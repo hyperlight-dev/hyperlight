@@ -24,11 +24,18 @@ use mshv_bindings::{
     hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
     FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters,
 };
+#[cfg(feature = "unwind_guest")]
+use mshv_bindings::{
+    hv_register_name, hv_register_name_HV_X64_REGISTER_RAX, hv_register_name_HV_X64_REGISTER_RBP,
+    hv_register_name_HV_X64_REGISTER_RCX, hv_register_name_HV_X64_REGISTER_RSP,
+};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+#[cfg(feature = "unwind_guest")]
+use super::TraceRegister;
 use super::{
     Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
     CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
@@ -162,6 +169,19 @@ impl Debug for HypervLinuxDriver {
         }
 
         f.finish()
+    }
+}
+
+#[cfg(feature = "unwind_guest")]
+impl From<TraceRegister> for hv_register_name {
+    fn from(r: TraceRegister) -> Self {
+        match r {
+            TraceRegister::RAX => hv_register_name_HV_X64_REGISTER_RAX,
+            TraceRegister::RCX => hv_register_name_HV_X64_REGISTER_RCX,
+            TraceRegister::RIP => hv_register_name_HV_X64_REGISTER_RIP,
+            TraceRegister::RSP => hv_register_name_HV_X64_REGISTER_RSP,
+            TraceRegister::RBP => hv_register_name_HV_X64_REGISTER_RBP,
+        }
     }
 }
 
@@ -364,6 +384,17 @@ impl Hypervisor for HypervLinuxDriver {
             },
         };
         Ok(result)
+    }
+
+    #[cfg(feature = "unwind_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+        let mut assoc = [hv_register_assoc {
+            name: reg.into(),
+            ..Default::default()
+        }];
+        self.vcpu_fd.get_reg(&mut assoc)?;
+        // safety: all registers that we currently support are 64-bit
+        unsafe { Ok(assoc[0].value.reg64) }
     }
 
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]

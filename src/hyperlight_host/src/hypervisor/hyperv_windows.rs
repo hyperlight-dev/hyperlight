@@ -22,6 +22,8 @@ use std::string::String;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{instrument, Span};
 use windows::Win32::Foundation::HANDLE;
+#[cfg(feature = "trace_guest")]
+use windows::Win32::System::Hypervisor::WHV_REGISTER_NAME;
 use windows::Win32::System::Hypervisor::{
     WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4, WHvX64RegisterCs, WHvX64RegisterEfer,
     WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT,
@@ -34,6 +36,8 @@ use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
 use super::wrappers::WHvFPURegisters;
+#[cfg(feature = "unwind_guest")]
+use super::TraceRegister;
 use super::{
     windows_hypervisor_platform as whp, HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET,
     CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA,
@@ -44,9 +48,9 @@ use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::HyperlightError::{NoHypervisorFound, WindowsAPIError};
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
+use crate::HyperlightError::{NoHypervisorFound, WindowsAPIError};
 use crate::{debug, log_then_return, new_error, Result};
 
 /// A Hypervisor driver for HyperV-on-Windows.
@@ -303,6 +307,19 @@ impl Debug for HypervWindowsDriver {
     }
 }
 
+#[cfg(feature = "trace_guest")]
+impl From<TraceRegister> for WHV_REGISTER_NAME {
+    fn from(r: TraceRegister) -> Self {
+        match r {
+            TraceRegister::RAX => windows::Win32::System::Hypervisor::WHvX64RegisterRax,
+            TraceRegister::RCX => windows::Win32::System::Hypervisor::WHvX64RegisterRcx,
+            TraceRegister::RIP => windows::Win32::System::Hypervisor::WHvX64RegisterRip,
+            TraceRegister::RSP => windows::Win32::System::Hypervisor::WHvX64RegisterRsp,
+            TraceRegister::RBP => windows::Win32::System::Hypervisor::WHvX64RegisterRbp,
+        }
+    }
+}
+
 impl Hypervisor for HypervWindowsDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
@@ -545,6 +562,23 @@ impl Hypervisor for HypervWindowsDriver {
 
     fn get_partition_handle(&self) -> WHV_PARTITION_HANDLE {
         self.processor.get_partition_hdl()
+    }
+
+    #[cfg(feature = "unwind_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+        let register_names = [WHV_REGISTER_NAME::from(reg)];
+        let mut register_values: [WHV_REGISTER_VALUE; 1] = Default::default();
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.get_partition_hdl(),
+                0,
+                register_names.as_ptr(),
+                register_names.len() as u832,
+                register_values.as_mut_ptr(),
+            );
+            // safety: all registers that we currently support are 64-bit
+            register_values[0].Reg64
+        }
     }
 
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]

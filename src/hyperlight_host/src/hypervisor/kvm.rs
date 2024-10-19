@@ -24,6 +24,8 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+#[cfg(feature = "unwind_guest")]
+use super::TraceRegister;
 use super::{
     HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
     CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
@@ -335,6 +337,18 @@ impl Hypervisor for KVMDriver {
             }
         };
         Ok(result)
+    }
+
+    #[cfg(feature = "unwind_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+        let regs = self.vcpu_fd.get_regs()?;
+        Ok(match reg {
+            TraceRegister::RAX => regs.rax,
+            TraceRegister::RCX => regs.rcx,
+            TraceRegister::RIP => regs.rip,
+            TraceRegister::RSP => regs.rsp,
+            TraceRegister::RBP => regs.rbp,
+        })
     }
 
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
