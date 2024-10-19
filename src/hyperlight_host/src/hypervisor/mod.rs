@@ -116,6 +116,21 @@ pub enum HyperlightExit {
     Retry(),
 }
 
+/// Registers which may be useful for tracing/stack unwinding
+#[cfg(feature = "trace_guest")]
+pub enum TraceRegister {
+    /// RAX
+    RAX,
+    /// RCX
+    RCX,
+    /// RIP
+    RIP,
+    /// RSP
+    RSP,
+    /// RBP
+    RBP,
+}
+
 /// A common set of hypervisor functionality
 pub(crate) trait Hypervisor: Debug + Sync + Send {
     /// Initialise the internally stored vCPU with the given PEB address and
@@ -251,6 +266,10 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     ) -> Result<()> {
         unimplemented!()
     }
+
+    /// Read a register for trace/unwind purposes
+    #[cfg(feature = "unwind_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64>;
 }
 
 /// A virtual CPU that can be run until an exit occurs
