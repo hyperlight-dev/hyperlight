@@ -35,6 +35,8 @@ use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(feature = "init-paging")]
 use crate::mem::shared_mem::SharedMemory;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -78,6 +80,8 @@ where
         &u_sbox.config,
         #[cfg(any(crashdump, gdb))]
         &u_sbox.rt_cfg,
+        #[cfg(feature = "trace_guest")]
+        TraceInfo::new()?,
     )?;
     let outb_hdl = outb_handler_wrapper(hshm.clone(), u_sbox.host_funcs.clone());
 
@@ -151,6 +155,7 @@ pub(crate) fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
+    #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
 ) -> Result<Box<dyn Hypervisor>> {
     #[cfg(feature = "init-paging")]
     let rsp_ptr = {
@@ -222,6 +227,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
+                #[cfg(feature = "trace_guest")]
+                trace_info,
             )?;
             Ok(Box::new(hv))
         }
@@ -238,6 +245,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
+                #[cfg(feature = "trace_guest")]
+                trace_info,
             )?;
             Ok(Box::new(hv))
         }
@@ -260,6 +269,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
+                #[cfg(feature = "trace_guest")]
+                trace_info,
             )?;
             Ok(Box::new(hv))
         }

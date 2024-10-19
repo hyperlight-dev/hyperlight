@@ -44,6 +44,7 @@ anyhow = "1.0"
 metrics = "0.24.2"
 serde_json = "1.0"
 elfcore = "2.0"
+uuid = { version = "1.17.0", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
@@ -79,6 +80,7 @@ mshv-ioctls3 = { package="mshv-ioctls",  version = "=0.3.2", optional = true}
 [dev-dependencies]
 uuid = { version = "1.17.0", features = ["v4"] }
 signal-hook-registry = "1.4.5"
+envy = { version = "0.4.2" }
 serde = "1.0"
 proptest = "1.7.0"
 tempfile = "3.20.0"
@@ -126,6 +128,7 @@ executable_heap = []
 print_debug = []
 # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged.
 crashdump = ["dep:chrono"]
+trace_guest = []
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv2 = ["dep:mshv-bindings2", "dep:mshv-ioctls2"]
 mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]
