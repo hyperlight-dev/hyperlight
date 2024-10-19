@@ -46,6 +46,8 @@ use crate::HyperlightError;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::sandbox::SandboxConfiguration;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
@@ -298,12 +300,17 @@ pub(crate) struct KVMDriver {
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
+    #[cfg(feature = "trace_guest")]
+    #[allow(dead_code)]
+    trace_info: TraceInfo,
 }
 
 impl KVMDriver {
     /// Create a new instance of a `KVMDriver`, with only control registers
     /// set. Standard registers will not be set, and `initialise` must
     /// be called to do so.
+    #[allow(clippy::too_many_arguments)]
+    // TODO: refactor this function to take fewer arguments. Add trace_info to rt_cfg
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
@@ -313,6 +320,7 @@ impl KVMDriver {
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<Self> {
         let kvm = Kvm::new()?;
 
@@ -380,6 +388,8 @@ impl KVMDriver {
             gdb_conn,
             #[cfg(crashdump)]
             rt_cfg,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         };
 
         // Send the interrupt handle to the GDB thread if debugging is enabled
@@ -586,7 +596,12 @@ impl Hypervisor for KVMDriver {
             outb_handle_fn
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .call(port, value)?;
+                .call(
+                    #[cfg(feature = "trace_guest")]
+                    self,
+                    port,
+                    value,
+                )?;
         }
 
         Ok(())

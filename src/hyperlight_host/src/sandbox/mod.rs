@@ -43,6 +43,9 @@ pub mod snapshot;
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 mod callable;
 
+#[cfg(feature = "trace_guest")]
+use std::sync::{Arc, Mutex};
+
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 pub use callable::Callable;
 /// Re-export for `SandboxConfiguration` type
@@ -87,6 +90,35 @@ pub type ExtraAllowedSyscall = i64;
 #[instrument(skip_all, parent = Span::current())]
 pub fn is_hypervisor_present() -> bool {
     hypervisor::get_available_hypervisor().is_some()
+}
+
+#[cfg(feature = "trace_guest")]
+#[derive(Clone)]
+/// The information that trace collection requires in order to write
+/// an accurate trace.
+pub(crate) struct TraceInfo {
+    /// The epoch against which trace events are timed; at least as
+    /// early as the creation of the sandbox being traced.
+    #[allow(dead_code)]
+    pub epoch: std::time::Instant,
+    /// The file to which the trace is being written
+    #[allow(dead_code)]
+    pub file: Arc<Mutex<std::fs::File>>,
+}
+#[cfg(feature = "trace_guest")]
+impl TraceInfo {
+    /// Create a new TraceInfo by saving the current time as the epoch
+    /// and generating a random filename.
+    pub fn new() -> crate::Result<Self> {
+        let mut path = std::env::current_dir()?;
+        path.push("trace");
+        path.push(uuid::Uuid::new_v4().to_string());
+        path.set_extension("trace");
+        Ok(Self {
+            epoch: std::time::Instant::now(),
+            file: Arc::new(Mutex::new(std::fs::File::create_new(path)?)),
+        })
+    }
 }
 
 pub(crate) trait WrapperGetter {
