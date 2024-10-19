@@ -31,6 +31,8 @@ use super::{
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 use crate::{log_then_return, new_error, Result};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
@@ -167,6 +169,7 @@ impl Hypervisor for KVMDriver {
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         let regs = kvm_regs {
             rip: self.entrypoint,
@@ -187,6 +190,8 @@ impl Hypervisor for KVMDriver {
             hv_handler,
             outb_hdl,
             mem_access_hdl,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         )?;
 
         // reset RSP to what it was before initialise
@@ -204,6 +209,7 @@ impl Hypervisor for KVMDriver {
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         // Reset general purpose registers except RSP, then set RIP
         let rsp_before = self.vcpu_fd.get_regs()?.rsp;
@@ -229,6 +235,8 @@ impl Hypervisor for KVMDriver {
             hv_handler,
             outb_handle_fn,
             mem_access_fn,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         )?;
 
         // reset RSP to what it was before function call
@@ -247,6 +255,7 @@ impl Hypervisor for KVMDriver {
         _rip: u64,
         _instruction_length: u64,
         outb_handle_fn: OutBHandlerWrapper,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         // KVM does not need RIP or instruction length, as it automatically sets the RIP
 
@@ -260,7 +269,14 @@ impl Hypervisor for KVMDriver {
             outb_handle_fn
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .call(port, payload_u64)?;
+                .call(
+                    #[cfg(feature = "trace_guest")]
+                    self,
+                    #[cfg(feature = "trace_guest")]
+                    trace_info,
+                    port,
+                    payload_u64,
+                )?;
         }
 
         Ok(())
@@ -388,7 +404,7 @@ pub(crate) mod test_cfg {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
+    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler, OutBHandlerFunction};
     use crate::hypervisor::tests::test_initialise;
     use crate::{should_run_kvm_linux_test, Result};
 
@@ -396,8 +412,13 @@ mod tests {
     fn test_init() {
         should_run_kvm_linux_test!();
         let outb_handler = {
-            let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
-                Box::new(|_, _| -> Result<()> { Ok(()) });
+            let func: OutBHandlerFunction = Box::new(
+                |#[cfg(feature = "trace_guest")] _,
+                 #[cfg(feature = "trace_guest")] _,
+                 _,
+                 _|
+                 -> Result<()> { Ok(()) },
+            );
             Arc::new(Mutex::new(OutBHandler::from(func)))
         };
         let mem_access_handler = {

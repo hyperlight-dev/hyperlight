@@ -48,6 +48,8 @@ strum = { version = "0.26", features = ["derive"] }
 tempfile = { version = "3.10", optional = true }
 serde_yaml = "0.9"
 anyhow = "1.0"
+uuid = { version = "1.4.1", features = ["v4"] }
+
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -76,7 +78,6 @@ kvm-bindings = { version = "0.10.0", features = ["fam-wrappers"], optional = tru
 kvm-ioctls = { version = "0.19.0", optional = true }
 
 [dev-dependencies]
-uuid = { version = "1.4.1", features = ["v4"] }
 signal-hook-registry = "1.4.1"
 envy = { version = "0.4.2" }
 serde = "1.0"
@@ -120,6 +121,10 @@ executable_heap = []
 # This feature enables printing of debug information to stdout in debug builds
 print_debug = []
 crashdump = ["dep:tempfile"] # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged. This feature can only be used in debug builds.
+# This feature enables the generation of trace files.  Traces do not
+# include any particularly expensive instrumentation unless other
+# features are enabled.
+trace_guest = []
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv = ["dep:mshv-bindings", "dep:mshv-ioctls"]
 inprocess = []

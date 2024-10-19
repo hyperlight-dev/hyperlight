@@ -47,6 +47,8 @@ use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
 #[cfg(feature = "function_call_metrics")]
 use crate::sandbox::metrics::SandboxMetric::GuestFunctionCallDurationMicroseconds;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::HyperlightError::{
@@ -183,6 +185,8 @@ pub(crate) struct HvHandlerConfig {
     pub(crate) outb_handler: OutBHandlerWrapper,
     pub(crate) mem_access_handler: MemAccessHandlerWrapper,
     pub(crate) max_wait_for_cancellation: Duration,
+    #[cfg(feature = "trace_guest")]
+    pub(crate) trace_info: TraceInfo,
 }
 
 impl HypervisorHandler {
@@ -338,6 +342,8 @@ impl HypervisorHandler {
                                     configuration.outb_handler.clone(),
                                     configuration.mem_access_handler.clone(),
                                     Some(hv_handler_clone.clone()),
+                                    #[cfg(feature = "trace_guest")]
+                                    configuration.trace_info.clone(),
                                 );
                                 drop(mem_lock_guard);
                                 drop(evar_lock_guard);
@@ -417,6 +423,7 @@ impl HypervisorHandler {
                                             configuration.outb_handler.clone(),
                                             configuration.mem_access_handler.clone(),
                                             Some(hv_handler_clone.clone()),
+                                            #[cfg(feature = "trace_guest")] configuration.trace_info.clone(),
                                         );
                                         histogram_vec_observe!(
                                             &GuestFunctionCallDurationMicroseconds,
@@ -432,6 +439,7 @@ impl HypervisorHandler {
                                         configuration.outb_handler.clone(),
                                         configuration.mem_access_handler.clone(),
                                         Some(hv_handler_clone.clone()),
+                                        #[cfg(feature = "trace_guest")] configuration.trace_info.clone(),
                                     )
                                 };
                                 drop(mem_lock_guard);

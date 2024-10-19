@@ -66,6 +66,8 @@ use self::handlers::{
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::ptr::RawPtr;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 
 pub(crate) const CR4_PAE: u64 = 1 << 5;
 pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
@@ -118,6 +120,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()>;
 
     /// Dispatch a call from the host to the guest using the given pointer
@@ -133,6 +136,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()>;
 
     /// Handle an IO exit from the internally stored vCPU.
@@ -143,6 +147,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         rip: u64,
         instruction_length: u64,
         outb_handle_fn: OutBHandlerWrapper,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()>;
 
     /// Run the vCPU
@@ -202,6 +207,7 @@ impl VirtualCPU {
         hv_handler: Option<HypervisorHandler>,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         loop {
             match hv.run() {
@@ -209,7 +215,7 @@ impl VirtualCPU {
                     break;
                 }
                 Ok(HyperlightExit::IoOut(port, data, rip, instruction_length)) => {
-                    hv.handle_io(port, data, rip, instruction_length, outb_handle_fn.clone())?
+                    hv.handle_io(port, data, rip, instruction_length, outb_handle_fn.clone(), #[cfg(feature = "trace_guest")] trace_info.clone())?
                 }
                 Ok(HyperlightExit::Mmio(addr)) => {
                     #[cfg(crashdump)]
@@ -319,6 +325,8 @@ pub(crate) mod tests {
             max_wait_for_cancellation: Duration::from_millis(
                 SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
             ),
+            #[cfg(feature = "trace_guest")]
+            trace_info: crate::sandbox::TraceInfo::new()?,
         };
 
         let mut hv_handler = HypervisorHandler::new(hv_handler_config);

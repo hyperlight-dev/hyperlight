@@ -37,6 +37,8 @@ use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 use crate::{log_then_return, new_error, Result};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
@@ -173,6 +175,7 @@ impl Hypervisor for HypervLinuxDriver {
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         let regs = StandardRegisters {
             rip: self.entrypoint,
@@ -194,6 +197,8 @@ impl Hypervisor for HypervLinuxDriver {
             hv_handler,
             outb_hdl,
             mem_access_hdl,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         )?;
 
         // reset RSP to what it was before initialise
@@ -212,6 +217,7 @@ impl Hypervisor for HypervLinuxDriver {
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         // Reset general purpose registers except RSP, then set RIP
         let rsp_before = self.vcpu_fd.get_regs()?.rsp;
@@ -238,6 +244,8 @@ impl Hypervisor for HypervLinuxDriver {
             hv_handler,
             outb_handle_fn,
             mem_access_fn,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         )?;
 
         // reset RSP to what it was before function call
@@ -257,12 +265,20 @@ impl Hypervisor for HypervLinuxDriver {
         rip: u64,
         instruction_length: u64,
         outb_handle_fn: OutBHandlerWrapper,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         let payload = data[..8].try_into()?;
         outb_handle_fn
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .call(port, u64::from_le_bytes(payload))?;
+            .call(
+                #[cfg(feature = "trace_guest")]
+                self,
+                #[cfg(feature = "trace_guest")]
+                trace_info,
+                port,
+                u64::from_le_bytes(payload),
+            )?;
 
         // update rip
         self.vcpu_fd.set_reg(&[hv_register_assoc {

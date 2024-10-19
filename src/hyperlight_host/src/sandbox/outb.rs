@@ -26,8 +26,12 @@ use tracing_log::format_trace;
 use super::host_funcs::HostFuncsWrapper;
 use super::mem_mgr::MemMgrWrapper;
 use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction, OutBHandlerWrapper};
+#[cfg(feature = "trace_guest")]
+use crate::hypervisor::Hypervisor;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 use crate::{new_error, HyperlightError, Result};
 
 pub(super) enum OutBAction {
@@ -116,6 +120,8 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
 fn handle_outb_impl(
     mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
     host_funcs: Arc<Mutex<HostFuncsWrapper>>,
+    #[cfg(feature = "trace_guest")] _hv: &mut dyn Hypervisor,
+    #[cfg(feature = "trace_guest")] _trace_info: TraceInfo,
     port: u16,
     byte: u64,
 ) -> Result<()> {
@@ -165,14 +171,23 @@ pub(crate) fn outb_handler_wrapper(
     mut mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
     host_funcs_wrapper: Arc<Mutex<HostFuncsWrapper>>,
 ) -> OutBHandlerWrapper {
-    let outb_func: OutBHandlerFunction = Box::new(move |port, payload| {
-        handle_outb_impl(
-            &mut mem_mgr_wrapper,
-            host_funcs_wrapper.clone(),
-            port,
-            payload,
-        )
-    });
+    let outb_func: OutBHandlerFunction = Box::new(
+        move |#[cfg(feature = "trace_guest")] hv,
+              #[cfg(feature = "trace_guest")] trace_info,
+              port,
+              payload| {
+            handle_outb_impl(
+                &mut mem_mgr_wrapper,
+                host_funcs_wrapper.clone(),
+                #[cfg(feature = "trace_guest")]
+                hv,
+                #[cfg(feature = "trace_guest")]
+                trace_info,
+                port,
+                payload,
+            )
+        },
+    );
     let outb_hdl = OutBHandler::from(outb_func);
     Arc::new(Mutex::new(outb_hdl))
 }

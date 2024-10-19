@@ -29,6 +29,8 @@ use crate::mem::shared_mem::GuestSharedMemory;
 use crate::sandbox::host_funcs::HostFuncsWrapper;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 use crate::sandbox_state::sandbox::Sandbox;
 use crate::{new_error, MultiUseSandbox, Result, SingleUseSandbox, UninitializedSandbox};
@@ -130,6 +132,8 @@ fn hv_init(
         max_init_time,
         max_exec_time,
         max_wait_for_cancellation,
+        #[cfg(feature = "trace_guest")]
+        trace_info: TraceInfo::new()?,
     };
     // Note: `dispatch_function_addr` is set by the Hyperlight guest library, and so it isn't in
     // shared memory at this point in time. We will set it after the execution of `hv_init`.
