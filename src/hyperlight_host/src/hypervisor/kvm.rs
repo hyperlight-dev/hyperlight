@@ -29,6 +29,8 @@ use tracing::{Span, instrument};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
+#[cfg(feature = "unwind_guest")]
+use super::TraceRegister;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
@@ -961,6 +963,18 @@ impl Hypervisor for KVMDriver {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "unwind_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+        let regs = self.vcpu_fd.get_regs()?;
+        Ok(match reg {
+            TraceRegister::RAX => regs.rax,
+            TraceRegister::RCX => regs.rcx,
+            TraceRegister::RIP => regs.rip,
+            TraceRegister::RSP => regs.rsp,
+            TraceRegister::RBP => regs.rbp,
+        })
     }
 }
 

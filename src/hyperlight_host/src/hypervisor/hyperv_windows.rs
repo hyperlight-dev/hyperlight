@@ -44,6 +44,8 @@ use {
     std::sync::Mutex,
 };
 
+#[cfg(feature = "unwind_guest")]
+use super::TraceRegister;
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::surrogate_process::SurrogateProcess;
@@ -1042,6 +1044,18 @@ impl Hypervisor for HypervWindowsDriver {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "unwind_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+        let regs = self.processor.get_regs()?;
+        match reg {
+            TraceRegister::RAX => Ok(regs.rax),
+            TraceRegister::RCX => Ok(regs.rcx),
+            TraceRegister::RIP => Ok(regs.rip),
+            TraceRegister::RSP => Ok(regs.rsp),
+            TraceRegister::RBP => Ok(regs.rbp),
+        }
     }
 }
 
