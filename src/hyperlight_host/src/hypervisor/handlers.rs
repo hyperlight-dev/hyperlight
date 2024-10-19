@@ -23,7 +23,7 @@ use crate::{new_error, Result};
 /// The trait representing custom logic to handle the case when
 /// a Hypervisor's virtual CPU (vCPU) informs Hyperlight the guest
 /// has initiated an outb operation.
-pub trait OutBHandlerCaller: Sync + Send {
+pub(crate) trait OutBHandlerCaller: Sync + Send {
     /// Function that gets called when an outb operation has occurred.
     fn call(&mut self, port: u16, payload: u64) -> Result<()>;
 }
@@ -34,7 +34,7 @@ pub trait OutBHandlerCaller: Sync + Send {
 /// Note: This needs to be wrapped in a Mutex to be able to grab a mutable
 /// reference to the underlying data (i.e., handle_outb in `Sandbox` takes
 /// a &mut self).
-pub type OutBHandlerWrapper = Arc<Mutex<dyn OutBHandlerCaller>>;
+pub(crate) type OutBHandlerWrapper = Arc<Mutex<dyn OutBHandlerCaller>>;
 
 pub(crate) type OutBHandlerFunction = Box<dyn FnMut(u16, u64) -> Result<()> + Send>;
 
