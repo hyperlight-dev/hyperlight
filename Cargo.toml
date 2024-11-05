@@ -30,7 +30,7 @@ rust-version = "1.79.0"
 
 [workspace.dependencies]
 mshv-bindings = { version = "=0.2.1" }
-mshv-ioctls = { version = "=0.2.1" }
+mshv-ioctls = { version = "=0.3.1" }
 
 hyperlight-common = { path = "src/hyperlight_common", version = "0.9.0", default-features = false }
 hyperlight-host = { path = "src/hyperlight_host", version = "0.9.0", default-features = false }
