@@ -14,7 +14,7 @@ alloca = [] # compile alloca wrapper
 [dependencies]
 anyhow = { version = "1.0.45", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-buddy_system_allocator = "0.9.0"
+buddy_system_allocator = "0.11.0"
 hyperlight-common = { workspace = true }
 spin = "0.9.8"
 log = { version = "0.4", default-features = false }
