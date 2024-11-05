@@ -4,15 +4,6 @@ name: Build Guest Binaries
 
 on:
   workflow_call:
-    secrets:
-      ADO_HYPERLIGHT_CARGO_RO_AZURE_CLIENT_ID:
-        required: true
-      AZURE_TENANT_ID:
-        required: true
-    inputs:
-      environment: 
-        required: false
-        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,7 +15,6 @@ permissions:
 jobs:
   # this job has no dependencies
   build-guest-binaries:
-    environment: ${{ inputs.environment }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true

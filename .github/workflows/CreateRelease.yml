@@ -18,8 +18,7 @@ jobs:
   build-rust-ubuntu:
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
     if: ${{ contains(github.ref, 'refs/heads/release/') }} ||  ${{ github.ref=='refs/heads/dev' }}
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=HL-Ubuntu-22.04-KVM"]
-    environment: release
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
 
     steps:
       - uses: actions/checkout@v4
@@ -49,7 +48,6 @@ jobs:
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
     if: ${{ contains(github.ref, 'refs/heads/release/') }} ||  ${{ github.ref=='refs/heads/dev' }}
     runs-on: windows-2022
-    environment: release
 
     steps:
       - uses: actions/checkout@v4
@@ -69,22 +67,17 @@ jobs:
   build-guest-binaries:
     uses: ./.github/workflows/dep_build_guest_binaries.yml
     secrets: inherit
-    with:
-      environment: release
 
   fuzzing:
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
       max_total_time: 3600 # 1 hour in seconds
-      environment: release
     secrets: inherit
 
   benchmarks:
     needs: [build-guest-binaries]
     uses: ./.github/workflows/Benchmarks.yml
     secrets: inherit
-    with:
-      environment: release
     permissions:
       id-token: write
       contents: read
@@ -98,7 +91,6 @@ jobs:
       contents: read
 
   publish:
-    environment: release
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
     if: ${{ contains(github.ref, 'refs/heads/release/') }} ||  ${{ github.ref=='refs/heads/dev' }}
     runs-on: windows-2022

@@ -33,11 +33,11 @@ jobs:
         build: [windows-debug, windows-release]
         include:
           - build: windows-debug
-            os: [self-hosted, Windows, X64, "1ES.Pool=HL-win-2022-amd"]
+            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
             config: debug
             platform: x64
           - build: windows-release
-            os: [self-hosted, Windows, X64, "1ES.Pool=HL-win-2022-amd"]
+            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
             config: release
             platform: x64
     env:
@@ -82,22 +82,22 @@ jobs:
           ]
         include:
           - build: linux-kvm-debug
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-Ubuntu-22.04-KVM"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
             config: debug
             platform: x64
             hypervisor: kvm
           - build: linux-kvm-release
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-Ubuntu-22.04-KVM"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
             config: release
             platform: x64
             hypervisor: kvm
           - build: linux-hyperv-debug
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-mshv-dev"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
             config: debug
             platform: x64
             hypervisor: hyperv
           - build: linux-hyperv-release
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-mshv-dev"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
             config: release
             platform: x64
             hypervisor: hyperv

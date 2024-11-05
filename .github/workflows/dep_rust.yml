@@ -5,11 +5,6 @@ name: Rust Tests and Lints
 # See README.md in this directory for more information about workflow_call
 on:
   workflow_call:
-    secrets:
-      ADO_HYPERLIGHT_CARGO_RO_AZURE_CLIENT_ID:
-        required: true
-      AZURE_TENANT_ID:
-        required: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,27 +30,27 @@ jobs:
           ]
         include:
           - build: windows-2022-debug
-            os: [self-hosted, Windows, X64, "1ES.Pool=HL-win-2022-amd"]
+            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
             hypervisor: none
             config: debug
           - build: linux-kvm-debug
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-Ubuntu-22.04-KVM"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
             hypervisor: kvm
             config: debug
           - build: linux-hyperv-debug
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-mshv-dev"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
             hypervisor: hyperv
             config: debug
           - build: windows-2022-release
-            os: [self-hosted, Windows, X64, "1ES.Pool=HL-win-2022-amd"]
+            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
             hypervisor: none
             config: release
           - build: linux-kvm-release
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-Ubuntu-22.04-KVM"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
             hypervisor: kvm
             config: release
           - build: linux-hyperv-release
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-mshv-dev"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
             hypervisor: hyperv
             config: release
 

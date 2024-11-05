@@ -4,15 +4,7 @@ name: Benchmarks
 
 on:
   workflow_call: # This is called from CreateRelease.yml
-    secrets:
-      ADO_HYPERLIGHT_CARGO_RO_AZURE_CLIENT_ID:
-        required: true
-      AZURE_TENANT_ID:
-        required: true
     inputs:
-      environment:
-        required: false
-        type: string
 
 permissions:
   id-token: write
@@ -23,20 +15,19 @@ jobs:
   # its execution. this dependency should be expressed in the dependent
   # workflow
   benchmark:
-    environment: ${{ inputs.environment }}
     strategy:
       fail-fast: true
       matrix:
         build: [windows-2022-release, linux-kvm-release, linux-hyperv-release]
         include:
           - build: windows-2022-release
-            os: [self-hosted, Windows, X64, "1ES.Pool=HL-win-2022-amd"]
+            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
             hypervisor: none
           - build: linux-kvm-release
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-Ubuntu-22.04-KVM"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
             hypervisor: kvm
           - build: linux-hyperv-release
-            os: [self-hosted, Linux, X64, "1ES.Pool=HL-mshv-dev"]
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
             hypervisor: hyperv
 
     runs-on: ${{ matrix.os }}
