@@ -85,7 +85,7 @@ tracing-subscriber = {version = "0.3.18", features = ["std", "env-filter"]}
 tracing-opentelemetry = "0.25.0"
 opentelemetry = "0.24.0"
 opentelemetry-otlp = { version = "0.17.0", features = ["default"] }
-opentelemetry_sdk = { version = "0.24.1", features = ["rt-tokio"] }
+opentelemetry_sdk = { version = "0.26.0", features = ["rt-tokio"] }
 tokio = { version = "1.34.0", features = ["full"] }
 criterion = "0.5.1"
 tracing-chrome = "0.7.2"
