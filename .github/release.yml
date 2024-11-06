@@ -4,7 +4,6 @@ changelog:
   exclude:
     labels:
       - chore
-      - ignore
   categories:
     - title: 🛠 Breaking Changes 
       labels:
@@ -12,7 +11,6 @@ changelog:
     - title: 🎉 New Features 
       labels:
         - enhancement
-        - feature
     - title: 🐛 Bug Fixes
       labels:
         - bug
