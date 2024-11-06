@@ -24,7 +24,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.79.0"
 license = "Apache-2.0"
@@ -36,9 +36,9 @@ readme = "README.md"
 mshv-bindings = { version = "=0.2.1" }
 mshv-ioctls = { version = "=0.2.1" }
 
-hyperlight-common = { path = "src/hyperlight_common", version = "0.9.0", default-features = false }
-hyperlight-host = { path = "src/hyperlight_host", version = "0.9.0", default-features = false }
-hyperlight-guest = { path = "src/hyperlight_guest", version = "0.9.0", default-features = false }
+hyperlight-common = { path = "src/hyperlight_common", version = "0.1.0", default-features = false }
+hyperlight-host = { path = "src/hyperlight_host", version = "0.1.0", default-features = false }
+hyperlight-guest = { path = "src/hyperlight_guest", version = "0.1.0", default-features = false }
 hyperlight-testing = { path = "src/hyperlight_testing", default-features = false }
 
 [workspace.lints.rust]
