@@ -82,7 +82,15 @@ impl KVMDriver {
         };
         let kvm = Kvm::new()?;
 
+        #[cfg(debug_assertions)]
+        let _now = std::time::Instant::now();
         let vm_fd = kvm.create_vm_with_type(0)?;
+        #[cfg(debug_assertions)]
+        println!(
+            "Time to create_vm_with_type: {:?} from thread {:?}",
+            _now.elapsed(),
+            std::thread::current().name()
+        );
 
         let perm_flags =
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;

@@ -122,7 +122,7 @@ unsafe impl Send for ExclusiveSharedMemory {}
 /// unit that likely can't be discovered by the compiler) that _rust_
 /// users do not perform racy accesses to the guest communication
 /// buffers that are also accessed by HostSharedMemory.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GuestSharedMemory {
     region: Arc<HostMapping>,
     /// The lock that indicates this shared memory is being used by non-Rust code
