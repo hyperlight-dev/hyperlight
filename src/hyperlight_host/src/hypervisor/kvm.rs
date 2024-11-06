@@ -145,16 +145,13 @@ impl Debug for KVMDriver {
             f.field("Registers", &regs);
         }
 
-        // TODO: the call to get sregs is removed because it hangs after updating to kvm-ioctls 0.18
-        // this needs to be investigated or to be replaced with sync_regs() to see if that gets around the issue
-
-        //let sregs = self.vcpu_fd.get_sregs();
+        let sregs = self.vcpu_fd.get_sregs();
 
         // check that sregs is OK and then set field in debug struct
 
-        // if let Ok(sregs) = sregs {
-        //     f.field("Special Registers", &sregs);
-        // }
+        if let Ok(sregs) = sregs {
+            f.field("Special Registers", &sregs);
+        }
 
         f.finish()
     }
