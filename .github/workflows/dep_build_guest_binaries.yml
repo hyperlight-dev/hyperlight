@@ -41,7 +41,7 @@ jobs:
         run: just build-and-move-rust-guests
 
       - name: Upload Binary Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: guest-binaries-${{ matrix.config }}
           path: |
