@@ -17,9 +17,9 @@ There are 2 types of issues:
 - Bug: You've found a bug with the code, and want to report it, or create an issue to track the bug.
 - Proposal: Used for items that propose a new idea or functionality. This allows feedback from others before code is written.
 
-## Contributing to Dapr
+## Contributing to Hyperlight
 
-This section describes the guidelines for contributing code / docs to Dapr.
+This section describes the guidelines for contributing code / docs to Hyperlight.
 
 ### Pull Requests
 
@@ -80,3 +80,5 @@ git checkout <branch-name>
 git commit --amend --no-edit --signoff
 git push --force-with-lease <remote-name> <branch-name>
 ```
+
+*Credit: This doc was cribbed from Dapr.*
