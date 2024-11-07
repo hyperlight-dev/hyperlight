@@ -220,7 +220,7 @@ If all worked as expected, you should the following message in your console:
 Hello, World! I am executing inside of a VM :)
 ```
 
-If you get the error `Error: NoHypervisorFound` and KVM or mshv is set up then this may be a permissions issue. In bash, you can use `ls -l /dev/kvm` or  `ls -l /dev/mshv` to check which groups that owns the device and then `groups` to make sure your user is a member of that group. 
+If you get the error `Error: NoHypervisorFound` and KVM or mshv is set up then this may be a permissions issue. In bash, you can use `ls -l /dev/kvm` or  `ls -l /dev/mshv` to check which group owns that device and then `groups` to make sure your user is a member of that group. 
 
 For more details on how to verify that KVM is correctly installed and permissions are correct, follow the guide [here](https://help.ubuntu.com/community/KVM/Installation).
 
