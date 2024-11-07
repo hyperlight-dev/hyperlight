@@ -155,29 +155,50 @@ jobs:
           just tar-headers
           just tar-static-lib
 
-      - name: Download benchmarks (Windows)
+      - name: Download benchmarks (Windows amd)
         uses: actions/download-artifact@v4
         with:
-          name: benchmarks_Windows_none
-          path: benchmarks_Windows_none
+          name: benchmarks_Windows_none_amd
+          path: benchmarks_Windows_none_amd
 
-      - name: Download benchmarks (Linux hyperv)
+      - name: Download benchmarks (Linux hyperv amd)
         uses: actions/download-artifact@v4
         with:
-          name: benchmarks_Linux_hyperv
-          path: benchmarks_Linux_hyperv
+          name: benchmarks_Linux_hyperv_amd
+          path: benchmarks_Linux_hyperv_amd
 
-      - name: Download benchmarks (Linux kvm)
+      - name: Download benchmarks (Linux kvm amd)
         uses: actions/download-artifact@v4
         with:
-          name: benchmarks_Linux_kvm
-          path: benchmarks_Linux_kvm
+          name: benchmarks_Linux_kvm_amd
+          path: benchmarks_Linux_kvm_amd
+
+      - name: Download benchmarks (Windows intel)
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmarks_Windows_none_intel
+          path: benchmarks_Windows_none_intel
+
+      - name: Download benchmarks (Linux hyperv intel)
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmarks_Linux_hyperv_intel
+          path: benchmarks_Linux_hyperv_intel
+
+      - name: Download benchmarks (Linux kvm intel)
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmarks_Linux_kvm_intel
+          path: benchmarks_Linux_kvm_intel
 
       - name: Archive benchmarks
         run: |
-          tar -zcvf benchmarks_Windows_none.tar.gz benchmarks_Windows_none
-          tar -zcvf benchmarks_Linux_hyperv.tar.gz benchmarks_Linux_hyperv
-          tar -zcvf benchmarks_Linux_kvm.tar.gz benchmarks_Linux_kvm
+          tar -zcvf benchmarks_Windows_none.tar.gz benchmarks_Windows_none_amd
+          tar -zcvf benchmarks_Linux_hyperv.tar.gz benchmarks_Linux_hyperv_amd
+          tar -zcvf benchmarks_Linux_kvm.tar.gz benchmarks_Linux_kvm_amd
+          tar -zcvf benchmarks_Windows_none.tar.gz benchmarks_Windows_none_intel
+          tar -zcvf benchmarks_Linux_hyperv.tar.gz benchmarks_Linux_hyperv_intel
+          tar -zcvf benchmarks_Linux_kvm.tar.gz benchmarks_Linux_kvm_intel          
 
       - name: Install github-cli
         run: |
@@ -202,9 +223,12 @@ jobs:
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest.exe `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/dummyguest `
-            benchmarks_Windows_none.tar.gz `
-            benchmarks_Linux_hyperv.tar.gz `
-            benchmarks_Linux_kvm.tar.gz `
+            benchmarks_Windows_none_amd.tar.gz `
+            benchmarks_Linux_hyperv_amd.tar.gz `
+            benchmarks_Linux_kvm_amd.tar.gz `
+            benchmarks_Windows_none_intel.tar.gz `
+            benchmarks_Linux_hyperv_intel.tar.gz `
+            benchmarks_Linux_kvm_intel.tar.gz `          
             hyperlight-guest-c-api-linux.tar.gz `
             hyperlight-guest-c-api-windows.tar.gz `
             include.tar.gz
@@ -221,9 +245,12 @@ jobs:
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest.exe `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/dummyguest `
-            benchmarks_Windows_none.tar.gz `
-            benchmarks_Linux_hyperv.tar.gz `
-            benchmarks_Linux_kvm.tar.gz `
+            benchmarks_Windows_none_amd.tar.gz `
+            benchmarks_Linux_hyperv_amd.tar.gz `
+            benchmarks_Linux_kvm_amd.tar.gz `
+            benchmarks_Windows_none_intel.tar.gz `
+            benchmarks_Linux_hyperv_intel.tar.gz `
+            benchmarks_Linux_kvm_intel.tar.gz `          
             hyperlight-guest-c-api-linux.tar.gz `
             hyperlight-guest-c-api-windows.tar.gz `
             include.tar.gz
