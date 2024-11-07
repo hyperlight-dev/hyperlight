@@ -28,7 +28,7 @@ jobs:
         include:
           - build: windows-2022-release-amd
             os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
-            hypervisor: none
+            hypervisor: hyperv
             arch: amd
           - build: linux-kvm-release-amd
             os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
@@ -40,7 +40,7 @@ jobs:
             arch: amd
           - build: windows-2022-release-intel
             os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-intel"]
-            hypervisor: none
+            hypervisor: hyperv
             arch: intel
           - build: linux-kvm-release-intel
             os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-intel"]

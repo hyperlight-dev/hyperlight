@@ -166,7 +166,7 @@ run-rust-examples-linux target=default-target: (build-rust target) (run-rust-exa
 # If tag is not given, defaults to latest release
 # Options for os: "Windows", or "Linux"
 # Options for Linux hypervisor: "kvm", "hyperv"
-# Options for Windows hypervisor: "none"
+# Options for Windows hypervisor: "hyperv"
 # Options for arch: "amd", "intel"
 bench-download os hypervisor arch tag="":
     gh release download {{ tag }} -D ./target/ -p benchmarks_{{ os }}_{{ hypervisor }}_{{ arch }}.tar.gz
