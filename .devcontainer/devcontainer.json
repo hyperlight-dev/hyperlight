@@ -1,0 +1,37 @@
+// For more info on the configuration below, check out the link:
+// https://code.visualstudio.com/docs/devcontainers/create-dev-container
+{
+	"name": "Hyperlight-kvm",
+
+	"build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "HYPERVISOR": "kvm",
+      "USERNAME": "vscode",
+    }
+  },
+
+	"customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cmake-tools",
+                "rust-lang.rust-analyzer"
+            ]
+        }
+    },
+
+  "containerEnv": {
+    "HYPERVISOR": "kvm",
+    "USERNAME": "vscode"
+  },
+
+	"runArgs": [
+      "--privileged",
+      "--device=/dev/kvm"
+  ],
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	"postCreateCommand": "bash .devcontainer/setup.sh",
+
+	"remoteUser": "vscode"
+}
