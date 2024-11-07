@@ -198,7 +198,7 @@ jobs:
             benchmarks_Linux_kvm_amd.tar.gz `
             benchmarks_Windows_hyperv_intel.tar.gz `
             benchmarks_Linux_hyperv_intel.tar.gz `
-            benchmarks_Linux_kvm_intel.tar.gz `          
+            benchmarks_Linux_kvm_intel.tar.gz `
             hyperlight-guest-c-api-linux.tar.gz `
             hyperlight-guest-c-api-windows.tar.gz `
             include.tar.gz
@@ -220,7 +220,7 @@ jobs:
             benchmarks_Linux_kvm_amd.tar.gz `
             benchmarks_Windows_hyperv_intel.tar.gz `
             benchmarks_Linux_hyperv_intel.tar.gz `
-            benchmarks_Linux_kvm_intel.tar.gz `          
+            benchmarks_Linux_kvm_intel.tar.gz `
             hyperlight-guest-c-api-linux.tar.gz `
             hyperlight-guest-c-api-windows.tar.gz `
             include.tar.gz
