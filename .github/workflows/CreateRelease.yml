@@ -155,29 +155,20 @@ jobs:
           just tar-headers
           just tar-static-lib
 
-      - name: Download benchmarks (Windows)
+      - name: Download all benchmarks
         uses: actions/download-artifact@v4
         with:
-          name: benchmarks_Windows_none
-          path: benchmarks_Windows_none
-
-      - name: Download benchmarks (Linux hyperv)
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmarks_Linux_hyperv
-          path: benchmarks_Linux_hyperv
-
-      - name: Download benchmarks (Linux kvm)
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmarks_Linux_kvm
-          path: benchmarks_Linux_kvm
+          pattern: benchmarks_*
+          # note: artifacts retain their upload name, so we don't have to specify the path
 
       - name: Archive benchmarks
         run: |
-          tar -zcvf benchmarks_Windows_none.tar.gz benchmarks_Windows_none
-          tar -zcvf benchmarks_Linux_hyperv.tar.gz benchmarks_Linux_hyperv
-          tar -zcvf benchmarks_Linux_kvm.tar.gz benchmarks_Linux_kvm
+          tar -zcvf benchmarks_Windows_hyperv.tar.gz benchmarks_Windows_hyperv_amd
+          tar -zcvf benchmarks_Linux_hyperv.tar.gz benchmarks_Linux_hyperv_amd
+          tar -zcvf benchmarks_Linux_kvm.tar.gz benchmarks_Linux_kvm_amd
+          tar -zcvf benchmarks_Windows_hyperv.tar.gz benchmarks_Windows_hyperv_intel
+          tar -zcvf benchmarks_Linux_hyperv.tar.gz benchmarks_Linux_hyperv_intel
+          tar -zcvf benchmarks_Linux_kvm.tar.gz benchmarks_Linux_kvm_intel          
 
       - name: Install github-cli
         run: |
@@ -202,9 +193,12 @@ jobs:
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest.exe `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/dummyguest `
-            benchmarks_Windows_none.tar.gz `
-            benchmarks_Linux_hyperv.tar.gz `
-            benchmarks_Linux_kvm.tar.gz `
+            benchmarks_Windows_hyperv_amd.tar.gz `
+            benchmarks_Linux_hyperv_amd.tar.gz `
+            benchmarks_Linux_kvm_amd.tar.gz `
+            benchmarks_Windows_hyperv_intel.tar.gz `
+            benchmarks_Linux_hyperv_intel.tar.gz `
+            benchmarks_Linux_kvm_intel.tar.gz `          
             hyperlight-guest-c-api-linux.tar.gz `
             hyperlight-guest-c-api-windows.tar.gz `
             include.tar.gz
@@ -221,9 +215,12 @@ jobs:
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest.exe `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/dummyguest `
-            benchmarks_Windows_none.tar.gz `
-            benchmarks_Linux_hyperv.tar.gz `
-            benchmarks_Linux_kvm.tar.gz `
+            benchmarks_Windows_hyperv_amd.tar.gz `
+            benchmarks_Linux_hyperv_amd.tar.gz `
+            benchmarks_Linux_kvm_amd.tar.gz `
+            benchmarks_Windows_hyperv_intel.tar.gz `
+            benchmarks_Linux_hyperv_intel.tar.gz `
+            benchmarks_Linux_kvm_intel.tar.gz `          
             hyperlight-guest-c-api-linux.tar.gz `
             hyperlight-guest-c-api-windows.tar.gz `
             include.tar.gz

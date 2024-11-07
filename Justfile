@@ -166,11 +166,12 @@ run-rust-examples-linux target=default-target: (build-rust target) (run-rust-exa
 # If tag is not given, defaults to latest release
 # Options for os: "Windows", or "Linux"
 # Options for Linux hypervisor: "kvm", "hyperv"
-# Options for Windows hypervisor: "none"
-bench-download os hypervisor tag="":
-    gh release download {{ tag }} -D ./target/ -p benchmarks_{{ os }}_{{ hypervisor }}.tar.gz
+# Options for Windows hypervisor: "hyperv"
+# Options for arch: "amd", "intel"
+bench-download os hypervisor arch tag="":
+    gh release download {{ tag }} -D ./target/ -p benchmarks_{{ os }}_{{ hypervisor }}_{{ arch }}.tar.gz
     mkdir -p target/criterion {{ if os() == "windows" { "-Force" } else { "" } }}
-    tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}.tar.gz -C target/criterion/ --strip-components=1
+    tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}_{{ arch }}.tar.gz -C target/criterion/ --strip-components=1
 
 # Warning: compares to and then OVERWRITES the given baseline
 bench-ci baseline target=default-target:

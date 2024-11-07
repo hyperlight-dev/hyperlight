@@ -17,17 +17,39 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build: [windows-2022-release, linux-kvm-release, linux-hyperv-release]
+        build: [
+          windows-2022-release-amd,
+          linux-kvm-release-amd,
+          linux-hyperv-release-amd,
+          windows-2022-release-intel,
+          linux-kvm-release-intel,
+          linux-hyperv-release-intel,
+        ]
         include:
-          - build: windows-2022-release
+          - build: windows-2022-release-amd
             os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
-            hypervisor: none
-          - build: linux-kvm-release
+            hypervisor: hyperv
+            arch: amd
+          - build: linux-kvm-release-amd
             os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
             hypervisor: kvm
-          - build: linux-hyperv-release
+            arch: amd
+          - build: linux-hyperv-release-amd
             os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
             hypervisor: hyperv
+            arch: amd
+          - build: windows-2022-release-intel
+            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-intel"]
+            hypervisor: hyperv
+            arch: intel
+          - build: linux-kvm-release-intel
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-intel"]
+            hypervisor: kvm
+            arch: intel
+          - build: linux-hyperv-release-intel
+            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-intel"]
+            hypervisor: hyperv
+            arch: intel
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -68,7 +90,7 @@ jobs:
         run: git fetch --tags origin
 
       - name: Download benchmarks from most recent release
-        run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} # skip tag parameter to compare to latest stable release
+        run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} ${{ matrix.arch }} # skip tag parameter to compare to latest stable release
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -78,6 +100,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: benchmarks_${{runner.os}}_${{matrix.hypervisor}}
+          name: benchmarks_${{runner.os}}_${{matrix.hypervisor}}_${{ matrix.arch }}
           path: ./target/criterion/
           if-no-files-found: error
