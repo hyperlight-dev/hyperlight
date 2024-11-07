@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Hyperlight</h1>
-  <img src="docs/assets/hl-tentative-logo.png" width="150px" />
+  <img src="https://github.com/hyperlight-dev/hyperlight/blob/main/docs/assets/hl-tentative-logo.png" width="150px" />
   <p>
     <strong>Hyperlight is a lightweight Virtual Machine Manager (VMM) designed to be embedded within applications. It enables safe execution of untrusted code within <i>micro virtual machines</i> with very low latency and minimal overhead.
     </strong>
