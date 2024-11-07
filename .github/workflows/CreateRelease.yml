@@ -155,41 +155,11 @@ jobs:
           just tar-headers
           just tar-static-lib
 
-      - name: Download benchmarks (Windows hyperv amd)
+      - name: Download all benchmarks
         uses: actions/download-artifact@v4
         with:
-          name: benchmarks_Windows_none_amd
-          path: benchmarks_Windows_none_amd
-
-      - name: Download benchmarks (Linux hyperv amd)
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmarks_Linux_hyperv_amd
-          path: benchmarks_Linux_hyperv_amd
-
-      - name: Download benchmarks (Linux kvm amd)
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmarks_Linux_kvm_amd
-          path: benchmarks_Linux_kvm_amd
-
-      - name: Download benchmarks (Windows hyperv intel)
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmarks_Windows_none_intel
-          path: benchmarks_Windows_none_intel
-
-      - name: Download benchmarks (Linux hyperv intel)
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmarks_Linux_hyperv_intel
-          path: benchmarks_Linux_hyperv_intel
-
-      - name: Download benchmarks (Linux kvm intel)
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmarks_Linux_kvm_intel
-          path: benchmarks_Linux_kvm_intel
+          pattern: benchmarks_*
+          # note: artifacts retain their upload name, so we don't have to specify the path
 
       - name: Archive benchmarks
         run: |
