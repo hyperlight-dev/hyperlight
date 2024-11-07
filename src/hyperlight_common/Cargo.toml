@@ -20,7 +20,7 @@ anyhow = { version = "1.0.72", default-features = false }
 log = "0.4.20"
 tracing = { version = "0.1.27", optional = true }
 strum = {version = "0.25",  default-features = false, features = ["derive"]}
-strum_macros = {version = "0.25", features =[]}
+strum_macros = {version = "0.26", features =[]}
 
 [features]
 default = ["tracing"]
