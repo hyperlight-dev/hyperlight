@@ -45,7 +45,7 @@ sha256 = "1.4.0"
 vmm-sys-util = "0.12.1"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.8"
-thiserror = "1.0.30"
+thiserror = "2.0.0"
 prometheus = "0.13.3"
 strum = { version = "0.25", features = ["derive"] }
 tempfile = {version = "3.10", optional = true}
