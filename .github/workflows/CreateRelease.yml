@@ -163,12 +163,12 @@ jobs:
 
       - name: Archive benchmarks
         run: |
-          tar -zcvf benchmarks_Windows_hyperv.tar.gz benchmarks_Windows_hyperv_amd
-          tar -zcvf benchmarks_Linux_hyperv.tar.gz benchmarks_Linux_hyperv_amd
-          tar -zcvf benchmarks_Linux_kvm.tar.gz benchmarks_Linux_kvm_amd
-          tar -zcvf benchmarks_Windows_hyperv.tar.gz benchmarks_Windows_hyperv_intel
-          tar -zcvf benchmarks_Linux_hyperv.tar.gz benchmarks_Linux_hyperv_intel
-          tar -zcvf benchmarks_Linux_kvm.tar.gz benchmarks_Linux_kvm_intel          
+          tar -zcvf benchmarks_Windows_hyperv_amd.tar.gz benchmarks_Windows_hyperv_amd
+          tar -zcvf benchmarks_Linux_hyperv_amd.tar.gz benchmarks_Linux_hyperv_amd
+          tar -zcvf benchmarks_Linux_kvm_amd.tar.gz benchmarks_Linux_kvm_amd
+          tar -zcvf benchmarks_Windows_hyperv_intel.tar.gz benchmarks_Windows_hyperv_intel
+          tar -zcvf benchmarks_Linux_hyperv_intel.tar.gz benchmarks_Linux_hyperv_intel
+          tar -zcvf benchmarks_Linux_kvm_intel.tar.gz benchmarks_Linux_kvm_intel          
 
       - name: Install github-cli
         run: |
@@ -198,7 +198,7 @@ jobs:
             benchmarks_Linux_kvm_amd.tar.gz `
             benchmarks_Windows_hyperv_intel.tar.gz `
             benchmarks_Linux_hyperv_intel.tar.gz `
-            benchmarks_Linux_kvm_intel.tar.gz `          
+            benchmarks_Linux_kvm_intel.tar.gz `
             hyperlight-guest-c-api-linux.tar.gz `
             hyperlight-guest-c-api-windows.tar.gz `
             include.tar.gz
@@ -220,7 +220,7 @@ jobs:
             benchmarks_Linux_kvm_amd.tar.gz `
             benchmarks_Windows_hyperv_intel.tar.gz `
             benchmarks_Linux_hyperv_intel.tar.gz `
-            benchmarks_Linux_kvm_intel.tar.gz `          
+            benchmarks_Linux_kvm_intel.tar.gz `
             hyperlight-guest-c-api-linux.tar.gz `
             hyperlight-guest-c-api-windows.tar.gz `
             include.tar.gz
