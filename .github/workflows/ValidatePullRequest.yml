@@ -5,6 +5,9 @@ name: Validate Pull Request
 on:
   pull_request:
     branches: [main, "release/**"]
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
   merge_group:
 
 permissions:
