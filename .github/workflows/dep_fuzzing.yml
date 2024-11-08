@@ -7,6 +7,11 @@ on:
         description: Maximum total time for the fuzz run in seconds
         required: true
         type: number
+      docs_only:
+        description: Skip fuzzing if docs only
+        required: false
+        type: string
+        default: "false"
 
 permissions:
   id-token: write
@@ -14,6 +19,7 @@ permissions:
 
 jobs:
   fuzz:
+    if: ${{ inputs.docs_only == 'false' }}
     runs-on: [ self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd" ]
     steps:
       - name: Checkout code
