@@ -16,7 +16,7 @@ limitations under the License.
 
 use anyhow::{bail, Error, Result};
 use log::Level;
-use strum_macros::EnumIter;
+use strum::EnumIter;
 #[cfg(feature = "tracing")]
 use tracing::{instrument, Span};
 

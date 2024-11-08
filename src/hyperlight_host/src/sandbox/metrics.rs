@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Once;
 
 use once_cell::sync::OnceCell;
-use strum::{EnumIter, EnumVariantNames, IntoStaticStr};
+use strum::{EnumIter, IntoStaticStr, VariantNames};
 use tracing::{instrument, Span};
 
 use crate::metrics::{
@@ -87,7 +87,7 @@ static SANDBOX_METRIC_DEFINITIONS: &[HyperlightMetricDefinition] = &[
 /// The enum is required to derive from EnumIter, EnumVariantNames, IntoStaticStr
 /// and strum(serialize_all = "snake_case") performs the name conversion from CamelCase to snake_case
 /// when the enum variant is serialized to a string
-#[derive(Debug, EnumIter, EnumVariantNames, IntoStaticStr)]
+#[derive(Debug, EnumIter, VariantNames, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum SandboxMetric {
     GuestErrorCount,
