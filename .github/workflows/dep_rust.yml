@@ -5,6 +5,12 @@ name: Rust Tests and Lints
 # See README.md in this directory for more information about workflow_call
 on:
   workflow_call:
+    inputs:
+      docs_only:
+        description: Skip building if docs only
+        required: false
+        type: string
+        default: "false"
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,6 +22,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ inputs.docs_only == 'false' }}
     strategy:
       fail-fast: true
       matrix:
