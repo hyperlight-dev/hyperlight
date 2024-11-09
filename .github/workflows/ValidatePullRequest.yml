@@ -86,9 +86,7 @@ jobs:
           systeminfo
 
       # Run this so we can use just targets in this workflow
-      - uses: hyperlight-dev/ci-setup-workflow@v1.0.0
-        with:
-          rust-toolchain: "1.81.0"
+      - uses: hyperlight-dev/ci-setup-workflow@use-rust-toolchain-toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -149,9 +147,7 @@ jobs:
           echo "cat /etc/os-release"
           cat /etc/os-release
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.0.0
-        with:
-          rust-toolchain: "1.81.0"
+      - uses: hyperlight-dev/ci-setup-workflow@use-rust-toolchain-toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

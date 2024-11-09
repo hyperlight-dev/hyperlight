@@ -171,15 +171,7 @@ You can run Hyperlight on:
 After having an environment with a hypervisor setup, running the example has the following pre-requisites:
 
 1. On Linux or WSL, you'll most likely need build essential. For Ubuntu, run `sudo apt install build-essential`. For Azure Linux, run `sudo dnf install build-essential`.
-2. [Rust](https://www.rust-lang.org/tools/install). Install toolchain v1.78.0 or later. 
-
-    Also, install the `x86_64-pc-windows-msvc` and `x86_64-unknown-none` targets, these are needed to build the test guest binaries. (Note: install both targets on either Linux or Windows: Hyperlight can load ELF or PE files on either OS, and the tests/examples are built for both):
-
-    ```sh
-    rustup target add x86_64-unknown-none
-    rustup target add x86_64-pc-windows-msvc
-    ```
-
+2. [Rust](https://www.rust-lang.org/tools/install). If you are using rustup you can move on to the next step, otherwise make sure to install the toolchain as specified in `rust-toolchain.toml`.
 3. [just](https://github.com/casey/just). `cargo install just` .
 4. [clang and LLVM](https://clang.llvm.org/get_started.html).
     - On Ubuntu, run:
