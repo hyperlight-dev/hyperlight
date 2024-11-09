@@ -17,7 +17,7 @@ limitations under the License.
 #[cfg(target_os = "windows")]
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::thread::{sleep, JoinHandle};
 use std::time::Duration;
@@ -64,6 +64,7 @@ pub(crate) struct HypervisorHandler {
     communication_channels: HvHandlerCommChannels,
     configuration: HvHandlerConfig,
     execution_variables: HvHandlerExecVars,
+    hypervisor: Option<Arc<Mutex<Box<dyn Hypervisor>>>>,
 }
 
 impl HypervisorHandler {
@@ -215,7 +216,21 @@ impl HypervisorHandler {
             communication_channels,
             configuration,
             execution_variables,
+            hypervisor: None,
         }
+    }
+
+    /// Sets the hypervisor for the Hypervisor Handler.
+    pub(crate) fn set_hypervisor(&mut self, hv: Box<dyn Hypervisor>) {
+        self.hypervisor = Some(Arc::new(Mutex::new(hv)));
+    }
+
+    /// Gets the hypervisor for the Hypervisor Handler.
+    pub(crate) fn get_hypervisor(&self) -> Result<MutexGuard<Box<dyn Hypervisor>>> {
+        self.hypervisor
+            .as_ref()
+            .ok_or_else(|| new_error!("Failed to get hypervisor: {}:{}:", file!(), line!()))
+            .map(|hv| hv.lock().unwrap())
     }
 
     /// Sets up a Hypervisor 'handler', designed to listen to messages to execute a specific action,
@@ -228,13 +243,10 @@ impl HypervisorHandler {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn start_hypervisor_handler(
         &mut self,
-        mut sandbox_memory_manager: SandboxMemoryManager<GuestSharedMemory>,
+        sandbox_memory_manager: SandboxMemoryManager<GuestSharedMemory>,
     ) -> Result<()> {
+        let mut sandbox_memory_manager_clone = sandbox_memory_manager.clone();
         let configuration = self.configuration.clone();
-        let mut hv = set_up_hypervisor_partition(
-            &mut sandbox_memory_manager,
-            configuration.outb_handler.clone(),
-        )?;
         #[cfg(target_os = "windows")]
         let in_process = sandbox_memory_manager.is_in_process();
 
@@ -267,12 +279,6 @@ impl HypervisorHandler {
         #[cfg(target_os = "linux")]
         self.execution_variables.run_cancelled.store(false);
 
-        #[cfg(target_os = "windows")]
-        if !in_process {
-            self.execution_variables
-                .set_partition_handle(hv.get_partition_handle())?;
-        }
-
         let to_handler_rx = self.communication_channels.to_handler_rx.clone();
         #[cfg(target_os = "windows")]
         let execution_variables = self.execution_variables.clone();
@@ -280,7 +286,7 @@ impl HypervisorHandler {
         let mut execution_variables = self.execution_variables.clone();
         // ^^^ this needs to be mut on linux to set_thread_id
         let from_handler_tx = self.communication_channels.from_handler_tx.clone();
-        let hv_handler_clone = self.clone();
+        let mut hv_handler_clone = self.clone();
 
         // Hyperlight has two signal handlers:
         // (1) for timeouts, and
@@ -298,6 +304,23 @@ impl HypervisorHandler {
                     for action in to_handler_rx {
                         match action {
                             HypervisorHandlerAction::Initialise => {
+                                {
+                                    let hv = set_up_hypervisor_partition(
+                                        &mut sandbox_memory_manager_clone,
+                                        configuration.outb_handler.clone(),
+                                    )?;
+
+                                    hv_handler_clone.set_hypervisor(hv);
+                                }
+
+                                let mut hv = hv_handler_clone.get_hypervisor()?;
+
+                                #[cfg(target_os = "windows")]
+                                if !in_process {
+                                    execution_variables
+                                        .set_partition_handle(hv.get_partition_handle())?;
+                                }
+
                                 #[cfg(target_os = "linux")]
                                 {
                                     // We cannot use the Killable trait, so we get the `pthread_t` via a libc
@@ -362,6 +385,8 @@ impl HypervisorHandler {
                                 }
                             }
                             HypervisorHandlerAction::DispatchCallFromHost(function_name) => {
+                                let mut hv = hv_handler_clone.get_hypervisor()?;
+
                                 // Lock to indicate an action is being performed in the hypervisor
                                 execution_variables.running.store(true, Ordering::SeqCst);
 
@@ -941,6 +966,13 @@ mod tests {
 
         for handle in handles {
             handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn create_10_sandboxes() {
+        for _ in 0..10 {
+            create_multi_use_sandbox();
         }
     }
 
