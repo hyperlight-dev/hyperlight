@@ -280,11 +280,7 @@ impl HypervisorHandler {
         self.execution_variables.run_cancelled.store(false);
 
         let to_handler_rx = self.communication_channels.to_handler_rx.clone();
-        #[cfg(target_os = "windows")]
-        let execution_variables = self.execution_variables.clone();
-        #[cfg(target_os = "linux")]
         let mut execution_variables = self.execution_variables.clone();
-        // ^^^ this needs to be mut on linux to set_thread_id
         let from_handler_tx = self.communication_channels.from_handler_tx.clone();
         let mut hv_handler_clone = self.clone();
 
