@@ -1,4 +1,4 @@
-FROM ghcr.io/dblnz/hyperlight-devcontainer:latest
+FROM ghcr.io/hyperlight-dev/hyperlight-devcontainer:latest
 
 COPY .env /tmp/.env
 
