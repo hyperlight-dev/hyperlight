@@ -143,14 +143,18 @@ impl UninitializedSandbox {
         log_build_details();
 
         // If the guest binary is a file make sure it exists
-
         let guest_binary = match guest_binary {
             GuestBinary::FilePath(binary_path) => {
-                let path = Path::new(&binary_path).canonicalize()?;
-                path.try_exists()?;
-                GuestBinary::FilePath(path.to_str().unwrap().to_string())
+                let path = Path::new(&binary_path)
+                    .canonicalize()
+                    .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?;
+                GuestBinary::FilePath(
+                    path.into_os_string()
+                        .into_string()
+                        .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?,
+                )
             }
-            GuestBinary::Buffer(buffer) => GuestBinary::Buffer(buffer),
+            buffer @ GuestBinary::Buffer(_) => buffer,
         };
 
         let run_opts = sandbox_run_options.unwrap_or_default();
@@ -1087,5 +1091,19 @@ mod tests {
 
             assert_eq!(0, num_calls);
         }
+    }
+
+    #[test]
+    fn test_invalid_path() {
+        let invalid_path = "some/path/that/does/not/exist";
+        let sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(invalid_path.to_string()),
+            None,
+            None,
+            None,
+        );
+        assert!(
+            matches!(sbox, Err(e) if e.to_string().contains("GuestBinary not found: 'some/path/that/does/not/exist': No such file or directory (os error 2)"))
+        );
     }
 }
