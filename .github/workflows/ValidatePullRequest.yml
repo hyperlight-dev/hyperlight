@@ -86,7 +86,7 @@ jobs:
           systeminfo
 
       # Run this so we can use just targets in this workflow
-      - uses: hyperlight-dev/ci-setup-workflow@v1.0.0
+      - uses: hyperlight-dev/ci-setup-workflow@update-clang-install
         with:
           rust-toolchain: "1.81.0"
         env:
@@ -149,7 +149,7 @@ jobs:
           echo "cat /etc/os-release"
           cat /etc/os-release
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.0.0
+      - uses: hyperlight-dev/ci-setup-workflow@update-clang-install
         with:
           rust-toolchain: "1.81.0"
         env:
