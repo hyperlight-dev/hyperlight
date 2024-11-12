@@ -925,11 +925,7 @@ mod tests {
                     event_values.get("metadata").unwrap().as_object().unwrap();
                 let event_values_map = event_values.as_object().unwrap();
 
-                #[cfg(target_os = "windows")]
-                let expected_error =
-                    "IOError(Os { code: 2, kind: NotFound, message: \"The system cannot find the file specified.\" }";
-                #[cfg(not(target_os = "windows"))]
-                let expected_error = "IOError(Os { code: 2, kind: NotFound, message: \"No such file or directory\" }";
+                let expected_error_start = "Error(\"GuestBinary not found:";
 
                 let err_vals_res = try_to_strings([
                     (metadata_values_map, "level"),
@@ -939,7 +935,7 @@ mod tests {
                 ]);
                 if let Ok(err_vals) = err_vals_res {
                     if err_vals[0] == "ERROR"
-                        && err_vals[1].starts_with(expected_error)
+                        && err_vals[1].starts_with(expected_error_start)
                         && err_vals[2] == "hyperlight_host::sandbox::uninitialized"
                         && err_vals[3] == "hyperlight_host::sandbox::uninitialized"
                     {
@@ -1017,7 +1013,9 @@ mod tests {
 
             let logcall = TEST_LOGGER.get_log_call(16).unwrap();
             assert_eq!(Level::Error, logcall.level);
-            assert!(logcall.args.starts_with("error=IOError(Os { code"));
+            assert!(logcall
+                .args
+                .starts_with("error=Error(\"GuestBinary not found:"));
             assert_eq!("hyperlight_host::sandbox::uninitialized", logcall.target);
 
             // Log record 18
@@ -1069,7 +1067,9 @@ mod tests {
 
             let logcall = TEST_LOGGER.get_log_call(1).unwrap();
             assert_eq!(Level::Error, logcall.level);
-            assert!(logcall.args.starts_with("error=IOError"));
+            assert!(logcall
+                .args
+                .starts_with("error=Error(\"GuestBinary not found:"));
             assert_eq!("hyperlight_host::sandbox::uninitialized", logcall.target);
         }
         {
