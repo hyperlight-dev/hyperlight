@@ -2,9 +2,9 @@
 
 FROM mcr.microsoft.com/devcontainers/base:debian AS base
 
-ARG USER
-ARG GROUP
-ARG RUST_TOOLCHAIN
+ARG USER=vscode
+ARG GROUP=vscode
+ARG RUST_TOOLCHAIN=1.81.0
 
 ENV HOME="/home/${USER}"
 ENV PATH="$HOME/.cargo/bin:$PATH"
@@ -37,21 +37,21 @@ RUN wget https://apt.llvm.org/llvm.sh \
 FROM base AS dev
 
 # Make sure the devcontainer user has sudo access
-RUN chown -R "${USER}:$GROUP" /home/${USER} \
+RUN chown -R "${USER}:${GROUP}" /home/${USER} \
     && echo "${USER} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Persist bash hystory
 RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
     && mkdir /commandhistory \
     && touch /commandhistory/.bash_history \
-    && chown -R $USER /commandhistory \
-    && echo "$SNIPPET" >> "/home/$USER/.bashrc"
+    && chown -R "${USER}" /commandhistory \
+    && echo "$SNIPPET" >> "/home/${USER}/.bashrc"
 
 USER $USER
 
 # Install rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-    && rustup default $RUST_TOOLCHAIN \
+    && rustup default ${RUST_TOOLCHAIN} \
     && rustup target add x86_64-unknown-linux-gnu \
     && rustup target add x86_64-unknown-none      \
     && rustup target add x86_64-pc-windows-msvc   \
