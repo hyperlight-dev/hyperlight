@@ -8,9 +8,10 @@
   "containerUser": "vscode",
   // Environment for the container also used by in the `postCreateCommand`
   "containerEnv": {
+    "DEVICE": "/dev/kvm",
+    "KVM_SHOULD_BE_PRESENT": "true",
     "REMOTE_USER": "vscode",
-    "REMOTE_GROUP": "vscode",
-    "DEVICE": "/dev/kvm"
+    "REMOTE_GROUP": "vscode"
   },
 
   "runArgs": [
@@ -24,7 +25,8 @@
     "vscode": {
       "extensions": [
         "ms-vscode.cmake-tools",
-        "rust-lang.rust-analyzer"
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb"
       ]
     }
   }
