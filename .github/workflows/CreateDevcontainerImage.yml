@@ -47,7 +47,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./.devcontainer
-          file: ./.devcontainer/Dockerfile.base
           push: true
           tags: |
             ${{ steps.meta.outputs.tags }}
