@@ -224,6 +224,10 @@ If you get the error `Error: NoHypervisorFound` and KVM or mshv is set up then t
 
 For more details on how to verify that KVM is correctly installed and permissions are correct, follow the guide [here](https://help.ubuntu.com/community/KVM/Installation).
 
+### Or you can use a codespace
+ 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/hyperlight-dev/hyperlight)
+
 ## Contributing to Hyperlight
 
 If you are interested in contributing to Hyperlight, running the entire test-suite is a good way to get started. To do so, on your console, run the following commands:
