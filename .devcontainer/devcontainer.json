@@ -3,19 +3,22 @@
 {
   "name": "Hyperlight",
 
-  "build": {
-    "dockerfile": "Dockerfile"
+  "image": "ghcr.io/dblnz/hyperlight-devcontainer:latest",
+
+  "containerUser": "vscode",
+  // Environment for the container also used by in the `postCreateCommand`
+  "containerEnv": {
+    "REMOTE_USER": "vscode",
+    "REMOTE_GROUP": "vscode",
+    "DEVICE": "/dev/kvm"
   },
 
-  "remoteUser": "vscode",
-
   "runArgs": [
-      "--env-file", ".devcontainer/.env",
       "--device=/dev/kvm"
   ],
 
-  // Use 'initializeCommand' to run commands before container image build
-  "initializeCommand": "bash .devcontainer/create_env.sh",
+  // Use 'postCreateCommand' to run commands after the container is created
+  "postCreateCommand": "bash .devcontainer/setup.sh",
 
   "customizations": {
     "vscode": {
