@@ -1,8 +1,8 @@
 # How to use FlatBuffers
 
-Flatbuffers is used to serialise and deserialize some data structures.
+Flatbuffers is used to serialize and deserialize some data structures.
 
-Schema files are used to define the data structures and are used to generate the code to serialise and deserialize the data structures.
+Schema files are used to define the data structures and are used to generate the code to serialize and deserialize the data structures.
 
 Those files are located in the [`schema`](../src/schema) directory.
 

@@ -8,7 +8,7 @@ Hyperlight assumes that guest binaries are untrusted, and are running arbitrary,
 
 ### Hypervisor Isolation
 
-Hyperlight runs all guest code inside a Virtual Machine, Each VM only has access to a very specific, small (by default) pre-allocted memory buffer in the host's process, no dynamic memory alocations are allowed. As a result, any attempt by the guest to read or write to memory anywhere outside of that particular buffer is caught by the hypervisor. Similarly, the guest VM does not have any access to devices since non are provided by the hyperlight host library, therefore there is no file, network, etc. access available to guest code.
+Hyperlight runs all guest code inside a Virtual Machine, Each VM only has access to a very specific, small (by default) pre-allocated memory buffer in the host's process, no dynamic memory allocations are allowed. As a result, any attempt by the guest to read or write to memory anywhere outside of that particular buffer is caught by the hypervisor. Similarly, the guest VM does not have any access to devices since non are provided by the hyperlight host library, therefore there is no file, network, etc. access available to guest code.
 
 ### Host-Guest Communication (Serialization and Deserialization)
 
