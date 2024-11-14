@@ -626,7 +626,7 @@ impl SandboxMemoryLayout {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_panic_context_buffer_pointer_offset(&self) -> usize {
         // The guest panic data pointer is immediately after the guest
-        // panic data size field in the `GuestPanicCContext` data which is a `u64`
+        // panic data size field in the `GuestPanicContext` data which is a `u64`
         self.get_guest_panic_context_size_offset() + size_of::<u64>()
     }
 
