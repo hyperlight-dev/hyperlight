@@ -6,7 +6,7 @@
   "image": "ghcr.io/hyperlight-dev/hyperlight-devcontainer:latest",
 
   "containerUser": "vscode",
-  // Environment for the container also used by in the `postCreateCommand`
+  // Environment for the container also used by the `postCreateCommand`
   "containerEnv": {
     "DEVICE": "/dev/kvm",
     "KVM_SHOULD_BE_PRESENT": "true",
