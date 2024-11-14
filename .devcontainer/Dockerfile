@@ -16,6 +16,7 @@ RUN apt-get update \
         curl \
         git \
         gnupg \
+        gnuplot \
         lsb-release \
         make \
         software-properties-common \
