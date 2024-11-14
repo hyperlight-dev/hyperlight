@@ -153,11 +153,11 @@ For examples of guest applications, see the [./src/tests/c_guests](./src/tests/c
   - [src/hyperlight_common](./src/hyperlight_common)
 
 - Test Guest Applications:
-  - [src/tests/rust_guests](./src/tests/rust_guests) - This directory contains two Hyperlight Guest programs written in Rust, which are intended to be launched within partitions as "guests".
+  - [src/tests/rust_guests](./src/tests/rust_guests) - This directory contains three Hyperlight Guest programs written in Rust, which are intended to be launched within partitions as "guests".
   - [src/tests/c_guests](./src/tests/c_guests) - This directory contains two Hyperlight Guest programs written in C, which are intended to be launched within partitions as "guests".
 
 - Tests:
-  - [src/hyperlight-testing](./src/hyperlight_testing) - Shared testing code for Hyperlight projects build int Rust.
+  - [src/hyperlight-testing](./src/hyperlight_testing) - Shared testing code for Hyperlight projects built in Rust.
 
 ## Try it yourself!
 
@@ -214,7 +214,7 @@ just rg     # build the rust test guest binaries
 cargo run --example hello-world
 ```
 
-If all worked as expected, you should the following message in your console:
+If all worked as expected, you should see the following message in your console:
 
 ```text
 Hello, World! I am executing inside of a VM :)
