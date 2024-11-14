@@ -1,0 +1,5 @@
+[default]
+extend-ignore-identifiers-re = ["Fo"]
+
+[files]
+extend-exclude = ["**/*.patch", "src/hyperlight_guest/third_party/**/*", "NOTICE.txt"]

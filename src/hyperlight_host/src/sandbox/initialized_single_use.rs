@@ -76,7 +76,7 @@ impl SingleUseSandbox {
     }
 
     /// Create a new `SingleUseCallContext` . The main purpose of the
-    /// a SingleUseSandbox is to allow mutiple calls to guest functions from within a callback function.
+    /// a SingleUseSandbox is to allow multiple calls to guest functions from within a callback function.
     ///
     /// Since this function consumes `self`, the returned
     /// `SingleUseGuestCallContext` is guaranteed mutual exclusion for calling

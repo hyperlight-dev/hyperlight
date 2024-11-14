@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 /*!
-This modue contains the definitions and implementations of the metrics used by the sandbox module
+This module contains the definitions and implementations of the metrics used by the sandbox module
 */
 use std::collections::HashMap;
 use std::sync::Once;
@@ -150,7 +150,7 @@ mod tests {
     /// Marking this test as ignored means that running `cargo test` will not
     /// run it. This feature will allow a developer who runs that command
     /// from their workstation to be successful without needing to know about
-    /// test interdependencies. This test will, however, be run explcitly as a
+    /// test interdependencies. This test will, however, be run explicitly as a
     /// part of the CI pipeline.
     fn test_metrics() {
         let iter: SandboxMetricIter = SandboxMetric::iter();
@@ -226,7 +226,7 @@ mod tests {
                         assert_eq!(histogram.get_sample_sum(&label_vals).unwrap(), 1.0);
                     }
                     _ => {
-                        panic!("metric is not an IntGauge,IntCounterVec or HistorgamVec");
+                        panic!("metric is not an IntGauge,IntCounterVec or HistogramVec");
                     }
                 },
                 Err(e) => {
@@ -242,7 +242,7 @@ mod tests {
     /// Marking this test as ignored means that running `cargo test` will not
     /// run it. This feature will allow a developer who runs that command
     /// from their workstation to be successful without needing to know about
-    /// test interdependencies. This test will, however, be run explcitly as a
+    /// test interdependencies. This test will, however, be run explicitly as a
     /// part of the CI pipeline.
     fn test_gather_metrics() {
         lazy_static! {

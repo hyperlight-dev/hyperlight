@@ -56,7 +56,7 @@ impl MultiUseGuestCallContext {
     ///
     /// Every call to a guest function through this method will be made with the same "context"
     /// meaning that the guest state resulting from any previous call will be present/osbservable
-    /// by the guest funcation called.
+    /// by the guest function called.
     ///
     /// If you want  to reset state, call `finish()` on this `MultiUseGuestCallContext`
     /// and get a new one from the resulting `MultiUseSandbox`
@@ -89,9 +89,9 @@ impl MultiUseGuestCallContext {
     /// Note that this method is pub(crate) and does not reset the state of the
     /// sandbox.
     ///
-    /// It is intended to be used when evolving a MutliUseSandbox to a new state
+    /// It is intended to be used when evolving a MultiUseSandbox to a new state
     /// and is not intended to be called publicly. It allows the state of the guest to be altered
-    /// during the eveolution of one sandbox state to another, enabling the new state created
+    /// during the evolution of one sandbox state to another, enabling the new state created
     /// to be captured and stored in the Sandboxes state stack.
     ///
     pub(crate) fn finish_no_reset(self) -> MultiUseSandbox {

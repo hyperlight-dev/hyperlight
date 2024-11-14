@@ -837,7 +837,7 @@ fn set_up_hypervisor_partition(
                 // debug build without in-process feature
                 log_then_return!("In-process mode requires `inprocess` cargo feature");
             } else {
-                log_then_return!("In-process mode requires `inprocess` cargo feature and is only avaiable on debug-builds");
+                log_then_return!("In-process mode requires `inprocess` cargo feature and is only available on debug-builds");
             }
         }
     } else {

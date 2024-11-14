@@ -560,7 +560,7 @@ impl ExclusiveSharedMemory {
     /// Convert the ExclusiveSharedMemory, which may be freely
     /// modified, into a GuestSharedMemory, which may be somewhat
     /// freely modified (mostly by the guest), and a HostSharedMemory,
-    /// which may only make certain kinds of acceses that do not race
+    /// which may only make certain kinds of accesses that do not race
     /// in the presence of malicious code inside the guest mutating
     /// the GuestSharedMemory.
     pub fn build(self) -> (HostSharedMemory, GuestSharedMemory) {
@@ -1095,7 +1095,7 @@ mod tests {
     /// Marking this test as ignored means that running `cargo test` will not
     /// run it. This feature will allow a developer who runs that command
     /// from their workstation to be successful without needing to know about
-    /// test interdependencies. This test will, however, be run explcitly as a
+    /// test interdependencies. This test will, however, be run explicitly as a
     /// part of the CI pipeline.
     #[test]
     #[ignore]

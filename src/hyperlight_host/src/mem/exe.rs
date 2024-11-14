@@ -24,7 +24,7 @@ use super::pe::pe_info::PEInfo;
 use super::ptr_offset::Offset;
 use crate::Result;
 
-// This is used extremely infrequently, so being unusally large for PE
+// This is used extremely infrequently, so being unusually large for PE
 // files _really_ doesn't matter, and probably isn't really worth the
 // cost of an indirection.
 #[allow(clippy::large_enum_variant)]

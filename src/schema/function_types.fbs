@@ -1,6 +1,6 @@
 namespace Hyperlight.Generated;
 
-// the folowing tables are used to hold the values of the parameters and return values of functions
+// the following tables are used to hold the values of the parameters and return values of functions
 // they are named with hl prefix to avoid reserved word clashes in generated code
 
 // hlint is a 32 bit signed integer
