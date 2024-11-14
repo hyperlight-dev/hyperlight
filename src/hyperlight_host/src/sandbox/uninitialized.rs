@@ -143,14 +143,18 @@ impl UninitializedSandbox {
         log_build_details();
 
         // If the guest binary is a file make sure it exists
-
         let guest_binary = match guest_binary {
             GuestBinary::FilePath(binary_path) => {
-                let path = Path::new(&binary_path).canonicalize()?;
-                path.try_exists()?;
-                GuestBinary::FilePath(path.to_str().unwrap().to_string())
+                let path = Path::new(&binary_path)
+                    .canonicalize()
+                    .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?;
+                GuestBinary::FilePath(
+                    path.into_os_string()
+                        .into_string()
+                        .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?,
+                )
             }
-            GuestBinary::Buffer(buffer) => GuestBinary::Buffer(buffer),
+            buffer @ GuestBinary::Buffer(_) => buffer,
         };
 
         let run_opts = sandbox_run_options.unwrap_or_default();
@@ -921,11 +925,7 @@ mod tests {
                     event_values.get("metadata").unwrap().as_object().unwrap();
                 let event_values_map = event_values.as_object().unwrap();
 
-                #[cfg(target_os = "windows")]
-                let expected_error =
-                    "IOError(Os { code: 2, kind: NotFound, message: \"The system cannot find the file specified.\" }";
-                #[cfg(not(target_os = "windows"))]
-                let expected_error = "IOError(Os { code: 2, kind: NotFound, message: \"No such file or directory\" }";
+                let expected_error_start = "Error(\"GuestBinary not found:";
 
                 let err_vals_res = try_to_strings([
                     (metadata_values_map, "level"),
@@ -935,7 +935,7 @@ mod tests {
                 ]);
                 if let Ok(err_vals) = err_vals_res {
                     if err_vals[0] == "ERROR"
-                        && err_vals[1].starts_with(expected_error)
+                        && err_vals[1].starts_with(expected_error_start)
                         && err_vals[2] == "hyperlight_host::sandbox::uninitialized"
                         && err_vals[3] == "hyperlight_host::sandbox::uninitialized"
                     {
@@ -1013,7 +1013,9 @@ mod tests {
 
             let logcall = TEST_LOGGER.get_log_call(16).unwrap();
             assert_eq!(Level::Error, logcall.level);
-            assert!(logcall.args.starts_with("error=IOError(Os { code"));
+            assert!(logcall
+                .args
+                .starts_with("error=Error(\"GuestBinary not found:"));
             assert_eq!("hyperlight_host::sandbox::uninitialized", logcall.target);
 
             // Log record 18
@@ -1065,7 +1067,9 @@ mod tests {
 
             let logcall = TEST_LOGGER.get_log_call(1).unwrap();
             assert_eq!(Level::Error, logcall.level);
-            assert!(logcall.args.starts_with("error=IOError"));
+            assert!(logcall
+                .args
+                .starts_with("error=Error(\"GuestBinary not found:"));
             assert_eq!("hyperlight_host::sandbox::uninitialized", logcall.target);
         }
         {
@@ -1087,5 +1091,19 @@ mod tests {
 
             assert_eq!(0, num_calls);
         }
+    }
+
+    #[test]
+    fn test_invalid_path() {
+        let invalid_path = "some/path/that/does/not/exist";
+        let sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(invalid_path.to_string()),
+            None,
+            None,
+            None,
+        );
+        assert!(
+            matches!(sbox, Err(e) if e.to_string().contains("GuestBinary not found: 'some/path/that/does/not/exist': No such file or directory (os error 2)"))
+        );
     }
 }
