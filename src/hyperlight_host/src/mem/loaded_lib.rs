@@ -57,7 +57,7 @@ impl LoadedLib {
         let mut lock = LOADED_LIB.lock().unwrap();
         if lock.upgrade().is_some() {
             // An owning copy of the loaded library still exists somewhere,
-            // we can't load a new libary yet
+            // we can't load a new library yet
             log_then_return!("LoadedLib: Only one guest binary can be loaded at any single time");
         }
         let inner = Arc::new(LoadedLibInner::load(path)?);

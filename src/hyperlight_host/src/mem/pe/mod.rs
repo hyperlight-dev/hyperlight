@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-/// Extends goblin to suport base relocations in PE file
+/// Extends goblin to support base relocations in PE file
 pub(super) mod base_relocations;
 /// PE file headers
 pub(super) mod headers;

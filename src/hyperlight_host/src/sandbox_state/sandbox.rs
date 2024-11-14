@@ -43,7 +43,7 @@ pub trait Sandbox: Sized + Debug {
     /// `Ok(true)` in the same situation where the stack guard does match.
     ///
 
-    // NOTE: this is only needed for UnitilizedSandbox, SingleUseSandbox, and MultiUseSandbox
+    // NOTE: this is only needed for UninitializedSandbox, SingleUseSandbox, and MultiUseSandbox
     // Those are the only types that need implement this trait
     // The default implementation is provided so that types that implement Sandbox (e.g. JSSandbox) but do not need to implement this trait do not need to provide an implementation
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]

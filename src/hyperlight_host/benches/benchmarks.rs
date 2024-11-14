@@ -106,7 +106,7 @@ fn sandbox_benchmark(c: &mut Criterion) {
 
     // Benchmarks the time to create a new uninintialized sandbox.
     // Does **not** include the time to drop the sandbox.
-    group.bench_function("create_uninitalized_sandbox", |b| {
+    group.bench_function("create_uninitialized_sandbox", |b| {
         b.iter_with_large_drop(create_uninit_sandbox);
     });
 

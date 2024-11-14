@@ -85,7 +85,7 @@ impl From<&LogLevel> for FbLogLevel {
 
 impl From<&LogLevel> for Level {
     // There is a test (sandbox::outb::tests::test_log_outb_log) which emits trace record as logs
-    // which causes a panic when this function is instrumeneted as the logger is contained in refcell and
+    // which causes a panic when this function is instrumented as the logger is contained in refcell and
     // instrumentation ends up causing a double mutborrow. So this is not instrumented.
     //TODO: instrument this once we fix the test
     fn from(val: &LogLevel) -> Level {

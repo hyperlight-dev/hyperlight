@@ -109,7 +109,7 @@ mod tests {
     /// Marking this test as ignored means that running `cargo test` will not
     /// run it. This will allow a developer who runs that command
     /// from their workstation to be successful without needing to know about
-    /// test interdependencies. This test will, however, be run explcitly as a
+    /// test interdependencies. This test will, however, be run explicitly as a
     /// part of the CI pipeline.
     fn test_metrics() {
         let iter: HypervisorMetricIter = HypervisorMetric::iter();
@@ -151,7 +151,7 @@ mod tests {
     /// Marking this test as ignored means that running `cargo test` will not
     /// run it. This will allow a developer who runs that command
     /// from their workstation to be successful without needing to know about
-    /// test interdependencies. This test will, however, be run explcitly as a
+    /// test interdependencies. This test will, however, be run explicitly as a
     /// part of the CI pipeline.
     fn test_gather_metrics() {
         lazy_static! {

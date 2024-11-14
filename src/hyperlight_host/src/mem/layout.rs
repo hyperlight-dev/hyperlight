@@ -515,7 +515,7 @@ impl SandboxMemoryLayout {
     /// Get the offset in guest memory to the output data pointer.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_output_data_pointer_offset(&self) -> usize {
-        // This field is immedaitely after the output data size field,
+        // This field is immediately after the output data size field,
         // which is a `u64`.
         self.get_output_data_size_offset() + size_of::<u64>()
     }
@@ -626,7 +626,7 @@ impl SandboxMemoryLayout {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_panic_context_buffer_pointer_offset(&self) -> usize {
         // The guest panic data pointer is immediately after the guest
-        // panic data size field in the `GuestPanicCOntext` data which is a `u64`
+        // panic data size field in the `GuestPanicContext` data which is a `u64`
         self.get_guest_panic_context_size_offset() + size_of::<u64>()
     }
 
@@ -715,7 +715,7 @@ impl SandboxMemoryLayout {
         stack_size: usize,
         heap_size: usize,
     ) -> usize {
-        // Get the conigured memory size (assume each section is 4K aligned)
+        // Get the configured memory size (assume each section is 4K aligned)
 
         let mut total_mapped_memory_size: usize = round_up_to(code_size, PAGE_SIZE_USIZE);
         total_mapped_memory_size += round_up_to(stack_size, PAGE_SIZE_USIZE);

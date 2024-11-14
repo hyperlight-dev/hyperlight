@@ -207,7 +207,7 @@ where
                                     PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX
                                 }
                                 // The guard page is marked RW and User so that if it gets written to we can detect it in the host
-                                // If/When we implement an interupt handler for page faults in the guest then we can remove this access and handle things properly there
+                                // If/When we implement an interrupt handler for page faults in the guest then we can remove this access and handle things properly there
                                 MemoryRegionType::GuardPage => {
                                     PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX
                                 }
@@ -585,7 +585,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // addresses that are valid are in its own address space.
         //
         // When executing in-process, maniulating this pointer could cause the
-        // host to execute arbitary functions.
+        // host to execute arbitrary functions.
         let guest_ptr = GuestPtr::try_from(RawPtr::from(guest_dispatch_function_ptr))?;
         guest_ptr.absolute()
     }

@@ -44,7 +44,7 @@ mod run_options;
 /// Functionality for creating uninitialized sandboxes, manipulating them,
 /// and converting them to initialized sandboxes.
 pub mod uninitialized;
-/// Functionality for properly converting `UninitailizedSandbox`es to
+/// Functionality for properly converting `UninitializedSandbox`es to
 /// initialized `Sandbox`es.
 pub(crate) mod uninitialized_evolve;
 
