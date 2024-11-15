@@ -17,27 +17,33 @@ limitations under the License.
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use rand::Rng;
 use tracing::{span, Level};
-use tracing_subscriber::util::SubscriberInitExt;
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 extern crate hyperlight_host;
-use std::error::Error;
-use std::io::stdin;
-use std::sync::{Arc, Mutex};
-use std::thread::{self, spawn, JoinHandle};
-
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result as HyperlightResult};
 use hyperlight_testing::simple_guest_as_string;
-use opentelemetry::global::shutdown_tracer_provider;
-use opentelemetry::trace::TracerProvider;
-use opentelemetry::KeyValue;
-use opentelemetry_otlp::{new_exporter, new_pipeline, WithExportConfig};
-use opentelemetry_sdk::runtime::Tokio;
-use opentelemetry_sdk::{trace, Resource};
-use tracing_subscriber::layer::SubscriberExt;
+use opentelemetry::{
+    global::{self, shutdown_tracer_provider},
+    trace::TracerProvider,
+    KeyValue,
+};
+use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_sdk::{runtime::Tokio, trace, Resource};
+use opentelemetry_semantic_conventions::{
+    attribute::{SERVICE_NAME, SERVICE_VERSION},
+    SCHEMA_URL,
+};
+use std::error::Error;
+use std::io::stdin;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, spawn, JoinHandle};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
+
+const ADDR: &str = "http://localhost:4317";
 
 fn fn_writer(_msg: String) -> HyperlightResult<i32> {
     Ok(0)
@@ -47,29 +53,43 @@ fn fn_writer(_msg: String) -> HyperlightResult<i32> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let tracer = new_pipeline()
-        .tracing()
-        .with_exporter(
-            new_exporter()
-                .tonic()
-                .with_endpoint("http://localhost:4317/v1/traces"),
+    init_tracing_subscriber(ADDR)?;
+
+    Ok(run_example()?)
+}
+
+fn init_tracing_subscriber(addr: &str) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(addr)
+        .build()?;
+
+    let provider = trace::TracerProvider::builder()
+        .with_config(
+            trace::Config::default().with_resource(Resource::from_schema_url(
+                vec![
+                    KeyValue::new(SERVICE_NAME, "hyperlight_otel_example"),
+                    KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+                ],
+                SCHEMA_URL,
+            )),
         )
-        .with_trace_config(trace::Config::default().with_resource(Resource::new(vec![
-            KeyValue::new("service.name", "hyperlight_otel_example"),
-        ])))
-        .install_batch(Tokio)
-        .unwrap()
-        .tracer("trace-demo");
+        .with_batch_exporter(exporter, Tokio)
+        .build();
 
-    let otel_layer = tracing_opentelemetry::OpenTelemetryLayer::new(tracer);
+    global::set_tracer_provider(provider.clone());
+    let tracer = provider.tracer("trace-demo");
 
-    tracing_subscriber::Registry::default()
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+
+    tracing_subscriber::registry()
         .with(EnvFilter::from_default_env())
         .with(otel_layer)
         .try_init()?;
 
-    Ok(run_example()?)
+    Ok(())
 }
+
 fn run_example() -> HyperlightResult<()> {
     // Get the path to a simple guest binary.
     let hyperlight_guest_path =
