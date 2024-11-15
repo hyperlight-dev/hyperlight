@@ -82,13 +82,13 @@ In the [examples/otlp_tracing](../src/hyperlight_host/examples/otlp_tracing) dir
 #### Linux
 
 ```bash
-RUST_LOG='none,hyperlight-host=info,tracing=info' cargo run --example otlp_tracing
+RUST_LOG='none,hyperlight_host=info,tracing=info' cargo run --example otlp_tracing
 ```
 
 #### Windows
 
 ```powershell
-$env:RUST_LOG='none,hyperlight-host=info,tracing=info';cargo run --example otlp_tracing
+$env:RUST_LOG='none,hyperlight_host=info,tracing=info';cargo run --example otlp_tracing
 ```
 
 The sample will run and generate trace data until any key is pressed.
@@ -96,7 +96,7 @@ The sample will run and generate trace data until any key is pressed.
 To view the trace data, leave the example running and use the jaegertracing/all-in-one container image with the following command:
 
 ```console
- docker run -d --name jaeger -e COLLECTOR_OTLP_ENABLED=true -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one:1.51
+ docker run -d --name jaeger -e COLLECTOR_OTLP_ENABLED=true -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one:1.60
 ```
 
 NOTE: when running this on windows that this is a linux container, so you will need to ensure that docker is configured to run linux containers using WSL2. Alternatively, you can download the Jaeger binaries from [here](https://www.jaegertracing.io/download/). Extract the archive and run the `jaeger-all-in-one` executable as follows:
