@@ -18,28 +18,27 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, Ret
 use rand::Rng;
 use tracing::{span, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 extern crate hyperlight_host;
+use std::error::Error;
+use std::io::stdin;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, spawn, JoinHandle};
+
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result as HyperlightResult};
 use hyperlight_testing::simple_guest_as_string;
-use opentelemetry::{
-    global::{self, shutdown_tracer_provider},
-    trace::TracerProvider,
-    KeyValue,
-};
+use opentelemetry::global::{self, shutdown_tracer_provider};
+use opentelemetry::trace::TracerProvider;
+use opentelemetry::KeyValue;
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
-use opentelemetry_sdk::{runtime::Tokio, trace, Resource};
-use opentelemetry_semantic_conventions::{
-    attribute::{SERVICE_NAME, SERVICE_VERSION},
-    SCHEMA_URL,
-};
-use std::error::Error;
-use std::io::stdin;
-use std::sync::{Arc, Mutex};
-use std::thread::{self, spawn, JoinHandle};
+use opentelemetry_sdk::runtime::Tokio;
+use opentelemetry_sdk::{trace, Resource};
+use opentelemetry_semantic_conventions::attribute::{SERVICE_NAME, SERVICE_VERSION};
+use opentelemetry_semantic_conventions::SCHEMA_URL;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
