@@ -457,10 +457,6 @@ $RECYCLE.BIN/
 
 # Rust build artifacts
 **/**target
-**/Cargo.lock
-!src/tests/rust_guests/callbackguest/Cargo.lock
-!src/tests/rust_guests/simpleguest/Cargo.lock
-!src/tests/rust_guests/dummyguest/Cargo.lock
 libhyperlight_host.so
 libhyperlight_host.d
 hyperlight_host.dll
