@@ -38,17 +38,14 @@ once_cell = { version = "1.18.0" }
 tracing = { version = "0.1.37", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-core = "0.1.31"
-uuid = { version = "1.4.1", features = ["v4"] }
 hyperlight-common = { workspace = true, default-features = true }
-rust-embed = { version = "8.3.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
-sha256 = "1.4.0"
 vmm-sys-util = "0.12.1"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.8"
 thiserror = "2.0.0"
 prometheus = "0.13.3"
 strum = { version = "0.25", features = ["derive"] }
-tempfile = {version = "3.10", optional = true}
+tempfile = { version = "3.10", optional = true }
 serde_yaml = "0.9"
 anyhow = "1.0"
 
@@ -68,6 +65,8 @@ windows = { version = "0.58", features = [
 ] }
 windows-sys = { version = "0.59", features = ["Win32"] }
 windows-result = "0.2"
+rust-embed = { version = "8.3.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
+sha256 = "1.4.0"
 
 [target.'cfg(unix)'.dependencies]
 seccompiler = { version = "0.4.0", optional = true }
@@ -77,6 +76,7 @@ kvm-bindings = { version = "0.10.0", features = ["fam-wrappers"], optional = tru
 kvm-ioctls = { version = "0.19.0", optional = true }
 
 [dev-dependencies]
+uuid = { version = "1.4.1", features = ["v4"] }
 signal-hook-registry = "1.4.1"
 envy = { version = "0.4.2" }
 serde = "1.0"
@@ -87,9 +87,9 @@ tracing-serde = "0.1.3"
 serial_test = "3.1.1"
 hyperlight-testing = { workspace = true }
 env_logger = "0.11.5"
-tracing-forest = { version = "0.1.6", features = ["uuid","chrono","smallvec","serde","env-filter"] }
+tracing-forest = { version = "0.1.6", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
 tracing = "0.1.37"
-tracing-subscriber = {version = "0.3.18", features = ["std", "env-filter"]}
+tracing-subscriber = { version = "0.3.18", features = ["std", "env-filter"] }
 tracing-opentelemetry = "0.27.0"
 opentelemetry = "0.26.0"
 opentelemetry-otlp = { version = "0.26.0", features = ["default"] }
@@ -109,7 +109,7 @@ proc-maps = "0.4.0"
 [build-dependencies]
 anyhow = { version = "1.0.75" }
 cfg_aliases = "0.2.1"
-built = { version = "0.7.0", features = ["chrono","git2"] }
+built = { version = "0.7.0", features = ["chrono", "git2"] }
 
 [features]
 default = ["kvm", "mshv", "seccomp"]
