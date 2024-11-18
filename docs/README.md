@@ -6,7 +6,7 @@ By eliminating this overhead, Hyperlight can execute arbitrary code more efficie
 
 ## Basics: Hyperlight internals
 
-Hyperlight achieves these efficiencies by removing all operating system functionality from inside the virtual machine, and instead requiring all guest binaries be run directly on the virtual CPU (vCPU). This key requirement means all Hyperlight guest binaries must not only be compiled to run on the vCPU's architecture, but also must be statically linked to specialized libraries to support their functionality (e.g. there are no syscalls whatsoever available). Roughly similar to Unikernel technologies, we provide a guest library (currently in C, but we have some preliminary plans to move to Rust for in-guest binary execution) to which guest binaries can be statically linked.
+Hyperlight achieves these efficiencies by removing all operating system functionality from inside the virtual machine, and instead requiring all guest binaries be run directly on the virtual CPU (vCPU). This key requirement means all Hyperlight guest binaries must not only be compiled to run on the vCPU's architecture, but also must be statically linked to specialized libraries to support their functionality (e.g. there are no syscalls whatsoever available). Roughly similar to Unikernel technologies, we provide a guest library (in Rust, and a C compatible wrapper for it) to which guest binaries can be statically linked.
 
 Given a guest, then, Hyperlight takes some simple steps prior to executing it, including the following:
 
@@ -32,12 +32,12 @@ This project is composed internally of several internal components, depicted in 
 
 ## For developers
 
-* [Security guidance for developers](./security-guidance-for-developers)
-* [Paging Development Notes](./paging-development-notes)
-* [How to use Flatbuffers in Hyperlight](./how-to-use-flatbuffers)
-* [How to make a Hyperlight release](./how-to-make-releases)
-* [Getting Hyperlight Metrics, Logs, and Traces](./hyperlight-metrics-logs-and-traces)
-* [Benchmarking Hyperlight](./benchmarking-hyperlight)
-* [Hyperlight Surrogate Development Notes](./hyperlight-surrogate-development-notes)
-* [Debugging Hyperlight](./debugging-hyperlight)
+* [Security guidance for developers](./security-guidance-for-developers.md)
+* [Paging Development Notes](./paging-development-notes.md)
+* [How to use Flatbuffers in Hyperlight](./how-to-use-flatbuffers.md)
+* [How to make a Hyperlight release](./how-to-make-releases.md)
+* [Getting Hyperlight Metrics, Logs, and Traces](./hyperlight-metrics-logs-and-traces.md)
+* [Benchmarking Hyperlight](./benchmarking-hyperlight.md)
+* [Hyperlight Surrogate Development Notes](./hyperlight-surrogate-development-notes.md)
+* [Debugging Hyperlight](./debugging-hyperlight.md)
 * [Signal Handling in Hyperlight](./signal-handlers-development-notes.md)

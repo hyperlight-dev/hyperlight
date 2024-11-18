@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-/// The standarized `Sandbox` trait and the ways it ban be transitioned
+/// The standardized `Sandbox` trait and the ways it ban be transitioned
 /// to a different `Sandbox` trait
 pub mod sandbox;
 /// Metadata about transitions between `Sandbox` states

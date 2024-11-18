@@ -103,7 +103,7 @@ impl KVMDriver {
         })?;
 
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
-        Self::setup_inital_sregs(&mut vcpu_fd, pml4_addr)?;
+        Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
         Ok(Self {
@@ -117,7 +117,7 @@ impl KVMDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn setup_inital_sregs(vcpu_fd: &mut VcpuFd, pml4_addr: u64) -> Result<()> {
+    fn setup_initial_sregs(vcpu_fd: &mut VcpuFd, pml4_addr: u64) -> Result<()> {
         // setup paging and IA-32e (64-bit) mode
         let mut sregs = vcpu_fd.get_sregs()?;
         sregs.cr3 = pml4_addr;

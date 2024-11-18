@@ -22,7 +22,7 @@ These micro VMs operate without a kernel or operating system, keeping overhead l
 
 By default, Hyperlight restricts guest access to a minimal API. The only _host function_ available by default allows the guest to print messages, which are displayed on the host console or redirected to stdout, as configured. Hosts can choose to expose additional host functions, expanding the guest’s capabilities as needed.
 
-Below is an example demonstrating the use of the Hyperlight host library in Rust to execute a simple guest application and am example of a simple guest application using the Hyperlight guest library in also written in Rust.
+Below is an example demonstrating the use of the Hyperlight host library in Rust to execute a simple guest application and an example of a simple guest application using the Hyperlight guest library in also written in Rust.
 
 ### Host
 
@@ -153,11 +153,11 @@ For examples of guest applications, see the [./src/tests/c_guests](./src/tests/c
   - [src/hyperlight_common](./src/hyperlight_common)
 
 - Test Guest Applications:
-  - [src/tests/rust_guests](./src/tests/rust_guests) - This directory contains two Hyperlight Guest programs written in Rust, which are intended to be launched within partitions as "guests".
+  - [src/tests/rust_guests](./src/tests/rust_guests) - This directory contains three Hyperlight Guest programs written in Rust, which are intended to be launched within partitions as "guests".
   - [src/tests/c_guests](./src/tests/c_guests) - This directory contains two Hyperlight Guest programs written in C, which are intended to be launched within partitions as "guests".
 
 - Tests:
-  - [src/hyperlight-testing](./src/hyperlight_testing) - Shared testing code for Hyperlight projects build int Rust.
+  - [src/hyperlight-testing](./src/hyperlight_testing) - Shared testing code for Hyperlight projects built in Rust.
 
 ## Try it yourself!
 
@@ -214,7 +214,7 @@ just rg     # build the rust test guest binaries
 cargo run --example hello-world
 ```
 
-If all worked as expected, you should the following message in your console:
+If all worked as expected, you should see the following message in your console:
 
 ```text
 Hello, World! I am executing inside of a VM :)
@@ -223,6 +223,10 @@ Hello, World! I am executing inside of a VM :)
 If you get the error `Error: NoHypervisorFound` and KVM or mshv is set up then this may be a permissions issue. In bash, you can use `ls -l /dev/kvm` or  `ls -l /dev/mshv` to check which group owns that device and then `groups` to make sure your user is a member of that group. 
 
 For more details on how to verify that KVM is correctly installed and permissions are correct, follow the guide [here](https://help.ubuntu.com/community/KVM/Installation).
+
+### Or you can use a codespace
+ 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/hyperlight-dev/hyperlight)
 
 ## Contributing to Hyperlight
 

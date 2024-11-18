@@ -68,7 +68,7 @@ pub(crate) type MapLookup<'a> = (&'a Map<String, Value>, &'a str);
 /// Given a constant-size slice of `MapLookup`s, attempt to look up the
 /// string value in each `MapLookup`'s map (the first tuple element) for
 /// that `MapLookup`'s key (the second tuple element). If the lookup
-/// succeeded, attempt to conver the resulting value to a string. Return
+/// succeeded, attempt to convert the resulting value to a string. Return
 /// `Ok` with all the successfully looked-up string values, or `Err`
 /// if any one or more lookups or string conversions failed.
 pub(crate) fn try_to_strings<'a, const NUM: usize>(

@@ -243,7 +243,7 @@ pub fn set_metrics_registry(registry: &'static Registry) -> Result<()> {
             REGISTRY
                 .set(registry)
                 // This should be impossible
-                .map_err(|e| new_error!("Registry alread set : {0:?}", e))
+                .map_err(|e| new_error!("Registry already set : {0:?}", e))
         }
     }
 }
@@ -259,7 +259,7 @@ fn get_histogram_opts(name: &str, help: &str, buckets: Vec<f64>) -> HistogramOpt
     opts.buckets(buckets)
 }
 
-/// Provides functionaility to help with testing Hyperlight Metrics
+/// Provides functionality to help with testing Hyperlight Metrics
 pub mod tests {
     use std::collections::HashSet;
 
@@ -281,11 +281,11 @@ pub mod tests {
         fn enum_has_variant_for_all_metrics() {
             let metric_definitions = Self::get_metric_definitions().iter();
             for metric_definition in metric_definitions {
-                let metric_defintion_name = metric_definition.name;
+                let metric_definition_name = metric_definition.name;
                 assert!(
-                    Self::get_enum_variant_names().contains(&metric_defintion_name),
+                    Self::get_enum_variant_names().contains(&metric_definition_name),
                     "Metric Definition Name {} not found",
-                    metric_defintion_name,
+                    metric_definition_name,
                 );
             }
         }

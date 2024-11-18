@@ -24,7 +24,7 @@ use hyperlight_testing::{
 };
 
 /// Returns a rust/c simpleguest depending on environment variable GUEST.
-/// Uses rust guest by default. Run test with envirnoment variable GUEST="c" to use the c version
+/// Uses rust guest by default. Run test with environment variable GUEST="c" to use the c version
 /// If a test is only applicable to rust, use `new_uninit_rust`` instead
 pub fn new_uninit() -> Result<UninitializedSandbox> {
     UninitializedSandbox::new(

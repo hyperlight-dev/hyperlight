@@ -5,9 +5,6 @@ name: Validate Pull Request
 on:
   pull_request:
     branches: [main, "release/**"]
-    paths-ignore:
-      - '**.md'
-      - '**.txt'
   merge_group:
 
 permissions:
@@ -15,20 +12,59 @@ permissions:
   contents: read
 
 jobs:
+  docs-pr:
+    runs-on: ubuntu-latest
+    outputs:
+      docs-only: ${{ steps.docs-only.outputs.result }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            docs:
+              - '**/*.md'
+              - '**/*.txt'
+            all:
+              - '**/*'
+      - uses: actions/github-script@v7
+        id: docs-only
+        with:
+          script: |
+            let docs_file_count = ${{steps.changes.outputs.docs_count}};
+            let all_file_count = ${{steps.changes.outputs.all_count}};
+            return all_file_count === docs_file_count;
+          result-encoding: string
 
   rust:
+    needs:
+      - docs-pr
     uses: ./.github/workflows/dep_rust.yml
     secrets: inherit
+    with: 
+      docs_only: ${{needs.docs-pr.outputs.docs-only}}
   fuzzing:
+    needs:
+      - docs-pr
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
       max_total_time: 300 # 5 minutes in seconds
+      docs_only: ${{needs.docs-pr.outputs.docs-only}}
     secrets: inherit
+  spelling:
+    name: spell check with typos
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Spell Check Repo
+      uses: crate-ci/typos@master
 
   #####
   # start build-on-windows
   #####
   build-on-windows:
+    needs:
+      - docs-pr
+    if: ${{needs.docs-pr.outputs.docs-only != 'true'}}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -57,7 +93,7 @@ jobs:
           systeminfo
 
       # Run this so we can use just targets in this workflow
-      - uses: hyperlight-dev/ci-setup-workflow@v1.0.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.1.0
         with:
           rust-toolchain: "1.81.0"
         env:
@@ -72,6 +108,9 @@ jobs:
   # start build-on-linux
   #####
   build-on-linux:
+    needs:
+      - docs-pr
+    if: ${{needs.docs-pr.outputs.docs-only != 'true'}}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -117,7 +156,7 @@ jobs:
           echo "cat /etc/os-release"
           cat /etc/os-release
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.0.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.1.0
         with:
           rust-toolchain: "1.81.0"
         env:

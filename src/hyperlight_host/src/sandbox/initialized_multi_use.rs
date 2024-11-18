@@ -91,7 +91,7 @@ impl MultiUseSandbox {
     /// `MultiUseGuestCallContext` is guaranteed mutual exclusion for calling
     /// functions within the sandbox. This guarantee is enforced at compile
     /// time, and no locks, atomics, or any other mutual exclusion mechanisms
-    /// are used at rumtime.
+    /// are used at runtime.
     ///
     /// If you have called this function, have a `MultiUseGuestCallContext`,
     /// and wish to "return" it to a `MultiUseSandbox`, call the `finish`
@@ -238,7 +238,7 @@ where
     /// An implementation such as HyperlightJs or HyperlightWasm can use this to call guest functions to load JS or WASM code and then evolve the sandbox causing state to be captured.
     /// The new MultiUseSandbox can then be used to call guest functions to execute the loaded code.
     ///
-    /// The evolve function creates a new MutliUseCallContext which is then passed to a callback function  allowing the
+    /// The evolve function creates a new MultiUseCallContext which is then passed to a callback function  allowing the
     /// callback function to call guest functions as part of the evolve process, once the callback function  is complete
     /// the context is finished using a crate internal method that does not restore the prior state of the Sanbbox.
     /// It then creates a mew  memory snapshot on the snapshot stack and returns the MultiUseSandbox

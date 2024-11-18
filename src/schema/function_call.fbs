@@ -3,7 +3,7 @@ include "function_types.fbs";
 namespace Hyperlight.Generated;
 
 enum FunctionCallType : ubyte {
-    // none is invalid, its the default, its only here to ensure that the type is explicity set to guest or host as none should fail validation if a buffer using it is written to memory
+    // none is invalid, its the default, its only here to ensure that the type is explicitly set to guest or host as none should fail validation if a buffer using it is written to memory
     none,
     guest,
     host,

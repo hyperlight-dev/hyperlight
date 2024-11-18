@@ -307,13 +307,13 @@ fn ensure_surrogate_process_exe() -> Result<()> {
     if p.exists() {
         // check to see if sha's match and if not delete the file so we'll extract
         // the embedded file below.
-        let embeded_file_sha = sha256::digest(exe.data.as_ref());
+        let embedded_file_sha = sha256::digest(exe.data.as_ref());
         let file_on_disk_sha = sha256::try_digest(&p)?;
 
-        if embeded_file_sha != file_on_disk_sha {
+        if embedded_file_sha != file_on_disk_sha {
             println!(
                 "sha of embedded surrorate '{}' does not match sha of file on disk '{}' - deleting surrogate binary at {}",
-                embeded_file_sha,
+                embedded_file_sha,
                 file_on_disk_sha,
                 &surrogate_process_path.display()
             );
