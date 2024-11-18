@@ -6,8 +6,8 @@
 | David Justice      | [@devigned](https://github.com/devigned)           |
 | Doru Blânzeanu     | [@dblnz](https://github.com/dblnz)                 |
 | Jorge Prendes      | [@jprendes](https://github.com/jprendes)           |
-| Ludvig Liljenberg  | [@ludfjig](https://github.com/ludfjig)             |
 | Lucy Menon         | [@syntactically](https://github.com/syntactically) |
+| Ludvig Liljenberg  | [@ludfjig](https://github.com/ludfjig)             |
 | Mark Rosetti       | [@marosset](https://github.com/marosset)           |
 | Simon Davies       | [@simongdavies](https://github.com/simongdavies)   |
 | Tomasz Andrzejak   | [@andreiltd](https://github.com/andreiltd)         |
