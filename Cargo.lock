@@ -1035,6 +1035,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-serde",
  "tracing-subscriber",
+ "uuid",
  "vmm-sys-util",
  "windows",
  "windows-result",
