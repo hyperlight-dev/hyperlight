@@ -27,7 +27,12 @@
         "ms-vscode.cmake-tools",
         "rust-lang.rust-analyzer",
         "vadimcn.vscode-lldb"
-      ]
+      ],
+      "settings": {
+        "rust-analyzer.rustfmt.extraArgs": [
+          "+nightly" // required for rustfmt.toml which uses nightly features
+        ]
+      }
     }
   }
 }

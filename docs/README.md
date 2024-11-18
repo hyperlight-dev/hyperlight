@@ -24,11 +24,11 @@ This project is composed internally of several internal components, depicted in 
 
 ## Further reading
 
-* [Glossary](./glossary)
-* [How code gets executed in a VM](./hyperlight-execution-details)
-* [How to build a Hyperlight guest binary](./how-to-build-a-hyperlight-guest-binary)
-* [Security considerations](./security)
-* [Technical requirements document](./technical-requirements-document)
+* [Glossary](./glossary.md)
+* [How code gets executed in a VM](./hyperlight-execution-details.md)
+* [How to build a Hyperlight guest binary](./how-to-build-a-hyperlight-guest-binary.md)
+* [Security considerations](./security.md)
+* [Technical requirements document](./technical-requirements-document.md)
 
 ## For developers
 

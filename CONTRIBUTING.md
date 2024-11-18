@@ -38,6 +38,7 @@ All contributions come through pull requests. To submit a proposed change, we re
 #### Use work-in-progress PRs for early feedback
 
 A good way to communicate before investing too much time is to create a "Work-in-progress" PR and share it with your reviewers. The standard way of doing this is to add a "[WIP]" prefix in your PR's title and open the pull request as a draft.
+
 ### Developer Certificate of Origin: Signing your work
 
 #### Every commit needs to be signed
@@ -82,3 +83,7 @@ git push --force-with-lease <remote-name> <branch-name>
 ```
 
 *Credit: This doc was cribbed from Dapr.*
+
+### Rust Analyzer
+
+If you are using the [Rust Analyzer](https://rust-analyzer.github.io/manual.html) then you may need to set the configuration option `rust-analyzer.rustfmt.extraArgs` to `["+nightly"]` to ensure that formatting works correctly as this project has a [`rustfmt.toml`](./rustfmt.toml) file that uses nightly features.
