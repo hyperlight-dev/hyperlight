@@ -78,7 +78,10 @@ impl ElfInfo {
                 .copy_from_slice(&self.payload[payload_offset..payload_offset + payload_len]);
             target[start_va + payload_len..start_va + phdr.p_memsz as usize].fill(0);
         }
-        let get_addend = |name, r: &Reloc| r.r_addend.ok_or(new_error!("{} missing addend", name));
+        let get_addend = |name, r: &Reloc| {
+            r.r_addend
+                .ok_or_else(|| new_error!("{} missing addend", name))
+        };
         for r in self.relocs.iter() {
             #[cfg(target_arch = "aarch64")]
             match r.r_type {
