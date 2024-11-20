@@ -42,7 +42,7 @@ use opentelemetry_semantic_conventions::SCHEMA_URL;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-const ADDR: &str = "http://localhost:4317";
+const ENDPOINT_ADDR: &str = "http://localhost:4317";
 
 fn fn_writer(_msg: String) -> HyperlightResult<i32> {
     Ok(0)
@@ -52,9 +52,9 @@ fn fn_writer(_msg: String) -> HyperlightResult<i32> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    init_tracing_subscriber(ADDR)?;
+    init_tracing_subscriber(ENDPOINT_ADDR)?;
 
-    Ok(run_example()?)
+    Ok(run_example(true)?)
 }
 
 fn init_tracing_subscriber(addr: &str) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
@@ -81,15 +81,22 @@ fn init_tracing_subscriber(addr: &str) -> Result<(), Box<dyn Error + Send + Sync
 
     let otel_layer = OpenTelemetryLayer::new(tracer);
 
+    // Try using the environment otherwise set default filters
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::from_default_env()
+            .add_directive("hyperlight_host=info".parse().unwrap())
+            .add_directive("tracing=info".parse().unwrap())
+    });
+
     tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env())
+        .with(filter)
         .with(otel_layer)
         .try_init()?;
 
     Ok(())
 }
 
-fn run_example() -> HyperlightResult<()> {
+fn run_example(wait_input: bool) -> HyperlightResult<()> {
     // Get the path to a simple guest binary.
     let hyperlight_guest_path =
         simple_guest_as_string().expect("Cannot find the guest binary at the expected location.");
@@ -187,9 +194,12 @@ fn run_example() -> HyperlightResult<()> {
         join_handles.push(handle);
     }
 
-    println!("Press enter to exit...");
-    let mut input = String::new();
-    stdin().read_line(&mut input)?;
+    if wait_input {
+        println!("Press enter to exit...");
+        let mut input = String::new();
+        stdin().read_line(&mut input)?;
+    }
+
     *should_exit.try_lock().unwrap() = true;
     for join_handle in join_handles {
         let result = join_handle.join();
@@ -198,4 +208,53 @@ fn run_example() -> HyperlightResult<()> {
     shutdown_tracer_provider();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use hyperlight_host::{HyperlightError, Result};
+    use tokio::io::AsyncReadExt;
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::*;
+
+    const TESTER_ADDR: &str = "127.0.0.1:4317";
+
+    async fn handle(mut stream: TcpStream) -> Result<()> {
+        let mut buf = Vec::with_capacity(128);
+        let size = stream.read_buf(&mut buf).await?;
+
+        if size > 0 {
+            Ok(())
+        } else {
+            Err(HyperlightError::Error("Cannot read req body".to_string()))
+        }
+    }
+
+    async fn check_otl_connection(addr: &str) -> Result<()> {
+        let listener = TcpListener::bind(addr).await?;
+
+        let (stream, _) = listener.accept().await?;
+
+        handle(stream).await
+    }
+
+    #[tokio::test]
+    async fn test_subscriber() {
+        // Create task that generates spans
+        let task = tokio::spawn(async move {
+            let _ = init_tracing_subscriber(ENDPOINT_ADDR);
+
+            // No need to wait for input, just generate some spans and exit
+            let _ = run_example(false);
+        });
+
+        // Create server that listens and checks to see if traces are received
+        let result = check_otl_connection(TESTER_ADDR).await;
+
+        // Abort task in case it doesn't finish
+        task.abort();
+
+        assert!(result.is_ok());
+    }
 }
