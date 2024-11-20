@@ -56,6 +56,7 @@ jobs:
             os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
             hypervisor: mshv
             config: release
+            arch: amd
           - build: windows-2022-debug-intel
             os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-intel"]
             hypervisor: hyperv
