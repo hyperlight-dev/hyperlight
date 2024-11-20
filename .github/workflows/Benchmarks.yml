@@ -17,14 +17,6 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build: [
-          windows-2022-release-amd,
-          linux-kvm-release-amd,
-          linux-hyperv-release-amd,
-          windows-2022-release-intel,
-          linux-kvm-release-intel,
-          linux-hyperv-release-intel,
-        ]
         include:
           - build: windows-2022-release-amd
             os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
@@ -34,9 +26,9 @@ jobs:
             os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
             hypervisor: kvm
             arch: amd
-          - build: linux-hyperv-release-amd
+          - build: linux-mshv-release-amd
             os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
-            hypervisor: hyperv
+            hypervisor: mshv
             arch: amd
           - build: windows-2022-release-intel
             os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-intel"]
@@ -46,9 +38,9 @@ jobs:
             os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-intel"]
             hypervisor: kvm
             arch: intel
-          - build: linux-hyperv-release-intel
+          - build: linux-mshv-release-intel
             os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-intel"]
-            hypervisor: hyperv
+            hypervisor: mshv
             arch: intel
 
     runs-on: ${{ matrix.os }}
