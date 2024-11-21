@@ -7,6 +7,12 @@ on:
     branches: [main, "release/**"]
   merge_group:
 
+# Cancels old running job if a new one is triggered (e.g. by a push onto the same branch).
+# This will cancel dependent jobs as well, such as dep_rust and dep_fuzzing
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true    
+
 permissions:
   id-token: write
   contents: read
@@ -42,6 +48,7 @@ jobs:
     secrets: inherit
     with: 
       docs_only: ${{needs.docs-pr.outputs.docs-only}}
+
   fuzzing:
     needs:
       - docs-pr
@@ -50,6 +57,7 @@ jobs:
       max_total_time: 300 # 5 minutes in seconds
       docs_only: ${{needs.docs-pr.outputs.docs-only}}
     secrets: inherit
+
   spelling:
     name: spell check with typos
     runs-on: ubuntu-latest
