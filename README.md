@@ -244,6 +244,8 @@ guide [here](https://help.ubuntu.com/community/KVM/Installation).
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/hyperlight-dev/hyperlight)
 
+[![Open in Codeanywhere](https://codeanywhere.com/img/open-in-codeanywhere-btn.svg)](https://app.codeanywhere.com/#https://github.com/hyperlight-dev/hyperlight)
+
 ## Contributing to Hyperlight
 
 If you are interested in contributing to Hyperlight, running the entire test-suite is a good way to get started. To do
