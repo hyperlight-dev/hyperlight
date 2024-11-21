@@ -26,69 +26,11 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        include:
-          - build: windows-2022-debug-amd
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
-            hypervisor: hyperv
-            config: debug
-            arch: amd
-          - build: linux-kvm-debug-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
-            hypervisor: kvm
-            config: debug
-            arch: amd
-          - build: linux-mshv-debug-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
-            hypervisor: mshv
-            config: debug
-            arch: amd
-          - build: windows-2022-release-amd
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
-            hypervisor: hyperv
-            config: release
-            arch: amd
-          - build: linux-kvm-release-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
-            hypervisor: kvm
-            config: release
-            arch: amd
-          - build: linux-mshv-release-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
-            hypervisor: mshv
-            config: release
-            arch: amd
-          - build: windows-2022-debug-intel
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-intel"]
-            hypervisor: hyperv
-            config: debug
-            arch: intel
-          - build: linux-kvm-debug-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-intel"]
-            hypervisor: kvm
-            config: debug
-            arch: intel
-          - build: linux-mshv-debug-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-intel"]
-            hypervisor: mshv
-            config: debug
-            arch: intel
-          - build: windows-2022-release-intel
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-intel"]
-            hypervisor: hyperv
-            config: release
-            arch: intel
-          - build: linux-kvm-release-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-intel"]
-            hypervisor: kvm
-            config: release
-            arch: intel
-          - build: linux-mshv-release-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-intel"]
-            hypervisor: mshv
-            config: release
-            arch: intel
+        hypervisor: [hyperv, mshv, kvm] # hyperv is windows, mshv and kvm are linux
+        cpu: [amd, intel]
+        config: [debug, release]
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ fromJson(format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', matrix.hypervisor == 'hyperv' && 'Windows' || 'Linux', matrix.hypervisor == 'hyperv' && 'win2022' || matrix.hypervisor, matrix.cpu)) }} 
     steps:
       - uses: actions/checkout@v4
 
@@ -160,7 +102,7 @@ jobs:
         run: sudo apt install gh -y
 
       - name: Download benchmarks from "latest"
-        run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} ${{ matrix.arch}} dev-latest # compare to prerelease
+        run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} ${{ matrix.cpu}} dev-latest # compare to prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true

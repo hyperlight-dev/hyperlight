@@ -17,33 +17,12 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        include:
-          - build: windows-2022-release-amd
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
-            hypervisor: hyperv
-            arch: amd
-          - build: linux-kvm-release-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
-            hypervisor: kvm
-            arch: amd
-          - build: linux-mshv-release-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
-            hypervisor: mshv
-            arch: amd
-          - build: windows-2022-release-intel
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-intel"]
-            hypervisor: hyperv
-            arch: intel
-          - build: linux-kvm-release-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-intel"]
-            hypervisor: kvm
-            arch: intel
-          - build: linux-mshv-release-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-intel"]
-            hypervisor: mshv
-            arch: intel
+        hypervisor: [hyperv, mshv, kvm] # hyperv is windows, mshv and kvm are linux
+        cpu: [amd, intel]
+        config: [release] # don't want to benchmark debug-builds
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ fromJson(format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', matrix.hypervisor == 'hyperv' && 'Windows' || 'Linux', matrix.hypervisor == 'hyperv' && 'win2022' || matrix.hypervisor, matrix.cpu)) }} 
+    
     steps:
       ### Setup ###
 
@@ -82,7 +61,7 @@ jobs:
         run: git fetch --tags origin
 
       - name: Download benchmarks from most recent release
-        run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} ${{ matrix.arch }} # skip tag parameter to compare to latest stable release
+        run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} ${{ matrix.cpu }} # skip tag parameter to compare to latest stable release
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,6 +71,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: benchmarks_${{runner.os}}_${{matrix.hypervisor}}_${{ matrix.arch }}
+          name: benchmarks_${{runner.os}}_${{matrix.hypervisor}}_${{ matrix.cpu }}
           path: ./target/criterion/
           if-no-files-found: error
