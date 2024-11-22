@@ -26,72 +26,11 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build:
-          [
-            windows-2022-debug-amd,
-            linux-kvm-debug-amd,
-            linux-hyperv-debug-amd,
-            windows-2022-release-amd,
-            linux-kvm-release-amd,
-            linux-hyperv-release-amd,
-            windows-2022-debug-intel,
-            linux-kvm-debug-intel,
-            linux-hyperv-debug-intel,
-            windows-2022-release-intel,
-            linux-kvm-release-intel,
-            linux-hyperv-release-intel,
-          ]
-        include:
-          - build: windows-2022-debug-amd
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
-            hypervisor: none
-            config: debug
-          - build: linux-kvm-debug-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
-            hypervisor: kvm
-            config: debug
-          - build: linux-hyperv-debug-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
-            hypervisor: hyperv
-            config: debug
-          - build: windows-2022-release-amd
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-amd"]
-            hypervisor: none
-            config: release
-          - build: linux-kvm-release-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
-            hypervisor: kvm
-            config: release
-          - build: linux-hyperv-release-amd
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-amd"]
-            hypervisor: hyperv
-            config: release
-          - build: windows-2022-debug-intel
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-intel"]
-            hypervisor: none
-            config: debug
-          - build: linux-kvm-debug-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-intel"]
-            hypervisor: kvm
-            config: debug
-          - build: linux-hyperv-debug-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-intel"]
-            hypervisor: hyperv
-            config: debug
-          - build: windows-2022-release-intel
-            os: [self-hosted, Windows, X64, "1ES.Pool=hld-win2022-intel"]
-            hypervisor: none
-            config: release
-          - build: linux-kvm-release-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-intel"]
-            hypervisor: kvm
-            config: release
-          - build: linux-hyperv-release-intel
-            os: [self-hosted, Linux, X64, "1ES.Pool=hld-mshv-intel"]
-            hypervisor: hyperv
-            config: release
+        hypervisor: [hyperv, mshv, kvm] # hyperv is windows, mshv and kvm are linux
+        cpu: [amd, intel]
+        config: [debug, release]
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ fromJson(format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', matrix.hypervisor == 'hyperv' && 'Windows' || 'Linux', matrix.hypervisor == 'hyperv' && 'win2022' || matrix.hypervisor, matrix.cpu)) }} 
     steps:
       - uses: actions/checkout@v4
 
@@ -133,7 +72,7 @@ jobs:
           just test-rust ${{ matrix.config }}
 
           # with only one driver enabled (driver mshv/kvm feature is ignored on windows) + seccomp + inprocess
-          just test-rust ${{ matrix.config }} inprocess,seccomp,${{ matrix.hypervisor == 'hyperv' && 'mshv' || 'kvm' }} 
+          just test-rust ${{ matrix.config }} inprocess,seccomp,${{ matrix.hypervisor == 'mshv' && 'mshv' || 'kvm' }} 
 
           # without any driver (shouldn't compile)
           just test-rust-feature-compilation-fail ${{ matrix.config }}
@@ -155,7 +94,7 @@ jobs:
 
       ### Benchmarks ###
       - name: Install github-cli (Linux mariner)
-        if: runner.os == 'Linux' && matrix.hypervisor == 'hyperv'
+        if: runner.os == 'Linux' && matrix.hypervisor == 'mshv'
         run: sudo dnf install gh -y
 
       - name: Install github-cli (Linux ubuntu)
@@ -163,7 +102,7 @@ jobs:
         run: sudo apt install gh -y
 
       - name: Download benchmarks from "latest"
-        run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} dev-latest # compare to prerelease
+        run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} ${{ matrix.cpu}} dev-latest # compare to prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true

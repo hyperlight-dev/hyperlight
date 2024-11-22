@@ -14,16 +14,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check for specific labels
         run: |
-          PR_NUMBER=$(echo ${{ github.event.pull_request.number }})
-          LABELS_JSON=$(gh pr view $PR_NUMBER --json labels -q '.labels.[] | .name')
-          REQUIRED_LABELS=("chore" "ignore" "breaking-change" "enhancement" "feature" "dependencies" "bug" "security" "performance" "refactor" "testing" "documentation" "github-actions")
-          for REQUIRED_LABEL in "${REQUIRED_LABELS[@]}"; do
-            if echo "$LABELS_JSON" | grep -q "$REQUIRED_LABEL"; then
-              echo "One of the required labels is present"
+          # Fetch repository labels from the GitHub API
+          REPO_LABELS=$(gh api repos/${{ github.repository }}/labels --jq '.[].name')
+
+          # Fetch labels applied to the current PR
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          PR_LABELS=$(gh pr view $PR_NUMBER --json labels -q '.labels.[] | .name')
+
+          # Check if any PR label matches a repository label
+          for PR_LABEL in $PR_LABELS; do
+            if echo "$REPO_LABELS" | grep -qw "$PR_LABEL"; then
+              echo "Label '$PR_LABEL' matches a repository label."
               exit 0
             fi
           done
-          echo "None of the required labels are present"
+
+          echo "None of the PR labels match repository labels."
           exit 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
