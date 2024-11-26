@@ -33,8 +33,6 @@ repository = "https://github.com/hyperlight-dev/hyperlight"
 readme = "README.md"
 
 [workspace.dependencies]
-mshv-bindings = { version = "=0.2.1" }
-mshv-ioctls = { version = "=0.2.1" }
 
 hyperlight-common = { path = "src/hyperlight_common", version = "0.1.0", default-features = false }
 hyperlight-host = { path = "src/hyperlight_host", version = "0.1.0", default-features = false }
