@@ -51,7 +51,6 @@ struct tm {
 	const char *__tm_zone;
 };
 
-#ifndef HYPERLIGHT
 clock_t clock (void);
 time_t time (time_t *);
 double difftime (time_t, time_t);
@@ -165,6 +164,5 @@ __REDIR(timegm, __timegm_time64);
 }
 #endif
 
-#endif // HYPERLIGHT
 
 #endif

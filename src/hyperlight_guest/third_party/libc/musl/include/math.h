@@ -12,17 +12,11 @@ extern "C" {
 #include <bits/alltypes.h>
 
 #if 100*__GNUC__+__GNUC_MINOR__ >= 303
-    #define NAN       __builtin_nanf("")
-    #define INFINITY  __builtin_inff()
+#define NAN       __builtin_nanf("")
+#define INFINITY  __builtin_inff()
 #else
-#ifdef _MSC_VER
-    #define _HUGE_ENUF  1e+300  // _HUGE_ENUF*_HUGE_ENUF must overflow
-    #define INFINITY   ((float)(_HUGE_ENUF * _HUGE_ENUF))
-    #define NAN        ((float)(INFINITY * 0.0F))
-#else    
-    #define NAN       (0.0f/0.0f)
-    #define INFINITY  1e5000f
-#endif
+#define NAN       (0.0f/0.0f)
+#define INFINITY  1e5000f
 #endif
 
 #define HUGE_VALF INFINITY
@@ -110,12 +104,7 @@ int __signbitl(long double);
 #define __ISREL_DEF(rel, op, type) \
 static __inline int __is##rel(type __x, type __y) \
 { return !isunordered(__x,__y) && __x op __y; }
-#if defined(_MSC_VER) 
-// TODO: Check these suppressions to see if the warnings can be avoided
-#pragma warning (push)
-#pragma warning (disable:4146)
-#pragma warning (disable:4244)
-#endif
+
 __ISREL_DEF(lessf, <, float_t)
 __ISREL_DEF(less, <, double_t)
 __ISREL_DEF(lessl, <, long double)
@@ -131,9 +120,7 @@ __ISREL_DEF(greaterl, >, long double)
 __ISREL_DEF(greaterequalf, >=, float_t)
 __ISREL_DEF(greaterequal, >=, double_t)
 __ISREL_DEF(greaterequall, >=, long double)
-#if defined(_MSC_VER)
-#pragma warning (pop)
-#endif
+
 #define __tg_pred_2(x, y, p) ( \
 	sizeof((x)+(y)) == sizeof(float) ? p##f(x, y) : \
 	sizeof((x)+(y)) == sizeof(double) ? p(x, y) : \

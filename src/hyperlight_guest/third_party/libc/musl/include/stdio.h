@@ -111,6 +111,18 @@ int fprintf(FILE *__restrict, const char *__restrict, ...);
 int sprintf(char *__restrict, const char *__restrict, ...);
 int snprintf(char *__restrict, size_t, const char *__restrict, ...);
 
+int vprintf(const char *__restrict, __isoc_va_list);
+int vfprintf(FILE *__restrict, const char *__restrict, __isoc_va_list);
+int vsprintf(char *__restrict, const char *__restrict, __isoc_va_list);
+int vsnprintf(char *__restrict, size_t, const char *__restrict, __isoc_va_list);
+
+int scanf(const char *__restrict, ...);
+int fscanf(FILE *__restrict, const char *__restrict, ...);
+int sscanf(const char *__restrict, const char *__restrict, ...);
+int vscanf(const char *__restrict, __isoc_va_list);
+int vfscanf(FILE *__restrict, const char *__restrict, __isoc_va_list);
+int vsscanf(const char *__restrict, const char *__restrict, __isoc_va_list);
+
 void perror(const char *);
 
 int setvbuf(FILE *__restrict, char *__restrict, int, size_t);
@@ -131,6 +143,7 @@ int fileno(FILE *);
 int fseeko(FILE *, off_t, int);
 off_t ftello(FILE *);
 int dprintf(int, const char *__restrict, ...);
+int vdprintf(int, const char *__restrict, __isoc_va_list);
 void flockfile(FILE *);
 int ftrylockfile(FILE *);
 void funlockfile(FILE *);
@@ -144,6 +157,7 @@ int renameat(int, const char *, int, const char *);
 char *ctermid(char *);
 #define L_ctermid 20
 #endif
+
 
 #if defined(_XOPEN_SOURCE) || defined(_GNU_SOURCE) \
  || defined(_BSD_SOURCE)
@@ -169,6 +183,7 @@ int getw(FILE *);
 int putw(int, FILE *);
 char *fgetln(FILE *, size_t *);
 int asprintf(char **, const char *, ...);
+int vasprintf(char **, const char *, __isoc_va_list);
 #endif
 
 #ifdef _GNU_SOURCE

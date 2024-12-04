@@ -58,11 +58,8 @@ static long long scanexp(FILE *f, int pok)
 	shunget(f);
 	return neg ? -y : y;
 }
-#if defined(_MSC_VER) 
-// TODO: Check these suppressions to see if the warnings can be avoided
-#pragma warning (push)
-#pragma warning (disable:4244)
-#endif
+
+
 static long double decfloat(FILE *f, int c, int bits, int emin, int sign, int pok)
 {
 	uint32_t x[KMAX];
@@ -425,9 +422,7 @@ static long double hexfloat(FILE *f, int bits, int emin, int sign, int pok)
 
 	return scalbnl(y, e2);
 }
-#if defined(_MSC_VER) 
-#pragma warning (pop)
-#endif
+
 long double __floatscan(FILE *f, int prec, int pok)
 {
 	int sign = 1;

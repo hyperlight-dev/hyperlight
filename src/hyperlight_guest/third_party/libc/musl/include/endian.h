@@ -25,19 +25,12 @@ static __inline uint32_t __bswap32(uint32_t __x)
 {
 	return __x>>24 | __x>>8&0xff00 | __x<<8&0xff0000 | __x<<24;
 }
-#if defined(_MSC_VER) 
-// TODO: Check these suppressions to see if the warnings can be avoided
-#pragma warning (push)
-#pragma warning (disable:4554)
-#pragma warning (disable:4244)
-#endif
+
 static __inline uint64_t __bswap64(uint64_t __x)
 {
 	return __bswap32(__x)+0ULL<<32 | __bswap32(__x>>32);
 }
-#if defined(_MSC_VER)
-#pragma warning (pop)
-#endif
+
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 #define htobe16(x) __bswap16(x)
 #define be16toh(x) __bswap16(x)

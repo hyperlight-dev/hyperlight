@@ -1,13 +1,6 @@
 #include <string.h>
 #include <stdint.h>
 
-// This is to allow the code to compile when /O2 (or /Oi which it implies) is specified with MSVC 
-// /Oi causes the compiler to generate and use intrinsics for some C functions which then results in compile errors if those functions are included in source
-// there does not appear to be a way to detect if this option is on so the use of #pragma function ensures that the instrinsi version is never used regadless of compiler settings
-#if defined(_MSC_VER) 
-#pragma function(memset)
-#endif
-
 void *memset(void *dest, int c, size_t n)
 {
 	unsigned char *s = dest;
@@ -35,7 +28,7 @@ void *memset(void *dest, int c, size_t n)
 	 * already took care of any head/tail that get cut off
 	 * by the alignment. */
 
-	k = -(intptr_t)s & 3;
+	k = -(uintptr_t)s & 3;
 	s += k;
 	n -= k;
 	n &= -4;
