@@ -3,7 +3,7 @@ name = "hyperlight-testing"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.72"
+anyhow = "1.0.94"
 log = "0.4"
 once_cell = "1.19"
 tracing = { version = "0.1.41", features = ["log"] }

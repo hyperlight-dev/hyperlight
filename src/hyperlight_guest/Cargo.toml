@@ -19,7 +19,7 @@ printf = [] # compile printf
 alloca = [] # compile alloca wrapper
 
 [dependencies]
-anyhow = { version = "1.0.45", default-features = false }
+anyhow = { version = "1.0.94", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 buddy_system_allocator = "0.11.0"
 hyperlight-common = { workspace = true }
