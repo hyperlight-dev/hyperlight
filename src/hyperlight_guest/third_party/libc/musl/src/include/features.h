@@ -2,6 +2,7 @@
 #define FEATURES_H
 
 #include "../../include/features.h"
+
 #ifndef _MSC_VER 
 #define weak __attribute__((__weak__))
 #define hidden __attribute__((__visibility__("hidden")))
