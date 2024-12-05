@@ -71,9 +71,9 @@ impl ExeInfo {
     // copying into target, but the PE loader chooses to apply
     // relocations in its owned representation of the PE contents,
     // which requires it to be &mut.
-    pub fn load(&mut self, load_addr: usize, target: &mut [u8]) -> Result<()> {
+    pub fn load(self, load_addr: usize, target: &mut [u8]) -> Result<()> {
         match self {
-            ExeInfo::Elf(elf) => {
+            ExeInfo::Elf(mut elf) => {
                 elf.load_at(load_addr, target)?;
             }
         }

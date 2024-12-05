@@ -281,12 +281,12 @@ impl UninitializedSandbox {
         guest_binary: &GuestBinary,
         guest_blob: Option<&GuestBlob>,
     ) -> Result<SandboxMemoryManager<ExclusiveSharedMemory>> {
-        let mut exe_info = match guest_binary {
+        let exe_info = match guest_binary {
             GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(bin_path_str)?,
             GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
         };
 
-        SandboxMemoryManager::load_guest_binary_into_memory(cfg, &mut exe_info, guest_blob)
+        SandboxMemoryManager::load_guest_binary_into_memory(cfg, exe_info, guest_blob)
     }
 
     /// Set the max log level to be used by the guest.

@@ -73,7 +73,7 @@ impl ElfInfo {
             .unwrap();
         (max_phdr.p_vaddr + max_phdr.p_memsz - self.get_base_va()) as usize
     }
-    pub(crate) fn load_at(&self, load_addr: usize, target: &mut [u8]) -> Result<()> {
+    pub(crate) fn load_at(&mut self, load_addr: usize, target: &mut [u8]) -> Result<()> {
         let base_va = self.get_base_va();
         for phdr in self.phdrs.iter().filter(|phdr| phdr.p_type == PT_LOAD) {
             let start_va = (phdr.p_vaddr - base_va) as usize;

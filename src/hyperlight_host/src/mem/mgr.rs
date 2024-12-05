@@ -311,7 +311,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn load_guest_binary_into_memory(
         cfg: SandboxConfiguration,
-        exe_info: &mut ExeInfo,
+        exe_info: ExeInfo,
         guest_blob: Option<&GuestBlob>,
     ) -> Result<Self> {
         let guest_blob_size = guest_blob.map(|b| b.data.len()).unwrap_or(0);
@@ -320,8 +320,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         let layout = SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
-            usize::try_from(cfg.get_stack_size(exe_info))?,
-            usize::try_from(cfg.get_heap_size(exe_info))?,
+            usize::try_from(cfg.get_stack_size(&exe_info))?,
+            usize::try_from(cfg.get_heap_size(&exe_info))?,
             guest_blob_size,
             guest_blob_mem_flags,
         )?;
