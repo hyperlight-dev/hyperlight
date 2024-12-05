@@ -16,6 +16,8 @@ limitations under the License.
 
 use std::fs::File;
 use std::io::Read;
+#[cfg(feature = "unwind_guest")]
+use std::sync::Arc;
 use std::vec::Vec;
 
 use super::elf::ElfInfo;
@@ -36,6 +38,41 @@ pub enum ExeInfo {
 // limits, unless overwritten when setting up the sandbox.
 const DEFAULT_ELF_STACK_RESERVE: u64 = 65536;
 const DEFAULT_ELF_HEAP_RESERVE: u64 = 131072;
+
+#[cfg(feature = "unwind_guest")]
+pub(crate) trait UnwindInfo: Send + Sync {
+    fn as_module(&self) -> framehop::Module<Vec<u8>>;
+    fn hash(&self) -> blake3::Hash;
+}
+
+#[cfg(feature = "unwind_guest")]
+pub(crate) struct DummyUnwindInfo {}
+#[cfg(feature = "unwind_guest")]
+impl UnwindInfo for DummyUnwindInfo {
+    fn as_module(&self) -> framehop::Module<Vec<u8>> {
+        framehop::Module::new("unsupported".to_string(), 0..0, 0, self)
+    }
+    fn hash(&self) -> blake3::Hash {
+        blake3::Hash::from_bytes([0; 32])
+    }
+}
+#[cfg(feature = "unwind_guest")]
+impl<A> framehop::ModuleSectionInfo<A> for &DummyUnwindInfo {
+    fn base_svma(&self) -> u64 {
+        0
+    }
+    fn section_svma_range(&mut self, _name: &[u8]) -> Option<std::ops::Range<u64>> {
+        None
+    }
+    fn section_data(&mut self, _name: &[u8]) -> Option<A> {
+        None
+    }
+}
+
+#[cfg(feature = "unwind_guest")]
+pub(crate) type LoadInfo = Arc<dyn UnwindInfo>;
+#[cfg(not(feature = "unwind_guest"))]
+pub(crate) type LoadInfo = ();
 
 impl ExeInfo {
     pub fn from_file(path: &str) -> Result<Self> {
@@ -71,12 +108,9 @@ impl ExeInfo {
     // copying into target, but the PE loader chooses to apply
     // relocations in its owned representation of the PE contents,
     // which requires it to be &mut.
-    pub fn load(self, load_addr: usize, target: &mut [u8]) -> Result<()> {
+    pub fn load(self, load_addr: usize, target: &mut [u8]) -> Result<LoadInfo> {
         match self {
-            ExeInfo::Elf(mut elf) => {
-                elf.load_at(load_addr, target)?;
-            }
+            ExeInfo::Elf(elf) => elf.load_at(load_addr, target),
         }
-        Ok(())
     }
 }

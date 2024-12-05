@@ -20,6 +20,8 @@ use tracing::{Span, instrument};
 use crate::error::HyperlightError::ExecutionCanceledByHost;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 use crate::{HyperlightError, Result, log_then_return, new_error};
 
 /// Util for handling x87 fpu state
@@ -270,6 +272,10 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     /// Read a register for trace/unwind purposes
     #[cfg(feature = "unwind_guest")]
     fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64>;
+
+    /// Get a reference of the trace info for the guest
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_ref(&self) -> &TraceInfo;
 }
 
 /// A virtual CPU that can be run until an exit occurs
@@ -278,7 +284,7 @@ pub struct VirtualCPU {}
 impl VirtualCPU {
     /// Run the given hypervisor until a halt instruction is reached
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub fn run(
+    pub(crate) fn run(
         hv: &mut dyn Hypervisor,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
@@ -526,8 +532,6 @@ pub(crate) mod tests {
     #[cfg(gdb)]
     use crate::hypervisor::DbgMemAccessHandlerCaller;
     use crate::mem::ptr::RawPtr;
-    #[cfg(feature = "trace_guest")]
-    use crate::sandbox::TraceInfo;
     use crate::sandbox::uninitialized::GuestBinary;
     #[cfg(any(crashdump, gdb))]
     use crate::sandbox::uninitialized::SandboxRuntimeConfig;
@@ -579,8 +583,7 @@ pub(crate) mod tests {
             &config,
             #[cfg(any(crashdump, gdb))]
             &rt_cfg,
-            #[cfg(feature = "trace_guest")]
-            TraceInfo::new()?,
+            sandbox.load_info,
         )?;
         let outb_handler: Arc<Mutex<OutBHandler>> = {
             #[cfg(feature = "trace_guest")]

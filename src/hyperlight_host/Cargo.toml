@@ -28,6 +28,8 @@ rand = { version = "0.9" }
 cfg-if = { version = "1.0.1" }
 libc = { version = "0.2.174" }
 flatbuffers = "25.2.10"
+framehop = { version = "0.13.1", optional = true }
+fallible-iterator = { version = "0.3.0", optional = true }
 page_size = "0.6.0"
 termcolor = "1.2.0"
 bitflags = "2.9.1"
@@ -45,6 +47,7 @@ metrics = "0.24.2"
 serde_json = "1.0"
 elfcore = "2.0"
 uuid = { version = "1.17.0", features = ["v4"] }
+blake3 = "1.8.2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
@@ -131,7 +134,7 @@ crashdump = ["dep:chrono"]
 trace_guest = []
 # This feature enables unwinding the guest stack from the host, in
 # order to produce stack traces for debugging or profiling.
-unwind_guest = [ "trace_guest" ]
+unwind_guest = [ "trace_guest", "dep:framehop", "dep:fallible-iterator", "hyperlight-common/unwind_guest" ]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv2 = ["dep:mshv-bindings2", "dep:mshv-ioctls2"]
 mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]

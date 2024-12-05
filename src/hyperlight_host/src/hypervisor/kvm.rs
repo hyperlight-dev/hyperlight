@@ -960,6 +960,11 @@ impl Hypervisor for KVMDriver {
             TraceRegister::RBP => regs.rbp,
         })
     }
+
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_ref(&self) -> &TraceInfo {
+        &self.trace_info
+    }
 }
 
 impl Drop for KVMDriver {
