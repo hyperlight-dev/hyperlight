@@ -15,7 +15,11 @@
 
 #ifndef __cplusplus
 #if defined(__NEED_wchar_t) && !defined(__DEFINED_wchar_t)
+#ifdef _MSC_VER
+typedef unsigned short wchar_t;
+#else
 typedef int wchar_t;
+#endif
 #define __DEFINED_wchar_t
 #endif
 

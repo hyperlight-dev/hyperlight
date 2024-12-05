@@ -77,15 +77,7 @@ fn cargo_main() {
         feature = "libc",
         feature = "alloca"
     )) {
-        if is_pe {
-            cfg.define("hidden", "");
-            cfg.define("weak_alias(old, new) ", " ");
-            cfg.define("__DEFINED_va_list", None);
-            cfg.define("__DEFINED___isoc_va_list", None);
-        }
-        cfg.define("__x86_64__", None);
-        cfg.define("__LITTLE_ENDIAN__", None);
-        cfg.define("HYPERLIGHT", None);
+        cfg.define("HYPERLIGHT", None); // used in certain musl files for conditional compilation
 
         // silence compiler warnings
         cfg.flag("-Wno-unused-command-line-argument") // including .s files makes clang believe arguments are unused
@@ -99,6 +91,8 @@ fn cargo_main() {
             .flag("-Wno-string-plus-int");
 
         if is_pe {
+            cfg.flag("-Wno-unused-label");
+            cfg.flag("-Wno-unused-variable");
             cfg.compiler("clang-cl");
         } else {
             cfg.flag("-fPIC");
