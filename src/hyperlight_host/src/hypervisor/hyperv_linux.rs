@@ -1124,6 +1124,11 @@ impl Hypervisor for HypervLinuxDriver {
         // safety: all registers that we currently support are 64-bit
         unsafe { Ok(assoc[0].value.reg64) }
     }
+
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_ref(&self) -> &TraceInfo {
+        &self.trace_info
+    }
 }
 
 impl Drop for HypervLinuxDriver {
@@ -1143,6 +1148,8 @@ impl Drop for HypervLinuxDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "unwind_guest")]
+    use crate::mem::exe::DummyUnwindInfo;
     use crate::mem::memory_region::MemoryRegionVecBuilder;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 
@@ -1211,7 +1218,11 @@ mod tests {
                 guest_core_dump: true,
             },
             #[cfg(feature = "trace_guest")]
-            TraceInfo::new().unwrap(),
+            TraceInfo::new(
+                #[cfg(feature = "unwind_guest")]
+                Arc::new(DummyUnwindInfo {}),
+            )
+            .unwrap(),
         )
         .unwrap();
     }

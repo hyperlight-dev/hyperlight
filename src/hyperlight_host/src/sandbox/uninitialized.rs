@@ -78,6 +78,7 @@ pub struct UninitializedSandbox {
     pub(crate) config: SandboxConfiguration,
     #[cfg(any(crashdump, gdb))]
     pub(crate) rt_cfg: SandboxRuntimeConfig,
+    pub(crate) load_info: crate::mem::exe::LoadInfo,
 }
 
 impl Debug for UninitializedSandbox {
@@ -222,8 +223,8 @@ impl UninitializedSandbox {
             }
         };
 
-        let mut mem_mgr_wrapper = {
-            let mut mgr = UninitializedSandbox::load_guest_binary(
+        let (mut mem_mgr_wrapper, load_info) = {
+            let (mut mgr, load_info) = UninitializedSandbox::load_guest_binary(
                 sandbox_cfg,
                 &guest_binary,
                 guest_blob.as_ref(),
@@ -231,7 +232,7 @@ impl UninitializedSandbox {
 
             let stack_guard = Self::create_stack_guard();
             mgr.set_stack_guard(&stack_guard)?;
-            MemMgrWrapper::new(mgr, stack_guard)
+            (MemMgrWrapper::new(mgr, stack_guard), load_info)
         };
 
         mem_mgr_wrapper.write_memory_layout()?;
@@ -250,6 +251,7 @@ impl UninitializedSandbox {
             config: sandbox_cfg,
             #[cfg(any(crashdump, gdb))]
             rt_cfg,
+            load_info,
         };
 
         // If we were passed a writer for host print register it otherwise use the default.
@@ -280,7 +282,10 @@ impl UninitializedSandbox {
         cfg: SandboxConfiguration,
         guest_binary: &GuestBinary,
         guest_blob: Option<&GuestBlob>,
-    ) -> Result<SandboxMemoryManager<ExclusiveSharedMemory>> {
+    ) -> Result<(
+        SandboxMemoryManager<ExclusiveSharedMemory>,
+        crate::mem::exe::LoadInfo,
+    )> {
         let exe_info = match guest_binary {
             GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(bin_path_str)?,
             GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
