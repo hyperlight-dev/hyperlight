@@ -391,12 +391,12 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn load_guest_binary_into_memory(
         cfg: SandboxConfiguration,
-        exe_info: &mut ExeInfo,
+        mut exe_info: ExeInfo,
         inprocess: bool,
     ) -> Result<Self> {
         let (layout, mut shared_mem, load_addr, entrypoint_offset) = load_guest_binary_common(
             cfg,
-            exe_info,
+            &mut exe_info,
             |shared_mem: &ExclusiveSharedMemory, layout: &SandboxMemoryLayout| {
                 let addr_usize = if inprocess {
                     // if we're running in-process, load_addr is the absolute

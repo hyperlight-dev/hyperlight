@@ -80,9 +80,9 @@ impl ExeInfo {
     // copying into target, but the PE loader chooses to apply
     // relocations in its owned representation of the PE contents,
     // which requires it to be &mut.
-    pub fn load(&mut self, load_addr: usize, target: &mut [u8]) -> Result<()> {
+    pub fn load(self, load_addr: usize, target: &mut [u8]) -> Result<()> {
         match self {
-            ExeInfo::PE(pe) => {
+            ExeInfo::PE(mut pe) => {
                 let patches = pe.get_exe_relocation_patches(load_addr)?;
                 pe.apply_relocation_patches(patches)?;
                 target[0..pe.payload.len()].copy_from_slice(&pe.payload);

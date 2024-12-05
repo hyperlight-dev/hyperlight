@@ -228,10 +228,10 @@ mod tests {
         let sandbox_cfg = SandboxConfiguration::default();
 
         let new_mgr = || {
-            let mut exe_info = simple_guest_exe_info().unwrap();
+            let exe_info = simple_guest_exe_info().unwrap();
             let mut mgr = SandboxMemoryManager::load_guest_binary_into_memory(
                 sandbox_cfg,
-                &mut exe_info,
+                exe_info,
                 false,
             )
             .unwrap();
@@ -348,10 +348,10 @@ mod tests {
         let sandbox_cfg = SandboxConfiguration::default();
         tracing::subscriber::with_default(subscriber.clone(), || {
             let new_mgr = || {
-                let mut exe_info = simple_guest_exe_info().unwrap();
+                let exe_info = simple_guest_exe_info().unwrap();
                 let mut mgr = SandboxMemoryManager::load_guest_binary_into_memory(
                     sandbox_cfg,
-                    &mut exe_info,
+                    exe_info,
                     false,
                 )
                 .unwrap();
