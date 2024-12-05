@@ -26,6 +26,7 @@ use crate::{log_then_return, new_error, Result};
 pub(crate) struct ElfInfo {
     payload: Vec<u8>,
     phdrs: ProgramHeaders,
+    section_headers: Vec<goblin::elf::SectionHeader>,
     entry: u64,
     relocs: Vec<Reloc>,
 }
@@ -45,6 +46,7 @@ impl ElfInfo {
             payload: bytes.to_vec(),
             phdrs: elf.program_headers,
             entry: elf.entry,
+            section_headers: elf.section_headers,
             relocs,
         })
     }
@@ -52,21 +54,21 @@ impl ElfInfo {
         self.entry
     }
     pub(crate) fn get_base_va(&self) -> u64 {
-        let min_phdr = self
-            .phdrs
+        let min_section = self
+            .section_headers
             .iter()
-            .find(|phdr| phdr.p_type == PT_LOAD)
+            .find(|section| section.is_alloc())
             .unwrap(); // guaranteed not to panic because of the check in new()
-        min_phdr.p_vaddr
+        min_section.sh_addr
     }
     pub(crate) fn get_va_size(&self) -> usize {
-        let max_phdr = self
-            .phdrs
+        let max_section = self
+            .section_headers
             .iter()
             .rev()
-            .find(|phdr| phdr.p_type == PT_LOAD)
+            .find(|section| section.is_alloc())
             .unwrap(); // guaranteed not to panic because of the check in new()
-        (max_phdr.p_vaddr + max_phdr.p_memsz - self.get_base_va()) as usize
+        (max_section.sh_addr + max_section.sh_size - self.get_base_va()) as usize
     }
     pub(crate) fn load_at(&self, load_addr: usize, target: &mut [u8]) -> Result<()> {
         let base_va = self.get_base_va();
