@@ -109,6 +109,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dde20b3d026af13f561bdd0f15edf01fc734f0dafcedbaf42bba506a9517f223"
 
 [[package]]
+name = "arrayvec"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
+
+[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -686,6 +692,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fallible-iterator"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+
+[[package]]
 name = "fastrand"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -714,6 +726,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "framehop"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf36f12e45e344d8ee069ea1d73657a1ff47967f49beb1bfaf562ecc091aab42"
+dependencies = [
+ "arrayvec",
+ "cfg-if",
+ "fallible-iterator",
+ "gimli",
+ "macho-unwind-info",
+ "pe-unwind-info",
 ]
 
 [[package]]
@@ -831,6 +857,10 @@ name = "gimli"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
+dependencies = [
+ "fallible-iterator",
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "git2"
@@ -1092,7 +1122,9 @@ dependencies = [
  "crossbeam-queue",
  "env_logger",
  "envy",
+ "fallible-iterator",
  "flatbuffers",
+ "framehop",
  "goblin",
  "hyperlight-common",
  "hyperlight-testing",
@@ -1559,6 +1591,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "macho-unwind-info"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b6086acc74bc23f56b60e88bb082d505e23849d68d6c0f12bb6a7ad5c60e03e"
+dependencies = [
+ "thiserror 1.0.69",
+ "zerocopy",
+ "zerocopy-derive",
+]
+
+[[package]]
 name = "matchers"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1830,6 +1873,19 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pe-unwind-info"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11fe3d7d11dde0fd142bf734ae5d645a4c62ede7c188bccc73dec5082359ff84"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.6.0",
+ "thiserror 1.0.69",
+ "zerocopy",
+ "zerocopy-derive",
+]
 
 [[package]]
 name = "percent-encoding"

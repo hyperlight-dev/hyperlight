@@ -68,6 +68,7 @@ where
             u_sbox.max_initialization_time,
             u_sbox.max_execution_time,
             u_sbox.max_wait_for_cancellation,
+            u_sbox.load_info,
         )?;
 
         {
@@ -110,6 +111,7 @@ fn hv_init(
     max_init_time: Duration,
     max_exec_time: Duration,
     max_wait_for_cancellation: Duration,
+    _load_info: crate::mem::exe::LoadInfo,
 ) -> Result<HypervisorHandler> {
     let outb_hdl = outb_handler_wrapper(hshm.clone(), host_funcs);
     let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
@@ -133,7 +135,7 @@ fn hv_init(
         max_exec_time,
         max_wait_for_cancellation,
         #[cfg(feature = "trace_guest")]
-        trace_info: TraceInfo::new()?,
+        trace_info: TraceInfo::new(#[cfg(feature = "unwind_guest")] _load_info)?,
     };
     // Note: `dispatch_function_addr` is set by the Hyperlight guest library, and so it isn't in
     // shared memory at this point in time. We will set it after the execution of `hv_init`.

@@ -22,6 +22,8 @@ workspace = true
 
 [dependencies]
 goblin = { version = "0.9" }
+framehop = { version = "0.13.1", optional = true }
+fallible-iterator = { version = "0.3.0", optional = true }
 rand = { version = "0.8.5" }
 cfg-if = { version = "1.0.0" }
 libc = { version = "0.2.167" }
@@ -127,7 +129,7 @@ crashdump = ["dep:tempfile"] # Dumps the VM state to a file on unexpected errors
 trace_guest = []
 # This feature enables unwinding the guest stack from the host, in
 # order to produce stack traces for debugging or profiling.
-unwind_guest = [ "trace_guest" ]
+unwind_guest = [ "trace_guest", "dep:framehop", "dep:fallible-iterator" ]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv = ["dep:mshv-bindings", "dep:mshv-ioctls"]
 inprocess = []

@@ -345,7 +345,10 @@ pub(crate) mod tests {
                 SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
             ),
             #[cfg(feature = "trace_guest")]
-            trace_info: crate::sandbox::TraceInfo::new()?,
+            trace_info: crate::sandbox::TraceInfo::new(
+                #[cfg(feature = "unwind_guest")]
+                Arc::new(crate::mem::exe::DummyUnwindInfo {})
+            )?,
         };
 
         let mut hv_handler = HypervisorHandler::new(hv_handler_config);

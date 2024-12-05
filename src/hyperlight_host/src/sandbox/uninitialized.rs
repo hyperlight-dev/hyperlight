@@ -54,6 +54,7 @@ pub struct UninitializedSandbox {
     pub(crate) max_initialization_time: Duration,
     pub(crate) max_execution_time: Duration,
     pub(crate) max_wait_for_cancellation: Duration,
+    pub(crate) load_info: crate::mem::exe::LoadInfo,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -173,8 +174,8 @@ impl UninitializedSandbox {
         }
 
         let sandbox_cfg = cfg.unwrap_or_default();
-        let mut mem_mgr_wrapper = {
-            let mut mgr = UninitializedSandbox::load_guest_binary(
+        let (mut mem_mgr_wrapper, load_info) = {
+            let (mut mgr, load_info) = UninitializedSandbox::load_guest_binary(
                 sandbox_cfg,
                 &guest_binary,
                 run_inprocess,
@@ -182,7 +183,7 @@ impl UninitializedSandbox {
             )?;
             let stack_guard = Self::create_stack_guard();
             mgr.set_stack_guard(&stack_guard)?;
-            MemMgrWrapper::new(mgr, stack_guard)
+            (MemMgrWrapper::new(mgr, stack_guard), load_info)
         };
 
         mem_mgr_wrapper.write_memory_layout(run_inprocess)?;
@@ -200,6 +201,7 @@ impl UninitializedSandbox {
             max_wait_for_cancellation: Duration::from_millis(
                 sandbox_cfg.get_max_wait_for_cancellation() as u64,
             ),
+            load_info,
         };
 
         // TODO: These only here to accommodate some writer functions.
@@ -284,7 +286,10 @@ impl UninitializedSandbox {
         guest_binary: &GuestBinary,
         inprocess: bool,
         use_loadlib: bool,
-    ) -> Result<SandboxMemoryManager<ExclusiveSharedMemory>> {
+    ) -> Result<(
+        SandboxMemoryManager<ExclusiveSharedMemory>,
+        crate::mem::exe::LoadInfo,
+    )> {
         let mut exe_info = match guest_binary {
             GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(bin_path_str)?,
             GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,

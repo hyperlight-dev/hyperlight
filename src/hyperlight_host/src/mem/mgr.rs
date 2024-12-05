@@ -391,12 +391,12 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn load_guest_binary_into_memory(
         cfg: SandboxConfiguration,
-        mut exe_info: ExeInfo,
+        exe_info: ExeInfo,
         inprocess: bool,
-    ) -> Result<Self> {
+    ) -> Result<(Self, super::exe::LoadInfo)> {
         let (layout, mut shared_mem, load_addr, entrypoint_offset) = load_guest_binary_common(
             cfg,
-            &mut exe_info,
+            &exe_info,
             |shared_mem: &ExclusiveSharedMemory, layout: &SandboxMemoryLayout| {
                 let addr_usize = if inprocess {
                     // if we're running in-process, load_addr is the absolute
@@ -417,19 +417,22 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             },
         )?;
 
-        exe_info.load(
+        let load_info = exe_info.load(
             load_addr.clone().try_into()?,
             &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
         )?;
 
-        Ok(Self::new(
-            layout,
-            shared_mem,
-            inprocess,
-            load_addr,
-            entrypoint_offset,
-            #[cfg(target_os = "windows")]
-            None,
+        Ok((
+            Self::new(
+                layout,
+                shared_mem,
+                inprocess,
+                load_addr,
+                entrypoint_offset,
+                #[cfg(target_os = "windows")]
+                None,
+            ),
+            load_info,
         ))
     }
 
@@ -442,7 +445,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         cfg: SandboxConfiguration,
         guest_bin_path: &str,
         exe_info: &mut ExeInfo,
-    ) -> Result<Self> {
+    ) -> Result<(Self, super::exe::LoadInfo)> {
         #[cfg(target_os = "windows")]
         {
             if !matches!(exe_info, ExeInfo::PE(_)) {
