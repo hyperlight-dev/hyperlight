@@ -26,6 +26,7 @@ spin = "0.10.0"
 default = ["tracing"]
 fuzzing = ["dep:arbitrary"]
 unwind_guest = []
+mem_profile = []
 std = []
 
 [dev-dependencies]

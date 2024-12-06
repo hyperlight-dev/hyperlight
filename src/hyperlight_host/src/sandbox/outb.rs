@@ -257,6 +257,36 @@ fn handle_outb_impl(
                 write_stack(f, &stack);
             })
         }
+        #[cfg(feature = "mem_profile")]
+        OutBAction::TraceMemoryAlloc => {
+            let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), _hv.trace_info_as_ref()) else {
+                return Ok(());
+            };
+            let Ok(amt) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RAX) else {
+                return Ok(());
+            };
+            let Ok(ptr) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RCX) else {
+                return Ok(());
+            };
+            record_trace_frame(_hv.trace_info_as_ref(), 2u64, |f| {
+                let _ = f.write_all(&ptr.to_ne_bytes());
+                let _ = f.write_all(&amt.to_ne_bytes());
+                write_stack(f, &stack);
+            })
+        }
+        #[cfg(feature = "mem_profile")]
+        OutBAction::TraceMemoryFree => {
+            let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), _hv.trace_info_as_ref()) else {
+                return Ok(());
+            };
+            let Ok(ptr) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RCX) else {
+                return Ok(());
+            };
+            record_trace_frame(_hv.trace_info_as_ref(), 3u64, |f| {
+                let _ = f.write_all(&ptr.to_ne_bytes());
+                write_stack(f, &stack);
+            })
+        }
     }
 }
 
