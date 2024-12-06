@@ -37,6 +37,13 @@ pub enum OutBAction {
     Log = 99,
     CallFunction = 101,
     Abort = 102,
+    #[cfg(feature = "mem_profile")]
+    #[allow(dead_code)]
+    TraceRecordStack = 103,
+    #[cfg(feature = "mem_profile")]
+    TraceMemoryAlloc = 104,
+    #[cfg(feature = "mem_profile")]
+    TraceMemoryFree = 105,
 }
 
 pub fn get_host_value_return_as_void() -> Result<()> {

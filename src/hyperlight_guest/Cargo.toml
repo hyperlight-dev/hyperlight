@@ -17,6 +17,7 @@ default = ["libc", "printf", "alloca"]
 libc = [] # compile musl libc
 printf = [] # compile printf
 alloca = [] # compile alloca wrapper
+mem_profile = []
 
 [dependencies]
 anyhow = { version = "1.0.45", default-features = false }

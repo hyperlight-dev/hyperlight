@@ -131,7 +131,11 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_
 
             let heap_start = (*peb_ptr).guestheapData.guestHeapBuffer as usize;
             let heap_size = (*peb_ptr).guestheapData.guestHeapSize as usize;
-            HEAP_ALLOCATOR
+            #[cfg(not(feature = "mem_profile"))]
+            let heap_allocator = &HEAP_ALLOCATOR;
+            #[cfg(feature = "mem_profile")]
+            let heap_allocator = &HEAP_ALLOCATOR.0;
+            heap_allocator
                 .try_lock()
                 .expect("Failed to access HEAP_ALLOCATOR")
                 .init(heap_start, heap_size);

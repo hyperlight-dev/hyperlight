@@ -24,6 +24,7 @@ workspace = true
 goblin = { version = "0.9" }
 framehop = { version = "0.13.1", optional = true }
 fallible-iterator = { version = "0.3.0", optional = true }
+blake3 = { version = "1.5.5", optional = true }
 rand = { version = "0.8.5" }
 cfg-if = { version = "1.0.0" }
 libc = { version = "0.2.167" }
@@ -130,6 +131,7 @@ trace_guest = []
 # This feature enables unwinding the guest stack from the host, in
 # order to produce stack traces for debugging or profiling.
 unwind_guest = [ "trace_guest", "dep:framehop", "dep:fallible-iterator" ]
+mem_profile = [ "unwind_guest", "dep:blake3" ]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv = ["dep:mshv-bindings", "dep:mshv-ioctls"]
 inprocess = []
