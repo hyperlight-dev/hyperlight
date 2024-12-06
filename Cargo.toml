@@ -15,6 +15,7 @@ members = [
     "src/hyperlight_guest_bin",
     "src/hyperlight_component_util",
     "src/hyperlight_component_macro",
+    "src/trace_dump",
 ]
 # Guests have custom linker flags, so we need to exclude them from the workspace
 exclude = [
