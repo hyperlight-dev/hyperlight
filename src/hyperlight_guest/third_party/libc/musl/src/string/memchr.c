@@ -8,13 +8,6 @@
 #define HIGHS (ONES * (UCHAR_MAX/2+1))
 #define HASZERO(x) ((x)-ONES & ~(x) & HIGHS)
 
-// This is to allow the code to compile when /O2 (or /Oi which it implies) is specified with MSVC 
-// /Oi causes the compiler to generate and use intrinsics for some C functions which then results in compile errors if those functions are included in source
-// there does not appear to be a way to detect if this option is on so the use of #pragma function ensures that the instrinsi version is never used regadless of compiler settings
-#if defined(_MSC_VER) 
-#pragma function(memchr)
-#endif
-
 void *memchr(const void *src, int c, size_t n)
 {
 	const unsigned char *s = src;

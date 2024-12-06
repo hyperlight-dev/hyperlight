@@ -27,12 +27,7 @@ long long strtoll(const char *restrict s, char **restrict p, int base)
 {
 	return strtox(s, p, base, LLONG_MIN);
 }
-#if defined(_MSC_VER) 
-// TODO: Check these suppressions to see if the warnings can be avoided
-#pragma warning (push)
-#pragma warning (disable:4308)
-#pragma warning (disable:4244)
-#endif
+
 unsigned long strtoul(const char *restrict s, char **restrict p, int base)
 {
 	return strtox(s, p, base, ULONG_MAX);
@@ -42,9 +37,7 @@ long strtol(const char *restrict s, char **restrict p, int base)
 {
 	return strtox(s, p, base, 0UL+LONG_MIN);
 }
-#if defined(_MSC_VER) 
-#pragma warning (pop)
-#endif
+
 intmax_t strtoimax(const char *restrict s, char **restrict p, int base)
 {
 	return strtoll(s, p, base);
