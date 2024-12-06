@@ -12,6 +12,7 @@ members = [
     "src/hyperlight_guest_capi",
     "src/hyperlight_testing",
     "src/hyperlight_host/fuzz",
+    "src/trace_dump",
 ]
 # Because hyperlight-guest has custom linker flags,
 # we exclude it from the default-members list
