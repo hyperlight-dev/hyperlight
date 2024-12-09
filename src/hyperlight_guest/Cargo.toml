@@ -29,3 +29,4 @@ log = { version = "0.4", default-features = false }
 [build-dependencies]
 cc = "1.2"
 cfg-if = "1.0"
+glob = "0.3.1"

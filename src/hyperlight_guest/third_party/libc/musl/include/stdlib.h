@@ -34,16 +34,19 @@ unsigned long strtoul (const char *__restrict, char **__restrict, int);
 long long strtoll (const char *__restrict, char **__restrict, int);
 unsigned long long strtoull (const char *__restrict, char **__restrict, int);
 
-int rand (void);
-void srand (unsigned);
-
+// These 5 functions are implemented in rust in hyperlight_guest
+_Noreturn void abort (void);
 void *malloc (size_t);
 void *calloc (size_t, size_t);
 void *realloc (void *, size_t);
 void free (void *);
+
+#ifndef HYPERLIGHT
+int rand (void);
+void srand (unsigned);
+
 void *aligned_alloc(size_t, size_t);
 
-_Noreturn void abort (void);
 int atexit (void (*) (void));
 _Noreturn void exit (int);
 _Noreturn void _Exit (int);
@@ -53,6 +56,7 @@ _Noreturn void quick_exit (int);
 char *getenv (const char *);
 
 int system (const char *);
+#endif // HYPERLIGHT
 
 void *bsearch (const void *, const void *, size_t, size_t, int (*)(const void *, const void *));
 void qsort (void *, size_t, size_t, int (*)(const void *, const void *));
@@ -84,9 +88,9 @@ size_t __ctype_get_mb_cur_max(void);
 #define RAND_MAX (0x7fffffff)
 
 
-#if defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
+#if (defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
  || defined(_XOPEN_SOURCE) || defined(_GNU_SOURCE) \
- || defined(_BSD_SOURCE)
+ || defined(_BSD_SOURCE)) && !defined(HYPERLIGHT)
 
 #define WNOHANG    1
 #define WUNTRACED  2
@@ -110,8 +114,8 @@ int rand_r (unsigned *);
 #endif
 
 
-#if defined(_XOPEN_SOURCE) || defined(_GNU_SOURCE) \
- || defined(_BSD_SOURCE)
+#if (defined(_XOPEN_SOURCE) || defined(_GNU_SOURCE) \
+ || defined(_BSD_SOURCE)) && !defined(HYPERLIGHT)
 char *realpath (const char *__restrict, char *__restrict);
 long int random (void);
 void srandom (unsigned int);
@@ -136,7 +140,7 @@ unsigned short *seed48 (unsigned short [3]);
 void lcong48 (unsigned short [7]);
 #endif
 
-#if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
+#if (defined(_GNU_SOURCE) || defined(_BSD_SOURCE)) && !defined(HYPERLIGHT)
 #include <alloca.h>
 char *mktemp (char *);
 int mkstemps (char *, int);
@@ -163,7 +167,7 @@ double strtod_l(const char *__restrict, char **__restrict, struct __locale_struc
 long double strtold_l(const char *__restrict, char **__restrict, struct __locale_struct *);
 #endif
 
-#if defined(_LARGEFILE64_SOURCE) || defined(_GNU_SOURCE)
+#if (defined(_LARGEFILE64_SOURCE) || defined(_GNU_SOURCE)) && !defined(HYPERLIGHT)
 #define mkstemp64 mkstemp
 #define mkostemp64 mkostemp
 #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)

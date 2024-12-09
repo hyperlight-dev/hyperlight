@@ -30,11 +30,6 @@ static char *fourbyte_strstr(const unsigned char *h, const unsigned char *n)
 #define BITOP(a,b,op) \
  ((a)[(size_t)(b)/(8*sizeof *(a))] op (size_t)1<<((size_t)(b)%(8*sizeof *(a))))
 
-#if defined(_MSC_VER) 
-// TODO: Check these suppressions to see if the warnings can be avoided
-#pragma warning (push)
-#pragma warning (disable:4018)
-#endif
 static char *twoway_strstr(const unsigned char *h, const unsigned char *n)
 {
 	const unsigned char *z;
@@ -139,9 +134,7 @@ static char *twoway_strstr(const unsigned char *h, const unsigned char *n)
 		mem = mem0;
 	}
 }
-#if defined(_MSC_VER) 
-#pragma warning (pop)
-#endif
+
 char *strstr(const char *h, const char *n)
 {
 	/* Return immediately on empty needle */

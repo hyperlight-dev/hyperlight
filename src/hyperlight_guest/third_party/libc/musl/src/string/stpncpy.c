@@ -23,11 +23,10 @@ char *__stpncpy(char *restrict d, const char *restrict s, size_t n)
 	}
 #endif
 	for (; n && (*d=*s); n--, s++, d++);
-#if  __GNUC__
 tail:
-#endif
 	memset(d, 0, n);
 	return d;
 }
 
 weak_alias(__stpncpy, stpncpy);
+
