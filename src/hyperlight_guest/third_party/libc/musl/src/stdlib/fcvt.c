@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include "printf.h"
 
 char *fcvt(double x, int n, int *dp, int *sign)
 {

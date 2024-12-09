@@ -51,6 +51,7 @@ struct tm {
 	const char *__tm_zone;
 };
 
+#ifndef HYPERLIGHT
 clock_t clock (void);
 time_t time (time_t *);
 double difftime (time_t, time_t);
@@ -61,14 +62,15 @@ struct tm *localtime (const time_t *);
 char *asctime (const struct tm *);
 char *ctime (const time_t *);
 int timespec_get(struct timespec *, int);
+#endif // HYPERLIGHT
 
 #define CLOCKS_PER_SEC 1000000L
 
 #define TIME_UTC 1
 
-#if defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
+#if (defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
  || defined(_XOPEN_SOURCE) || defined(_GNU_SOURCE) \
- || defined(_BSD_SOURCE)
+ || defined(_BSD_SOURCE)) && !defined(HYPERLIGHT)
 
 size_t strftime_l (char *  __restrict, size_t, const char *  __restrict, const struct tm *  __restrict, locale_t);
 
@@ -118,7 +120,7 @@ extern char *tzname[2];
 #endif
 
 
-#if defined(_XOPEN_SOURCE) || defined(_BSD_SOURCE) || defined(_GNU_SOURCE)
+#if (defined(_XOPEN_SOURCE) || defined(_BSD_SOURCE) || defined(_GNU_SOURCE)) && !defined(HYPERLIGHT)
 char *strptime (const char *__restrict, const char *__restrict, struct tm *__restrict);
 extern int daylight;
 extern long timezone;
@@ -127,7 +129,7 @@ struct tm *getdate (const char *);
 #endif
 
 
-#if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
+#if (defined(_GNU_SOURCE) || defined(_BSD_SOURCE)) && !defined(HYPERLIGHT)
 int stime(const time_t *);
 time_t timegm(struct tm *);
 #endif

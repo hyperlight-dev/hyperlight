@@ -58,8 +58,10 @@ wchar_t *wcsncat (wchar_t *__restrict, const wchar_t *__restrict, size_t);
 int wcscmp (const wchar_t *, const wchar_t *);
 int wcsncmp (const wchar_t *, const wchar_t *, size_t);
 
+#ifndef HYPERLIGHT
 int wcscoll(const wchar_t *, const wchar_t *);
 size_t wcsxfrm (wchar_t *__restrict, const wchar_t *__restrict, size_t);
+#endif
 
 wchar_t *wcschr (const wchar_t *, wchar_t);
 wchar_t *wcsrchr (const wchar_t *, wchar_t);
@@ -104,7 +106,7 @@ long long wcstoll (const wchar_t *__restrict, wchar_t **__restrict, int);
 unsigned long long wcstoull (const wchar_t *__restrict, wchar_t **__restrict, int);
 
 
-
+#ifndef HYPERLIGHT
 int fwide (FILE *, int);
 
 
@@ -136,9 +138,10 @@ wchar_t *fgetws (wchar_t *__restrict, int, FILE *__restrict);
 int fputws (const wchar_t *__restrict, FILE *__restrict);
 
 wint_t ungetwc (wint_t, FILE *);
-
-struct tm;
 size_t wcsftime (wchar_t *__restrict, size_t, const wchar_t *__restrict, const struct tm *__restrict);
+
+#endif // HYPERLIGHT
+struct tm;
 
 #undef iswdigit
 
@@ -156,6 +159,7 @@ int fputws_unlocked (const wchar_t *__restrict, FILE *__restrict);
 #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
 size_t wcsftime_l (wchar_t *__restrict, size_t, const wchar_t *__restrict, const struct tm *__restrict, locale_t);
 #endif
+
 
 #if defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
  || defined(_XOPEN_SOURCE) || defined(_GNU_SOURCE)  || defined(_BSD_SOURCE)

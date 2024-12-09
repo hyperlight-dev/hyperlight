@@ -2,6 +2,7 @@
 #define _STDIO_IMPL_H
 
 #include <stdio.h>
+#ifndef HYPERLIGHT
 #include "syscall.h"
 
 #define UNGET 8
@@ -9,6 +10,7 @@
 #define FFINALLOCK(f) ((f)->lock>=0 ? __lockfile((f)) : 0)
 #define FLOCK(f) int __need_unlock = ((f)->lock>=0 ? __lockfile((f)) : 0)
 #define FUNLOCK(f) do { if (__need_unlock) __unlockfile((f)); } while (0)
+#endif // HYPERLIGHT
 
 #define F_PERM 1
 #define F_NORD 4
@@ -47,6 +49,11 @@ struct _IO_FILE {
 	struct __locale_struct *locale;
 };
 
+hidden int __toread(FILE *);
+hidden int __towrite(FILE *);
+int __uflow(FILE *);
+
+#ifndef HYPERLIGHT
 extern hidden FILE *volatile __stdin_used;
 extern hidden FILE *volatile __stdout_used;
 extern hidden FILE *volatile __stderr_used;
@@ -60,16 +67,13 @@ hidden size_t __stdout_write(FILE *, const unsigned char *, size_t);
 hidden off_t __stdio_seek(FILE *, off_t, int);
 hidden int __stdio_close(FILE *);
 
-hidden int __toread(FILE *);
-hidden int __towrite(FILE *);
-
 hidden void __stdio_exit(void);
 hidden void __stdio_exit_needed(void);
 
 #if defined(__PIC__) && (100*__GNUC__+__GNUC_MINOR__ >= 303)
 __attribute__((visibility("protected")))
 #endif
-int __overflow(FILE *, int), __uflow(FILE *);
+int __overflow(FILE *, int);
 
 hidden int __fseeko(FILE *, off_t, int);
 hidden int __fseeko_unlocked(FILE *, off_t, int);
@@ -109,4 +113,5 @@ hidden void __getopt_msg(const char *, const char *, const char *, size_t);
 hidden FILE *__fopen_rb_ca(const char *, FILE *, unsigned char *, size_t);
 hidden int __fclose_ca(FILE *);
 
+#endif
 #endif

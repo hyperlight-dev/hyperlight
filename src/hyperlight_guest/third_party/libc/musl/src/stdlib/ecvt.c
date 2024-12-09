@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
+#include "printf.h"
 
 char *ecvt(double x, int n, int *dp, int *sign)
 {

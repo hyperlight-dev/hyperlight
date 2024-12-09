@@ -4,7 +4,6 @@
 # using the exact multiplication method of Dekker and Veltkamp
 
 .global expl
-.type expl,@function
 expl:
 	fldt 8(%rsp)
 

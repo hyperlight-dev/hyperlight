@@ -11,7 +11,7 @@ extern "C" {
 #define __NEED_double_t
 #include <bits/alltypes.h>
 
-#if 100*__GNUC__+__GNUC_MINOR__ >= 303
+#if 100*__GNUC__+__GNUC_MINOR__ >= 303 || defined (HYPERLIGHT)
 #define NAN       __builtin_nanf("")
 #define INFINITY  __builtin_inff()
 #else
