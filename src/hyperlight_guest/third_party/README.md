@@ -11,6 +11,6 @@ Changes have been applied to the original code for Hyperlight using this [patch]
 
 ## libc
 
-A partial version of musl libc is used by hyperlight and is located in the [musl](./libc/musl) directory.
+A partial version of musl libc is used by hyperlight and is located in the [musl](./musl) directory as a git subtree.
 
-The current version is release [v1.2.3](https://git.musl-libc.org/cgit/musl/tag/?h=v1.2.3). Many files have been deleted and changes have been made to some of the remaining files, those deletions and changes can be applied using [this](./libc/musl-libc.patch) patch.
+The current version is release [v1.2.5](https://git.musl-libc.org/cgit/musl/tag/?h=v1.2.5). Many files have been deleted and changes have been made to some of the remaining files.

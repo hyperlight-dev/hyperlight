@@ -26,7 +26,7 @@ install-flatbuffers-with-vcpkg: install-vcpkg
     cd ../vcpkg && ./vcpkg install flatbuffers || cd -
 
 tar-headers: (build-rust-capi) # build-rust-capi is a dependency because we need the hyperlight_guest.h to be built
-    tar -zcvf include.tar.gz -C {{root}}/src/hyperlight_guest/third_party/ libc/musl/include libc/musl/arch/x86_64 printf/printf.h -C {{root}}/src/hyperlight_guest_capi include
+    tar -zcvf include.tar.gz -C {{root}}/src/hyperlight_guest/third_party/ musl/include musl/arch/x86_64 printf/printf.h -C {{root}}/src/hyperlight_guest_capi include
 
 tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
     tar -zcvf hyperlight-guest-c-api-windows.tar.gz -C {{root}}/target/x86_64-pc-windows-msvc/ release/hyperlight_guest_capi.lib -C {{root}}/target/x86_64-pc-windows-msvc/ debug/hyperlight_guest_capi.lib
