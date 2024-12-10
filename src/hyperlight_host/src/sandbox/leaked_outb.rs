@@ -29,6 +29,7 @@ use crate::mem::shared_mem::GuestSharedMemory;
 ///
 /// NOTE: This is not part of the C Hyperlight API , it is intended only to be
 /// called in proc through a pointer passed to the guest.
+#[cfg(not(feature = "trace_guest"))]
 extern "win64" fn call_outb(ptr: *mut Arc<Mutex<dyn OutBHandlerCaller>>, port: u16, data: u64) {
     let outb_handlercaller = unsafe { Box::from_raw(ptr) };
     let res = outb_handlercaller
@@ -44,6 +45,10 @@ extern "win64" fn call_outb(ptr: *mut Arc<Mutex<dyn OutBHandlerCaller>>, port: u
     // Leak the box so that it is not dropped when the function returns
     // the box will be dropped when the sandbox is dropped
     Box::leak(outb_handlercaller);
+}
+#[cfg(feature = "trace_guest")]
+extern "win64" fn call_outb(_ptr: *mut Arc<Mutex<dyn OutBHandlerCaller>>, _port: u16, _data: u64) {
+    unimplemented!("tracing is not supported in in-process mode")
 }
 
 /// A container to store and safely drop leaked outb handlers when executing

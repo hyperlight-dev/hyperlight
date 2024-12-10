@@ -24,11 +24,18 @@ use mshv_bindings::{
     hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
     FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters,
 };
+#[cfg(feature = "unwind_guest")]
+use mshv_bindings::{
+    hv_register_name, hv_register_name_HV_X64_REGISTER_RAX, hv_register_name_HV_X64_REGISTER_RBP,
+    hv_register_name_HV_X64_REGISTER_RCX, hv_register_name_HV_X64_REGISTER_RSP,
+};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+#[cfg(feature = "unwind_guest")]
+use super::TraceRegister;
 use super::{
     Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
     CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
@@ -37,6 +44,8 @@ use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 use crate::{log_then_return, new_error, Result};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
@@ -163,6 +172,19 @@ impl Debug for HypervLinuxDriver {
     }
 }
 
+#[cfg(feature = "unwind_guest")]
+impl From<TraceRegister> for hv_register_name {
+    fn from(r: TraceRegister) -> Self {
+        match r {
+            TraceRegister::RAX => hv_register_name_HV_X64_REGISTER_RAX,
+            TraceRegister::RCX => hv_register_name_HV_X64_REGISTER_RCX,
+            TraceRegister::RIP => hv_register_name_HV_X64_REGISTER_RIP,
+            TraceRegister::RSP => hv_register_name_HV_X64_REGISTER_RSP,
+            TraceRegister::RBP => hv_register_name_HV_X64_REGISTER_RBP,
+        }
+    }
+}
+
 impl Hypervisor for HypervLinuxDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
@@ -173,6 +195,7 @@ impl Hypervisor for HypervLinuxDriver {
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         let regs = StandardRegisters {
             rip: self.entrypoint,
@@ -194,6 +217,8 @@ impl Hypervisor for HypervLinuxDriver {
             hv_handler,
             outb_hdl,
             mem_access_hdl,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         )?;
 
         // reset RSP to what it was before initialise
@@ -212,6 +237,7 @@ impl Hypervisor for HypervLinuxDriver {
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         // Reset general purpose registers except RSP, then set RIP
         let rsp_before = self.vcpu_fd.get_regs()?.rsp;
@@ -238,6 +264,8 @@ impl Hypervisor for HypervLinuxDriver {
             hv_handler,
             outb_handle_fn,
             mem_access_fn,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         )?;
 
         // reset RSP to what it was before function call
@@ -257,12 +285,20 @@ impl Hypervisor for HypervLinuxDriver {
         rip: u64,
         instruction_length: u64,
         outb_handle_fn: OutBHandlerWrapper,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         let payload = data[..8].try_into()?;
         outb_handle_fn
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .call(port, u64::from_le_bytes(payload))?;
+            .call(
+                #[cfg(feature = "trace_guest")]
+                self,
+                #[cfg(feature = "trace_guest")]
+                trace_info,
+                port,
+                u64::from_le_bytes(payload),
+            )?;
 
         // update rip
         self.vcpu_fd.set_reg(&[hv_register_assoc {
@@ -348,6 +384,17 @@ impl Hypervisor for HypervLinuxDriver {
             },
         };
         Ok(result)
+    }
+
+    #[cfg(feature = "unwind_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+        let mut assoc = [hv_register_assoc {
+            name: reg.into(),
+            ..Default::default()
+        }];
+        self.vcpu_fd.get_reg(&mut assoc)?;
+        // safety: all registers that we currently support are 64-bit
+        unsafe { Ok(assoc[0].value.reg64) }
     }
 
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]

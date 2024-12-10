@@ -22,10 +22,13 @@ use std::string::String;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{instrument, Span};
 use windows::Win32::Foundation::HANDLE;
+#[cfg(feature = "trace_guest")]
+use windows::Win32::System::Hypervisor::WHV_REGISTER_NAME;
 use windows::Win32::System::Hypervisor::{
-    WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4, WHvX64RegisterCs, WHvX64RegisterEfer,
-    WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT,
-    WHV_RUN_VP_EXIT_REASON, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
+    WHvGetVirtualProcessorRegisters, WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4,
+    WHvX64RegisterCs, WHvX64RegisterEfer, WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE,
+    WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT, WHV_RUN_VP_EXIT_REASON, WHV_X64_SEGMENT_REGISTER,
+    WHV_X64_SEGMENT_REGISTER_0,
 };
 
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
@@ -34,6 +37,8 @@ use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
 use super::wrappers::WHvFPURegisters;
+#[cfg(feature = "unwind_guest")]
+use super::TraceRegister;
 use super::{
     windows_hypervisor_platform as whp, HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET,
     CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA,
@@ -44,6 +49,8 @@ use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 use crate::HyperlightError::{NoHypervisorFound, WindowsAPIError};
 use crate::{debug, log_then_return, new_error, Result};
 
@@ -301,6 +308,19 @@ impl Debug for HypervWindowsDriver {
     }
 }
 
+#[cfg(feature = "trace_guest")]
+impl From<TraceRegister> for WHV_REGISTER_NAME {
+    fn from(r: TraceRegister) -> Self {
+        match r {
+            TraceRegister::RAX => windows::Win32::System::Hypervisor::WHvX64RegisterRax,
+            TraceRegister::RCX => windows::Win32::System::Hypervisor::WHvX64RegisterRcx,
+            TraceRegister::RIP => windows::Win32::System::Hypervisor::WHvX64RegisterRip,
+            TraceRegister::RSP => windows::Win32::System::Hypervisor::WHvX64RegisterRsp,
+            TraceRegister::RBP => windows::Win32::System::Hypervisor::WHvX64RegisterRbp,
+        }
+    }
+}
+
 impl Hypervisor for HypervWindowsDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
@@ -311,6 +331,7 @@ impl Hypervisor for HypervWindowsDriver {
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         let regs = WHvGeneralRegisters {
             rip: self.entrypoint,
@@ -332,6 +353,8 @@ impl Hypervisor for HypervWindowsDriver {
             hv_handler,
             outb_hdl,
             mem_access_hdl,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         )?;
 
         // reset RSP to what it was before initialise
@@ -350,6 +373,7 @@ impl Hypervisor for HypervWindowsDriver {
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         // Reset general purpose registers except RSP, then set RIP
         let rsp_before = self.processor.get_regs()?.rsp;
@@ -374,6 +398,8 @@ impl Hypervisor for HypervWindowsDriver {
             hv_handler,
             outb_hdl,
             mem_access_hdl,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         )?;
 
         // reset RSP to what it was before function call
@@ -393,12 +419,20 @@ impl Hypervisor for HypervWindowsDriver {
         rip: u64,
         instruction_length: u64,
         outb_handle_fn: OutBHandlerWrapper,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<()> {
         let payload = data[..8].try_into()?;
         outb_handle_fn
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .call(port, u64::from_le_bytes(payload))?;
+            .call(
+                #[cfg(feature = "trace_guest")]
+                self,
+                #[cfg(feature = "trace_guest")]
+                trace_info,
+                port,
+                u64::from_le_bytes(payload),
+            )?;
 
         let mut regs = self.processor.get_regs()?;
         regs.rip = rip + instruction_length;
@@ -531,6 +565,23 @@ impl Hypervisor for HypervWindowsDriver {
         self.processor.get_partition_hdl()
     }
 
+    #[cfg(feature = "unwind_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+        let register_names = [WHV_REGISTER_NAME::from(reg)];
+        let mut register_values: [WHV_REGISTER_VALUE; 1] = Default::default();
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.get_partition_hdl(),
+                0,
+                register_names.as_ptr(),
+                register_names.len() as u32,
+                register_values.as_mut_ptr(),
+            )?;
+            // safety: all registers that we currently support are 64-bit
+            Ok(register_values[0].Reg64)
+        }
+    }
+
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
         self as &mut dyn Hypervisor
@@ -548,7 +599,7 @@ pub mod tests {
 
     use serial_test::serial;
 
-    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
+    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler, OutBHandlerFunction};
     use crate::hypervisor::tests::test_initialise;
     use crate::Result;
 
@@ -556,8 +607,13 @@ pub mod tests {
     #[serial]
     fn test_init() {
         let outb_handler = {
-            let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
-                Box::new(|_, _| -> Result<()> { Ok(()) });
+            let func: OutBHandlerFunction = Box::new(
+                |#[cfg(feature = "trace_guest")] _,
+                 #[cfg(feature = "trace_guest")] _,
+                 _,
+                 _|
+                 -> Result<()> { Ok(()) },
+            );
             Arc::new(Mutex::new(OutBHandler::from(func)))
         };
         let mem_access_handler = {
