@@ -1,7 +1,6 @@
 # see ../i386/acos.s
 
 .global acosl
-.type acosl,@function
 acosl:
 	fldt 8(%rsp)
 1:	fld %st(0)

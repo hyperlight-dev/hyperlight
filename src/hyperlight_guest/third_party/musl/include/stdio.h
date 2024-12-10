@@ -59,6 +59,8 @@ typedef union _G_fpos64_t {
 	double __align;
 } fpos_t;
 
+#ifndef HYPERLIGHT
+
 extern FILE *const stdin;
 extern FILE *const stdout;
 extern FILE *const stderr;
@@ -220,5 +222,7 @@ FILE *fopencookie(void *, const char *, cookie_io_functions_t);
 #ifdef __cplusplus
 }
 #endif
+
+#endif //HYPERLIGHT
 
 #endif
