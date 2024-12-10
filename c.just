@@ -3,7 +3,7 @@ mkdir := if os() == "windows" { "mkdir -f -p" } else { "mkdir -p"}
 # PE options
 c-compile-options-pe := '/GS /W3 /Zi /Od /fp:precise /WX- /std:c17  /showIncludes /MT /EHsc /nologo /diagnostics:column'
 c-linker-options-pe := '/MANIFEST:NO /NXCOMPAT /HEAP:131072,131072 /STACK:65536,65536 /DEBUG /RELEASE /ENTRY:"entrypoint" /ALIGN:4096 /FILEALIGN:4096 /NODEFAULTLIB /SAFESEH:NO /driver /SUBSYSTEM:NATIVE /MACHINE:x64 /DYNAMICBASE /TSAWARE:no /section:.text,ERP /section:.rdata,RP /section:.data,RWP /section:.pdata,RP'
-c-include-flags-pe := "/I " + root / "src/hyperlight_guest_capi/include/"  + " /I " + root / "src/hyperlight_guest/third_party/libc/musl/include/" + " /I " + root / "src/hyperlight_guest/third_party/libc/musl/arch/x86_64" + " /I " + root / "src/hyperlight_guest/third_party/printf"
+c-include-flags-pe := "/I " + root / "src/hyperlight_guest_capi/include/"  + " /I " + root / "src/hyperlight_guest/third_party/musl/include/" + " /I " + root / "src/hyperlight_guest/third_party/musl/arch/x86_64" + " /I " + root / "src/hyperlight_guest/third_party/printf"
 c-flags-debug-pe := '/Od /Ob0 /Z7'
 c-flags-release-pe := '/O2 /Gy'
 
