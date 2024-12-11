@@ -164,10 +164,12 @@ mod tests {
                 thread::spawn(move || {
                     let calls: Vec<TestFuncCall> = vec![
                         TestFuncCall {
-                            func_name: "StackAllocate".to_string(),
-                            ret_type: ReturnType::Int,
-                            params: Some(vec![ParameterValue::Int(i + 1)]),
-                            expected_ret: ReturnValue::Int(i + 1),
+                            func_name: "Echo".to_string(),
+                            ret_type: ReturnType::String,
+                            params: Some(vec![ParameterValue::String(
+                                format!("Hello {}", i).to_string(),
+                            )]),
+                            expected_ret: ReturnValue::String(format!("Hello {}", i).to_string()),
                         },
                         TestFuncCall {
                             func_name: "CallMalloc".to_string(),

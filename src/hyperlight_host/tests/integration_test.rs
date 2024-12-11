@@ -22,7 +22,7 @@ use hyperlight_host::mem::memory_region::MemoryRegionFlags;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{GuestBinary, HyperlightError, UninitializedSandbox};
+use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 
 pub mod common; // pub to disable dead_code warning
@@ -266,76 +266,30 @@ fn guest_malloc_abort() {
     ));
 }
 
-// checks that alloca works
+// Tests libc alloca
 #[test]
-fn dynamic_stack_allocate() {
-    let mut sbox = new_uninit().unwrap().evolve(Noop::default()).unwrap();
-
-    let bytes = 10_000; // some low number that can be allocated on stack
-
-    sbox.call_guest_function_by_name(
-        "StackAllocate",
-        ReturnType::Int,
-        Some(vec![ParameterValue::Int(bytes)]),
-    )
-    .unwrap();
-}
-
-// checks alloca fails with stackoverflow for large allocations
-#[test]
-fn dynamic_stack_allocate_overflow() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
-
-    // zero is handled as special case in guest,
-    // will turn DEFAULT_GUEST_STACK_SIZE + 1
-    let bytes = 0;
-
-    let res = sbox1
-        .call_guest_function_by_name(
-            "StackAllocate",
-            ReturnType::Int,
-            Some(vec![ParameterValue::Int(bytes)]),
-        )
-        .unwrap_err();
-    println!("{:?}", res);
-    assert!(matches!(res, HyperlightError::StackOverflow()));
-}
-
-// checks alloca fails with overflow when stack pointer overflows
-#[test]
-fn dynamic_stack_allocate_pointer_overflow() {
-    let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
-    let bytes = 10 * 1024 * 1024; // 10Mb
-
-    let res = sbox1
-        .call_guest_function_by_name(
-            "StackAllocate",
-            ReturnType::Int,
-            Some(vec![ParameterValue::Int(bytes)]),
-        )
-        .unwrap_err();
-    println!("{:?}", res);
-    assert!(matches!(res, HyperlightError::StackOverflow()));
-}
-
-// checks alloca fails with stackoverflow for huge allocations with c guest lib
-#[test]
-fn dynamic_stack_allocate_overflow_c_guest() {
+fn dynamic_stack_allocate_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None, None, None);
-    let mut sbox1 = uninit.unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1: MultiUseSandbox = uninit.unwrap().evolve(Noop::default()).unwrap();
 
-    let bytes = 0; // zero is handled as special case in guest, will turn into large number
+    let res2 = sbox1
+        .call_guest_function_by_name(
+            "StackAllocate",
+            ReturnType::Int,
+            Some(vec![ParameterValue::Int(100)]),
+        )
+        .unwrap();
+    assert!(matches!(res2, ReturnValue::Int(n) if n == 100));
 
     let res = sbox1
         .call_guest_function_by_name(
             "StackAllocate",
             ReturnType::Int,
-            Some(vec![ParameterValue::Int(bytes)]),
+            Some(vec![ParameterValue::Int(128 * 1024 * 1024)]),
         )
         .unwrap_err();
-    println!("{:?}", res);
     assert!(matches!(res, HyperlightError::StackOverflow()));
 }
 

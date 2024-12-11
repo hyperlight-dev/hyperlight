@@ -289,9 +289,9 @@ mod tests {
 
         for _ in 0..1000 {
             ctx.call(
-                "StackAllocate",
-                ReturnType::Int,
-                Some(vec![ParameterValue::Int(1)]),
+                "Echo",
+                ReturnType::String,
+                Some(vec![ParameterValue::String("hello".to_string())]),
             )
             .unwrap();
         }

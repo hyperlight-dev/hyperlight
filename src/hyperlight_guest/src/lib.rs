@@ -42,7 +42,6 @@ pub mod host_error;
 pub mod host_function_call;
 pub mod host_functions;
 
-pub mod alloca;
 pub(crate) mod guest_logger;
 pub mod memory;
 pub mod print;

@@ -3,6 +3,7 @@
 // Included from hyperlight_guest/third_party/libc
 #include "stdint.h"
 #include "string.h"
+#include "stdlib.h"
 // Included from hyperlight_guest/third_party/printf
 #include "printf.h"
 
@@ -33,11 +34,7 @@ int print_output(const char *message) {
 
 __attribute__((optnone)) 
 int stack_allocate(int32_t length) {
-  if (length == 0) {
-    length = GUEST_STACK_SIZE + 1;
-  }
-
-  void *buffer = _alloca(length);
+  void *buffer = alloca(length);
   (void)buffer;
 
   return length;

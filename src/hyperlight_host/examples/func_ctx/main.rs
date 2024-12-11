@@ -49,16 +49,16 @@ fn main() {
 /// if anything failed.
 fn do_calls(mut ctx: MultiUseGuestCallContext) -> Result<MultiUseSandbox> {
     {
-        let res1: i32 = {
+        let res1: String = {
             let rv = ctx.call(
-                "StackAllocate",
+                "Echo",
                 ReturnType::Int,
-                Some(vec![ParameterValue::Int(1)]),
+                Some(vec![ParameterValue::String("hello".to_string())]),
             )?;
             rv.try_into()
         }
-        .map_err(|e| new_error!("failed to get StackAllocate result: {}", e))?;
-        println!("got StackAllocate res: {res1}");
+        .map_err(|e| new_error!("failed to get Echo result: {}", e))?;
+        println!("got Echo res: {res1}");
     }
     {
         let res2: i32 = {
