@@ -9,7 +9,6 @@
   // Environment for the container also used by the `postCreateCommand`
   "containerEnv": {
     "DEVICE": "/dev/kvm",
-    "KVM_SHOULD_BE_PRESENT": "true",
     "REMOTE_USER": "vscode",
     "REMOTE_GROUP": "vscode"
   },
