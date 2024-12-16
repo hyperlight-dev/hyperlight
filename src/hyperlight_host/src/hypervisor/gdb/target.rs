@@ -12,7 +12,6 @@ pub struct HyperlightKvmSandboxTarget {
 }
 
 impl HyperlightKvmSandboxTarget {
-    #[allow(dead_code)]
     pub fn new(
     ) -> Self {
         HyperlightKvmSandboxTarget {

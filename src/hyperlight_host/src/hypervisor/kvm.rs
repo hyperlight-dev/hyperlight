@@ -23,6 +23,8 @@ use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
+#[cfg(gdb)]
+use super::gdb::{self, target::HyperlightKvmSandboxTarget};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
     HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
@@ -104,6 +106,11 @@ impl KVMDriver {
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
 
+        #[cfg(gdb)]
+        let _ = Self::enable_gdb_debug(
+            entrypoint
+        )?;
+
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
         Ok(Self {
             _kvm: kvm,
@@ -113,6 +120,17 @@ impl KVMDriver {
             orig_rsp: rsp_gp,
             mem_regions,
         })
+    }
+
+    #[cfg(gdb)]
+    fn enable_gdb_debug(
+        _entrypoint: u64,
+    ) -> Result<()> {
+        let target = HyperlightKvmSandboxTarget::new();
+
+        let _ = gdb::create_gdb_thread(target).map_err(|_| new_error!("Cannot create GDB thread"))?;
+
+        Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]

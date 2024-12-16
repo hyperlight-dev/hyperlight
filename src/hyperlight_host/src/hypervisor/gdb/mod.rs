@@ -2,6 +2,7 @@ pub mod target;
 
 use std::net::TcpListener;
 use std::thread;
+use target::HyperlightKvmSandboxTarget;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -12,8 +13,8 @@ pub enum GdbTargetError {
 }
 
 /// Creates a thread that handles gdb protocol
-#[allow(dead_code)]
 pub fn create_gdb_thread(
+    _target: HyperlightKvmSandboxTarget,
 ) -> Result<(), GdbTargetError> {
     // TODO: Address multiple sandboxes scenario
     let socket = format!("localhost:{}", 8081);
