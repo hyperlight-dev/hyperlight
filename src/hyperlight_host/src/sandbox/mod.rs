@@ -52,9 +52,15 @@ pub(crate) mod uninitialized_evolve;
 pub(crate) mod metrics;
 
 use std::collections::HashMap;
+#[cfg(feature = "unwind_guest")]
+use std::io::Write;
+#[cfg(feature = "trace_guest")]
+use std::sync::{Arc, Mutex};
 
 /// Re-export for `SandboxConfiguration` type
 pub use config::SandboxConfiguration;
+#[cfg(feature = "unwind_guest")]
+use framehop::Unwinder;
 /// Re-export for the `MultiUseSandbox` type
 pub use initialized_multi_use::MultiUseSandbox;
 /// Re-export for `SingleUseSandbox` type
@@ -144,6 +150,68 @@ impl Eq for FunctionsMap {}
 #[instrument(skip_all, parent = Span::current())]
 pub fn is_hypervisor_present() -> bool {
     hypervisor::get_available_hypervisor().is_some()
+}
+
+#[cfg(feature = "trace_guest")]
+#[derive(Clone)]
+/// The information that trace collection requires in order to write
+/// an accurate trace.
+pub(crate) struct TraceInfo {
+    /// The epoch against which trace events are timed; at least as
+    /// early as the creation of the sandbox being traced.
+    #[allow(dead_code)]
+    pub epoch: std::time::Instant,
+    /// The file to which the trace is being written
+    #[allow(dead_code)]
+    pub file: Arc<Mutex<std::fs::File>>,
+    /// The unwind information for the current guest
+    #[cfg(feature = "unwind_guest")]
+    #[allow(dead_code)]
+    pub unwind_module: Arc<dyn crate::mem::exe::UnwindInfo>,
+    /// The framehop unwinder for the current guest
+    #[cfg(feature = "unwind_guest")]
+    pub unwinder: framehop::x86_64::UnwinderX86_64<Vec<u8>>,
+    /// The framehop cache
+    #[cfg(feature = "unwind_guest")]
+    pub unwind_cache: Arc<Mutex<framehop::x86_64::CacheX86_64>>,
+}
+#[cfg(feature = "trace_guest")]
+impl TraceInfo {
+    /// Create a new TraceInfo by saving the current time as the epoch
+    /// and generating a random filename.
+    pub fn new(
+        #[cfg(feature = "unwind_guest")] unwind_module: Arc<dyn crate::mem::exe::UnwindInfo>,
+    ) -> crate::Result<Self> {
+        let mut path = std::env::current_dir()?;
+        path.push("trace");
+        path.push(uuid::Uuid::new_v4().to_string());
+        path.set_extension("trace");
+        #[cfg(feature = "unwind_guest")]
+        let hash = unwind_module.hash();
+        #[cfg(feature = "unwind_guest")]
+        let (unwinder, unwind_cache) = {
+            let mut unwinder = framehop::x86_64::UnwinderX86_64::new();
+            unwinder.add_module(unwind_module.clone().as_module());
+            let cache = framehop::x86_64::CacheX86_64::new();
+            (unwinder, Arc::new(Mutex::new(cache)))
+        };
+        let ret = Self {
+            epoch: std::time::Instant::now(),
+            file: Arc::new(Mutex::new(std::fs::File::create_new(path)?)),
+            #[cfg(feature = "unwind_guest")]
+            unwind_module,
+            #[cfg(feature = "unwind_guest")]
+            unwinder,
+            #[cfg(feature = "unwind_guest")]
+            unwind_cache,
+        };
+        /* write a frame identifying the binary */
+        #[cfg(feature = "unwind_guest")]
+        self::outb::record_trace_frame(&ret, 0, |f| {
+            let _ = f.write_all(hash.as_bytes());
+        })?;
+        Ok(ret)
+    }
 }
 
 pub(crate) trait WrapperGetter {

@@ -83,8 +83,66 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 // Globals
+#[cfg(feature = "mem_profile")]
+struct ProfiledLockedHeap<const ORDER: usize>(LockedHeap<ORDER>);
+#[cfg(feature = "mem_profile")]
+unsafe impl<const ORDER: usize> alloc::alloc::GlobalAlloc for ProfiledLockedHeap<ORDER> {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        let addr = self.0.alloc(layout);
+        unsafe {
+            core::arch::asm!("out dx, al",
+                in("dx") OutBAction::TraceMemoryAlloc as u16,
+                in("rax") layout.size() as u64,
+                in("rcx") addr as u64);
+        }
+        addr
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+        unsafe {
+            core::arch::asm!("out dx, al",
+                in("dx") OutBAction::TraceMemoryFree as u16,
+                in("rax") layout.size() as u64,
+                in("rcx") ptr as u64);
+        }
+        self.0.dealloc(ptr, layout)
+    }
+    unsafe fn alloc_zeroed(&self, layout: core::alloc::Layout) -> *mut u8 {
+        let addr = self.0.alloc_zeroed(layout);
+        unsafe {
+            core::arch::asm!("out dx, al",
+                in("dx") OutBAction::TraceMemoryAlloc as u16,
+                in("rax") layout.size() as u64,
+                in("rcx") addr as u64);
+        }
+        addr
+    }
+    unsafe fn realloc(
+        &self,
+        ptr: *mut u8,
+        layout: core::alloc::Layout,
+        new_size: usize,
+    ) -> *mut u8 {
+        let new_ptr = self.0.realloc(ptr, layout, new_size);
+        unsafe {
+            core::arch::asm!("out dx, al",
+                in("dx") OutBAction::TraceMemoryFree as u16,
+                in("rax") layout.size() as u64,
+                in("rcx") ptr);
+            core::arch::asm!("out dx, al",
+                in("dx") OutBAction::TraceMemoryAlloc as u16,
+                in("rax") new_size as u64,
+                in("rcx") new_ptr);
+        }
+        new_ptr
+    }
+}
+#[cfg(not(feature = "mem_profile"))]
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
+#[cfg(feature = "mem_profile")]
+#[global_allocator]
+pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap<32> =
+    ProfiledLockedHeap(LockedHeap::<32>::empty());
 
 ///cbindgen:ignore
 #[no_mangle]

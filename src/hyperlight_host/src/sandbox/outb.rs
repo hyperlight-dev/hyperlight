@@ -14,8 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#[cfg(feature = "unwind_guest")]
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "unwind_guest")]
+use fallible_iterator::FallibleIterator;
+#[cfg(feature = "unwind_guest")]
+use framehop::Unwinder;
 use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
@@ -26,14 +32,26 @@ use tracing_log::format_trace;
 use super::host_funcs::HostFuncsWrapper;
 use super::mem_mgr::MemMgrWrapper;
 use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction, OutBHandlerWrapper};
+#[cfg(feature = "trace_guest")]
+use crate::hypervisor::Hypervisor;
+#[cfg(feature = "unwind_guest")]
+use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 use crate::{new_error, HyperlightError, Result};
 
 pub(super) enum OutBAction {
     Log,
     CallFunction,
     Abort,
+    #[cfg(feature = "unwind_guest")]
+    TraceRecordStack,
+    #[cfg(feature = "mem_profile")]
+    TraceMemoryAlloc,
+    #[cfg(feature = "mem_profile")]
+    TraceMemoryFree,
 }
 
 impl TryFrom<u16> for OutBAction {
@@ -44,6 +62,12 @@ impl TryFrom<u16> for OutBAction {
             99 => Ok(OutBAction::Log),
             101 => Ok(OutBAction::CallFunction),
             102 => Ok(OutBAction::Abort),
+            #[cfg(feature = "unwind_guest")]
+            103 => Ok(OutBAction::TraceRecordStack),
+            #[cfg(feature = "mem_profile")]
+            104 => Ok(OutBAction::TraceMemoryAlloc),
+            #[cfg(feature = "mem_profile")]
+            105 => Ok(OutBAction::TraceMemoryFree),
             _ => Err(new_error!("Invalid OutB value: {}", val)),
         }
     }
@@ -111,11 +135,71 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
     Ok(())
 }
 
+#[cfg(feature = "unwind_guest")]
+fn unwind(
+    hv: &mut dyn Hypervisor,
+    mem: &SandboxMemoryManager<HostSharedMemory>,
+    trace_info: &mut TraceInfo,
+) -> Result<Vec<u64>> {
+    let mut read_stack = |addr| {
+        mem.shared_mem
+            .read::<u64>((addr - SandboxMemoryLayout::BASE_ADDRESS as u64) as usize)
+            .map_err(|_| ())
+    };
+    let mut cache = trace_info
+        .unwind_cache
+        .try_lock()
+        .map_err(|e| new_error!("could not lock unwinder cache {}\n", e))?;
+    let iter = trace_info.unwinder.iter_frames(
+        hv.read_trace_reg(crate::hypervisor::TraceRegister::RIP)?,
+        framehop::x86_64::UnwindRegsX86_64::new(
+            hv.read_trace_reg(crate::hypervisor::TraceRegister::RIP)?,
+            hv.read_trace_reg(crate::hypervisor::TraceRegister::RSP)?,
+            hv.read_trace_reg(crate::hypervisor::TraceRegister::RBP)?,
+        ),
+        &mut *cache,
+        &mut read_stack,
+    );
+    iter.map(|f| Ok(f.address() - mem.layout.get_guest_code_address() as u64))
+        .collect()
+        .map_err(|e| new_error!("couldn't unwind: {}", e))
+}
+
+#[cfg(feature = "unwind_guest")]
+fn write_stack(out: &mut std::fs::File, stack: &[u64]) {
+    let _ = out.write_all(&stack.len().to_ne_bytes());
+    for frame in stack {
+        let _ = out.write_all(&frame.to_ne_bytes());
+    }
+}
+
+#[cfg(feature = "unwind_guest")]
+pub(super) fn record_trace_frame<F: FnOnce(&mut std::fs::File)>(
+    trace_info: &TraceInfo,
+    frame_id: u64,
+    write_frame: F,
+) -> Result<()> {
+    let Ok(mut out) = trace_info.file.lock() else {
+        return Ok(());
+    };
+    // frame structure:
+    // 16 bytes timestamp
+    let now = std::time::Instant::now().saturating_duration_since(trace_info.epoch);
+    let _ = out.write_all(&now.as_micros().to_ne_bytes());
+    // 8 bytes frame type id
+    let _ = out.write_all(&frame_id.to_ne_bytes());
+    // frame data
+    write_frame(&mut out);
+    Ok(())
+}
+
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 fn handle_outb_impl(
     mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
     host_funcs: Arc<Mutex<HostFuncsWrapper>>,
+    #[cfg(feature = "trace_guest")] _hv: &mut dyn Hypervisor,
+    #[cfg(feature = "trace_guest")] mut _trace_info: TraceInfo,
     port: u16,
     byte: u64,
 ) -> Result<()> {
@@ -153,6 +237,45 @@ fn handle_outb_impl(
                 )),
             }
         }
+        #[cfg(feature = "unwind_guest")]
+        OutBAction::TraceRecordStack => {
+            let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), &mut _trace_info) else {
+                return Ok(());
+            };
+            record_trace_frame(&_trace_info, 1u64, |f| {
+                write_stack(f, &stack);
+            })
+        }
+        #[cfg(feature = "mem_profile")]
+        OutBAction::TraceMemoryAlloc => {
+            let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), &mut _trace_info) else {
+                return Ok(());
+            };
+            let Ok(amt) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RAX) else {
+                return Ok(());
+            };
+            let Ok(ptr) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RCX) else {
+                return Ok(());
+            };
+            record_trace_frame(&_trace_info, 2u64, |f| {
+                let _ = f.write_all(&ptr.to_ne_bytes());
+                let _ = f.write_all(&amt.to_ne_bytes());
+                write_stack(f, &stack);
+            })
+        }
+        #[cfg(feature = "mem_profile")]
+        OutBAction::TraceMemoryFree => {
+            let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), &mut _trace_info) else {
+                return Ok(());
+            };
+            let Ok(ptr) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RCX) else {
+                return Ok(());
+            };
+            record_trace_frame(&_trace_info, 3u64, |f| {
+                let _ = f.write_all(&ptr.to_ne_bytes());
+                write_stack(f, &stack);
+            })
+        }
     }
 }
 
@@ -165,14 +288,23 @@ pub(crate) fn outb_handler_wrapper(
     mut mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
     host_funcs_wrapper: Arc<Mutex<HostFuncsWrapper>>,
 ) -> OutBHandlerWrapper {
-    let outb_func: OutBHandlerFunction = Box::new(move |port, payload| {
-        handle_outb_impl(
-            &mut mem_mgr_wrapper,
-            host_funcs_wrapper.clone(),
-            port,
-            payload,
-        )
-    });
+    let outb_func: OutBHandlerFunction = Box::new(
+        move |#[cfg(feature = "trace_guest")] hv,
+              #[cfg(feature = "trace_guest")] trace_info,
+              port,
+              payload| {
+            handle_outb_impl(
+                &mut mem_mgr_wrapper,
+                host_funcs_wrapper.clone(),
+                #[cfg(feature = "trace_guest")]
+                hv,
+                #[cfg(feature = "trace_guest")]
+                trace_info,
+                port,
+                payload,
+            )
+        },
+    );
     let outb_hdl = OutBHandler::from(outb_func);
     Arc::new(Mutex::new(outb_hdl))
 }
@@ -213,13 +345,10 @@ mod tests {
         let sandbox_cfg = SandboxConfiguration::default();
 
         let new_mgr = || {
-            let mut exe_info = simple_guest_exe_info().unwrap();
-            let mut mgr = SandboxMemoryManager::load_guest_binary_into_memory(
-                sandbox_cfg,
-                &mut exe_info,
-                false,
-            )
-            .unwrap();
+            let exe_info = simple_guest_exe_info().unwrap();
+            let (mut mgr, _) =
+                SandboxMemoryManager::load_guest_binary_into_memory(sandbox_cfg, exe_info, false)
+                    .unwrap();
             let mem_size = mgr.get_shared_mem_mut().mem_size();
             let layout = mgr.layout;
             let shared_mem = mgr.get_shared_mem_mut();
@@ -333,10 +462,10 @@ mod tests {
         let sandbox_cfg = SandboxConfiguration::default();
         tracing::subscriber::with_default(subscriber.clone(), || {
             let new_mgr = || {
-                let mut exe_info = simple_guest_exe_info().unwrap();
-                let mut mgr = SandboxMemoryManager::load_guest_binary_into_memory(
+                let exe_info = simple_guest_exe_info().unwrap();
+                let (mut mgr, _) = SandboxMemoryManager::load_guest_binary_into_memory(
                     sandbox_cfg,
-                    &mut exe_info,
+                    exe_info,
                     false,
                 )
                 .unwrap();
