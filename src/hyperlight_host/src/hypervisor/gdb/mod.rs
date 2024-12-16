@@ -1,7 +1,11 @@
+mod event_loop;
 pub mod target;
 
 use std::net::TcpListener;
 use std::thread;
+use event_loop::event_loop_thread;
+use gdbstub::conn::ConnectionExt;
+use gdbstub::stub::GdbStub;
 use target::HyperlightKvmSandboxTarget;
 
 #[allow(dead_code)]
@@ -9,12 +13,14 @@ use target::HyperlightKvmSandboxTarget;
 pub enum GdbTargetError {
     BindError,
     ListenerError,
+    ReceiveMsgError,
+    SendMsgError,
     SpawnThreadError,
 }
 
 /// Creates a thread that handles gdb protocol
 pub fn create_gdb_thread(
-    _target: HyperlightKvmSandboxTarget,
+    target: HyperlightKvmSandboxTarget,
 ) -> Result<(), GdbTargetError> {
     // TODO: Address multiple sandboxes scenario
     let socket = format!("localhost:{}", 8081);
@@ -27,10 +33,17 @@ pub fn create_gdb_thread(
         .name("GDB handler".to_string())
         .spawn(move || -> Result<(), GdbTargetError> {
             log::info!("Waiting for GDB connection ... ");
-            let (_conn, _) = listener
+            let (conn, _) = listener
                 .accept()
                 .map_err(|_| GdbTargetError::ListenerError)?;
-            todo!()
+
+            let conn: Box<dyn ConnectionExt<Error = std::io::Error>> = Box::new(conn);
+            let debugger = GdbStub::new(conn);
+
+
+            event_loop_thread(debugger, target);
+
+            Ok(())
         })
         .map_err(|_| GdbTargetError::SpawnThreadError)?;
 
