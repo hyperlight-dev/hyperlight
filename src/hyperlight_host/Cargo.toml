@@ -82,7 +82,7 @@ envy = { version = "0.4.2" }
 serde = "1.0"
 proptest = "1.2.0"
 tempfile = "3.8.0"
-crossbeam-queue = "0.3.8"
+crossbeam-queue = "0.3.12"
 tracing-serde = "0.2.0"
 serial_test = "3.1.1"
 hyperlight-testing = { workspace = true }
