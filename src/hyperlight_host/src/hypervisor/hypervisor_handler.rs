@@ -313,24 +313,6 @@ impl HypervisorHandler {
 
                                 log::info!("Initialising Hypervisor Handler");
 
-                                let mut evar_lock_guard =
-                                    execution_variables.shm.try_lock().map_err(|e| {
-                                        new_error!(
-                                            "Error locking exec var shm lock: {}:{}: {}",
-                                            file!(),
-                                            line!(),
-                                            e
-                                        )
-                                    })?;
-                                let mem_lock_guard = evar_lock_guard
-                                    .as_mut()
-                                    .ok_or_else(|| {
-                                        new_error!("guest shm lock: {}:{}:", file!(), line!())
-                                    })?
-                                    .shared_mem
-                                    .lock
-                                    .try_read();
-
                                 let res = hv.initialise(
                                     configuration.peb_addr.clone(),
                                     configuration.seed,
@@ -339,8 +321,6 @@ impl HypervisorHandler {
                                     configuration.mem_access_handler.clone(),
                                     Some(hv_handler_clone.clone()),
                                 );
-                                drop(mem_lock_guard);
-                                drop(evar_lock_guard);
 
                                 execution_variables.running.store(false, Ordering::SeqCst);
 
@@ -390,24 +370,6 @@ impl HypervisorHandler {
                                     .clone()
                                     .ok_or_else(|| new_error!("Hypervisor not initialized"))?;
 
-                                let mut evar_lock_guard =
-                                    execution_variables.shm.try_lock().map_err(|e| {
-                                        new_error!(
-                                            "Error locking exec var shm lock: {}:{}: {}",
-                                            file!(),
-                                            line!(),
-                                            e
-                                        )
-                                    })?;
-                                let mem_lock_guard = evar_lock_guard
-                                    .as_mut()
-                                    .ok_or_else(|| {
-                                        new_error!("guest shm lock {}:{}", file!(), line!())
-                                    })?
-                                    .shared_mem
-                                    .lock
-                                    .try_read();
-
                                 let res = {
                                     #[cfg(feature = "function_call_metrics")]
                                     {
@@ -434,8 +396,6 @@ impl HypervisorHandler {
                                         Some(hv_handler_clone.clone()),
                                     )
                                 };
-                                drop(mem_lock_guard);
-                                drop(evar_lock_guard);
 
                                 execution_variables.running.store(false, Ordering::SeqCst);
 
