@@ -53,7 +53,6 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                 }
             }
 
-
             if conn.peek().map(|b| b.is_some()).unwrap_or(false) {
                 let byte = conn
                     .read()

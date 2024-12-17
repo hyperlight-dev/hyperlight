@@ -93,9 +93,7 @@ impl GdbConnection {
 }
 
 /// Creates a thread that handles gdb protocol
-pub fn create_gdb_thread(
-    mut target: HyperlightKvmSandboxTarget
-) -> Result<(), GdbTargetError> {
+pub fn create_gdb_thread(mut target: HyperlightKvmSandboxTarget) -> Result<(), GdbTargetError> {
     // TODO: Address multiple sandboxes scenario
     let socket = format!("localhost:{}", 8081);
 

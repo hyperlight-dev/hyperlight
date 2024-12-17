@@ -115,11 +115,7 @@ impl KVMDriver {
 
         let vcpu_fd = Arc::new(Mutex::new(vcpu_fd));
         #[cfg(gdb)]
-        let gdb_conn = Self::enable_gdb_debug(
-            mgr,
-            vcpu_fd.clone(),
-            entrypoint
-        )?;
+        let gdb_conn = Self::enable_gdb_debug(mgr, vcpu_fd.clone(), entrypoint)?;
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
         Ok(Self {
@@ -148,7 +144,8 @@ impl KVMDriver {
             .set_entrypoint_bp()
             .map_err(|_| new_error!("Cannot set entrypoint breakpoint"))?;
 
-        let _ = gdb::create_gdb_thread(target).map_err(|_| new_error!("Cannot create GDB thread"))?;
+        let _ =
+            gdb::create_gdb_thread(target).map_err(|_| new_error!("Cannot create GDB thread"))?;
 
         Ok(gdb_conn)
     }

@@ -5,9 +5,8 @@ use gdbstub::arch::Arch;
 use gdbstub::common::Signal;
 use gdbstub::stub::{BaseStopReason, SingleThreadStopReason};
 use gdbstub::target::ext::base::singlethread::{
-    SingleThreadBase,
-    SingleThreadResume, SingleThreadResumeOps,
-    SingleThreadSingleStep, SingleThreadSingleStepOps,
+    SingleThreadBase, SingleThreadResume, SingleThreadResumeOps, SingleThreadSingleStep,
+    SingleThreadSingleStepOps,
 };
 use gdbstub::target::ext::base::BaseOps;
 use gdbstub::target::ext::breakpoints::{
@@ -23,8 +22,7 @@ use kvm_bindings::{
 };
 use kvm_ioctls::VcpuFd;
 
-use super::GdbConnection;
-use super::GdbTargetError;
+use super::{GdbConnection, GdbTargetError};
 use crate::hypervisor::gdb::{DebugMessage, GdbDebug};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
