@@ -90,7 +90,7 @@ impl GdbConnection {
 
 /// Creates a thread that handles gdb protocol
 pub fn create_gdb_thread(
-    target: HyperlightKvmSandboxTarget,
+    mut target: HyperlightKvmSandboxTarget
 ) -> Result<(), GdbTargetError> {
     // TODO: Address multiple sandboxes scenario
     let socket = format!("localhost:{}", 8081);
@@ -111,6 +111,7 @@ pub fn create_gdb_thread(
             let debugger = GdbStub::new(conn);
 
             if let DebugMessage::VcpuStoppedEv = target.recv()? {
+                target.pause_vcpu();
 
                 event_loop_thread(debugger, target);
 

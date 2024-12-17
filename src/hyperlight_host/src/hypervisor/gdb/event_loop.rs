@@ -27,6 +27,7 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
         loop {
             match target.try_recv() {
                 Ok(_) => {
+                    target.pause_vcpu();
                 }
                 Err(crossbeam_channel::TryRecvError::Empty) => (),
                 Err(_) => {
@@ -48,8 +49,10 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
     }
 
     fn on_interrupt(
-        _target: &mut Self::Target,
+        target: &mut Self::Target,
     ) -> Result<Option<Self::StopReason>, <Self::Target as gdbstub::target::Target>::Error> {
+        target.pause_vcpu();
+
         Ok(Some(SingleThreadStopReason::SignalWithThread {
             tid: (),
             signal: Signal::SIGINT,

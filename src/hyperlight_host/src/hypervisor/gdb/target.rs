@@ -25,6 +25,8 @@ pub struct HyperlightKvmSandboxTarget {
     vcpu_fd: Arc<Mutex<VcpuFd>>,
     /// Guest entrypoint
     entrypoint: u64,
+    /// vCPU paused state
+    paused: bool,
 
     /// Hypervisor communication channels
     hyp_conn: GdbConnection,
@@ -41,8 +43,14 @@ impl HyperlightKvmSandboxTarget {
             mgr,
             vcpu_fd,
             entrypoint,
+
+            paused: false,
             hyp_conn,
         }
+    }
+
+    pub fn pause_vcpu(&mut self) {
+        self.paused = true;
     }
 }
 
