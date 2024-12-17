@@ -545,6 +545,16 @@ impl HypervisorHandler {
     /// and still have to receive after sorting that out without sending
     /// an extra message.
     pub(crate) fn try_receive_handler_msg(&self) -> Result<()> {
+        #[cfg(gdb)]
+        match self.communication_channels.from_handler_rx.recv() {
+            Ok(msg) => match msg {
+                HandlerMsg::Error(e) => Err(e),
+                HandlerMsg::FinishedHypervisorHandlerAction => Ok(()),
+            },
+            Err(_) => Err(HyperlightError::HypervisorHandlerMessageReceiveTimedout()),
+        }
+
+        #[cfg(not(gdb))]
         match self
             .communication_channels
             .from_handler_rx
