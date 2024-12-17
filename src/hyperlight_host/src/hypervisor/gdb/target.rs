@@ -7,6 +7,9 @@ use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase,
 };
 use gdbstub::target::ext::base::BaseOps;
+use gdbstub::target::ext::breakpoints::{
+    Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps,
+};
 use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::reg::X86_64CoreRegs;
@@ -82,7 +85,6 @@ impl KvmDebug {
     }
 }
 
-#[allow(dead_code)]
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
 pub struct HyperlightKvmSandboxTarget {
     /// Memory manager that grants access to guest's memory
@@ -97,6 +99,9 @@ pub struct HyperlightKvmSandboxTarget {
 
     /// vCPU paused state
     paused: bool,
+
+    /// Array of addresses for HW breakpoints
+    hw_breakpoints: Vec<u64>,
 
     /// Hypervisor communication channels
     hyp_conn: GdbConnection,
@@ -118,6 +123,9 @@ impl HyperlightKvmSandboxTarget {
             entrypoint,
 
             paused: false,
+
+            hw_breakpoints: vec![],
+
             hyp_conn,
         }
     }
@@ -137,6 +145,10 @@ impl HyperlightKvmSandboxTarget {
     /// Get the reason the vCPU has stopped
     pub fn get_stop_reason(&self) -> Result<Option<BaseStopReason<(), u64>>, GdbTargetError> {
         let ip = self.get_instruction_pointer()?;
+
+        if self.hw_breakpoints.contains(&ip) {
+            return Ok(Some(SingleThreadStopReason::HwBreak(())));
+        }
 
         if ip == self.entrypoint {
             return Ok(Some(SingleThreadStopReason::HwBreak(())));
@@ -171,6 +183,44 @@ impl HyperlightKvmSandboxTarget {
 
     pub fn pause_vcpu(&mut self) {
         self.paused = true;
+    }
+
+    /// Add new breakpoint at provided address if there is enough space
+    fn add_breakpoint(&mut self, addr: u64) -> Result<bool, GdbTargetError> {
+        log::debug!("Add breakpoint at address {:X}", addr);
+        if self.hw_breakpoints.contains(&addr)
+            || self.hw_breakpoints.len() >= KvmDebug::MAX_NO_OF_HW_BP
+        {
+            Ok(false)
+        } else {
+            self.hw_breakpoints.push(addr);
+            self.debug.set_breakpoints(
+                &self.vcpu_fd.lock().unwrap(),
+                &self.hw_breakpoints,
+                false,
+            )?;
+
+            Ok(true)
+        }
+    }
+
+    /// Removes breakpoint at the provided address if exists
+    fn remove_breakpoint(&mut self, addr: u64) -> Result<bool, GdbTargetError> {
+        log::debug!("Remove breakpoint at address {:X}", addr);
+        if self.hw_breakpoints.contains(&addr) {
+            let index = self.hw_breakpoints.iter().position(|a| *a == addr).unwrap();
+            self.hw_breakpoints.copy_within(index + 1.., index);
+            self.hw_breakpoints.pop();
+            self.debug.set_breakpoints(
+                &self.vcpu_fd.lock().unwrap(),
+                &self.hw_breakpoints,
+                false,
+            )?;
+
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     fn read_regs(&self, regs: &mut X86_64CoreRegs) -> Result<(), GdbTargetError> {
@@ -256,6 +306,15 @@ impl GdbDebug for HyperlightKvmSandboxTarget {
 impl Target for HyperlightKvmSandboxTarget {
     type Arch = GdbTargetArch;
     type Error = GdbTargetError;
+
+    #[inline(always)]
+    fn guard_rail_implicit_sw_breakpoints(&self) -> bool {
+        true
+    }
+
+    fn support_breakpoints(&mut self) -> Option<BreakpointsOps<Self>> {
+        Some(self)
+    }
 
     #[inline(always)]
     fn base_ops(&mut self) -> BaseOps<Self::Arch, Self::Error> {
@@ -352,5 +411,29 @@ impl SectionOffsets for HyperlightKvmSandboxTarget {
             text_seg: text as u64,
             data_seg: None,
         })
+    }
+}
+
+impl Breakpoints for HyperlightKvmSandboxTarget {
+    fn support_hw_breakpoint(&mut self) -> Option<HwBreakpointOps<Self>> {
+        Some(self)
+    }
+}
+
+impl HwBreakpoint for HyperlightKvmSandboxTarget {
+    fn add_hw_breakpoint(
+        &mut self,
+        addr: <Self::Arch as Arch>::Usize,
+        _kind: <Self::Arch as Arch>::BreakpointKind,
+    ) -> TargetResult<bool, Self> {
+        self.add_breakpoint(addr).map_err(TargetError::Fatal)
+    }
+
+    fn remove_hw_breakpoint(
+        &mut self,
+        addr: <Self::Arch as Arch>::Usize,
+        _kind: <Self::Arch as Arch>::BreakpointKind,
+    ) -> TargetResult<bool, Self> {
+        self.remove_breakpoint(addr).map_err(TargetError::Fatal)
     }
 }
