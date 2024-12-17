@@ -2,9 +2,11 @@ use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::TryRecvError;
 use gdbstub::arch::Arch;
+use gdbstub::common::Signal;
 use gdbstub::stub::{BaseStopReason, SingleThreadStopReason};
 use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase,
+    SingleThreadResume, SingleThreadResumeOps,
 };
 use gdbstub::target::ext::base::BaseOps;
 use gdbstub::target::ext::breakpoints::{
@@ -183,6 +185,31 @@ impl HyperlightKvmSandboxTarget {
 
     pub fn pause_vcpu(&mut self) {
         self.paused = true;
+    }
+
+    /// Sends an event to the Hypervisor that tells it to resume vCPU execution
+    /// Note: The method waits for a confirmation message
+    pub fn resume_vcpu(&mut self) -> Result<(), GdbTargetError> {
+        if self.paused {
+            log::info!("Attempted to resume running vCPU");
+
+            self.send(DebugMessage::VcpuResumeEv)
+                .map_err(|_| GdbTargetError::CannotResume)?;
+
+            // TODO: Maybe add timeout here because if the confirmation is not
+            // sent right away, it means something is not right
+            let response = self.recv().map_err(|_| GdbTargetError::CannotResume)?;
+            log::info!("Got message {:?}", response);
+
+            if let DebugMessage::RspOk = response {
+                self.paused = false;
+            } else {
+                log::error!("Error when resuming");
+                return Err(GdbTargetError::CannotResume);
+            }
+        }
+
+        Ok(())
     }
 
     /// Add new breakpoint at provided address if there is enough space
@@ -399,6 +426,10 @@ impl SingleThreadBase for HyperlightKvmSandboxTarget {
     ) -> TargetResult<(), Self> {
         self.write_regs(regs).map_err(TargetError::Fatal)
     }
+
+    fn support_resume(&mut self) -> Option<SingleThreadResumeOps<Self>> {
+        Some(self)
+    }
 }
 
 impl SectionOffsets for HyperlightKvmSandboxTarget {
@@ -435,5 +466,12 @@ impl HwBreakpoint for HyperlightKvmSandboxTarget {
         _kind: <Self::Arch as Arch>::BreakpointKind,
     ) -> TargetResult<bool, Self> {
         self.remove_breakpoint(addr).map_err(TargetError::Fatal)
+    }
+}
+
+impl SingleThreadResume for HyperlightKvmSandboxTarget {
+    fn resume(&mut self, _signal: Option<Signal>) -> Result<(), Self::Error> {
+        log::debug!("Resume");
+        self.resume_vcpu()
     }
 }

@@ -18,6 +18,7 @@ pub enum GdbTargetError {
     QueueError,
     ReadRegistersError,
     ReceiveMsgError,
+    CannotResume,
     SendMsgError,
     SetGuestDebugError,
     SpawnThreadError,
@@ -26,7 +27,6 @@ pub enum GdbTargetError {
     WriteRegistersError,
 }
 
-#[allow(dead_code)]
 /// Trait that provides common communication methods for targets
 pub trait GdbDebug {
     /// Sends a message to the Hypervisor
@@ -37,7 +37,6 @@ pub trait GdbDebug {
     fn try_recv(&self) -> Result<DebugMessage, TryRecvError>;
 }
 
-#[allow(dead_code)]
 /// Event sent to the VCPU execution loop
 #[derive(Debug)]
 pub enum DebugMessage {

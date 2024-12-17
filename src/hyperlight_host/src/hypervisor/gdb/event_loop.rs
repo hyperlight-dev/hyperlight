@@ -34,7 +34,12 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                         .get_stop_reason()
                         .map_err(WaitForStopReasonError::Target)?;
 
+                    // Resume execution if unknown reason for stop
                     let Some(stop_response) = stop_reason else {
+                        target
+                            .resume_vcpu()
+                            .map_err(WaitForStopReasonError::Target)?;
+
                         continue;
                     };
 
