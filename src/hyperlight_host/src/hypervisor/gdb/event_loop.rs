@@ -1,6 +1,6 @@
 use gdbstub::common::Signal;
 use gdbstub::conn::ConnectionExt;
-use gdbstub::stub::run_blocking;
+use gdbstub::stub::run_blocking::{self, WaitForStopReasonError};
 use gdbstub::stub::{DisconnectReason, GdbStub, SingleThreadStopReason};
 
 use super::target::HyperlightKvmSandboxTarget;
@@ -28,6 +28,17 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
             match target.try_recv() {
                 Ok(_) => {
                     target.pause_vcpu();
+
+                    // Get the stop reason from the target
+                    let stop_reason = target
+                        .get_stop_reason()
+                        .map_err(WaitForStopReasonError::Target)?;
+
+                    let Some(stop_response) = stop_reason else {
+                        continue;
+                    };
+
+                    return Ok(run_blocking::Event::TargetStopped(stop_response));
                 }
                 Err(crossbeam_channel::TryRecvError::Empty) => (),
                 Err(_) => {

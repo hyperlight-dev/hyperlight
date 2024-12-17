@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::TryRecvError;
 use gdbstub::arch::Arch;
+use gdbstub::stub::{BaseStopReason, SingleThreadStopReason};
 use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase,
 };
@@ -115,6 +116,29 @@ impl HyperlightKvmSandboxTarget {
             paused: false,
             hyp_conn,
         }
+    }
+
+    /// Returns the instruction pointer from the stopped vCPU
+    fn get_instruction_pointer(&self) -> Result<u64, GdbTargetError> {
+        let regs = self
+            .vcpu_fd
+            .lock()
+            .unwrap()
+            .get_regs()
+            .map_err(|_| GdbTargetError::InstructionPointerError)?;
+
+        Ok(regs.rip)
+    }
+
+    /// Get the reason the vCPU has stopped
+    pub fn get_stop_reason(&self) -> Result<Option<BaseStopReason<(), u64>>, GdbTargetError> {
+        let ip = self.get_instruction_pointer()?;
+
+        if ip == self.entrypoint {
+            return Ok(Some(SingleThreadStopReason::HwBreak(())));
+        }
+
+        Ok(None)
     }
 
     /// This method provides a way to set a breakpoint at the entrypoint

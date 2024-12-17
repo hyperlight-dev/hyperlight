@@ -13,6 +13,7 @@ use target::HyperlightKvmSandboxTarget;
 #[derive(Debug)]
 pub enum GdbTargetError {
     BindError,
+    InstructionPointerError,
     ListenerError,
     QueueError,
     ReceiveMsgError,
