@@ -143,7 +143,11 @@ impl KVMDriver {
     ) -> Result<GdbConnection> {
         let (gdb_conn, hyp_conn) = GdbConnection::new_pair();
 
-        let target = HyperlightKvmSandboxTarget::new(mgr, vcpu_fd, entrypoint, hyp_conn);
+        let mut target = HyperlightKvmSandboxTarget::new(mgr, vcpu_fd, entrypoint, hyp_conn);
+        let _ = target
+            .set_entrypoint_bp()
+            .map_err(|_| new_error!("Cannot set entrypoint breakpoint"))?;
+
         let _ = gdb::create_gdb_thread(target).map_err(|_| new_error!("Cannot create GDB thread"))?;
 
         Ok(gdb_conn)
