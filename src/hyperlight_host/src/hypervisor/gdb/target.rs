@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use crossbeam_channel::TryRecvError;
 use gdbstub::arch::Arch;
 use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase,
@@ -11,9 +12,9 @@ use kvm_ioctls::VcpuFd;
 
 use super::GdbConnection;
 use super::GdbTargetError;
+use crate::hypervisor::gdb::{DebugMessage, GdbDebug};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::GuestSharedMemory;
-
 
 #[allow(dead_code)]
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
@@ -42,6 +43,20 @@ impl HyperlightKvmSandboxTarget {
             entrypoint,
             hyp_conn,
         }
+    }
+}
+
+impl GdbDebug for HyperlightKvmSandboxTarget {
+    fn send(&self, ev: DebugMessage) -> Result<(), GdbTargetError> {
+        self.hyp_conn.send(ev)
+    }
+
+    fn recv(&self) -> Result<DebugMessage, GdbTargetError> {
+        self.hyp_conn.recv()
+    }
+
+    fn try_recv(&self) -> Result<DebugMessage, TryRecvError> {
+        self.hyp_conn.try_recv()
     }
 }
 

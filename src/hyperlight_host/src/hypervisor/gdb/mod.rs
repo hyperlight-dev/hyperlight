@@ -10,14 +10,26 @@ use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use target::HyperlightKvmSandboxTarget;
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum GdbTargetError {
     BindError,
     ListenerError,
+    QueueError,
     ReceiveMsgError,
     SendMsgError,
     SpawnThreadError,
+    UnexpectedMessageError,
+}
+
+#[allow(dead_code)]
+/// Trait that provides common communication methods for targets
+pub trait GdbDebug {
+    /// Sends a message to the Hypervisor
+    fn send(&self, ev: DebugMessage) -> Result<(), GdbTargetError>;
+    /// Waits for a message from the Hypervisor
+    fn recv(&self) -> Result<DebugMessage, GdbTargetError>;
+    /// Checks for a pending message from the Hypervisor
+    fn try_recv(&self) -> Result<DebugMessage, TryRecvError>;
 }
 
 #[allow(dead_code)]
@@ -34,7 +46,6 @@ pub enum DebugMessage {
     RspErr,
 }
 
-#[allow(dead_code)]
 /// Type that takes care of communication between Hypervisor and Gdb
 pub struct GdbConnection {
     /// Transmit channel
@@ -43,7 +54,6 @@ pub struct GdbConnection {
     rx: Receiver<DebugMessage>,
 }
 
-#[allow(dead_code)]
 impl GdbConnection {
     pub fn new_pair() -> (Self, Self) {
         let (hyp_tx, gdb_rx) = crossbeam_channel::unbounded();
@@ -100,10 +110,14 @@ pub fn create_gdb_thread(
             let conn: Box<dyn ConnectionExt<Error = std::io::Error>> = Box::new(conn);
             let debugger = GdbStub::new(conn);
 
+            if let DebugMessage::VcpuStoppedEv = target.recv()? {
 
-            event_loop_thread(debugger, target);
+                event_loop_thread(debugger, target);
 
-            Ok(())
+                Ok(())
+            } else {
+                Err(GdbTargetError::UnexpectedMessageError)
+            }
         })
         .map_err(|_| GdbTargetError::SpawnThreadError)?;
 

@@ -25,7 +25,7 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{self, target::HyperlightKvmSandboxTarget, GdbConnection};
+use super::gdb::{self, target::HyperlightKvmSandboxTarget, DebugMessage, GdbConnection};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
     HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
@@ -60,7 +60,6 @@ pub(crate) fn is_hypervisor_present() -> bool {
     }
 }
 
-#[allow(dead_code)]
 /// A Hypervisor driver for KVM on Linux
 pub(super) struct KVMDriver {
     _kvm: Kvm,
@@ -303,7 +302,9 @@ impl Hypervisor for KVMDriver {
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn run(&mut self) -> Result<HyperlightExit> {
-        let result = match self.vcpu_fd.lock().unwrap().run() {
+        let result = loop {
+            let mut vcpu_fd = self.vcpu_fd.lock().unwrap();
+            let result = match vcpu_fd.run() {
             Ok(VcpuExit::Hlt) => {
                 crate::debug!("KVM - Halt Details : {:#?}", &self);
                 HyperlightExit::Halt()
@@ -338,6 +339,44 @@ impl Hypervisor for KVMDriver {
                     None => HyperlightExit::Mmio(addr),
                 }
             }
+                #[cfg(gdb)]
+                Ok(VcpuExit::Debug(arch)) => {
+                    // Drop so that the gdb thread can acquire the VcpuFd
+                    drop(vcpu_fd);
+                    log::debug!("Sending gdb message to notify KVM_EXIT_DEBUG {:?}", arch);
+                    self.gdb_conn
+                        .send(DebugMessage::VcpuStoppedEv)
+                        .map_err(|e| {
+                            new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
+                        })?;
+
+                    log::debug!("VCPU: Debug wait for event to resume vCPU");
+                    if let Ok(ev) = self.gdb_conn.recv() {
+                        match ev {
+                            DebugMessage::VcpuResumeEv => {
+                                log::debug!("VCPU: Debug got event -> resuming vCPU");
+                                self.gdb_conn.send(DebugMessage::RspOk).map_err(|e| {
+                                    new_error!(
+                                        "Couldn't signal vCPU event received to GDB
+                                            thread: {:?}",
+                                        e
+                                    )
+                                })?;
+                                continue;
+                            }
+                            e => {
+                                log::debug!("VCPU: Debug got event {:?}", e);
+                                self.gdb_conn.send(DebugMessage::RspErr).map_err(|e| {
+                                    new_error!("Couldn't signal error to GDB thread: {:?}", e)
+                                })?;
+                            }
+                        }
+                    }
+
+                    HyperlightExit::Unknown(
+                        "KVM Debug Exit failed to receive debug event from GDB".to_string(),
+                    )
+                }
             Err(e) => match e.errno() {
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
                 libc::EINTR => HyperlightExit::Cancelled(),
@@ -352,6 +391,10 @@ impl Hypervisor for KVMDriver {
                 HyperlightExit::Unknown(format!("Unexpected KVM Exit {:?}", other))
             }
         };
+
+            break result;
+        };
+
         Ok(result)
     }
 

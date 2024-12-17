@@ -4,6 +4,8 @@ use gdbstub::stub::run_blocking;
 use gdbstub::stub::{DisconnectReason, GdbStub, SingleThreadStopReason};
 
 use super::target::HyperlightKvmSandboxTarget;
+use super::GdbTargetError;
+use crate::hypervisor::gdb::GdbDebug;
 
 pub struct GdbBlockingEventLoop;
 
@@ -13,7 +15,7 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
     type Target = HyperlightKvmSandboxTarget;
 
     fn wait_for_stop_reason(
-        _target: &mut Self::Target,
+        target: &mut Self::Target,
         conn: &mut Self::Connection,
     ) -> Result<
         run_blocking::Event<Self::StopReason>,
@@ -23,7 +25,17 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
         >,
     > {
         loop {
-            // Event from vcpu should be expected here
+            match target.try_recv() {
+                Ok(_) => {
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => (),
+                Err(_) => {
+                    return Err(run_blocking::WaitForStopReasonError::Target(
+                        GdbTargetError::QueueError,
+                    ));
+                }
+            }
+
 
             if conn.peek().map(|b| b.is_some()).unwrap_or(false) {
                 let byte = conn
