@@ -7,10 +7,11 @@ use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase,
 };
 use gdbstub::target::ext::base::BaseOps;
-use gdbstub::target::{Target, TargetResult};
+use gdbstub::target::{Target, TargetError, TargetResult};
+use gdbstub_arch::x86::reg::X86_64CoreRegs;
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 use kvm_bindings::{
-    kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP,
+    kvm_guest_debug, kvm_regs, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP,
 };
 use kvm_ioctls::VcpuFd;
 
@@ -151,6 +152,71 @@ impl HyperlightKvmSandboxTarget {
     pub fn pause_vcpu(&mut self) {
         self.paused = true;
     }
+
+    fn read_regs(&self, regs: &mut X86_64CoreRegs) -> Result<(), GdbTargetError> {
+        log::debug!("Read registers");
+        let vcpu_regs = self
+            .vcpu_fd
+            .lock()
+            .unwrap()
+            .get_regs()
+            .map_err(|_| GdbTargetError::ReadRegistersError)?;
+
+        regs.regs[0] = vcpu_regs.rax;
+        regs.regs[1] = vcpu_regs.rbx;
+        regs.regs[2] = vcpu_regs.rcx;
+        regs.regs[3] = vcpu_regs.rdx;
+        regs.regs[4] = vcpu_regs.rsi;
+        regs.regs[5] = vcpu_regs.rdi;
+        regs.regs[6] = vcpu_regs.rbp;
+        regs.regs[7] = vcpu_regs.rsp;
+        regs.regs[8] = vcpu_regs.r8;
+        regs.regs[9] = vcpu_regs.r9;
+        regs.regs[10] = vcpu_regs.r10;
+        regs.regs[11] = vcpu_regs.r11;
+        regs.regs[12] = vcpu_regs.r12;
+        regs.regs[13] = vcpu_regs.r13;
+        regs.regs[14] = vcpu_regs.r14;
+        regs.regs[15] = vcpu_regs.r15;
+
+        regs.rip = vcpu_regs.rip;
+
+        regs.eflags =
+            u32::try_from(vcpu_regs.rflags).map_err(|_| GdbTargetError::ReadRegistersError)?;
+
+        Ok(())
+    }
+
+    fn write_regs(&self, regs: &X86_64CoreRegs) -> Result<(), GdbTargetError> {
+        log::debug!("Write registers");
+        let new_regs = kvm_regs {
+            rax: regs.regs[0],
+            rbx: regs.regs[1],
+            rcx: regs.regs[2],
+            rdx: regs.regs[3],
+            rsi: regs.regs[4],
+            rdi: regs.regs[5],
+            rbp: regs.regs[6],
+            rsp: regs.regs[7],
+            r8: regs.regs[8],
+            r9: regs.regs[9],
+            r10: regs.regs[10],
+            r11: regs.regs[11],
+            r12: regs.regs[12],
+            r13: regs.regs[13],
+            r14: regs.regs[14],
+            r15: regs.regs[15],
+
+            rip: regs.rip,
+            rflags: regs.eflags as u64,
+        };
+
+        self.vcpu_fd
+            .lock()
+            .unwrap()
+            .set_regs(&new_regs)
+            .map_err(|_| GdbTargetError::WriteRegistersError)
+    }
 }
 
 impl GdbDebug for HyperlightKvmSandboxTarget {
@@ -196,15 +262,15 @@ impl SingleThreadBase for HyperlightKvmSandboxTarget {
 
     fn read_registers(
         &mut self,
-        _regs: &mut <Self::Arch as Arch>::Registers,
+        regs: &mut <Self::Arch as Arch>::Registers,
     ) -> TargetResult<(), Self> {
-        todo!()
+        self.read_regs(regs).map_err(TargetError::Fatal)
     }
 
     fn write_registers(
         &mut self,
-        _regs: &<Self::Arch as Arch>::Registers,
+        regs: &<Self::Arch as Arch>::Registers,
     ) -> TargetResult<(), Self> {
-        todo!()
+        self.write_regs(regs).map_err(TargetError::Fatal)
     }
 }

@@ -16,11 +16,13 @@ pub enum GdbTargetError {
     InstructionPointerError,
     ListenerError,
     QueueError,
+    ReadRegistersError,
     ReceiveMsgError,
     SendMsgError,
     SetGuestDebugError,
     SpawnThreadError,
     UnexpectedMessageError,
+    WriteRegistersError,
 }
 
 #[allow(dead_code)]
