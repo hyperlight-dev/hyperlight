@@ -11,7 +11,7 @@ use gdbstub::target::ext::base::singlethread::{
 };
 use gdbstub::target::ext::base::BaseOps;
 use gdbstub::target::ext::breakpoints::{
-    Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps,
+    Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps, SwBreakpoint, SwBreakpointOps,
 };
 use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
@@ -158,6 +158,10 @@ impl HyperlightKvmSandboxTarget {
         }
 
         let ip = self.get_instruction_pointer()?;
+        let gpa = self.translate_gva(ip)?;
+        if self.hw_breakpoints.contains(&gpa) {
+            return Ok(Some(SingleThreadStopReason::SwBreak(())));
+        }
 
         if self.hw_breakpoints.contains(&ip) {
             return Ok(Some(SingleThreadStopReason::HwBreak(())));
@@ -469,6 +473,9 @@ impl Breakpoints for HyperlightKvmSandboxTarget {
     fn support_hw_breakpoint(&mut self) -> Option<HwBreakpointOps<Self>> {
         Some(self)
     }
+    fn support_sw_breakpoint(&mut self) -> Option<SwBreakpointOps<'_, Self>> {
+        Some(self)
+    }
 }
 
 impl HwBreakpoint for HyperlightKvmSandboxTarget {
@@ -481,6 +488,24 @@ impl HwBreakpoint for HyperlightKvmSandboxTarget {
     }
 
     fn remove_hw_breakpoint(
+        &mut self,
+        addr: <Self::Arch as Arch>::Usize,
+        _kind: <Self::Arch as Arch>::BreakpointKind,
+    ) -> TargetResult<bool, Self> {
+        self.remove_breakpoint(addr).map_err(TargetError::Fatal)
+    }
+}
+
+impl SwBreakpoint for HyperlightKvmSandboxTarget {
+    fn add_sw_breakpoint(
+        &mut self,
+        addr: <Self::Arch as Arch>::Usize,
+        _kind: <Self::Arch as Arch>::BreakpointKind,
+    ) -> TargetResult<bool, Self> {
+        self.add_breakpoint(addr).map_err(TargetError::Fatal)
+    }
+
+    fn remove_sw_breakpoint(
         &mut self,
         addr: <Self::Arch as Arch>::Usize,
         _kind: <Self::Arch as Arch>::BreakpointKind,
