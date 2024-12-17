@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::convert::TryFrom;
 use std::fmt::Debug;
+use std::sync::{Arc, Mutex};
 
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region, KVM_MEM_READONLY};
 use kvm_ioctls::Cap::UserMemory;
@@ -33,6 +34,8 @@ use super::{
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+#[cfg(gdb)]
+use crate::mem::{mgr::SandboxMemoryManager, shared_mem::GuestSharedMemory};
 use crate::{log_then_return, new_error, Result};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
@@ -61,7 +64,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
 pub(super) struct KVMDriver {
     _kvm: Kvm,
     _vm_fd: VmFd,
-    vcpu_fd: VcpuFd,
+    vcpu_fd: Arc<Mutex<VcpuFd>>,
     entrypoint: u64,
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
@@ -73,6 +76,7 @@ impl KVMDriver {
     /// be called to do so.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn new(
+        #[cfg(gdb)] mgr: Arc<Mutex<SandboxMemoryManager<GuestSharedMemory>>>,
         mem_regions: Vec<MemoryRegion>,
         pml4_addr: u64,
         entrypoint: u64,
@@ -106,8 +110,11 @@ impl KVMDriver {
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
 
+        let vcpu_fd = Arc::new(Mutex::new(vcpu_fd));
         #[cfg(gdb)]
         let _ = Self::enable_gdb_debug(
+            mgr,
+            vcpu_fd.clone(),
             entrypoint
         )?;
 
@@ -124,9 +131,11 @@ impl KVMDriver {
 
     #[cfg(gdb)]
     fn enable_gdb_debug(
-        _entrypoint: u64,
+        mgr: Arc<Mutex<SandboxMemoryManager<GuestSharedMemory>>>,
+        vcpu_fd: Arc<Mutex<VcpuFd>>,
+        entrypoint: u64,
     ) -> Result<()> {
-        let target = HyperlightKvmSandboxTarget::new();
+        let target = HyperlightKvmSandboxTarget::new(mgr, vcpu_fd, entrypoint);
 
         let _ = gdb::create_gdb_thread(target).map_err(|_| new_error!("Cannot create GDB thread"))?;
 
@@ -155,14 +164,14 @@ impl Debug for KVMDriver {
         for region in &self.mem_regions {
             f.field("Memory Region", &region);
         }
-        let regs = self.vcpu_fd.get_regs();
+        let regs = self.vcpu_fd.lock().unwrap().get_regs();
         // check that regs is OK and then set field in debug struct
 
         if let Ok(regs) = regs {
             f.field("Registers", &regs);
         }
 
-        let sregs = self.vcpu_fd.get_sregs();
+        let sregs = self.vcpu_fd.lock().unwrap().get_sregs();
 
         // check that sregs is OK and then set field in debug struct
 
@@ -198,7 +207,7 @@ impl Hypervisor for KVMDriver {
 
             ..Default::default()
         };
-        self.vcpu_fd.set_regs(&regs)?;
+        self.vcpu_fd.lock().unwrap().set_regs(&regs)?;
 
         VirtualCPU::run(
             self.as_mut_hypervisor(),
@@ -208,7 +217,7 @@ impl Hypervisor for KVMDriver {
         )?;
 
         // reset RSP to what it was before initialise
-        self.vcpu_fd.set_regs(&kvm_regs {
+        self.vcpu_fd.lock().unwrap().set_regs(&kvm_regs {
             rsp: self.orig_rsp.absolute()?,
             ..Default::default()
         })?;
@@ -224,13 +233,13 @@ impl Hypervisor for KVMDriver {
         hv_handler: Option<HypervisorHandler>,
     ) -> Result<()> {
         // Reset general purpose registers except RSP, then set RIP
-        let rsp_before = self.vcpu_fd.get_regs()?.rsp;
+        let rsp_before = self.vcpu_fd.lock().unwrap().get_regs()?.rsp;
         let regs = kvm_regs {
-            rip: dispatch_func_addr.into(),
+            rip: dispatch_func_addr.clone().into(),
             rsp: rsp_before,
             ..Default::default()
         };
-        self.vcpu_fd.set_regs(&regs)?;
+        self.vcpu_fd.lock().unwrap().set_regs(&regs)?;
 
         // reset fpu state
         let fpu = kvm_fpu {
@@ -239,7 +248,7 @@ impl Hypervisor for KVMDriver {
             mxcsr: MXCSR_DEFAULT,
             ..Default::default() // zero out the rest
         };
-        self.vcpu_fd.set_fpu(&fpu)?;
+        self.vcpu_fd.lock().unwrap().set_fpu(&fpu)?;
 
         // run
         VirtualCPU::run(
@@ -250,7 +259,7 @@ impl Hypervisor for KVMDriver {
         )?;
 
         // reset RSP to what it was before function call
-        self.vcpu_fd.set_regs(&kvm_regs {
+        self.vcpu_fd.lock().unwrap().set_regs(&kvm_regs {
             rsp: rsp_before,
             ..Default::default()
         })?;
@@ -286,8 +295,7 @@ impl Hypervisor for KVMDriver {
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn run(&mut self) -> Result<HyperlightExit> {
-        let exit_reason = self.vcpu_fd.run();
-        let result = match exit_reason {
+        let result = match self.vcpu_fd.lock().unwrap().run() {
             Ok(VcpuExit::Hlt) => {
                 crate::debug!("KVM - Halt Details : {:#?}", &self);
                 HyperlightExit::Halt()

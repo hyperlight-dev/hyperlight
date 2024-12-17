@@ -88,7 +88,8 @@ impl HypervisorHandler {
 #[derive(Clone)]
 struct HvHandlerExecVars {
     join_handle: Arc<Mutex<Option<JoinHandle<Result<()>>>>>,
-    shm: Arc<Mutex<Option<SandboxMemoryManager<GuestSharedMemory>>>>,
+    #[allow(clippy::type_complexity)] // TODO: Change this type
+    shm: Arc<Mutex<Option<Arc<Mutex<SandboxMemoryManager<GuestSharedMemory>>>>>>,
     timeout: Arc<Mutex<Duration>>,
     #[cfg(target_os = "linux")]
     thread_id: Arc<Mutex<Option<libc::pthread_t>>>,
@@ -232,8 +233,9 @@ impl HypervisorHandler {
         sandbox_memory_manager: SandboxMemoryManager<GuestSharedMemory>,
     ) -> Result<()> {
         let configuration = self.configuration.clone();
+        let sandbox_memory_manager = Arc::new(Mutex::new(sandbox_memory_manager));
         #[cfg(target_os = "windows")]
-        let in_process = sandbox_memory_manager.is_in_process();
+        let in_process = sandbox_memory_manager.lock().unwrap().is_in_process();
 
         *self.execution_variables.shm.try_lock().unwrap() = Some(sandbox_memory_manager);
 
@@ -744,14 +746,15 @@ pub enum HandlerMsg {
 }
 
 fn set_up_hypervisor_partition(
-    mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
+    mgr: &mut Arc<Mutex<SandboxMemoryManager<GuestSharedMemory>>>,
     #[allow(unused_variables)] // parameter only used for in-process mode
     outb_handler: OutBHandlerWrapper,
 ) -> Result<Box<dyn Hypervisor>> {
-    let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
-    let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
+    let mut mgr_g = mgr.lock().unwrap();
+    let mem_size = u64::try_from(mgr_g.shared_mem.mem_size())?;
+    let mut regions = mgr_g.layout.get_memory_regions(&mgr_g.shared_mem)?;
     let rsp_ptr = {
-        let rsp_u64 = mgr.set_up_shared_memory(mem_size, &mut regions)?;
+        let rsp_u64 = mgr_g.set_up_shared_memory(mem_size, &mut regions)?;
         let rsp_raw = RawPtr::from(rsp_u64);
         GuestPtr::try_from(rsp_raw)
     }?;
@@ -761,7 +764,7 @@ fn set_up_hypervisor_partition(
         base_ptr + Offset::from(pml4_offset_u64)
     };
     let entrypoint_ptr = {
-        let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;
+        let entrypoint_total_offset = mgr_g.load_addr.clone() + mgr_g.entrypoint_offset;
         GuestPtr::try_from(entrypoint_total_offset)
     }?;
 
@@ -779,7 +782,10 @@ fn set_up_hypervisor_partition(
             pml4_ptr
         );
     }
-    if mgr.is_in_process() {
+    let is_in_process = mgr_g.is_in_process();
+    drop(mgr_g);
+
+    if is_in_process {
         cfg_if::cfg_if! {
             if #[cfg(inprocess)] {
                 // in-process feature + debug build
@@ -787,7 +793,8 @@ fn set_up_hypervisor_partition(
                 use crate::sandbox::leaked_outb::LeakedOutBWrapper;
                 use super::inprocess::InprocessDriver;
 
-                let leaked_outb_wrapper = LeakedOutBWrapper::new(mgr, outb_handler)?;
+                let mut mgr = mgr.lock().unwrap();
+                let leaked_outb_wrapper = LeakedOutBWrapper::new(&mut mgr, outb_handler)?;
                 let hv = InprocessDriver::new(InprocessArgs {
                     entrypoint_raw: u64::from(mgr.load_addr.clone() + mgr.entrypoint_offset),
                     peb_ptr_raw: mgr
@@ -821,6 +828,8 @@ fn set_up_hypervisor_partition(
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => {
                 let hv = crate::hypervisor::kvm::KVMDriver::new(
+                    #[cfg(gdb)]
+                    mgr.clone(),
                     regions,
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
