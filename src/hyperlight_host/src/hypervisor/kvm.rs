@@ -25,7 +25,7 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{self, target::HyperlightKvmSandboxTarget};
+use super::gdb::{self, target::HyperlightKvmSandboxTarget, GdbConnection};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
     HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
@@ -60,6 +60,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
     }
 }
 
+#[allow(dead_code)]
 /// A Hypervisor driver for KVM on Linux
 pub(super) struct KVMDriver {
     _kvm: Kvm,
@@ -68,6 +69,9 @@ pub(super) struct KVMDriver {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
+
+    #[cfg(gdb)]
+    gdb_conn: GdbConnection,
 }
 
 impl KVMDriver {
@@ -112,7 +116,7 @@ impl KVMDriver {
 
         let vcpu_fd = Arc::new(Mutex::new(vcpu_fd));
         #[cfg(gdb)]
-        let _ = Self::enable_gdb_debug(
+        let gdb_conn = Self::enable_gdb_debug(
             mgr,
             vcpu_fd.clone(),
             entrypoint
@@ -126,6 +130,9 @@ impl KVMDriver {
             entrypoint,
             orig_rsp: rsp_gp,
             mem_regions,
+
+            #[cfg(gdb)]
+            gdb_conn,
         })
     }
 
@@ -134,12 +141,13 @@ impl KVMDriver {
         mgr: Arc<Mutex<SandboxMemoryManager<GuestSharedMemory>>>,
         vcpu_fd: Arc<Mutex<VcpuFd>>,
         entrypoint: u64,
-    ) -> Result<()> {
-        let target = HyperlightKvmSandboxTarget::new(mgr, vcpu_fd, entrypoint);
+    ) -> Result<GdbConnection> {
+        let (gdb_conn, hyp_conn) = GdbConnection::new_pair();
 
+        let target = HyperlightKvmSandboxTarget::new(mgr, vcpu_fd, entrypoint, hyp_conn);
         let _ = gdb::create_gdb_thread(target).map_err(|_| new_error!("Cannot create GDB thread"))?;
 
-        Ok(())
+        Ok(gdb_conn)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]

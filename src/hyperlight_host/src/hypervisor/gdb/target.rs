@@ -8,6 +8,8 @@ use gdbstub::target::ext::base::BaseOps;
 use gdbstub::target::{Target, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 use kvm_ioctls::VcpuFd;
+
+use super::GdbConnection;
 use super::GdbTargetError;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::GuestSharedMemory;
@@ -22,6 +24,9 @@ pub struct HyperlightKvmSandboxTarget {
     vcpu_fd: Arc<Mutex<VcpuFd>>,
     /// Guest entrypoint
     entrypoint: u64,
+
+    /// Hypervisor communication channels
+    hyp_conn: GdbConnection,
 }
 
 impl HyperlightKvmSandboxTarget {
@@ -29,11 +34,13 @@ impl HyperlightKvmSandboxTarget {
         mgr: Arc<Mutex<SandboxMemoryManager<GuestSharedMemory>>>,
         vcpu_fd: Arc<Mutex<VcpuFd>>,
         entrypoint: u64,
+        hyp_conn: GdbConnection,
     ) -> Self {
         HyperlightKvmSandboxTarget {
             mgr,
             vcpu_fd,
             entrypoint,
+            hyp_conn,
         }
     }
 }
