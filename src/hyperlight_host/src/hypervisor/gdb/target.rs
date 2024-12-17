@@ -7,6 +7,7 @@ use gdbstub::stub::{BaseStopReason, SingleThreadStopReason};
 use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase,
     SingleThreadResume, SingleThreadResumeOps,
+    SingleThreadSingleStep, SingleThreadSingleStepOps,
 };
 use gdbstub::target::ext::base::BaseOps;
 use gdbstub::target::ext::breakpoints::{
@@ -101,6 +102,8 @@ pub struct HyperlightKvmSandboxTarget {
 
     /// vCPU paused state
     paused: bool,
+    /// vCPU stepping state
+    single_step: bool,
 
     /// Array of addresses for HW breakpoints
     hw_breakpoints: Vec<u64>,
@@ -125,6 +128,7 @@ impl HyperlightKvmSandboxTarget {
             entrypoint,
 
             paused: false,
+            single_step: false,
 
             hw_breakpoints: vec![],
 
@@ -146,6 +150,13 @@ impl HyperlightKvmSandboxTarget {
 
     /// Get the reason the vCPU has stopped
     pub fn get_stop_reason(&self) -> Result<Option<BaseStopReason<(), u64>>, GdbTargetError> {
+        if self.single_step {
+            return Ok(Some(SingleThreadStopReason::SignalWithThread {
+                tid: (),
+                signal: Signal::SIGTRAP,
+            }));
+        }
+
         let ip = self.get_instruction_pointer()?;
 
         if self.hw_breakpoints.contains(&ip) {
@@ -157,6 +168,15 @@ impl HyperlightKvmSandboxTarget {
         }
 
         Ok(None)
+    }
+
+    fn set_single_step(&mut self, enable: bool) -> Result<(), GdbTargetError> {
+        self.single_step = enable;
+
+        self.debug
+            .set_breakpoints(&self.vcpu_fd.lock().unwrap(), &self.hw_breakpoints, enable)?;
+
+        Ok(())
     }
 
     /// This method provides a way to set a breakpoint at the entrypoint
@@ -472,6 +492,20 @@ impl HwBreakpoint for HyperlightKvmSandboxTarget {
 impl SingleThreadResume for HyperlightKvmSandboxTarget {
     fn resume(&mut self, _signal: Option<Signal>) -> Result<(), Self::Error> {
         log::debug!("Resume");
+        self.set_single_step(false)?;
+        self.resume_vcpu()
+    }
+    fn support_single_step(&mut self) -> Option<SingleThreadSingleStepOps<Self>> {
+        Some(self)
+    }
+}
+
+impl SingleThreadSingleStep for HyperlightKvmSandboxTarget {
+    fn step(&mut self, signal: Option<Signal>) -> Result<(), Self::Error> {
+        assert!(signal.is_none());
+
+        log::debug!("Step");
+        self.set_single_step(true)?;
         self.resume_vcpu()
     }
 }
