@@ -7,9 +7,11 @@ use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase,
 };
 use gdbstub::target::ext::base::BaseOps;
+use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::reg::X86_64CoreRegs;
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
+use hyperlight_common::mem::PAGE_SIZE;
 use kvm_bindings::{
     kvm_guest_debug, kvm_regs, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP,
 };
@@ -18,8 +20,9 @@ use kvm_ioctls::VcpuFd;
 use super::GdbConnection;
 use super::GdbTargetError;
 use crate::hypervisor::gdb::{DebugMessage, GdbDebug};
+use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::GuestSharedMemory;
+use crate::mem::shared_mem::{GuestSharedMemory, SharedMemory};
 
 /// KVM Debug struct
 /// This struct is used to abstract the internal details of the kvm
@@ -149,6 +152,23 @@ impl HyperlightKvmSandboxTarget {
         entrypoint_debug.set_breakpoints(&self.vcpu_fd.lock().unwrap(), &[self.entrypoint], false)
     }
 
+    /// Translates the guest address to physical address
+    fn translate_gva(&self, gva: u64) -> Result<u64, GdbTargetError> {
+        // TODO: Properly handle errors
+        let tr = self
+            .vcpu_fd
+            .lock()
+            .unwrap()
+            .translate_gva(gva)
+            .map_err(|_| GdbTargetError::InvalidGva)?;
+
+        if tr.valid == 0 {
+            Err(GdbTargetError::InvalidGva)
+        } else {
+            Ok(tr.physical_address)
+        }
+    }
+
     pub fn pause_vcpu(&mut self) {
         self.paused = true;
     }
@@ -241,23 +261,70 @@ impl Target for HyperlightKvmSandboxTarget {
     fn base_ops(&mut self) -> BaseOps<Self::Arch, Self::Error> {
         BaseOps::SingleThread(self)
     }
+
+    fn support_section_offsets(
+        &mut self,
+    ) -> Option<gdbstub::target::ext::section_offsets::SectionOffsetsOps<Self>> {
+        Some(self)
+    }
 }
 
 impl SingleThreadBase for HyperlightKvmSandboxTarget {
     fn read_addrs(
         &mut self,
-        _gva: <Self::Arch as Arch>::Usize,
-        _data: &mut [u8],
+        mut gva: <Self::Arch as Arch>::Usize,
+        mut data: &mut [u8],
     ) -> TargetResult<usize, Self> {
-        todo!()
+        let data_len = data.len();
+        log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
+
+        let mut mgr = self.mgr.lock().unwrap();
+        while !data.is_empty() {
+            let gpa = self.translate_gva(gva).expect("");
+            let read_len = std::cmp::min(
+                data.len(),
+                (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+            );
+            let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+
+            let _ = mgr.shared_mem.with_exclusivity(|ex| {
+                data[..read_len].copy_from_slice(&ex.as_slice()[offset..offset + read_len]);
+            });
+
+            data = &mut data[read_len..];
+            gva += read_len as u64;
+        }
+
+        Ok(data_len)
     }
 
     fn write_addrs(
         &mut self,
-        _gva: <Self::Arch as Arch>::Usize,
-        _data: &[u8],
+        mut gva: <Self::Arch as Arch>::Usize,
+        mut data: &[u8],
     ) -> TargetResult<(), Self> {
-        todo!()
+        let data_len = data.len();
+        log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
+
+        let mut mgr = self.mgr.lock().unwrap();
+        while !data.is_empty() {
+            let gpa = self.translate_gva(gva).expect("");
+
+            let write_len = std::cmp::min(
+                data.len(),
+                (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+            );
+            let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+
+            let _ = mgr
+                .shared_mem
+                .with_exclusivity(|ex| ex.copy_from_slice(data, offset));
+
+            data = &data[write_len..];
+            gva += write_len as u64;
+        }
+
+        Ok(())
     }
 
     fn read_registers(
@@ -272,5 +339,18 @@ impl SingleThreadBase for HyperlightKvmSandboxTarget {
         regs: &<Self::Arch as Arch>::Registers,
     ) -> TargetResult<(), Self> {
         self.write_regs(regs).map_err(TargetError::Fatal)
+    }
+}
+
+impl SectionOffsets for HyperlightKvmSandboxTarget {
+    fn get_section_offsets(&mut self) -> Result<Offsets<<Self::Arch as Arch>::Usize>, Self::Error> {
+        let mgr = self.mgr.lock().unwrap();
+        let text = mgr.layout.get_guest_code_address();
+
+        log::debug!("Get section offsets text: {:X}", text);
+        Ok(Offsets::Segments {
+            text_seg: text as u64,
+            data_seg: None,
+        })
     }
 }

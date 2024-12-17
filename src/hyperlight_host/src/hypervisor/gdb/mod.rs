@@ -21,6 +21,7 @@ pub enum GdbTargetError {
     SendMsgError,
     SetGuestDebugError,
     SpawnThreadError,
+    InvalidGva,
     UnexpectedMessageError,
     WriteRegistersError,
 }
