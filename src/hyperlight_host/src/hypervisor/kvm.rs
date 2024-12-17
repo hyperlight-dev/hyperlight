@@ -309,40 +309,40 @@ impl Hypervisor for KVMDriver {
         let result = loop {
             let mut vcpu_fd = self.vcpu_fd.lock().unwrap();
             let result = match vcpu_fd.run() {
-            Ok(VcpuExit::Hlt) => {
-                crate::debug!("KVM - Halt Details : {:#?}", &self);
-                HyperlightExit::Halt()
-            }
-            Ok(VcpuExit::IoOut(port, data)) => {
-                // because vcpufd.run() mutably borrows self we cannot pass self to crate::debug! macro here
-                crate::debug!("KVM IO Details : \nPort : {}\nData : {:?}", port, data);
-                // KVM does not need to set RIP or instruction length so these are set to 0
-                HyperlightExit::IoOut(port, data.to_vec(), 0, 0)
-            }
-            Ok(VcpuExit::MmioRead(addr, _)) => {
-                crate::debug!("KVM MMIO Read -Details: Address: {} \n {:#?}", addr, &self);
-
-                match self.get_memory_access_violation(
-                    addr as usize,
-                    &self.mem_regions,
-                    MemoryRegionFlags::READ,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
+                Ok(VcpuExit::Hlt) => {
+                    crate::debug!("KVM - Halt Details : {:#?}", &self);
+                    HyperlightExit::Halt()
                 }
-            }
-            Ok(VcpuExit::MmioWrite(addr, _)) => {
-                crate::debug!("KVM MMIO Write -Details: Address: {} \n {:#?}", addr, &self);
-
-                match self.get_memory_access_violation(
-                    addr as usize,
-                    &self.mem_regions,
-                    MemoryRegionFlags::WRITE,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
+                Ok(VcpuExit::IoOut(port, data)) => {
+                    // because vcpufd.run() mutably borrows self we cannot pass self to crate::debug! macro here
+                    crate::debug!("KVM IO Details : \nPort : {}\nData : {:?}", port, data);
+                    // KVM does not need to set RIP or instruction length so these are set to 0
+                    HyperlightExit::IoOut(port, data.to_vec(), 0, 0)
                 }
-            }
+                Ok(VcpuExit::MmioRead(addr, _)) => {
+                    crate::debug!("KVM MMIO Read -Details: Address: {} \n {:#?}", addr, &self);
+
+                    match self.get_memory_access_violation(
+                        addr as usize,
+                        &self.mem_regions,
+                        MemoryRegionFlags::READ,
+                    ) {
+                        Some(access_violation_exit) => access_violation_exit,
+                        None => HyperlightExit::Mmio(addr),
+                    }
+                }
+                Ok(VcpuExit::MmioWrite(addr, _)) => {
+                    crate::debug!("KVM MMIO Write -Details: Address: {} \n {:#?}", addr, &self);
+
+                    match self.get_memory_access_violation(
+                        addr as usize,
+                        &self.mem_regions,
+                        MemoryRegionFlags::WRITE,
+                    ) {
+                        Some(access_violation_exit) => access_violation_exit,
+                        None => HyperlightExit::Mmio(addr),
+                    }
+                }
                 #[cfg(gdb)]
                 Ok(VcpuExit::Debug(arch)) => {
                     // Drop so that the gdb thread can acquire the VcpuFd
@@ -354,11 +354,11 @@ impl Hypervisor for KVMDriver {
                             new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
                         })?;
 
-                    log::debug!("VCPU: Debug wait for event to resume vCPU");
+                    log::debug!("Debug wait for event to resume vCPU");
                     if let Ok(ev) = self.gdb_conn.recv() {
                         match ev {
                             DebugMessage::VcpuResumeEv => {
-                                log::debug!("VCPU: Debug got event -> resuming vCPU");
+                                log::debug!("Debug got event -> resuming vCPU");
                                 self.gdb_conn.send(DebugMessage::RspOk).map_err(|e| {
                                     new_error!(
                                         "Couldn't signal vCPU event received to GDB
@@ -369,7 +369,7 @@ impl Hypervisor for KVMDriver {
                                 continue;
                             }
                             e => {
-                                log::debug!("VCPU: Debug got event {:?}", e);
+                                log::debug!("Debug got event {:?}", e);
                                 self.gdb_conn.send(DebugMessage::RspErr).map_err(|e| {
                                     new_error!("Couldn't signal error to GDB thread: {:?}", e)
                                 })?;
@@ -381,20 +381,20 @@ impl Hypervisor for KVMDriver {
                         "KVM Debug Exit failed to receive debug event from GDB".to_string(),
                     )
                 }
-            Err(e) => match e.errno() {
-                // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
-                libc::EINTR => HyperlightExit::Cancelled(),
-                libc::EAGAIN => HyperlightExit::Retry(),
-                _ => {
-                    crate::debug!("KVM Error -Details: Address: {} \n {:#?}", e, &self);
-                    log_then_return!("Error running VCPU {:?}", e);
+                Err(e) => match e.errno() {
+                    // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
+                    libc::EINTR => HyperlightExit::Cancelled(),
+                    libc::EAGAIN => HyperlightExit::Retry(),
+                    _ => {
+                        crate::debug!("KVM Error -Details: Address: {} \n {:#?}", e, &self);
+                        log_then_return!("Error running VCPU {:?}", e);
+                    }
+                },
+                Ok(other) => {
+                    crate::debug!("KVM Other Exit {:?}", other);
+                    HyperlightExit::Unknown(format!("Unexpected KVM Exit {:?}", other))
                 }
-            },
-            Ok(other) => {
-                crate::debug!("KVM Other Exit {:?}", other);
-                HyperlightExit::Unknown(format!("Unexpected KVM Exit {:?}", other))
-            }
-        };
+            };
 
             break result;
         };
