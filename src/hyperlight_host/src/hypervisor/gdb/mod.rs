@@ -104,23 +104,33 @@ pub fn create_gdb_thread(mut target: HyperlightKvmSandboxTarget) -> Result<(), G
     let _handle = thread::Builder::new()
         .name("GDB handler".to_string())
         .spawn(move || -> Result<(), GdbTargetError> {
-            log::info!("Waiting for GDB connection ... ");
-            let (conn, _) = listener
-                .accept()
-                .map_err(|_| GdbTargetError::ListenerError)?;
+            let mut initial_conn = true;
+            let result = loop {
+                log::info!("Waiting for GDB connection ... ");
+                let (conn, _) = listener
+                    .accept()
+                    .map_err(|_| GdbTargetError::ListenerError)?;
 
-            let conn: Box<dyn ConnectionExt<Error = std::io::Error>> = Box::new(conn);
-            let debugger = GdbStub::new(conn);
+                let conn: Box<dyn ConnectionExt<Error = std::io::Error>> = Box::new(conn);
+                let debugger = GdbStub::new(conn);
 
-            if let DebugMessage::VcpuStoppedEv = target.recv()? {
-                target.pause_vcpu();
+                if initial_conn {
+                    // Waits for vCPU to stop at entrypoint breakpoint
+                    if let DebugMessage::VcpuStoppedEv = target.recv()? {
+                        target.pause_vcpu();
 
-                event_loop_thread(debugger, target);
+                        event_loop_thread(debugger, &mut target);
+                        initial_conn = false;
+                    } else {
+                        break Err(GdbTargetError::UnexpectedMessageError);
+                    }
+                } else {
+                    log::info!("Reattaching GDB connection ... ");
+                    event_loop_thread(debugger, &mut target);
+                }
+            };
 
-                Ok(())
-            } else {
-                Err(GdbTargetError::UnexpectedMessageError)
-            }
+            result
         })
         .map_err(|_| GdbTargetError::SpawnThreadError)?;
 

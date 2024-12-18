@@ -77,9 +77,9 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
 
 pub fn event_loop_thread(
     debugger: GdbStub<HyperlightKvmSandboxTarget, Box<dyn ConnectionExt<Error = std::io::Error>>>,
-    mut target: HyperlightKvmSandboxTarget,
+    target: &mut HyperlightKvmSandboxTarget,
 ) {
-    match debugger.run_blocking::<GdbBlockingEventLoop>(&mut target) {
+    match debugger.run_blocking::<GdbBlockingEventLoop>(target) {
         Ok(disconnect_reason) => match disconnect_reason {
             DisconnectReason::Disconnect => log::info!("Gdb client disconnected"),
             DisconnectReason::TargetExited(code) => {
