@@ -852,8 +852,8 @@ fn set_up_hypervisor_partition(
             Some(HypervisorType::Whp) => {
                 let hv = crate::hypervisor::hyperv_windows::HypervWindowsDriver::new(
                     regions,
-                    mgr.shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
-                    mgr.shared_mem.raw_ptr() as *mut c_void, // and instead convert it to base_addr where needed in the driver itself
+                    mgr.lock().unwrap().shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
+                    mgr.lock().unwrap().shared_mem.raw_ptr() as *mut c_void, // and instead convert it to base_addr where needed in the driver itself
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
                     rsp_ptr.absolute()?,
