@@ -34,6 +34,10 @@ pub mod hyperv_linux;
 pub(crate) mod hyperv_windows;
 pub(crate) mod hypervisor_handler;
 
+/// GDB debugging support
+#[cfg(gdb)]
+mod gdb;
+
 /// Driver for running in process instead of using hypervisor
 #[cfg(inprocess)]
 pub mod inprocess;
@@ -85,6 +89,8 @@ pub(crate) const EFER_NX: u64 = 1 << 11;
 /// These are the generic exit reasons that we can handle from a Hypervisor the Hypervisors run method is responsible for mapping from
 /// the hypervisor specific exit reasons to these generic ones
 pub enum HyperlightExit {
+    /// The vCPU has exited due to a debug event
+    Debug,
     /// The vCPU has halted
     Halt(),
     /// The vCPU has issued a write to the given port with the given value
@@ -205,6 +211,9 @@ impl VirtualCPU {
     ) -> Result<()> {
         loop {
             match hv.run() {
+                Ok(HyperlightExit::Debug) => {
+                    log_then_return!("Unexpected Debug Exit");
+                }
                 Ok(HyperlightExit::Halt()) => {
                     break;
                 }
