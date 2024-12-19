@@ -70,6 +70,8 @@ sha256 = "1.4.0"
 windows-version = "0.1"
 
 [target.'cfg(unix)'.dependencies]
+gdbstub = "0.7.3"
+gdbstub_arch = "0.3.1"
 seccompiler = { version = "0.4.0", optional = true }
 mshv-bindings = { workspace = true, optional = true }
 mshv-ioctls = { workspace = true, optional = true }
@@ -124,6 +126,8 @@ crashdump = ["dep:tempfile"] # Dumps the VM state to a file on unexpected errors
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv = ["dep:mshv-bindings", "dep:mshv-ioctls"]
 inprocess = []
+# This enables compilation of gdb stub for easy debug in the guest
+gdb = []
 
 [[bench]]
 name = "benchmarks"
