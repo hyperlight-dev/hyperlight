@@ -1,0 +1,80 @@
+name: Bug Report
+
+description: Report a bug in the project
+
+labels: 
+  - bug
+
+body:
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of what the bug is.
+      placeholder: Describe the bug here
+    validations:
+      required: true
+
+  - type: textarea
+    id: bug-expected-behavior
+    attributes:
+      label: What did you expect to happen?
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: bug-steps-to-reproduce
+    attributes:
+      label: Steps to reproduce the behavior
+      description: |
+        Steps to reproduce the behavior:
+      placeholder: |
+        1. Run '...'
+        2. and then do '...'
+        3. Check logs for '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: hyperlight-version
+    attributes:
+      label: Hyperlight Version
+      description: The version of Hyperlight you are using.
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: os-version
+    attributes:
+      label: OS version
+      description: The version of the OS you are using.
+      value: |
+        <details>
+
+        ```console
+        On Linux:
+        $ cat /etc/os-release
+        # paste output here
+
+        $ uname -a
+        # paste output here
+
+        On Windows:
+        C:\> cmd /c ver
+        # paste output here
+
+        ````
+        </details>
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-info
+    attributes:
+      label: Additional Information
+      description: Add any other context about the problem here.
+      placeholder: Add any other context about the problem here.
+    validations:
+      required: false
