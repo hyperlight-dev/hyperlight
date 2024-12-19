@@ -13,10 +13,9 @@ Library to build guest applications for hyperlight.
 """
 
 [features]
-default = ["libc", "printf", "alloca"]
+default = ["libc", "printf"]
 libc = [] # compile musl libc
 printf = [] # compile printf
-alloca = [] # compile alloca wrapper
 
 [dependencies]
 anyhow = { version = "1.0.94", default-features = false }
@@ -29,3 +28,4 @@ log = { version = "0.4", default-features = false }
 [build-dependencies]
 cc = "1.2"
 cfg-if = "1.0"
+glob = "0.3.1"
