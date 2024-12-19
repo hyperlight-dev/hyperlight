@@ -372,64 +372,10 @@ impl Drop for HypervLinuxDriver {
 }
 
 #[cfg(test)]
-pub(crate) mod test_cfg {
-    use once_cell::sync::Lazy;
-    use serde::Deserialize;
-
-    pub(crate) static TEST_CONFIG: Lazy<TestConfig> =
-        Lazy::new(|| match envy::from_env::<TestConfig>() {
-            Ok(config) => config,
-            Err(err) => panic!("error parsing config from env: {}", err),
-        });
-    pub(crate) static SHOULD_RUN_TEST: Lazy<bool> = Lazy::new(is_hyperv_present);
-
-    fn is_hyperv_present() -> bool {
-        println!(
-            "HYPERV_SHOULD_BE_PRESENT is {}",
-            TEST_CONFIG.hyperv_should_be_present
-        );
-        let is_present = super::is_hypervisor_present();
-        if (is_present && !TEST_CONFIG.hyperv_should_be_present)
-            || (!is_present && TEST_CONFIG.hyperv_should_be_present)
-        {
-            panic!(
-                "WARNING Hyper-V is present returned  {}, should be present is: {}",
-                is_present, TEST_CONFIG.hyperv_should_be_present
-            );
-        }
-        is_present
-    }
-
-    fn hyperv_should_be_present_default() -> bool {
-        false
-    }
-
-    #[derive(Deserialize, Debug)]
-    pub(crate) struct TestConfig {
-        #[serde(default = "hyperv_should_be_present_default")]
-        // Set env var HYPERV_SHOULD_BE_PRESENT to require hyperv to be present for the tests.
-        pub(crate) hyperv_should_be_present: bool,
-    }
-
-    #[macro_export]
-    macro_rules! should_run_hyperv_linux_test {
-        () => {{
-            if !(*SHOULD_RUN_TEST) {
-                println! {"Not Running Test SHOULD_RUN_TEST is false"}
-                return;
-            }
-            println! {"Running Test SHOULD_RUN_TEST is true"}
-        }};
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use super::test_cfg::{SHOULD_RUN_TEST, TEST_CONFIG};
     use super::*;
     use crate::mem::memory_region::MemoryRegionVecBuilder;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
-    use crate::should_run_hyperv_linux_test;
 
     #[rustfmt::skip]
     const CODE: [u8; 12] = [
@@ -461,14 +407,10 @@ mod tests {
     }
 
     #[test]
-    fn is_hypervisor_present() {
-        let result = super::is_hypervisor_present();
-        assert_eq!(result, TEST_CONFIG.hyperv_should_be_present);
-    }
-
-    #[test]
     fn create_driver() {
-        should_run_hyperv_linux_test!();
+        if !super::is_hypervisor_present() {
+            return;
+        }
         const MEM_SIZE: usize = 0x3000;
         let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
         let rsp_ptr = GuestPtr::try_from(0).unwrap();

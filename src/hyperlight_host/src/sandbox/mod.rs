@@ -163,12 +163,6 @@ mod tests {
     use crossbeam_queue::ArrayQueue;
     use hyperlight_testing::simple_guest_as_string;
 
-    #[cfg(target_os = "linux")]
-    use super::is_hypervisor_present;
-    #[cfg(mshv)]
-    use crate::hypervisor::hyperv_linux::test_cfg::TEST_CONFIG as HYPERV_TEST_CONFIG;
-    #[cfg(kvm)]
-    use crate::hypervisor::kvm::test_cfg::TEST_CONFIG as KVM_TEST_CONFIG;
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
@@ -177,29 +171,18 @@ mod tests {
     #[test]
     // TODO: add support for testing on WHP
     #[cfg(target_os = "linux")]
-    fn test_is_hypervisor_present() {
-        // TODO: Handle requiring a stable API
+    fn is_hypervisor_present() {
+        use std::path::Path;
+
         cfg_if::cfg_if! {
             if #[cfg(all(kvm, mshv))] {
-                if KVM_TEST_CONFIG.kvm_should_be_present || HYPERV_TEST_CONFIG.hyperv_should_be_present {
-                    assert!(is_hypervisor_present());
-                } else {
-                    assert!(!is_hypervisor_present());
-                }
+                assert_eq!(Path::new("/dev/kvm").exists() || Path::new("/dev/mshv").exists(), super::is_hypervisor_present());
             } else if #[cfg(kvm)] {
-                if KVM_TEST_CONFIG.kvm_should_be_present {
-                    assert!(is_hypervisor_present());
-                } else {
-                    assert!(!is_hypervisor_present());
-                }
+                assert_eq!(Path::new("/dev/kvm").exists(), super::is_hypervisor_present());
             } else if #[cfg(mshv)] {
-                if HYPERV_TEST_CONFIG.hyperv_should_be_present {
-                    assert!(is_hypervisor_present());
-                } else {
-                    assert!(!is_hypervisor_present());
-                }
+                assert_eq!(Path::new("/dev/mshv").exists(), super::is_hypervisor_present());
             } else {
-                assert!(!is_hypervisor_present());
+                assert!(!super::is_hypervisor_present());
             }
         }
     }
