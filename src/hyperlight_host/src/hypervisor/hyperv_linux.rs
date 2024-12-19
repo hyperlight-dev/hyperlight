@@ -14,15 +14,31 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#[cfg(mshv2)]
+extern crate mshv_bindings2 as mshv_bindings;
+#[cfg(mshv2)]
+extern crate mshv_ioctls2 as mshv_ioctls;
+
+#[cfg(mshv3)]
+extern crate mshv_bindings3 as mshv_bindings;
+#[cfg(mshv3)]
+extern crate mshv_ioctls3 as mshv_ioctls;
+
 use std::fmt::{Debug, Formatter};
 
 use log::error;
+#[cfg(mshv2)]
+use mshv_bindings::hv_message;
 use mshv_bindings::{
-    hv_message, hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT,
-    hv_message_type_HVMSG_UNMAPPED_GPA, hv_message_type_HVMSG_X64_HALT,
-    hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
+    hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
+    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
     hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
     FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters,
+};
+#[cfg(mshv3)]
+use mshv_bindings::{
+    hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
+    hv_partition_synthetic_processor_features,
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
@@ -86,7 +102,23 @@ impl HypervLinuxDriver {
     ) -> Result<Self> {
         let mshv = Mshv::new()?;
         let pr = Default::default();
+        #[cfg(mshv2)]
         let vm_fd = mshv.create_vm_with_config(&pr)?;
+        #[cfg(mshv3)]
+        let vm_fd = {
+            // It's important to avoid create_vm() and explicitly use
+            // create_vm_with_args() with an empty arguments structure
+            // here, because otherwise the partition is set up with a SynIC.
+
+            let vm_fd = mshv.create_vm_with_args(&pr)?;
+            let features: hv_partition_synthetic_processor_features = Default::default();
+            vm_fd.hvcall_set_partition_property(
+                hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
+                unsafe { features.as_uint64[0] },
+            )?;
+            vm_fd
+        };
+
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
 
         mem_regions.iter().try_for_each(|region| {
@@ -280,8 +312,15 @@ impl Hypervisor for HypervLinuxDriver {
         const UNMAPPED_GPA_MESSAGE: hv_message_type = hv_message_type_HVMSG_UNMAPPED_GPA;
         const INVALID_GPA_ACCESS_MESSAGE: hv_message_type = hv_message_type_HVMSG_GPA_INTERCEPT;
 
-        let hv_message: hv_message = Default::default();
-        let result = match &self.vcpu_fd.run(hv_message) {
+        #[cfg(mshv2)]
+        let run_result = {
+            let hv_message: hv_message = Default::default();
+            &self.vcpu_fd.run(hv_message)
+        };
+        #[cfg(mshv3)]
+        let run_result = &self.vcpu_fd.run();
+
+        let result = match run_result {
             Ok(m) => match m.header.message_type {
                 HALT_MESSAGE => {
                     crate::debug!("mshv - Halt Details : {:#?}", &self);
