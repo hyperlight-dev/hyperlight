@@ -14,6 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#[cfg(mshv2)]
+extern crate mshv_bindings2 as mshv_bindings;
+#[cfg(mshv2)]
+extern crate mshv_ioctls2 as mshv_ioctls;
+
+#[cfg(mshv3)]
+extern crate mshv_bindings3 as mshv_bindings;
+#[cfg(mshv3)]
+extern crate mshv_ioctls3 as mshv_ioctls;
+
 use std::ops::Range;
 
 use bitflags::bitflags;
@@ -21,9 +31,14 @@ use bitflags::bitflags;
 use hyperlight_common::mem::PAGE_SHIFT;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 #[cfg(mshv)]
+use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
+#[cfg(mshv2)]
 use mshv_bindings::{
-    hv_x64_memory_intercept_message, mshv_user_mem_region, HV_MAP_GPA_EXECUTABLE,
-    HV_MAP_GPA_PERMISSIONS_NONE, HV_MAP_GPA_READABLE, HV_MAP_GPA_WRITABLE,
+    HV_MAP_GPA_EXECUTABLE, HV_MAP_GPA_PERMISSIONS_NONE, HV_MAP_GPA_READABLE, HV_MAP_GPA_WRITABLE,
+};
+#[cfg(mshv3)]
+use mshv_bindings::{
+    MSHV_SET_MEM_BIT_EXECUTABLE, MSHV_SET_MEM_BIT_UNMAP, MSHV_SET_MEM_BIT_WRITABLE,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
@@ -227,22 +242,45 @@ impl From<MemoryRegion> for mshv_user_mem_region {
         let guest_pfn = region.guest_region.start as u64 >> PAGE_SHIFT;
         let userspace_addr = region.host_region.start as u64;
 
-        let flags = region.flags.iter().fold(0, |acc, flag| {
-            let flag_value = match flag {
-                MemoryRegionFlags::NONE => HV_MAP_GPA_PERMISSIONS_NONE,
-                MemoryRegionFlags::READ => HV_MAP_GPA_READABLE,
-                MemoryRegionFlags::WRITE => HV_MAP_GPA_WRITABLE,
-                MemoryRegionFlags::EXECUTE => HV_MAP_GPA_EXECUTABLE,
-                _ => 0, // ignore any unknown flags
-            };
-            acc | flag_value
-        });
+        #[cfg(mshv2)]
+        {
+            let flags = region.flags.iter().fold(0, |acc, flag| {
+                let flag_value = match flag {
+                    MemoryRegionFlags::NONE => HV_MAP_GPA_PERMISSIONS_NONE,
+                    MemoryRegionFlags::READ => HV_MAP_GPA_READABLE,
+                    MemoryRegionFlags::WRITE => HV_MAP_GPA_WRITABLE,
+                    MemoryRegionFlags::EXECUTE => HV_MAP_GPA_EXECUTABLE,
+                    _ => 0, // ignore any unknown flags
+                };
+                acc | flag_value
+            });
+            mshv_user_mem_region {
+                guest_pfn,
+                size,
+                userspace_addr,
+                flags,
+            }
+        }
+        #[cfg(mshv3)]
+        {
+            let flags: u8 = region.flags.iter().fold(0, |acc, flag| {
+                let flag_value = match flag {
+                    MemoryRegionFlags::NONE => 1 << MSHV_SET_MEM_BIT_UNMAP,
+                    MemoryRegionFlags::READ => 0,
+                    MemoryRegionFlags::WRITE => 1 << MSHV_SET_MEM_BIT_WRITABLE,
+                    MemoryRegionFlags::EXECUTE => 1 << MSHV_SET_MEM_BIT_EXECUTABLE,
+                    _ => 0, // ignore any unknown flags
+                };
+                acc | flag_value
+            });
 
-        mshv_user_mem_region {
-            guest_pfn,
-            size,
-            userspace_addr,
-            flags,
+            mshv_user_mem_region {
+                guest_pfn,
+                size,
+                userspace_addr,
+                flags,
+                ..Default::default()
+            }
         }
     }
 }

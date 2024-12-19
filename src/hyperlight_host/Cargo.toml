@@ -71,10 +71,12 @@ windows-version = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 seccompiler = { version = "0.4.0", optional = true }
-mshv-bindings = { workspace = true, optional = true }
-mshv-ioctls = { workspace = true, optional = true }
 kvm-bindings = { version = "0.10.0", features = ["fam-wrappers"], optional = true }
 kvm-ioctls = { version = "0.19.0", optional = true }
+mshv-bindings2 = { package="mshv-bindings", version = "=0.2.1", optional = true }
+mshv-ioctls2 = { package="mshv-ioctls",  version = "=0.2.1", optional = true}
+mshv-bindings3 = { package="mshv-bindings", version = "0.3.1", optional = true }
+mshv-ioctls3 = { package="mshv-ioctls",  version = "0.3.1", optional = true}
 
 [dev-dependencies]
 uuid = { version = "1.4.1", features = ["v4"] }
@@ -114,7 +116,7 @@ cfg_aliases = "0.2.1"
 built = { version = "0.7.0", features = ["chrono", "git2"] }
 
 [features]
-default = ["kvm", "mshv", "seccomp"]
+default = ["kvm", "mshv2", "seccomp"]
 seccomp = ["dep:seccompiler"]
 function_call_metrics = []
 executable_heap = []
@@ -122,7 +124,8 @@ executable_heap = []
 print_debug = []
 crashdump = ["dep:tempfile"] # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged. This feature can only be used in debug builds.
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
-mshv = ["dep:mshv-bindings", "dep:mshv-ioctls"]
+mshv2 = ["mshv-bindings2", "mshv-ioctls2"]
+mshv3 = ["mshv-bindings3", "mshv-ioctls3"]
 inprocess = []
 
 [[bench]]

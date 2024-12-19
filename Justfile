@@ -94,7 +94,7 @@ test-rust target=default-target features="": (test-rust-int "rust" target featur
 test-seccomp target=default-target:
     # run seccomp test with feature "seccomp" on and off
     cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --lib -- --ignored
-    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --no-default-features --features mshv,kvm --lib -- --ignored
+    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --no-default-features --features mshv2,kvm --lib -- --ignored
 
 # rust integration tests. guest can either be "rust" or "c"
 test-rust-int guest target=default-target features="":
