@@ -233,9 +233,9 @@ impl HypervisorHandler {
         sandbox_memory_manager: SandboxMemoryManager<GuestSharedMemory>,
     ) -> Result<()> {
         let configuration = self.configuration.clone();
-        let sandbox_memory_manager = Arc::new(Mutex::new(sandbox_memory_manager));
         #[cfg(target_os = "windows")]
-        let in_process = sandbox_memory_manager.lock().unwrap().is_in_process();
+        let in_process = sandbox_memory_manager.is_in_process();
+        let sandbox_memory_manager = Arc::new(Mutex::new(sandbox_memory_manager));
 
         *self.execution_variables.shm.try_lock().unwrap() = Some(sandbox_memory_manager);
 
@@ -850,10 +850,12 @@ fn set_up_hypervisor_partition(
 
             #[cfg(target_os = "windows")]
             Some(HypervisorType::Whp) => {
+                let mgr_lock = mgr.lock().unwrap();
+
                 let hv = crate::hypervisor::hyperv_windows::HypervWindowsDriver::new(
                     regions,
-                    mgr.lock().unwrap().shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
-                    mgr.lock().unwrap().shared_mem.raw_ptr() as *mut c_void, // and instead convert it to base_addr where needed in the driver itself
+                    mgr_lock.shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
+                    mgr_lock.shared_mem.raw_ptr() as *mut c_void, // and instead convert it to base_addr where needed in the driver itself
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
                     rsp_ptr.absolute()?,
