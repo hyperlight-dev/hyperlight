@@ -46,7 +46,6 @@ use hyperlight_common::flatbuffer_wrappers::util::{
     get_flatbuffer_result_from_void,
 };
 use hyperlight_common::mem::PAGE_SIZE;
-use hyperlight_guest::alloca::_alloca;
 use hyperlight_guest::entrypoint::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
@@ -409,25 +408,6 @@ fn print_eleven_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
-fn stack_allocate(function_call: &FunctionCall) -> Result<Vec<u8>> {
-    if let ParameterValue::Int(length) = function_call.parameters.clone().unwrap()[0].clone() {
-        let alloc_length = if length == 0 {
-            DEFAULT_GUEST_STACK_SIZE + 1
-        } else {
-            length
-        };
-
-        _alloca(alloc_length as usize);
-
-        Ok(get_flatbuffer_result_from_int(alloc_length))
-    } else {
-        Err(HyperlightGuestError::new(
-            ErrorCode::GuestFunctionParameterTypeMismatch,
-            "Invalid parameters passed to stack_allocate".to_string(),
-        ))
-    }
-}
-
 fn buffer_overrun(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(value) = function_call.parameters.clone().unwrap()[0].clone() {
         let c_str = value.as_str();
@@ -748,14 +728,6 @@ pub extern "C" fn hyperlight_main() {
         simple_print_output as i64, // alias to simple_print_output for now
     );
     register_function(print_using_printf_def);
-
-    let stack_allocate_def = GuestFunctionDefinition::new(
-        "StackAllocate".to_string(),
-        Vec::from(&[ParameterType::Int]),
-        ReturnType::Int,
-        stack_allocate as i64,
-    );
-    register_function(stack_allocate_def);
 
     let stack_overflow_def = GuestFunctionDefinition::new(
         "StackOverflow".to_string(),

@@ -41,7 +41,6 @@ fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(include_dir: 
 
 fn cargo_main() {
     println!("cargo:rerun-if-changed=third_party");
-    println!("cargo:rerun-if-changed=src/alloca");
     println!("cargo:rerun-if-changed=include");
 
     let mut cfg = cc::Build::new();
@@ -64,19 +63,9 @@ fn cargo_main() {
             .include("third_party/musl/arch/x86_64");
     }
 
-    if cfg!(feature = "alloca") {
-        cfg.file("src/alloca/alloca.c")
-            .define("_alloca", "_alloca_wrapper")
-            .flag("-Wno-return-stack-address");
-    }
-
     let is_pe = env::var("CARGO_CFG_WINDOWS").is_ok();
 
-    if cfg!(any(
-        feature = "printf",
-        feature = "libc",
-        feature = "alloca"
-    )) {
+    if cfg!(any(feature = "printf", feature = "libc")) {
         cfg.define("HYPERLIGHT", None); // used in certain musl files for conditional compilation
 
         // silence compiler warnings
