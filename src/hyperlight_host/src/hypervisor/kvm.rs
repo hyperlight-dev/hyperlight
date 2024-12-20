@@ -328,71 +328,21 @@ impl Hypervisor for KVMDriver {
         &self.mem_regions
     }
 }
-
-#[cfg(test)]
-pub(crate) mod test_cfg {
-    use once_cell::sync::Lazy;
-    use serde::Deserialize;
-
-    pub(crate) static TEST_CONFIG: Lazy<TestConfig> =
-        Lazy::new(|| match envy::from_env::<TestConfig>() {
-            Ok(config) => config,
-            Err(err) => panic!("error parsing config from env: {}", err),
-        });
-    pub(crate) static SHOULD_RUN_TEST: Lazy<bool> = Lazy::new(is_kvm_present);
-
-    fn is_kvm_present() -> bool {
-        println!(
-            "KVM_SHOULD_BE_PRESENT is {}",
-            TEST_CONFIG.kvm_should_be_present
-        );
-        let is_present = super::is_hypervisor_present();
-        if (is_present && !TEST_CONFIG.kvm_should_be_present)
-            || (!is_present && TEST_CONFIG.kvm_should_be_present)
-        {
-            println!(
-                "WARNING: KVM is-present returned {}, should be present is: {}",
-                is_present, TEST_CONFIG.kvm_should_be_present
-            );
-        }
-        is_present
-    }
-
-    fn kvm_should_be_present_default() -> bool {
-        false
-    }
-
-    #[derive(Deserialize, Debug)]
-    pub(crate) struct TestConfig {
-        #[serde(default = "kvm_should_be_present_default")]
-        // Set env var KVM_SHOULD_BE_PRESENT to require kvm to be present for the tests.
-        pub(crate) kvm_should_be_present: bool,
-    }
-
-    #[macro_export]
-    macro_rules! should_run_kvm_linux_test {
-        () => {{
-            if !(*$crate::hypervisor::kvm::test_cfg::SHOULD_RUN_TEST) {
-                println! {"Not Running KVM Test - SHOULD_RUN_TEST is false"}
-                return;
-            }
-            println! {"Running Test - SHOULD_RUN_TEST is true"}
-        }};
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
     use crate::hypervisor::tests::test_initialise;
-    use crate::{should_run_kvm_linux_test, Result};
+    use crate::Result;
 
     #[test]
     fn test_init() {
-        should_run_kvm_linux_test!();
-        let outb_handler = {
+        if !super::is_hypervisor_present() {
+            return;
+        }
+
+        let outb_handler: Arc<Mutex<OutBHandler>> = {
             let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
                 Box::new(|_, _| -> Result<()> { Ok(()) });
             Arc::new(Mutex::new(OutBHandler::from(func)))
