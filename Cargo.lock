@@ -1071,6 +1071,7 @@ dependencies = [
  "buddy_system_allocator",
  "cc",
  "cfg-if",
+ "glob",
  "hyperlight-common",
  "log",
  "serde_json",
@@ -1125,7 +1126,7 @@ dependencies = [
  "strum",
  "tempfile",
  "termcolor",
- "thiserror 2.0.7",
+ "thiserror 2.0.10",
  "tokio",
  "tracing",
  "tracing-chrome",
@@ -2584,11 +2585,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.7"
+version = "2.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93605438cbd668185516ab499d589afb7ee1859ea3d5fc8f6b0755e1c7443767"
+checksum = "a3ac7f54ca534db81081ef1c1e7f6ea8a3ef428d2fc069097c079443d24124d3"
 dependencies = [
- "thiserror-impl 2.0.7",
+ "thiserror-impl 2.0.10",
 ]
 
 [[package]]
@@ -2604,9 +2605,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.7"
+version = "2.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1d8749b4531af2117677a5fcd12b1348a3fe2b81e36e61ffeac5c4aa3273e36"
+checksum = "9e9465d30713b56a37ede7185763c3492a91be2f5fa68d958c44e41ab9248beb"
 dependencies = [
  "proc-macro2",
  "quote",
