@@ -46,6 +46,12 @@ jobs:
       - name: clippy
         run: just clippy ${{ matrix.config }}
 
+      - name: Ensure up-to-date Cargo.lock
+        run: |
+          cargo fetch --locked
+          cargo fetch --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml --locked
+          cargo fetch --manifest-path src/tests/rust_guests/callbackguest/Cargo.toml --locked
+
       - name: Get gh action service name
         if: ${{ (runner.os == 'Windows' )}}
         run: (Get-Service actions.runner.*) | Foreach { $_.Name, $_.UserName, $_.ServiceType }
