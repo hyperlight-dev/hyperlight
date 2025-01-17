@@ -46,7 +46,7 @@ MSHV stands for Microsoft Hypervisor and is the name commonly used for Hyper-V w
 
 ## Guest
 
-A guest is a standalone executable binary that is executed inside a hypervisor [micro virtual machine](#micro-virtual-machine). By having purpose-fit guests binaries, as opposed to running a full operating system, is how Hyperlight achieves low-latency startup times of workloads, since it doesn't need to first boot an entire operating system before executing the workload.
+A guest is a standalone executable binary that is executed inside a hypervisor [micro virtual machine](#micro-virtual-machine). By having purpose-fit guests binaries, as opposed to running a full operating system, Hyperlight achieves low-latency startup times of workloads, since it doesn't need to first boot an entire operating system before executing the workload.
 
 The interface that a guest must implement is specific to the associated [host](#host) and the type of workloads that it may be specialized for executing, such as WebAssembly Modules (Wasm), or a specific language.
 
