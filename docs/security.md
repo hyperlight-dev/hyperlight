@@ -4,7 +4,7 @@ A primary goal of Hyperlight is to safely execute untrusted or unsafe code.
 
 ## Threat Model
 
-Hyperlight assumes that guest binaries are untrusted, and are running arbitrary, potentially malicious code. Despite this, the host should never be compromised. This documents outlines some of the steps Hyperlight takes to uphold this strong security guarantee.
+Hyperlight assumes that guest binaries are untrusted, and are running arbitrary, potentially malicious code. Despite this, the host should never be compromised. This document outlines some of the steps Hyperlight takes to uphold this strong security guarantee.
 
 ### Hypervisor Isolation
 
