@@ -22,7 +22,7 @@ This is an application that consumes the Hyperlight library, in order to execute
 
 ## Host
 
-Host is the machine on which the [host application](#host-application) is are running. A host could be a bare metal or virtual machine, when the host is a virtual machine, the nested virtualization is required to run Hyperlight.
+Host is the machine on which the [host application](#host-application) is running. A host could be a bare metal or virtual machine, when the host is a virtual machine, the nested virtualization is required to run Hyperlight.
 
 ## Hypervisor
 
