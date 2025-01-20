@@ -81,7 +81,7 @@ uuid = { version = "1.4.1", features = ["v4"] }
 signal-hook-registry = "1.4.1"
 envy = { version = "0.4.2" }
 serde = "1.0"
-proptest = "1.2.0"
+proptest = "1.6.0"
 tempfile = "3.15.0"
 crossbeam-queue = "0.3.12"
 tracing-serde = "0.2.0"
