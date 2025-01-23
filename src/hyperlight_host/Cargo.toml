@@ -77,7 +77,7 @@ kvm-bindings = { version = "0.10.0", features = ["fam-wrappers"], optional = tru
 kvm-ioctls = { version = "0.19.1", optional = true }
 
 [dev-dependencies]
-uuid = { version = "1.4.1", features = ["v4"] }
+uuid = { version = "1.12.1", features = ["v4"] }
 signal-hook-registry = "1.4.1"
 envy = { version = "0.4.2" }
 serde = "1.0"
