@@ -693,9 +693,9 @@ checksum = "486f806e73c5707928240ddc295403b1b93c96a02038563881c4a2fd84b81ac4"
 
 [[package]]
 name = "flatbuffers"
-version = "24.3.25"
+version = "25.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8add37afff2d4ffa83bc748a70b4b1370984f6980768554182424ef71447c35f"
+checksum = "744fff4a025a51bc620d8427474693aa2af4534a3b3610aabfb07a3968dacaa9"
 dependencies = [
  "bitflags 1.3.2",
  "rustc_version",
