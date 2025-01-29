@@ -1654,7 +1654,7 @@ checksum = "89abe853221fa6f14ad4066affb9abda241a03d65622887d5794e1422d0bd75a"
 dependencies = [
  "libc",
  "mshv-bindings 0.3.2",
- "thiserror 2.0.10",
+ "thiserror 2.0.11",
  "vmm-sys-util",
 ]
 
@@ -1730,16 +1730,16 @@ checksum = "b410bbe7e14ab526a0e86877eb47c6996a2bd7746f027ba551028c925390e4e9"
 
 [[package]]
 name = "opentelemetry"
-version = "0.27.0"
+version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f3cebff57f7dbd1255b44d8bddc2cebeb0ea677dbaa2e25a3070a91b318f660"
+checksum = "ab70038c28ed37b97d8ed414b6429d343a8bbf44c9f79ec854f3a643029ba6d7"
 dependencies = [
  "futures-core",
  "futures-sink",
  "js-sys",
- "once_cell",
  "pin-project-lite",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
