@@ -38,7 +38,6 @@ use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 use opentelemetry_sdk::runtime::Tokio;
 use opentelemetry_sdk::{trace, Resource};
 use opentelemetry_semantic_conventions::attribute::{SERVICE_NAME, SERVICE_VERSION};
-use opentelemetry_semantic_conventions::SCHEMA_URL;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -64,15 +63,10 @@ fn init_tracing_subscriber(addr: &str) -> Result<(), Box<dyn Error + Send + Sync
         .build()?;
 
     let provider = trace::TracerProvider::builder()
-        .with_config(
-            trace::Config::default().with_resource(Resource::from_schema_url(
-                vec![
-                    KeyValue::new(SERVICE_NAME, "hyperlight_otel_example"),
-                    KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-                ],
-                SCHEMA_URL,
-            )),
-        )
+        .with_resource(Resource::new(vec![
+            KeyValue::new(SERVICE_NAME, "hyperlight_otel_example"),
+            KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+        ]))
         .with_batch_exporter(exporter, Tokio)
         .build();
 
