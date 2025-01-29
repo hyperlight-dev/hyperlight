@@ -22,7 +22,7 @@ workspace = true
 
 [dependencies]
 goblin = { version = "0.9" }
-rand = { version = "0.8.5" }
+rand = { version = "0.9.0" }
 cfg-if = { version = "1.0.0" }
 libc = { version = "0.2.169" }
 paste = "1.0"
