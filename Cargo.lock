@@ -1097,7 +1097,7 @@ dependencies = [
  "goblin",
  "hyperlight-common",
  "hyperlight-testing",
- "kvm-bindings",
+ "kvm-bindings 0.10.0",
  "kvm-ioctls",
  "lazy_static",
  "libc",
@@ -1431,13 +1431,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "kvm-ioctls"
-version = "0.19.1"
+name = "kvm-bindings"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e013ae7fcd2c6a8f384104d16afe7ea02969301ea2bb2a56e44b011ebc907cab"
+checksum = "501bc0717c6a9fc409f29047ebeb6040a4d304344698abb268c4c6a440e6a09a"
+dependencies = [
+ "vmm-sys-util",
+]
+
+[[package]]
+name = "kvm-ioctls"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f9120f23310f01dd7b4fbb4ae1fd4eae3e09a7aa5b77038b08a6b37099d8ef4"
 dependencies = [
  "bitflags 2.8.0",
- "kvm-bindings",
+ "kvm-bindings 0.11.0",
  "libc",
  "vmm-sys-util",
 ]
@@ -1654,7 +1663,7 @@ checksum = "89abe853221fa6f14ad4066affb9abda241a03d65622887d5794e1422d0bd75a"
 dependencies = [
  "libc",
  "mshv-bindings 0.3.2",
- "thiserror 2.0.10",
+ "thiserror 2.0.11",
  "vmm-sys-util",
 ]
 
