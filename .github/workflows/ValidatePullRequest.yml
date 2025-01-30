@@ -32,6 +32,9 @@ jobs:
               - '**/*.txt'
             all:
               - '**/*'
+            common_deps:
+              - '**/src/hyperlight_guest/Cargo.toml'
+              - '**/src/hyperlight_common/Cargo.toml'
       - uses: actions/github-script@v7
         id: docs-only
         with:
@@ -43,7 +46,7 @@ jobs:
       # Check to see if this a dependabot PR and if it updates either the common or guest Cargo.toml files
       # if it does we need to try and generate a new Cargo.lock file as the PR validation checks that these are up to date
       - name: Update Cargo.lock for dependabot changes
-        if: ${{ github.actor == 'dependabot[bot]' && (github.event.pull_request.changed_files.* == 'src/hyperlight_common/Cargo.toml' || github.event.pull_request.changed_files.* == 'src/hyperlight_guest/Cargo.toml') }}
+        if: ${{ github.actor == 'dependabot[bot]' && steps.changes.outputs.common_deps_count > 0 }}
         run: |
           cargo update --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
           cargo update --manifest-path src/tests/rust_guests/callbackguest/Cargo.toml
