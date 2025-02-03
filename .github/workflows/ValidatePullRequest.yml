@@ -45,6 +45,9 @@ jobs:
           result-encoding: string
       # Check to see if this a dependabot PR and if it updates either the common or guest Cargo.toml files
       # if it does we need to try and generate a new Cargo.lock file as the PR validation checks that these are up to date
+      - name: checkout
+        uses: actions/checkout@v4
+        if: ${{ github.actor == 'dependabot[bot]' && steps.changes.outputs.common_deps_count > 0 }}
       - name: Update Cargo.lock for dependabot changes
         if: ${{ github.actor == 'dependabot[bot]' && steps.changes.outputs.common_deps_count > 0 }}
         run: |
