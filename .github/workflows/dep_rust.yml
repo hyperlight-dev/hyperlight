@@ -59,6 +59,11 @@ jobs:
         run: |
           cargo fetch --locked
 
+      - name: Get gh action service name
+        if: ${{ (runner.os == 'Windows' )}}
+        run: (Get-Service actions.runner.*) | Foreach { $_.Name, $_.UserName, $_.ServiceType }
+        shell: pwsh
+
       - name: Build and move Rust guests
         run: just build-and-move-rust-guests
 
