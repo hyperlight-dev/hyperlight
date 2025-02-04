@@ -61,14 +61,166 @@ pub(crate) fn is_hypervisor_present() -> bool {
 
 #[cfg(gdb)]
 mod debug {
+    use kvm_bindings::{
+        kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
+        KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
+    };
+    use kvm_ioctls::VcpuFd;
+
     use super::KVMDriver;
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
     use crate::{new_error, Result};
 
+    /// KVM Debug struct
+    /// This struct is used to abstract the internal details of the kvm
+    /// guest debugging settings
+    pub struct KvmDebug {
+        /// vCPU stepping state
+        single_step: bool,
+
+        /// Array of addresses for HW breakpoints
+        hw_breakpoints: Vec<u64>,
+
+        /// Sent to KVM for enabling guest debug
+        pub dbg_cfg: kvm_guest_debug,
+    }
+
+    impl KvmDebug {
+        const MAX_NO_OF_HW_BP: usize = 4;
+
+        pub fn new() -> Self {
+            let dbg = kvm_guest_debug {
+                control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP,
+                ..Default::default()
+            };
+
+            Self {
+                single_step: false,
+                hw_breakpoints: vec![],
+                dbg_cfg: dbg,
+            }
+        }
+
+        /// Method to set the kvm debugreg fields for breakpoints
+        /// The maximum number of supported breakpoints is `Self::MAX_NO_OF_HW_BP`
+        pub fn set_breakpoints(&mut self, vcpu_fd: &VcpuFd, step: bool) -> Result<()> {
+            let addrs: &[u64] = &self.hw_breakpoints;
+
+            if addrs.len() >= Self::MAX_NO_OF_HW_BP {
+                return Err(new_error!(
+                    "The breakpoints array is larger than expected: {} >= {}",
+                    addrs.len(),
+                    Self::MAX_NO_OF_HW_BP
+                ));
+            }
+
+            self.dbg_cfg.arch.debugreg = [0; 8];
+            for (k, addr) in addrs.iter().enumerate() {
+                self.dbg_cfg.arch.debugreg[k] = *addr;
+                self.dbg_cfg.arch.debugreg[7] |= 1 << (k * 2);
+            }
+
+            if !addrs.is_empty() {
+                self.dbg_cfg.control |= KVM_GUESTDBG_USE_HW_BP;
+            } else {
+                self.dbg_cfg.control &= !KVM_GUESTDBG_USE_HW_BP;
+            }
+
+            if step {
+                self.dbg_cfg.control |= KVM_GUESTDBG_SINGLESTEP;
+            } else {
+                self.dbg_cfg.control &= !KVM_GUESTDBG_SINGLESTEP;
+            }
+
+            log::debug!("Setting bp: {:?} cfg: {:?}", addrs, self.dbg_cfg);
+            vcpu_fd
+                .set_guest_debug(&self.dbg_cfg)
+                .map_err(|e| new_error!("Could not set guest debug: {:?}", e))?;
+
+            self.single_step = step;
+
+            Ok(())
+        }
+    }
 
     impl KVMDriver {
+
+        /// Returns the instruction pointer from the stopped vCPU
+        pub fn get_instruction_pointer(&self) -> Result<u64> {
+            let regs = self
+                .vcpu_fd
+                .get_regs()
+                .map_err(|e| new_error!("Could not retrieve registers from vCPU: {:?}", e))?;
+
+            Ok(regs.rip)
+        }
+
+        /// Sets or clears stepping for vCPU
+        pub fn set_single_step(&mut self, enable: bool) -> Result<()> {
+            let debug = self
+                .debug
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            debug.set_breakpoints(&self.vcpu_fd, enable)
+        }
+
+        /// Gdb expects the target to be stopped when connected.
+        /// This method provides a way to set a breakpoint at the entrypoint
+        /// it does not keep this breakpoint set after the vcpu already stopped at the address
+        pub fn set_entrypoint_bp(&self) -> Result<()> {
+            if self.debug.is_some() {
+                log::debug!("Setting entrypoint bp {:X}", self.entrypoint);
+                let mut entrypoint_debug = KvmDebug::new();
+                entrypoint_debug.hw_breakpoints.push(self.entrypoint);
+                entrypoint_debug.set_breakpoints(&self.vcpu_fd, false)
+            } else {
+                Ok(())
+            }
+        }
+
+        /// Translates the guest address to physical address
+        fn translate_gva(&self, gva: u64) -> Result<u64> {
+            let tr = self.vcpu_fd.translate_gva(gva).map_err(|e| {
+                new_error!(
+                    "Could not translate guest virtual address {:X}: {:?}",
+                    gva,
+                    e
+                )
+            })?;
+
+            if tr.valid == 0 {
+                Err(new_error!(
+                    "Could not translate guest virtual address {:X}",
+                    gva
+                ))
+            } else {
+                Ok(tr.physical_address)
+            }
+        }
+
         /// Get the reason the vCPU has stopped
         pub fn get_stop_reason(&self) -> Result<VcpuStopReason> {
+            let debug = self
+                .debug
+                .as_ref()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            if debug.single_step {
+                return Ok(VcpuStopReason::DoneStep);
+            }
+
+            let ip = self.get_instruction_pointer()?;
+            let gpa = self.translate_gva(ip)?;
+
+            if debug.hw_breakpoints.contains(&gpa) {
+                return Ok(VcpuStopReason::HwBp);
+            }
+
+            if ip == self.entrypoint {
+                return Ok(VcpuStopReason::HwBp);
+            }
+
             Ok(VcpuStopReason::Unknown)
         }
 
@@ -78,6 +230,7 @@ mod debug {
         ) -> Result<DebugResponse> {
             match req {
                 DebugMsg::Continue => {
+                    self.set_single_step(false)?;
                     Ok(DebugResponse::Continue)
                 }
             }
@@ -123,6 +276,8 @@ pub(super) struct KVMDriver {
     mem_regions: Vec<MemoryRegion>,
 
     #[cfg(gdb)]
+    debug: Option<debug::KvmDebug>,
+    #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
 }
 
@@ -164,10 +319,13 @@ impl KVMDriver {
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
 
         #[cfg(gdb)]
-        let gdb_conn = if let Some(DebugInfo { port }) = debug_info {
-                Some(create_gdb_thread(*port).map_err(|_| new_error!("Cannot create GDB thread"))?)
+        let (debug, gdb_conn) = if let Some(DebugInfo { port }) = debug_info {
+            (
+                Some(debug::KvmDebug::new()),
+                Some(create_gdb_thread(*port).map_err(|_| new_error!("Cannot create GDB thread"))?),
+            )
         } else {
-            None
+            (None, None)
         };
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
@@ -179,9 +337,15 @@ impl KVMDriver {
             entrypoint,
             orig_rsp: rsp_gp,
             mem_regions,
+
+            #[cfg(gdb)]
+            debug,
             #[cfg(gdb)]
             gdb_conn,
         };
+
+        #[cfg(gdb)]
+        ret.set_entrypoint_bp()?;
 
         Ok(ret)
     }
