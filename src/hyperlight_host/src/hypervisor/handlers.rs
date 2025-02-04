@@ -121,7 +121,7 @@ pub trait DbgMemAccessHandlerCaller: Send {
 /// are passed as parameters to functions
 ///
 /// Note: This needs to be wrapped in a Mutex to be able to grab a mutable
-/// reference to the underlying data 
+/// reference to the underlying data
 pub type DbgMemAccessHandlerWrapper = Arc<Mutex<dyn DbgMemAccessHandlerCaller>>;
 
 pub(crate) type DbgReadMemAccessHandlerFunction =
@@ -130,12 +130,12 @@ pub(crate) type DbgWriteMemAccessHandlerFunction =
     Box<dyn FnMut(usize, &[u8]) -> Result<()> + Send>;
 pub(crate) type DbgGetCodeAddrHandlerFunction = Box<dyn FnMut() -> Result<usize> + Send>;
 
-/// A `DbgMemAccessHandler` implementation using 
+/// A `DbgMemAccessHandler` implementation using
 /// (`DbgReadMemAccessHandlerFunction`, `DbgWriteMemAccessHandlerFunction `, `DbgGetCodeAddrHandlerFunction `).
 ///
 /// Note: This handler must live for as long as its Sandbox or for
 /// static in the case of its C API usage.
-pub(crate) struct DbgMemAccessHandler (
+pub(crate) struct DbgMemAccessHandler(
     Arc<Mutex<DbgReadMemAccessHandlerFunction>>,
     Arc<Mutex<DbgWriteMemAccessHandlerFunction>>,
     Arc<Mutex<DbgGetCodeAddrHandlerFunction>>,
