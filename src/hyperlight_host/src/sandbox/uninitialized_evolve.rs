@@ -26,6 +26,8 @@ use crate::hypervisor::hypervisor_handler::{
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
+#[cfg(gdb)]
+use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::HostFuncsWrapper;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
@@ -66,6 +68,8 @@ where
             u_sbox.max_initialization_time,
             u_sbox.max_execution_time,
             u_sbox.max_wait_for_cancellation,
+            #[cfg(gdb)]
+            u_sbox.debug_info,
         )?;
 
         {
@@ -98,6 +102,7 @@ fn hv_init(
     max_init_time: Duration,
     max_exec_time: Duration,
     max_wait_for_cancellation: Duration,
+    #[cfg(gdb)] debug_info: Option<DebugInfo>,
 ) -> Result<HypervisorHandler> {
     let outb_hdl = outb_handler_wrapper(hshm.clone(), host_funcs);
     let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
@@ -126,7 +131,11 @@ fn hv_init(
 
     let mut hv_handler = HypervisorHandler::new(hv_handler_config);
 
-    hv_handler.start_hypervisor_handler(gshm)?;
+    hv_handler.start_hypervisor_handler(
+        gshm,
+        #[cfg(gdb)]
+        debug_info,
+    )?;
 
     hv_handler
         .execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)

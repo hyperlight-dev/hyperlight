@@ -336,7 +336,11 @@ pub(crate) mod tests {
         // whether we can configure the shared memory region, load a binary
         // into it, and run the CPU to completion (e.g., a HLT interrupt)
 
-        hv_handler.start_hypervisor_handler(gshm)?;
+        hv_handler.start_hypervisor_handler(
+            gshm,
+            #[cfg(gdb)]
+            None,
+        )?;
 
         hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
     }
