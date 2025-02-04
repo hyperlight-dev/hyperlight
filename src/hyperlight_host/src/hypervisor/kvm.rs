@@ -925,7 +925,7 @@ impl Hypervisor for KVMDriver {
             );
 
             self.send_dbg_msg(response)
-                .map_err(|e| new_error!("Couldn't send reponse to gdb: {:?}", e))?;
+                .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
 
             if cont {
                 break;

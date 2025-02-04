@@ -1,3 +1,19 @@
+/*
+Copyright 2024 The Hyperlight Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 mod event_loop;
 pub mod x86_64_target;
 
@@ -23,6 +39,8 @@ pub enum GdbTargetError {
     CannotReceiveMsg,
     #[error("Error encountered when sending message")]
     CannotSendMsg,
+    #[error("Out of range conversion: {0}")]
+    OutOfRangeConversion(String),
     #[error("Encountered an unexpected message over communication channel")]
     UnexpectedMessage,
     #[error("Unexpected error encountered")]
@@ -48,8 +66,8 @@ impl From<GdbTargetError> for TargetError<GdbTargetError> {
     }
 }
 
-#[derive(Debug, Default)]
 /// Struct that contains the x86_64 core registers
+#[derive(Debug, Default)]
 pub struct X86_64Regs {
     pub rax: u64,
     pub rbx: u64,
@@ -71,8 +89,8 @@ pub struct X86_64Regs {
     pub rflags: u64,
 }
 
-#[derive(Debug)]
 /// Defines the possible reasons for which a vCPU ce be stopped when debugging
+#[derive(Debug)]
 pub enum VcpuStopReason {
     DoneStep,
     HwBp,
@@ -80,8 +98,8 @@ pub enum VcpuStopReason {
     Unknown,
 }
 
-#[derive(Debug)]
 /// Enumerates the possible actions that a debugger can ask from a Hypervisor
+#[derive(Debug)]
 pub enum DebugMsg {
     AddHwBreakpoint(u64),
     AddSwBreakpoint(u64),
@@ -97,8 +115,8 @@ pub enum DebugMsg {
     WriteRegisters(X86_64Regs),
 }
 
-#[derive(Debug)]
 /// Enumerates the possible responses that a hypervisor can provide to a debugger
+#[derive(Debug)]
 pub enum DebugResponse {
     AddHwBreakpoint(bool),
     AddSwBreakpoint(bool),

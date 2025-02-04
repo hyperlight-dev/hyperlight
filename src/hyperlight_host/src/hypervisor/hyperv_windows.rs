@@ -374,6 +374,7 @@ impl Hypervisor for HypervWindowsDriver {
             hv_handler,
             outb_hdl,
             mem_access_hdl,
+            #[cfg(gdb)]
             dbg_mem_access_hdl,
         )?;
 
