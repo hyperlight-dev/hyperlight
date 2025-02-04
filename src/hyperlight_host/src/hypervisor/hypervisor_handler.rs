@@ -597,11 +597,15 @@ impl HypervisorHandler {
     /// and still have to receive after sorting that out without sending
     /// an extra message.
     pub(crate) fn try_receive_handler_msg(&self) -> Result<()> {
-        match self
+        #[cfg(gdb)]
+        let response = self.communication_channels.from_handler_rx.recv();
+        #[cfg(not(gdb))]
+        let response = self
             .communication_channels
             .from_handler_rx
-            .recv_timeout(self.execution_variables.get_timeout()?)
-        {
+            .recv_timeout(self.execution_variables.get_timeout()?);
+
+        match response {
             Ok(msg) => match msg {
                 HandlerMsg::Error(e) => Err(e),
                 HandlerMsg::FinishedHypervisorHandlerAction => Ok(()),
