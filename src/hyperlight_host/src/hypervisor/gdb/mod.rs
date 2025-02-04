@@ -1,10 +1,18 @@
-#![allow(dead_code)]
+mod event_loop;
+pub mod x86_64_target;
+
 use std::io::{self, ErrorKind};
 use std::net::TcpListener;
 use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use event_loop::event_loop_thread;
+use gdbstub::conn::ConnectionExt;
+use gdbstub::stub::GdbStub;
+use gdbstub::target::TargetError;
 use thiserror::Error;
+use x86_64_target::HyperlightSandboxTarget;
+
 #[derive(Debug, Error)]
 pub enum GdbTargetError {
     #[error("Error encountered while binding to address and port")]
@@ -15,6 +23,8 @@ pub enum GdbTargetError {
     CannotReceiveMsg,
     #[error("Error encountered when sending message")]
     CannotSendMsg,
+    #[error("Encountered an unexpected message over communication channel")]
+    UnexpectedMessage,
     #[error("Unexpected error encountered")]
     UnexpectedError,
 }
@@ -31,7 +41,39 @@ impl From<io::Error> for GdbTargetError {
         }
     }
 }
-/// Type that takes care of communication between Hypervisor and Gdb
+
+impl From<GdbTargetError> for TargetError<GdbTargetError> {
+    fn from(value: GdbTargetError) -> TargetError<GdbTargetError> {
+        TargetError::Io(std::io::Error::other(value))
+    }
+}
+
+#[derive(Debug)]
+/// Defines the possible reasons for which a vCPU ce be stopped when debugging
+pub enum VcpuStopReason {
+    DoneStep,
+    HwBp,
+    SwBp,
+    Unknown,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+/// Enumerates the possible actions that a debugger can ask from a Hypervisor
+pub enum DebugMsg {
+    Continue,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+/// Enumerates the possible responses that a hypervisor can provide to a debugger 
+pub enum DebugResponse {
+    Continue,
+    VcpuStopped(VcpuStopReason),
+}
+
+/// Debug communication channel that is used for sending a request type and
+/// receive a different response type
 pub struct DebugCommChannel<T, U> {
     /// Transmit channel
     tx: Sender<T>,
@@ -76,7 +118,8 @@ impl<T, U> DebugCommChannel<T, U> {
 /// Creates a thread that handles gdb protocol
 pub fn create_gdb_thread(
     port: u16,
-) -> Result<(), GdbTargetError> {
+) -> Result<DebugCommChannel<DebugResponse, DebugMsg>, GdbTargetError> {
+    let (gdb_conn, hyp_conn) = DebugCommChannel::unbounded();
     let socket = format!("localhost:{}", port);
 
     log::info!("Listening on {:?}", socket);
@@ -87,9 +130,21 @@ pub fn create_gdb_thread(
         .name("GDB handler".to_string())
         .spawn(move || -> Result<(), GdbTargetError> {
             log::info!("Waiting for GDB connection ... ");
-            let (_, _) = listener.accept()?;
+            let (conn, _) = listener.accept()?;
+
+            let conn: Box<dyn ConnectionExt<Error = io::Error>> = Box::new(conn);
+            let debugger = GdbStub::new(conn);
+
+            let mut target = HyperlightSandboxTarget::new(hyp_conn);
+
+            // Waits for vCPU to stop at entrypoint breakpoint
+            let res = target.recv()?;
+            if let DebugResponse::VcpuStopped(_) = res {
+                event_loop_thread(debugger, &mut target);
+            }
+
             Ok(())
         });
 
-    Ok(())
+    Ok(gdb_conn)
 }
