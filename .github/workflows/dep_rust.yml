@@ -95,6 +95,7 @@ jobs:
           # make sure certain cargo features compile
           cargo check -p hyperlight-host --features crashdump
           cargo check -p hyperlight-host --features print_debug
+          cargo check -p hyperlight-host --features gdb
 
           # without any driver (shouldn't compile)
           just test-rust-feature-compilation-fail ${{ matrix.config }}
