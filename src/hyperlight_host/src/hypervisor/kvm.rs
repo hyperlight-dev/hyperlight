@@ -74,6 +74,7 @@ mod debug {
     /// KVM Debug struct
     /// This struct is used to abstract the internal details of the kvm
     /// guest debugging settings
+    #[derive(Default)]
     pub struct KvmDebug {
         /// vCPU stepping state
         single_step: bool,
@@ -167,6 +168,12 @@ mod debug {
     }
 
     impl KVMDriver {
+        /// Resets the debug information to disable debugging
+        fn disable_debug(&mut self) -> Result<()> {
+            self.debug = Some(KvmDebug::default());
+
+            self.set_single_step(false)
+        }
 
         /// Returns the instruction pointer from the stopped vCPU
         fn get_instruction_pointer(&self) -> Result<u64> {
@@ -342,6 +349,11 @@ mod debug {
                     self.set_single_step(false)?;
                     Ok(DebugResponse::Continue)
                 }
+                DebugMsg::DisableDebug => {
+                    self.disable_debug()?;
+
+                    Ok(DebugResponse::DisableDebug)
+                }
                 DebugMsg::ReadRegisters => {
                     let mut regs = X86_64Regs::default();
                     self.read_regs(&mut regs).expect("Read Regs error");
@@ -352,6 +364,10 @@ mod debug {
                         .remove_hw_breakpoint(addr)
                         .expect("Remove hw breakpoint error");
                     Ok(DebugResponse::RemoveHwBreakpoint(res))
+                }
+                DebugMsg::Step => {
+                    self.set_single_step(true)?;
+                    Ok(DebugResponse::Step)
                 }
                 DebugMsg::WriteRegisters(regs) => {
                     self.write_regs(&regs).expect("Write Regs error");
@@ -720,7 +736,7 @@ impl Hypervisor for KVMDriver {
             // If the command was either step or continue, we need to run the vcpu
             let cont = matches!(
                 response,
-                DebugResponse::Continue
+                DebugResponse::Step | DebugResponse::Continue | DebugResponse::DisableDebug
             );
 
             self.send_dbg_msg(response)
