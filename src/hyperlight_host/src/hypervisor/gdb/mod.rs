@@ -100,12 +100,14 @@ pub enum VcpuStopReason {
 #[derive(Debug)]
 pub enum DebugMsg {
     AddHwBreakpoint(u64),
+    AddSwBreakpoint(u64),
     Continue,
     DisableDebug,
     GetCodeSectionOffset,
     ReadAddr(u64, usize),
     ReadRegisters,
     RemoveHwBreakpoint(u64),
+    RemoveSwBreakpoint(u64),
     Step,
     WriteAddr(u64, Vec<u8>),
     WriteRegisters(X86_64Regs),
@@ -115,12 +117,14 @@ pub enum DebugMsg {
 #[derive(Debug)]
 pub enum DebugResponse {
     AddHwBreakpoint(bool),
+    AddSwBreakpoint(bool),
     Continue,
     DisableDebug,
     GetCodeSectionOffset(u64),
     ReadAddr(Vec<u8>),
     ReadRegisters(X86_64Regs),
     RemoveHwBreakpoint(bool),
+    RemoveSwBreakpoint(bool),
     Step,
     VcpuStopped(VcpuStopReason),
     WriteAddr,
