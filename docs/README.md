@@ -34,6 +34,7 @@ This project is composed internally of several internal components, depicted in 
 
 * [Security guidance for developers](./security-guidance-for-developers.md)
 * [Paging Development Notes](./paging-development-notes.md)
+* [How to debug a Hyperlight guest](./how-to-debug-a-hyperlight-guest.md)
 * [How to use Flatbuffers in Hyperlight](./how-to-use-flatbuffers.md)
 * [How to make a Hyperlight release](./how-to-make-releases.md)
 * [Getting Hyperlight Metrics, Logs, and Traces](./hyperlight-metrics-logs-and-traces.md)
