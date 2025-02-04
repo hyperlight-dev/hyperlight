@@ -65,6 +65,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
 
 #[cfg(gdb)]
 mod debug {
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use hyperlight_common::mem::PAGE_SIZE;
@@ -80,6 +81,13 @@ mod debug {
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::{new_error, Result};
 
+    /// Software Breakpoint size in memory
+    pub const SW_BP_SIZE: usize = 1;
+    /// Software Breakpoinnt opcode
+    const SW_BP_OP: u8 = 0xCC;
+    /// Software Breakpoint written to memory
+    pub const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
+
     /// KVM Debug struct
     /// This struct is used to abstract the internal details of the kvm
     /// guest debugging settings
@@ -90,6 +98,8 @@ mod debug {
 
         /// Array of addresses for HW breakpoints
         hw_breakpoints: Vec<u64>,
+        /// Saves the bytes modified to enable sw breakpoints
+        sw_breakpoints: HashMap<u64, [u8; SW_BP_SIZE]>,
 
         /// Sent to KVM for enabling guest debug
         pub dbg_cfg: kvm_guest_debug,
@@ -107,6 +117,7 @@ mod debug {
             Self {
                 single_step: false,
                 hw_breakpoints: vec![],
+                sw_breakpoints: HashMap::new(),
                 dbg_cfg: dbg,
             }
         }
@@ -380,6 +391,69 @@ mod debug {
             }
         }
 
+        pub fn add_sw_breakpoint(
+            &mut self,
+            addr: u64,
+            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        ) -> Result<bool> {
+            let addr = {
+                let debug = self
+                    .debug
+                    .as_ref()
+                    .ok_or_else(|| new_error!("Debug is not enabled"))?;
+                let addr = self.translate_gva(addr)?;
+                if debug.sw_breakpoints.contains_key(&addr) {
+                    return Ok(true);
+                }
+
+                addr
+            };
+
+            let mut save_data = [0; SW_BP_SIZE];
+            self.read_addrs(addr, &mut save_data[..], dbg_mem_access_fn.clone())?;
+            self.write_addrs(addr, &SW_BP, dbg_mem_access_fn.clone())?;
+
+            {
+                let debug = self
+                    .debug
+                    .as_mut()
+                    .ok_or_else(|| new_error!("Debug is not enabled"))?;
+                debug.sw_breakpoints.insert(addr, save_data);
+            }
+
+            Ok(true)
+        }
+
+        pub fn remove_sw_breakpoint(
+            &mut self,
+            addr: u64,
+            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        ) -> Result<bool> {
+            let (ret, data) = {
+                let addr = self.translate_gva(addr)?;
+                let debug = self
+                    .debug
+                    .as_mut()
+                    .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+                if debug.sw_breakpoints.contains_key(&addr) {
+                    let save_data = debug
+                        .sw_breakpoints
+                        .remove(&addr)
+                        .expect("Expected the hashmap to contain the address");
+
+                    (true, Some(save_data))
+                } else {
+                    (false, None)
+                }
+            };
+
+            if ret {
+                self.write_addrs(addr, &data.unwrap(), dbg_mem_access_fn.clone())?;
+            }
+
+            Ok(ret)
+        }
 
         /// Get the reason the vCPU has stopped
         pub fn get_stop_reason(&self) -> Result<VcpuStopReason> {
@@ -394,6 +468,9 @@ mod debug {
 
             let ip = self.get_instruction_pointer()?;
             let gpa = self.translate_gva(ip)?;
+            if debug.sw_breakpoints.contains_key(&gpa) {
+                return Ok(VcpuStopReason::SwBp);
+            }
 
             if debug.hw_breakpoints.contains(&gpa) {
                 return Ok(VcpuStopReason::HwBp);
@@ -417,6 +494,13 @@ mod debug {
                         .add_hw_breakpoint(addr)
                         .expect("Add hw breakpoint error");
                     Ok(DebugResponse::AddHwBreakpoint(res))
+                }
+                DebugMsg::AddSwBreakpoint(addr) => {
+                    let res = self
+                        .add_sw_breakpoint(addr, dbg_mem_access_fn.clone())
+                        .expect("Add sw breakpoint error");
+
+                    Ok(DebugResponse::AddSwBreakpoint(res))
                 }
                 DebugMsg::Continue => {
                     self.set_single_step(false)?;
@@ -453,6 +537,12 @@ mod debug {
                         .remove_hw_breakpoint(addr)
                         .expect("Remove hw breakpoint error");
                     Ok(DebugResponse::RemoveHwBreakpoint(res))
+                }
+                DebugMsg::RemoveSwBreakpoint(addr) => {
+                    let res = self
+                        .remove_sw_breakpoint(addr, dbg_mem_access_fn.clone())
+                        .expect("Remove sw breakpoint error");
+                    Ok(DebugResponse::RemoveSwBreakpoint(res))
                 }
                 DebugMsg::Step => {
                     self.set_single_step(true)?;

@@ -7,7 +7,7 @@ use gdbstub::target::ext::base::singlethread::{
 };
 use gdbstub::target::ext::base::BaseOps;
 use gdbstub::target::ext::breakpoints::{
-    Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps,
+    Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps, SwBreakpoint, SwBreakpointOps,
 };
 use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
@@ -82,6 +82,11 @@ impl HyperlightSandboxTarget {
 impl Target for HyperlightSandboxTarget {
     type Arch = GdbTargetArch;
     type Error = GdbTargetError;
+
+    #[inline(always)]
+    fn guard_rail_implicit_sw_breakpoints(&self) -> bool {
+        true
+    }
 
     fn support_breakpoints(&mut self) -> Option<BreakpointsOps<Self>> {
         Some(self)
@@ -215,6 +220,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         Some(self)
     }
 }
+
 impl SectionOffsets for HyperlightSandboxTarget {
     fn get_section_offsets(&mut self) -> Result<Offsets<<Self::Arch as Arch>::Usize>, Self::Error> {
         log::debug!("Get section offsets");
@@ -234,6 +240,9 @@ impl SectionOffsets for HyperlightSandboxTarget {
 
 impl Breakpoints for HyperlightSandboxTarget {
     fn support_hw_breakpoint(&mut self) -> Option<HwBreakpointOps<Self>> {
+        Some(self)
+    }
+    fn support_sw_breakpoint(&mut self) -> Option<SwBreakpointOps<'_, Self>> {
         Some(self)
     }
 }
@@ -264,6 +273,40 @@ impl HwBreakpoint for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::RemoveHwBreakpoint(addr))? {
             DebugResponse::RemoveHwBreakpoint(rsp) => Ok(rsp),
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
+            }
+        }
+    }
+}
+
+impl SwBreakpoint for HyperlightSandboxTarget {
+    fn add_sw_breakpoint(
+        &mut self,
+        addr: <Self::Arch as Arch>::Usize,
+        _kind: <Self::Arch as Arch>::BreakpointKind,
+    ) -> TargetResult<bool, Self> {
+        log::debug!("Add sw breakpoint at address {:X}", addr);
+
+        match self.send_command(DebugMsg::AddSwBreakpoint(addr))? {
+            DebugResponse::AddSwBreakpoint(rsp) => Ok(rsp),
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
+            }
+        }
+    }
+
+    fn remove_sw_breakpoint(
+        &mut self,
+        addr: <Self::Arch as Arch>::Usize,
+        _kind: <Self::Arch as Arch>::BreakpointKind,
+    ) -> TargetResult<bool, Self> {
+        log::debug!("Remove sw breakpoint at address {:X}", addr);
+
+        match self.send_command(DebugMsg::RemoveSwBreakpoint(addr))? {
+            DebugResponse::RemoveSwBreakpoint(rsp) => Ok(rsp),
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
