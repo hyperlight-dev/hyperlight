@@ -16,8 +16,14 @@ limitations under the License.
 
 use crossbeam_channel::TryRecvError;
 use gdbstub::arch::Arch;
-use gdbstub::target::ext::base::singlethread::SingleThreadBase;
+use gdbstub::common::Signal;
+use gdbstub::target::ext::base::singlethread::{
+    SingleThreadBase, SingleThreadResume, SingleThreadResumeOps,
+};
 use gdbstub::target::ext::base::BaseOps;
+use gdbstub::target::ext::breakpoints::{
+    Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps,
+};
 use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 
@@ -76,6 +82,10 @@ impl HyperlightSandboxTarget {
 impl Target for HyperlightSandboxTarget {
     type Arch = GdbTargetArch;
     type Error = GdbTargetError;
+
+    fn support_breakpoints(&mut self) -> Option<BreakpointsOps<Self>> {
+        Some(self)
+    }
 
     #[inline(always)]
     fn base_ops(&mut self) -> BaseOps<Self::Arch, Self::Error> {
@@ -175,5 +185,56 @@ impl SingleThreadBase for HyperlightSandboxTarget {
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
             }
         }
+    }
+
+    fn support_resume(&mut self) -> Option<SingleThreadResumeOps<Self>> {
+        Some(self)
+    }
+}
+
+impl Breakpoints for HyperlightSandboxTarget {
+    fn support_hw_breakpoint(&mut self) -> Option<HwBreakpointOps<Self>> {
+        Some(self)
+    }
+}
+
+impl HwBreakpoint for HyperlightSandboxTarget {
+    fn add_hw_breakpoint(
+        &mut self,
+        addr: <Self::Arch as Arch>::Usize,
+        _kind: <Self::Arch as Arch>::BreakpointKind,
+    ) -> TargetResult<bool, Self> {
+        log::debug!("Add hw breakpoint at address {:X}", addr);
+
+        match self.send_command(DebugMsg::AddHwBreakpoint(addr))? {
+            DebugResponse::AddHwBreakpoint(rsp) => Ok(rsp),
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
+            }
+        }
+    }
+
+    fn remove_hw_breakpoint(
+        &mut self,
+        addr: <Self::Arch as Arch>::Usize,
+        _kind: <Self::Arch as Arch>::BreakpointKind,
+    ) -> TargetResult<bool, Self> {
+        log::debug!("Remove hw breakpoint at address {:X}", addr);
+
+        match self.send_command(DebugMsg::RemoveHwBreakpoint(addr))? {
+            DebugResponse::RemoveHwBreakpoint(rsp) => Ok(rsp),
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
+            }
+        }
+    }
+}
+
+impl SingleThreadResume for HyperlightSandboxTarget {
+    fn resume(&mut self, _signal: Option<Signal>) -> Result<(), Self::Error> {
+        log::debug!("Resume");
+        self.resume_vcpu()
     }
 }
