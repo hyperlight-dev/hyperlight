@@ -25,10 +25,11 @@ use gdbstub::target::ext::base::BaseOps;
 use gdbstub::target::ext::breakpoints::{
     Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps,
 };
+use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 
-use super::{DebugMsg, DebugResponse, DebugCommChannel, GdbTargetError, X86_64Regs};
+use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError, X86_64Regs};
 
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
 pub struct HyperlightSandboxTarget {
@@ -106,6 +107,12 @@ impl Target for HyperlightSandboxTarget {
     fn base_ops(&mut self) -> BaseOps<Self::Arch, Self::Error> {
         BaseOps::SingleThread(self)
     }
+
+    fn support_section_offsets(
+        &mut self,
+    ) -> Option<gdbstub::target::ext::section_offsets::SectionOffsetsOps<Self>> {
+        Some(self)
+    }
 }
 
 impl SingleThreadBase for HyperlightSandboxTarget {
@@ -116,7 +123,17 @@ impl SingleThreadBase for HyperlightSandboxTarget {
     ) -> TargetResult<usize, Self> {
         log::debug!("Read addr: {:X} len: {:X}", gva, data.len());
 
-        unimplemented!()
+        match self.send_command(DebugMsg::ReadAddr(gva, data.len()))? {
+            DebugResponse::ReadAddr(v) => {
+                data.copy_from_slice(&v);
+
+                Ok(v.len())
+            }
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
+            }
+        }
     }
 
     fn write_addrs(
@@ -125,8 +142,15 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         data: &[u8],
     ) -> TargetResult<(), Self> {
         log::debug!("Write addr: {:X} len: {:X}", gva, data.len());
+        let v = Vec::from(data);
 
-        unimplemented!()
+        match self.send_command(DebugMsg::WriteAddr(gva, v))? {
+            DebugResponse::WriteAddr => Ok(()),
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
+            }
+        }
     }
 
     fn read_registers(
@@ -204,6 +228,22 @@ impl SingleThreadBase for HyperlightSandboxTarget {
 
     fn support_resume(&mut self) -> Option<SingleThreadResumeOps<Self>> {
         Some(self)
+    }
+}
+impl SectionOffsets for HyperlightSandboxTarget {
+    fn get_section_offsets(&mut self) -> Result<Offsets<<Self::Arch as Arch>::Usize>, Self::Error> {
+        log::debug!("Get section offsets");
+
+        match self.send_command(DebugMsg::GetCodeSectionOffset)? {
+            DebugResponse::GetCodeSectionOffset(text) => Ok(Offsets::Segments {
+                text_seg: text,
+                data_seg: None,
+            }),
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(GdbTargetError::UnexpectedMessage)
+            }
+        }
     }
 }
 

@@ -99,7 +99,7 @@ pub fn event_loop_thread(
 ) {
     match debugger.run_blocking::<GdbBlockingEventLoop>(target) {
         Ok(disconnect_reason) => match disconnect_reason {
-            DisconnectReason::Disconnect => { 
+            DisconnectReason::Disconnect => {
                 log::info!("Gdb client disconnected");
                 if let Err(e) = target.disable_debug() {
                     log::error!("Cannot disable debugging: {:?}", e);

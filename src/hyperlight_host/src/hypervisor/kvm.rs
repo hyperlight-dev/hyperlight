@@ -66,6 +66,8 @@ pub(crate) fn is_hypervisor_present() -> bool {
 #[cfg(gdb)]
 mod debug {
     use std::sync::{Arc, Mutex};
+
+    use hyperlight_common::mem::PAGE_SIZE;
     use kvm_bindings::{
         kvm_guest_debug, kvm_regs, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
         KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
@@ -75,6 +77,7 @@ mod debug {
     use super::KVMDriver;
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
+    use crate::mem::layout::SandboxMemoryLayout;
     use crate::{new_error, Result};
 
     /// KVM Debug struct
@@ -221,6 +224,66 @@ mod debug {
             }
         }
 
+        fn read_addrs(
+            &mut self,
+            mut gva: u64,
+            mut data: &mut [u8],
+            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        ) -> Result<()> {
+            let data_len = data.len();
+            log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
+
+            while !data.is_empty() {
+                let gpa = self.translate_gva(gva)?;
+
+                let read_len = std::cmp::min(
+                    data.len(),
+                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                );
+                let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+
+                dbg_mem_access_fn
+                    .try_lock()
+                    .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                    .read(offset, &mut data[..read_len])?;
+
+                data = &mut data[read_len..];
+                gva += read_len as u64;
+            }
+
+            Ok(())
+        }
+
+        fn write_addrs(
+            &mut self,
+            mut gva: u64,
+            mut data: &[u8],
+            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        ) -> Result<()> {
+            let data_len = data.len();
+            log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
+
+            while !data.is_empty() {
+                let gpa = self.translate_gva(gva)?;
+
+                let write_len = std::cmp::min(
+                    data.len(),
+                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                );
+                let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+
+                dbg_mem_access_fn
+                    .try_lock()
+                    .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                    .write(offset, data)?;
+
+                data = &data[write_len..];
+                gva += write_len as u64;
+            }
+
+            Ok(())
+        }
+
         fn read_regs(&self, regs: &mut X86_64Regs) -> Result<()> {
             log::debug!("Read registers");
             let vcpu_regs = self
@@ -343,7 +406,7 @@ mod debug {
         pub fn process_dbg_request(
             &mut self,
             req: DebugMsg,
-            _dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         ) -> Result<DebugResponse> {
             match req {
                 DebugMsg::AddHwBreakpoint(addr) => {
@@ -361,6 +424,21 @@ mod debug {
 
                     Ok(DebugResponse::DisableDebug)
                 }
+                DebugMsg::GetCodeSectionOffset => {
+                    let offset = dbg_mem_access_fn
+                        .try_lock()
+                        .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                        .get_code_offset()?;
+
+                    Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
+                }
+                DebugMsg::ReadAddr(addr, len) => {
+                    let mut data = vec![0u8; len];
+
+                    self.read_addrs(addr, &mut data, dbg_mem_access_fn)?;
+
+                    Ok(DebugResponse::ReadAddr(data))
+                }
                 DebugMsg::ReadRegisters => {
                     let mut regs = X86_64Regs::default();
                     self.read_regs(&mut regs).expect("Read Regs error");
@@ -375,6 +453,11 @@ mod debug {
                 DebugMsg::Step => {
                     self.set_single_step(true)?;
                     Ok(DebugResponse::Step)
+                }
+                DebugMsg::WriteAddr(addr, data) => {
+                    self.write_addrs(addr, &data, dbg_mem_access_fn)?;
+
+                    Ok(DebugResponse::WriteAddr)
                 }
                 DebugMsg::WriteRegisters(regs) => {
                     self.write_regs(&regs).expect("Write Regs error");
