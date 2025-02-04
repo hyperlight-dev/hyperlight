@@ -62,13 +62,13 @@ pub(crate) fn is_hypervisor_present() -> bool {
 #[cfg(gdb)]
 mod debug {
     use kvm_bindings::{
-        kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
+        kvm_guest_debug, kvm_regs, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
         KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
     };
     use kvm_ioctls::VcpuFd;
 
     use super::KVMDriver;
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
     use crate::{new_error, Result};
 
     /// KVM Debug struct
@@ -208,6 +208,65 @@ mod debug {
             }
         }
 
+        fn read_regs(&self, regs: &mut X86_64Regs) -> Result<()> {
+            log::debug!("Read registers");
+            let vcpu_regs = self
+                .vcpu_fd
+                .get_regs()
+                .map_err(|e| new_error!("Could not read guest registers: {:?}", e))?;
+
+            regs.rax = vcpu_regs.rax;
+            regs.rbx = vcpu_regs.rbx;
+            regs.rcx = vcpu_regs.rcx;
+            regs.rdx = vcpu_regs.rdx;
+            regs.rsi = vcpu_regs.rsi;
+            regs.rdi = vcpu_regs.rdi;
+            regs.rbp = vcpu_regs.rbp;
+            regs.rsp = vcpu_regs.rsp;
+            regs.r8 = vcpu_regs.r8;
+            regs.r9 = vcpu_regs.r9;
+            regs.r10 = vcpu_regs.r10;
+            regs.r11 = vcpu_regs.r11;
+            regs.r12 = vcpu_regs.r12;
+            regs.r13 = vcpu_regs.r13;
+            regs.r14 = vcpu_regs.r14;
+            regs.r15 = vcpu_regs.r15;
+
+            regs.rip = vcpu_regs.rip;
+            regs.rflags = vcpu_regs.rflags;
+
+            Ok(())
+        }
+
+        fn write_regs(&self, regs: &X86_64Regs) -> Result<()> {
+            log::debug!("Write registers");
+            let new_regs = kvm_regs {
+                rax: regs.rax,
+                rbx: regs.rbx,
+                rcx: regs.rcx,
+                rdx: regs.rdx,
+                rsi: regs.rsi,
+                rdi: regs.rdi,
+                rbp: regs.rbp,
+                rsp: regs.rsp,
+                r8: regs.r8,
+                r9: regs.r9,
+                r10: regs.r10,
+                r11: regs.r11,
+                r12: regs.r12,
+                r13: regs.r13,
+                r14: regs.r14,
+                r15: regs.r15,
+
+                rip: regs.rip,
+                rflags: regs.rflags,
+            };
+
+            self.vcpu_fd
+                .set_regs(&new_regs)
+                .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
+        }
+
         /// Gdb expects the target to be stopped when connected.
         /// This method provides a way to set a breakpoint at the entry point
         /// it does not keep this breakpoint set after the vCPU already stopped at the address
@@ -256,6 +315,15 @@ mod debug {
                 DebugMsg::Continue => {
                     self.set_single_step(false)?;
                     Ok(DebugResponse::Continue)
+                }
+                DebugMsg::ReadRegisters => {
+                    let mut regs = X86_64Regs::default();
+                    self.read_regs(&mut regs).expect("Read Regs error");
+                    Ok(DebugResponse::ReadRegisters(regs))
+                }
+                DebugMsg::WriteRegisters(regs) => {
+                    self.write_regs(&regs).expect("Write Regs error");
+                    Ok(DebugResponse::WriteRegisters)
                 }
             }
         }
