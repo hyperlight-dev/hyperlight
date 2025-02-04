@@ -68,6 +68,8 @@ use std::sync::{Arc, Mutex};
 #[cfg(gdb)]
 use gdb::VcpuStopReason;
 
+#[cfg(gdb)]
+use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use self::handlers::{
     MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
 };
@@ -128,6 +130,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
 
     /// Dispatch a call from the host to the guest using the given pointer
@@ -143,6 +146,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
 
     /// Handle an IO exit from the internally stored vCPU.
@@ -204,6 +208,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     /// handles the cases when the vCPU stops due to a Debug event
     fn handle_debug(
         &mut self,
+        _dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         _stop_reason: VcpuStopReason,
     ) -> Result<()> {
         unimplemented!()
@@ -221,12 +226,13 @@ impl VirtualCPU {
         hv_handler: Option<HypervisorHandler>,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()> {
         loop {
             match hv.run() {
                 #[cfg(gdb)]
                 Ok(HyperlightExit::Debug(stop_reason)) => {
-                    hv.handle_debug(stop_reason)?;
+                    hv.handle_debug(dbg_mem_access_fn.clone(), stop_reason)?;
                 }
 
                 Ok(HyperlightExit::Halt()) => {
@@ -301,6 +307,8 @@ pub(crate) mod tests {
 
     use hyperlight_testing::dummy_guest_as_string;
 
+    #[cfg(gdb)]
+    use super::handlers::DbgMemAccessHandlerWrapper;
     use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
     use crate::hypervisor::hypervisor_handler::{
         HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
@@ -313,6 +321,7 @@ pub(crate) mod tests {
     pub(crate) fn test_initialise(
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
         if !Path::new(&filename).exists() {
@@ -330,6 +339,8 @@ pub(crate) mod tests {
         let hv_handler_config = HvHandlerConfig {
             outb_handler: outb_hdl,
             mem_access_handler: mem_access_hdl,
+            #[cfg(gdb)]
+            dbg_mem_access_handler: dbg_mem_access_fn,
             seed: 1234567890,
             page_size: 4096,
             peb_addr: RawPtr::from(0x230000),

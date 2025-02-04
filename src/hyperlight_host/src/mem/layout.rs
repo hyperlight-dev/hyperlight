@@ -656,7 +656,7 @@ impl SandboxMemoryLayout {
 
     /// Get the guest address of the code section in the sandbox
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_guest_code_address(&self) -> usize {
+    pub(crate) fn get_guest_code_address(&self) -> usize {
         Self::BASE_ADDRESS + self.guest_code_offset
     }
 
