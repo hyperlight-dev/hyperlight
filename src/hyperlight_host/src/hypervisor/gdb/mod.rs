@@ -48,6 +48,29 @@ impl From<GdbTargetError> for TargetError<GdbTargetError> {
     }
 }
 
+#[derive(Debug, Default)]
+/// Struct that contains the x86_64 core registers
+pub struct X86_64Regs {
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rip: u64,
+    pub rflags: u64,
+}
+
 #[derive(Debug)]
 /// Defines the possible reasons for which a vCPU ce be stopped when debugging
 pub enum VcpuStopReason {
@@ -57,19 +80,21 @@ pub enum VcpuStopReason {
     Unknown,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 /// Enumerates the possible actions that a debugger can ask from a Hypervisor
 pub enum DebugMsg {
     Continue,
+    ReadRegisters,
+    WriteRegisters(X86_64Regs),
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 /// Enumerates the possible responses that a hypervisor can provide to a debugger 
 pub enum DebugResponse {
     Continue,
+    ReadRegisters(X86_64Regs),
     VcpuStopped(VcpuStopReason),
+    WriteRegisters,
 }
 
 /// Debug communication channel that is used for sending a request type and
