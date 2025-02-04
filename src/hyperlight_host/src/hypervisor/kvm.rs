@@ -258,6 +258,48 @@ mod debug {
                 .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
         }
 
+        pub fn add_hw_breakpoint(&mut self, addr: u64) -> Result<bool> {
+            let addr = self.translate_gva(addr)?;
+
+            if let Some(debug) = self.debug.as_mut() {
+                if debug.hw_breakpoints.contains(&addr) {
+                    Ok(true)
+                } else if debug.hw_breakpoints.len() >= KvmDebug::MAX_NO_OF_HW_BP {
+                    Ok(false)
+                } else {
+                    debug.hw_breakpoints.push(addr);
+                    debug.set_breakpoints(&self.vcpu_fd, false)?;
+
+                    Ok(true)
+                }
+            } else {
+                Ok(false)
+            }
+        }
+
+        pub fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<bool> {
+            let addr = self.translate_gva(addr)?;
+
+            if let Some(debug) = self.debug.as_mut() {
+                if debug.hw_breakpoints.contains(&addr) {
+                    let index = debug
+                        .hw_breakpoints
+                        .iter()
+                        .position(|a| *a == addr)
+                        .unwrap();
+                    debug.hw_breakpoints.copy_within(index + 1.., index);
+                    debug.hw_breakpoints.pop();
+                    debug.set_breakpoints(&self.vcpu_fd, false)?;
+
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            } else {
+                Ok(false)
+            }
+        }
+
 
         /// Get the reason the vCPU has stopped
         pub fn get_stop_reason(&self) -> Result<VcpuStopReason> {
@@ -289,6 +331,12 @@ mod debug {
             req: DebugMsg,
         ) -> Result<DebugResponse> {
             match req {
+                DebugMsg::AddHwBreakpoint(addr) => {
+                    let res = self
+                        .add_hw_breakpoint(addr)
+                        .expect("Add hw breakpoint error");
+                    Ok(DebugResponse::AddHwBreakpoint(res))
+                }
                 DebugMsg::Continue => {
                     self.set_single_step(false)?;
                     Ok(DebugResponse::Continue)
@@ -297,6 +345,12 @@ mod debug {
                     let mut regs = X86_64Regs::default();
                     self.read_regs(&mut regs).expect("Read Regs error");
                     Ok(DebugResponse::ReadRegisters(regs))
+                }
+                DebugMsg::RemoveHwBreakpoint(addr) => {
+                    let res = self
+                        .remove_hw_breakpoint(addr)
+                        .expect("Remove hw breakpoint error");
+                    Ok(DebugResponse::RemoveHwBreakpoint(res))
                 }
                 DebugMsg::WriteRegisters(regs) => {
                     self.write_regs(&regs).expect("Write Regs error");
