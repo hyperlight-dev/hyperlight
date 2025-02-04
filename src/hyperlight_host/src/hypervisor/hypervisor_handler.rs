@@ -836,7 +836,7 @@ fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[allow(unused_variables)] // parameter only used for in-process mode
     outb_handler: OutBHandlerWrapper,
-    #[cfg(gdb)] _debug_info: &Option<DebugInfo>,
+    #[cfg(gdb)] debug_info: &Option<DebugInfo>,
 ) -> Result<Box<dyn Hypervisor>> {
     let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
     let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
@@ -915,6 +915,8 @@ fn set_up_hypervisor_partition(
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
                     rsp_ptr.absolute()?,
+                    #[cfg(gdb)]
+                    debug_info,
                 )?;
                 Ok(Box::new(hv))
             }

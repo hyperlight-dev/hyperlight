@@ -34,6 +34,10 @@ pub mod hyperv_linux;
 pub(crate) mod hyperv_windows;
 pub(crate) mod hypervisor_handler;
 
+/// GDB debugging support
+#[cfg(gdb)]
+mod gdb;
+
 /// Driver for running in process instead of using hypervisor
 #[cfg(inprocess)]
 pub mod inprocess;
