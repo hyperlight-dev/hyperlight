@@ -128,6 +128,8 @@ kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv2 = ["dep:mshv-bindings2", "dep:mshv-ioctls2"]
 mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]
 inprocess = []
+# This enables compilation of gdb stub for easy debug in the guest
+gdb = []
 
 [[bench]]
 name = "benchmarks"
