@@ -18,10 +18,10 @@ use crossbeam_channel::TryRecvError;
 use gdbstub::arch::Arch;
 use gdbstub::target::ext::base::singlethread::SingleThreadBase;
 use gdbstub::target::ext::base::BaseOps;
-use gdbstub::target::{Target, TargetResult};
+use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 
-use super::{DebugMsg, DebugResponse, DebugCommChannel, GdbTargetError};
+use super::{DebugMsg, DebugResponse, DebugCommChannel, GdbTargetError, X86_64Regs};
 
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
 pub struct HyperlightSandboxTarget {
@@ -106,19 +106,74 @@ impl SingleThreadBase for HyperlightSandboxTarget {
 
     fn read_registers(
         &mut self,
-        _regs: &mut <Self::Arch as Arch>::Registers,
+        regs: &mut <Self::Arch as Arch>::Registers,
     ) -> TargetResult<(), Self> {
         log::debug!("Read regs");
 
-        unimplemented!()
+        match self.send_command(DebugMsg::ReadRegisters)? {
+            DebugResponse::ReadRegisters(read_regs) => {
+                regs.regs[0] = read_regs.rax;
+                regs.regs[1] = read_regs.rbp;
+                regs.regs[2] = read_regs.rcx;
+                regs.regs[3] = read_regs.rdx;
+                regs.regs[4] = read_regs.rsi;
+                regs.regs[5] = read_regs.rdi;
+                regs.regs[6] = read_regs.rbp;
+                regs.regs[7] = read_regs.rsp;
+                regs.regs[8] = read_regs.r8;
+                regs.regs[9] = read_regs.r9;
+                regs.regs[10] = read_regs.r10;
+                regs.regs[11] = read_regs.r11;
+                regs.regs[12] = read_regs.r12;
+                regs.regs[13] = read_regs.r13;
+                regs.regs[14] = read_regs.r14;
+                regs.regs[15] = read_regs.r15;
+                regs.rip = read_regs.rip;
+                regs.eflags = read_regs.rflags as u32;
+
+                Ok(())
+            }
+
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
+            }
+        }
     }
 
     fn write_registers(
         &mut self,
-        _regs: &<Self::Arch as Arch>::Registers,
+        regs: &<Self::Arch as Arch>::Registers,
     ) -> TargetResult<(), Self> {
         log::debug!("Write regs");
 
-        unimplemented!()
+        let regs = X86_64Regs {
+            rax: regs.regs[0],
+            rbx: regs.regs[1],
+            rcx: regs.regs[2],
+            rdx: regs.regs[3],
+            rsi: regs.regs[4],
+            rdi: regs.regs[5],
+            rbp: regs.regs[6],
+            rsp: regs.regs[7],
+            r8: regs.regs[8],
+            r9: regs.regs[9],
+            r10: regs.regs[10],
+            r11: regs.regs[11],
+            r12: regs.regs[12],
+            r13: regs.regs[13],
+            r14: regs.regs[14],
+            r15: regs.regs[15],
+            rip: regs.rip,
+            rflags: u64::from(regs.eflags),
+        };
+
+        match self.send_command(DebugMsg::WriteRegisters(regs))? {
+            DebugResponse::WriteRegisters => Ok(()),
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
+            }
+        }
     }
 }
