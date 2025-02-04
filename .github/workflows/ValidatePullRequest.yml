@@ -51,6 +51,7 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
       - name: Update Cargo.lock for dependabot changes
+        id: update-cargo-lock
         if: ${{ github.actor == 'dependabot[bot]' && steps.changes.outputs.common_deps_count > 0 }}
         run: |
           cargo update --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
@@ -62,7 +63,17 @@ jobs:
             git add src/tests/rust_guests/callbackguest/Cargo.lock
             git commit -m "Update Cargo.lock files for dependabot changes"
             git push
+            // Set an output to indicate that the PR branch has been updated
+            echo "pr_updated=1" >> "$GITHUB_OUTPUT"
           fi
+      - name: Restart workflow if changes have been made
+        if: steps.update-cargo-lock.outputs.pr_updated == '1'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.actions.log('Restarting workflow due to changes in the PR branch');
+            github.actions.restart()
 
   rust:
     needs:
