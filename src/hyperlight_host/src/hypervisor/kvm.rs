@@ -267,6 +267,26 @@ mod debug {
                 .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
         }
 
+        fn add_hw_breakpoint(&mut self, addr: u64) -> Result<bool> {
+            let addr = self.translate_gva(addr)?;
+
+            if let Some(debug) = self.debug.as_mut() {
+                debug.add_breakpoint(&self.vcpu_fd, addr)
+            } else {
+                Ok(false)
+            }
+        }
+
+        fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<bool> {
+            let addr = self.translate_gva(addr)?;
+
+            if let Some(debug) = self.debug.as_mut() {
+                debug.remove_breakpoint(&self.vcpu_fd, addr)
+            } else {
+                Ok(false)
+            }
+        }
+
         /// Gdb expects the target to be stopped when connected.
         /// This method provides a way to set a breakpoint at the entry point
         /// it does not keep this breakpoint set after the vCPU already stopped at the address
@@ -312,6 +332,12 @@ mod debug {
             req: DebugMsg,
         ) -> Result<DebugResponse> {
             match req {
+                DebugMsg::AddHwBreakpoint(addr) => {
+                    let res = self
+                        .add_hw_breakpoint(addr)
+                        .expect("Add hw breakpoint error");
+                    Ok(DebugResponse::AddHwBreakpoint(res))
+                }
                 DebugMsg::Continue => {
                     self.set_single_step(false)?;
                     Ok(DebugResponse::Continue)
@@ -320,6 +346,12 @@ mod debug {
                     let mut regs = X86_64Regs::default();
                     self.read_regs(&mut regs).expect("Read Regs error");
                     Ok(DebugResponse::ReadRegisters(regs))
+                }
+                DebugMsg::RemoveHwBreakpoint(addr) => {
+                    let res = self
+                        .remove_hw_breakpoint(addr)
+                        .expect("Remove hw breakpoint error");
+                    Ok(DebugResponse::RemoveHwBreakpoint(res))
                 }
                 DebugMsg::WriteRegisters(regs) => {
                     self.write_regs(&regs).expect("Write Regs error");

@@ -99,16 +99,20 @@ pub enum VcpuStopReason {
 /// Enumerates the possible actions that a debugger can ask from a Hypervisor
 #[derive(Debug)]
 pub enum DebugMsg {
+    AddHwBreakpoint(u64),
     Continue,
     ReadRegisters,
+    RemoveHwBreakpoint(u64),
     WriteRegisters(X86_64Regs),
 }
 
 /// Enumerates the possible responses that a hypervisor can provide to a debugger
 #[derive(Debug)]
 pub enum DebugResponse {
+    AddHwBreakpoint(bool),
     Continue,
     ReadRegisters(X86_64Regs),
+    RemoveHwBreakpoint(bool),
     VcpuStopped(VcpuStopReason),
     WriteRegisters,
 }
