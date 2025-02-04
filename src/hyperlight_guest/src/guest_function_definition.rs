@@ -33,7 +33,7 @@ pub struct GuestFunctionDefinition {
     /// The type of the return value from the host function call
     pub return_type: ReturnType,
     /// The function pointer to the guest function
-    pub function_pointer: i64,
+    pub function_pointer: usize,
 }
 
 impl GuestFunctionDefinition {
@@ -42,7 +42,7 @@ impl GuestFunctionDefinition {
         function_name: String,
         parameter_types: Vec<ParameterType>,
         return_type: ReturnType,
-        function_pointer: i64,
+        function_pointer: usize,
     ) -> Self {
         Self {
             function_name,

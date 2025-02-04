@@ -138,6 +138,10 @@ fmt-apply:
 clippy target=default-target:
     cargo clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
+clippy-guests target=default-target:
+    cd src/tests/rust_guests/simpleguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    cd src/tests/rust_guests/callbackguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+
 clippy-apply-fix-unix:
     cargo clippy --fix --all 
 
