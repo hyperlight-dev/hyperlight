@@ -597,11 +597,19 @@ impl HypervisorHandler {
     /// and still have to receive after sorting that out without sending
     /// an extra message.
     pub(crate) fn try_receive_handler_msg(&self) -> Result<()> {
-        match self
+        // When gdb debugging is enabled, we don't want to timeout on receiving messages
+        // from the handler thread, as the thread may be paused by gdb.
+        // In this case, we will wait indefinitely for a message from the handler thread.
+        // Note: This applies to all the running sandboxes, not just the one being debugged.
+        #[cfg(gdb)]
+        let response = self.communication_channels.from_handler_rx.recv();
+        #[cfg(not(gdb))]
+        let response = self
             .communication_channels
             .from_handler_rx
-            .recv_timeout(self.execution_variables.get_timeout()?)
-        {
+            .recv_timeout(self.execution_variables.get_timeout()?);
+
+        match response {
             Ok(msg) => match msg {
                 HandlerMsg::Error(e) => Err(e),
                 HandlerMsg::FinishedHypervisorHandlerAction => Ok(()),
