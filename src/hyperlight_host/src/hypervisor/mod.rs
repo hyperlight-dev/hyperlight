@@ -65,6 +65,9 @@ pub(crate) mod crashdump;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
+#[cfg(gdb)]
+use gdb::VcpuStopReason;
+
 use self::handlers::{
     MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
 };
@@ -89,6 +92,9 @@ pub(crate) const EFER_NX: u64 = 1 << 11;
 /// These are the generic exit reasons that we can handle from a Hypervisor the Hypervisors run method is responsible for mapping from
 /// the hypervisor specific exit reasons to these generic ones
 pub enum HyperlightExit {
+    #[cfg(gdb)]
+    /// The vCPU has exited due to a debug event
+    Debug(VcpuStopReason),
     /// The vCPU has halted
     Halt(),
     /// The vCPU has issued a write to the given port with the given value
@@ -193,6 +199,15 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
 
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion];
+
+    #[cfg(gdb)]
+    /// handles the cases when the vCPU stops due to a Debug event
+    fn handle_debug(
+        &mut self,
+        _stop_reason: VcpuStopReason,
+    ) -> Result<()> {
+        unimplemented!()
+    }
 }
 
 /// A virtual CPU that can be run until an exit occurs
@@ -209,6 +224,11 @@ impl VirtualCPU {
     ) -> Result<()> {
         loop {
             match hv.run() {
+                #[cfg(gdb)]
+                Ok(HyperlightExit::Debug(stop_reason)) => {
+                    hv.handle_debug(stop_reason)?;
+                }
+
                 Ok(HyperlightExit::Halt()) => {
                     break;
                 }
