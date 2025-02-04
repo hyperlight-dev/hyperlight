@@ -101,8 +101,10 @@ pub enum VcpuStopReason {
 pub enum DebugMsg {
     AddHwBreakpoint(u64),
     Continue,
+    DisableDebug,
     ReadRegisters,
     RemoveHwBreakpoint(u64),
+    Step,
     WriteRegisters(X86_64Regs),
 }
 
@@ -111,8 +113,10 @@ pub enum DebugMsg {
 pub enum DebugResponse {
     AddHwBreakpoint(bool),
     Continue,
+    DisableDebug,
     ReadRegisters(X86_64Regs),
     RemoveHwBreakpoint(bool),
+    Step,
     VcpuStopped(VcpuStopReason),
     WriteRegisters,
 }

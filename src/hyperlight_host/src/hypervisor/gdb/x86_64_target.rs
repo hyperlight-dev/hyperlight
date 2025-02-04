@@ -18,7 +18,8 @@ use crossbeam_channel::TryRecvError;
 use gdbstub::arch::Arch;
 use gdbstub::common::Signal;
 use gdbstub::target::ext::base::singlethread::{
-    SingleThreadBase, SingleThreadResume, SingleThreadResumeOps,
+    SingleThreadBase, SingleThreadResume, SingleThreadResumeOps, SingleThreadSingleStep,
+    SingleThreadSingleStepOps,
 };
 use gdbstub::target::ext::base::BaseOps;
 use gdbstub::target::ext::breakpoints::{
@@ -77,6 +78,20 @@ impl HyperlightSandboxTarget {
         }
     }
 
+    /// Sends an event to the Hypervisor that tells it to disable debugging
+    /// and continue executing until end
+    /// Note: The method waits for a confirmation message
+    pub fn disable_debug(&mut self) -> Result<(), GdbTargetError> {
+        log::info!("Disable debugging and continue until end");
+
+        match self.send_command(DebugMsg::DisableDebug)? {
+            DebugResponse::DisableDebug => Ok(()),
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(GdbTargetError::UnexpectedMessage)
+            }
+        }
+    }
 }
 
 impl Target for HyperlightSandboxTarget {
@@ -236,5 +251,23 @@ impl SingleThreadResume for HyperlightSandboxTarget {
     fn resume(&mut self, _signal: Option<Signal>) -> Result<(), Self::Error> {
         log::debug!("Resume");
         self.resume_vcpu()
+    }
+    fn support_single_step(&mut self) -> Option<SingleThreadSingleStepOps<Self>> {
+        Some(self)
+    }
+}
+
+impl SingleThreadSingleStep for HyperlightSandboxTarget {
+    fn step(&mut self, signal: Option<Signal>) -> Result<(), Self::Error> {
+        assert!(signal.is_none());
+
+        log::debug!("Step");
+        match self.send_command(DebugMsg::Step)? {
+            DebugResponse::Step => Ok(()),
+            msg => {
+                log::error!("Unexpected message received: {:?}", msg);
+                Err(GdbTargetError::UnexpectedMessage)
+            }
+        }
     }
 }
