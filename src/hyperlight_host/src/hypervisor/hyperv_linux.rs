@@ -44,6 +44,8 @@ use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
+#[cfg(gdb)]
+use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
     Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
@@ -203,6 +205,7 @@ impl Hypervisor for HypervLinuxDriver {
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         let regs = StandardRegisters {
             rip: self.entrypoint,
@@ -224,6 +227,8 @@ impl Hypervisor for HypervLinuxDriver {
             hv_handler,
             outb_hdl,
             mem_access_hdl,
+            #[cfg(gdb)]
+            dbg_mem_access_fn,
         )?;
 
         // reset RSP to what it was before initialise
@@ -242,6 +247,7 @@ impl Hypervisor for HypervLinuxDriver {
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers except RSP, then set RIP
         let rsp_before = self.vcpu_fd.get_regs()?.rsp;
@@ -268,6 +274,8 @@ impl Hypervisor for HypervLinuxDriver {
             hv_handler,
             outb_handle_fn,
             mem_access_fn,
+            #[cfg(gdb)]
+            dbg_mem_access_fn,
         )?;
 
         // reset RSP to what it was before function call

@@ -20,6 +20,8 @@ use tracing::{instrument, Span};
 
 use super::mem_mgr::MemMgrWrapper;
 use crate::error::HyperlightError::StackOverflow;
+#[cfg(gdb)]
+use crate::hypervisor::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use crate::hypervisor::handlers::{
     MemAccessHandler, MemAccessHandlerFunction, MemAccessHandlerWrapper,
 };
@@ -43,4 +45,43 @@ pub(crate) fn mem_access_handler_wrapper(
         Box::new(move || handle_mem_access_impl(&wrapper));
     let mem_access_hdl = MemAccessHandler::from(mem_access_func);
     Arc::new(Mutex::new(mem_access_hdl))
+}
+
+#[cfg(gdb)]
+struct DbgMemAccessContainer {
+    wrapper: MemMgrWrapper<HostSharedMemory>,
+}
+
+#[cfg(gdb)]
+impl DbgMemAccessHandlerCaller for DbgMemAccessContainer {
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn read(&mut self, addr: usize, data: &mut [u8]) -> Result<()> {
+        self.wrapper
+            .unwrap_mgr_mut()
+            .get_shared_mem_mut()
+            .copy_to_slice(data, addr)
+    }
+
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn write(&mut self, addr: usize, data: &[u8]) -> Result<()> {
+        self.wrapper
+            .unwrap_mgr_mut()
+            .get_shared_mem_mut()
+            .copy_from_slice(data, addr)
+    }
+
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn get_code_offset(&mut self) -> Result<usize> {
+        Ok(self.wrapper.unwrap_mgr().layout.get_guest_code_address())
+    }
+}
+
+#[cfg(gdb)]
+#[instrument(skip_all, parent = Span::current(), level= "Trace")]
+pub(crate) fn dbg_mem_access_handler_wrapper(
+    wrapper: MemMgrWrapper<HostSharedMemory>,
+) -> DbgMemAccessHandlerWrapper {
+    let container = DbgMemAccessContainer { wrapper };
+
+    Arc::new(Mutex::new(container))
 }

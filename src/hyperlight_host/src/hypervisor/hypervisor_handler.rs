@@ -37,6 +37,8 @@ use windows::Win32::System::Hypervisor::{WHvCancelRunVirtualProcessor, WHV_PARTI
 
 #[cfg(feature = "function_call_metrics")]
 use crate::histogram_vec_observe;
+#[cfg(gdb)]
+use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
 use crate::hypervisor::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
@@ -187,6 +189,8 @@ pub(crate) struct HvHandlerConfig {
     pub(crate) outb_handler: OutBHandlerWrapper,
     pub(crate) mem_access_handler: MemAccessHandlerWrapper,
     pub(crate) max_wait_for_cancellation: Duration,
+    #[cfg(gdb)]
+    pub(crate) dbg_mem_access_handler: DbgMemAccessHandlerWrapper,
 }
 
 impl HypervisorHandler {
@@ -351,6 +355,8 @@ impl HypervisorHandler {
                                     configuration.outb_handler.clone(),
                                     configuration.mem_access_handler.clone(),
                                     Some(hv_handler_clone.clone()),
+                                    #[cfg(gdb)]
+                                    configuration.dbg_mem_access_handler.clone(),
                                 );
                                 drop(mem_lock_guard);
                                 drop(evar_lock_guard);
@@ -436,6 +442,8 @@ impl HypervisorHandler {
                                             configuration.outb_handler.clone(),
                                             configuration.mem_access_handler.clone(),
                                             Some(hv_handler_clone.clone()),
+                                            #[cfg(gdb)]
+                                            configuration.dbg_mem_access_handler.clone(),
                                         );
                                         histogram_vec_observe!(
                                             &GuestFunctionCallDurationMicroseconds,
@@ -451,6 +459,8 @@ impl HypervisorHandler {
                                         configuration.outb_handler.clone(),
                                         configuration.mem_access_handler.clone(),
                                         Some(hv_handler_clone.clone()),
+                                        #[cfg(gdb)]
+                                        configuration.dbg_mem_access_handler.clone(),
                                     )
                                 };
                                 drop(mem_lock_guard);

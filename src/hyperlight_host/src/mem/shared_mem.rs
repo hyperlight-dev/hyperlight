@@ -840,7 +840,7 @@ impl HostSharedMemory {
         Ok(())
     }
 
-    /// /Copy the contents of the sandbox at the specified offset into
+    /// Copy the contents of the sandbox at the specified offset into
     /// the slice
     pub fn copy_from_slice(&self, slice: &[u8], offset: usize) -> Result<()> {
         bounds_check!(offset, slice.len(), self.mem_size());
