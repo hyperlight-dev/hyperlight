@@ -36,7 +36,6 @@ use crate::sandbox_state::sandbox::EvolvableSandbox;
 use crate::sandbox_state::transition::Noop;
 use crate::{log_build_details, log_then_return, new_error, MultiUseSandbox, Result};
 
-#[allow(dead_code)]
 #[cfg(gdb)]
 /// Used for passing debug configuration to a sandbox
 pub struct DebugInfo {
