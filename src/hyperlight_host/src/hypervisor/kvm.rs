@@ -24,7 +24,7 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::create_gdb_thread;
+use super::gdb::{create_gdb_thread, DebugMsg, DebugResponse, DebugCommChannel, VcpuStopReason};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
     HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
@@ -59,6 +59,56 @@ pub(crate) fn is_hypervisor_present() -> bool {
     }
 }
 
+#[cfg(gdb)]
+mod debug {
+    use super::KVMDriver;
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
+    use crate::{new_error, Result};
+
+
+    impl KVMDriver {
+        /// Get the reason the vCPU has stopped
+        pub fn get_stop_reason(&self) -> Result<VcpuStopReason> {
+            Ok(VcpuStopReason::Unknown)
+        }
+
+        pub fn process_dbg_request(
+            &mut self,
+            req: DebugMsg,
+        ) -> Result<DebugResponse> {
+            match req {
+                DebugMsg::Continue => {
+                    Ok(DebugResponse::Continue)
+                }
+            }
+        }
+
+        pub fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
+            let gdb_conn = self
+                .gdb_conn
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            gdb_conn
+                .recv()
+                .map_err(|e| new_error!("Got an error while waiting to receive a message: {:?}", e))
+        }
+
+        pub fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
+            log::debug!("Sending {:?}", cmd);
+
+            let gdb_conn = self
+                .gdb_conn
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            gdb_conn
+                .send(cmd)
+                .map_err(|e| new_error!("Got an error while sending a response message {:?}", e))
+        }
+    }
+}
+
 /// A Hypervisor driver for KVM on Linux
 pub(super) struct KVMDriver {
     _kvm: Kvm,
@@ -67,6 +117,9 @@ pub(super) struct KVMDriver {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
+
+    #[cfg(gdb)]
+    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
 }
 
 impl KVMDriver {
@@ -107,19 +160,26 @@ impl KVMDriver {
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
 
         #[cfg(gdb)]
-        if let Some(DebugInfo { port }) = debug_info {
-            create_gdb_thread(*port).map_err(|_| new_error!("Cannot create GDB thread"))?;
-        }
+        let gdb_conn = if let Some(DebugInfo { port }) = debug_info {
+                Some(create_gdb_thread(*port).map_err(|_| new_error!("Cannot create GDB thread"))?)
+        } else {
+            None
+        };
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
-        Ok(Self {
+
+        let ret = Self {
             _kvm: kvm,
             _vm_fd: vm_fd,
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
             mem_regions,
-        })
+            #[cfg(gdb)]
+            gdb_conn,
+        };
+
+        Ok(ret)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -311,6 +371,12 @@ impl Hypervisor for KVMDriver {
                     None => HyperlightExit::Mmio(addr),
                 }
             }
+            #[cfg(gdb)]
+            Ok(VcpuExit::Debug(_)) => {
+                let reason = self.get_stop_reason()?;
+
+                HyperlightExit::Debug(reason)
+            }
             Err(e) => match e.errno() {
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
                 libc::EINTR => HyperlightExit::Cancelled(),
@@ -337,7 +403,40 @@ impl Hypervisor for KVMDriver {
     fn get_memory_regions(&self) -> &[MemoryRegion] {
         &self.mem_regions
     }
+
+    #[cfg(gdb)]
+    fn handle_debug(
+        &mut self,
+        stop_reason: VcpuStopReason,
+    ) -> Result<()> {
+        self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
+            .map_err(|e| new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e))?;
+
+        loop {
+            log::debug!("Debug wait for event to resume vCPU");
+            // Wait for a message from gdb
+            let req = self.recv_dbg_msg()?;
+
+            let response = self.process_dbg_request(req)?;
+
+            // If the command was either step or continue, we need to run the vcpu
+            let cont = matches!(
+                response,
+                DebugResponse::Continue
+            );
+
+            self.send_dbg_msg(response)
+                .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+
+            if cont {
+                break;
+            }
+        }
+
+        Ok(())
+    }
 }
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
