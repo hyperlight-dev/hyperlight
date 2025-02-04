@@ -46,6 +46,8 @@ use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
+#[cfg(gdb)]
+use crate::sandbox::config::DebugInfo;
 use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
 #[cfg(feature = "function_call_metrics")]
 use crate::sandbox::metrics::SandboxMetric::GuestFunctionCallDurationMicroseconds;
@@ -232,6 +234,7 @@ impl HypervisorHandler {
     pub(crate) fn start_hypervisor_handler(
         &mut self,
         sandbox_memory_manager: SandboxMemoryManager<GuestSharedMemory>,
+        #[cfg(gdb)] debug_info: Option<DebugInfo>,
     ) -> Result<()> {
         let configuration = self.configuration.clone();
         #[cfg(target_os = "windows")]
@@ -292,6 +295,8 @@ impl HypervisorHandler {
                                     hv = Some(set_up_hypervisor_partition(
                                         execution_variables.shm.try_lock().unwrap().deref_mut().as_mut().unwrap(),
                                         configuration.outb_handler.clone(),
+                                        #[cfg(gdb)]
+                                        &debug_info,
                                     )?);
                                 }
                                 let hv = hv.as_mut().unwrap();
@@ -831,6 +836,7 @@ fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[allow(unused_variables)] // parameter only used for in-process mode
     outb_handler: OutBHandlerWrapper,
+    #[cfg(gdb)] _debug_info: &Option<DebugInfo>,
 ) -> Result<Box<dyn Hypervisor>> {
     let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
     let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
