@@ -23,6 +23,8 @@ use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
+#[cfg(gdb)]
+use super::gdb::create_gdb_thread;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
     HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
@@ -31,6 +33,8 @@ use super::{
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+#[cfg(gdb)]
+use crate::sandbox::config::DebugInfo;
 use crate::{log_then_return, new_error, Result};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
@@ -75,6 +79,7 @@ impl KVMDriver {
         pml4_addr: u64,
         entrypoint: u64,
         rsp: u64,
+        #[cfg(gdb)] debug_info: &Option<DebugInfo>,
     ) -> Result<Self> {
         let kvm = Kvm::new()?;
 
@@ -100,6 +105,11 @@ impl KVMDriver {
 
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
+
+        #[cfg(gdb)]
+        if let Some(DebugInfo { port }) = debug_info {
+            create_gdb_thread(*port).map_err(|_| new_error!("Cannot create GDB thread"))?;
+        }
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
         Ok(Self {

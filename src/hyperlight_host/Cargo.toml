@@ -71,6 +71,8 @@ sha256 = "1.4.0"
 windows-version = "0.1"
 
 [target.'cfg(unix)'.dependencies]
+gdbstub = { version = "0.7.3", optional = true }
+gdbstub_arch = { version = "0.3.1", optional = true }
 seccompiler = { version = "0.4.0", optional = true }
 kvm-bindings = { version = "0.11", features = ["fam-wrappers"], optional = true }
 kvm-ioctls = { version = "0.20", optional = true }
@@ -128,8 +130,8 @@ kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv2 = ["dep:mshv-bindings2", "dep:mshv-ioctls2"]
 mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]
 inprocess = []
-# This enables compilation of gdb stub for easy debug in the guest
-gdb = []
+# This enables easy debug in the guest
+gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 
 [[bench]]
 name = "benchmarks"
