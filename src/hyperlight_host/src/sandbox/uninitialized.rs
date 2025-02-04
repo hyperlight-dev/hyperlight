@@ -170,10 +170,12 @@ impl UninitializedSandbox {
         }
 
         let sandbox_cfg = cfg.unwrap_or_default();
+
         #[cfg(gdb)]
         let debug_info = sandbox_cfg
             .get_guest_debug_port()
             .map(|port| DebugInfo { port });
+
         let mut mem_mgr_wrapper = {
             let mut mgr = UninitializedSandbox::load_guest_binary(
                 sandbox_cfg,

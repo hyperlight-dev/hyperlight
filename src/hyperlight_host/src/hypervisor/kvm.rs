@@ -16,6 +16,8 @@ limitations under the License.
 
 use std::convert::TryFrom;
 use std::fmt::Debug;
+#[cfg(gdb)]
+use std::sync::{Arc, Mutex};
 
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region, KVM_MEM_READONLY};
 use kvm_ioctls::Cap::UserMemory;
@@ -24,7 +26,9 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{create_gdb_thread, DebugMsg, DebugResponse, DebugCommChannel, VcpuStopReason};
+use super::gdb::{create_gdb_thread, DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
+#[cfg(gdb)]
+use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
     HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
@@ -61,6 +65,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
 
 #[cfg(gdb)]
 mod debug {
+    use std::sync::{Arc, Mutex};
     use kvm_bindings::{
         kvm_guest_debug, kvm_regs, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
         KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
@@ -69,6 +74,7 @@ mod debug {
 
     use super::KVMDriver;
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::{new_error, Result};
 
     /// KVM Debug struct
@@ -336,6 +342,7 @@ mod debug {
         pub fn process_dbg_request(
             &mut self,
             req: DebugMsg,
+            _dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         ) -> Result<DebugResponse> {
             match req {
                 DebugMsg::AddHwBreakpoint(addr) => {
@@ -541,6 +548,7 @@ impl Hypervisor for KVMDriver {
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         let regs = kvm_regs {
             rip: self.entrypoint,
@@ -561,6 +569,8 @@ impl Hypervisor for KVMDriver {
             hv_handler,
             outb_hdl,
             mem_access_hdl,
+            #[cfg(gdb)]
+            dbg_mem_access_fn,
         )?;
 
         // reset RSP to what it was before initialise
@@ -578,6 +588,7 @@ impl Hypervisor for KVMDriver {
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers except RSP, then set RIP
         let rsp_before = self.vcpu_fd.get_regs()?.rsp;
@@ -603,6 +614,8 @@ impl Hypervisor for KVMDriver {
             hv_handler,
             outb_handle_fn,
             mem_access_fn,
+            #[cfg(gdb)]
+            dbg_mem_access_fn,
         )?;
 
         // reset RSP to what it was before function call
@@ -714,6 +727,7 @@ impl Hypervisor for KVMDriver {
     #[cfg(gdb)]
     fn handle_debug(
         &mut self,
+        dbg_mem_access_fn: Arc<Mutex<dyn super::handlers::DbgMemAccessHandlerCaller>>,
         stop_reason: VcpuStopReason,
     ) -> Result<()> {
         self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
@@ -724,7 +738,7 @@ impl Hypervisor for KVMDriver {
             // Wait for a message from gdb
             let req = self.recv_dbg_msg()?;
 
-            let response = self.process_dbg_request(req)?;
+            let response = self.process_dbg_request(req, dbg_mem_access_fn.clone())?;
 
             // If the command was either step or continue, we need to run the vcpu
             let cont = matches!(
@@ -748,6 +762,8 @@ impl Hypervisor for KVMDriver {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    #[cfg(gdb)]
+    use crate::hypervisor::handlers::DbgMemAccessHandler;
     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
     use crate::hypervisor::tests::test_initialise;
     use crate::Result;
@@ -767,6 +783,28 @@ mod tests {
             let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
             Arc::new(Mutex::new(MemAccessHandler::from(func)))
         };
-        test_initialise(outb_handler, mem_access_handler).unwrap();
+        #[cfg(gdb)]
+        #[allow(clippy::type_complexity)]
+        let dbg_mem_access_handler = {
+            let read: Box<dyn FnMut(usize, &mut [u8]) -> Result<()> + Send> =
+                Box::new(|_: usize, _: &mut [u8]| -> Result<()> { Ok(()) });
+            let write: Box<dyn FnMut(usize, &[u8]) -> Result<()> + Send> =
+                Box::new(|_: usize, _: &[u8]| -> Result<()> { Ok(()) });
+            let get_code_offset: Box<dyn FnMut() -> Result<usize> + Send> =
+                Box::new(|| -> Result<usize> { Ok(0) });
+            Arc::new(Mutex::new(DbgMemAccessHandler::from((
+                read,
+                write,
+                get_code_offset,
+            ))))
+        };
+
+        test_initialise(
+            outb_handler,
+            mem_access_handler,
+            #[cfg(gdb)]
+            dbg_mem_access_handler,
+        )
+        .unwrap();
     }
 }
