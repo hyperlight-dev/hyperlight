@@ -122,6 +122,7 @@ pub enum DebugResponse {
     AddSwBreakpoint(bool),
     Continue,
     DisableDebug,
+    ErrorOccurred,
     GetCodeSectionOffset(u64),
     ReadAddr(Vec<u8>),
     ReadRegisters(X86_64Regs),
