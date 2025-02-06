@@ -20,6 +20,12 @@ permissions:
   id-token: write
   contents: read
 
+# The reason for default shell bash is because on our self-hosted windows runners,
+# the default shell is powershell, which doesn't work correctly together with `just` commands.
+# Even if a command inside a just-recipe fails, github reports the step as successful.
+# The problem may or may not be related to our custom windows runner not applying the
+# powershell steps outlined here 
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#exit-codes-and-error-action-preference
 defaults:
   run:
     shell: bash
