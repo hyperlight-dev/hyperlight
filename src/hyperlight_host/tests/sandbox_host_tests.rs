@@ -63,7 +63,6 @@ fn pass_byte_array() {
 }
 
 #[test]
-#[ignore = "Fails with mismatched float only when c .exe guest?!"]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn float_roundtrip() {
     let doubles = [
