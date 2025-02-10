@@ -25,6 +25,8 @@ use crate::mem::exe::ExeInfo;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct SandboxConfiguration {
+    /// Guest gdb debug port
+    guest_debug_port: Option<u16>,
     /// The maximum size of the guest error buffer.
     guest_error_buffer_size: usize,
     /// The size of the memory buffer that is made available for Guest Function
@@ -136,6 +138,8 @@ impl SandboxConfiguration {
     pub const MIN_KERNEL_STACK_SIZE: usize = 0x1000;
     /// The default value for kernel stack size
     pub const DEFAULT_KERNEL_STACK_SIZE: usize = Self::MIN_KERNEL_STACK_SIZE;
+    /// The minimum value for debug port
+    pub const MIN_GUEST_DEBUG_PORT: u16 = 1024;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -153,6 +157,7 @@ impl SandboxConfiguration {
         max_initialization_time: Option<Duration>,
         max_wait_for_cancellation: Option<Duration>,
         guest_panic_context_buffer_size: usize,
+        guest_debug_port: Option<u16>,
     ) -> Self {
         Self {
             input_data_size: max(input_data_size, Self::MIN_INPUT_SIZE),
@@ -220,6 +225,7 @@ impl SandboxConfiguration {
                 guest_panic_context_buffer_size,
                 Self::MIN_GUEST_PANIC_CONTEXT_BUFFER_SIZE,
             ),
+            guest_debug_port,
         }
     }
 
@@ -347,6 +353,12 @@ impl SandboxConfiguration {
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    /// Sets the configuration for the guest debug
+    pub fn set_guest_debug_port(&mut self, port: u16) {
+        self.guest_debug_port = Some(max(port, Self::MIN_GUEST_DEBUG_PORT));
+    }
+
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_error_buffer_size(&self) -> usize {
         self.guest_error_buffer_size
     }
@@ -388,6 +400,11 @@ impl SandboxConfiguration {
 
     pub(crate) fn get_max_initialization_time(&self) -> u16 {
         self.max_initialization_time
+    }
+
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_guest_debug_port(&self) -> Option<u16> {
+        self.guest_debug_port
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
@@ -438,6 +455,7 @@ impl Default for SandboxConfiguration {
             None,
             None,
             Self::DEFAULT_GUEST_PANIC_CONTEXT_BUFFER_SIZE,
+            None,
         )
     }
 }
@@ -480,6 +498,7 @@ mod tests {
                 MAX_WAIT_FOR_CANCELLATION_OVERRIDE as u64,
             )),
             GUEST_PANIC_CONTEXT_BUFFER_SIZE_OVERRIDE,
+            None,
         );
         let exe_infos = vec![
             simple_guest_exe_info().unwrap(),
@@ -543,6 +562,7 @@ mod tests {
                 SandboxConfiguration::MIN_MAX_WAIT_FOR_CANCELLATION as u64 - 1,
             )),
             SandboxConfiguration::MIN_GUEST_PANIC_CONTEXT_BUFFER_SIZE - 1,
+            None,
         );
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
@@ -710,6 +730,13 @@ mod tests {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(size);
                 prop_assert_eq!(size, cfg.heap_size_override);
+            }
+
+            #[test]
+            fn guest_debug_port(port in 9000..=u16::MAX) {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_guest_debug_port(port);
+                prop_assert_eq!(port, *cfg.get_guest_debug_port().as_ref().unwrap());
             }
         }
     }

@@ -36,6 +36,13 @@ use crate::sandbox_state::sandbox::EvolvableSandbox;
 use crate::sandbox_state::transition::Noop;
 use crate::{log_build_details, log_then_return, new_error, MultiUseSandbox, Result};
 
+#[cfg(gdb)]
+/// Used for passing debug configuration to a sandbox
+pub struct DebugInfo {
+    /// Guest debug port
+    pub(crate) port: u16,
+}
+
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
 ///
 /// Prior to initializing a full-fledged `Sandbox`, you must create one of
@@ -52,6 +59,8 @@ pub struct UninitializedSandbox {
     pub(crate) max_initialization_time: Duration,
     pub(crate) max_execution_time: Duration,
     pub(crate) max_wait_for_cancellation: Duration,
+    #[cfg(gdb)]
+    pub(crate) debug_info: Option<DebugInfo>,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -161,6 +170,12 @@ impl UninitializedSandbox {
         }
 
         let sandbox_cfg = cfg.unwrap_or_default();
+
+        #[cfg(gdb)]
+        let debug_info = sandbox_cfg
+            .get_guest_debug_port()
+            .map(|port| DebugInfo { port });
+
         let mut mem_mgr_wrapper = {
             let mut mgr = UninitializedSandbox::load_guest_binary(
                 sandbox_cfg,
@@ -188,6 +203,8 @@ impl UninitializedSandbox {
             max_wait_for_cancellation: Duration::from_millis(
                 sandbox_cfg.get_max_wait_for_cancellation() as u64,
             ),
+            #[cfg(gdb)]
+            debug_info,
         };
 
         // TODO: These only here to accommodate some writer functions.

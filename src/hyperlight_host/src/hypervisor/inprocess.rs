@@ -17,6 +17,8 @@ limitations under the License.
 use std::fmt::Debug;
 use std::os::raw::c_void;
 
+#[cfg(gdb)]
+use super::handlers::DbgMemAccessHandlerWrapper;
 use super::{HyperlightExit, Hypervisor};
 #[cfg(crashdump)]
 use crate::mem::memory_region::MemoryRegion;
@@ -73,6 +75,7 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
         _outb_handle_fn: super::handlers::OutBHandlerWrapper,
         _mem_access_fn: super::handlers::MemAccessHandlerWrapper,
         _hv_handler: Option<super::hypervisor_handler::HypervisorHandler>,
+        #[cfg(gdb)] _dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> crate::Result<()> {
         let entrypoint_fn: extern "win64" fn(u64, u64, u64, u64) =
             unsafe { std::mem::transmute(self.args.entrypoint_raw as *const c_void) };
@@ -93,6 +96,7 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
         _outb_handle_fn: super::handlers::OutBHandlerWrapper,
         _mem_access_fn: super::handlers::MemAccessHandlerWrapper,
         _hv_handler: Option<super::hypervisor_handler::HypervisorHandler>,
+        #[cfg(gdb)] _dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> crate::Result<()> {
         let ptr: u64 = dispatch_func_addr.into();
         let dispatch_func: extern "win64" fn() =

@@ -102,3 +102,96 @@ impl MemAccessHandlerCaller for MemAccessHandler {
         func()
     }
 }
+
+/// The trait representing custom logic to handle the case when
+/// a Hypervisor's virtual CPU (vCPU) informs Hyperlight a debug memory access
+/// has been requested.
+pub trait DbgMemAccessHandlerCaller: Send {
+    /// Function that gets called when a read is requested.
+    fn read(&mut self, addr: usize, data: &mut [u8]) -> Result<()>;
+
+    /// Function that gets called when a write is requested.
+    fn write(&mut self, addr: usize, data: &[u8]) -> Result<()>;
+
+    /// Function that gets called for a request to get guest code offset.
+    fn get_code_offset(&mut self) -> Result<usize>;
+}
+
+/// A convenient type representing a common way `DbgMemAccessHandler` implementations
+/// are passed as parameters to functions
+///
+/// Note: This needs to be wrapped in a Mutex to be able to grab a mutable
+/// reference to the underlying data
+pub type DbgMemAccessHandlerWrapper = Arc<Mutex<dyn DbgMemAccessHandlerCaller>>;
+
+pub(crate) type DbgReadMemAccessHandlerFunction =
+    Box<dyn FnMut(usize, &mut [u8]) -> Result<()> + Send>;
+pub(crate) type DbgWriteMemAccessHandlerFunction =
+    Box<dyn FnMut(usize, &[u8]) -> Result<()> + Send>;
+pub(crate) type DbgGetCodeAddrHandlerFunction = Box<dyn FnMut() -> Result<usize> + Send>;
+
+/// A `DbgMemAccessHandler` implementation using
+/// (`DbgReadMemAccessHandlerFunction`, `DbgWriteMemAccessHandlerFunction `, `DbgGetCodeAddrHandlerFunction `).
+///
+/// Note: This handler must live for as long as its Sandbox or for
+/// static in the case of its C API usage.
+pub(crate) struct DbgMemAccessHandler(
+    Arc<Mutex<DbgReadMemAccessHandlerFunction>>,
+    Arc<Mutex<DbgWriteMemAccessHandlerFunction>>,
+    Arc<Mutex<DbgGetCodeAddrHandlerFunction>>,
+);
+
+impl
+    From<(
+        DbgReadMemAccessHandlerFunction,
+        DbgWriteMemAccessHandlerFunction,
+        DbgGetCodeAddrHandlerFunction,
+    )> for DbgMemAccessHandler
+{
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    fn from(
+        (f1, f2, f3): (
+            DbgReadMemAccessHandlerFunction,
+            DbgWriteMemAccessHandlerFunction,
+            DbgGetCodeAddrHandlerFunction,
+        ),
+    ) -> Self {
+        Self(
+            Arc::new(Mutex::new(f1)),
+            Arc::new(Mutex::new(f2)),
+            Arc::new(Mutex::new(f3)),
+        )
+    }
+}
+
+impl DbgMemAccessHandlerCaller for DbgMemAccessHandler {
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn read(&mut self, addr: usize, data: &mut [u8]) -> Result<()> {
+        let mut read_func = self
+            .0
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        read_func(addr, data)
+    }
+
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn write(&mut self, addr: usize, data: &[u8]) -> Result<()> {
+        let mut write_func = self
+            .1
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        write_func(addr, data)
+    }
+
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn get_code_offset(&mut self) -> Result<usize> {
+        let mut get_code_offset_func = self
+            .2
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        get_code_offset_func()
+    }
+}
