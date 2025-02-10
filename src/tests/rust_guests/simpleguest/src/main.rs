@@ -637,6 +637,12 @@ fn log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+fn divide_by_zero(_: &FunctionCall) -> Result<Vec<u8>> {
+    #[allow(unconditional_panic)]
+    let _ = 1 / 0;
+    Ok(get_flatbuffer_result_from_void())
+}
+
 static mut COUNTER: i32 = 0;
 
 fn add_to_static(function_call: &FunctionCall) -> Result<Vec<u8>> {
@@ -1094,6 +1100,14 @@ pub extern "C" fn hyperlight_main() {
         add as i64,
     );
     register_function(add_def);
+
+    let divide_by_zero_def = GuestFunctionDefinition::new(
+        "DivideByZero".to_string(),
+        Vec::new(),
+        ReturnType::Void,
+        divide_by_zero as i64,
+    );
+    register_function(divide_by_zero_def);
 }
 
 #[no_mangle]

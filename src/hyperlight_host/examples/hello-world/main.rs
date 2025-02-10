@@ -49,11 +49,16 @@ fn main() -> hyperlight_host::Result<()> {
     let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default())?;
 
     // Call guest function
-    let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
+    // let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
+    // let result = multi_use_sandbox.call_guest_function_by_name(
+    //     "PrintOutput", // function must be defined in the guest binary
+    //     ReturnType::Int,
+    //     Some(vec![ParameterValue::String(message.clone())]),
+    // );
     let result = multi_use_sandbox.call_guest_function_by_name(
-        "PrintOutput", // function must be defined in the guest binary
-        ReturnType::Int,
-        Some(vec![ParameterValue::String(message.clone())]),
+        "DivideByZero",
+        ReturnType::Void,
+        None,
     );
 
     assert!(result.is_ok());
