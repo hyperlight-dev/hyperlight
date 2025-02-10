@@ -44,7 +44,7 @@ crossbeam = "0.8.0"
 crossbeam-channel = "0.5.14"
 thiserror = "2.0.11"
 prometheus = "0.13.3"
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
 tempfile = { version = "3.16", optional = true }
 serde_yaml = "0.9"
 anyhow = "1.0"
