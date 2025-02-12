@@ -17,13 +17,13 @@ limitations under the License.
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::arch::global_asm;
+use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result_from_int;
 use hyperlight_common::mem::RunMode;
 
 use crate::error::{HyperlightGuestError, Result};
@@ -195,7 +195,7 @@ pub fn print_output_as_guest_function(function_call: &FunctionCall) -> Result<Ve
             ReturnType::Int,
         )?;
         let res_i = get_host_value_return_as_int()?;
-        Ok(get_flatbuffer_result_from_int(res_i))
+        Ok(get_flatbuffer_result(res_i))
     } else {
         Err(HyperlightGuestError::new(
             ErrorCode::GuestError,
