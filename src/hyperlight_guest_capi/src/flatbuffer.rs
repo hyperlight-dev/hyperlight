@@ -1,13 +1,7 @@
 use alloc::boxed::Box;
 use core::ffi::{c_char, CStr};
 
-use hyperlight_common::flatbuffer_wrappers::util::{
-    get_flatbuffer_result_from_double, get_flatbuffer_result_from_float,
-    get_flatbuffer_result_from_int, get_flatbuffer_result_from_long,
-    get_flatbuffer_result_from_string, get_flatbuffer_result_from_uint,
-    get_flatbuffer_result_from_ulong, get_flatbuffer_result_from_vec,
-    get_flatbuffer_result_from_void,
-};
+use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_guest::host_function_call::{
     get_host_value_return_as_int, get_host_value_return_as_long, get_host_value_return_as_uint,
     get_host_value_return_as_ulong,
@@ -21,49 +15,49 @@ use crate::types::FfiVec;
 
 #[no_mangle]
 pub extern "C" fn hl_flatbuffer_result_from_Int(value: i32) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result_from_int(value);
+    let vec = get_flatbuffer_result(value);
 
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
 
 #[no_mangle]
 pub extern "C" fn hl_flatbuffer_result_from_UInt(value: u32) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result_from_uint(value);
+    let vec = get_flatbuffer_result(value);
 
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
 
 #[no_mangle]
 pub extern "C" fn hl_flatbuffer_result_from_Long(value: i64) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result_from_long(value);
+    let vec = get_flatbuffer_result(value);
 
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
 
 #[no_mangle]
 pub extern "C" fn hl_flatbuffer_result_from_ULong(value: u64) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result_from_ulong(value);
+    let vec = get_flatbuffer_result(value);
 
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
 
 #[no_mangle]
 pub extern "C" fn hl_flatbuffer_result_from_Float(value: f32) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result_from_float(value);
+    let vec = get_flatbuffer_result(value);
 
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
 
 #[no_mangle]
 pub extern "C" fn hl_flatbuffer_result_from_Double(value: f64) -> Box<FfiVec> {
-    let vec = get_flatbuffer_result_from_double(value);
+    let vec = get_flatbuffer_result(value);
 
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
 
 #[no_mangle]
 pub extern "C" fn hl_flatbuffer_result_from_Void() -> Box<FfiVec> {
-    let vec = get_flatbuffer_result_from_void();
+    let vec = get_flatbuffer_result(());
 
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
@@ -71,7 +65,7 @@ pub extern "C" fn hl_flatbuffer_result_from_Void() -> Box<FfiVec> {
 #[no_mangle]
 pub extern "C" fn hl_flatbuffer_result_from_String(value: *const c_char) -> Box<FfiVec> {
     let str = unsafe { CStr::from_ptr(value) };
-    let vec = get_flatbuffer_result_from_string(str.to_string_lossy().as_ref());
+    let vec = get_flatbuffer_result(str.to_string_lossy().as_ref());
 
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
@@ -80,7 +74,7 @@ pub extern "C" fn hl_flatbuffer_result_from_String(value: *const c_char) -> Box<
 pub extern "C" fn hl_flatbuffer_result_from_Bytes(data: *const u8, len: usize) -> Box<FfiVec> {
     let slice = unsafe { core::slice::from_raw_parts(data, len) };
 
-    let vec = get_flatbuffer_result_from_vec(slice);
+    let vec = get_flatbuffer_result(slice);
 
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
