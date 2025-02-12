@@ -15,7 +15,7 @@ Hyperlight's components common to host and guest.
 workspace = true
 
 [dependencies]
-flatbuffers = { version = "25.1.24", default-features = false }
+flatbuffers = { version = "25.2.10", default-features = false }
 anyhow = { version = "1.0.95", default-features = false }
 log = "0.4.25"
 tracing = { version = "0.1.41", optional = true }
