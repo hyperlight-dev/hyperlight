@@ -45,9 +45,7 @@ use hyperlight_guest::entrypoint::{abort_with_code, abort_with_code_and_message}
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::register_function;
-use hyperlight_guest::host_function_call::{
-    call_host_function, get_host_value_return_as_int, get_host_value_return_as_ulong,
-};
+use hyperlight_guest::host_function_call::{call_host_function, get_host_return_value};
 use hyperlight_guest::memory::malloc;
 use hyperlight_guest::{logging, MIN_STACK_ADDRESS};
 use log::{error, LevelFilter};
@@ -94,7 +92,7 @@ fn print_output(message: &str) -> Result<Vec<u8>> {
         Some(Vec::from(&[ParameterValue::String(message.to_string())])),
         ReturnType::Int,
     )?;
-    let result = get_host_value_return_as_int()?;
+    let result = get_host_return_value::<i32>()?;
     Ok(get_flatbuffer_result(result))
 }
 
@@ -681,7 +679,7 @@ fn violate_seccomp_filters(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if function_call.parameters.is_none() {
         call_host_function("MakeGetpidSyscall", None, ReturnType::ULong)?;
 
-        let res = get_host_value_return_as_ulong()?;
+        let res = get_host_return_value::<u64>()?;
 
         Ok(get_flatbuffer_result(res))
     } else {
@@ -703,7 +701,7 @@ fn add(function_call: &FunctionCall) -> Result<Vec<u8>> {
             ReturnType::Int,
         )?;
 
-        let res = get_host_value_return_as_int()?;
+        let res = get_host_return_value::<i32>()?;
 
         Ok(get_flatbuffer_result(res))
     } else {
@@ -1130,7 +1128,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         Some(Vec::from(&[ParameterValue::String(message.to_string())])),
         ReturnType::Int,
     )?;
-    let result = get_host_value_return_as_int()?;
+    let result = get_host_return_value::<i32>()?;
     let function_name = function_call.function_name.clone();
     let param_len = function_call.parameters.clone().unwrap_or_default().len();
     let call_type = function_call.function_call_type().clone();

@@ -2,10 +2,7 @@ use alloc::boxed::Box;
 use core::ffi::{c_char, CStr};
 
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
-use hyperlight_guest::host_function_call::{
-    get_host_value_return_as_int, get_host_value_return_as_long, get_host_value_return_as_uint,
-    get_host_value_return_as_ulong,
-};
+use hyperlight_guest::host_function_call::get_host_return_value;
 
 use crate::types::FfiVec;
 
@@ -83,23 +80,23 @@ pub extern "C" fn hl_flatbuffer_result_from_Bytes(data: *const u8, len: usize) -
 
 #[no_mangle]
 pub extern "C" fn hl_get_host_return_value_as_Int() -> i32 {
-    get_host_value_return_as_int().expect("Unable to get host return value as int")
+    get_host_return_value().expect("Unable to get host return value as int")
 }
 
 #[no_mangle]
 pub extern "C" fn hl_get_host_return_value_as_UInt() -> u32 {
-    get_host_value_return_as_uint().expect("Unable to get host return value as uint")
+    get_host_return_value().expect("Unable to get host return value as uint")
 }
 
 // the same for long, ulong
 #[no_mangle]
 pub extern "C" fn hl_get_host_return_value_as_Long() -> i64 {
-    get_host_value_return_as_long().expect("Unable to get host return value as long")
+    get_host_return_value().expect("Unable to get host return value as long")
 }
 
 #[no_mangle]
 pub extern "C" fn hl_get_host_return_value_as_ULong() -> u64 {
-    get_host_value_return_as_ulong().expect("Unable to get host return value as ulong")
+    get_host_return_value().expect("Unable to get host return value as ulong")
 }
 
 // TODO add bool, float, double, string, vecbytes
