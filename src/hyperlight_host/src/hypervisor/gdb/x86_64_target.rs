@@ -87,6 +87,10 @@ impl HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::DisableDebug)? {
             DebugResponse::DisableDebug => Ok(()),
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(GdbTargetError::UnexpectedError)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(GdbTargetError::UnexpectedMessage)
@@ -129,6 +133,10 @@ impl SingleThreadBase for HyperlightSandboxTarget {
 
                 Ok(v.len())
             }
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(TargetError::NonFatal)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
@@ -146,6 +154,10 @@ impl SingleThreadBase for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::WriteAddr(gva, v))? {
             DebugResponse::WriteAddr => Ok(()),
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(TargetError::NonFatal)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
@@ -181,6 +193,10 @@ impl SingleThreadBase for HyperlightSandboxTarget {
                 regs.eflags = read_regs.rflags as u32;
 
                 Ok(())
+            }
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(TargetError::NonFatal)
             }
 
             msg => {
@@ -219,6 +235,10 @@ impl SingleThreadBase for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::WriteRegisters(regs))? {
             DebugResponse::WriteRegisters => Ok(()),
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(TargetError::NonFatal)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
@@ -240,6 +260,10 @@ impl SectionOffsets for HyperlightSandboxTarget {
                 text_seg: text,
                 data_seg: None,
             }),
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(GdbTargetError::UnexpectedError)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(GdbTargetError::UnexpectedMessage)
@@ -267,6 +291,10 @@ impl HwBreakpoint for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::AddHwBreakpoint(addr))? {
             DebugResponse::AddHwBreakpoint(rsp) => Ok(rsp),
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(TargetError::NonFatal)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
@@ -283,6 +311,10 @@ impl HwBreakpoint for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::RemoveHwBreakpoint(addr))? {
             DebugResponse::RemoveHwBreakpoint(rsp) => Ok(rsp),
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(TargetError::NonFatal)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
@@ -301,6 +333,10 @@ impl SwBreakpoint for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::AddSwBreakpoint(addr))? {
             DebugResponse::AddSwBreakpoint(rsp) => Ok(rsp),
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(TargetError::NonFatal)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
@@ -317,6 +353,10 @@ impl SwBreakpoint for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::RemoveSwBreakpoint(addr))? {
             DebugResponse::RemoveSwBreakpoint(rsp) => Ok(rsp),
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(TargetError::NonFatal)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
@@ -342,6 +382,10 @@ impl SingleThreadSingleStep for HyperlightSandboxTarget {
         log::debug!("Step");
         match self.send_command(DebugMsg::Step)? {
             DebugResponse::Step => Ok(()),
+            DebugResponse::ErrorOccurred => {
+                log::error!("Error occurred");
+                Err(GdbTargetError::UnexpectedError)
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(GdbTargetError::UnexpectedMessage)

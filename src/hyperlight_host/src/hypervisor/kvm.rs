@@ -39,6 +39,8 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
+#[cfg(gdb)]
+use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
@@ -79,7 +81,7 @@ mod debug {
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::mem::layout::SandboxMemoryLayout;
-    use crate::{new_error, Result};
+    use crate::{new_error, HyperlightError, Result};
 
     /// Software Breakpoint size in memory
     pub const SW_BP_SIZE: usize = 1;
@@ -217,19 +219,13 @@ mod debug {
 
         /// Translates the guest address to physical address
         fn translate_gva(&self, gva: u64) -> Result<u64> {
-            let tr = self.vcpu_fd.translate_gva(gva).map_err(|e| {
-                new_error!(
-                    "Could not translate guest virtual address {:X}: {:?}",
-                    gva,
-                    e
-                )
-            })?;
+            let tr = self
+                .vcpu_fd
+                .translate_gva(gva)
+                .map_err(|_| HyperlightError::TranslateGuestAddress(gva))?;
 
             if tr.valid == 0 {
-                Err(new_error!(
-                    "Could not translate guest virtual address {:X}",
-                    gva
-                ))
+                Err(HyperlightError::TranslateGuestAddress(gva))
             } else {
                 Ok(tr.physical_address)
             }
@@ -919,7 +915,16 @@ impl Hypervisor for KVMDriver {
             // Wait for a message from gdb
             let req = self.recv_dbg_msg()?;
 
-            let response = self.process_dbg_request(req, dbg_mem_access_fn.clone())?;
+            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+
+            let response = match result {
+                Ok(response) => response,
+                // Treat non fatal errors separately so the guest doesn't fail
+                Err(HyperlightError::TranslateGuestAddress(_)) => DebugResponse::ErrorOccurred,
+                Err(e) => {
+                    return Err(e);
+                }
+            };
 
             // If the command was either step or continue, we need to run the vcpu
             let cont = matches!(
