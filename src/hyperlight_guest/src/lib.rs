@@ -53,6 +53,7 @@ pub mod error;
 pub mod logging;
 pub mod interrupt_entry;
 pub mod interrupt_handlers;
+pub mod idt;
 
 // Unresolved symbols
 ///cbindgen:ignore
