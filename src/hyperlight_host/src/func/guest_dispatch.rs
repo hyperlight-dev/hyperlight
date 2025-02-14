@@ -160,7 +160,7 @@ mod tests {
                 None,
                 None,
             )
-            .unwrap();
+                .unwrap();
 
             make_get_pid_syscall_func.register(&mut usbox, "MakeGetpidSyscall")?;
 
@@ -196,7 +196,7 @@ mod tests {
                 None,
                 None,
             )
-            .unwrap();
+                .unwrap();
 
             make_get_pid_syscall_func.register_with_extra_allowed_syscalls(
                 &mut usbox,
@@ -228,7 +228,7 @@ mod tests {
                 None,
                 None,
             )
-            .unwrap()
+                .unwrap()
         };
 
         // test_function0
@@ -345,7 +345,7 @@ mod tests {
             // just use the built-in host print function
             None,
         )
-        .unwrap();
+            .unwrap();
         test_call_guest_function_by_name(u_sbox);
     }
 
@@ -365,7 +365,7 @@ mod tests {
             Some(crate::SandboxRunOptions::RunInProcess(true)),
             None,
         )
-        .unwrap();
+            .unwrap();
         test_call_guest_function_by_name(u_sbox);
     }
 
@@ -378,7 +378,7 @@ mod tests {
             Some(crate::SandboxRunOptions::RunInProcess(false)),
             None,
         )
-        .unwrap();
+            .unwrap();
         test_call_guest_function_by_name(u_sbox);
     }
 
@@ -444,7 +444,7 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+            .unwrap();
 
         // Make this host call run for 5 seconds
 
@@ -478,6 +478,35 @@ mod tests {
                 "Expected HyperlightError::GuestExecutionHungOnHostFunctionCall but got {:?}",
                 e
             ),
+        }
+    }
+
+    #[test]
+    fn test_trigger_exception_on_guest() {
+        let usbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+            None,
+            None,
+        )
+            .unwrap();
+
+        let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
+
+        let res = multi_use_sandbox.call_guest_function_by_name(
+            "TriggerException",
+            ReturnType::Void,
+            None,
+        );
+
+        assert!(res.is_err());
+
+        match res.unwrap_err() {
+            HyperlightError::GuestAborted(_, msg) => {
+                // msg should indicate we got an invalid opcode exception
+                assert!(msg.contains("EXCEPTION: 0x6"));
+            }
+            e => panic!("Expected HyperlightError::GuestExecutionError but got {:?}", e),
         }
     }
 }
