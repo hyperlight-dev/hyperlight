@@ -50,11 +50,12 @@ pub mod setjmp;
 
 pub mod chkstk;
 pub mod error;
-pub mod logging;
-pub mod interrupt_entry;
-pub mod interrupt_handlers;
+pub mod gdt;
 pub mod idt;
 pub mod idtr;
+pub mod interrupt_entry;
+pub mod interrupt_handlers;
+pub mod logging;
 
 // Unresolved symbols
 ///cbindgen:ignore
