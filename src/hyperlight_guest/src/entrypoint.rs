@@ -30,6 +30,9 @@ use crate::{
     __security_cookie, HEAP_ALLOCATOR, MIN_STACK_ADDRESS, OS_PAGE_SIZE, OUTB_PTR,
     OUTB_PTR_WITH_CONTEXT, P_PEB, RUNNING_MODE,
 };
+use crate::gdt::load_gdt;
+use crate::idt::init_idt;
+use crate::idtr::load_idt;
 
 #[inline(never)]
 pub fn halt() {
@@ -85,6 +88,14 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_
             P_PEB = Some(peb_address as *mut HyperlightPEB);
             let peb_ptr = P_PEB.unwrap();
             __security_cookie = peb_address ^ seed;
+
+            // Set up GDT/IDT
+            load_gdt();
+            init_idt();
+            load_idt();
+
+            // Enable interrupts
+            asm!("sti", options(nostack));
 
             let srand_seed = ((peb_address << 8 ^ seed >> 4) >> 32) as u32;
 
