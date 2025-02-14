@@ -110,6 +110,11 @@ test-rust-feature-compilation-fail target=default-target:
     @# the following should fail on linux because one of kvm, mshv, or mshv3 feature must be specified, which is why the exit code is inverted with an !.
     {{ if os() == "linux" { "! cargo check -p hyperlight-host --no-default-features 2> /dev/null"} else { "" } }}
 
+# Test rust gdb debugging
+test-rust-gdb-debugging target=default-target: (build-rust target)
+    {{ set-trace-env-vars }} cargo test --profile={{ if target == "debug" { "dev" } else { target } }} --example guest-debugging --features gdb
+    {{ set-trace-env-vars }} cargo test --profile={{ if target == "debug" { "dev" } else { target } }} --features gdb -- test_gdb
+
 test target=default-target: (test-rust target)
 
 # RUST LINTING
