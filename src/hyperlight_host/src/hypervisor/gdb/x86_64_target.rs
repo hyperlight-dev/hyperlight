@@ -393,3 +393,46 @@ impl SingleThreadSingleStep for HyperlightSandboxTarget {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use gdbstub_arch::x86::reg::X86_64CoreRegs;
+
+    use super::*;
+
+    #[test]
+    fn test_gdb_target() {
+        let (gdb_conn, hyp_conn) = DebugCommChannel::unbounded();
+
+        let mut target = HyperlightSandboxTarget::new(hyp_conn);
+
+        // Check response to read registers - send the response first to not be blocked
+        // by the recv call in the target
+        let msg = DebugResponse::ReadRegisters(X86_64Regs::default());
+        let res = gdb_conn.send(msg);
+        assert!(res.is_ok());
+
+        let mut regs = X86_64CoreRegs::default();
+        assert!(
+            target.read_registers(&mut regs).is_ok(),
+            "Failed to read registers"
+        );
+
+        // Check response to write registers
+        let msg = DebugResponse::WriteRegisters;
+        let res = gdb_conn.send(msg);
+        assert!(res.is_ok());
+        assert!(
+            target.write_registers(&regs).is_ok(),
+            "Failed to write registers"
+        );
+
+        // Check response when the channel is dropped
+        drop(gdb_conn);
+        assert!(
+            target.read_registers(&mut regs).is_err(),
+            "Succeeded to read registers when
+            expected to fail"
+        );
+    }
+}

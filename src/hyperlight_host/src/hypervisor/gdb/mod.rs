@@ -208,3 +208,29 @@ pub fn create_gdb_thread(
 
     Ok(gdb_conn)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gdb_debug_comm_channel() {
+        let (gdb_conn, hyp_conn) = DebugCommChannel::<DebugMsg, DebugResponse>::unbounded();
+
+        let msg = DebugMsg::ReadRegisters;
+        let res = gdb_conn.send(msg);
+        assert!(res.is_ok());
+
+        let res = hyp_conn.recv();
+        assert!(res.is_ok());
+
+        let res = gdb_conn.try_recv();
+        assert!(res.is_err());
+
+        let res = hyp_conn.send(DebugResponse::ReadRegisters(X86_64Regs::default()));
+        assert!(res.is_ok());
+
+        let res = gdb_conn.recv();
+        assert!(res.is_ok());
+    }
+}
