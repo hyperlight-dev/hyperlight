@@ -17,8 +17,6 @@ limitations under the License.
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
-#[cfg(not(feature = "executable_heap"))]
-use hyperlight_host::mem::memory_region::MemoryRegionFlags;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -388,7 +386,7 @@ fn execute_on_stack() {
         .call_guest_function_by_name("ExecuteOnStack", ReturnType::String, Some(vec![]))
         .unwrap_err();
 
-    // TODO: because we set the stack as NX in the guest PTE we get a generic error, once we handle the exception correctly in the guest we can make this more specific
+    #[cfg(inprocess)]
     if let HyperlightError::Error(message) = result {
         cfg_if::cfg_if! {
             if #[cfg(target_os = "linux")] {
@@ -399,8 +397,15 @@ fn execute_on_stack() {
                 panic!("Unexpected");
             }
         }
-    } else {
-        panic!("Unexpected error type");
+    }
+
+    #[cfg(not(inprocess))]
+    {
+        let err = result.to_string();
+        assert!(
+            // exception that indicates a page fault
+            err.contains("EXCEPTION: 0xe")
+        );
     }
 }
 
@@ -419,13 +424,8 @@ fn execute_on_heap() {
     {
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(
-            matches!(
-                err,
-                HyperlightError::MemoryAccessViolation(_, MemoryRegionFlags::EXECUTE, _)
-            ) || matches!(err, HyperlightError::Error(ref s) if s.starts_with("Unexpected VM Exit"))
-                || matches!(err, HyperlightError::Error(ref s) if s.starts_with("unknown Hyper-V run message type")) // Because the memory is set as NX in the guest PTE we get a generic error, once we handle the exception correctly in the guest we can make this more specific
-        );
+
+        assert!(err.to_string().contains("EXCEPTION: 0xe"));
     }
 }
 

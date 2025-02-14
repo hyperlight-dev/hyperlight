@@ -637,6 +637,13 @@ fn log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+fn trigger_exception(_: &FunctionCall) -> Result<Vec<u8>> {
+    unsafe {
+        core::arch::asm!("ud2");
+    } // trigger an undefined instruction exception
+    Ok(get_flatbuffer_result_from_void())
+}
+
 static mut COUNTER: i32 = 0;
 
 fn add_to_static(function_call: &FunctionCall) -> Result<Vec<u8>> {
@@ -1094,6 +1101,14 @@ pub extern "C" fn hyperlight_main() {
         add as i64,
     );
     register_function(add_def);
+
+    let trigger_exception_def = GuestFunctionDefinition::new(
+        "TriggerException".to_string(),
+        Vec::new(),
+        ReturnType::Void,
+        trigger_exception as i64,
+    );
+    register_function(trigger_exception_def);
 }
 
 #[no_mangle]
