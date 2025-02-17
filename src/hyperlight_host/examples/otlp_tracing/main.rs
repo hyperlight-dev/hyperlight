@@ -33,9 +33,8 @@ use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result as HyperlightResult};
 use hyperlight_testing::simple_guest_as_string;
-use opentelemetry::global;
 use opentelemetry::trace::TracerProvider;
-use opentelemetry::KeyValue;
+use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 //use opentelemetry_sdk::runtime::Tokio;
 use opentelemetry_sdk::Resource;
@@ -60,21 +59,23 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     provider.shutdown()?;
 
     Ok(())
-
 }
 
-fn init_tracing_subscriber(addr: &str) -> Result<SdkTracerProvider, Box<dyn Error + Send + Sync + 'static>> {
+fn init_tracing_subscriber(
+    addr: &str,
+) -> Result<SdkTracerProvider, Box<dyn Error + Send + Sync + 'static>> {
     let exporter = SpanExporter::builder()
         .with_tonic()
         .with_endpoint(addr)
         .build()?;
 
     let version = KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION"));
-    let resource = Resource::builder().with_service_name( "hyperlight_otel_example").with_attribute(
-        version
-    ).build();
+    let resource = Resource::builder()
+        .with_service_name("hyperlight_otel_example")
+        .with_attribute(version)
+        .build();
 
-    let provider =  opentelemetry_sdk::trace::SdkTracerProvider::builder()
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
         .with_resource(resource)
         .with_batch_exporter(exporter)
         .build();
