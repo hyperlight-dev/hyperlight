@@ -26,9 +26,9 @@ const MAX_BUFFER_SIZE: usize = 1024;
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::ffi::c_char;
 use core::hint::black_box;
 use core::ptr::write_volatile;
@@ -61,13 +61,12 @@ extern crate hyperlight_guest;
 
 static mut BIGARRAY: [i32; 1024 * 1024] = [0; 1024 * 1024];
 
-fn set_static() -> Result<Vec<u8>> {
+fn set_static(_: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
-        let length = BIGARRAY.len();
-        for i in 0..length {
-            BIGARRAY[i] = i as i32;
+        for val in BIGARRAY.iter_mut() {
+            *val = 1;
         }
-        Ok(get_flatbuffer_result_from_int(length as i32))
+        Ok(get_flatbuffer_result_from_int(BIGARRAY.len() as i32))
     }
 }
 
@@ -430,13 +429,13 @@ fn buffer_overrun(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 #[allow(unconditional_recursion)]
-fn infinite_recursion(a: &FunctionCall) -> Result<Vec<u8>> {
+fn infinite_recursion(_a: &FunctionCall) -> Result<Vec<u8>> {
     // blackbox is needed so something
     //is written to the stack in release mode,
     //to trigger guard page violation
     let param = black_box(5);
     black_box(param);
-    infinite_recursion(a)
+    infinite_recursion(_a)
 }
 
 fn stack_overflow(function_call: &FunctionCall) -> Result<Vec<u8>> {
@@ -489,8 +488,7 @@ fn malloc_and_free(function_call: &FunctionCall) -> Result<Vec<u8>> {
         } else {
             size.min(MAX_BUFFER_SIZE as i32)
         };
-        let mut allocated_buffer = Vec::with_capacity(alloc_length as usize);
-        allocated_buffer.resize(alloc_length as usize, 0);
+        let allocated_buffer = vec![0; alloc_length as usize];
         drop(allocated_buffer);
 
         Ok(get_flatbuffer_result_from_int(size))
@@ -524,6 +522,10 @@ fn get_size_prefixed_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[expect(
+    clippy::empty_loop,
+    reason = "This function is used to keep the CPU busy"
+)]
 fn spin(_: &FunctionCall) -> Result<Vec<u8>> {
     loop {
         // Keep the CPU 100% busy forever
@@ -718,7 +720,7 @@ pub extern "C" fn hyperlight_main() {
         "SetStatic".to_string(),
         Vec::new(),
         ReturnType::Int,
-        set_static as i64,
+        set_static as usize,
     );
 
     register_function(set_static_def);
@@ -727,7 +729,7 @@ pub extern "C" fn hyperlight_main() {
         "PrintOutput".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::Int,
-        simple_print_output as i64,
+        simple_print_output as usize,
     );
     register_function(simple_print_output_def);
 
@@ -735,7 +737,7 @@ pub extern "C" fn hyperlight_main() {
         "PrintUsingPrintf".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::Int,
-        simple_print_output as i64, // alias to simple_print_output for now
+        simple_print_output as usize, // alias to simple_print_output for now
     );
     register_function(print_using_printf_def);
 
@@ -743,7 +745,7 @@ pub extern "C" fn hyperlight_main() {
         "StackOverflow".to_string(),
         Vec::from(&[ParameterType::Int]),
         ReturnType::Int,
-        stack_overflow as i64,
+        stack_overflow as usize,
     );
     register_function(stack_overflow_def);
 
@@ -751,7 +753,7 @@ pub extern "C" fn hyperlight_main() {
         "BufferOverrun".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::Int,
-        buffer_overrun as i64,
+        buffer_overrun as usize,
     );
     register_function(buffer_overrun_def);
 
@@ -759,7 +761,7 @@ pub extern "C" fn hyperlight_main() {
         "LargeVar".to_string(),
         Vec::new(),
         ReturnType::Int,
-        large_var as i64,
+        large_var as usize,
     );
     register_function(large_var_def);
 
@@ -767,7 +769,7 @@ pub extern "C" fn hyperlight_main() {
         "SmallVar".to_string(),
         Vec::new(),
         ReturnType::Int,
-        small_var as i64,
+        small_var as usize,
     );
     register_function(small_var_def);
 
@@ -775,7 +777,7 @@ pub extern "C" fn hyperlight_main() {
         "CallMalloc".to_string(),
         Vec::from(&[ParameterType::Int]),
         ReturnType::Int,
-        call_malloc as i64,
+        call_malloc as usize,
     );
     register_function(call_malloc_def);
 
@@ -783,7 +785,7 @@ pub extern "C" fn hyperlight_main() {
         "MallocAndFree".to_string(),
         Vec::from(&[ParameterType::Int]),
         ReturnType::Int,
-        malloc_and_free as i64,
+        malloc_and_free as usize,
     );
     register_function(malloc_and_free_def);
 
@@ -791,7 +793,7 @@ pub extern "C" fn hyperlight_main() {
         "PrintTwoArgs".to_string(),
         Vec::from(&[ParameterType::String, ParameterType::Int]),
         ReturnType::Int,
-        print_two_args as i64,
+        print_two_args as usize,
     );
     register_function(print_two_args_def);
 
@@ -803,7 +805,7 @@ pub extern "C" fn hyperlight_main() {
             ParameterType::Long,
         ]),
         ReturnType::Int,
-        print_three_args as i64,
+        print_three_args as usize,
     );
     register_function(print_three_args_def);
 
@@ -816,7 +818,7 @@ pub extern "C" fn hyperlight_main() {
             ParameterType::String,
         ]),
         ReturnType::Int,
-        print_four_args as i64,
+        print_four_args as usize,
     );
     register_function(print_four_args_def);
 
@@ -830,7 +832,7 @@ pub extern "C" fn hyperlight_main() {
             ParameterType::String,
         ]),
         ReturnType::Int,
-        print_five_args as i64,
+        print_five_args as usize,
     );
     register_function(print_five_args_def);
 
@@ -845,7 +847,7 @@ pub extern "C" fn hyperlight_main() {
             ParameterType::Bool,
         ]),
         ReturnType::Int,
-        print_six_args as i64,
+        print_six_args as usize,
     );
     register_function(print_six_args_def);
 
@@ -861,7 +863,7 @@ pub extern "C" fn hyperlight_main() {
             ParameterType::Bool,
         ]),
         ReturnType::Int,
-        print_seven_args as i64,
+        print_seven_args as usize,
     );
     register_function(print_seven_args_def);
 
@@ -878,7 +880,7 @@ pub extern "C" fn hyperlight_main() {
             ParameterType::UInt,
         ]),
         ReturnType::Int,
-        print_eight_args as i64,
+        print_eight_args as usize,
     );
     register_function(print_eight_args_def);
 
@@ -896,7 +898,7 @@ pub extern "C" fn hyperlight_main() {
             ParameterType::ULong,
         ]),
         ReturnType::Int,
-        print_nine_args as i64,
+        print_nine_args as usize,
     );
     register_function(print_nine_args_def);
 
@@ -915,7 +917,7 @@ pub extern "C" fn hyperlight_main() {
             ParameterType::Int,
         ]),
         ReturnType::Int,
-        print_ten_args as i64,
+        print_ten_args as usize,
     );
     register_function(print_ten_args_def);
 
@@ -935,7 +937,7 @@ pub extern "C" fn hyperlight_main() {
             ParameterType::Float,
         ]),
         ReturnType::Int,
-        print_eleven_args as i64,
+        print_eleven_args as usize,
     );
     register_function(print_eleven_args_def);
 
@@ -943,7 +945,7 @@ pub extern "C" fn hyperlight_main() {
         "SetByteArrayToZero".to_string(),
         Vec::from(&[ParameterType::VecBytes]),
         ReturnType::VecBytes,
-        set_byte_array_to_zero as i64,
+        set_byte_array_to_zero as usize,
     );
     register_function(set_byte_array_to_zero_def);
 
@@ -951,7 +953,7 @@ pub extern "C" fn hyperlight_main() {
         "Echo".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::String,
-        echo as i64,
+        echo as usize,
     );
     register_function(echo_def);
 
@@ -959,19 +961,23 @@ pub extern "C" fn hyperlight_main() {
         "GetSizePrefixedBuffer".to_string(),
         Vec::from(&[ParameterType::VecBytes]),
         ReturnType::Int,
-        get_size_prefixed_buffer as i64,
+        get_size_prefixed_buffer as usize,
     );
     register_function(get_size_prefixed_buffer_def);
 
-    let spin_def =
-        GuestFunctionDefinition::new("Spin".to_string(), Vec::new(), ReturnType::Int, spin as i64);
+    let spin_def = GuestFunctionDefinition::new(
+        "Spin".to_string(),
+        Vec::new(),
+        ReturnType::Int,
+        spin as usize,
+    );
     register_function(spin_def);
 
     let abort_def = GuestFunctionDefinition::new(
         "GuestAbortWithCode".to_string(),
         Vec::from(&[ParameterType::Int]),
         ReturnType::Void,
-        test_abort as i64,
+        test_abort as usize,
     );
     register_function(abort_def);
 
@@ -979,7 +985,7 @@ pub extern "C" fn hyperlight_main() {
         "GuestAbortWithMessage".to_string(),
         Vec::from(&[ParameterType::Int, ParameterType::String]),
         ReturnType::Void,
-        test_abort_with_code_and_message as i64,
+        test_abort_with_code_and_message as usize,
     );
     register_function(abort_with_code_message_def);
 
@@ -987,7 +993,7 @@ pub extern "C" fn hyperlight_main() {
         "guest_panic".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::Void,
-        test_guest_panic as i64,
+        test_guest_panic as usize,
     );
     register_function(guest_panic_def);
 
@@ -995,7 +1001,7 @@ pub extern "C" fn hyperlight_main() {
         "TestMalloc".to_string(),
         Vec::from(&[ParameterType::Int]),
         ReturnType::Int,
-        test_rust_malloc as i64,
+        test_rust_malloc as usize,
     );
     register_function(rust_malloc_def);
 
@@ -1003,7 +1009,7 @@ pub extern "C" fn hyperlight_main() {
         "LogMessage".to_string(),
         Vec::from(&[ParameterType::String, ParameterType::Int]),
         ReturnType::Void,
-        log_message as i64,
+        log_message as usize,
     );
     register_function(log_message_def);
 
@@ -1011,7 +1017,7 @@ pub extern "C" fn hyperlight_main() {
         "InfiniteRecursion".to_string(),
         Vec::new(),
         ReturnType::Void,
-        infinite_recursion as i64,
+        infinite_recursion as usize,
     );
     register_function(infinite_recursion_def);
 
@@ -1019,7 +1025,7 @@ pub extern "C" fn hyperlight_main() {
         "test_write_raw_ptr".to_string(),
         Vec::from(&[ParameterType::Long]),
         ReturnType::String,
-        test_write_raw_ptr as i64,
+        test_write_raw_ptr as usize,
     );
     register_function(test_write_raw_ptr_def);
 
@@ -1027,7 +1033,7 @@ pub extern "C" fn hyperlight_main() {
         "ExecuteOnStack".to_string(),
         Vec::new(),
         ReturnType::String,
-        execute_on_stack as i64,
+        execute_on_stack as usize,
     );
     register_function(execute_on_stack_def);
 
@@ -1035,7 +1041,7 @@ pub extern "C" fn hyperlight_main() {
         "ExecuteOnHeap".to_string(),
         Vec::new(),
         ReturnType::String,
-        execute_on_heap as i64,
+        execute_on_heap as usize,
     );
     register_function(execute_on_heap_def);
 
@@ -1043,7 +1049,7 @@ pub extern "C" fn hyperlight_main() {
         "AddToStatic".to_string(),
         Vec::from(&[ParameterType::Int]),
         ReturnType::Int,
-        add_to_static as i64,
+        add_to_static as usize,
     );
     register_function(add_to_static_def);
 
@@ -1051,7 +1057,7 @@ pub extern "C" fn hyperlight_main() {
         "GetStatic".to_string(),
         Vec::new(),
         ReturnType::Int,
-        get_static as i64,
+        get_static as usize,
     );
     register_function(get_static_def);
 
@@ -1059,7 +1065,7 @@ pub extern "C" fn hyperlight_main() {
         "AddToStaticAndFail".to_string(),
         Vec::new(),
         ReturnType::Int,
-        add_to_static_and_fail as i64,
+        add_to_static_and_fail as usize,
     );
     register_function(add_to_static_and_fail_def);
 
@@ -1067,7 +1073,7 @@ pub extern "C" fn hyperlight_main() {
         "ViolateSeccompFilters".to_string(),
         Vec::new(),
         ReturnType::ULong,
-        violate_seccomp_filters as i64,
+        violate_seccomp_filters as usize,
     );
     register_function(violate_seccomp_filters_def);
 
@@ -1075,7 +1081,7 @@ pub extern "C" fn hyperlight_main() {
         "EchoFloat".to_string(),
         Vec::from(&[ParameterType::Float]),
         ReturnType::Float,
-        echo_float as i64,
+        echo_float as usize,
     );
     register_function(echo_float_def);
 
@@ -1083,7 +1089,7 @@ pub extern "C" fn hyperlight_main() {
         "EchoDouble".to_string(),
         Vec::from(&[ParameterType::Double]),
         ReturnType::Double,
-        echo_double as i64,
+        echo_double as usize,
     );
     register_function(echo_double_def);
 
@@ -1091,7 +1097,7 @@ pub extern "C" fn hyperlight_main() {
         "Add".to_string(),
         Vec::from(&[ParameterType::Int, ParameterType::Int]),
         ReturnType::Int,
-        add as i64,
+        add as usize,
     );
     register_function(add_def);
 }
@@ -1108,7 +1114,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
 
     logging::log_message(
         LogLevel::Information,
-        &message,
+        message,
         "source",
         "caller",
         "file",
