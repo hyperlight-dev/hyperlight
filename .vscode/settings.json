@@ -1,0 +1,8 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml", 
+        // guest crates for testing, not part of the workspace
+        "src/tests/rust_guests/simpleguest/Cargo.toml",
+        "src/tests/rust_guests/callbackguest/Cargo.toml"
+    ]
+}
