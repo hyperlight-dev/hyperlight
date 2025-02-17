@@ -45,7 +45,7 @@ crossbeam-channel = "0.5.14"
 thiserror = "2.0.11"
 prometheus = "0.13.3"
 strum = { version = "0.27", features = ["derive"] }
-tempfile = { version = "3.16", optional = true }
+tempfile = { version = "3.17", optional = true }
 serde_yaml = "0.9"
 anyhow = "1.0"
 
@@ -85,7 +85,7 @@ signal-hook-registry = "1.4.1"
 envy = { version = "0.4.2" }
 serde = "1.0"
 proptest = "1.6.0"
-tempfile = "3.16.0"
+tempfile = "3.17.0"
 crossbeam-queue = "0.3.12"
 tracing-serde = "0.2.0"
 serial_test = "3.1.1"
