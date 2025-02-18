@@ -19,7 +19,11 @@ limitations under the License.
 
 /// Exception handler
 #[no_mangle]
-pub extern "sysv64" fn hl_exception_handler(stack_pointer: u64, exception_number: u64, page_fault_address: u64) {
+pub extern "sysv64" fn hl_exception_handler(
+    stack_pointer: u64,
+    exception_number: u64,
+    page_fault_address: u64,
+) {
     panic!(
         "EXCEPTION: {:#x}\n\
             Page Fault Address: {:#x}\n\

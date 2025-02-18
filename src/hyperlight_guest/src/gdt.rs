@@ -48,10 +48,8 @@ impl GdtEntry {
 static mut GDT: [GdtEntry; 3] = [
     // Null descriptor
     GdtEntry::new(0, 0, 0, 0),
-
     // Kernel Code Segment (0x08)
     GdtEntry::new(0, 0, 0x9A, 0xA),
-
     // Kernel Data Segment (0x10)
     GdtEntry::new(0, 0, 0x92, 0xC),
 ];
@@ -87,4 +85,3 @@ pub unsafe fn load_gdt() {
     options(nostack, preserves_flags)
     );
 }
-

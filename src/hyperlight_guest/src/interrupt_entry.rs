@@ -18,6 +18,7 @@ limitations under the License.
 // https://github.com/nanvix/nanvix/tree/dev/src/kernel/src/hal/arch/x86
 
 use core::arch::global_asm;
+
 use crate::interrupt_handlers::hl_exception_handler;
 
 extern "sysv64" {
@@ -66,7 +67,6 @@ macro_rules! context_save {
             "    push r13\n",
             "    push r14\n",
             "    push r15\n",
-
             // Save segment registers
             "    mov rax, ds\n",
             "    push rax\n",
@@ -92,7 +92,6 @@ macro_rules! context_restore {
             "    mov es, rax\n",
             "    pop rax\n",
             "    mov ds, rax\n",
-
             // Restore general-purpose registers
             "    pop r15\n",
             "    pop r14\n",
@@ -168,12 +167,18 @@ macro_rules! generate_exceptions {
 macro_rules! generate_excp {
     ($num:expr) => {
         concat!(
-            ".global _do_excp", stringify!($num), "\n",
-            "_do_excp", stringify!($num), ":\n",
+            ".global _do_excp",
+            stringify!($num),
+            "\n",
+            "_do_excp",
+            stringify!($num),
+            ":\n",
             context_save!(),
             // In SysV ABI, the second argument is passed in rsi
             // rsi is the exception number.
-            "    mov rsi, ", stringify!($num), "\n",
+            "    mov rsi, ",
+            stringify!($num),
+            "\n",
             // In SysV ABI, the third argument is passed in rdx
             // rdx is only used for pagefault exception and
             // contains the address that caused the pagefault.
@@ -183,8 +188,12 @@ macro_rules! generate_excp {
     };
     ($num:expr, pusherrcode) => {
         concat!(
-            ".global _do_excp", stringify!($num), "\n",
-            "_do_excp", stringify!($num), ":\n",
+            ".global _do_excp",
+            stringify!($num),
+            "\n",
+            "_do_excp",
+            stringify!($num),
+            ":\n",
             // Some exceptions push an error code onto the stack.
             // For the ones that don't, we push a 0 to keep the
             // stack aligned.
@@ -192,7 +201,9 @@ macro_rules! generate_excp {
             context_save!(),
             // In SysV ABI, the second argument is passed in rsi
             // rsi is the exception number.
-            "    mov rsi, ", stringify!($num), "\n",
+            "    mov rsi, ",
+            stringify!($num),
+            "\n",
             // In SysV ABI, the third argument is passed in rdx
             // rdx is only used for pagefault exception and
             // contains the address that caused the pagefault.
@@ -202,10 +213,16 @@ macro_rules! generate_excp {
     };
     ($num:expr, pagefault) => {
         concat!(
-            ".global _do_excp", stringify!($num), "\n",
-            "_do_excp", stringify!($num), ":\n",
+            ".global _do_excp",
+            stringify!($num),
+            "\n",
+            "_do_excp",
+            stringify!($num),
+            ":\n",
             context_save!(),
-            "    mov rsi, ", stringify!($num), "\n",
+            "    mov rsi, ",
+            stringify!($num),
+            "\n",
             // In a page fault exception, the cr2 register
             // contains the address that caused the page fault.
             "    mov rdx, cr2\n",

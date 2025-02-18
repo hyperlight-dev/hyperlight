@@ -638,7 +638,9 @@ fn log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 fn trigger_exception(_: &FunctionCall) -> Result<Vec<u8>> {
-    unsafe { core::arch::asm!("ud2"); } // trigger an undefined instruction exception
+    unsafe {
+        core::arch::asm!("ud2");
+    } // trigger an undefined instruction exception
     Ok(get_flatbuffer_result_from_void())
 }
 

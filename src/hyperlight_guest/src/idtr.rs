@@ -1,4 +1,5 @@
 use core::ptr::addr_of;
+
 use crate::idt::{init_idt, IdtEntry, IDT};
 
 #[repr(C, packed)]

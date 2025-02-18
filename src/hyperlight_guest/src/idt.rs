@@ -15,29 +15,30 @@ limitations under the License.
 */
 
 use crate::interrupt_entry::{
-    _do_excp0, _do_excp1, _do_excp2, _do_excp3, _do_excp4, _do_excp5, _do_excp6, _do_excp7,
-    _do_excp8, _do_excp9, _do_excp10, _do_excp11, _do_excp12, _do_excp13, _do_excp14, _do_excp15,
-    _do_excp16, _do_excp17, _do_excp18, _do_excp19, _do_excp20, _do_excp30};
+    _do_excp0, _do_excp1, _do_excp10, _do_excp11, _do_excp12, _do_excp13, _do_excp14, _do_excp15,
+    _do_excp16, _do_excp17, _do_excp18, _do_excp19, _do_excp2, _do_excp20, _do_excp3, _do_excp30,
+    _do_excp4, _do_excp5, _do_excp6, _do_excp7, _do_excp8, _do_excp9,
+};
 
 // An entry in the Interrupt Descriptor Table (IDT)
 // For reference, see: https://wiki.osdev.org/Interrupt_Descriptor_Table#Structure_on_x86-64
 #[repr(C, align(16))]
 pub(crate) struct IdtEntry {
-    offset_low: u16,  // Lower 16 bits of handler address
-    selector: u16,    // code segment selector in GDT
-    ist: u8,          // Interrupt Stack Table offset
-    type_attr: u8,    // Gate type and flags
-    offset_mid: u16,  // Middle 16 bits of handler address
-    offset_high: u32, // High 32 bits of handler address
-    zero: u32,        // Reserved (always 0)
+    offset_low: u16,                  // Lower 16 bits of handler address
+    selector: u16,                    // code segment selector in GDT
+    interrupt_stack_table_offset: u8, // Interrupt Stack Table offset
+    type_attr: u8,                    // Gate type and flags
+    offset_mid: u16,                  // Middle 16 bits of handler address
+    offset_high: u32,                 // High 32 bits of handler address
+    zero: u32,                        // Reserved (always 0)
 }
 
 impl IdtEntry {
     fn new(handler: u64) -> Self {
         Self {
             offset_low: (handler & 0xFFFF) as u16,
-            selector: 0x08,                             // Kernel Code Segment
-            ist: 0,                                     // No IST used
+            selector: 0x08,                  // Kernel Code Segment
+            interrupt_stack_table_offset: 0, // No interrupt stack table used
             type_attr: 0x8E,
             // 0x8E = 10001110b
             // 1 00 0 1110
@@ -53,38 +54,38 @@ impl IdtEntry {
     }
 }
 
-
 // The IDT is an array of 256 IDT entries
 // (for reference, see: https://wiki.osdev.org/Interrupt_Descriptor_Table#Structure_on_x86-64)
 pub(crate) static mut IDT: [IdtEntry; 256] = unsafe { core::mem::zeroed() };
 
 pub(crate) fn init_idt() {
-    set_idt_entry(0, _do_excp0);    // Divide by zero
-    set_idt_entry(1, _do_excp1);    // Debug
-    set_idt_entry(2, _do_excp2);    // Non-maskable interrupt
-    set_idt_entry(3, _do_excp3);    // Breakpoint
-    set_idt_entry(4, _do_excp4);    // Overflow
-    set_idt_entry(5, _do_excp5);    // Bound Range Exceeded
-    set_idt_entry(6, _do_excp6);    // Invalid Opcode
-    set_idt_entry(7, _do_excp7);    // Device Not Available
-    set_idt_entry(8, _do_excp8);    // Double Fault
-    set_idt_entry(9, _do_excp9);    // Coprocessor Segment Overrun
-    set_idt_entry(10, _do_excp10);  // Invalid TSS
-    set_idt_entry(11, _do_excp11);  // Segment Not Present
-    set_idt_entry(12, _do_excp12);  // Stack-Segment Fault
-    set_idt_entry(13, _do_excp13);  // General Protection Fault
-    set_idt_entry(14, _do_excp14);  // Page Fault
-    set_idt_entry(15, _do_excp15);  // Reserved
-    set_idt_entry(16, _do_excp16);  // x87 Floating-Point Exception
-    set_idt_entry(17, _do_excp17);  // Alignment Check
-    set_idt_entry(18, _do_excp18);  // Machine Check
-    set_idt_entry(19, _do_excp19);  // SIMD Floating-Point Exception
-    set_idt_entry(20, _do_excp20);  // Virtualization Exception
-    set_idt_entry(30, _do_excp30);  // Security Exception
+    set_idt_entry(0, _do_excp0); // Divide by zero
+    set_idt_entry(1, _do_excp1); // Debug
+    set_idt_entry(2, _do_excp2); // Non-maskable interrupt
+    set_idt_entry(3, _do_excp3); // Breakpoint
+    set_idt_entry(4, _do_excp4); // Overflow
+    set_idt_entry(5, _do_excp5); // Bound Range Exceeded
+    set_idt_entry(6, _do_excp6); // Invalid Opcode
+    set_idt_entry(7, _do_excp7); // Device Not Available
+    set_idt_entry(8, _do_excp8); // Double Fault
+    set_idt_entry(9, _do_excp9); // Coprocessor Segment Overrun
+    set_idt_entry(10, _do_excp10); // Invalid TSS
+    set_idt_entry(11, _do_excp11); // Segment Not Present
+    set_idt_entry(12, _do_excp12); // Stack-Segment Fault
+    set_idt_entry(13, _do_excp13); // General Protection Fault
+    set_idt_entry(14, _do_excp14); // Page Fault
+    set_idt_entry(15, _do_excp15); // Reserved
+    set_idt_entry(16, _do_excp16); // x87 Floating-Point Exception
+    set_idt_entry(17, _do_excp17); // Alignment Check
+    set_idt_entry(18, _do_excp18); // Machine Check
+    set_idt_entry(19, _do_excp19); // SIMD Floating-Point Exception
+    set_idt_entry(20, _do_excp20); // Virtualization Exception
+    set_idt_entry(30, _do_excp30); // Security Exception
 }
 
 fn set_idt_entry(index: usize, handler: unsafe extern "sysv64" fn()) {
     let handler_addr = handler as *const () as u64;
-    unsafe { IDT[index] = IdtEntry::new(handler_addr); }
+    unsafe {
+        IDT[index] = IdtEntry::new(handler_addr);
+    }
 }
-

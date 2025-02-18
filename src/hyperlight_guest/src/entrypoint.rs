@@ -22,16 +22,16 @@ use hyperlight_common::mem::{HyperlightPEB, RunMode};
 use log::LevelFilter;
 use spin::Once;
 
+use crate::gdt::load_gdt;
 use crate::guest_error::reset_error;
 use crate::guest_function_call::dispatch_function;
 use crate::guest_logger::init_logger;
 use crate::host_function_call::{outb, OutBAction};
+use crate::idtr::load_idt;
 use crate::{
     __security_cookie, HEAP_ALLOCATOR, MIN_STACK_ADDRESS, OS_PAGE_SIZE, OUTB_PTR,
     OUTB_PTR_WITH_CONTEXT, P_PEB, RUNNING_MODE,
 };
-use crate::gdt::load_gdt;
-use crate::idtr::load_idt;
 
 #[inline(never)]
 pub fn halt() {
