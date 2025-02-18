@@ -1,5 +1,5 @@
 use core::ptr::addr_of;
-use crate::idt::{IdtEntry, IDT};
+use crate::idt::{init_idt, IdtEntry, IDT};
 
 #[repr(C, packed)]
 pub struct Idtr {
@@ -21,6 +21,8 @@ impl Idtr {
 }
 
 pub(crate) unsafe fn load_idt() {
+    init_idt();
+
     let idt_size = 256 * size_of::<IdtEntry>();
     let expected_base = addr_of!(IDT) as *const _ as u64;
 

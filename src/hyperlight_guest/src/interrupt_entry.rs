@@ -127,27 +127,27 @@ macro_rules! generate_exceptions {
             context_restore!(),
             "    mov r14, 495\n",
             "    iretq\n", // iretq is used to return from exception in x86_64
-            generate_excp!(0),
-            generate_excp!(1),
-            generate_excp!(2),
-            generate_excp!(3),
-            generate_excp!(4),
-            generate_excp!(5),
-            generate_excp!(6),
-            generate_excp!(7),
+            generate_excp!(0, pusherrcode),
+            generate_excp!(1, pusherrcode),
+            generate_excp!(2, pusherrcode),
+            generate_excp!(3, pusherrcode),
+            generate_excp!(4, pusherrcode),
+            generate_excp!(5, pusherrcode),
+            generate_excp!(6, pusherrcode),
+            generate_excp!(7, pusherrcode),
             generate_excp!(8),
-            generate_excp!(9),
+            generate_excp!(9, pusherrcode),
             generate_excp!(10),
             generate_excp!(11),
             generate_excp!(12),
             generate_excp!(13),
             generate_excp!(14, pagefault),
-            generate_excp!(15),
-            generate_excp!(16),
+            generate_excp!(15, pusherrcode),
+            generate_excp!(16, pusherrcode),
             generate_excp!(17),
-            generate_excp!(18),
-            generate_excp!(19),
-            generate_excp!(20),
+            generate_excp!(18, pusherrcode),
+            generate_excp!(19, pusherrcode),
+            generate_excp!(20, pusherrcode),
             generate_excp!(30),
         )
     };
@@ -170,6 +170,25 @@ macro_rules! generate_excp {
         concat!(
             ".global _do_excp", stringify!($num), "\n",
             "_do_excp", stringify!($num), ":\n",
+            context_save!(),
+            // In SysV ABI, the second argument is passed in rsi
+            // rsi is the exception number.
+            "    mov rsi, ", stringify!($num), "\n",
+            // In SysV ABI, the third argument is passed in rdx
+            // rdx is only used for pagefault exception and
+            // contains the address that caused the pagefault.
+            "    mov rdx, 0\n",
+            "    jmp _do_excp_common\n"
+        )
+    };
+    ($num:expr, pusherrcode) => {
+        concat!(
+            ".global _do_excp", stringify!($num), "\n",
+            "_do_excp", stringify!($num), ":\n",
+            // Some exceptions push an error code onto the stack.
+            // For the ones that don't, we push a 0 to keep the
+            // stack aligned.
+            "   push 0\n",
             context_save!(),
             // In SysV ABI, the second argument is passed in rsi
             // rsi is the exception number.

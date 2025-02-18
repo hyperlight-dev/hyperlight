@@ -31,7 +31,6 @@ use crate::{
     OUTB_PTR_WITH_CONTEXT, P_PEB, RUNNING_MODE,
 };
 use crate::gdt::load_gdt;
-use crate::idt::init_idt;
 use crate::idtr::load_idt;
 
 #[inline(never)]
@@ -91,7 +90,6 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_
 
             // Set up GDT/IDT
             load_gdt();
-            init_idt();
             load_idt();
 
             // Enable interrupts
