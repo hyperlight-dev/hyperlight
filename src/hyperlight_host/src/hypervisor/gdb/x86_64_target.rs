@@ -35,11 +35,16 @@ use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError, X86_64Reg
 pub struct HyperlightSandboxTarget {
     /// Hypervisor communication channels
     hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>,
+    /// Thread ID
+    thread_id: u64,
 }
 
 impl HyperlightSandboxTarget {
-    pub fn new(hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>) -> Self {
-        HyperlightSandboxTarget { hyp_conn }
+    pub fn new(hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>, thread_id: u64) -> Self {
+        HyperlightSandboxTarget {
+            hyp_conn,
+            thread_id,
+        }
     }
 
     /// Sends a command over the communication channel and waits for response
@@ -53,6 +58,11 @@ impl HyperlightSandboxTarget {
     /// Sends a command over the communication channel
     fn send(&self, ev: DebugMsg) -> Result<(), GdbTargetError> {
         self.hyp_conn.send(ev)
+    }
+
+    /// Returns the thread ID
+    pub fn get_thread_id(&self) -> u64 {
+        self.thread_id
     }
 
     /// Waits for a response over the communication channel
@@ -366,6 +376,8 @@ impl SwBreakpoint for HyperlightSandboxTarget {
 }
 
 impl SingleThreadResume for HyperlightSandboxTarget {
+    /// Resumes the execution of the vCPU
+    /// Note: We do not handle signals passed to this method
     fn resume(&mut self, _signal: Option<Signal>) -> Result<(), Self::Error> {
         log::debug!("Resume");
         self.resume_vcpu()
@@ -376,9 +388,9 @@ impl SingleThreadResume for HyperlightSandboxTarget {
 }
 
 impl SingleThreadSingleStep for HyperlightSandboxTarget {
-    fn step(&mut self, signal: Option<Signal>) -> Result<(), Self::Error> {
-        assert!(signal.is_none());
-
+    /// Steps the vCPU execution by
+    /// Note: We do not handle signals passed to this method
+    fn step(&mut self, _signal: Option<Signal>) -> Result<(), Self::Error> {
         log::debug!("Step");
         match self.send_command(DebugMsg::Step)? {
             DebugResponse::Step => Ok(()),
@@ -404,7 +416,7 @@ mod tests {
     fn test_gdb_target() {
         let (gdb_conn, hyp_conn) = DebugCommChannel::unbounded();
 
-        let mut target = HyperlightSandboxTarget::new(hyp_conn);
+        let mut target = HyperlightSandboxTarget::new(hyp_conn, 0);
 
         // Check response to read registers - send the response first to not be blocked
         // by the recv call in the target

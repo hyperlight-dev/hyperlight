@@ -39,6 +39,8 @@ pub enum GdbTargetError {
     CannotReceiveMsg,
     #[error("Error encountered when sending message")]
     CannotSendMsg,
+    #[error("Error encountered when sending a signal to the hypervisor thread")]
+    SendSignalError,
     #[error("Encountered an unexpected message over communication channel")]
     UnexpectedMessage,
     #[error("Unexpected error encountered")]
@@ -93,6 +95,7 @@ pub enum VcpuStopReason {
     DoneStep,
     HwBp,
     SwBp,
+    Interrupt,
     Unknown,
 }
 
@@ -178,6 +181,7 @@ impl<T, U> DebugCommChannel<T, U> {
 /// Creates a thread that handles gdb protocol
 pub fn create_gdb_thread(
     port: u16,
+    thread_id: u64,
 ) -> Result<DebugCommChannel<DebugResponse, DebugMsg>, GdbTargetError> {
     let (gdb_conn, hyp_conn) = DebugCommChannel::unbounded();
     let socket = format!("localhost:{}", port);
@@ -195,7 +199,7 @@ pub fn create_gdb_thread(
             let conn: Box<dyn ConnectionExt<Error = io::Error>> = Box::new(conn);
             let debugger = GdbStub::new(conn);
 
-            let mut target = HyperlightSandboxTarget::new(hyp_conn);
+            let mut target = HyperlightSandboxTarget::new(hyp_conn, thread_id);
 
             // Waits for vCPU to stop at entrypoint breakpoint
             let res = target.recv()?;

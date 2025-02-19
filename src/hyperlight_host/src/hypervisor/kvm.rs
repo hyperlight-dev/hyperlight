@@ -634,7 +634,7 @@ impl KVMDriver {
         #[cfg(gdb)]
         let (debug, gdb_conn) = {
             if let Some(DebugInfo { port }) = debug_info {
-                let gdb_conn = create_gdb_thread(*port);
+                let gdb_conn = create_gdb_thread(*port, unsafe { pthread_self() });
 
                 // in case the gdb thread creation fails, we still want to continue
                 // without gdb
@@ -875,7 +875,13 @@ impl Hypervisor for KVMDriver {
                 HyperlightExit::Debug(reason)
             }
             Err(e) => match e.errno() {
+                // In case of the gdb feature, the timeout is not enabled, this
+                // exit is because of a signal sent from the gdb thread to the
+                // hypervisor thread to cancel execution
+                #[cfg(gdb)]
+                libc::EINTR => HyperlightExit::Debug(VcpuStopReason::Interrupt),
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
+                #[cfg(not(gdb))]
                 libc::EINTR => HyperlightExit::Cancelled(),
                 libc::EAGAIN => HyperlightExit::Retry(),
                 _ => {

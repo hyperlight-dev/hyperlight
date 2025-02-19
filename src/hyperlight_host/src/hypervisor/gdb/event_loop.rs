@@ -14,12 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use gdbstub::common::Signal;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::run_blocking::{self, WaitForStopReasonError};
 use gdbstub::stub::{BaseStopReason, DisconnectReason, GdbStub, SingleThreadStopReason};
+use libc::{pthread_kill, SIGRTMIN};
 
 use super::x86_64_target::HyperlightSandboxTarget;
-use super::{DebugResponse, VcpuStopReason};
+use super::{DebugResponse, GdbTargetError, VcpuStopReason};
 
 pub struct GdbBlockingEventLoop;
 
@@ -48,7 +50,15 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                         VcpuStopReason::DoneStep => BaseStopReason::DoneStep,
                         VcpuStopReason::SwBp => BaseStopReason::SwBreak(()),
                         VcpuStopReason::HwBp => BaseStopReason::HwBreak(()),
+                        // This is a consequence of the GDB client sending an interrupt signal
+                        // to the target thread
+                        VcpuStopReason::Interrupt => BaseStopReason::SignalWithThread {
+                            tid: (),
+                            signal: Signal(SIGRTMIN() as u8),
+                        },
                         VcpuStopReason::Unknown => {
+                            log::warn!("Unknown stop reason - resuming execution");
+
                             target
                                 .resume_vcpu()
                                 .map_err(WaitForStopReasonError::Target)?;
@@ -87,8 +97,20 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
     /// This function is called when the GDB client sends an interrupt signal.
     /// Passing `None` defers sending a stop reason to later (e.g. when the target stops).
     fn on_interrupt(
-        _target: &mut Self::Target,
+        target: &mut Self::Target,
     ) -> Result<Option<Self::StopReason>, <Self::Target as gdbstub::target::Target>::Error> {
+        log::info!("Received interrupt from GDB client - sending signal to target thread");
+
+        // Send a signal to the target thread to interrupt it
+        let ret = unsafe { pthread_kill(target.get_thread_id(), SIGRTMIN()) };
+
+        log::info!("pthread_kill returned {}", ret);
+
+        if ret < 0 && ret != libc::ESRCH {
+            log::error!("Failed to send signal to target thread");
+            return Err(GdbTargetError::SendSignalError);
+        }
+
         Ok(None)
     }
 }
