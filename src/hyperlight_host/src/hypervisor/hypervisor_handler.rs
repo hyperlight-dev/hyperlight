@@ -35,6 +35,8 @@ use vmm_sys_util::signal::SIGRTMIN;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{WHvCancelRunVirtualProcessor, WHV_PARTITION_HANDLE};
 
+#[cfg(gdb)]
+use super::gdb::create_gdb_thread;
 #[cfg(feature = "function_call_metrics")]
 use crate::histogram_vec_observe;
 #[cfg(gdb)]
@@ -906,6 +908,26 @@ fn set_up_hypervisor_partition(
             }
         }
     } else {
+        // Create gdb thread if gdb is enabled and the configuration is provided
+        // This is only done when the hypervisor is not in-process
+        #[cfg(gdb)]
+        let gdb_conn = if let Some(DebugInfo { port }) = debug_info {
+            let gdb_conn = create_gdb_thread(*port, unsafe { pthread_self() });
+
+            // in case the gdb thread creation fails, we still want to continue
+            // without gdb
+            match gdb_conn {
+                Ok(gdb_conn) => Some(gdb_conn),
+                Err(e) => {
+                    log::error!("Could not create gdb connection: {:#}", e);
+
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         match *get_available_hypervisor() {
             #[cfg(mshv)]
             Some(HypervisorType::Mshv) => {
@@ -926,7 +948,7 @@ fn set_up_hypervisor_partition(
                     entrypoint_ptr.absolute()?,
                     rsp_ptr.absolute()?,
                     #[cfg(gdb)]
-                    debug_info,
+                    gdb_conn,
                 )?;
                 Ok(Box::new(hv))
             }

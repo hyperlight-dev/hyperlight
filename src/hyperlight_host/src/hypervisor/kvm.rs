@@ -26,7 +26,7 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{create_gdb_thread, DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
+use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
@@ -37,8 +37,6 @@ use super::{
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
-#[cfg(gdb)]
-use crate::sandbox::config::DebugInfo;
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -604,7 +602,7 @@ impl KVMDriver {
         pml4_addr: u64,
         entrypoint: u64,
         rsp: u64,
-        #[cfg(gdb)] debug_info: &Option<DebugInfo>,
+        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
         let kvm = Kvm::new()?;
 
@@ -632,23 +630,10 @@ impl KVMDriver {
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
 
         #[cfg(gdb)]
-        let (debug, gdb_conn) = {
-            if let Some(DebugInfo { port }) = debug_info {
-                let gdb_conn = create_gdb_thread(*port, unsafe { pthread_self() });
-
-                // in case the gdb thread creation fails, we still want to continue
-                // without gdb
-                match gdb_conn {
-                    Ok(gdb_conn) => (Some(debug::KvmDebug::new()), Some(gdb_conn)),
-                    Err(e) => {
-                        log::error!("Could not create gdb connection: {:#}", e);
-
-                        (None, None)
-                    }
-                }
-            } else {
-                (None, None)
-            }
+        let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
+            (Some(debug::KvmDebug::new()), Some(gdb_conn))
+        } else {
+            (None, None)
         };
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
