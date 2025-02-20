@@ -15,6 +15,8 @@ limitations under the License.
 */
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+//use opentelemetry_sdk::resource::ResourceBuilder;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use rand::Rng;
 use tracing::{span, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
@@ -31,13 +33,12 @@ use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result as HyperlightResult};
 use hyperlight_testing::simple_guest_as_string;
-use opentelemetry::global::{self, shutdown_tracer_provider};
 use opentelemetry::trace::TracerProvider;
-use opentelemetry::KeyValue;
+use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
-use opentelemetry_sdk::runtime::Tokio;
-use opentelemetry_sdk::{trace, Resource};
-use opentelemetry_semantic_conventions::attribute::{SERVICE_NAME, SERVICE_VERSION};
+//use opentelemetry_sdk::runtime::Tokio;
+use opentelemetry_sdk::Resource;
+use opentelemetry_semantic_conventions::attribute::SERVICE_VERSION;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -51,23 +52,32 @@ fn fn_writer(_msg: String) -> HyperlightResult<i32> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    init_tracing_subscriber(ENDPOINT_ADDR)?;
+    let provider = init_tracing_subscriber(ENDPOINT_ADDR)?;
 
-    Ok(run_example(true)?)
+    run_example(true)?;
+
+    provider.shutdown()?;
+
+    Ok(())
 }
 
-fn init_tracing_subscriber(addr: &str) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+fn init_tracing_subscriber(
+    addr: &str,
+) -> Result<SdkTracerProvider, Box<dyn Error + Send + Sync + 'static>> {
     let exporter = SpanExporter::builder()
         .with_tonic()
         .with_endpoint(addr)
         .build()?;
 
-    let provider = trace::TracerProvider::builder()
-        .with_resource(Resource::new(vec![
-            KeyValue::new(SERVICE_NAME, "hyperlight_otel_example"),
-            KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-        ]))
-        .with_batch_exporter(exporter, Tokio)
+    let version = KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION"));
+    let resource = Resource::builder()
+        .with_service_name("hyperlight_otel_example")
+        .with_attribute(version)
+        .build();
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
         .build();
 
     global::set_tracer_provider(provider.clone());
@@ -87,7 +97,7 @@ fn init_tracing_subscriber(addr: &str) -> Result<(), Box<dyn Error + Send + Sync
         .with(otel_layer)
         .try_init()?;
 
-    Ok(())
+    Ok(provider)
 }
 
 fn run_example(wait_input: bool) -> HyperlightResult<()> {
@@ -199,7 +209,6 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
         let result = join_handle.join();
         assert!(result.is_ok());
     }
-    shutdown_tracer_provider();
 
     Ok(())
 }

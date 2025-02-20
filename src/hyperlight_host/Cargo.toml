@@ -94,11 +94,11 @@ env_logger = "0.11.6"
 tracing-forest = { version = "0.1.6", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
 tracing = "0.1.41"
 tracing-subscriber = {version = "0.3.19", features = ["std", "env-filter"]}
-tracing-opentelemetry = "0.28.0"
-opentelemetry = "0.27.1"
-opentelemetry-otlp = { version = "0.27.0", features = ["default"] }
-opentelemetry-semantic-conventions = "0.27.0"
-opentelemetry_sdk = { version = "0.27.1", features = ["rt-tokio"] }
+tracing-opentelemetry = "0.29.0"
+opentelemetry = "0.28"
+opentelemetry-otlp = { version = "0.28", features = ["default", "grpc-tonic"] }
+opentelemetry-semantic-conventions = "0.28"
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
 tokio = { version = "1.43.0", features = ["full"] }
 criterion = "0.5.1"
 tracing-chrome = "0.7.2"
