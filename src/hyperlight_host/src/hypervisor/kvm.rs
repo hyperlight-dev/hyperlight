@@ -128,7 +128,8 @@ mod debug {
         /// The first 4 debug registers are used to set the addresses
         /// The 4th and 5th debug registers are obsolete and not used
         /// The 7th debug register is used to enable the breakpoints
-        /// For more information see: https://en.wikipedia.org/wiki/X86_debug_register
+        /// For more information see: DEBUG REGISTERS chapter in the architecture
+        /// manual
         fn set_debug_config(&mut self, vcpu_fd: &VcpuFd, step: bool) -> Result<()> {
             let addrs = &self.hw_breakpoints;
 
@@ -417,7 +418,7 @@ mod debug {
                     let save_data = debug
                         .sw_breakpoints
                         .remove(&addr)
-                        .expect("Expected the hashmap to contain the address");
+                        .ok_or_else(|| new_error!("Expected the hashmap to contain the address"))?;
 
                     (true, Some(save_data))
                 } else {
@@ -481,19 +482,12 @@ mod debug {
             dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         ) -> Result<DebugResponse> {
             match req {
-                DebugMsg::AddHwBreakpoint(addr) => {
-                    let res = self
-                        .add_hw_breakpoint(addr)
-                        .expect("Add hw breakpoint error");
-                    Ok(DebugResponse::AddHwBreakpoint(res))
-                }
-                DebugMsg::AddSwBreakpoint(addr) => {
-                    let res = self
-                        .add_sw_breakpoint(addr, dbg_mem_access_fn)
-                        .expect("Add sw breakpoint error");
-
-                    Ok(DebugResponse::AddSwBreakpoint(res))
-                }
+                DebugMsg::AddHwBreakpoint(addr) => self
+                    .add_hw_breakpoint(addr)
+                    .map(DebugResponse::AddHwBreakpoint),
+                DebugMsg::AddSwBreakpoint(addr) => self
+                    .add_sw_breakpoint(addr, dbg_mem_access_fn)
+                    .map(DebugResponse::AddSwBreakpoint),
                 DebugMsg::Continue => {
                     self.set_single_step(false)?;
                     Ok(DebugResponse::Continue)
@@ -520,21 +514,16 @@ mod debug {
                 }
                 DebugMsg::ReadRegisters => {
                     let mut regs = X86_64Regs::default();
-                    self.read_regs(&mut regs).expect("Read Regs error");
-                    Ok(DebugResponse::ReadRegisters(regs))
+
+                    self.read_regs(&mut regs)
+                        .map(|_| DebugResponse::ReadRegisters(regs))
                 }
-                DebugMsg::RemoveHwBreakpoint(addr) => {
-                    let res = self
-                        .remove_hw_breakpoint(addr)
-                        .expect("Remove hw breakpoint error");
-                    Ok(DebugResponse::RemoveHwBreakpoint(res))
-                }
-                DebugMsg::RemoveSwBreakpoint(addr) => {
-                    let res = self
-                        .remove_sw_breakpoint(addr, dbg_mem_access_fn)
-                        .expect("Remove sw breakpoint error");
-                    Ok(DebugResponse::RemoveSwBreakpoint(res))
-                }
+                DebugMsg::RemoveHwBreakpoint(addr) => self
+                    .remove_hw_breakpoint(addr)
+                    .map(DebugResponse::RemoveHwBreakpoint),
+                DebugMsg::RemoveSwBreakpoint(addr) => self
+                    .remove_sw_breakpoint(addr, dbg_mem_access_fn)
+                    .map(DebugResponse::RemoveSwBreakpoint),
                 DebugMsg::Step => {
                     self.set_single_step(true)?;
                     Ok(DebugResponse::Step)
@@ -544,10 +533,9 @@ mod debug {
 
                     Ok(DebugResponse::WriteAddr)
                 }
-                DebugMsg::WriteRegisters(regs) => {
-                    self.write_regs(&regs).expect("Write Regs error");
-                    Ok(DebugResponse::WriteRegisters)
-                }
+                DebugMsg::WriteRegisters(regs) => self
+                    .write_regs(&regs)
+                    .map(|_| DebugResponse::WriteRegisters),
             }
         }
 
@@ -557,9 +545,12 @@ mod debug {
                 .as_mut()
                 .ok_or_else(|| new_error!("Debug is not enabled"))?;
 
-            gdb_conn
-                .recv()
-                .map_err(|e| new_error!("Got an error while waiting to receive a message: {:?}", e))
+            gdb_conn.recv().map_err(|e| {
+                new_error!(
+                    "Got an error while waiting to receive a message from the gdb thread: {:?}",
+                    e
+                )
+            })
         }
 
         pub fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
@@ -570,9 +561,12 @@ mod debug {
                 .as_mut()
                 .ok_or_else(|| new_error!("Debug is not enabled"))?;
 
-            gdb_conn
-                .send(cmd)
-                .map_err(|e| new_error!("Got an error while sending a response message {:?}", e))
+            gdb_conn.send(cmd).map_err(|e| {
+                new_error!(
+                    "Got an error while sending a response message to the gdb thread: {:?}",
+                    e
+                )
+            })
         }
     }
 }
@@ -854,11 +848,12 @@ impl Hypervisor for KVMDriver {
                 }
             }
             #[cfg(gdb)]
-            Ok(VcpuExit::Debug(_)) => {
-                let reason = self.get_stop_reason()?;
-
-                HyperlightExit::Debug(reason)
-            }
+            Ok(VcpuExit::Debug(_)) => match self.get_stop_reason() {
+                Ok(reason) => HyperlightExit::Debug(reason),
+                Err(e) => {
+                    log_then_return!("Error getting stop reason: {:?}", e);
+                }
+            },
             Err(e) => match e.errno() {
                 // In case of the gdb feature, the timeout is not enabled, this
                 // exit is because of a signal sent from the gdb thread to the

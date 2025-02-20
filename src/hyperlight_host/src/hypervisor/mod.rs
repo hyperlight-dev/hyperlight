@@ -232,7 +232,9 @@ impl VirtualCPU {
             match hv.run() {
                 #[cfg(gdb)]
                 Ok(HyperlightExit::Debug(stop_reason)) => {
-                    hv.handle_debug(dbg_mem_access_fn.clone(), stop_reason)?;
+                    if let Err(e) = hv.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
+                        log_then_return!(e);
+                    }
                 }
 
                 Ok(HyperlightExit::Halt()) => {

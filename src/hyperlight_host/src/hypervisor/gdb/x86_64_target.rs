@@ -90,10 +90,10 @@ impl HyperlightSandboxTarget {
     }
 
     /// Sends an event to the Hypervisor that tells it to disable debugging
-    /// and continue executing until end
+    /// and continue executing
     /// Note: The method waits for a confirmation message
     pub fn disable_debug(&mut self) -> Result<(), GdbTargetError> {
-        log::info!("Disable debugging and continue until end");
+        log::info!("Disable debugging and resume execution");
 
         match self.send_command(DebugMsg::DisableDebug)? {
             DebugResponse::DisableDebug => Ok(()),
