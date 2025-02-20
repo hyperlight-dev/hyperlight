@@ -22,10 +22,12 @@ use hyperlight_common::mem::{HyperlightPEB, RunMode};
 use log::LevelFilter;
 use spin::Once;
 
+use crate::gdt::load_gdt;
 use crate::guest_error::reset_error;
 use crate::guest_function_call::dispatch_function;
 use crate::guest_logger::init_logger;
 use crate::host_function_call::{outb, OutBAction};
+use crate::idtr::load_idt;
 use crate::{
     __security_cookie, HEAP_ALLOCATOR, MIN_STACK_ADDRESS, OS_PAGE_SIZE, OUTB_PTR,
     OUTB_PTR_WITH_CONTEXT, P_PEB, RUNNING_MODE,
@@ -85,6 +87,13 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_
             P_PEB = Some(peb_address as *mut HyperlightPEB);
             let peb_ptr = P_PEB.unwrap();
             __security_cookie = peb_address ^ seed;
+
+            // Set up GDT/IDT
+            load_gdt();
+            load_idt();
+
+            // Enable interrupts
+            asm!("sti", options(nostack));
 
             let srand_seed = ((peb_address << 8 ^ seed >> 4) >> 32) as u32;
 
