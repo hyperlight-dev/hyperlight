@@ -95,6 +95,7 @@ jobs:
           # make sure certain cargo features compile
           cargo check -p hyperlight-host --features crashdump
           cargo check -p hyperlight-host --features print_debug
+          cargo check -p hyperlight-host --features gdb
 
           # without any driver (shouldn't compile)
           just test-rust-feature-compilation-fail ${{ matrix.config }}
@@ -113,6 +114,13 @@ jobs:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
         run: just run-rust-examples-linux ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+
+      - name: Run Rust Gdb tests - linux
+        if: runner.os == 'Linux' && matrix.hypervisor == 'kvm'
+        env:
+          CARGO_TERM_COLOR: always
+          RUST_LOG: debug
+        run: just test-rust-gdb-debugging ${{ matrix.config }}
 
       ### Benchmarks ###
       - name: Install github-cli (Linux mariner)

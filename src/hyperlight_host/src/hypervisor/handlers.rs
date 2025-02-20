@@ -102,3 +102,25 @@ impl MemAccessHandlerCaller for MemAccessHandler {
         func()
     }
 }
+
+/// The trait representing custom logic to handle the case when
+/// a Hypervisor's virtual CPU (vCPU) informs Hyperlight a debug memory access
+/// has been requested.
+#[cfg(gdb)]
+pub trait DbgMemAccessHandlerCaller: Send {
+    /// Function that gets called when a read is requested.
+    fn read(&mut self, addr: usize, data: &mut [u8]) -> Result<()>;
+
+    /// Function that gets called when a write is requested.
+    fn write(&mut self, addr: usize, data: &[u8]) -> Result<()>;
+
+    /// Function that gets called for a request to get guest code offset.
+    fn get_code_offset(&mut self) -> Result<usize>;
+}
+
+/// A convenient type representing an implementer of `DbgMemAccessHandlerCaller`
+///
+/// Note: This needs to be wrapped in a Mutex to be able to grab a mutable
+/// reference to the underlying data
+#[cfg(gdb)]
+pub type DbgMemAccessHandlerWrapper = Arc<Mutex<dyn DbgMemAccessHandlerCaller>>;

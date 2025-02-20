@@ -22,6 +22,8 @@ use std::time::Duration;
 
 use tracing::{instrument, Span};
 
+#[cfg(gdb)]
+use super::config::DebugInfo;
 use super::host_funcs::{default_writer_func, HostFuncsWrapper};
 use super::mem_mgr::MemMgrWrapper;
 use super::run_options::SandboxRunOptions;
@@ -52,6 +54,8 @@ pub struct UninitializedSandbox {
     pub(crate) max_initialization_time: Duration,
     pub(crate) max_execution_time: Duration,
     pub(crate) max_wait_for_cancellation: Duration,
+    #[cfg(gdb)]
+    pub(crate) debug_info: Option<DebugInfo>,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -161,6 +165,9 @@ impl UninitializedSandbox {
         }
 
         let sandbox_cfg = cfg.unwrap_or_default();
+
+        #[cfg(gdb)]
+        let debug_info = sandbox_cfg.get_guest_debug_info();
         let mut mem_mgr_wrapper = {
             let mut mgr = UninitializedSandbox::load_guest_binary(
                 sandbox_cfg,
@@ -188,6 +195,8 @@ impl UninitializedSandbox {
             max_wait_for_cancellation: Duration::from_millis(
                 sandbox_cfg.get_max_wait_for_cancellation() as u64,
             ),
+            #[cfg(gdb)]
+            debug_info,
         };
 
         // TODO: These only here to accommodate some writer functions.

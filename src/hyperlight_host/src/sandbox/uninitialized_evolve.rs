@@ -20,12 +20,16 @@ use std::sync::{Arc, Mutex};
 use rand::Rng;
 use tracing::{instrument, Span};
 
+#[cfg(gdb)]
+use super::mem_access::dbg_mem_access_handler_wrapper;
 use crate::hypervisor::hypervisor_handler::{
     HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
 };
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
+#[cfg(gdb)]
+use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::HostFuncsWrapper;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
@@ -66,6 +70,8 @@ where
             u_sbox.max_initialization_time,
             u_sbox.max_execution_time,
             u_sbox.max_wait_for_cancellation,
+            #[cfg(gdb)]
+            u_sbox.debug_info,
         )?;
 
         {
@@ -98,9 +104,13 @@ fn hv_init(
     max_init_time: Duration,
     max_exec_time: Duration,
     max_wait_for_cancellation: Duration,
+    #[cfg(gdb)] debug_info: Option<DebugInfo>,
 ) -> Result<HypervisorHandler> {
     let outb_hdl = outb_handler_wrapper(hshm.clone(), host_funcs);
     let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
+    #[cfg(gdb)]
+    let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(hshm.clone());
+
     let seed = {
         let mut rng = rand::rng();
         rng.random::<u64>()
@@ -113,6 +123,8 @@ fn hv_init(
     let hv_handler_config = HvHandlerConfig {
         outb_handler: outb_hdl,
         mem_access_handler: mem_access_hdl,
+        #[cfg(gdb)]
+        dbg_mem_access_handler: dbg_mem_access_hdl,
         seed,
         page_size,
         peb_addr,
@@ -126,7 +138,11 @@ fn hv_init(
 
     let mut hv_handler = HypervisorHandler::new(hv_handler_config);
 
-    hv_handler.start_hypervisor_handler(gshm)?;
+    hv_handler.start_hypervisor_handler(
+        gshm,
+        #[cfg(gdb)]
+        debug_info,
+    )?;
 
     hv_handler
         .execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
