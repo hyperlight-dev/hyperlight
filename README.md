@@ -174,7 +174,7 @@ the [./src/tests/rust_guests](./src/tests/rust_guests) directory for Rust guests
 You can run Hyperlight on:
 
 - [Linux with KVM][kvm].
-- [Windows with Windows Hypervisor Platform (WHP).][whp] -  Note that you need Windows 11 / Windows Server 2022 or later to use hyperlight, if you are running on earlier versions of Windows then you should consider using our devcontainer on [GitHub codepsaces]((https://codespaces.new/hyperlight-dev/hyperlight)) or WSL2.
+- [Windows with Windows Hypervisor Platform (WHP).][whp] -  Note that you need Windows 11 / Windows Server 2022 or later to use hyperlight, if you are running on earlier versions of Windows then you should consider using our devcontainer on [GitHub codespaces]((https://codespaces.new/hyperlight-dev/hyperlight)) or WSL2.
 - Windows Subsystem for Linux 2 (see instructions [here](https://learn.microsoft.com/en-us/windows/wsl/install) for Windows client and [here](https://learn.microsoft.com/en-us/windows/wsl/install-on-server) for Windows Server) with KVM.
 - Azure Linux with mshv (note that you need mshv to be installed to use Hyperlight)
 
