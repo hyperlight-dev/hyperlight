@@ -58,7 +58,9 @@ jobs:
         run: just fmt-check
 
       - name: clippy
-        run: just clippy ${{ matrix.config }}
+        run: |
+          just clippy ${{ matrix.config }}
+          just clippy-guests ${{ matrix.config }}
 
       # Does not check for updated Cargo.lock files for test rust guests as this causes an issue with this checkwhen deoendabot updates dependencies in common crates
       - name: Ensure up-to-date Cargo.lock
