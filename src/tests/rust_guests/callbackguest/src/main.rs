@@ -30,14 +30,12 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
-use hyperlight_common::flatbuffer_wrappers::util::{
-    get_flatbuffer_result_from_int, get_flatbuffer_result_from_void,
-};
+use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::register_function;
 use hyperlight_guest::host_function_call::{
-    call_host_function, get_host_value_return_as_int, print_output_as_guest_function,
+    call_host_function, get_host_return_value, print_output_as_guest_function,
 };
 use hyperlight_guest::logging::log_message;
 
@@ -53,9 +51,9 @@ fn send_message_to_host_method(
         ReturnType::Int,
     )?;
 
-    let result = get_host_value_return_as_int()?;
+    let result = get_host_return_value::<i32>()?;
 
-    Ok(get_flatbuffer_result_from_int(result))
+    Ok(get_flatbuffer_result(result))
 }
 
 fn guest_function(function_call: &FunctionCall) -> Result<Vec<u8>> {
@@ -111,7 +109,7 @@ fn guest_function4() -> Result<Vec<u8>> {
         ReturnType::Void,
     )?;
 
-    Ok(get_flatbuffer_result_from_void())
+    Ok(get_flatbuffer_result(()))
 }
 
 fn guest_log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
@@ -138,7 +136,7 @@ fn guest_log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
             line!(),
         );
 
-        Ok(get_flatbuffer_result_from_int(message.len() as i32))
+        Ok(get_flatbuffer_result(message.len() as i32))
     } else {
         return Err(HyperlightGuestError::new(
             ErrorCode::GuestFunctionParameterTypeMismatch,
@@ -160,7 +158,7 @@ fn call_error_method(function_call: &FunctionCall) -> Result<Vec<u8>> {
 
 fn call_host_spin() -> Result<Vec<u8>> {
     call_host_function("Spin", None, ReturnType::Void)?;
-    Ok(get_flatbuffer_result_from_void())
+    Ok(get_flatbuffer_result(()))
 }
 
 #[no_mangle]
