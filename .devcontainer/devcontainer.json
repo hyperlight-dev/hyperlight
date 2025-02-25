@@ -20,6 +20,9 @@
   // Use 'postCreateCommand' to run commands after the container is created
   "postCreateCommand": "bash .devcontainer/setup.sh",
 
+  // Runs each time the container starts/restarts
+  // Only run these commands if /dev/kvm exists
+  "postStartCommand": "if [ -e /dev/kvm ]; then sudo chown root:kvm /dev/kvm && sudo chmod 660 /dev/kvm && sudo usermod -aG kvm vscode; else echo 'KVM device not found, skipping...'; fi",
   "customizations": {
     "vscode": {
       "extensions": [
