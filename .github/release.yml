@@ -3,32 +3,11 @@
 changelog:
   exclude:
     labels:
-      - chore
+      - release-notes/ignore
   categories:
-    - title: 🛠 Breaking Changes 
+    - title: New Features or Improvements
       labels:
-        - breaking-change
-    - title: 🎉 New Features 
+        - kind/enhancement
+    - title: Bug Fixes
       labels:
-        - enhancement
-    - title: 🐛 Bug Fixes
-      labels:
-        - bug
-    - title: 🔒 Security Fixes
-      labels:
-        - security
-    - title: 🚀 Performance Improvements
-      labels:
-        - performance
-    - title: 👒 Dependencies
-      labels:
-        - dependencies
-    - title: 📚 Documentation
-      labels:
-        - documentation
-    - title: 🔬 Testing
-      labels:
-        - testing
-    - title: 📝 Other Changes
-      labels:
-        - "*"
+        - kind/bugfix
