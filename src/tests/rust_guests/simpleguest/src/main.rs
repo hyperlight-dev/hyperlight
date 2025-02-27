@@ -634,7 +634,7 @@ fn trigger_exception(_: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
         core::arch::asm!("ud2");
     } // trigger an undefined instruction exception
-    Ok(get_flatbuffer_result_from_void())
+    Ok(get_flatbuffer_result(()))
 }
 
 static mut COUNTER: i32 = 0;
