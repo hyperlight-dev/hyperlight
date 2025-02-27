@@ -61,16 +61,16 @@ use crate::{log_then_return, new_error, Result};
 // +-------------------------------------------+
 // |                PEB Struct (0x98)          |
 // +-------------------------------------------+
-// |               Guest Code                  |
-// +-------------------------------------------+
 // |                    PT                     |
-// +-------------------------------------------+ 0x3_000
+// +-------------------------------------------+ guest_code_offset + 0x3_000
 // |                    PD                     |
-// +-------------------------------------------+ 0x2_000
+// +-------------------------------------------+ guest_code_offset + 0x2_000
 // |                   PDPT                    |
-// +-------------------------------------------+ 0x1_000
+// +-------------------------------------------+ guest_code_offset + 0x1_000
 // |                   PML4                    |
-// +-------------------------------------------+ 0x0_000
+// +-------------------------------------------+ guest_code_offset
+// |               Guest Code                  |
+// +-------------------------------------------+ 0x0
 
 ///
 /// - `HostDefinitions` - the length of this is the `HostFunctionDefinitionSize`
@@ -160,6 +160,8 @@ pub(crate) struct SandboxMemoryLayout {
     total_page_table_size: usize,
     // The offset in the sandbox memory where the code starts
     guest_code_offset: usize,
+    // The offset in the sandbox memory where the PML4 Table is located
+    paging_sections_offset: usize,
 }
 
 impl Debug for SandboxMemoryLayout {
@@ -283,24 +285,13 @@ impl Debug for SandboxMemoryLayout {
 }
 
 impl SandboxMemoryLayout {
-    /// The offset into the sandbox's memory where the PML4 Table is located.
-    /// See https://www.pagetable.com/?p=14 for more information.
-    pub(crate) const PML4_OFFSET: usize = 0x0000;
-    /// The offset into the sandbox's memory where the Page Directory Pointer
-    /// Table starts.
-    pub(super) const PDPT_OFFSET: usize = 0x1000;
+    /// The offset from the start of the paging section region into the sandbox's memory where the
+    /// Page Directory Pointer Table starts.
+    const PDPT_OFFSET: usize = 0x1000;
     /// The offset into the sandbox's memory where the Page Directory starts.
-    pub(super) const PD_OFFSET: usize = 0x2000;
+    const PD_OFFSET: usize = 0x2000;
     /// The offset into the sandbox's memory where the Page Tables start.
-    pub(super) const PT_OFFSET: usize = 0x3000;
-    /// The address (not the offset) to the start of the page directory
-    pub(super) const PD_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PD_OFFSET;
-    /// The address (not the offset) into sandbox memory where the Page
-    /// Directory Pointer Table starts
-    pub(super) const PDPT_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PDPT_OFFSET;
-    /// The address (not the offset) into sandbox memory where the Page
-    /// Tables start
-    pub(super) const PT_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PT_OFFSET;
+    const PT_OFFSET: usize = 0x3000;
     /// The maximum amount of memory a single sandbox will be allowed.
     /// The addressable virtual memory with current paging setup is virtual address 0x0 - 0x40000000,
     /// excluding the memory up to BASE_ADDRESS (which is 0 by default).
@@ -321,9 +312,9 @@ impl SandboxMemoryLayout {
         stack_size: usize,
         heap_size: usize,
     ) -> Result<Self> {
-        let total_page_table_size =
-            Self::get_total_page_table_size(cfg, code_size, stack_size, heap_size);
-        let guest_code_offset = total_page_table_size;
+        let guest_code_offset = 0x0;
+        let total_page_table_size = Self::get_total_page_table_size(cfg, code_size, stack_size, heap_size);
+        let paging_sections_offset = guest_code_offset + round_up_to(code_size, PAGE_SIZE_USIZE);
         // The following offsets are to the fields of the PEB struct itself!
         let peb_offset = total_page_table_size + round_up_to(code_size, PAGE_SIZE_USIZE);
         let peb_security_cookie_seed_offset =
@@ -424,7 +415,32 @@ impl SandboxMemoryLayout {
             kernel_stack_guard_page_offset,
             kernel_stack_size_rounded,
             boot_stack_buffer_offset,
+            paging_sections_offset,
         })
+    }
+
+    /// Gets the PML4 offset
+    /// (i.e., the `paging_sections_offset` == aligned code size)
+    pub fn get_pml4_offset(&self) -> usize {
+        self.paging_sections_offset
+    }
+
+    /// Gets the PDPT offset
+    /// (i.e., the `paging_sections_offset` + 0x1000)
+    pub fn get_pdpt_offset(&self) -> usize {
+        self.paging_sections_offset + Self::PDPT_OFFSET
+    }
+
+    /// Gets the PD offset
+    /// (i.e., the `paging_sections_offset` + 0x2000)
+    pub fn get_pd_offset(&self) -> usize {
+        self.paging_sections_offset + Self::PD_OFFSET
+    }
+
+    /// Gets the PT offset
+    /// (i.e., the `paging_sections_offset` + 0x3000)
+    pub fn get_pt_offset(&self) -> usize {
+        self.paging_sections_offset + Self::PT_OFFSET
     }
 
     /// Gets the offset in guest memory to the RunMode field in the PEB struct.
@@ -778,26 +794,20 @@ impl SandboxMemoryLayout {
     pub fn get_memory_regions(&self, shared_mem: &GuestSharedMemory) -> Result<Vec<MemoryRegion>> {
         let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, shared_mem.base_addr());
 
-        // PML4, PDPT, PD
-        let code_offset = builder.push_page_aligned(
-            self.total_page_table_size,
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            PageTables,
-        );
+        assert_eq!(self.guest_code_offset, 0x0);
 
-        if code_offset != self.guest_code_offset {
-            return Err(new_error!(
-                "Code offset does not match expected code offset expected:  {}, actual:  {}",
-                self.guest_code_offset,
-                code_offset
-            ));
-        }
-
-        // code
-        let peb_offset = builder.push_page_aligned(
+        // Code
+        builder.push_page_aligned(
             self.code_size,
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
             Code,
+        );
+
+        // PML4, PDPT, PD
+        let peb_offset = builder.push_page_aligned(
+            self.total_page_table_size,
+            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
+            PageTables,
         );
 
         let expected_peb_offset = TryInto::<usize>::try_into(self.peb_offset)?;

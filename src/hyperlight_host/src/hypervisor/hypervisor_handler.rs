@@ -45,7 +45,6 @@ use crate::hypervisor::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::Hypervisor;
-use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
@@ -859,7 +858,7 @@ fn set_up_hypervisor_partition(
     }?;
     let base_ptr = GuestPtr::try_from(Offset::from(0))?;
     let pml4_ptr = {
-        let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
+        let pml4_offset_u64 = u64::try_from(mgr.layout.get_pml4_offset())?;
         base_ptr + Offset::from(pml4_offset_u64)
     };
     let entrypoint_ptr = {
@@ -867,20 +866,6 @@ fn set_up_hypervisor_partition(
         GuestPtr::try_from(entrypoint_total_offset)
     }?;
 
-    if base_ptr != pml4_ptr {
-        log_then_return!(
-            "Error: base_ptr ({:#?}) does not equal pml4_ptr ({:#?})",
-            base_ptr,
-            pml4_ptr
-        );
-    }
-    if entrypoint_ptr <= pml4_ptr {
-        log_then_return!(
-            "Error: entrypoint_ptr ({:#?}) is not greater than pml4_ptr ({:#?})",
-            entrypoint_ptr,
-            pml4_ptr
-        );
-    }
     if mgr.is_in_process() {
         cfg_if::cfg_if! {
             if #[cfg(inprocess)] {
