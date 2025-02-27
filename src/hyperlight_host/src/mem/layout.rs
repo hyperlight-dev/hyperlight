@@ -313,7 +313,8 @@ impl SandboxMemoryLayout {
         heap_size: usize,
     ) -> Result<Self> {
         let guest_code_offset = 0x0;
-        let total_page_table_size = Self::get_total_page_table_size(cfg, code_size, stack_size, heap_size);
+        let total_page_table_size =
+            Self::get_total_page_table_size(cfg, code_size, stack_size, heap_size);
         let paging_sections_offset = guest_code_offset + round_up_to(code_size, PAGE_SIZE_USIZE);
         // The following offsets are to the fields of the PEB struct itself!
         let peb_offset = total_page_table_size + round_up_to(code_size, PAGE_SIZE_USIZE);

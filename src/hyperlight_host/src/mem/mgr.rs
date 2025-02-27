@@ -166,8 +166,7 @@ where
 
             for i in 0..512 {
                 let offset = self.layout.get_pd_offset() + (i * 8);
-                let val_to_write: u64 = (self.layout.get_pt_offset() as u64
-                    + (i * 4096) as u64)
+                let val_to_write: u64 = (self.layout.get_pt_offset() as u64 + (i * 4096) as u64)
                     | PAGE_PRESENT
                     | PAGE_RW;
                 shared_mem.write_u64(offset, val_to_write)?;
