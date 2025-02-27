@@ -17,7 +17,7 @@ workspace = true
 [dependencies]
 flatbuffers = { version = "25.2.10", default-features = false }
 anyhow = { version = "1.0.96", default-features = false }
-log = "0.4.25"
+log = "0.4.26"
 tracing = { version = "0.1.41", optional = true }
 strum = {version = "0.27",  default-features = false, features = ["derive"]}
 
