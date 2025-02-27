@@ -24,7 +24,8 @@ To track the lifecycle of issues, we also use GitHub labels:
   - If the issue type is **bug**, the bug has been verified.  
   - If the issue type is **enhancement**, the proposal has been deemed ready for implementation.  
   - This label does not indicate when the fix or enhancement will be implemented. Unconfirmed issues are typically closed with an explanatory comment.  
-- **lifecycle/needs-info** – The issue requires additional information from the original poster (OP).  
+- **lifecycle/needs-info** – The issue requires additional information from the original poster (OP).
+- **lifecycle/blocked** - The issue is blocked by another issue or external factor.
 
 ---
 
@@ -32,9 +33,9 @@ To track the lifecycle of issues, we also use GitHub labels:
 
 In addition to **kind/*** labels, we use optional **area/*** labels to specify the focus of a PR or issue. These labels are purely for categorization, are not mandatory, and are not used for release notes.  
 
-- **area/testing** – Related to tests or testing infrastructure.  
-- **area/infrastructure** – Concerns infrastructure rather than core functionality.  
+- **area/dependencies** – Relates to dependency management and updates.  
 - **area/documentation** – Related to documentation updates or improvements.  
+- **area/infrastructure** – Concerns infrastructure rather than core functionality.  
 - **area/performance** – Addresses performance.  
 - **area/security** – Involves security-related changes or fixes.  
-- **area/dependencies** – Relates to dependency management and updates.  
+- **area/testing** – Related to tests or testing infrastructure.  
