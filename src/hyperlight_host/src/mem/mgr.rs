@@ -134,10 +134,9 @@ where
         mem_size: u64,
         regions: &mut [MemoryRegion],
     ) -> Result<u64> {
-        // Add 0x200000 because that's the start of mapped memory
         // For MSVC, move rsp down by 0x28.  This gives the called 'main'
         // function the appearance that rsp was 16 byte aligned before
-        // the 'call' that calls main (note we don't really have a return value
+        // the 'call' that calls main. Note: we don't really have a return value
         // on the stack but some assembly instructions are expecting rsp have
         // started 0x8 bytes off of 16 byte alignment when 'main' is invoked.
         // We do 0x28 instead of 0x8 because MSVC can expect that there are
@@ -153,31 +152,30 @@ where
             - 0x28;
 
         self.shared_mem.with_exclusivity(|shared_mem| {
-            // Create PDL4 table with only 1 PML4E
+            // Create PML4 table with only 1 PML4E
             shared_mem.write_u64(
-                SandboxMemoryLayout::PML4_OFFSET,
-                SandboxMemoryLayout::PDPT_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW,
+                self.layout.get_pml4_offset(),
+                self.layout.get_pdpt_offset() as u64 | PAGE_PRESENT | PAGE_RW,
             )?;
 
             // Create PDPT with only 1 PDPTE
             shared_mem.write_u64(
-                SandboxMemoryLayout::PDPT_OFFSET,
-                SandboxMemoryLayout::PD_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW,
+                self.layout.get_pdpt_offset(),
+                self.layout.get_pd_offset() as u64 | PAGE_PRESENT | PAGE_RW,
             )?;
 
             for i in 0..512 {
-                let offset = SandboxMemoryLayout::PD_OFFSET + (i * 8);
-                let val_to_write: u64 = (SandboxMemoryLayout::PT_GUEST_ADDRESS as u64
-                    + (i * 4096) as u64)
+                let offset = self.layout.get_pd_offset() + (i * 8);
+                let val_to_write: u64 = (self.layout.get_pt_offset() as u64 + (i * 4096) as u64)
                     | PAGE_PRESENT
                     | PAGE_RW;
                 shared_mem.write_u64(offset, val_to_write)?;
             }
 
-            // We only need to create enough PTEs to map the amount of memory we have
-            // We need one PT for every 2MB of memory that is mapped
-            // We can use the memory size to calculate the number of PTs we need
-            // We round up mem_size/2MB and then we need to add 1 as we start our memory mapping at 0x200000
+            // - We only need to create enough PTEs to map the amount of memory we have.
+            // - We need one PT for every 2MB of memory that is mapped.
+            // - We can use the memory size to calculate the number of PTs we need.
+            // - We round up mem_size/2MB.
 
             let mem_size = usize::try_from(mem_size)?;
 
@@ -187,11 +185,9 @@ where
             // Create num_pages PT with 512 PTEs
             for p in 0..num_pages {
                 for i in 0..512 {
-                    let offset = SandboxMemoryLayout::PT_OFFSET + (p * 4096) + (i * 8);
+                    let offset = self.layout.get_pt_offset() + (p * 4096) + (i * 8);
                     // Each PTE maps a 4KB page
-                    let val_to_write = if p == 0 {
-                        (p << 21) as u64 | (i << 12) as u64
-                    } else {
+                    let val_to_write = {
                         let flags = match Self::get_page_flags(p, i, regions) {
                             Ok(region_type) => match region_type {
                                 // TODO: We parse and load the exe according to its sections and then
@@ -249,11 +245,11 @@ where
 
         let idx = regions.binary_search_by(|region| {
             if region.guest_region.contains(&addr) {
-                std::cmp::Ordering::Equal
+                Ordering::Equal
             } else if region.guest_region.start > addr {
-                std::cmp::Ordering::Greater
+                Ordering::Greater
             } else {
-                std::cmp::Ordering::Less
+                Ordering::Less
             }
         });
 
@@ -578,13 +574,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
             .read::<u64>(self.layout.get_dispatch_function_pointer_offset())?;
 
         // This pointer is written by the guest library but is accessible to
-        // the guest engine so we should bounds check it before we return it.
+        // the guest engine, so we should bounds check it before we return it.
         //
         // When executing with in-hypervisor mode, there is no danger from
         // the guest manipulating this memory location because the only
         // addresses that are valid are in its own address space.
         //
-        // When executing in-process, maniulating this pointer could cause the
+        // When executing in-process, manipulating this pointer could cause the
         // host to execute arbitrary functions.
         let guest_ptr = GuestPtr::try_from(RawPtr::from(guest_dispatch_function_ptr))?;
         guest_ptr.absolute()
@@ -691,7 +687,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Look for a `HyperlightError` generated by the host, and return
     /// an `Ok(Some(the_error))` if we succeeded in looking for one, and
     /// it was found. Return `Ok(None)` if we succeeded in looking for
-    /// one and it wasn't found. Return an `Err` if we did not succeed
+    /// one, and it wasn't found. Return an `Err` if we did not succeed
     /// in looking for one.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_error(&self) -> Result<Option<HyperlightHostError>> {
