@@ -1112,7 +1112,7 @@ pub extern "C" fn hyperlight_main() {
         "TriggerException".to_string(),
         Vec::new(),
         ReturnType::Void,
-        trigger_exception as i64,
+        trigger_exception as usize,
     );
     register_function(trigger_exception_def);
 }
