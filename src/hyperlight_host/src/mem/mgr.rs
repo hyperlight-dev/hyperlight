@@ -152,22 +152,21 @@ where
             - 0x28;
 
         self.shared_mem.with_exclusivity(|shared_mem| {
-            // Create PDL4 table with only 1 PML4E
+            // Create PML4 table with only 1 PML4E
             shared_mem.write_u64(
-                SandboxMemoryLayout::PML4_OFFSET,
-                SandboxMemoryLayout::PDPT_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW,
+                self.layout.get_pml4_offset(),
+                self.layout.get_pdpt_offset() as u64 | PAGE_PRESENT | PAGE_RW,
             )?;
 
             // Create PDPT with only 1 PDPTE
             shared_mem.write_u64(
-                SandboxMemoryLayout::PDPT_OFFSET,
-                SandboxMemoryLayout::PD_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW,
+                self.layout.get_pdpt_offset(),
+                self.layout.get_pd_offset() as u64 | PAGE_PRESENT | PAGE_RW,
             )?;
 
             for i in 0..512 {
-                let offset = SandboxMemoryLayout::PD_OFFSET + (i * 8);
-                let val_to_write: u64 = (SandboxMemoryLayout::PT_GUEST_ADDRESS as u64
-                    + (i * 4096) as u64)
+                let offset = self.layout.get_pd_offset() + (i * 8);
+                let val_to_write: u64 = (self.layout.get_pt_offset() as u64 + (i * 4096) as u64)
                     | PAGE_PRESENT
                     | PAGE_RW;
                 shared_mem.write_u64(offset, val_to_write)?;
@@ -186,7 +185,7 @@ where
             // Create num_pages PT with 512 PTEs
             for p in 0..num_pages {
                 for i in 0..512 {
-                    let offset = SandboxMemoryLayout::PT_OFFSET + (p * 4096) + (i * 8);
+                    let offset = self.layout.get_pt_offset() + (p * 4096) + (i * 8);
                     // Each PTE maps a 4KB page
                     let val_to_write = {
                         let flags = match Self::get_page_flags(p, i, regions) {

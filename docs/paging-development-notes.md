@@ -29,11 +29,12 @@ The following page table structs are set up in memory before running a Hyperligh
 ### PML4 (Page Map Level 4) Table
 
 The PML4 table is located at physical address specified in CR3. In Hyperlight we set 
-`CR3=0x0`, which means the PML4 table is located at physical address `0x0`. The PML4 
-table comprises 512 64-bit entries.
+`CR3=pml4_address` (i.e., i.e., base address (0x0) + aligned guest code size), which 
+means the PML4 table is located at physical address `0x0`. The PML4 table comprises 
+512 64-bit entries.
 
-In Hyperlight, we only initialize the first entry (at address `0x0`), with value  
-`0x1_000`, implying that we only have a single PDPT.
+In Hyperlight, we only initialize the first entry, with value `0x1_000`, implying that 
+we only have a single PDPT.
 
 ### PDPT (Page-directory-pointer Table)
 
@@ -63,7 +64,7 @@ created to cover the size of memory mapped into the VM.
 Given a 64-bit virtual address X, the corresponding physical address is obtained as 
 follows:
 
-1. PML4 table's physical address is located using CR3 (CR3 is `0x0`).
+1. PML4 table's physical address is located using CR3.
 2. Bits 47:39 of X are used to index into PML4, giving us the address of the PDPT.
 3. Bits 38:30 of X are used to index into PDPT, giving us the address of the PD.
 4. Bits 29:21 of X are used to index into PD, giving us the address of the PT.
