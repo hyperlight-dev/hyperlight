@@ -64,17 +64,13 @@ use crate::{log_then_return, new_error, Result};
 // |               Guest Code                  |
 // +-------------------------------------------+
 // |                    PT                     |
-// +-------------------------------------------+ 0x203_000
+// +-------------------------------------------+ 0x3_000
 // |                    PD                     |
-// +-------------------------------------------+ 0x202_000
+// +-------------------------------------------+ 0x2_000
 // |                   PDPT                    |
-// +-------------------------------------------+ 0x201_000
+// +-------------------------------------------+ 0x1_000
 // |                   PML4                    |
-// +-------------------------------------------+ 0x200_000
-// |                    ⋮                      |
-// |                 Unmapped                  |
-// |                    ⋮                      |
-// +-------------------------------------------+ 0x0
+// +-------------------------------------------+ 0x0_000
 
 ///
 /// - `HostDefinitions` - the length of this is the `HostFunctionDefinitionSize`
@@ -107,10 +103,13 @@ use crate::{log_then_return, new_error, Result};
 ///   panic that occurred.
 ///   the length of this field is returned by the `guest_panic_context_size()` fn of this struct.
 ///
-/// Boot Stack - this is the stack that is used before the TSS is set up. It is fixed to 4K
-/// Kernel Stack Guard Page is to Guard against boot stack overflow so we dont corrupt the kernel stack
-/// Kernel Stack - this is the stack that is used for kernel mode operations we switch to this early in the initialization function
-/// Guest Stack Guard Page is to Guard against kernel stack overflow so we dont corrupt the user stack
+/// Boot Stack - this is the stack that is used before the TSS is set up. It is fixed to 4K.
+/// Kernel Stack Guard Page is to Guard against boot stack overflow, so we don't corrupt the kernel
+/// stack.
+/// Kernel Stack - this is the stack that is used for kernel mode operations we switch to this early
+/// in the initialization function.
+/// Guest Stack Guard Page is to Guard against kernel stack overflow ,so we don't corrupt the user
+/// stack.
 
 #[derive(Copy, Clone)]
 pub(crate) struct SandboxMemoryLayout {
@@ -303,12 +302,12 @@ impl SandboxMemoryLayout {
     /// Tables start
     pub(super) const PT_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PT_OFFSET;
     /// The maximum amount of memory a single sandbox will be allowed.
-    /// The addressable virtual memory with current paging setup is virtual address 0x0 - 0x40000000 (excl.),
-    /// However, the memory up to Self::BASE_ADDRESS is not used.
+    /// The addressable virtual memory with current paging setup is virtual address 0x0 - 0x40000000,
+    /// excluding the memory up to BASE_ADDRESS (which is 0 by default).
     const MAX_MEMORY_SIZE: usize = 0x40000000 - Self::BASE_ADDRESS;
 
     /// The base address of the sandbox's memory.
-    pub(crate) const BASE_ADDRESS: usize = 0x0200000;
+    pub(crate) const BASE_ADDRESS: usize = 0x0;
 
     // the offset into a sandbox's input/output buffer where the stack starts
     const STACK_POINTER_SIZE_BYTES: u64 = 8;
@@ -694,18 +693,25 @@ impl SandboxMemoryLayout {
         self.total_page_table_size
     }
 
-    // This function calculates the page table size for the sandbox
-    // We need enough memory to store the PML4, PDPT, PD and PTs
-    // The size of a single table is 4K, we can map up to 1GB total memory which requires 1 PML4, 1 PDPT, 1 PD and 512 PTs
-    // but we only need enough PTs to map the memory we are using. (In other words we only need 512 PTs to map the memory if the memory size is 1GB)
+    // This function calculates the page table size for the sandbox.
     //
-    // Because we always start the physical address space at 0x200_000
-    // we can calculate the amount of memory needed for the PTs by calculating how much memory is needed for the sandbox configuration in total,
-    // then add 0x200_000 to that (as we start at 0x200_000),
-    // and then add 3 * 4K (for the PML4, PDPT and PD)  to that,
-    // then add 2MB to that (the maximum size of memory required for the PTs themselves is 2MB when we map 1GB of memory in 4K pages),
-    // then divide that by 0x200_000 (as we can map 2MB in each PT) and then round the result up by 1 .
-    // This will give us the total size of the PTs required for the sandbox to which we can add the size of the PML4, PDPT and PD.
+    // We need enough memory to store the PML4, PDPT, PD and PTs.
+    //
+    // The size of a single table is 4K, we can map up to 1GB total memory
+    // which requires 1 PML4, 1 PDPT, 1 PD and 512 PTs, but we only need enough
+    // PTs to map the memory we are using. In other words, we only need 512 PTs
+    // to map the memory if the memory size is 1GB.
+    //
+    // We can calculate the amount of memory needed for the PTs by calculating
+    // how much memory is needed for the sandbox configuration in total,
+    // then add 3 * 4K (for the PML4, PDPT and PD) to that,
+    // then add 2MB to that (the maximum size of memory required for the PTs
+    // themselves is 2MB when we map 1GB of memory in 4K pages),
+    // then divide that by 0x200_000 (as we can map 2MB in each PT),
+    // and then round the result up by 1.
+    //
+    // This will give us the total size of the PTs required for the sandbox
+    // to which we can add the size of the PML4, PDPT and PD.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_total_page_table_size(
         cfg: SandboxConfiguration,
@@ -714,7 +720,6 @@ impl SandboxMemoryLayout {
         heap_size: usize,
     ) -> usize {
         // Get the configured memory size (assume each section is 4K aligned)
-
         let mut total_mapped_memory_size: usize = round_up_to(code_size, PAGE_SIZE_USIZE);
         total_mapped_memory_size += round_up_to(stack_size, PAGE_SIZE_USIZE);
         total_mapped_memory_size += round_up_to(heap_size, PAGE_SIZE_USIZE);
@@ -1077,11 +1082,7 @@ impl SandboxMemoryLayout {
         macro_rules! get_address {
             ($something:ident) => {
                 paste! {
-                    if guest_offset == 0 {
-                        let offset = self.[<$something _offset>];
-                        let calculated_addr = shared_mem.calculate_address(offset)?;
-                        u64::try_from(calculated_addr)?
-                    } else {
+                    {
                         u64::try_from(guest_offset +  self.[<$something _offset>])?
                     }
                 }
@@ -1115,7 +1116,7 @@ impl SandboxMemoryLayout {
 
         // Set up Host Exception Header
         // The peb only needs to include the size, not the actual buffer
-        // since the the guest wouldn't want to read the buffer anyway
+        // since the guest wouldn't want to read the buffer anyway
         shared_mem.write_u64(
             self.get_host_exception_size_offset(),
             self.sandbox_memory_config
@@ -1217,7 +1218,7 @@ impl SandboxMemoryLayout {
 
         // Start of kernel stack
 
-        // There is a guard page between the user stack and the kernel stack and then we need to add the size of the kernel stack
+        // There is a guard page between the user stack and the kernel stack, and then we need to add the size of the kernel stack
 
         let start_of_kernel_stack: u64 =
             start_of_user_stack + (PAGE_SIZE_USIZE + self.kernel_stack_size_rounded) as u64;
@@ -1229,7 +1230,7 @@ impl SandboxMemoryLayout {
 
         // Start of boot stack
 
-        // There is a guard page between the kernel stack and the boot stack and then we need to add the size of the boot stack
+        // There is a guard page between the kernel stack and the boot stack, and then we need to add the size of the boot stack
 
         let start_of_boot_stack: u64 = start_of_kernel_stack + (PAGE_SIZE_USIZE * 2) as u64;
 
@@ -1239,7 +1240,7 @@ impl SandboxMemoryLayout {
 
         // Initialize the stack pointers of input data and output data
         // to point to the ninth (index 8) byte, which is the first free address
-        // of the each respective stack. The first 8 bytes are the stack pointer itself.
+        // of each respective stack. The first 8 bytes are the stack pointer itself.
         shared_mem.write_u64(
             self.input_data_buffer_offset,
             Self::STACK_POINTER_SIZE_BYTES,

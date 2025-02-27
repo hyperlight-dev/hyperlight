@@ -16,7 +16,7 @@ limitations under the License.
 
 use std::sync::Once;
 
-/// This crate contains an SDK that is used to execute specially-
+/// This crate contains an SDK that is used to execute specially
 /// compiled binaries within a very lightweight hypervisor environment.
 use log::info;
 /// The `built` crate is used to generate a `built.rs` file that contains
@@ -49,19 +49,19 @@ pub mod hypervisor;
 /// - `GuestHeap`
 /// - `GuestStack`
 ///
-/// the start of the guest  memory contains the page tables and is always located at the Virtual Address 0x00200000 when
-/// running in a Hypervisor:
+/// the start of the guest  memory contains the page tables and is always located at the Virtual
+/// Address 0x0 when running in a Hypervisor:
 ///
 /// Virtual Address
 ///
-/// 0x200000    PML4
-/// 0x201000    PDPT
-/// 0x202000    PD
-/// 0x203000    The guest PE code (When the code has been loaded using LoadLibrary to debug the guest this will not be
-/// present and code length will be zero;
+/// 0x0_000    PML4
+/// 0x1_000    PDPT
+/// 0x2_000    PD
+/// 0x3_000    The guest PE code (when the code has been loaded using LoadLibrary to debug the guest
+/// this will not be present and code length will be zero)
 ///
-/// The pointer passed to the Entrypoint in the Guest application is the 0x200000 + size of page table + size of code,
-/// at this address structs below are laid out in this order
+/// The pointer passed to the Entrypoint in the Guest application is the size of page
+/// table + size of code, at this address structs below are laid out in this order
 #[deny(dead_code, missing_docs, unused_mut)]
 pub mod mem;
 /// Metric definitions and helpers
@@ -108,7 +108,7 @@ pub use sandbox::UninitializedSandbox;
 pub use crate::func::call_ctx::MultiUseGuestCallContext;
 
 /// The universal `Result` type used throughout the Hyperlight codebase.
-pub type Result<T> = core::result::Result<T, error::HyperlightError>;
+pub type Result<T> = core::result::Result<T, HyperlightError>;
 
 // Logs an error then returns with it , more or less equivalent to the bail! macro in anyhow
 // but for HyperlightError instead of anyhow::Error
