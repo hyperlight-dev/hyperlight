@@ -39,7 +39,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         let ffi_func_call = FfiFunctionCall::from_function_call(function_call)?;
 
         let guest_func =
-            unsafe { mem::transmute::<i64, CGuestFunc>(registered_func.function_pointer) };
+            unsafe { mem::transmute::<usize, CGuestFunc>(registered_func.function_pointer) };
         let function_result = guest_func(&ffi_func_call);
 
         unsafe { Ok(FfiVec::into_vec(*function_result)) }
@@ -76,12 +76,8 @@ pub extern "C" fn hl_register_function_definition(
 
     let func_params = unsafe { slice::from_raw_parts(params_type, param_no).to_vec() };
 
-    let func_def = GuestFunctionDefinition::new(
-        func_name,
-        func_params,
-        return_type,
-        func_ptr as usize as i64,
-    );
+    let func_def =
+        GuestFunctionDefinition::new(func_name, func_params, return_type, func_ptr as usize);
 
     #[allow(static_mut_refs)]
     unsafe { &mut REGISTERED_C_GUEST_FUNCTIONS }.register(func_def);
