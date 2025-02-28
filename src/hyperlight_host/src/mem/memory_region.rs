@@ -153,6 +153,8 @@ pub enum MemoryRegionType {
     KernelStack,
     /// The region contains the Boot Stack
     BootStack,
+    /// The region contains the Custom Guest Memory (i.e., addressable by the guest in any way)
+    CustomGuestMemory,
 }
 
 /// represents a single memory region inside the guest. All memory within a region has

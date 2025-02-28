@@ -96,6 +96,9 @@ pub struct SandboxConfiguration {
     /// The size of the memory buffer that is made available for serializing
     /// guest panic context
     guest_panic_context_buffer_size: usize,
+    // The size of custom guest memory, which includes everything the guest might want to make
+    // addressable (e.g., stack, heap, etc.).
+    custom_guest_memory_size: u64,
 }
 
 impl SandboxConfiguration {
@@ -164,6 +167,7 @@ impl SandboxConfiguration {
         max_initialization_time: Option<Duration>,
         max_wait_for_cancellation: Option<Duration>,
         guest_panic_context_buffer_size: usize,
+        custom_guest_memory_size: u64,
         #[cfg(gdb)] guest_debug_info: Option<DebugInfo>,
     ) -> Self {
         Self {
@@ -232,6 +236,7 @@ impl SandboxConfiguration {
                 guest_panic_context_buffer_size,
                 Self::MIN_GUEST_PANIC_CONTEXT_BUFFER_SIZE,
             ),
+            custom_guest_memory_size,
             #[cfg(gdb)]
             guest_debug_info,
         }
@@ -447,6 +452,19 @@ impl SandboxConfiguration {
         self.heap_size_override_opt()
             .unwrap_or_else(|| exe_info.heap_reserve())
     }
+
+    /// Get the size of custom guest memory, which includes everything the guest might want to make
+    pub(crate) fn get_custom_guest_memory_size(&self) -> u64 {
+        self.custom_guest_memory_size
+    }
+
+    /// Set the size of custom guest memory
+    // TODO(danbugs:297): currently, this is only used in the KVM backend
+    // because test_custom_initialise is only used there.
+    #[allow(dead_code)]
+    pub(crate) fn set_custom_guest_memory_size(&mut self, size: u64) {
+        self.custom_guest_memory_size = size;
+    }
 }
 
 impl Default for SandboxConfiguration {
@@ -465,6 +483,8 @@ impl Default for SandboxConfiguration {
             None,
             None,
             Self::DEFAULT_GUEST_PANIC_CONTEXT_BUFFER_SIZE,
+            // TODO(danbugs:297): arbitrary value, change
+            0x2_000_000,
             #[cfg(gdb)]
             None,
         )
@@ -509,6 +529,8 @@ mod tests {
                 MAX_WAIT_FOR_CANCELLATION_OVERRIDE as u64,
             )),
             GUEST_PANIC_CONTEXT_BUFFER_SIZE_OVERRIDE,
+            // TODO(danbugs:297): arbitrary value, change
+            0x2_000_000,
             #[cfg(gdb)]
             None,
         );
@@ -574,6 +596,8 @@ mod tests {
                 SandboxConfiguration::MIN_MAX_WAIT_FOR_CANCELLATION as u64 - 1,
             )),
             SandboxConfiguration::MIN_GUEST_PANIC_CONTEXT_BUFFER_SIZE - 1,
+            // TODO(danbugs:297): arbitrary value, change
+            0x2_000_000,
             #[cfg(gdb)]
             None,
         );

@@ -937,7 +937,7 @@ mod tests {
     #[cfg(gdb)]
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
-    use crate::hypervisor::tests::test_initialise;
+    use crate::hypervisor::tests::{test_custom_initialise, test_initialise};
     use crate::Result;
 
     #[cfg(gdb)]
@@ -977,6 +977,33 @@ mod tests {
         let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
 
         test_initialise(
+            outb_handler,
+            mem_access_handler,
+            #[cfg(gdb)]
+            dbg_mem_access_handler,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_custom_init() {
+        if !super::is_hypervisor_present() {
+            return;
+        }
+
+        let outb_handler: Arc<Mutex<OutBHandler>> = {
+            let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
+                Box::new(|_, _| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(OutBHandler::from(func)))
+        };
+        let mem_access_handler = {
+            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(MemAccessHandler::from(func)))
+        };
+        #[cfg(gdb)]
+        let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
+
+        test_custom_initialise(
             outb_handler,
             mem_access_handler,
             #[cfg(gdb)]

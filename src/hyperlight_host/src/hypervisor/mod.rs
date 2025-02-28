@@ -307,7 +307,7 @@ pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use hyperlight_testing::dummy_guest_as_string;
+    use hyperlight_testing::{custom_guest_as_string, dummy_guest_as_string};
 
     #[cfg(gdb)]
     use super::handlers::DbgMemAccessHandlerWrapper;
@@ -319,6 +319,70 @@ pub(crate) mod tests {
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{new_error, Result};
+
+    // TODO(danbugs:297): use this test in all Hypervisor implementations
+    // then remove this attribute
+    #[allow(dead_code)]
+    pub(crate) fn test_custom_initialise(
+        outb_hdl: OutBHandlerWrapper,
+        mem_access_hdl: MemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    ) -> Result<()> {
+        let filename = custom_guest_as_string().map_err(|e| new_error!("{}", e))?;
+        let mut sbox_config = SandboxConfiguration::default();
+        sbox_config.set_custom_guest_memory_size(0x2_000_000);
+        let uninitialized_sandbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(filename.clone()),
+            Some(sbox_config),
+            None,
+            None,
+        )?;
+
+        let (hshm, gshm) = uninitialized_sandbox.mgr.build();
+
+        let custom_memory_offset = gshm.layout.get_custom_guest_memory_offset();
+        let custom_memory_size = gshm.layout.get_custom_guest_memory_size();
+        dbg!(&custom_memory_offset);
+
+        let custom_memory = hshm.as_ref().get_custom_guest_memory()?;
+        assert_eq!(custom_memory[0], 0);
+
+        let hv_handler_config = HvHandlerConfig {
+            outb_handler: outb_hdl,
+            mem_access_handler: mem_access_hdl,
+            #[cfg(gdb)]
+            dbg_mem_access_handler: dbg_mem_access_fn,
+            seed: custom_memory_size as u64, // re-using seed as custom_memory_size
+            page_size: 4096,
+            peb_addr: RawPtr::from(custom_memory_offset as u64),
+            dispatch_function_addr: Arc::new(Mutex::new(None)),
+            max_init_time: Duration::from_millis(
+                SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
+            ),
+            max_exec_time: Duration::from_millis(
+                SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
+            ),
+            max_wait_for_cancellation: Duration::from_millis(
+                SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
+            ),
+        };
+
+        let mut hv_handler = HypervisorHandler::new(hv_handler_config);
+
+        hv_handler.start_hypervisor_handler(
+            gshm,
+            #[cfg(gdb)]
+            None,
+        )?;
+
+        hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)?;
+
+        let custom_memory = hshm.as_ref().get_custom_guest_memory()?;
+
+        assert_eq!(custom_memory[0], 1);
+
+        Ok(())
+    }
 
     pub(crate) fn test_initialise(
         outb_hdl: OutBHandlerWrapper,

@@ -221,6 +221,11 @@ where
                                 MemoryRegionType::PageTables => PAGE_PRESENT | PAGE_RW | PAGE_NX,
                                 MemoryRegionType::KernelStack => PAGE_PRESENT | PAGE_RW | PAGE_NX,
                                 MemoryRegionType::BootStack => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+                                // TODO(danbugs:297): this sets the custom guest memory as executable
+                                // by default. This should potentially be configurable.
+                                MemoryRegionType::CustomGuestMemory => {
+                                    PAGE_PRESENT | PAGE_RW | PAGE_USER
+                                }
                             },
                             // If there is an error then the address isn't mapped so mark it as not present
                             Err(_) => 0,
@@ -350,6 +355,7 @@ where
         exe_info.loaded_size(),
         usize::try_from(cfg.get_stack_size(exe_info))?,
         usize::try_from(cfg.get_heap_size(exe_info))?,
+        usize::try_from(cfg.get_custom_guest_memory_size())?,
     )?;
     let mut shared_mem = ExclusiveSharedMemory::new(layout.get_memory_size()?)?;
 
@@ -732,6 +738,22 @@ impl SandboxMemoryManager<HostSharedMemory> {
         })
     }
 
+    /// Gets the custom guest memory
+    // TODO(danbugs:297): currently, this is only used in the KVM backend
+    // because test_custom_initialise is only used there.
+    #[allow(dead_code)]
+    pub(crate) fn get_custom_guest_memory(&self) -> Result<Vec<u8>> {
+        let custom_guest_memory_offset = self.layout.get_custom_guest_memory_offset();
+        let custom_guest_memory_size = self.layout.get_custom_guest_memory_size();
+        let mut custom_guest_memory = vec![b'0'; custom_guest_memory_size];
+        self.shared_mem.copy_to_slice(
+            custom_guest_memory.as_mut_slice(),
+            custom_guest_memory_offset,
+        )?;
+
+        Ok(custom_guest_memory)
+    }
+
     /// This function writes an error to guest memory and is intended to be
     /// used when the host's outb handler code raises an error.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
@@ -890,7 +912,8 @@ mod tests {
     #[test]
     fn get_host_error_none() {
         let cfg = SandboxConfiguration::default();
-        let layout = SandboxMemoryLayout::new(cfg, 0x10000, 0x10000, 0x10000).unwrap();
+        // TODO(danbugs:297): arbitrary value, change
+        let layout = SandboxMemoryLayout::new(cfg, 0x10_000, 0x10_000, 0x10_000, 0x10_000).unwrap();
         let mut eshm = ExclusiveSharedMemory::new(layout.get_memory_size().unwrap()).unwrap();
         let mem_size = eshm.mem_size();
         layout
@@ -918,7 +941,8 @@ mod tests {
     #[test]
     fn round_trip_host_error() {
         let cfg = SandboxConfiguration::default();
-        let layout = SandboxMemoryLayout::new(cfg, 0x10000, 0x10000, 0x10000).unwrap();
+        // TODO(danbugs:297): arbitrary value, change
+        let layout = SandboxMemoryLayout::new(cfg, 0x10_000, 0x10_000, 0x10_000, 0x10_000).unwrap();
         let mem_size = layout.get_memory_size().unwrap();
         // write a host error and then try to read it back
         let mut eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
