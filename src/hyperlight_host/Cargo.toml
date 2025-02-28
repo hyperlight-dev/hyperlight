@@ -24,7 +24,7 @@ workspace = true
 goblin = { version = "0.9" }
 rand = { version = "0.9" }
 cfg-if = { version = "1.0.0" }
-libc = { version = "0.2.169" }
+libc = { version = "0.2.170" }
 paste = "1.0"
 flatbuffers = "25.2.10"
 page_size = "0.6.0"
@@ -33,7 +33,7 @@ bitflags = "2.8.0"
 lazy_static = "1.4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-log = "0.4.25"
+log = "0.4.26"
 once_cell = { version = "1.20.3" }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
@@ -78,11 +78,11 @@ kvm-bindings = { version = "0.11", features = ["fam-wrappers"], optional = true 
 kvm-ioctls = { version = "0.20", optional = true }
 mshv-bindings2 = { package="mshv-bindings", version = "=0.2.1", optional = true }
 mshv-ioctls2 = { package="mshv-ioctls",  version = "=0.2.1", optional = true}
-mshv-bindings3 = { package="mshv-bindings", version = "0.3.2", optional = true }
-mshv-ioctls3 = { package="mshv-ioctls",  version = "0.3.2", optional = true}
+mshv-bindings3 = { package="mshv-bindings", version = "=0.3.2", optional = true }
+mshv-ioctls3 = { package="mshv-ioctls",  version = "=0.3.2", optional = true}
 
 [dev-dependencies]
-uuid = { version = "1.13.2", features = ["v4"] }
+uuid = { version = "1.15.1", features = ["v4"] }
 signal-hook-registry = "1.4.1"
 envy = { version = "0.4.2" }
 serde = "1.0"
@@ -114,7 +114,7 @@ windows = { version = "0.59", features = [
 proc-maps = "0.4.0"
 
 [build-dependencies]
-anyhow = { version = "1.0.95" }
+anyhow = { version = "1.0.96" }
 cfg_aliases = "0.2.1"
 built = { version = "0.7.7", features = ["chrono", "git2"] }
 
