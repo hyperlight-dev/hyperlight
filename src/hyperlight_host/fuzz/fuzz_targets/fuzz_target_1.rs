@@ -16,7 +16,7 @@ limitations under the License.
 
 #![no_main]
 
-use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
+use hyperlight_host::func::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox::uninitialized::GuestBinary;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -24,7 +24,7 @@ use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simple_guest_as_string;
 use libfuzzer_sys::fuzz_target;
 
-fuzz_target!(|data: &[u8]| {
+fuzz_target!(|data: (ReturnType, Option<Vec<ParameterValue>>)| {
     let u_sbox = UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
         None,
@@ -33,18 +33,7 @@ fuzz_target!(|data: &[u8]| {
     )
     .unwrap();
 
-    let mu_sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
+    let mut mu_sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
 
-    let msg = String::from_utf8_lossy(data).to_string();
-    let len = msg.len() as i32;
-    let mut ctx = mu_sbox.new_call_context();
-    let result = ctx
-        .call(
-            "PrintOutput",
-            ReturnType::Int,
-            Some(vec![ParameterValue::String(msg.clone())]),
-        )
-        .unwrap();
-
-    assert_eq!(result, ReturnValue::Int(len));
+    let _ = mu_sbox.call_guest_function_by_name("PrintOutput", data.0, data.1);
 });
