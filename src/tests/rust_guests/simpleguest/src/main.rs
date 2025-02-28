@@ -1117,6 +1117,9 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     // If the stack is not working correctly, the input or output buffer will be
     // overwritten before the function call is serialized, and we will not be able
     // to verify that the function call name is "ThisIsNotARealFunctionButTheNameIsImportant"
+    if function_call.function_name == "FuzzHostFunc" {
+        return fuzz_host_function(function_call);
+    }
 
     let message = "Hi this is a log message that will overwrite the shared buffer if the stack is not working correctly";
 
@@ -1151,4 +1154,24 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     }
 
     Ok(get_flatbuffer_result(99))
+}
+
+// Interprets the given guest function call as a host function call and dispatches it to the host.
+fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
+    let mut params = func.parameters.unwrap();
+    // first parameter must be string (the name of the host function to call)
+    let host_func_name = match params.remove(0) {
+        // TODO use `swap_remove` instead of `remove` if performance is an issue, but left out
+        // to avoid confusion for replicating failure cases
+        ParameterValue::String(name) => name,
+        _ => {
+            return Err(HyperlightGuestError::new(
+                ErrorCode::GuestFunctionParameterTypeMismatch,
+                "Invalid parameters passed to fuzz_host_function".to_string(),
+            ))
+        }
+    };
+    call_host_function(&host_func_name, Some(params), func.expected_return_type)
+        .expect("failed to call host function");
+    Ok(get_flatbuffer_result(()))
 }

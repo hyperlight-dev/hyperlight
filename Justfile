@@ -190,8 +190,11 @@ bench target=default-target features="":
     cargo bench --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {''} else { "--features " + features } }} -- --verbose
 
 # FUZZING
-fuzz:
-    cd src/hyperlight_host && cargo +nightly fuzz run fuzz_target_1
 
-fuzz-timed:
-    cd src/hyperlight_host && cargo +nightly fuzz run fuzz_target_1 -- -max_total_time=300
+# Fuzzes the given target
+fuzz fuzz-target:
+    cargo +nightly fuzz run {{ fuzz-target }} --release
+
+# Fuzzes the given target. Stops after `max_time` seconds
+fuzz-timed fuzz-target max_time:
+    cargo +nightly fuzz run {{ fuzz-target }} --release -- -max_total_time={{ max_time }}
