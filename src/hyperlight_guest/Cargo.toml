@@ -16,6 +16,7 @@ Library to build guest applications for hyperlight.
 default = ["libc", "printf"]
 libc = [] # compile musl libc
 printf = [] # compile printf
+fuzzing = []
 
 [dependencies]
 anyhow = { version = "1.0.96", default-features = false }
