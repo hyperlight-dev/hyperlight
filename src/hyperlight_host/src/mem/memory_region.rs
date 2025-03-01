@@ -125,34 +125,10 @@ impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 /// The type of memory region
 pub enum MemoryRegionType {
+    /// The region contains the guest's code
+    GuestCode,
     /// The region contains the guest's page tables
     PageTables,
-    /// The region contains the guest's code
-    Code,
-    /// The region contains the PEB
-    Peb,
-    /// The region contains the Host Function Definitions
-    HostFunctionDefinitions,
-    /// The region contains the Host Exception Data
-    HostExceptionData,
-    /// The region contains the Guest Error Data
-    GuestErrorData,
-    /// The region contains the Input Data
-    InputData,
-    /// The region contains the Output Data
-    OutputData,
-    /// The region contains the Panic Context
-    PanicContext,
-    /// The region contains the Heap
-    Heap,
-    /// The region contains the Guard Page
-    GuardPage,
-    /// The region contains the Stack
-    Stack,
-    /// The region contains the Kernel Stack
-    KernelStack,
-    /// The region contains the Boot Stack
-    BootStack,
     /// The region contains the Custom Guest Memory (i.e., addressable by the guest in any way)
     CustomGuestMemory,
 }

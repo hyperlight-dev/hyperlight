@@ -33,12 +33,12 @@ pub enum ExeInfo {
     Elf(ElfInfo),
 }
 
-// There isn't a commonly-used standard convention for heap and stack
+// TODO(danbugs:297) bring back
+// There isn't a commonly-used standard convention for stack
 // limits to be included in ELF files as they are in
-// PEs. Consequently, we use these static defaults as the default
-// limits, unless overwritten when setting up the sandbox.
-const DEFAULT_ELF_STACK_RESERVE: u64 = 65536;
-const DEFAULT_ELF_HEAP_RESERVE: u64 = 131072;
+// PEs. Consequently, we use this static default as the default
+// limit, unless overwritten when setting up the sandbox.
+// const DEFAULT_ELF_STACK_RESERVE: u64 = 65536;
 
 impl ExeInfo {
     pub fn from_file(path: &str) -> Result<Self> {
@@ -52,18 +52,13 @@ impl ExeInfo {
             .map(ExeInfo::PE)
             .or_else(|_| ElfInfo::new(buf).map(ExeInfo::Elf))
     }
-    pub fn stack_reserve(&self) -> u64 {
-        match self {
-            ExeInfo::PE(pe) => pe.stack_reserve(),
-            ExeInfo::Elf(_) => DEFAULT_ELF_STACK_RESERVE,
-        }
-    }
-    pub fn heap_reserve(&self) -> u64 {
-        match self {
-            ExeInfo::PE(pe) => pe.heap_reserve(),
-            ExeInfo::Elf(_) => DEFAULT_ELF_HEAP_RESERVE,
-        }
-    }
+    // TODO(danbugs:297) bring back
+    // pub fn stack_reserve(&self) -> u64 {
+    //     match self {
+    //         ExeInfo::PE(pe) => pe.stack_reserve(),
+    //         ExeInfo::Elf(_) => DEFAULT_ELF_STACK_RESERVE,
+    //     }
+    // }
     pub fn entrypoint(&self) -> Offset {
         match self {
             ExeInfo::PE(pe) => Offset::from(PEHeaders::from(pe).entrypoint_offset),

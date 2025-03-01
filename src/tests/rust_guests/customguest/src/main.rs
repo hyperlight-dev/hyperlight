@@ -46,7 +46,7 @@ pub extern "win64" fn entrypoint(
     let guest_memory = unsafe {
         core::slice::from_raw_parts_mut(
             custom_guest_memory_address as *mut u8,
-            custom_guest_memory_size as usize,
+            custom_guest_memory_size as usize - 0x20_000,
         )
     };
 
