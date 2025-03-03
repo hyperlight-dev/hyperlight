@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 mod event_loop;
+pub mod hyp_debug;
 pub mod x86_64_target;
 
 use std::io::{self, ErrorKind};
@@ -26,6 +27,7 @@ use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
+pub use hyp_debug::{kvm, SW_BP, SW_BP_SIZE};
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
