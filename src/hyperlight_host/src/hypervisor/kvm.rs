@@ -72,7 +72,8 @@ mod debug {
 
     use super::KVMDriver;
     use crate::hypervisor::gdb::{
-        DebugMsg, DebugResponse, KvmDebug, VcpuStopReason, X86_64Regs, SW_BP, SW_BP_SIZE,
+        DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason, X86_64Regs, SW_BP,
+        SW_BP_SIZE,
     };
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::mem::layout::SandboxMemoryLayout;
@@ -81,9 +82,13 @@ mod debug {
     impl KVMDriver {
         /// Resets the debug information to disable debugging
         fn disable_debug(&mut self) -> Result<()> {
-            self.debug = Some(KvmDebug::default());
+            let mut debug = KvmDebug::default();
 
-            self.set_single_step(false)
+            debug.set_single_step(&self.vcpu_fd, false)?;
+
+            self.debug = Some(debug);
+
+            Ok(())
         }
 
         /// Returns the instruction pointer from the stopped vCPU
@@ -94,16 +99,6 @@ mod debug {
                 .map_err(|e| new_error!("Could not retrieve registers from vCPU: {:?}", e))?;
 
             Ok(regs.rip)
-        }
-
-        /// Sets or clears stepping for vCPU
-        fn set_single_step(&mut self, enable: bool) -> Result<()> {
-            let debug = self
-                .debug
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            debug.set_debug_config(&self.vcpu_fd, enable)
         }
 
         /// Translates the guest address to physical address
@@ -239,26 +234,6 @@ mod debug {
                 .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
         }
 
-        fn add_hw_breakpoint(&mut self, addr: u64) -> Result<bool> {
-            let addr = self.translate_gva(addr)?;
-
-            if let Some(debug) = self.debug.as_mut() {
-                debug.add_breakpoint(&self.vcpu_fd, addr)
-            } else {
-                Ok(false)
-            }
-        }
-
-        fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<bool> {
-            let addr = self.translate_gva(addr)?;
-
-            if let Some(debug) = self.debug.as_mut() {
-                debug.remove_breakpoint(&self.vcpu_fd, addr)
-            } else {
-                Ok(false)
-            }
-        }
-
         fn add_sw_breakpoint(
             &mut self,
             addr: u64,
@@ -330,7 +305,7 @@ mod debug {
             if self.debug.is_some() {
                 log::debug!("Setting entrypoint bp {:X}", self.entrypoint);
                 let mut entrypoint_debug = KvmDebug::new();
-                entrypoint_debug.add_breakpoint(&self.vcpu_fd, self.entrypoint)?;
+                entrypoint_debug.add_hw_breakpoint(&self.vcpu_fd, self.entrypoint)?;
 
                 Ok(())
             } else {
@@ -371,61 +346,67 @@ mod debug {
             req: DebugMsg,
             dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         ) -> Result<DebugResponse> {
-            match req {
-                DebugMsg::AddHwBreakpoint(addr) => self
-                    .add_hw_breakpoint(addr)
-                    .map(DebugResponse::AddHwBreakpoint),
-                DebugMsg::AddSwBreakpoint(addr) => self
-                    .add_sw_breakpoint(addr, dbg_mem_access_fn)
-                    .map(DebugResponse::AddSwBreakpoint),
-                DebugMsg::Continue => {
-                    self.set_single_step(false)?;
-                    Ok(DebugResponse::Continue)
-                }
-                DebugMsg::DisableDebug => {
-                    self.disable_debug()?;
+            if let Some(debug) = self.debug.as_mut() {
+                match req {
+                    DebugMsg::AddHwBreakpoint(addr) => debug
+                        .add_hw_breakpoint(&self.vcpu_fd, addr)
+                        .map(DebugResponse::AddHwBreakpoint),
+                    DebugMsg::AddSwBreakpoint(addr) => self
+                        .add_sw_breakpoint(addr, dbg_mem_access_fn)
+                        .map(DebugResponse::AddSwBreakpoint),
+                    DebugMsg::Continue => {
+                        debug.set_single_step(&self.vcpu_fd, false)?;
+                        Ok(DebugResponse::Continue)
+                    }
+                    DebugMsg::DisableDebug => {
+                        self.disable_debug()?;
 
-                    Ok(DebugResponse::DisableDebug)
-                }
-                DebugMsg::GetCodeSectionOffset => {
-                    let offset = dbg_mem_access_fn
-                        .try_lock()
-                        .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                        .get_code_offset()?;
+                        Ok(DebugResponse::DisableDebug)
+                    }
+                    DebugMsg::GetCodeSectionOffset => {
+                        let offset = dbg_mem_access_fn
+                            .try_lock()
+                            .map_err(|e| {
+                                new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
+                            })?
+                            .get_code_offset()?;
 
-                    Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
-                }
-                DebugMsg::ReadAddr(addr, len) => {
-                    let mut data = vec![0u8; len];
+                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
+                    }
+                    DebugMsg::ReadAddr(addr, len) => {
+                        let mut data = vec![0u8; len];
 
-                    self.read_addrs(addr, &mut data, dbg_mem_access_fn)?;
+                        self.read_addrs(addr, &mut data, dbg_mem_access_fn)?;
 
-                    Ok(DebugResponse::ReadAddr(data))
-                }
-                DebugMsg::ReadRegisters => {
-                    let mut regs = X86_64Regs::default();
+                        Ok(DebugResponse::ReadAddr(data))
+                    }
+                    DebugMsg::ReadRegisters => {
+                        let mut regs = X86_64Regs::default();
 
-                    self.read_regs(&mut regs)
-                        .map(|_| DebugResponse::ReadRegisters(regs))
-                }
-                DebugMsg::RemoveHwBreakpoint(addr) => self
-                    .remove_hw_breakpoint(addr)
-                    .map(DebugResponse::RemoveHwBreakpoint),
-                DebugMsg::RemoveSwBreakpoint(addr) => self
-                    .remove_sw_breakpoint(addr, dbg_mem_access_fn)
-                    .map(DebugResponse::RemoveSwBreakpoint),
-                DebugMsg::Step => {
-                    self.set_single_step(true)?;
-                    Ok(DebugResponse::Step)
-                }
-                DebugMsg::WriteAddr(addr, data) => {
-                    self.write_addrs(addr, &data, dbg_mem_access_fn)?;
+                        self.read_regs(&mut regs)
+                            .map(|_| DebugResponse::ReadRegisters(regs))
+                    }
+                    DebugMsg::RemoveHwBreakpoint(addr) => debug
+                        .remove_hw_breakpoint(&self.vcpu_fd, addr)
+                        .map(DebugResponse::RemoveHwBreakpoint),
+                    DebugMsg::RemoveSwBreakpoint(addr) => self
+                        .remove_sw_breakpoint(addr, dbg_mem_access_fn)
+                        .map(DebugResponse::RemoveSwBreakpoint),
+                    DebugMsg::Step => {
+                        debug.set_single_step(&self.vcpu_fd, true)?;
+                        Ok(DebugResponse::Step)
+                    }
+                    DebugMsg::WriteAddr(addr, data) => {
+                        self.write_addrs(addr, &data, dbg_mem_access_fn)?;
 
-                    Ok(DebugResponse::WriteAddr)
+                        Ok(DebugResponse::WriteAddr)
+                    }
+                    DebugMsg::WriteRegisters(regs) => self
+                        .write_regs(&regs)
+                        .map(|_| DebugResponse::WriteRegisters),
                 }
-                DebugMsg::WriteRegisters(regs) => self
-                    .write_regs(&regs)
-                    .map(|_| DebugResponse::WriteRegisters),
+            } else {
+                Err(new_error!("Debugging is not enabled"))
             }
         }
 

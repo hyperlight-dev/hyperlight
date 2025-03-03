@@ -41,6 +41,8 @@ pub(crate) const SW_BP_SIZE: usize = 1;
 const SW_BP_OP: u8 = 0xCC;
 /// Software Breakpoint written to memory
 pub(crate) const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
+/// Maximum number of supported hardware breakpoints
+pub(crate) const MAX_NO_OF_HW_BP: usize = 4;
 
 #[derive(Debug, Error)]
 pub(crate) enum GdbTargetError {
@@ -146,6 +148,19 @@ pub(crate) enum DebugResponse {
     VcpuStopped(VcpuStopReason),
     WriteAddr,
     WriteRegisters,
+}
+
+/// This trait is used to define common debugging functionality for Hypervisors
+pub(crate) trait GuestDebug {
+    /// Type that wraps the vCPU functionality
+    type Vcpu;
+
+    /// Adds hardware breakpoint
+    fn add_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<bool>;
+    /// Removes hardware breakpoint
+    fn remove_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<bool>;
+    /// Enables or disables stepping and sets the vCPU debug configuration
+    fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> crate::Result<()>;
 }
 
 /// Debug communication channel that is used for sending a request type and
