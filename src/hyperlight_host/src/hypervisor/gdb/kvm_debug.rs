@@ -17,12 +17,12 @@ limitations under the License.
 use std::collections::HashMap;
 
 use kvm_bindings::{
-    kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP,
-    KVM_GUESTDBG_USE_SW_BP,
+    kvm_guest_debug, kvm_regs, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
+    KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
 };
 use kvm_ioctls::VcpuFd;
 
-use super::{GuestDebug, MAX_NO_OF_HW_BP, SW_BP_SIZE};
+use super::{GuestDebug, VcpuStopReason, X86_64Regs, MAX_NO_OF_HW_BP, SW_BP_SIZE};
 use crate::{new_error, HyperlightError, Result};
 
 /// KVM Debug struct
@@ -31,10 +31,10 @@ use crate::{new_error, HyperlightError, Result};
 #[derive(Default)]
 pub(crate) struct KvmDebug {
     /// vCPU stepping state
-    pub(crate) single_step: bool,
+    single_step: bool,
 
     /// Array of addresses for HW breakpoints
-    pub(crate) hw_breakpoints: Vec<u64>,
+    hw_breakpoints: Vec<u64>,
     /// Saves the bytes modified to enable SW breakpoints
     pub(crate) sw_breakpoints: HashMap<u64, [u8; SW_BP_SIZE]>,
 
@@ -55,6 +55,15 @@ impl KvmDebug {
             sw_breakpoints: HashMap::new(),
             dbg_cfg: dbg,
         }
+    }
+
+    /// Returns the instruction pointer from the stopped vCPU
+    fn get_instruction_pointer(&self, vcpu_fd: &VcpuFd) -> Result<u64> {
+        let regs = vcpu_fd
+            .get_regs()
+            .map_err(|e| new_error!("Could not retrieve registers from vCPU: {:?}", e))?;
+
+        Ok(regs.rip)
     }
 
     /// This method sets the kvm debugreg fields to enable breakpoints at
@@ -122,6 +131,34 @@ impl KvmDebug {
         }
     }
 
+    /// Get the reason the vCPU has stopped
+    pub(crate) fn get_stop_reason(
+        &self,
+        vcpu_fd: &VcpuFd,
+        entrypoint: u64,
+    ) -> Result<VcpuStopReason> {
+        if self.single_step {
+            return Ok(VcpuStopReason::DoneStep);
+        }
+
+        let ip = self.get_instruction_pointer(vcpu_fd)?;
+        let gpa = self.translate_gva(vcpu_fd, ip)?;
+
+        if self.sw_breakpoints.contains_key(&gpa) {
+            return Ok(VcpuStopReason::SwBp);
+        }
+
+        if self.hw_breakpoints.contains(&gpa) {
+            return Ok(VcpuStopReason::HwBp);
+        }
+
+        if gpa == entrypoint {
+            return Ok(VcpuStopReason::HwBp);
+        }
+
+        Ok(VcpuStopReason::Unknown)
+    }
+
     /// Translates the guest address to physical address
     fn translate_gva(&self, vcpu_fd: &VcpuFd, gva: u64) -> Result<u64> {
         let tr = vcpu_fd
@@ -151,7 +188,65 @@ impl GuestDebug for KvmDebug {
         self.remove_breakpoint(vcpu_fd, addr)
     }
 
+    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> Result<()> {
+        log::debug!("Read registers");
+        let vcpu_regs = vcpu_fd
+            .get_regs()
+            .map_err(|e| new_error!("Could not read guest registers: {:?}", e))?;
+
+        regs.rax = vcpu_regs.rax;
+        regs.rbx = vcpu_regs.rbx;
+        regs.rcx = vcpu_regs.rcx;
+        regs.rdx = vcpu_regs.rdx;
+        regs.rsi = vcpu_regs.rsi;
+        regs.rdi = vcpu_regs.rdi;
+        regs.rbp = vcpu_regs.rbp;
+        regs.rsp = vcpu_regs.rsp;
+        regs.r8 = vcpu_regs.r8;
+        regs.r9 = vcpu_regs.r9;
+        regs.r10 = vcpu_regs.r10;
+        regs.r11 = vcpu_regs.r11;
+        regs.r12 = vcpu_regs.r12;
+        regs.r13 = vcpu_regs.r13;
+        regs.r14 = vcpu_regs.r14;
+        regs.r15 = vcpu_regs.r15;
+
+        regs.rip = vcpu_regs.rip;
+        regs.rflags = vcpu_regs.rflags;
+
+        Ok(())
+    }
+
     fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> Result<()> {
         self.set_debug_config(vcpu_fd, enable)
+    }
+
+    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> Result<()> {
+        log::debug!("Write registers");
+        let new_regs = kvm_regs {
+            rax: regs.rax,
+            rbx: regs.rbx,
+            rcx: regs.rcx,
+            rdx: regs.rdx,
+            rsi: regs.rsi,
+            rdi: regs.rdi,
+            rbp: regs.rbp,
+            rsp: regs.rsp,
+            r8: regs.r8,
+            r9: regs.r9,
+            r10: regs.r10,
+            r11: regs.r11,
+            r12: regs.r12,
+            r13: regs.r13,
+            r14: regs.r14,
+            r15: regs.r15,
+
+            rip: regs.rip,
+            rflags: regs.rflags,
+        };
+
+        vcpu_fd
+            .set_regs(&new_regs)
+            .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
     }
 }

@@ -157,10 +157,14 @@ pub(crate) trait GuestDebug {
 
     /// Adds hardware breakpoint
     fn add_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<bool>;
+    /// Read registers
+    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> crate::Result<()>;
     /// Removes hardware breakpoint
     fn remove_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<bool>;
     /// Enables or disables stepping and sets the vCPU debug configuration
     fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> crate::Result<()>;
+    /// Write registers
+    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> crate::Result<()>;
 }
 
 /// Debug communication channel that is used for sending a request type and

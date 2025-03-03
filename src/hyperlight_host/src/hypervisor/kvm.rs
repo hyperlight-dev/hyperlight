@@ -68,7 +68,6 @@ mod debug {
     use std::sync::{Arc, Mutex};
 
     use hyperlight_common::mem::PAGE_SIZE;
-    use kvm_bindings::kvm_regs;
 
     use super::KVMDriver;
     use crate::hypervisor::gdb::{
@@ -89,16 +88,6 @@ mod debug {
             self.debug = Some(debug);
 
             Ok(())
-        }
-
-        /// Returns the instruction pointer from the stopped vCPU
-        fn get_instruction_pointer(&self) -> Result<u64> {
-            let regs = self
-                .vcpu_fd
-                .get_regs()
-                .map_err(|e| new_error!("Could not retrieve registers from vCPU: {:?}", e))?;
-
-            Ok(regs.rip)
         }
 
         /// Translates the guest address to physical address
@@ -173,65 +162,6 @@ mod debug {
             }
 
             Ok(())
-        }
-
-        fn read_regs(&self, regs: &mut X86_64Regs) -> Result<()> {
-            log::debug!("Read registers");
-            let vcpu_regs = self
-                .vcpu_fd
-                .get_regs()
-                .map_err(|e| new_error!("Could not read guest registers: {:?}", e))?;
-
-            regs.rax = vcpu_regs.rax;
-            regs.rbx = vcpu_regs.rbx;
-            regs.rcx = vcpu_regs.rcx;
-            regs.rdx = vcpu_regs.rdx;
-            regs.rsi = vcpu_regs.rsi;
-            regs.rdi = vcpu_regs.rdi;
-            regs.rbp = vcpu_regs.rbp;
-            regs.rsp = vcpu_regs.rsp;
-            regs.r8 = vcpu_regs.r8;
-            regs.r9 = vcpu_regs.r9;
-            regs.r10 = vcpu_regs.r10;
-            regs.r11 = vcpu_regs.r11;
-            regs.r12 = vcpu_regs.r12;
-            regs.r13 = vcpu_regs.r13;
-            regs.r14 = vcpu_regs.r14;
-            regs.r15 = vcpu_regs.r15;
-
-            regs.rip = vcpu_regs.rip;
-            regs.rflags = vcpu_regs.rflags;
-
-            Ok(())
-        }
-
-        fn write_regs(&self, regs: &X86_64Regs) -> Result<()> {
-            log::debug!("Write registers");
-            let new_regs = kvm_regs {
-                rax: regs.rax,
-                rbx: regs.rbx,
-                rcx: regs.rcx,
-                rdx: regs.rdx,
-                rsi: regs.rsi,
-                rdi: regs.rdi,
-                rbp: regs.rbp,
-                rsp: regs.rsp,
-                r8: regs.r8,
-                r9: regs.r9,
-                r10: regs.r10,
-                r11: regs.r11,
-                r12: regs.r12,
-                r13: regs.r13,
-                r14: regs.r14,
-                r15: regs.r15,
-
-                rip: regs.rip,
-                rflags: regs.rflags,
-            };
-
-            self.vcpu_fd
-                .set_regs(&new_regs)
-                .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
         }
 
         fn add_sw_breakpoint(
@@ -320,25 +250,7 @@ mod debug {
                 .as_ref()
                 .ok_or_else(|| new_error!("Debug is not enabled"))?;
 
-            if debug.single_step {
-                return Ok(VcpuStopReason::DoneStep);
-            }
-
-            let ip = self.get_instruction_pointer()?;
-            let gpa = self.translate_gva(ip)?;
-            if debug.sw_breakpoints.contains_key(&gpa) {
-                return Ok(VcpuStopReason::SwBp);
-            }
-
-            if debug.hw_breakpoints.contains(&gpa) {
-                return Ok(VcpuStopReason::HwBp);
-            }
-
-            if ip == self.entrypoint {
-                return Ok(VcpuStopReason::HwBp);
-            }
-
-            Ok(VcpuStopReason::Unknown)
+            debug.get_stop_reason(&self.vcpu_fd, self.entrypoint)
         }
 
         pub(crate) fn process_dbg_request(
@@ -383,7 +295,8 @@ mod debug {
                     DebugMsg::ReadRegisters => {
                         let mut regs = X86_64Regs::default();
 
-                        self.read_regs(&mut regs)
+                        debug
+                            .read_regs(&self.vcpu_fd, &mut regs)
                             .map(|_| DebugResponse::ReadRegisters(regs))
                     }
                     DebugMsg::RemoveHwBreakpoint(addr) => debug
@@ -401,8 +314,8 @@ mod debug {
 
                         Ok(DebugResponse::WriteAddr)
                     }
-                    DebugMsg::WriteRegisters(regs) => self
-                        .write_regs(&regs)
+                    DebugMsg::WriteRegisters(regs) => debug
+                        .write_regs(&self.vcpu_fd, &regs)
                         .map(|_| DebugResponse::WriteRegisters),
                 }
             } else {
