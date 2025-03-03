@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use crate::{HyperlightError, Result};
+
 /// Software Breakpoint size in memory
 pub const SW_BP_SIZE: usize = 1;
 /// Software Breakpoint opcode - INT3
@@ -22,6 +24,22 @@ pub const SW_BP_SIZE: usize = 1;
 const SW_BP_OP: u8 = 0xCC;
 /// Software Breakpoint written to memory
 pub const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
+/// Max number of supported hw breakpoints
+const MAX_NO_OF_HW_BP: usize = 4;
+
+/// This trait is used to define a common way of interacting with a vCPU to
+/// allow debugging functionality
+pub trait GuestVcpuDebug {
+    /// Type that wraps the vCPU functionality
+    type Vcpu;
+
+    /// Adds hardware breakpoint
+    fn add_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> Result<bool>;
+    /// Removes hardware breakpoint
+    fn remove_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> Result<bool>;
+    /// Enables or disables stepping and sets the vCPU debug configuration
+    fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> Result<()>;
+}
 
 #[cfg(kvm)]
 pub mod kvm {
@@ -54,8 +72,6 @@ pub mod kvm {
     }
 
     impl KvmDebug {
-        const MAX_NO_OF_HW_BP: usize = 4;
-
         pub fn new() -> Self {
             let dbg = kvm_guest_debug {
                 control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP,
@@ -78,7 +94,7 @@ pub mod kvm {
         /// The 7th debug register is used to enable the breakpoints
         /// For more information see: DEBUG REGISTERS chapter in the architecture
         /// manual
-        pub fn set_debug_config(&mut self, vcpu_fd: &VcpuFd, step: bool) -> Result<()> {
+        fn set_debug_config(&mut self, vcpu_fd: &VcpuFd, step: bool) -> Result<()> {
             let addrs = &self.hw_breakpoints;
 
             self.dbg_cfg.arch.debugreg = [0; 8];
@@ -110,8 +126,8 @@ pub mod kvm {
         }
 
         /// Method that adds a breakpoint
-        pub fn add_breakpoint(&mut self, vcpu_fd: &VcpuFd, addr: u64) -> Result<bool> {
-            if self.hw_breakpoints.len() >= Self::MAX_NO_OF_HW_BP {
+        fn add_breakpoint(&mut self, vcpu_fd: &VcpuFd, addr: u64) -> Result<bool> {
+            if self.hw_breakpoints.len() >= MAX_NO_OF_HW_BP {
                 Ok(false)
             } else if self.hw_breakpoints.contains(&addr) {
                 Ok(true)
@@ -124,7 +140,7 @@ pub mod kvm {
         }
 
         /// Method that removes a breakpoint
-        pub fn remove_breakpoint(&mut self, vcpu_fd: &VcpuFd, addr: u64) -> Result<bool> {
+        fn remove_breakpoint(&mut self, vcpu_fd: &VcpuFd, addr: u64) -> Result<bool> {
             if self.hw_breakpoints.contains(&addr) {
                 self.hw_breakpoints.retain(|&a| a != addr);
                 self.set_debug_config(vcpu_fd, self.single_step)?;
@@ -133,6 +149,39 @@ pub mod kvm {
             } else {
                 Ok(false)
             }
+        }
+
+        /// Translates the guest address to physical address
+        fn translate_gva(&self, vcpu_fd: &VcpuFd, gva: u64) -> Result<u64> {
+            let tr = vcpu_fd
+                .translate_gva(gva)
+                .map_err(|_| HyperlightError::TranslateGuestAddress(gva))?;
+
+            if tr.valid == 0 {
+                Err(HyperlightError::TranslateGuestAddress(gva))
+            } else {
+                Ok(tr.physical_address)
+            }
+        }
+    }
+
+    impl GuestVcpuDebug for KvmDebug {
+        type Vcpu = VcpuFd;
+
+        fn add_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> Result<bool> {
+            let addr = self.translate_gva(vcpu_fd, addr)?;
+
+            self.add_breakpoint(vcpu_fd, addr)
+        }
+
+        fn remove_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> Result<bool> {
+            let addr = self.translate_gva(vcpu_fd, addr)?;
+
+            self.remove_breakpoint(vcpu_fd, addr)
+        }
+
+        fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> Result<()> {
+            self.set_debug_config(vcpu_fd, enable)
         }
     }
 }
