@@ -36,7 +36,7 @@ pub(crate) struct KvmDebug {
     /// Array of addresses for HW breakpoints
     hw_breakpoints: Vec<u64>,
     /// Saves the bytes modified to enable SW breakpoints
-    pub(crate) sw_breakpoints: HashMap<u64, [u8; SW_BP_SIZE]>,
+    sw_breakpoints: HashMap<u64, [u8; SW_BP_SIZE]>,
 
     /// Sent to KVM for enabling guest debug
     dbg_cfg: kvm_guest_debug,
@@ -140,6 +140,9 @@ impl GuestDebug for KvmDebug {
     fn is_hw_breakpoint(&self, addr: &u64) -> bool {
         self.hw_breakpoints.contains(addr)
     }
+    fn is_sw_breakpoint(&self, addr: &u64) -> bool {
+        self.sw_breakpoints.contains_key(addr)
+    }
     fn save_hw_breakpoint(&mut self, addr: &u64) -> bool {
         if self.hw_breakpoints.len() >= MAX_NO_OF_HW_BP {
             false
@@ -149,8 +152,14 @@ impl GuestDebug for KvmDebug {
             true
         }
     }
+    fn save_sw_breakpoint_data(&mut self, addr: u64, data: [u8; 1]) {
+        _ = self.sw_breakpoints.insert(addr, data);
+    }
     fn delete_hw_breakpoint(&mut self, addr: &u64) {
         self.hw_breakpoints.retain(|&a| a != *addr);
+    }
+    fn delete_sw_breakpoint_data(&mut self, addr: &u64) -> Option<[u8; 1]> {
+        self.sw_breakpoints.remove(addr)
     }
 
     fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> Result<()> {

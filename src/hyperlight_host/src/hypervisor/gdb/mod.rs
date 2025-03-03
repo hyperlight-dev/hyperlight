@@ -21,6 +21,7 @@ mod x86_64_target;
 
 use std::io::{self, ErrorKind};
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -28,23 +29,26 @@ use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
+use hyperlight_common::mem::PAGE_SIZE;
 #[cfg(kvm)]
 pub(crate) use kvm_debug::KvmDebug;
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
+use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
+use crate::mem::layout::SandboxMemoryLayout;
 use crate::new_error;
 
 /// Software Breakpoint size in memory
-pub(crate) const SW_BP_SIZE: usize = 1;
+const SW_BP_SIZE: usize = 1;
 /// Software Breakpoint opcode - INT3
 /// Check page 7-28 Vol. 3A of Intel 64 and IA-32
 /// Architectures Software Developer's Manual
 const SW_BP_OP: u8 = 0xCC;
 /// Software Breakpoint written to memory
-pub(crate) const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
+const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
 /// Maximum number of supported hardware breakpoints
-pub(crate) const MAX_NO_OF_HW_BP: usize = 4;
+const MAX_NO_OF_HW_BP: usize = 4;
 
 #[derive(Debug, Error)]
 pub(crate) enum GdbTargetError {
@@ -159,10 +163,16 @@ pub(crate) trait GuestDebug {
 
     /// Returns true whether the provided address is a hardware breakpoint
     fn is_hw_breakpoint(&self, addr: &u64) -> bool;
+    /// Returns true whether the provided address is a software breakpoint
+    fn is_sw_breakpoint(&self, addr: &u64) -> bool;
     /// Stores the address of the hw breakpoint
     fn save_hw_breakpoint(&mut self, addr: &u64) -> bool;
+    /// Stores the data that the sw breakpoint op code replaces
+    fn save_sw_breakpoint_data(&mut self, addr: u64, data: [u8; 1]);
     /// Deletes the address of the hw breakpoint from storage
     fn delete_hw_breakpoint(&mut self, addr: &u64);
+    /// Retrieves the saved data that the sw breakpoint op code replaces
+    fn delete_sw_breakpoint_data(&mut self, addr: &u64) -> Option<[u8; 1]>;
 
     /// Read registers
     fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> crate::Result<()>;
@@ -185,6 +195,63 @@ pub(crate) trait GuestDebug {
             .then(|| self.set_single_step(vcpu_fd, false))
             .ok_or_else(|| new_error!("Failed to save hw breakpoint"))?
     }
+    /// Overwrites the guest memory with the SW Breakpoint op code that instructs
+    /// the vCPU to stop when is executed and stores the overwritten data to be
+    /// able to restore it
+    fn add_sw_breakpoint(
+        &mut self,
+        vcpu_fd: &Self::Vcpu,
+        addr: u64,
+        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> crate::Result<()> {
+        let addr = self.translate_gva(vcpu_fd, addr)?;
+
+        if self.is_sw_breakpoint(&addr) {
+            return Ok(());
+        }
+
+        // Write breakpoint OP code to write to guest memory
+        let mut save_data = [0; SW_BP_SIZE];
+        self.read_addrs(vcpu_fd, addr, &mut save_data[..], dbg_mem_access_fn.clone())?;
+        self.write_addrs(vcpu_fd, addr, &SW_BP, dbg_mem_access_fn)?;
+
+        // Save guest memory to restore when breakpoint is removed
+        self.save_sw_breakpoint_data(addr, save_data);
+
+        Ok(())
+    }
+    /// Copies the data from the guest memory address to the provided slice
+    /// The address is checked to be a valid guest address
+    fn read_addrs(
+        &mut self,
+        vcpu_fd: &Self::Vcpu,
+        mut gva: u64,
+        mut data: &mut [u8],
+        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> crate::Result<()> {
+        let data_len = data.len();
+        log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
+
+        while !data.is_empty() {
+            let gpa = self.translate_gva(vcpu_fd, gva)?;
+
+            let read_len = std::cmp::min(
+                data.len(),
+                (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+            );
+            let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+
+            dbg_mem_access_fn
+                .try_lock()
+                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                .read(offset, &mut data[..read_len])?;
+
+            data = &mut data[read_len..];
+            gva += read_len as u64;
+        }
+
+        Ok(())
+    }
     /// Removes hardware breakpoint
     fn remove_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<()> {
         let addr = self.translate_gva(vcpu_fd, addr)?;
@@ -195,6 +262,60 @@ pub(crate) trait GuestDebug {
                 self.set_single_step(vcpu_fd, false)
             })
             .ok_or_else(|| new_error!("The address: {:?} is not a hw breakpoint", addr))?
+    }
+    /// Restores the overwritten data to the guest memory
+    fn remove_sw_breakpoint(
+        &mut self,
+        vcpu_fd: &Self::Vcpu,
+        addr: u64,
+        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> crate::Result<()> {
+        let addr = self.translate_gva(vcpu_fd, addr)?;
+
+        if self.is_sw_breakpoint(&addr) {
+            let save_data = self
+                .delete_sw_breakpoint_data(&addr)
+                .ok_or_else(|| new_error!("Expected to contain the sw breakpoint address"))?;
+
+            // Restore saved data to the guest's memory
+            self.write_addrs(vcpu_fd, addr, &save_data, dbg_mem_access_fn)?;
+
+            Ok(())
+        } else {
+            Err(new_error!("The address: {:?} is not a sw breakpoint", addr))
+        }
+    }
+    /// Copies the data from the provided slice to the guest memory address
+    /// The address is checked to be a valid guest address
+    fn write_addrs(
+        &mut self,
+        vcpu_fd: &Self::Vcpu,
+        mut gva: u64,
+        mut data: &[u8],
+        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> crate::Result<()> {
+        let data_len = data.len();
+        log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
+
+        while !data.is_empty() {
+            let gpa = self.translate_gva(vcpu_fd, gva)?;
+
+            let write_len = std::cmp::min(
+                data.len(),
+                (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+            );
+            let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+
+            dbg_mem_access_fn
+                .try_lock()
+                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                .write(offset, data)?;
+
+            data = &data[write_len..];
+            gva += write_len as u64;
+        }
+
+        Ok(())
     }
 }
 

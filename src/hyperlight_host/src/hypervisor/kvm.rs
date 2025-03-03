@@ -67,16 +67,12 @@ pub(crate) fn is_hypervisor_present() -> bool {
 mod debug {
     use std::sync::{Arc, Mutex};
 
-    use hyperlight_common::mem::PAGE_SIZE;
-
     use super::KVMDriver;
     use crate::hypervisor::gdb::{
-        DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason, X86_64Regs, SW_BP,
-        SW_BP_SIZE,
+        DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason, X86_64Regs,
     };
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-    use crate::mem::layout::SandboxMemoryLayout;
-    use crate::{new_error, HyperlightError, Result};
+    use crate::{new_error, Result};
 
     impl KVMDriver {
         /// Resets the debug information to disable debugging
@@ -88,144 +84,6 @@ mod debug {
             self.debug = Some(debug);
 
             Ok(())
-        }
-
-        /// Translates the guest address to physical address
-        fn translate_gva(&self, gva: u64) -> Result<u64> {
-            let tr = self
-                .vcpu_fd
-                .translate_gva(gva)
-                .map_err(|_| HyperlightError::TranslateGuestAddress(gva))?;
-
-            if tr.valid == 0 {
-                Err(HyperlightError::TranslateGuestAddress(gva))
-            } else {
-                Ok(tr.physical_address)
-            }
-        }
-
-        fn read_addrs(
-            &mut self,
-            mut gva: u64,
-            mut data: &mut [u8],
-            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
-        ) -> Result<()> {
-            let data_len = data.len();
-            log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
-
-            while !data.is_empty() {
-                let gpa = self.translate_gva(gva)?;
-
-                let read_len = std::cmp::min(
-                    data.len(),
-                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
-                );
-                let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
-
-                dbg_mem_access_fn
-                    .try_lock()
-                    .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                    .read(offset, &mut data[..read_len])?;
-
-                data = &mut data[read_len..];
-                gva += read_len as u64;
-            }
-
-            Ok(())
-        }
-
-        fn write_addrs(
-            &mut self,
-            mut gva: u64,
-            mut data: &[u8],
-            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
-        ) -> Result<()> {
-            let data_len = data.len();
-            log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
-
-            while !data.is_empty() {
-                let gpa = self.translate_gva(gva)?;
-
-                let write_len = std::cmp::min(
-                    data.len(),
-                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
-                );
-                let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
-
-                dbg_mem_access_fn
-                    .try_lock()
-                    .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                    .write(offset, data)?;
-
-                data = &data[write_len..];
-                gva += write_len as u64;
-            }
-
-            Ok(())
-        }
-
-        fn add_sw_breakpoint(
-            &mut self,
-            addr: u64,
-            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
-        ) -> Result<bool> {
-            let addr = {
-                let debug = self
-                    .debug
-                    .as_ref()
-                    .ok_or_else(|| new_error!("Debug is not enabled"))?;
-                let addr = self.translate_gva(addr)?;
-                if debug.sw_breakpoints.contains_key(&addr) {
-                    return Ok(true);
-                }
-
-                addr
-            };
-
-            let mut save_data = [0; SW_BP_SIZE];
-            self.read_addrs(addr, &mut save_data[..], dbg_mem_access_fn.clone())?;
-            self.write_addrs(addr, &SW_BP, dbg_mem_access_fn)?;
-
-            {
-                let debug = self
-                    .debug
-                    .as_mut()
-                    .ok_or_else(|| new_error!("Debug is not enabled"))?;
-                debug.sw_breakpoints.insert(addr, save_data);
-            }
-
-            Ok(true)
-        }
-
-        fn remove_sw_breakpoint(
-            &mut self,
-            addr: u64,
-            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
-        ) -> Result<bool> {
-            let (ret, data) = {
-                let addr = self.translate_gva(addr)?;
-                let debug = self
-                    .debug
-                    .as_mut()
-                    .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-                if debug.sw_breakpoints.contains_key(&addr) {
-                    let save_data = debug
-                        .sw_breakpoints
-                        .remove(&addr)
-                        .ok_or_else(|| new_error!("Expected the hashmap to contain the address"))?;
-
-                    (true, Some(save_data))
-                } else {
-                    (false, None)
-                }
-            };
-
-            if ret {
-                self.write_addrs(addr, &data.unwrap(), dbg_mem_access_fn)?;
-            }
-
-            Ok(ret)
         }
 
         /// Gdb expects the target to be stopped when connected.
@@ -263,9 +121,11 @@ mod debug {
                     DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
                         debug.add_hw_breakpoint(&self.vcpu_fd, addr).is_ok(),
                     )),
-                    DebugMsg::AddSwBreakpoint(addr) => self
-                        .add_sw_breakpoint(addr, dbg_mem_access_fn)
-                        .map(DebugResponse::AddSwBreakpoint),
+                    DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
+                        debug
+                            .add_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                            .is_ok(),
+                    )),
                     DebugMsg::Continue => {
                         debug.set_single_step(&self.vcpu_fd, false)?;
                         Ok(DebugResponse::Continue)
@@ -288,7 +148,7 @@ mod debug {
                     DebugMsg::ReadAddr(addr, len) => {
                         let mut data = vec![0u8; len];
 
-                        self.read_addrs(addr, &mut data, dbg_mem_access_fn)?;
+                        debug.read_addrs(&self.vcpu_fd, addr, &mut data, dbg_mem_access_fn)?;
 
                         Ok(DebugResponse::ReadAddr(data))
                     }
@@ -302,15 +162,17 @@ mod debug {
                     DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
                         debug.remove_hw_breakpoint(&self.vcpu_fd, addr).is_ok(),
                     )),
-                    DebugMsg::RemoveSwBreakpoint(addr) => self
-                        .remove_sw_breakpoint(addr, dbg_mem_access_fn)
-                        .map(DebugResponse::RemoveSwBreakpoint),
+                    DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
+                        debug
+                            .remove_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                            .is_ok(),
+                    )),
                     DebugMsg::Step => {
                         debug.set_single_step(&self.vcpu_fd, true)?;
                         Ok(DebugResponse::Step)
                     }
                     DebugMsg::WriteAddr(addr, data) => {
-                        self.write_addrs(addr, &data, dbg_mem_access_fn)?;
+                        debug.write_addrs(&self.vcpu_fd, addr, &data, dbg_mem_access_fn)?;
 
                         Ok(DebugResponse::WriteAddr)
                     }
