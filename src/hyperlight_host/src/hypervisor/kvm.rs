@@ -260,9 +260,9 @@ mod debug {
         ) -> Result<DebugResponse> {
             if let Some(debug) = self.debug.as_mut() {
                 match req {
-                    DebugMsg::AddHwBreakpoint(addr) => debug
-                        .add_hw_breakpoint(&self.vcpu_fd, addr)
-                        .map(DebugResponse::AddHwBreakpoint),
+                    DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
+                        debug.add_hw_breakpoint(&self.vcpu_fd, addr).is_ok(),
+                    )),
                     DebugMsg::AddSwBreakpoint(addr) => self
                         .add_sw_breakpoint(addr, dbg_mem_access_fn)
                         .map(DebugResponse::AddSwBreakpoint),
@@ -299,9 +299,9 @@ mod debug {
                             .read_regs(&self.vcpu_fd, &mut regs)
                             .map(|_| DebugResponse::ReadRegisters(regs))
                     }
-                    DebugMsg::RemoveHwBreakpoint(addr) => debug
-                        .remove_hw_breakpoint(&self.vcpu_fd, addr)
-                        .map(DebugResponse::RemoveHwBreakpoint),
+                    DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
+                        debug.remove_hw_breakpoint(&self.vcpu_fd, addr).is_ok(),
+                    )),
                     DebugMsg::RemoveSwBreakpoint(addr) => self
                         .remove_sw_breakpoint(addr, dbg_mem_access_fn)
                         .map(DebugResponse::RemoveSwBreakpoint),

@@ -33,6 +33,8 @@ pub(crate) use kvm_debug::KvmDebug;
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
+use crate::new_error;
+
 /// Software Breakpoint size in memory
 pub(crate) const SW_BP_SIZE: usize = 1;
 /// Software Breakpoint opcode - INT3
@@ -155,16 +157,45 @@ pub(crate) trait GuestDebug {
     /// Type that wraps the vCPU functionality
     type Vcpu;
 
-    /// Adds hardware breakpoint
-    fn add_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<bool>;
+    /// Returns true whether the provided address is a hardware breakpoint
+    fn is_hw_breakpoint(&self, addr: &u64) -> bool;
+    /// Stores the address of the hw breakpoint
+    fn save_hw_breakpoint(&mut self, addr: &u64) -> bool;
+    /// Deletes the address of the hw breakpoint from storage
+    fn delete_hw_breakpoint(&mut self, addr: &u64);
+
     /// Read registers
     fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> crate::Result<()>;
-    /// Removes hardware breakpoint
-    fn remove_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<bool>;
     /// Enables or disables stepping and sets the vCPU debug configuration
     fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> crate::Result<()>;
+    /// Translates the guest address to physical address
+    fn translate_gva(&self, vcpu_fd: &Self::Vcpu, gva: u64) -> crate::Result<u64>;
     /// Write registers
     fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> crate::Result<()>;
+
+    /// Adds hardware breakpoint
+    fn add_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<()> {
+        let addr = self.translate_gva(vcpu_fd, addr)?;
+
+        if self.is_hw_breakpoint(&addr) {
+            return Ok(());
+        }
+
+        self.save_hw_breakpoint(&addr)
+            .then(|| self.set_single_step(vcpu_fd, false))
+            .ok_or_else(|| new_error!("Failed to save hw breakpoint"))?
+    }
+    /// Removes hardware breakpoint
+    fn remove_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<()> {
+        let addr = self.translate_gva(vcpu_fd, addr)?;
+
+        self.is_hw_breakpoint(&addr)
+            .then(|| {
+                self.delete_hw_breakpoint(&addr);
+                self.set_single_step(vcpu_fd, false)
+            })
+            .ok_or_else(|| new_error!("The address: {:?} is not a hw breakpoint", addr))?
+    }
 }
 
 /// Debug communication channel that is used for sending a request type and

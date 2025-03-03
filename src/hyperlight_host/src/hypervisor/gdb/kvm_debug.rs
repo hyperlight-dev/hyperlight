@@ -105,32 +105,6 @@ impl KvmDebug {
         Ok(())
     }
 
-    /// Method that adds a breakpoint
-    fn add_breakpoint(&mut self, vcpu_fd: &VcpuFd, addr: u64) -> Result<bool> {
-        if self.hw_breakpoints.len() >= MAX_NO_OF_HW_BP {
-            Ok(false)
-        } else if self.hw_breakpoints.contains(&addr) {
-            Ok(true)
-        } else {
-            self.hw_breakpoints.push(addr);
-            self.set_debug_config(vcpu_fd, self.single_step)?;
-
-            Ok(true)
-        }
-    }
-
-    /// Method that removes a breakpoint
-    fn remove_breakpoint(&mut self, vcpu_fd: &VcpuFd, addr: u64) -> Result<bool> {
-        if self.hw_breakpoints.contains(&addr) {
-            self.hw_breakpoints.retain(|&a| a != addr);
-            self.set_debug_config(vcpu_fd, self.single_step)?;
-
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
     /// Get the reason the vCPU has stopped
     pub(crate) fn get_stop_reason(
         &self,
@@ -158,34 +132,25 @@ impl KvmDebug {
 
         Ok(VcpuStopReason::Unknown)
     }
-
-    /// Translates the guest address to physical address
-    fn translate_gva(&self, vcpu_fd: &VcpuFd, gva: u64) -> Result<u64> {
-        let tr = vcpu_fd
-            .translate_gva(gva)
-            .map_err(|_| HyperlightError::TranslateGuestAddress(gva))?;
-
-        if tr.valid == 0 {
-            Err(HyperlightError::TranslateGuestAddress(gva))
-        } else {
-            Ok(tr.physical_address)
-        }
-    }
 }
 
 impl GuestDebug for KvmDebug {
     type Vcpu = VcpuFd;
 
-    fn add_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> Result<bool> {
-        let addr = self.translate_gva(vcpu_fd, addr)?;
-
-        self.add_breakpoint(vcpu_fd, addr)
+    fn is_hw_breakpoint(&self, addr: &u64) -> bool {
+        self.hw_breakpoints.contains(addr)
     }
+    fn save_hw_breakpoint(&mut self, addr: &u64) -> bool {
+        if self.hw_breakpoints.len() >= MAX_NO_OF_HW_BP {
+            false
+        } else {
+            self.hw_breakpoints.push(*addr);
 
-    fn remove_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> Result<bool> {
-        let addr = self.translate_gva(vcpu_fd, addr)?;
-
-        self.remove_breakpoint(vcpu_fd, addr)
+            true
+        }
+    }
+    fn delete_hw_breakpoint(&mut self, addr: &u64) {
+        self.hw_breakpoints.retain(|&a| a != *addr);
     }
 
     fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> Result<()> {
@@ -219,6 +184,18 @@ impl GuestDebug for KvmDebug {
 
     fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> Result<()> {
         self.set_debug_config(vcpu_fd, enable)
+    }
+
+    fn translate_gva(&self, vcpu_fd: &Self::Vcpu, gva: u64) -> Result<u64> {
+        let tr = vcpu_fd
+            .translate_gva(gva)
+            .map_err(|_| HyperlightError::TranslateGuestAddress(gva))?;
+
+        if tr.valid == 0 {
+            Err(HyperlightError::TranslateGuestAddress(gva))
+        } else {
+            Ok(tr.physical_address)
+        }
     }
 
     fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> Result<()> {
