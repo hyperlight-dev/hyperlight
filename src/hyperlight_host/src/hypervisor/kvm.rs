@@ -26,7 +26,9 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{kvm::KvmDebug, DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
+use super::gdb::{
+    kvm::KvmDebug, DebugCommChannel, DebugMsg, DebugResponse, GuestVcpuDebug, VcpuStopReason,
+};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
@@ -87,26 +89,11 @@ mod debug {
             Ok(())
         }
 
-        /// Gdb expects the target to be stopped when connected.
-        /// This method provides a way to set a breakpoint at the entry point
-        /// it does not keep this breakpoint set after the vCPU already stopped at the address
-        pub fn set_entrypoint_bp(&self) -> Result<()> {
-            if self.debug.is_some() {
-                log::debug!("Setting entrypoint bp {:X}", self.entrypoint);
-                let mut entrypoint_debug = KvmDebug::new();
-                entrypoint_debug.add_hw_breakpoint(&self.vcpu_fd, self.entrypoint)?;
-
-                Ok(())
-            } else {
-                Ok(())
-            }
-        }
-
         /// Get the reason the vCPU has stopped
-        pub fn get_stop_reason(&self) -> Result<VcpuStopReason> {
+        pub fn get_stop_reason(&mut self) -> Result<VcpuStopReason> {
             let debug = self
                 .debug
-                .as_ref()
+                .as_mut()
                 .ok_or_else(|| new_error!("Debug is not enabled"))?;
 
             debug.get_stop_reason(&self.vcpu_fd, self.entrypoint)
@@ -268,7 +255,11 @@ impl KVMDriver {
 
         #[cfg(gdb)]
         let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
-            (Some(KvmDebug::new()), Some(gdb_conn))
+            let mut debug = KvmDebug::new();
+            // Add breakpoint to the entry point address
+            debug.add_hw_breakpoint(&vcpu_fd, entrypoint)?;
+
+            (Some(debug), Some(gdb_conn))
         } else {
             (None, None)
         };
@@ -288,9 +279,6 @@ impl KVMDriver {
             #[cfg(gdb)]
             gdb_conn,
         };
-
-        #[cfg(gdb)]
-        ret.set_entrypoint_bp()?;
 
         Ok(ret)
     }

@@ -306,7 +306,11 @@ pub mod kvm {
         }
 
         /// Get the reason the vCPU has stopped
-        pub fn get_stop_reason(&self, vcpu_fd: &VcpuFd, entrypoint: u64) -> Result<VcpuStopReason> {
+        pub fn get_stop_reason(
+            &mut self,
+            vcpu_fd: &VcpuFd,
+            entrypoint: u64,
+        ) -> Result<VcpuStopReason> {
             if self.single_step {
                 return Ok(VcpuStopReason::DoneStep);
             }
@@ -319,10 +323,13 @@ pub mod kvm {
             }
 
             if self.hw_breakpoints.contains(&gpa) {
-                return Ok(VcpuStopReason::HwBp);
-            }
-
-            if gpa == entrypoint {
+                // In case the hw breakpoint is the entry point, remove it to
+                // avoid hanging here as gdb does not remove breakpoints it
+                // has not set.
+                // Gdb expects the target to be stopped when connected.
+                if gpa == entrypoint {
+                    self.remove_hw_breakpoint(vcpu_fd, entrypoint)?;
+                }
                 return Ok(VcpuStopReason::HwBp);
             }
 
