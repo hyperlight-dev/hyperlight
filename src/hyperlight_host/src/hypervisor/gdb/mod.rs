@@ -15,6 +15,8 @@ limitations under the License.
 */
 
 mod event_loop;
+#[cfg(kvm)]
+mod kvm_debug;
 mod x86_64_target;
 
 use std::io::{self, ErrorKind};
@@ -26,8 +28,19 @@ use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
+#[cfg(kvm)]
+pub(crate) use kvm_debug::KvmDebug;
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
+
+/// Software Breakpoint size in memory
+pub(crate) const SW_BP_SIZE: usize = 1;
+/// Software Breakpoint opcode - INT3
+/// Check page 7-28 Vol. 3A of Intel 64 and IA-32
+/// Architectures Software Developer's Manual
+const SW_BP_OP: u8 = 0xCC;
+/// Software Breakpoint written to memory
+pub(crate) const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
 
 #[derive(Debug, Error)]
 pub(crate) enum GdbTargetError {

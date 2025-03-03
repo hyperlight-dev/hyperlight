@@ -26,7 +26,7 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
+use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, KvmDebug, VcpuStopReason};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
@@ -65,128 +65,18 @@ pub(crate) fn is_hypervisor_present() -> bool {
 
 #[cfg(gdb)]
 mod debug {
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use hyperlight_common::mem::PAGE_SIZE;
-    use kvm_bindings::{
-        kvm_guest_debug, kvm_regs, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
-        KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
-    };
-    use kvm_ioctls::VcpuFd;
+    use kvm_bindings::kvm_regs;
 
     use super::KVMDriver;
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::gdb::{
+        DebugMsg, DebugResponse, KvmDebug, VcpuStopReason, X86_64Regs, SW_BP, SW_BP_SIZE,
+    };
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::{new_error, HyperlightError, Result};
-
-    /// Software Breakpoint size in memory
-    pub(crate) const SW_BP_SIZE: usize = 1;
-    /// Software Breakpoint opcode
-    const SW_BP_OP: u8 = 0xCC;
-    /// Software Breakpoint written to memory
-    pub(crate) const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
-
-    /// KVM Debug struct
-    /// This struct is used to abstract the internal details of the kvm
-    /// guest debugging settings
-    #[derive(Default)]
-    pub(crate) struct KvmDebug {
-        /// vCPU stepping state
-        single_step: bool,
-
-        /// Array of addresses for HW breakpoints
-        hw_breakpoints: Vec<u64>,
-        /// Saves the bytes modified to enable SW breakpoints
-        sw_breakpoints: HashMap<u64, [u8; SW_BP_SIZE]>,
-
-        /// Sent to KVM for enabling guest debug
-        pub dbg_cfg: kvm_guest_debug,
-    }
-
-    impl KvmDebug {
-        const MAX_NO_OF_HW_BP: usize = 4;
-
-        pub(crate) fn new() -> Self {
-            let dbg = kvm_guest_debug {
-                control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP,
-                ..Default::default()
-            };
-
-            Self {
-                single_step: false,
-                hw_breakpoints: vec![],
-                sw_breakpoints: HashMap::new(),
-                dbg_cfg: dbg,
-            }
-        }
-
-        /// This method sets the kvm debugreg fields to enable breakpoints at
-        /// specific addresses
-        ///
-        /// The first 4 debug registers are used to set the addresses
-        /// The 4th and 5th debug registers are obsolete and not used
-        /// The 7th debug register is used to enable the breakpoints
-        /// For more information see: DEBUG REGISTERS chapter in the architecture
-        /// manual
-        fn set_debug_config(&mut self, vcpu_fd: &VcpuFd, step: bool) -> Result<()> {
-            let addrs = &self.hw_breakpoints;
-
-            self.dbg_cfg.arch.debugreg = [0; 8];
-            for (k, addr) in addrs.iter().enumerate() {
-                self.dbg_cfg.arch.debugreg[k] = *addr;
-                self.dbg_cfg.arch.debugreg[7] |= 1 << (k * 2);
-            }
-
-            if !addrs.is_empty() {
-                self.dbg_cfg.control |= KVM_GUESTDBG_USE_HW_BP;
-            } else {
-                self.dbg_cfg.control &= !KVM_GUESTDBG_USE_HW_BP;
-            }
-
-            if step {
-                self.dbg_cfg.control |= KVM_GUESTDBG_SINGLESTEP;
-            } else {
-                self.dbg_cfg.control &= !KVM_GUESTDBG_SINGLESTEP;
-            }
-
-            log::debug!("Setting bp: {:?} cfg: {:?}", addrs, self.dbg_cfg);
-            vcpu_fd
-                .set_guest_debug(&self.dbg_cfg)
-                .map_err(|e| new_error!("Could not set guest debug: {:?}", e))?;
-
-            self.single_step = step;
-
-            Ok(())
-        }
-
-        /// Method that adds a breakpoint
-        fn add_breakpoint(&mut self, vcpu_fd: &VcpuFd, addr: u64) -> Result<bool> {
-            if self.hw_breakpoints.len() >= Self::MAX_NO_OF_HW_BP {
-                Ok(false)
-            } else if self.hw_breakpoints.contains(&addr) {
-                Ok(true)
-            } else {
-                self.hw_breakpoints.push(addr);
-                self.set_debug_config(vcpu_fd, self.single_step)?;
-
-                Ok(true)
-            }
-        }
-
-        /// Method that removes a breakpoint
-        fn remove_breakpoint(&mut self, vcpu_fd: &VcpuFd, addr: u64) -> Result<bool> {
-            if self.hw_breakpoints.contains(&addr) {
-                self.hw_breakpoints.retain(|&a| a != addr);
-                self.set_debug_config(vcpu_fd, self.single_step)?;
-
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        }
-    }
 
     impl KVMDriver {
         /// Resets the debug information to disable debugging
@@ -581,7 +471,7 @@ pub(super) struct KVMDriver {
     mem_regions: Vec<MemoryRegion>,
 
     #[cfg(gdb)]
-    debug: Option<debug::KvmDebug>,
+    debug: Option<KvmDebug>,
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
 }
@@ -625,7 +515,7 @@ impl KVMDriver {
 
         #[cfg(gdb)]
         let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
-            (Some(debug::KvmDebug::new()), Some(gdb_conn))
+            (Some(KvmDebug::new()), Some(gdb_conn))
         } else {
             (None, None)
         };
