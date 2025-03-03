@@ -67,7 +67,7 @@ windows = { version = "0.59", features = [
 windows-sys = { version = "0.59", features = ["Win32"] }
 windows-result = "0.3"
 rust-embed = { version = "8.3.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
-sha256 = "1.4.0"
+sha256 = "1.6.0"
 windows-version = "0.1"
 
 [target.'cfg(unix)'.dependencies]
