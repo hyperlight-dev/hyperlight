@@ -27,7 +27,7 @@ use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
-pub use hyp_debug::{kvm, GuestVcpuDebug, SW_BP, SW_BP_SIZE};
+pub use hyp_debug::{kvm, GuestMemoryDebug, GuestVcpuDebug};
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
