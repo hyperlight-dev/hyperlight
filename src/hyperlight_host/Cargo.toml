@@ -29,7 +29,7 @@ paste = "1.0"
 flatbuffers = "25.2.10"
 page_size = "0.6.0"
 termcolor = "1.2.0"
-bitflags = "2.8.0"
+bitflags = "2.9.0"
 lazy_static = "1.4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -67,7 +67,7 @@ windows = { version = "0.59", features = [
 windows-sys = { version = "0.59", features = ["Win32"] }
 windows-result = "0.3"
 rust-embed = { version = "8.3.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
-sha256 = "1.4.0"
+sha256 = "1.6.0"
 windows-version = "0.1"
 
 [target.'cfg(unix)'.dependencies]
