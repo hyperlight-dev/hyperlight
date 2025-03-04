@@ -335,7 +335,7 @@ fn ensure_surrogate_process_exe() -> Result<()> {
 
         if embedded_file_sha != file_on_disk_sha {
             println!(
-                "sha of embedded surrorate '{}' does not match sha of file on disk '{}' - deleting surrogate binary at {}",
+                "sha of embedded surrogate '{}' does not match sha of file on disk '{}' - deleting surrogate binary at {}",
                 embedded_file_sha,
                 file_on_disk_sha,
                 &surrogate_process_path.display()

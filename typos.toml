@@ -3,3 +3,7 @@ extend-ignore-identifiers-re = ["Fo"]
 
 [files]
 extend-exclude = ["**/*.patch", "src/hyperlight_guest/third_party/**/*", "NOTICE.txt"]
+
+[default.extend-words]
+# typ is used for field name as type is a reserved keyword
+typ="typ"
