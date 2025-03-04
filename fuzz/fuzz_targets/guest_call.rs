@@ -16,35 +16,35 @@ limitations under the License.
 
 #![no_main]
 
-use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
+use std::sync::{Mutex, OnceLock};
+
+use hyperlight_host::func::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox::uninitialized::GuestBinary;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simple_guest_as_string;
 use libfuzzer_sys::fuzz_target;
+static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 
-fuzz_target!(|data: &[u8]| {
-    let u_sbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-
-    let mu_sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
-
-    let msg = String::from_utf8_lossy(data).to_string();
-    let len = msg.len() as i32;
-    let mut ctx = mu_sbox.new_call_context();
-    let result = ctx
-        .call(
-            "PrintOutput",
-            ReturnType::Int,
-            Some(vec![ParameterValue::String(msg.clone())]),
+// This fuzz target tests all combinations of ReturnType and Parameters for `call_guest_function_by_name`.
+// For fuzzing efficiency, we create one Sandbox and reuse it for all fuzzing iterations.
+fuzz_target!(
+    init: {
+        let u_sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+            None,
+            None,
         )
         .unwrap();
 
-    assert_eq!(result, ReturnValue::Int(len));
-});
+        let mu_sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
+        SANDBOX.set(Mutex::new(mu_sbox)).unwrap();
+    },
+
+    |data: (ReturnType, Option<Vec<ParameterValue>>)| {
+        let mut sandbox = SANDBOX.get().unwrap().lock().unwrap();
+        let _ = sandbox.call_guest_function_by_name("PrintOutput", data.0, data.1);
+    }
+);
