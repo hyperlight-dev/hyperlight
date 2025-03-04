@@ -15,9 +15,6 @@ limitations under the License.
 */
 
 use std::fmt::Debug;
-use std::panic;
-
-use tracing::{instrument, Span};
 
 use super::transition::TransitionMetadata;
 use crate::Result;
@@ -35,21 +32,22 @@ use crate::Result;
 /// `DevolvableSandbox` implementations any `Sandbox` implementation can
 /// opt into.
 pub trait Sandbox: Sized + Debug {
-    /// Check to ensure the current stack cookie matches the one that
-    /// was selected when the stack was constructed.
-    ///
-    /// Return an `Err` if there was an error inspecting the stack, `Ok(false)`
-    /// if there was no such error but the stack guard doesn't match, and
-    /// `Ok(true)` in the same situation where the stack guard does match.
-    ///
-
-    // NOTE: this is only needed for UninitializedSandbox and MultiUseSandbox
-    // Those are the only types that need implement this trait
-    // The default implementation is provided so that types that implement Sandbox (e.g. JSSandbox) but do not need to implement this trait do not need to provide an implementation
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn check_stack_guard(&self) -> Result<bool> {
-        panic!("check_stack_guard not implemented for this type");
-    }
+    // TODO(danbugs:297): bring back
+    // /// Check to ensure the current stack cookie matches the one that
+    // /// was selected when the stack was constructed.
+    // ///
+    // /// Return an `Err` if there was an error inspecting the stack, `Ok(false)`
+    // /// if there was no such error but the stack guard doesn't match, and
+    // /// `Ok(true)` in the same situation where the stack guard does match.
+    // ///
+    //
+    // // NOTE: this is only needed for UninitializedSandbox and MultiUseSandbox
+    // // Those are the only types that need implement this trait
+    // // The default implementation is provided so that types that implement Sandbox (e.g. JSSandbox) but do not need to implement this trait do not need to provide an implementation
+    // #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    // fn check_stack_guard(&self) -> Result<bool> {
+    //     panic!("check_stack_guard not implemented for this type");
+    // }
 }
 
 /// A utility trait to recognize a Sandbox that has not yet been initialized.
@@ -58,11 +56,6 @@ pub trait UninitializedSandbox: Sandbox {
     fn get_uninitialized_sandbox(&self) -> &crate::sandbox::UninitializedSandbox;
 
     fn get_uninitialized_sandbox_mut(&mut self) -> &mut crate::sandbox::UninitializedSandbox;
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn is_running_in_process(&self) -> bool {
-        self.get_uninitialized_sandbox().run_inprocess
-    }
 }
 
 /// A `Sandbox` that knows how to "evolve" into a next state.

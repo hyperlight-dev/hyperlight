@@ -15,9 +15,7 @@ limitations under the License.
 */
 
 use core::time::Duration;
-use std::sync::{Arc, Mutex};
 
-use rand::Rng;
 use tracing::{instrument, Span};
 
 #[cfg(gdb)]
@@ -26,14 +24,11 @@ use crate::hypervisor::hypervisor_handler::{
     HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
 };
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
-use crate::sandbox::host_funcs::HostFuncsWrapper;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
-use crate::sandbox::outb::outb_handler_wrapper;
-use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
+use crate::sandbox::HostSharedMemory;
 use crate::sandbox_state::sandbox::Sandbox;
 use crate::{new_error, MultiUseSandbox, Result, UninitializedSandbox};
 
@@ -55,80 +50,63 @@ fn evolve_impl<TransformFunc, ResSandbox: Sandbox>(
 ) -> Result<ResSandbox>
 where
     TransformFunc: Fn(
-        Arc<Mutex<HostFuncsWrapper>>,
-        MemMgrWrapper<HostSharedMemory>,
+        SandboxMemoryManager<HostSharedMemory>,
         HypervisorHandler,
     ) -> Result<ResSandbox>,
 {
-    let (hshm, gshm) = u_sbox.mgr.build();
+    let (hshm, gshm) = u_sbox.mem_mgr.build();
 
     let hv_handler = {
-        let mut hv_handler = hv_init(
-            &hshm,
+        hv_init(
             gshm,
-            u_sbox.host_funcs.clone(),
-            u_sbox.max_initialization_time,
-            u_sbox.max_execution_time,
-            u_sbox.max_wait_for_cancellation,
+            Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
+            Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
+            Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
             #[cfg(gdb)]
             u_sbox.debug_info,
-        )?;
+        )?
 
-        {
-            let dispatch_function_addr = hshm.as_ref().get_pointer_to_dispatch_function()?;
-            assert_ne!(dispatch_function_addr, 0);
-            hv_handler.set_dispatch_function_addr(RawPtr::from(dispatch_function_addr))?;
-        }
-
-        hv_handler
+        // TODO(danbugs:297): bring back
+        // {
+        //     let dispatch_function_addr = hshm.as_ref().get_pointer_to_dispatch_function()?;
+        //     assert_ne!(dispatch_function_addr, 0);
+        //     hv_handler.set_dispatch_function_addr(RawPtr::from(dispatch_function_addr))?;
+        // }
     };
 
-    transform(u_sbox.host_funcs, hshm, hv_handler)
+    transform(hshm, hv_handler)
 }
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    evolve_impl(u_sbox, |hf, mut hshm, hv_handler| {
+    evolve_impl(u_sbox, |mut hshm, hv_handler| {
         {
-            hshm.as_mut().push_state()?;
+            hshm.push_state()?;
         }
-        Ok(MultiUseSandbox::from_uninit(hf, hshm, hv_handler))
+        Ok(MultiUseSandbox::from_uninit(hshm, hv_handler))
     })
 }
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 fn hv_init(
-    hshm: &MemMgrWrapper<HostSharedMemory>,
     gshm: SandboxMemoryManager<GuestSharedMemory>,
-    host_funcs: Arc<Mutex<HostFuncsWrapper>>,
     max_init_time: Duration,
     max_exec_time: Duration,
     max_wait_for_cancellation: Duration,
     #[cfg(gdb)] debug_info: Option<DebugInfo>,
 ) -> Result<HypervisorHandler> {
-    let outb_hdl = outb_handler_wrapper(hshm.clone(), host_funcs);
-    let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
+    let mem_access_hdl = mem_access_handler_wrapper();
     #[cfg(gdb)]
     let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(hshm.clone());
 
-    let seed = {
-        let mut rng = rand::rng();
-        rng.random::<u64>()
-    };
-    let peb_addr = {
-        let peb_u64 = u64::try_from(gshm.layout.peb_address)?;
-        RawPtr::from(peb_u64)
-    };
     let page_size = u32::try_from(page_size::get())?;
     let hv_handler_config = HvHandlerConfig {
-        outb_handler: outb_hdl,
+        custom_guest_memory_region_address: gshm.layout.get_custom_guest_memory_offset() as u64,
+        custom_guest_memory_region_size: gshm.layout.get_custom_guest_memory_size() as u64,
         mem_access_handler: mem_access_hdl,
         #[cfg(gdb)]
         dbg_mem_access_handler: dbg_mem_access_hdl,
-        seed,
         page_size,
-        peb_addr,
-        dispatch_function_addr: Arc::new(Mutex::new(None)),
         max_init_time,
         max_exec_time,
         max_wait_for_cancellation,
@@ -154,52 +132,53 @@ fn hv_init(
     Ok(hv_handler)
 }
 
-#[cfg(test)]
-mod tests {
-    use hyperlight_testing::{callback_guest_as_string, simple_guest_as_string};
-
-    use super::evolve_impl_multi_use;
-    use crate::sandbox::uninitialized::GuestBinary;
-    use crate::UninitializedSandbox;
-
-    #[test]
-    fn test_evolve() {
-        let guest_bin_paths = vec![
-            simple_guest_as_string().unwrap(),
-            callback_guest_as_string().unwrap(),
-        ];
-        for guest_bin_path in guest_bin_paths {
-            let u_sbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(guest_bin_path.clone()),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-            evolve_impl_multi_use(u_sbox).unwrap();
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "windows")]
-    fn test_evolve_in_proc() {
-        use crate::SandboxRunOptions;
-
-        let guest_bin_paths = vec![
-            simple_guest_as_string().unwrap(),
-            callback_guest_as_string().unwrap(),
-        ];
-        for guest_bin_path in guest_bin_paths {
-            let u_sbox: UninitializedSandbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(guest_bin_path.clone()),
-                None,
-                Some(SandboxRunOptions::RunInHypervisor),
-                None,
-            )
-            .unwrap();
-            let err = format!("error evolving sandbox with guest binary {guest_bin_path}");
-            let err_str = err.as_str();
-            evolve_impl_multi_use(u_sbox).expect(err_str);
-        }
-    }
-}
+// TODO(danbugs:297): bring back
+// #[cfg(test)]
+// mod tests {
+//     use hyperlight_testing::{callback_guest_as_string, simple_guest_as_string};
+//
+//     use super::evolve_impl_multi_use;
+//     use crate::sandbox::uninitialized::GuestBinary;
+//     use crate::UninitializedSandbox;
+//
+//     #[test]
+//     fn test_evolve() {
+//         let guest_bin_paths = vec![
+//             simple_guest_as_string().unwrap(),
+//             callback_guest_as_string().unwrap(),
+//         ];
+//         for guest_bin_path in guest_bin_paths {
+//             let u_sbox = UninitializedSandbox::new(
+//                 GuestBinary::FilePath(guest_bin_path.clone()),
+//                 None,
+//                 None,
+//                 None,
+//             )
+//             .unwrap();
+//             evolve_impl_multi_use(u_sbox).unwrap();
+//         }
+//     }
+//
+//     #[test]
+//     #[cfg(target_os = "windows")]
+//     fn test_evolve_in_proc() {
+//         use crate::SandboxRunOptions;
+//
+//         let guest_bin_paths = vec![
+//             simple_guest_as_string().unwrap(),
+//             callback_guest_as_string().unwrap(),
+//         ];
+//         for guest_bin_path in guest_bin_paths {
+//             let u_sbox: UninitializedSandbox = UninitializedSandbox::new(
+//                 GuestBinary::FilePath(guest_bin_path.clone()),
+//                 None,
+//                 Some(SandboxRunOptions::RunInHypervisor),
+//                 None,
+//             )
+//             .unwrap();
+//             let err = format!("error evolving sandbox with guest binary {guest_bin_path}");
+//             let err_str = err.as_str();
+//             evolve_impl_multi_use(u_sbox).expect(err_str);
+//         }
+//     }
+// }

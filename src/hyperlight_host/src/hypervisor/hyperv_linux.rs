@@ -31,9 +31,8 @@ use log::error;
 use mshv_bindings::hv_message;
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
-    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
-    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
-    FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters,
+    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, mshv_user_mem_region,
+    SegmentRegister, SpecialRegisters, StandardRegisters,
 };
 #[cfg(mshv3)]
 use mshv_bindings::{
@@ -43,10 +42,9 @@ use mshv_bindings::{
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
-use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+use super::handlers::MemAccessHandlerWrapper;
 use super::{
     Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
     CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
@@ -54,8 +52,8 @@ use super::{
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::{log_then_return, new_error, Result};
+use crate::mem::ptr::GuestPtr;
+use crate::{log_then_return, Result};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -199,10 +197,9 @@ impl Hypervisor for HypervLinuxDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
         &mut self,
-        peb_addr: RawPtr,
-        seed: u64,
+        custom_guest_memory_region_addr: u64,
+        custom_guest_memory_region_size: u64,
         page_size: u32,
-        outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -213,8 +210,8 @@ impl Hypervisor for HypervLinuxDriver {
             rflags: 2, //bit 1 of rlags is required to be set
 
             // function args
-            rcx: peb_addr.into(),
-            rdx: seed,
+            rcx: custom_guest_memory_region_addr.into(),
+            rdx: custom_guest_memory_region_size.into(),
             r8: page_size.into(),
             r9: self.get_max_log_level().into(),
 
@@ -225,7 +222,6 @@ impl Hypervisor for HypervLinuxDriver {
         VirtualCPU::run(
             self.as_mut_hypervisor(),
             hv_handler,
-            outb_hdl,
             mem_access_hdl,
             #[cfg(gdb)]
             dbg_mem_access_fn,
@@ -240,78 +236,79 @@ impl Hypervisor for HypervLinuxDriver {
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn dispatch_call_from_host(
-        &mut self,
-        dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
-        mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        // Reset general purpose registers except RSP, then set RIP
-        let rsp_before = self.vcpu_fd.get_regs()?.rsp;
-        let regs = StandardRegisters {
-            rip: dispatch_func_addr.into(),
-            rsp: rsp_before,
-            rflags: 2, //bit 1 of rlags is required to be set
-            ..Default::default()
-        };
-        self.vcpu_fd.set_regs(&regs)?;
-
-        // reset fpu state
-        let fpu = FloatingPointUnit {
-            fcw: FP_CONTROL_WORD_DEFAULT,
-            ftwx: FP_TAG_WORD_DEFAULT,
-            mxcsr: MXCSR_DEFAULT,
-            ..Default::default() // zero out the rest
-        };
-        self.vcpu_fd.set_fpu(&fpu)?;
-
-        // run
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            hv_handler,
-            outb_handle_fn,
-            mem_access_fn,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )?;
-
-        // reset RSP to what it was before function call
-        self.vcpu_fd.set_regs(&StandardRegisters {
-            rsp: rsp_before,
-            rflags: 2, //bit 1 of rlags is required to be set
-            ..Default::default()
-        })?;
-        Ok(())
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        rip: u64,
-        instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
-    ) -> Result<()> {
-        let payload = data[..8].try_into()?;
-        outb_handle_fn
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .call(port, u64::from_le_bytes(payload))?;
-
-        // update rip
-        self.vcpu_fd.set_reg(&[hv_register_assoc {
-            name: hv_register_name_HV_X64_REGISTER_RIP,
-            value: hv_register_value {
-                reg64: rip + instruction_length,
-            },
-            ..Default::default()
-        }])?;
-        Ok(())
-    }
+    // TODO(danbugs:297): bring back
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    // fn dispatch_call_from_host(
+    //     &mut self,
+    //     dispatch_func_addr: RawPtr,
+    //     outb_handle_fn: OutBHandlerWrapper,
+    //     mem_access_fn: MemAccessHandlerWrapper,
+    //     hv_handler: Option<HypervisorHandler>,
+    //     #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    // ) -> Result<()> {
+    //     // Reset general purpose registers except RSP, then set RIP
+    //     let rsp_before = self.vcpu_fd.get_regs()?.rsp;
+    //     let regs = StandardRegisters {
+    //         rip: dispatch_func_addr.into(),
+    //         rsp: rsp_before,
+    //         rflags: 2, //bit 1 of rlags is required to be set
+    //         ..Default::default()
+    //     };
+    //     self.vcpu_fd.set_regs(&regs)?;
+    //
+    //     // reset fpu state
+    //     let fpu = FloatingPointUnit {
+    //         fcw: FP_CONTROL_WORD_DEFAULT,
+    //         ftwx: FP_TAG_WORD_DEFAULT,
+    //         mxcsr: MXCSR_DEFAULT,
+    //         ..Default::default() // zero out the rest
+    //     };
+    //     self.vcpu_fd.set_fpu(&fpu)?;
+    //
+    //     // run
+    //     VirtualCPU::run(
+    //         self.as_mut_hypervisor(),
+    //         hv_handler,
+    //         outb_handle_fn,
+    //         mem_access_fn,
+    //         #[cfg(gdb)]
+    //         dbg_mem_access_fn,
+    //     )?;
+    //
+    //     // reset RSP to what it was before function call
+    //     self.vcpu_fd.set_regs(&StandardRegisters {
+    //         rsp: rsp_before,
+    //         rflags: 2, //bit 1 of rlags is required to be set
+    //         ..Default::default()
+    //     })?;
+    //     Ok(())
+    // }
+    //
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    // fn handle_io(
+    //     &mut self,
+    //     port: u16,
+    //     data: Vec<u8>,
+    //     rip: u64,
+    //     instruction_length: u64,
+    //     outb_handle_fn: OutBHandlerWrapper,
+    // ) -> Result<()> {
+    //     let payload = data[..8].try_into()?;
+    //     outb_handle_fn
+    //         .try_lock()
+    //         .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+    //         .call(port, u64::from_le_bytes(payload))?;
+    //
+    //     // update rip
+    //     self.vcpu_fd.set_reg(&[hv_register_assoc {
+    //         name: hv_register_name_HV_X64_REGISTER_RIP,
+    //         value: hv_register_value {
+    //             reg64: rip + instruction_length,
+    //         },
+    //         ..Default::default()
+    //     }])?;
+    //     Ok(())
+    // }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn run(&mut self) -> Result<super::HyperlightExit> {
@@ -419,57 +416,58 @@ impl Drop for HypervLinuxDriver {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::mem::memory_region::MemoryRegionVecBuilder;
-    use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
-
-    #[rustfmt::skip]
-    const CODE: [u8; 12] = [
-        0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */
-        0x00, 0xd8, /* add %bl, %al */
-        0x04, b'0', /* add $'0', %al */
-        0xee, /* out %al, (%dx) */
-        /* send a 0 to indicate we're done */
-        0xb0, b'\0', /* mov $'\0', %al */
-        0xee, /* out %al, (%dx) */
-        0xf4, /* HLT */
-    ];
-
-    fn shared_mem_with_code(
-        code: &[u8],
-        mem_size: usize,
-        load_offset: usize,
-    ) -> Result<Box<ExclusiveSharedMemory>> {
-        if load_offset > mem_size {
-            log_then_return!(
-                "code load offset ({}) > memory size ({})",
-                load_offset,
-                mem_size
-            );
-        }
-        let mut shared_mem = ExclusiveSharedMemory::new(mem_size)?;
-        shared_mem.copy_from_slice(code, load_offset)?;
-        Ok(Box::new(shared_mem))
-    }
-
-    #[test]
-    fn create_driver() {
-        if !super::is_hypervisor_present() {
-            return;
-        }
-        const MEM_SIZE: usize = 0x3000;
-        let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
-        let rsp_ptr = GuestPtr::try_from(0).unwrap();
-        let pml4_ptr = GuestPtr::try_from(0).unwrap();
-        let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
-        let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
-        regions.push_page_aligned(
-            MEM_SIZE,
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
-            crate::mem::memory_region::MemoryRegionType::Code,
-        );
-        super::HypervLinuxDriver::new(regions.build(), entrypoint_ptr, rsp_ptr, pml4_ptr).unwrap();
-    }
-}
+// TODO(danbugs:297): bring back
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::mem::memory_region::MemoryRegionVecBuilder;
+//     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+//
+//     #[rustfmt::skip]
+//     const CODE: [u8; 12] = [
+//         0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */
+//         0x00, 0xd8, /* add %bl, %al */
+//         0x04, b'0', /* add $'0', %al */
+//         0xee, /* out %al, (%dx) */
+//         /* send a 0 to indicate we're done */
+//         0xb0, b'\0', /* mov $'\0', %al */
+//         0xee, /* out %al, (%dx) */
+//         0xf4, /* HLT */
+//     ];
+//
+//     fn shared_mem_with_code(
+//         code: &[u8],
+//         mem_size: usize,
+//         load_offset: usize,
+//     ) -> Result<Box<ExclusiveSharedMemory>> {
+//         if load_offset > mem_size {
+//             log_then_return!(
+//                 "code load offset ({}) > memory size ({})",
+//                 load_offset,
+//                 mem_size
+//             );
+//         }
+//         let mut shared_mem = ExclusiveSharedMemory::new(mem_size)?;
+//         shared_mem.copy_from_slice(code, load_offset)?;
+//         Ok(Box::new(shared_mem))
+//     }
+//
+//     #[test]
+//     fn create_driver() {
+//         if !super::is_hypervisor_present() {
+//             return;
+//         }
+//         const MEM_SIZE: usize = 0x3000;
+//         let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
+//         let rsp_ptr = GuestPtr::try_from(0).unwrap();
+//         let pml4_ptr = GuestPtr::try_from(0).unwrap();
+//         let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
+//         let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
+//         regions.push_page_aligned(
+//             MEM_SIZE,
+//             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
+//             crate::mem::memory_region::MemoryRegionType::Code,
+//         );
+//         super::HypervLinuxDriver::new(regions.build(), entrypoint_ptr, rsp_ptr, pml4_ptr).unwrap();
+//     }
+// }
