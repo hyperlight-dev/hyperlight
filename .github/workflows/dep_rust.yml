@@ -48,9 +48,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # For rust-fmt 
+      - name: Set up nightly rust 
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
       - uses: hyperlight-dev/ci-setup-workflow@v1.2.0
         with:
-          rust-toolchain: "nightly"
+          rust-toolchain: "1.81.0" 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
