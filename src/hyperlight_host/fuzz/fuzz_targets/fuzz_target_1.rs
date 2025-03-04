@@ -21,17 +21,13 @@ use hyperlight_host::sandbox::uninitialized::GuestBinary;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_for_fuzzing_as_string;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let u_sbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+    let guest_binary = GuestBinary::FilePath(simple_guest_for_fuzzing_as_string().unwrap());
+
+    let u_sbox = UninitializedSandbox::new(guest_binary, None, None, None).unwrap();
 
     let mu_sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
 
