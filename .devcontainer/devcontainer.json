@@ -17,9 +17,9 @@
       "--device=/dev/kvm"
   ],
 
-  // Use 'postCreateCommand' to run commands after the container is created
-  "postCreateCommand": "bash .devcontainer/setup.sh",
-
+  // Runs each time the container starts/restarts 
+  "postStartCommand": "bash .devcontainer/setup.sh",
+  
   "customizations": {
     "vscode": {
       "extensions": [
