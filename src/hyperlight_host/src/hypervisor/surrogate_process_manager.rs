@@ -417,7 +417,8 @@ mod tests {
     use hyperlight_common::mem::PAGE_SIZE_USIZE;
     use rand::{rng, Rng};
     use serial_test::serial;
-    use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_result::BOOL;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
     };
