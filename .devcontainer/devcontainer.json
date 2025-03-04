@@ -23,6 +23,7 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "ms-vscode.cpptools-extension-pack",
         "ms-vscode.cmake-tools",
         "rust-lang.rust-analyzer",
         "vadimcn.vscode-lldb"

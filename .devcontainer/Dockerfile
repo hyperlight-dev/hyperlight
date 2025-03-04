@@ -14,6 +14,7 @@ RUN apt-get update \
         build-essential \
         cmake \
         curl \
+        gdb \
         git \
         gnupg \
         gnuplot \
