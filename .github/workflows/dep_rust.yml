@@ -50,9 +50,13 @@ jobs:
 
       - uses: hyperlight-dev/ci-setup-workflow@v1.2.0
         with:
-          rust-toolchain: "nightly"
+          rust-toolchain: "1.81.0" 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # For rust-fmt 
+      - name: Set up nightly rust 
+        uses: dtolnay/rust-toolchain@nightly
 
       - name: fmt
         run: just fmt-check
