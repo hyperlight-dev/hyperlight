@@ -58,7 +58,7 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
 
         let p_function = unsafe {
             let function_pointer = registered_function_definition.function_pointer;
-            core::mem::transmute::<i64, GuestFunc>(function_pointer)
+            core::mem::transmute::<usize, GuestFunc>(function_pointer)
         };
 
         p_function(&function_call)

@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::arch::global_asm;
@@ -23,7 +24,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result_from_int;
+use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::mem::RunMode;
 
 use crate::error::{HyperlightGuestError, Result};
@@ -39,94 +40,20 @@ pub enum OutBAction {
     Abort = 102,
 }
 
-pub fn get_host_value_return_as_void() -> Result<()> {
+/// Get a return value from a host function call.
+/// This usually requires a host function to be called first using `call_host_function`.
+pub fn get_host_return_value<T: TryFrom<ReturnValue>>() -> Result<T> {
     let return_value = try_pop_shared_input_data_into::<ReturnValue>()
         .expect("Unable to deserialize a return value from host");
-    if let ReturnValue::Void = return_value {
-        Ok(())
-    } else {
-        Err(HyperlightGuestError::new(
+    T::try_from(return_value).map_err(|_| {
+        HyperlightGuestError::new(
             ErrorCode::GuestError,
-            "Host return value was not void as expected".to_string(),
-        ))
-    }
-}
-
-pub fn get_host_value_return_as_int() -> Result<i32> {
-    let return_value = try_pop_shared_input_data_into::<ReturnValue>()
-        .expect("Unable to deserialize return value from host");
-
-    // check that return value is an int and return
-    if let ReturnValue::Int(i) = return_value {
-        Ok(i)
-    } else {
-        Err(HyperlightGuestError::new(
-            ErrorCode::GuestError,
-            "Host return value was not an int as expected".to_string(),
-        ))
-    }
-}
-
-pub fn get_host_value_return_as_uint() -> Result<u32> {
-    let return_value = try_pop_shared_input_data_into::<ReturnValue>()
-        .expect("Unable to deserialize return value from host");
-
-    // check that return value is an int and return
-    if let ReturnValue::UInt(ui) = return_value {
-        Ok(ui)
-    } else {
-        Err(HyperlightGuestError::new(
-            ErrorCode::GuestError,
-            "Host return value was not a uint as expected".to_string(),
-        ))
-    }
-}
-
-pub fn get_host_value_return_as_long() -> Result<i64> {
-    let return_value = try_pop_shared_input_data_into::<ReturnValue>()
-        .expect("Unable to deserialize return value from host");
-
-    // check that return value is an int and return
-    if let ReturnValue::Long(l) = return_value {
-        Ok(l)
-    } else {
-        Err(HyperlightGuestError::new(
-            ErrorCode::GuestError,
-            "Host return value was not a long as expected".to_string(),
-        ))
-    }
-}
-
-pub fn get_host_value_return_as_ulong() -> Result<u64> {
-    let return_value = try_pop_shared_input_data_into::<ReturnValue>()
-        .expect("Unable to deserialize return value from host");
-
-    // check that return value is an int and return
-    if let ReturnValue::ULong(ul) = return_value {
-        Ok(ul)
-    } else {
-        Err(HyperlightGuestError::new(
-            ErrorCode::GuestError,
-            "Host return value was not a ulong as expected".to_string(),
-        ))
-    }
-}
-
-// TODO: Make this generic, return a Result<T, ErrorCode>
-
-pub fn get_host_value_return_as_vecbytes() -> Result<Vec<u8>> {
-    let return_value = try_pop_shared_input_data_into::<ReturnValue>()
-        .expect("Unable to deserialize return value from host");
-
-    // check that return value is an Vec<u8> and return
-    if let ReturnValue::VecBytes(v) = return_value {
-        Ok(v)
-    } else {
-        Err(HyperlightGuestError::new(
-            ErrorCode::GuestError,
-            "Host return value was not an VecBytes as expected".to_string(),
-        ))
-    }
+            format!(
+                "Host return value was not a {} as expected",
+                core::any::type_name::<T>()
+            ),
+        )
+    })
 }
 
 // TODO: Make this generic, return a Result<T, ErrorCode> this should allow callers to call this function and get the result type they expect
@@ -194,8 +121,8 @@ pub fn print_output_as_guest_function(function_call: &FunctionCall) -> Result<Ve
             Some(Vec::from(&[ParameterValue::String(message.to_string())])),
             ReturnType::Int,
         )?;
-        let res_i = get_host_value_return_as_int()?;
-        Ok(get_flatbuffer_result_from_int(res_i))
+        let res_i = get_host_return_value::<i32>()?;
+        Ok(get_flatbuffer_result(res_i))
     } else {
         Err(HyperlightGuestError::new(
             ErrorCode::GuestError,
