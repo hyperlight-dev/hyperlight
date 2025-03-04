@@ -417,7 +417,7 @@ mod tests {
     use hyperlight_common::mem::PAGE_SIZE_USIZE;
     use rand::{rng, Rng};
     use serial_test::serial;
-    use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, INVALID_HANDLE_VALUE};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
     };
@@ -426,6 +426,7 @@ mod tests {
         CreateFileMappingA, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
         SEC_COMMIT,
     };
+    use windows_result::BOOL;
 
     use super::*;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
