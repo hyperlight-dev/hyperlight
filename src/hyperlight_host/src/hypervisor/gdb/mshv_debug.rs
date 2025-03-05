@@ -24,6 +24,8 @@ extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
 extern crate mshv_ioctls3 as mshv_ioctls;
 
+use std::collections::HashMap;
+
 use mshv_bindings::{
     DebugRegisters, StandardRegisters, HV_TRANSLATE_GVA_VALIDATE_READ,
     HV_TRANSLATE_GVA_VALIDATE_WRITE,
@@ -31,7 +33,8 @@ use mshv_bindings::{
 use mshv_ioctls::VcpuFd;
 
 use super::{
-    GuestDebug, VcpuStopReason, X86_64Regs, DR6_BS_FLAG_MASK, DR6_HW_BP_FLAGS_MASK, MAX_NO_OF_HW_BP,
+    GuestDebug, VcpuStopReason, X86_64Regs, DR6_BS_FLAG_MASK, DR6_HW_BP_FLAGS_MASK,
+    MAX_NO_OF_HW_BP, SW_BP_SIZE,
 };
 use crate::{new_error, HyperlightError, Result};
 
@@ -42,6 +45,9 @@ pub(crate) struct MshvDebug {
 
     /// Array of addresses for HW breakpoints
     hw_breakpoints: Vec<u64>,
+    /// Saves the bytes modified to enable SW breakpoints
+    sw_breakpoints: HashMap<u64, [u8; SW_BP_SIZE]>,
+
     /// Debug registers
     dbg_cfg: DebugRegisters,
 }
@@ -51,6 +57,7 @@ impl MshvDebug {
         Self {
             single_step: false,
             hw_breakpoints: vec![],
+            sw_breakpoints: HashMap::new(),
             dbg_cfg: DebugRegisters::default(),
         }
     }
@@ -163,6 +170,14 @@ impl MshvDebug {
             return Ok(VcpuStopReason::HwBp);
         }
 
+        // mshv does not provide a way to specify which exception triggered the
+        // vCPU exit as the mshv intercepts both #DB and #BP
+        // We check against the SW breakpoints Hashmap to detect whether the
+        // vCPU exited due to a SW breakpoint
+        if self.sw_breakpoints.contains_key(&gpa) {
+            return Ok(VcpuStopReason::SwBp);
+        }
+
         Ok(VcpuStopReason::Unknown)
     }
 }
@@ -173,8 +188,8 @@ impl GuestDebug for MshvDebug {
     fn is_hw_breakpoint(&self, addr: &u64) -> bool {
         self.hw_breakpoints.contains(addr)
     }
-    fn is_sw_breakpoint(&self, _addr: &u64) -> bool {
-        unimplemented!()
+    fn is_sw_breakpoint(&self, addr: &u64) -> bool {
+        self.sw_breakpoints.contains_key(addr)
     }
     fn save_hw_breakpoint(&mut self, addr: &u64) -> bool {
         if self.hw_breakpoints.len() >= MAX_NO_OF_HW_BP {
@@ -185,14 +200,14 @@ impl GuestDebug for MshvDebug {
             true
         }
     }
-    fn save_sw_breakpoint_data(&mut self, _addr: u64, _data: [u8; 1]) {
-        unimplemented!()
+    fn save_sw_breakpoint_data(&mut self, addr: u64, data: [u8; 1]) {
+        _ = self.sw_breakpoints.insert(addr, data);
     }
     fn delete_hw_breakpoint(&mut self, addr: &u64) {
         self.hw_breakpoints.retain(|&a| a != *addr);
     }
-    fn delete_sw_breakpoint_data(&mut self, _addr: &u64) -> Option<[u8; 1]> {
-        unimplemented!()
+    fn delete_sw_breakpoint_data(&mut self, addr: &u64) -> Option<[u8; 1]> {
+        self.sw_breakpoints.remove(addr)
     }
 
     fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> Result<()> {
