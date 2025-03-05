@@ -492,6 +492,8 @@ pub mod kvm {
 
 #[cfg(mshv)]
 pub mod mshv {
+    use std::collections::HashMap;
+
     use mshv_bindings::{
         DebugRegisters, StandardRegisters, HV_TRANSLATE_GVA_VALIDATE_READ,
         HV_TRANSLATE_GVA_VALIDATE_WRITE,
@@ -508,6 +510,9 @@ pub mod mshv {
 
         /// Array of addresses for HW breakpoints
         hw_breakpoints: Vec<u64>,
+        /// Saves the bytes modified to enable SW breakpoints
+        sw_breakpoints: HashMap<u64, [u8; SW_BP_SIZE]>,
+
         /// Debug registers
         pub dbg_cfg: DebugRegisters,
     }
@@ -517,6 +522,7 @@ pub mod mshv {
             Self {
                 single_step: false,
                 hw_breakpoints: vec![],
+                sw_breakpoints: HashMap::new(),
                 dbg_cfg: DebugRegisters::default(),
             }
         }
@@ -621,6 +627,14 @@ pub mod mshv {
                 return Ok(VcpuStopReason::HwBp);
             }
 
+            // mshv does not provide a way to specify which exception triggered the
+            // vCPU exit as the mshv intercepts both #DB and #BP
+            // We check against the SW breakpoints Hashmap to detect whether the
+            // vCPU exited due to a SW breakpoint
+            if self.sw_breakpoints.contains_key(&gpa) {
+                return Ok(VcpuStopReason::SwBp);
+            }
+
             Ok(VcpuStopReason::Unknown)
         }
     }
@@ -713,6 +727,18 @@ pub mod mshv {
             vcpu_fd
                 .set_regs(&new_regs)
                 .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
+        }
+    }
+
+    impl GuestMemoryDebug for MshvDebug {
+        fn is_sw_breakpoint(&self, addr: &u64) -> bool {
+            self.sw_breakpoints.contains_key(addr)
+        }
+        fn save_sw_breakpoint_data(&mut self, addr: u64, data: [u8; 1]) {
+            _ = self.sw_breakpoints.insert(addr, data);
+        }
+        fn delete_sw_breakpoint_data(&mut self, addr: &u64) -> Option<[u8; 1]> {
+            self.sw_breakpoints.remove(addr)
         }
     }
 }
