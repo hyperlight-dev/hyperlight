@@ -164,7 +164,14 @@ pub trait GuestMemoryDebug: GuestVcpuDebug {
                 data.len(),
                 (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
             );
-            let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+            let offset = (gpa as usize)
+                .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
+                .ok_or_else(|| {
+                    log::warn!(
+                        "gva=0x{:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
+                        gva, gpa, SandboxMemoryLayout::BASE_ADDRESS);
+                    HyperlightError::TranslateGuestAddress(gva)
+                })?;
 
             dbg_mem_access_fn
                 .try_lock()
@@ -220,7 +227,14 @@ pub trait GuestMemoryDebug: GuestVcpuDebug {
                 data.len(),
                 (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
             );
-            let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+            let offset = (gpa as usize)
+                .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
+                .ok_or_else(|| {
+                    log::warn!(
+                        "gva=0x{:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
+                        gva, gpa, SandboxMemoryLayout::BASE_ADDRESS);
+                    HyperlightError::TranslateGuestAddress(gva)
+                })?;
 
             dbg_mem_access_fn
                 .try_lock()
