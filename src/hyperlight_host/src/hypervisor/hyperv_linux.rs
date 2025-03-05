@@ -51,7 +51,7 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{mshv::MshvDebug, DebugCommChannel, DebugMsg, DebugResponse};
+use super::gdb::{mshv::MshvDebug, DebugCommChannel, DebugMsg, DebugResponse, GuestVcpuDebug};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
@@ -71,15 +71,31 @@ use crate::{log_then_return, new_error, Result};
 mod debug {
     use std::sync::{Arc, Mutex};
 
-    use super::HypervLinuxDriver;
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
+    use super::{HypervLinuxDriver, *};
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::{new_error, Result};
 
     impl HypervLinuxDriver {
+        /// Resets the debug information to disable debugging
+        fn disable_debug(&mut self) -> Result<()> {
+            let mut debug = MshvDebug::default();
+
+            debug.set_single_step(&self.vcpu_fd, false)?;
+
+            self.debug = Some(debug);
+
+            Ok(())
+        }
+
         /// Get the reason the vCPU has stopped
         pub fn get_stop_reason(&mut self) -> Result<VcpuStopReason> {
-            unimplemented!()
+            let debug = self
+                .debug
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            debug.get_stop_reason(&self.vcpu_fd, self.entrypoint)
         }
 
         pub fn process_dbg_request(
@@ -87,7 +103,61 @@ mod debug {
             req: DebugMsg,
             dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         ) -> Result<DebugResponse> {
-            unimplemented!()
+            if let Some(debug) = self.debug.as_mut() {
+                match req {
+                    DebugMsg::AddHwBreakpoint(addr) => {
+                        let res = debug
+                            .add_hw_breakpoint(&self.vcpu_fd, addr)
+                            .unwrap_or(false);
+
+                        Ok(DebugResponse::AddHwBreakpoint(res))
+                    }
+                    DebugMsg::Continue => {
+                        debug.set_single_step(&self.vcpu_fd, false)?;
+                        Ok(DebugResponse::Continue)
+                    }
+                    DebugMsg::DisableDebug => {
+                        self.disable_debug()?;
+
+                        Ok(DebugResponse::DisableDebug)
+                    }
+                    DebugMsg::GetCodeSectionOffset => {
+                        let offset = dbg_mem_access_fn
+                            .try_lock()
+                            .map_err(|e| {
+                                new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
+                            })?
+                            .get_code_offset()?;
+
+                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
+                    }
+                    DebugMsg::ReadRegisters => {
+                        let mut regs = X86_64Regs::default();
+                        debug.read_regs(&self.vcpu_fd, &mut regs)?;
+
+                        Ok(DebugResponse::ReadRegisters(regs))
+                    }
+                    DebugMsg::RemoveHwBreakpoint(addr) => {
+                        let res = debug
+                            .remove_hw_breakpoint(&self.vcpu_fd, addr)
+                            .unwrap_or(false);
+
+                        Ok(DebugResponse::RemoveHwBreakpoint(res))
+                    }
+                    DebugMsg::Step => {
+                        debug.set_single_step(&self.vcpu_fd, true)?;
+                        Ok(DebugResponse::Step)
+                    }
+                    DebugMsg::WriteRegisters(regs) => {
+                        debug.write_regs(&self.vcpu_fd, &regs)?;
+
+                        Ok(DebugResponse::WriteRegisters)
+                    }
+                    _ => Err(new_error!("Not yet implemented")),
+                }
+            } else {
+                Err(new_error!("Debugging is not enabled"))
+            }
         }
 
         pub fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
@@ -148,10 +218,8 @@ pub(super) struct HypervLinuxDriver {
     mem_regions: Vec<MemoryRegion>,
     orig_rsp: GuestPtr,
 
-    #[allow(dead_code)]
     #[cfg(gdb)]
     debug: Option<MshvDebug>,
-    #[allow(dead_code)]
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
 }
@@ -197,7 +265,8 @@ impl HypervLinuxDriver {
 
         #[cfg(gdb)]
         let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
-            let debug = MshvDebug::new();
+            let mut debug = MshvDebug::new();
+            debug.add_hw_breakpoint(&vcpu_fd, entrypoint_ptr.absolute()?)?;
 
             // The bellow intercepts make the vCPU exit with the Exception Intercept exit code
             // Install intercept for #DB exception
