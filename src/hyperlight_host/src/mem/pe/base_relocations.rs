@@ -132,9 +132,10 @@ pub(super) fn get_base_relocations(
         // Process each block of relocations until we have processed the expected amount of relocation data
         while size_processed < table_size {
             // Read the header for the block, which is the same format as a DataDirectory so I'm reusing its parse function
-            let block_header =
-                goblin::pe::data_directories::DataDirectory::parse(payload, &mut next_block_offset)
-                    .expect("oops");
+            let block_header = goblin::pe::data_directories::DataDirectory::parse(
+                payload,
+                &mut next_block_offset,
+            )?;
             // All relocation blocks in a page contain offsets against this address
             let page_virtual_address = block_header.virtual_address;
 
