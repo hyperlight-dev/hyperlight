@@ -936,6 +936,8 @@ fn set_up_hypervisor_partition(
                     entrypoint_ptr,
                     rsp_ptr,
                     pml4_ptr,
+                    #[cfg(gdb)]
+                    gdb_conn,
                 )?;
                 Ok(Box::new(hv))
             }
