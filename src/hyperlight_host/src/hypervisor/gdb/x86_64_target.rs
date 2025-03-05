@@ -70,11 +70,6 @@ impl HyperlightSandboxTarget {
         self.hyp_conn.recv()
     }
 
-    /// Non-Blocking check for a response over the communication channel
-    pub(crate) fn try_recv(&self) -> Result<DebugResponse, TryRecvError> {
-        self.hyp_conn.try_recv()
-    }
-
     /// Sends an event to the Hypervisor that tells it to resume vCPU execution
     /// Note: The method waits for a confirmation message
     pub(crate) fn resume_vcpu(&mut self) -> Result<(), GdbTargetError> {
@@ -87,6 +82,11 @@ impl HyperlightSandboxTarget {
                 Err(GdbTargetError::UnexpectedMessage)
             }
         }
+    }
+
+    /// Non-Blocking check for a response over the communication channel
+    pub(crate) fn try_recv(&self) -> Result<DebugResponse, TryRecvError> {
+        self.hyp_conn.try_recv()
     }
 
     /// Sends an event to the Hypervisor that tells it to disable debugging

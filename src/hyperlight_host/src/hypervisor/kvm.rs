@@ -67,6 +67,8 @@ pub(crate) fn is_hypervisor_present() -> bool {
 mod debug {
     use std::sync::{Arc, Mutex};
 
+    use kvm_bindings::kvm_debug_exit_arch;
+
     use super::KVMDriver;
     use crate::hypervisor::gdb::{
         DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason, X86_64Regs,
@@ -87,13 +89,16 @@ mod debug {
         }
 
         /// Get the reason the vCPU has stopped
-        pub(crate) fn get_stop_reason(&mut self) -> Result<VcpuStopReason> {
+        pub(crate) fn get_stop_reason(
+            &mut self,
+            debug_exit: kvm_debug_exit_arch,
+        ) -> Result<VcpuStopReason> {
             let debug = self
                 .debug
                 .as_mut()
                 .ok_or_else(|| new_error!("Debug is not enabled"))?;
 
-            debug.get_stop_reason(&self.vcpu_fd, self.entrypoint)
+            debug.get_stop_reason(&self.vcpu_fd, debug_exit, self.entrypoint)
         }
 
         pub(crate) fn process_dbg_request(
@@ -469,7 +474,8 @@ impl Hypervisor for KVMDriver {
                 }
             }
             #[cfg(gdb)]
-            Ok(VcpuExit::Debug(_)) => match self.get_stop_reason() {
+            // KVM provides architecture specific information about the vCPU state when exiting
+            Ok(VcpuExit::Debug(debug_exit)) => match self.get_stop_reason(debug_exit) {
                 Ok(reason) => HyperlightExit::Debug(reason),
                 Err(e) => {
                     log_then_return!("Error getting stop reason: {:?}", e);

@@ -50,6 +50,17 @@ const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
 /// Maximum number of supported hardware breakpoints
 const MAX_NO_OF_HW_BP: usize = 4;
 
+/// Check page 19-4 Vol. 3B of Intel 64 and IA-32
+/// Architectures Software Developer's Manual
+/// Bit position of BS flag in DR6 debug register
+const DR6_BS_FLAG_POS: usize = 14;
+/// Bit mask of BS flag in DR6 debug register
+const DR6_BS_FLAG_MASK: u64 = 1 << DR6_BS_FLAG_POS;
+/// Bit position of HW breakpoints status in DR6 debug register
+const DR6_HW_BP_FLAGS_POS: usize = 0;
+/// Bit mask of HW breakpoints status in DR6 debug register
+const DR6_HW_BP_FLAGS_MASK: u64 = 0x0F << DR6_HW_BP_FLAGS_POS;
+
 #[derive(Debug, Error)]
 pub(crate) enum GdbTargetError {
     #[error("Error encountered while binding to address and port")]
