@@ -17,7 +17,7 @@
       "--device=/dev/kvm"
   ],
 
-  // use postCreateCoomand for additional setup commands
+  // use `postStartCommand` for additional setup commands
   // this is run after the container is created and the user has been added
   "postStartCommand": "bash .devcontainer/setup.sh",
 
