@@ -107,7 +107,7 @@ mod tests {
 
                 set pagination off
                 set logging file {out_file_path}
-                set logging enabled on
+                set logging on
 
                 break hyperlight_main
                     commands
@@ -118,7 +118,7 @@ mod tests {
 
                 continue
 
-                set logging enabled off
+                set logging off
                 quit
             "
             )
@@ -134,12 +134,17 @@ mod tests {
         write_cmds_file(&cmd_file_path, &out_file_path)
             .expect("Failed to write gdb commands to file");
 
+        #[cfg(mshv3)]
+        let features = "gdb,mshv3";
+        #[cfg(not(mshv3))]
+        let features = "gdb";
+
         let mut guest_child = Command::new("cargo")
             .arg("run")
             .arg("--example")
             .arg("guest-debugging")
             .arg("--features")
-            .arg("gdb")
+            .arg(features)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
