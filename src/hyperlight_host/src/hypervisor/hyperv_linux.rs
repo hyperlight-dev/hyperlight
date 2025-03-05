@@ -45,6 +45,8 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
+use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
+#[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
@@ -84,6 +86,10 @@ pub(super) struct HypervLinuxDriver {
     entrypoint: u64,
     mem_regions: Vec<MemoryRegion>,
     orig_rsp: GuestPtr,
+
+    #[allow(dead_code)]
+    #[cfg(gdb)]
+    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
 }
 
 impl HypervLinuxDriver {
@@ -101,6 +107,7 @@ impl HypervLinuxDriver {
         entrypoint_ptr: GuestPtr,
         rsp_ptr: GuestPtr,
         pml4_ptr: GuestPtr,
+        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
         let mshv = Mshv::new()?;
         let pr = Default::default();
@@ -138,6 +145,9 @@ impl HypervLinuxDriver {
             mem_regions,
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
+
+            #[cfg(gdb)]
+            gdb_conn,
         })
     }
 
@@ -457,6 +467,14 @@ mod tests {
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
             crate::mem::memory_region::MemoryRegionType::Code,
         );
-        super::HypervLinuxDriver::new(regions.build(), entrypoint_ptr, rsp_ptr, pml4_ptr).unwrap();
+        super::HypervLinuxDriver::new(
+            regions.build(),
+            entrypoint_ptr,
+            rsp_ptr,
+            pml4_ptr,
+            #[cfg(gdb)]
+            None,
+        )
+        .unwrap();
     }
 }
