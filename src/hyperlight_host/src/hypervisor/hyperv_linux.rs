@@ -29,6 +29,12 @@ use std::fmt::{Debug, Formatter};
 use log::error;
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
+#[cfg(gdb)]
+use mshv_bindings::{
+    hv_intercept_parameters, hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
+    hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT, mshv_install_intercept,
+    HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+};
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
@@ -66,11 +72,16 @@ mod debug {
     use std::sync::{Arc, Mutex};
 
     use super::HypervLinuxDriver;
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse};
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::{new_error, Result};
 
     impl HypervLinuxDriver {
+        /// Get the reason the vCPU has stopped
+        pub fn get_stop_reason(&mut self) -> Result<VcpuStopReason> {
+            unimplemented!()
+        }
+
         pub fn process_dbg_request(
             &mut self,
             _req: DebugMsg,
@@ -187,6 +198,33 @@ impl HypervLinuxDriver {
         #[cfg(gdb)]
         let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
             let debug = MshvDebug::new();
+
+            // The bellow intercepts make the vCPU exit with the Exception Intercept exit code
+            // Check Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
+            // of Intel 64 and IA-32 Architectures Software Developer's Manual
+            // Install intercept for #DB (1) exception
+            vm_fd
+                .install_intercept(mshv_install_intercept {
+                    access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                    intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
+                    // Exception handler #DB (1)
+                    intercept_parameter: hv_intercept_parameters {
+                        exception_vector: 0x1,
+                    },
+                })
+                .map_err(|e| new_error!("Cannot install debug exception intercept: {}", e))?;
+
+            // Install intercept for #BP (3) exception
+            vm_fd
+                .install_intercept(mshv_install_intercept {
+                    access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                    intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
+                    // Exception handler #BP (3)
+                    intercept_parameter: hv_intercept_parameters {
+                        exception_vector: 0x3,
+                    },
+                })
+                .map_err(|e| new_error!("Cannot install breakpoint exception intercept: {}", e))?;
 
             (Some(debug), Some(gdb_conn))
         } else {
@@ -381,6 +419,8 @@ impl Hypervisor for HypervLinuxDriver {
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
         const UNMAPPED_GPA_MESSAGE: hv_message_type = hv_message_type_HVMSG_UNMAPPED_GPA;
         const INVALID_GPA_ACCESS_MESSAGE: hv_message_type = hv_message_type_HVMSG_GPA_INTERCEPT;
+        #[cfg(gdb)]
+        const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
         #[cfg(mshv2)]
         let run_result = {
@@ -438,6 +478,15 @@ impl Hypervisor for HypervLinuxDriver {
                         None => HyperlightExit::Mmio(gpa),
                     }
                 }
+                // The only case an intercept exit is expected is when debugging is enabled
+                // and the intercepts are installed
+                #[cfg(gdb)]
+                EXCEPTION_INTERCEPT => match self.get_stop_reason() {
+                    Ok(reason) => HyperlightExit::Debug(reason),
+                    Err(e) => {
+                        log_then_return!("Error getting stop reason: {:?}", e);
+                    }
+                },
                 other => {
                     crate::debug!("mshv Other Exit: Exit: {:#?} \n {:#?}", other, &self);
                     log_then_return!("unknown Hyper-V run message type {:?}", other);
