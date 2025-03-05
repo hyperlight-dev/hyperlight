@@ -41,7 +41,7 @@ use x86_64_target::HyperlightSandboxTarget;
 
 use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::new_error;
+use crate::{new_error, HyperlightError};
 
 /// Software Breakpoint size in memory
 const SW_BP_SIZE: usize = 1;
@@ -254,7 +254,14 @@ pub(crate) trait GuestDebug {
                 data.len(),
                 (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
             );
-            let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+            let offset = (gpa as usize)
+                .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
+                .ok_or_else(|| {
+                    log::warn!(
+                        "gva=0x{:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
+                        gva, gpa, SandboxMemoryLayout::BASE_ADDRESS);
+                    HyperlightError::TranslateGuestAddress(gva)
+                })?;
 
             dbg_mem_access_fn
                 .try_lock()
@@ -319,7 +326,14 @@ pub(crate) trait GuestDebug {
                 data.len(),
                 (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
             );
-            let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+            let offset = (gpa as usize)
+                .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
+                .ok_or_else(|| {
+                    log::warn!(
+                        "gva=0x{:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
+                        gva, gpa, SandboxMemoryLayout::BASE_ADDRESS);
+                    HyperlightError::TranslateGuestAddress(gva)
+                })?;
 
             dbg_mem_access_fn
                 .try_lock()
