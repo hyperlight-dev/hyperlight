@@ -231,12 +231,6 @@ impl Hypervisor for HypervLinuxDriver {
             dbg_mem_access_fn,
         )?;
 
-        // reset RSP to what it was before initialise
-        self.vcpu_fd.set_regs(&StandardRegisters {
-            rsp: self.orig_rsp.absolute()?,
-            rflags: 2, //bit 1 of rlags is required to be set
-            ..Default::default()
-        })?;
         Ok(())
     }
 
@@ -249,11 +243,10 @@ impl Hypervisor for HypervLinuxDriver {
         hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
-        // Reset general purpose registers except RSP, then set RIP
-        let rsp_before = self.vcpu_fd.get_regs()?.rsp;
+        // Reset general purpose registers, then set RIP and RSP
         let regs = StandardRegisters {
             rip: dispatch_func_addr.into(),
-            rsp: rsp_before,
+            rsp: self.orig_rsp.absolute()?,
             rflags: 2, //bit 1 of rlags is required to be set
             ..Default::default()
         };
@@ -278,12 +271,6 @@ impl Hypervisor for HypervLinuxDriver {
             dbg_mem_access_fn,
         )?;
 
-        // reset RSP to what it was before function call
-        self.vcpu_fd.set_regs(&StandardRegisters {
-            rsp: rsp_before,
-            rflags: 2, //bit 1 of rlags is required to be set
-            ..Default::default()
-        })?;
         Ok(())
     }
 

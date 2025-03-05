@@ -729,11 +729,6 @@ impl Hypervisor for KVMDriver {
             dbg_mem_access_fn,
         )?;
 
-        // reset RSP to what it was before initialise
-        self.vcpu_fd.set_regs(&kvm_regs {
-            rsp: self.orig_rsp.absolute()?,
-            ..Default::default()
-        })?;
         Ok(())
     }
 
@@ -746,11 +741,10 @@ impl Hypervisor for KVMDriver {
         hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
-        // Reset general purpose registers except RSP, then set RIP
-        let rsp_before = self.vcpu_fd.get_regs()?.rsp;
+        // Reset general purpose registers, then set RIP and RSP
         let regs = kvm_regs {
             rip: dispatch_func_addr.into(),
-            rsp: rsp_before,
+            rsp: self.orig_rsp.absolute()?,
             ..Default::default()
         };
         self.vcpu_fd.set_regs(&regs)?;
@@ -774,11 +768,6 @@ impl Hypervisor for KVMDriver {
             dbg_mem_access_fn,
         )?;
 
-        // reset RSP to what it was before function call
-        self.vcpu_fd.set_regs(&kvm_regs {
-            rsp: rsp_before,
-            ..Default::default()
-        })?;
         Ok(())
     }
 

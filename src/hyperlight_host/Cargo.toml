@@ -132,6 +132,7 @@ mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]
 inprocess = []
 # This enables easy debug in the guest
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
+fuzzing = ["hyperlight-common/fuzzing"]
 
 [[bench]]
 name = "benchmarks"
