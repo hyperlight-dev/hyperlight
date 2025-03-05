@@ -333,12 +333,6 @@ impl Hypervisor for HypervWindowsDriver {
             dbg_mem_access_hdl,
         )?;
 
-        // reset RSP to what it was before initialise
-        self.processor
-            .set_general_purpose_registers(&WHvGeneralRegisters {
-                rsp: self.orig_rsp.absolute()?,
-                ..Default::default()
-            })?;
         Ok(())
     }
 
@@ -351,11 +345,10 @@ impl Hypervisor for HypervWindowsDriver {
         hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_hdl: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
-        // Reset general purpose registers except RSP, then set RIP
-        let rsp_before = self.processor.get_regs()?.rsp;
+        // Reset general purpose registers, then set RIP and RSP
         let regs = WHvGeneralRegisters {
             rip: dispatch_func_addr.into(),
-            rsp: rsp_before,
+            rsp: self.orig_rsp.absolute()?,
             rflags: 1 << 1, // eflags bit index 1 is reserved and always needs to be 1
             ..Default::default()
         };
@@ -378,12 +371,6 @@ impl Hypervisor for HypervWindowsDriver {
             dbg_mem_access_hdl,
         )?;
 
-        // reset RSP to what it was before function call
-        self.processor
-            .set_general_purpose_registers(&WHvGeneralRegisters {
-                rsp: rsp_before,
-                ..Default::default()
-            })?;
         Ok(())
     }
 
