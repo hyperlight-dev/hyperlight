@@ -328,17 +328,19 @@ impl ExclusiveSharedMemory {
             .checked_add(2 * PAGE_SIZE_USIZE) // guard page around the memory
             .ok_or_else(|| new_error!("Memory required for sandbox exceeded usize::MAX"))?;
 
-        assert!(
-            total_size % PAGE_SIZE_USIZE == 0,
+        // Make sure that the total size is a multiple of the page size
+        assert_eq!(
+            total_size % PAGE_SIZE_USIZE, 0,
             "shared memory must be a multiple of 4096"
         );
-        // usize and isize are guaranteed to be the same size, and
-        // isize::MAX should be positive, so this cast should be safe.
+
+        // `usize` and `isize` are guaranteed to be the same size, and
+        // `isize::MAX` should be positive, so this cast should be safe.
         if total_size > isize::MAX as usize {
             return Err(MemoryRequestTooBig(total_size, isize::MAX as usize));
         }
 
-        // allocate the memory
+        // Allocate the memory
         let addr = unsafe {
             mmap(
                 null_mut(),
@@ -353,8 +355,7 @@ impl ExclusiveSharedMemory {
             log_then_return!(MmapFailed(Error::last_os_error().raw_os_error()));
         }
 
-        // protect the guard pages
-
+        // Protect the guard pages
         let res = unsafe { mprotect(addr, PAGE_SIZE_USIZE, PROT_NONE) };
         if res != 0 {
             return Err(MprotectFailed(Error::last_os_error().raw_os_error()));
@@ -1246,7 +1247,7 @@ mod tests {
                 signal_hook_registry::register_signal_unchecked(libc::SIGSEGV, || {
                     std::process::exit(TEST_EXIT_CODE.into());
                 })
-                .unwrap();
+                    .unwrap();
             }
         }
 

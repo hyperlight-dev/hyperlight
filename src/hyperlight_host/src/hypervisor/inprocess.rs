@@ -31,9 +31,10 @@ pub struct InprocessArgs<'a> {
     pub entrypoint_raw: u64,
     /// raw ptr to peb structure. Since we are in-process mode, this is a ptr in the host's address space
     pub peb_ptr_raw: u64,
-    // compiler can't tell that we are actually using this in a deeply unsafe way.
-    #[allow(dead_code)]
-    pub(crate) leaked_outb_wrapper: LeakedOutBWrapper<'a>,
+    // TODO(danbugs:297): bring back
+    // // compiler can't tell that we are actually using this in a deeply unsafe way.
+    // #[allow(dead_code)]
+    // pub(crate) leaked_outb_wrapper: LeakedOutBWrapper<'a>,
 }
 
 /// Arguments passed to inprocess driver

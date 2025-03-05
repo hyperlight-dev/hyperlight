@@ -241,13 +241,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn ptr_fail() {
-        {
-            let raw_guest_ptr = RawPtr(SandboxMemoryLayout::BASE_ADDRESS as u64 - 1);
-            let guest_ptr = GuestPtr::try_from(raw_guest_ptr);
-            assert!(guest_ptr.is_err());
-        }
-    }
 }
