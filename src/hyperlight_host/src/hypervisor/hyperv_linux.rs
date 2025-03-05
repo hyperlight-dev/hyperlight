@@ -72,7 +72,9 @@ mod debug {
     use std::sync::{Arc, Mutex};
 
     use super::{HypervLinuxDriver, *};
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::gdb::{
+        DebugMsg, DebugResponse, GuestMemoryDebug, VcpuStopReason, X86_64Regs,
+    };
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::{new_error, Result};
 
@@ -112,6 +114,9 @@ mod debug {
 
                         Ok(DebugResponse::AddHwBreakpoint(res))
                     }
+                    DebugMsg::AddSwBreakpoint(addr) => debug
+                        .add_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                        .map(DebugResponse::AddSwBreakpoint),
                     DebugMsg::Continue => {
                         debug.set_single_step(&self.vcpu_fd, false)?;
                         Ok(DebugResponse::Continue)
@@ -131,6 +136,13 @@ mod debug {
 
                         Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
                     }
+                    DebugMsg::ReadAddr(addr, len) => {
+                        let mut data = vec![0u8; len];
+
+                        debug.read_addrs(&self.vcpu_fd, addr, &mut data, dbg_mem_access_fn)?;
+
+                        Ok(DebugResponse::ReadAddr(data))
+                    }
                     DebugMsg::ReadRegisters => {
                         let mut regs = X86_64Regs::default();
                         debug.read_regs(&self.vcpu_fd, &mut regs)?;
@@ -144,16 +156,23 @@ mod debug {
 
                         Ok(DebugResponse::RemoveHwBreakpoint(res))
                     }
+                    DebugMsg::RemoveSwBreakpoint(addr) => debug
+                        .remove_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                        .map(DebugResponse::RemoveSwBreakpoint),
                     DebugMsg::Step => {
                         debug.set_single_step(&self.vcpu_fd, true)?;
                         Ok(DebugResponse::Step)
+                    }
+                    DebugMsg::WriteAddr(addr, data) => {
+                        debug.write_addrs(&self.vcpu_fd, addr, &data, dbg_mem_access_fn)?;
+
+                        Ok(DebugResponse::WriteAddr)
                     }
                     DebugMsg::WriteRegisters(regs) => {
                         debug.write_regs(&self.vcpu_fd, &regs)?;
 
                         Ok(DebugResponse::WriteRegisters)
                     }
-                    _ => Err(new_error!("Not yet implemented")),
                 }
             } else {
                 Err(new_error!("Debugging is not enabled"))
