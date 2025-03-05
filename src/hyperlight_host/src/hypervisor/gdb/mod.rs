@@ -17,6 +17,8 @@ limitations under the License.
 mod event_loop;
 #[cfg(kvm)]
 mod kvm_debug;
+#[cfg(mshv)]
+mod mshv_debug;
 mod x86_64_target;
 
 use std::io::{self, ErrorKind};
@@ -32,6 +34,8 @@ use gdbstub::target::TargetError;
 use hyperlight_common::mem::PAGE_SIZE;
 #[cfg(kvm)]
 pub(crate) use kvm_debug::KvmDebug;
+#[cfg(mshv)]
+pub(crate) use mshv_debug::MshvDebug;
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 

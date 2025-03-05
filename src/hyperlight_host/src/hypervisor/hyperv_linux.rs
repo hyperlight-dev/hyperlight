@@ -45,7 +45,7 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
+use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, MshvDebug};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
@@ -57,7 +57,57 @@ use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+#[cfg(gdb)]
+use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
+
+#[cfg(gdb)]
+mod debug {
+    use std::sync::{Arc, Mutex};
+
+    use super::HypervLinuxDriver;
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse};
+    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
+    use crate::{new_error, Result};
+
+    impl HypervLinuxDriver {
+        pub fn process_dbg_request(
+            &mut self,
+            _req: DebugMsg,
+            _dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        ) -> Result<DebugResponse> {
+            unimplemented!()
+        }
+
+        pub fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
+            let gdb_conn = self
+                .gdb_conn
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            gdb_conn.recv().map_err(|e| {
+                new_error!(
+                    "Got an error while waiting to receive a
+                    message: {:?}",
+                    e
+                )
+            })
+        }
+
+        pub fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
+            log::debug!("Sending {:?}", cmd);
+
+            let gdb_conn = self
+                .gdb_conn
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            gdb_conn
+                .send(cmd)
+                .map_err(|e| new_error!("Got an error while sending a response message {:?}", e))
+        }
+    }
+}
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -87,6 +137,9 @@ pub(super) struct HypervLinuxDriver {
     mem_regions: Vec<MemoryRegion>,
     orig_rsp: GuestPtr,
 
+    #[allow(dead_code)]
+    #[cfg(gdb)]
+    debug: Option<MshvDebug>,
     #[allow(dead_code)]
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -131,6 +184,15 @@ impl HypervLinuxDriver {
 
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
 
+        #[cfg(gdb)]
+        let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
+            let debug = MshvDebug::new();
+
+            (Some(debug), Some(gdb_conn))
+        } else {
+            (None, None)
+        };
+
         mem_regions.iter().try_for_each(|region| {
             let mshv_region = region.to_owned().into();
             vm_fd.map_user_memory(mshv_region)
@@ -146,6 +208,8 @@ impl HypervLinuxDriver {
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
 
+            #[cfg(gdb)]
+            debug,
             #[cfg(gdb)]
             gdb_conn,
         })
@@ -400,6 +464,51 @@ impl Hypervisor for HypervLinuxDriver {
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion] {
         &self.mem_regions
+    }
+
+    #[cfg(gdb)]
+    fn handle_debug(
+        &mut self,
+        dbg_mem_access_fn: std::sync::Arc<
+            std::sync::Mutex<dyn super::handlers::DbgMemAccessHandlerCaller>,
+        >,
+        stop_reason: super::gdb::VcpuStopReason,
+    ) -> Result<()> {
+        self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
+            .map_err(|e| new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e))?;
+
+        loop {
+            log::debug!("Debug wait for event to resume vCPU");
+
+            // Wait for a message from gdb
+            let req = self.recv_dbg_msg()?;
+
+            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+
+            let response = match result {
+                Ok(response) => response,
+                // Treat non fatal errors separately so the guest doesn't fail
+                Err(HyperlightError::TranslateGuestAddress(_)) => DebugResponse::ErrorOccurred,
+                Err(e) => {
+                    return Err(e);
+                }
+            };
+
+            // If the command was either step or continue, we need to run the vcpu
+            let cont = matches!(
+                response,
+                DebugResponse::Step | DebugResponse::Continue | DebugResponse::DisableDebug
+            );
+
+            self.send_dbg_msg(response)
+                .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+
+            if cont {
+                break;
+            }
+        }
+
+        Ok(())
     }
 }
 
