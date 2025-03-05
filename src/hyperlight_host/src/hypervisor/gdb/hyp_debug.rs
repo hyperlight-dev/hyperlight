@@ -479,3 +479,15 @@ pub mod kvm {
         }
     }
 }
+
+#[cfg(mshv)]
+pub mod mshv {
+    #[derive(Debug, Default)]
+    pub struct MshvDebug {}
+
+    impl MshvDebug {
+        pub fn new() -> Self {
+            Self {}
+        }
+    }
+}
