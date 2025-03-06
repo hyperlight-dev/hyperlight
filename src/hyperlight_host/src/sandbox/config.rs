@@ -160,19 +160,6 @@ impl SandboxConfiguration {
         }
     }
 
-    /// Get the size of custom guest memory, which includes everything the guest might want to make.
-    pub(crate) fn get_custom_guest_memory_size(&self) -> u64 {
-        self.custom_guest_memory_size
-    }
-
-    /// Set the size of custom guest memory
-    // TODO(danbugs:297): currently, this is only used in the KVM backend
-    // because test_custom_initialise is only used there.
-    #[allow(dead_code)]
-    pub(crate) fn set_custom_guest_memory_size(&mut self, size: u64) {
-        self.custom_guest_memory_size = size;
-    }
-
     /// Set the stack size to use in the guest sandbox. If set to 0, the stack size will be
     /// determined from the guest binary file header.
     pub fn set_stack_size(&mut self, stack_size: u64) {
@@ -235,11 +222,10 @@ impl SandboxConfiguration {
         }
     }
 
-    // TODO(danbugs:297): bring back
-    // /// Get the maximum execution time of a guest function.
-    // pub(crate) fn get_max_execution_time(&self) -> u16 {
-    //     self.max_execution_time
-    // }
+    /// Get the maximum execution time of a guest function.
+    pub(crate) fn get_max_execution_time(&self) -> u16 {
+        self.max_execution_time
+    }
 
     /// Set the maximum time to wait for guest execution calculation. If set to 0, the maximum
     /// cancellation time will be set to the default value of `DEFAULT_MAX_WAIT_FOR_CANCELLATION`.
@@ -261,11 +247,10 @@ impl SandboxConfiguration {
         }
     }
 
-    // TODO(danbugs:297): bring back
-    // /// Get the maximum time to wait for guest execution cancellation.
-    // pub(crate) fn get_max_wait_for_cancellation(&self) -> u8 {
-    //     self.max_wait_for_cancellation
-    // }
+    /// Get the maximum time to wait for guest execution cancellation.
+    pub(crate) fn get_max_wait_for_cancellation(&self) -> u8 {
+        self.max_wait_for_cancellation
+    }
 
 
     /// Sets the configuration for the guest debug

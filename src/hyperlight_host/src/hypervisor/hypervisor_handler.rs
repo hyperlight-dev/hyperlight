@@ -47,7 +47,7 @@ use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::Hypervisor;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
+use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
@@ -853,15 +853,13 @@ fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[cfg(gdb)] debug_info: &Option<DebugInfo>,
 ) -> Result<Box<dyn Hypervisor>> {
-    let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
-    let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-    mgr.set_up_shared_memory(mem_size, &mut regions)?;
+    mgr.set_up_shared_memory()?;
+    let memory_sections = mgr.memory_sections.clone();
 
-    // TODO(danbugs:297) rsp is set at the top of custom guest memory, we should potentially still
-    // set this up.
-    let rsp_ptr = GuestPtr::try_from(RawPtr::from((mgr.layout.custom_guest_memory_offset + mgr.layout.custom_guest_memory_size) as u64))?;
+    let rsp_ptr = GuestPtr::try_from(RawPtr::from(mgr.init_rsp))?;
 
-    let pml4_ptr = GuestPtr::try_from(Offset::from(mgr.layout.get_pml4_offset() as u64))?;
+    // TODO(danbugs:297): change unwrap to proper error handling informing paging isn't set up.
+    let pml4_ptr = GuestPtr::try_from(Offset::from(mgr.memory_sections.get_paging_structures_offset().unwrap() as u64))?;
     let entrypoint_ptr = {
         let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_exe_offset;
         GuestPtr::try_from(entrypoint_total_offset)
@@ -915,7 +913,7 @@ fn set_up_hypervisor_partition(
             #[cfg(mshv)]
             Some(HypervisorType::Mshv) => {
                 let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
-                    regions,
+                    memory_sections,
                     entrypoint_ptr,
                     rsp_ptr,
                     pml4_ptr,
@@ -926,7 +924,7 @@ fn set_up_hypervisor_partition(
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => {
                 let hv = crate::hypervisor::kvm::KVMDriver::new(
-                    regions,
+                    memory_sections,
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
                     rsp_ptr.absolute()?,
@@ -942,7 +940,7 @@ fn set_up_hypervisor_partition(
                     .shared_mem
                     .with_exclusivity(|e| e.get_mmap_file_handle())?;
                 let hv = crate::hypervisor::hyperv_windows::HypervWindowsDriver::new(
-                    regions,
+                    memory_sections,
                     mgr.shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
                     mgr.shared_mem.raw_ptr() as *mut c_void, // and instead convert it to base_addr where needed in the driver itself
                     pml4_ptr.absolute()?,

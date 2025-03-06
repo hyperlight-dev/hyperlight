@@ -47,6 +47,8 @@ pub(crate) mod uninitialized_evolve;
 
 /// Metric definitions for Sandbox module.
 pub(crate) mod metrics;
+/// Functionality for creating a sandbox with a specific configuration
+pub mod sandbox_builder;
 
 /// Re-export for `SandboxConfiguration` type
 pub use config::SandboxConfiguration;
@@ -56,7 +58,7 @@ pub use initialized_multi_use::MultiUseSandbox;
 pub use run_options::SandboxRunOptions;
 use tracing::{instrument, Span};
 /// Re-export for `GuestBinary` type
-pub use uninitialized::GuestBinary;
+pub use sandbox_builder::GuestBinary;
 /// Re-export for `UninitializedSandbox` type
 pub use uninitialized::UninitializedSandbox;
 

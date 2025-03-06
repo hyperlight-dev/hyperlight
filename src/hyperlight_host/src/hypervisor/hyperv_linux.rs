@@ -26,12 +26,11 @@ extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
 
-use log::error;
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
-    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, mshv_user_mem_region,
+    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     SegmentRegister, SpecialRegisters, StandardRegisters,
 };
 #[cfg(mshv3)]
@@ -51,9 +50,9 @@ use super::{
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::GuestPtr;
 use crate::{log_then_return, Result};
+use crate::sandbox::sandbox_builder::SandboxMemorySections;
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -77,10 +76,11 @@ pub(crate) fn is_hypervisor_present() -> bool {
 /// called the Microsoft Hypervisor (MSHV)
 pub(super) struct HypervLinuxDriver {
     _mshv: Mshv,
-    vm_fd: VmFd,
+    // TODO(danbugs:297): bring back
+    _vm_fd: VmFd,
     vcpu_fd: VcpuFd,
     entrypoint: u64,
-    mem_regions: Vec<MemoryRegion>,
+    mem_sections: SandboxMemorySections,
     orig_rsp: GuestPtr,
 }
 
@@ -95,7 +95,7 @@ impl HypervLinuxDriver {
     /// `initialise` to do it for you.
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn new(
-        mem_regions: Vec<MemoryRegion>,
+        mem_sections: SandboxMemorySections,
         entrypoint_ptr: GuestPtr,
         rsp_ptr: GuestPtr,
         pml4_ptr: GuestPtr,
@@ -103,9 +103,9 @@ impl HypervLinuxDriver {
         let mshv = Mshv::new()?;
         let pr = Default::default();
         #[cfg(mshv2)]
-        let vm_fd = mshv.create_vm_with_config(&pr)?;
+        let _vm_fd = mshv.create_vm_with_config(&pr)?;
         #[cfg(mshv3)]
-        let vm_fd = {
+        let _vm_fd = {
             // It's important to avoid create_vm() and explicitly use
             // create_vm_with_args() with an empty arguments structure
             // here, because otherwise the partition is set up with a SynIC.
@@ -120,20 +120,21 @@ impl HypervLinuxDriver {
             vm_fd
         };
 
-        let mut vcpu_fd = vm_fd.create_vcpu(0)?;
+        let mut vcpu_fd = _vm_fd.create_vcpu(0)?;
 
-        mem_regions.iter().try_for_each(|region| {
-            let mshv_region = region.to_owned().into();
-            vm_fd.map_user_memory(mshv_region)
-        })?;
+        // TODO(danbugs:297): bring back
+        // mem_sections.iter().try_for_each(|region| {
+        //     let mshv_region = region.to_owned().into();
+        //     vm_fd.map_user_memory(mshv_region)
+        // })?;
 
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr.absolute()?)?;
 
         Ok(Self {
             _mshv: mshv,
-            vm_fd,
+            _vm_fd,
             vcpu_fd,
-            mem_regions,
+            mem_sections,
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
         })
@@ -173,7 +174,7 @@ impl Debug for HypervLinuxDriver {
         f.field("Entrypoint", &self.entrypoint)
             .field("Original RSP", &self.orig_rsp);
 
-        for region in &self.mem_regions {
+        for region in self.mem_sections.iter() {
             f.field("Memory Region", &region);
         }
 
@@ -359,20 +360,24 @@ impl Hypervisor for HypervLinuxDriver {
                 INVALID_GPA_ACCESS_MESSAGE => {
                     let mimo_message = m.to_memory_info()?;
                     let gpa = mimo_message.guest_physical_address;
-                    let access_info = MemoryRegionFlags::try_from(mimo_message)?;
+                    // TODO(danbugs:297): bring back
+                    // let access_info = MemoryRegionFlags::try_from(mimo_message)?;
                     crate::debug!(
                         "mshv MMIO invalid GPA access -Details: Address: {} \n {:#?}",
                         gpa,
                         &self
                     );
-                    match self.get_memory_access_violation(
-                        gpa as usize,
-                        &self.mem_regions,
-                        access_info,
-                    ) {
-                        Some(access_info_violation) => access_info_violation,
-                        None => HyperlightExit::Mmio(gpa),
-                    }
+                    // TODO(danbugs:297): bring back
+                    // match self.get_memory_access_violation(
+                    //     gpa as usize,
+                    //     &self.mem_regions,
+                    //     access_info,
+                    // ) {
+                    //     Some(access_info_violation) => access_info_violation,
+                    //     None => HyperlightExit::Mmio(gpa),
+                    // }
+
+                    HyperlightExit::Mmio(gpa)
                 }
                 other => {
                     crate::debug!("mshv Other Exit: Exit: {:#?} \n {:#?}", other, &self);
@@ -399,22 +404,23 @@ impl Hypervisor for HypervLinuxDriver {
 
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
+        &self.mem_sections
     }
 }
 
-impl Drop for HypervLinuxDriver {
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn drop(&mut self) {
-        for region in &self.mem_regions {
-            let mshv_region: mshv_user_mem_region = region.to_owned().into();
-            match self.vm_fd.unmap_user_memory(mshv_region) {
-                Ok(_) => (),
-                Err(e) => error!("Failed to unmap user memory in HyperVOnLinux ({:?})", e),
-            }
-        }
-    }
-}
+// TODO(danbugs:297): bring back
+// impl Drop for HypervLinuxDriver {
+//     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
+//     fn drop(&mut self) {
+//         for region in self.mem_sections.iter() {
+//             let mshv_region: mshv_user_mem_region = region.to_owned().into();
+//             match self.vm_fd.unmap_user_memory(mshv_region) {
+//                 Ok(_) => (),
+//                 Err(e) => error!("Failed to unmap user memory in HyperVOnLinux ({:?})", e),
+//             }
+//         }
+//     }
+// }
 
 // TODO(danbugs:297): bring back
 // #[cfg(test)]

@@ -24,22 +24,10 @@ extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
 extern crate mshv_ioctls3 as mshv_ioctls;
 
-use std::ops::Range;
 
 use bitflags::bitflags;
 #[cfg(mshv)]
-use hyperlight_common::mem::PAGE_SHIFT;
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
-#[cfg(mshv)]
-use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
-#[cfg(mshv2)]
-use mshv_bindings::{
-    HV_MAP_GPA_EXECUTABLE, HV_MAP_GPA_PERMISSIONS_NONE, HV_MAP_GPA_READABLE, HV_MAP_GPA_WRITABLE,
-};
-#[cfg(mshv3)]
-use mshv_bindings::{
-    MSHV_SET_MEM_BIT_EXECUTABLE, MSHV_SET_MEM_BIT_UNMAP, MSHV_SET_MEM_BIT_WRITABLE,
-};
+use mshv_bindings::hv_x64_memory_intercept_message;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
 
@@ -121,144 +109,143 @@ impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
     }
 }
 
-// only used for debugging
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-/// The type of memory region
-pub enum MemoryRegionType {
-    /// The region contains the guest's code
-    GuestCode,
-    /// The region contains the guest's page tables
-    PageTables,
-    /// The region contains the Custom Guest Memory (i.e., addressable by the guest in any way)
-    CustomGuestMemory,
-}
-
-/// represents a single memory region inside the guest. All memory within a region has
-/// the same memory permissions
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryRegion {
-    /// the range of guest memory addresses
-    pub(crate) guest_region: Range<usize>,
-    /// the range of host memory addresses
-    pub(crate) host_region: Range<usize>,
-    /// memory access flags for the given region
-    pub(crate) flags: MemoryRegionFlags,
-    /// the type of memory region
-    pub(crate) region_type: MemoryRegionType,
-}
-
-pub(crate) struct MemoryRegionVecBuilder {
-    guest_base_phys_addr: usize,
-    host_base_virt_addr: usize,
-    regions: Vec<MemoryRegion>,
-}
-
-impl MemoryRegionVecBuilder {
-    pub(crate) fn new(guest_base_phys_addr: usize, host_base_virt_addr: usize) -> Self {
-        Self {
-            guest_base_phys_addr,
-            host_base_virt_addr,
-            regions: Vec::new(),
-        }
-    }
-
-    fn push(
-        &mut self,
-        size: usize,
-        flags: MemoryRegionFlags,
-        region_type: MemoryRegionType,
-    ) -> usize {
-        if self.regions.is_empty() {
-            let guest_end = self.guest_base_phys_addr + size;
-            let host_end = self.host_base_virt_addr + size;
-            self.regions.push(MemoryRegion {
-                guest_region: self.guest_base_phys_addr..guest_end,
-                host_region: self.host_base_virt_addr..host_end,
-                flags,
-                region_type,
-            });
-            return guest_end - self.guest_base_phys_addr;
-        }
-
-        let last_region = self.regions.last().unwrap();
-        let new_region = MemoryRegion {
-            guest_region: last_region.guest_region.end..last_region.guest_region.end + size,
-            host_region: last_region.host_region.end..last_region.host_region.end + size,
-            flags,
-            region_type,
-        };
-        let ret = new_region.guest_region.end;
-        self.regions.push(new_region);
-        ret - self.guest_base_phys_addr
-    }
-
-    /// Pushes a memory region with the given size. Will round up the size to the nearest page.
-    /// Returns the current size of the all memory regions in the builder after adding the given region.
-    /// # Note:
-    /// Memory regions pushed MUST match the guest's memory layout, in SandboxMemoryLayout::new(..)
-    pub(crate) fn push_page_aligned(
-        &mut self,
-        size: usize,
-        flags: MemoryRegionFlags,
-        region_type: MemoryRegionType,
-    ) -> usize {
-        let aligned_size = (size + PAGE_SIZE_USIZE - 1) & !(PAGE_SIZE_USIZE - 1);
-        self.push(aligned_size, flags, region_type)
-    }
-
-    /// Consumes the builder and returns a vec of memory regions. The regions are guaranteed to be a contiguous chunk
-    /// of memory, in other words, there will be any memory gaps between them.
-    pub(crate) fn build(self) -> Vec<MemoryRegion> {
-        self.regions
-    }
-}
-
-#[cfg(mshv)]
-impl From<MemoryRegion> for mshv_user_mem_region {
-    fn from(region: MemoryRegion) -> Self {
-        let size = (region.guest_region.end - region.guest_region.start) as u64;
-        let guest_pfn = region.guest_region.start as u64 >> PAGE_SHIFT;
-        let userspace_addr = region.host_region.start as u64;
-
-        #[cfg(mshv2)]
-        {
-            let flags = region.flags.iter().fold(0, |acc, flag| {
-                let flag_value = match flag {
-                    MemoryRegionFlags::NONE => HV_MAP_GPA_PERMISSIONS_NONE,
-                    MemoryRegionFlags::READ => HV_MAP_GPA_READABLE,
-                    MemoryRegionFlags::WRITE => HV_MAP_GPA_WRITABLE,
-                    MemoryRegionFlags::EXECUTE => HV_MAP_GPA_EXECUTABLE,
-                    _ => 0, // ignore any unknown flags
-                };
-                acc | flag_value
-            });
-            mshv_user_mem_region {
-                guest_pfn,
-                size,
-                userspace_addr,
-                flags,
-            }
-        }
-        #[cfg(mshv3)]
-        {
-            let flags: u8 = region.flags.iter().fold(0, |acc, flag| {
-                let flag_value = match flag {
-                    MemoryRegionFlags::NONE => 1 << MSHV_SET_MEM_BIT_UNMAP,
-                    MemoryRegionFlags::READ => 0,
-                    MemoryRegionFlags::WRITE => 1 << MSHV_SET_MEM_BIT_WRITABLE,
-                    MemoryRegionFlags::EXECUTE => 1 << MSHV_SET_MEM_BIT_EXECUTABLE,
-                    _ => 0, // ignore any unknown flags
-                };
-                acc | flag_value
-            });
-
-            mshv_user_mem_region {
-                guest_pfn,
-                size,
-                userspace_addr,
-                flags,
-                ..Default::default()
-            }
-        }
-    }
-}
+// TODO(danbugs:297): re-evaluate
+// // only used for debugging
+// #[derive(Debug, PartialEq, Eq, Copy, Clone)]
+// /// The type of memory region
+// pub enum MemoryRegionType {
+//     /// The region contains the guest's code
+//     GuestCode,
+//     /// The region contains the guest's page tables
+//     PageTables,
+// }
+//
+// /// represents a single memory region inside the guest. All memory within a region has
+// /// the same memory permissions
+// #[derive(Debug, Clone, PartialEq, Eq)]
+// pub struct MemoryRegion {
+//     /// the range of guest memory addresses
+//     pub(crate) guest_region: Range<usize>,
+//     /// the range of host memory addresses
+//     pub(crate) host_region: Range<usize>,
+//     /// memory access flags for the given region
+//     pub(crate) flags: MemoryRegionFlags,
+//     /// the type of memory region
+//     pub(crate) region_type: MemoryRegionType,
+// }
+//
+// pub(crate) struct MemoryRegionVecBuilder {
+//     guest_base_phys_addr: usize,
+//     host_base_virt_addr: usize,
+//     regions: Vec<MemoryRegion>,
+// }
+//
+// impl MemoryRegionVecBuilder {
+//     pub(crate) fn new(guest_base_phys_addr: usize, host_base_virt_addr: usize) -> Self {
+//         Self {
+//             guest_base_phys_addr,
+//             host_base_virt_addr,
+//             regions: Vec::new(),
+//         }
+//     }
+//
+//     fn push(
+//         &mut self,
+//         size: usize,
+//         flags: MemoryRegionFlags,
+//         region_type: MemoryRegionType,
+//     ) -> usize {
+//         if self.regions.is_empty() {
+//             let guest_end = self.guest_base_phys_addr + size;
+//             let host_end = self.host_base_virt_addr + size;
+//             self.regions.push(MemoryRegion {
+//                 guest_region: self.guest_base_phys_addr..guest_end,
+//                 host_region: self.host_base_virt_addr..host_end,
+//                 flags,
+//                 region_type,
+//             });
+//             return guest_end - self.guest_base_phys_addr;
+//         }
+//
+//         let last_region = self.regions.last().unwrap();
+//         let new_region = MemoryRegion {
+//             guest_region: last_region.guest_region.end..last_region.guest_region.end + size,
+//             host_region: last_region.host_region.end..last_region.host_region.end + size,
+//             flags,
+//             region_type,
+//         };
+//         let ret = new_region.guest_region.end;
+//         self.regions.push(new_region);
+//         ret - self.guest_base_phys_addr
+//     }
+//
+//     /// Pushes a memory region with the given size. Will round up the size to the nearest page.
+//     /// Returns the current size of the all memory regions in the builder after adding the given region.
+//     /// # Note:
+//     /// Memory regions pushed MUST match the guest's memory layout
+//     pub(crate) fn push_page_aligned(
+//         &mut self,
+//         size: usize,
+//         flags: MemoryRegionFlags,
+//         region_type: MemoryRegionType,
+//     ) -> usize {
+//         let aligned_size = (size + PAGE_SIZE_USIZE - 1) & !(PAGE_SIZE_USIZE - 1);
+//         self.push(aligned_size, flags, region_type)
+//     }
+//
+//     /// Consumes the builder and returns a vec of memory regions. The regions are guaranteed to be a contiguous chunk
+//     /// of memory, in other words, there will be any memory gaps between them.
+//     pub(crate) fn build(self) -> Vec<MemoryRegion> {
+//         self.regions
+//     }
+// }
+//
+// #[cfg(mshv)]
+// impl From<MemoryRegion> for mshv_user_mem_region {
+//     fn from(region: MemoryRegion) -> Self {
+//         let size = (region.guest_region.end - region.guest_region.start) as u64;
+//         let guest_pfn = region.guest_region.start as u64 >> PAGE_SHIFT;
+//         let userspace_addr = region.host_region.start as u64;
+//
+//         #[cfg(mshv2)]
+//         {
+//             let flags = region.flags.iter().fold(0, |acc, flag| {
+//                 let flag_value = match flag {
+//                     MemoryRegionFlags::NONE => HV_MAP_GPA_PERMISSIONS_NONE,
+//                     MemoryRegionFlags::READ => HV_MAP_GPA_READABLE,
+//                     MemoryRegionFlags::WRITE => HV_MAP_GPA_WRITABLE,
+//                     MemoryRegionFlags::EXECUTE => HV_MAP_GPA_EXECUTABLE,
+//                     _ => 0, // ignore any unknown flags
+//                 };
+//                 acc | flag_value
+//             });
+//             mshv_user_mem_region {
+//                 guest_pfn,
+//                 size,
+//                 userspace_addr,
+//                 flags,
+//             }
+//         }
+//         #[cfg(mshv3)]
+//         {
+//             let flags: u8 = region.flags.iter().fold(0, |acc, flag| {
+//                 let flag_value = match flag {
+//                     MemoryRegionFlags::NONE => 1 << MSHV_SET_MEM_BIT_UNMAP,
+//                     MemoryRegionFlags::READ => 0,
+//                     MemoryRegionFlags::WRITE => 1 << MSHV_SET_MEM_BIT_WRITABLE,
+//                     MemoryRegionFlags::EXECUTE => 1 << MSHV_SET_MEM_BIT_EXECUTABLE,
+//                     _ => 0, // ignore any unknown flags
+//                 };
+//                 acc | flag_value
+//             });
+//
+//             mshv_user_mem_region {
+//                 guest_pfn,
+//                 size,
+//                 userspace_addr,
+//                 flags,
+//                 ..Default::default()
+//             }
+//         }
+//     }
+// }

@@ -185,7 +185,6 @@ mod tests {
     use tracing_core::callsite::rebuild_interest_cache;
 
     use super::outb_log;
-    use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::SharedMemory;
     use crate::sandbox::outb::GuestLogData;

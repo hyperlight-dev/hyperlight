@@ -14,23 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
 
 use tracing::{instrument, Span};
 
-use super::exe::ExeInfo;
-use super::layout::SandboxMemoryLayout;
 #[cfg(target_os = "windows")]
 use super::loaded_lib::LoadedLib;
-use super::memory_region::{MemoryRegion, MemoryRegionType};
+use super::memory_region::MemoryRegionFlags;
 use super::ptr::RawPtr;
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use super::shared_mem_snapshot::SharedMemorySnapshot;
 use crate::error::HyperlightError::NoMemorySnapshot;
-use crate::sandbox::SandboxConfiguration;
 use crate::{log_then_return, new_error, HyperlightError, Result};
+use crate::sandbox::sandbox_builder::{SandboxMemorySections, BASE_ADDRESS, PDPT_OFFSET, PD_OFFSET, PT_OFFSET};
 
 /// Paging Flags
 ///
@@ -44,9 +41,9 @@ const PAGE_USER: u64 = 1 << 2; // User/Supervisor (if this bit is set then the p
 const PAGE_NX: u64 = 1 << 63; // Execute Disable (if this bit is set then data in the page cannot be executed)
 
 // The amount of memory that can be mapped per page table
-pub(super) const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200000;
+pub(crate) const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200000;
 
-/// SandboxMemoryManager is a struct that pairs a `SharedMemory` and a `SandboxMemoryLayout` and
+/// SandboxMemoryManager is a struct that pairs a `SharedMemory` and a `SandboxMemorySections` and
 /// allows you to snapshot and restore memory states.
 #[derive(Clone)]
 pub(crate) struct SandboxMemoryManager<S> {
@@ -58,9 +55,6 @@ pub(crate) struct SandboxMemoryManager<S> {
     /// - `GuestSharedMemory`.
     pub(crate) shared_mem: S,
 
-    /// The memory layout of the underlying shared memory
-    pub(crate) layout: SandboxMemoryLayout,
-
     /// Pointer to where to load memory from
     ///
     /// In in-process mode, this is the direct host memory address.
@@ -71,6 +65,12 @@ pub(crate) struct SandboxMemoryManager<S> {
     ///
     /// This is obtained from the guest binary.
     pub(crate) entrypoint_exe_offset: Offset,
+
+    /// Memory sections
+    pub(crate) memory_sections: SandboxMemorySections,
+
+    /// Initial RSP value
+    pub(crate) init_rsp: u64,
 
     /// A vector of memory snapshots that can be used to save and restore the state of the memory.
     snapshots: Arc<Mutex<Vec<SharedMemorySnapshot>>>,
@@ -89,19 +89,21 @@ where
     S: SharedMemory,
 {
     /// Create a new `SandboxMemoryManager`
-    fn new(
-        layout: SandboxMemoryLayout,
+    pub(crate) fn new(
         shared_mem: S,
         load_addr: RawPtr,
         entrypoint_exe_offset: Offset,
+        memory_sections: SandboxMemorySections,
+        init_rsp: u64,
         #[cfg(target_os = "windows")] lib: Option<LoadedLib>,
     ) -> Self {
         Self {
-            layout,
             shared_mem,
             load_addr,
             entrypoint_exe_offset,
+            memory_sections,
             snapshots: Arc::new(Mutex::new(Vec::new())),
+            init_rsp,
             #[cfg(target_os = "windows")]
             _lib: lib,
         }
@@ -113,25 +115,30 @@ where
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn set_up_shared_memory(
         &mut self,
-        mem_size: u64,
-        regions: &mut [MemoryRegion],
     ) -> Result<()> {
+        let memory_size = self.memory_sections.get_total_size();
+        let memory_sections = self.memory_sections.clone();
         self.shared_mem.with_exclusivity(|shared_mem| {
+            let pml4_offset = self.memory_sections.get_paging_structures_offset().unwrap();
+            let pdpt_offset = pml4_offset + PDPT_OFFSET;
+            let pd_offset = pdpt_offset + PD_OFFSET;
+            let pt_offset = pd_offset + PT_OFFSET;
+
             // Create PML4 table with only 1 PML4E
             shared_mem.write_u64(
-                self.layout.get_pml4_offset(),
-                self.layout.get_pdpt_offset() as u64 | PAGE_PRESENT | PAGE_RW,
+                pml4_offset,
+                pdpt_offset as u64 | PAGE_PRESENT | PAGE_RW,
             )?;
 
             // Create PDPT with only 1 PDPTE
             shared_mem.write_u64(
-                self.layout.get_pdpt_offset(),
-                self.layout.get_pd_offset() as u64 | PAGE_PRESENT | PAGE_RW,
+                pdpt_offset,
+                pd_offset as u64 | PAGE_PRESENT | PAGE_RW,
             )?;
 
             for i in 0..512 {
-                let offset = self.layout.get_pd_offset() + (i * 8);
-                let val_to_write: u64 = (self.layout.get_pt_offset() as u64 + (i * 4096) as u64)
+                let offset = pd_offset + (i * 8);
+                let val_to_write: u64 = (pt_offset as u64 + (i * 4096) as u64)
                     | PAGE_PRESENT
                     | PAGE_RW;
                 shared_mem.write_u64(offset, val_to_write)?;
@@ -142,36 +149,15 @@ where
             // - We can use the memory size to calculate the number of PTs we need.
             // - We round up mem_size/2MB.
 
-            let mem_size = usize::try_from(mem_size)?;
-
             let num_pages: usize =
-                ((mem_size + AMOUNT_OF_MEMORY_PER_PT - 1) / AMOUNT_OF_MEMORY_PER_PT) + 1;
+                ((memory_size + AMOUNT_OF_MEMORY_PER_PT - 1) / AMOUNT_OF_MEMORY_PER_PT) + 1;
 
             // Create num_pages PT with 512 PTEs
             for p in 0..num_pages {
                 for i in 0..512 {
-                    let offset = self.layout.get_pt_offset() + (p * 4096) + (i * 8);
+                    let offset = pt_offset + (p * 4096) + (i * 8);
                     // Each PTE maps a 4KB page
-                    let val_to_write = {
-                        let flags = match Self::get_page_flags(p, i, regions) {
-                            Ok(region_type) => match region_type {
-                                // TODO: We parse and load the exe according to its sections and then
-                                // have the correct flags set rather than just marking the entire binary
-                                // as executable
-                                MemoryRegionType::GuestCode => PAGE_PRESENT | PAGE_RW | PAGE_USER,
-                                MemoryRegionType::PageTables => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                                // TODO(danbugs:297): this sets the custom guest memory as executable
-                                // by default. This should potentially be configurable.
-                                MemoryRegionType::CustomGuestMemory => {
-                                    PAGE_PRESENT | PAGE_RW | PAGE_USER
-                                }
-                            },
-                            // If there is an error then the address isn't mapped so mark it as not
-                            // present
-                            Err(_) => 0,
-                        };
-                        ((p << 21) as u64 | (i << 12) as u64) | flags
-                    };
+                    let val_to_write = ((p << 21) as u64 | (i << 12) as u64) | Self::get_page_flags(p, i, &memory_sections)?;
                     shared_mem.write_u64(offset, val_to_write)?;
                 }
             }
@@ -185,31 +171,44 @@ where
     pub(crate) fn is_in_process(&self) -> bool {
         // We can recognize if we are in process by checking if the load address
         // is the same as the base address of the memory layout.
-        self.load_addr != RawPtr::from(SandboxMemoryLayout::BASE_ADDRESS as u64)
+        self.load_addr != RawPtr::from(BASE_ADDRESS as u64)
     }
 
-    /// Get the page flags for a given page and index
     fn get_page_flags(
         p: usize,
         i: usize,
-        regions: &mut [MemoryRegion],
-    ) -> Result<MemoryRegionType> {
+        sandbox_memory_sections: &SandboxMemorySections,
+    ) -> Result<u64> {
         let addr = (p << 21) + (i << 12);
 
-        let idx = regions.binary_search_by(|region| {
-            if region.guest_region.contains(&addr) {
-                Ordering::Equal
-            } else if region.guest_region.start > addr {
-                Ordering::Greater
-            } else {
-                Ordering::Less
+        // Find the memory section that contains this address
+        match sandbox_memory_sections.sections.range(..=addr).next_back() {
+            Some((_, section)) if (section.page_aligned_guest_offset..(section.page_aligned_guest_offset + section.page_aligned_size)).contains(&addr) => {
+                Ok(Self::translate_flags(section.flags))
             }
-        });
-
-        match idx {
-            Ok(index) => Ok(regions[index].region_type),
-            Err(_) => Err(new_error!("Could not find region for address: {}", addr)),
+            _ => Err(new_error!("Could not find region for address: {}", addr)),
         }
+    }
+
+    // Translates MemoryRegionFlags into x86-style page flags
+    fn translate_flags(flags: MemoryRegionFlags) -> u64 {
+        let mut page_flags = 0;
+
+        if flags.contains(MemoryRegionFlags::READ) {
+            page_flags |= PAGE_PRESENT; // Mark page as present
+        }
+
+        if flags.contains(MemoryRegionFlags::WRITE) {
+            page_flags |= PAGE_RW; // Allow read/write
+        }
+
+        if flags.contains(MemoryRegionFlags::EXECUTE) {
+            page_flags |= PAGE_USER; // Allow user access
+        } else {
+            page_flags |= PAGE_NX; // Mark as non-executable if EXECUTE is not set
+        }
+
+        page_flags
     }
 }
 
@@ -266,58 +265,6 @@ where
     }
 }
 
-/// Common setup functionality for the `load_guest_binary_{into_memory, using_load_library}`
-/// functions.
-///
-/// Returns the newly created `SandboxMemoryLayout`, newly created
-/// `SharedMemory`, load address as calculated by `load_addr_fn`,
-/// and calculated entrypoint exe offset, in order.
-#[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-fn load_guest_binary_common<F>(
-    cfg: SandboxConfiguration,
-    exe_info: &ExeInfo,
-    load_addr_fn: F,
-) -> Result<(SandboxMemoryLayout, ExclusiveSharedMemory, RawPtr, Offset)>
-where
-    F: FnOnce(&ExclusiveSharedMemory) -> Result<RawPtr>,
-{
-    let layout = SandboxMemoryLayout::new(
-        cfg,
-        exe_info.loaded_size(),
-    )?;
-    let mut shared_mem = ExclusiveSharedMemory::new(layout.get_total_page_aligned_memory_size()?)?;
-
-    let offset = layout.get_guest_code_offset();
-    let load_addr: RawPtr = load_addr_fn(&shared_mem)?;
-
-    // Write the code pointer to shared memory
-    let load_addr_u64: u64 = load_addr.clone().into();
-    shared_mem.write_u64(offset, load_addr_u64)?;
-
-    let entrypoint_exe_offset = exe_info.entrypoint();
-
-
-    Ok((layout, shared_mem, load_addr, entrypoint_exe_offset))
-}
-
-impl SandboxMemoryManager<HostSharedMemory> {
-    /// Gets the custom guest memory
-    // TODO(danbugs:297): currently, this is only used in the KVM backend
-    // because test_custom_initialise is only used there.
-    #[allow(dead_code)]
-    pub(crate) fn get_custom_guest_memory(&self) -> Result<Vec<u8>> {
-        let custom_guest_memory_offset = self.layout.get_custom_guest_memory_offset();
-        let custom_guest_memory_size = self.layout.get_custom_guest_memory_size();
-        let mut custom_guest_memory = vec![b'0'; custom_guest_memory_size];
-        self.shared_mem.copy_to_slice(
-            custom_guest_memory.as_mut_slice(),
-            custom_guest_memory_offset,
-        )?;
-
-        Ok(custom_guest_memory)
-    }
-}
-
 /// Implementations over `ExclusiveSharedMemory` and loading guest binaries
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
     /// Wraps `ExclusiveSharedMemory::build`, giving you access to Host and Guest shared memories.
@@ -331,120 +278,25 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         (
             SandboxMemoryManager {
                 shared_mem: hshm,
-                layout: self.layout,
                 load_addr: self.load_addr.clone(),
                 entrypoint_exe_offset: self.entrypoint_exe_offset,
+                memory_sections: self.memory_sections.clone(),
                 snapshots: Arc::new(Mutex::new(Vec::new())),
+                init_rsp: self.init_rsp,
                 #[cfg(target_os = "windows")]
                 _lib: self._lib,
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
-                layout: self.layout,
                 load_addr: self.load_addr.clone(),
                 entrypoint_exe_offset: self.entrypoint_exe_offset,
+                memory_sections: self.memory_sections,
                 snapshots: Arc::new(Mutex::new(Vec::new())),
+                init_rsp: self.init_rsp,
                 #[cfg(target_os = "windows")]
                 _lib: None,
             },
         )
-    }
-
-    /// Load the binary represented by `exe_info` into memory, ensuring
-    /// all necessary relocations are made prior to completing the load
-    /// operation, then create a new `SharedMemory` to store the new exe
-    /// file and a `SandboxMemoryLayout` to describe the layout of that
-    /// new `SharedMemory`.
-    ///
-    /// Returns the following:
-    ///
-    /// - The newly-created `SharedMemory`
-    /// - The `SandboxMemoryLayout` describing that `SharedMemory`
-    /// - The offset to the entrypoint. This value means something different
-    /// depending on whether we're using in-process mode or not:
-    ///     - If we're using in-process mode, this value will be into
-    ///     host memory
-    ///     - If we're not running with in-memory mode, this value will be
-    ///     into guest memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn load_guest_binary_into_memory(
-        cfg: SandboxConfiguration,
-        exe_info: &mut ExeInfo,
-        inprocess: bool,
-    ) -> Result<Self> {
-        let (layout, mut shared_mem, load_addr, entrypoint_exe_offset) = load_guest_binary_common(
-            cfg,
-            exe_info,
-            |shared_mem: &ExclusiveSharedMemory| {
-                let addr_usize = if inprocess {
-                    // If we're running in-process, load_addr is the absolute
-                    // address to the start of shared memory, plus the offset to
-                    // code.
-
-                    // We also need to make the memory executable.
-
-                    shared_mem.make_memory_executable()?;
-                    shared_mem.base_addr()
-                } else {
-                    // Otherwise, we're running in a VM, so `load_addr`
-                    // is the base address in a VM
-                    SandboxMemoryLayout::BASE_ADDRESS
-                };
-                RawPtr::try_from(addr_usize)
-            },
-        )?;
-
-        exe_info.load(
-            load_addr.clone().try_into()?,
-            &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
-        )?;
-
-        Ok(Self::new(
-            layout,
-            shared_mem,
-            load_addr,
-            entrypoint_exe_offset,
-            #[cfg(target_os = "windows")]
-            None,
-        ))
-    }
-
-    /// Similar to `load_guest_binary_into_memory`, except only works on Windows and uses the
-    /// [`LoadLibraryA`](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibrarya)
-    /// function.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn load_guest_binary_using_load_library(
-        cfg: SandboxConfiguration,
-        guest_bin_path: &str,
-        exe_info: &mut ExeInfo,
-    ) -> Result<Self> {
-        #[cfg(target_os = "windows")]
-        {
-            if !matches!(exe_info, ExeInfo::PE(_)) {
-                log_then_return!("LoadLibrary can only be used with PE files");
-            }
-
-            let lib = LoadedLib::load(guest_bin_path)?;
-            let (layout, shared_mem, load_addr, entrypoint_exe_offset) =
-                load_guest_binary_common(cfg, exe_info, |_| Ok(lib.base_addr()))?;
-
-            // Make the memory executable when running in-process
-            shared_mem.make_memory_executable()?;
-
-            Ok(Self::new(
-                layout,
-                shared_mem,
-                true,
-                load_addr,
-                entrypoint_exe_offset,
-                Some(lib),
-            ))
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = (cfg, guest_bin_path, exe_info);
-            log_then_return!("load_guest_binary_using_load_library is only available on Windows");
-        }
     }
 }
 

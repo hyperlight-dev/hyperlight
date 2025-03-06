@@ -33,11 +33,12 @@ use super::{
     CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, Result};
+use crate::sandbox::sandbox_builder::SandboxMemorySections;
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -76,8 +77,8 @@ mod debug {
     use super::KVMDriver;
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-    use crate::mem::layout::SandboxMemoryLayout;
     use crate::{new_error, HyperlightError, Result};
+    use crate::sandbox::sandbox_builder::BASE_ADDRESS;
 
     /// Software Breakpoint size in memory
     pub const SW_BP_SIZE: usize = 1;
@@ -244,7 +245,7 @@ mod debug {
                     data.len(),
                     (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
                 );
-                let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+                let offset = gpa as usize - BASE_ADDRESS;
 
                 dbg_mem_access_fn
                     .try_lock()
@@ -274,7 +275,7 @@ mod debug {
                     data.len(),
                     (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
                 );
-                let offset = gpa as usize - SandboxMemoryLayout::BASE_ADDRESS;
+                let offset = gpa as usize - BASE_ADDRESS;
 
                 dbg_mem_access_fn
                     .try_lock()
@@ -576,7 +577,7 @@ pub(super) struct KVMDriver {
     vcpu_fd: VcpuFd,
     orig_rsp: GuestPtr,
     entrypoint_ptr: u64,
-    mem_regions: Vec<MemoryRegion>,
+    mem_sections: SandboxMemorySections,
 
     #[cfg(gdb)]
     debug: Option<debug::KvmDebug>,
@@ -590,7 +591,7 @@ impl KVMDriver {
     /// be called to do so.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn new(
-        mem_regions: Vec<MemoryRegion>,
+        mem_sections: SandboxMemorySections,
         rsp_ptr: u64,
         pml4_addr: u64,
         entrypoint: u64,
@@ -603,13 +604,13 @@ impl KVMDriver {
         let perm_flags =
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
 
-        mem_regions.iter().enumerate().try_for_each(|(i, region)| {
-            let perm_flags = perm_flags.intersection(region.flags);
+        mem_sections.iter().enumerate().try_for_each(|(i, region)| {
+            let perm_flags = perm_flags.intersection(region.1.flags);
             let kvm_region = kvm_userspace_memory_region {
                 slot: i as u32,
-                guest_phys_addr: region.guest_region.start as u64,
-                memory_size: (region.guest_region.end - region.guest_region.start) as u64,
-                userspace_addr: region.host_region.start as u64,
+                guest_phys_addr: region.1.page_aligned_guest_offset as u64,
+                memory_size: region.1.page_aligned_size as u64,
+                userspace_addr: region.1.host_address.unwrap() as u64,
                 flags: match perm_flags {
                     MemoryRegionFlags::READ => KVM_MEM_READONLY,
                     _ => 0, // normal, RWX
@@ -636,7 +637,7 @@ impl KVMDriver {
             orig_rsp: rsp_gp,
             vcpu_fd,
             entrypoint_ptr: entrypoint,
-            mem_regions,
+            mem_sections: mem_sections,
 
             #[cfg(gdb)]
             debug,
@@ -669,7 +670,7 @@ impl Debug for KVMDriver {
         let mut f = f.debug_struct("KVM Driver");
         // Output each memory region
 
-        for region in &self.mem_regions {
+        for region in self.mem_sections.sections.iter() {
             f.field("Memory Region", &region);
         }
         let regs = self.vcpu_fd.get_regs();
@@ -822,26 +823,32 @@ impl Hypervisor for KVMDriver {
             Ok(VcpuExit::MmioRead(addr, _)) => {
                 crate::debug!("KVM MMIO Read -Details: Address: {} \n {:#?}", addr, &self);
 
-                match self.get_memory_access_violation(
-                    addr as usize,
-                    &self.mem_regions,
-                    MemoryRegionFlags::READ,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
+                // TODO(danbugs:297): bring back
+                // match self.get_memory_access_violation(
+                //     addr as usize,
+                //     &self.mem_sections,
+                //     MemoryRegionFlags::READ,
+                // ) {
+                //     Some(access_violation_exit) => access_violation_exit,
+                //     None => HyperlightExit::Mmio(addr),
+                // }
+
+                HyperlightExit::Mmio(addr)
             }
             Ok(VcpuExit::MmioWrite(addr, _)) => {
                 crate::debug!("KVM MMIO Write -Details: Address: {} \n {:#?}", addr, &self);
 
-                match self.get_memory_access_violation(
-                    addr as usize,
-                    &self.mem_regions,
-                    MemoryRegionFlags::WRITE,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
+                // TODO(danbugs:297): bring back
+                // match self.get_memory_access_violation(
+                //     addr as usize,
+                //     &self.mem_sections,
+                //     MemoryRegionFlags::WRITE,
+                // ) {
+                //     Some(access_violation_exit) => access_violation_exit,
+                //     None => HyperlightExit::Mmio(addr),
+                // }
+
+                HyperlightExit::Mmio(addr)
             }
             #[cfg(gdb)]
             Ok(VcpuExit::Debug(_)) => match self.get_stop_reason() {
@@ -880,7 +887,7 @@ impl Hypervisor for KVMDriver {
 
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
+        &self.mem_sections
     }
 
     #[cfg(gdb)]

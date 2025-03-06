@@ -18,7 +18,7 @@ use tracing::{instrument, Span};
 
 use crate::error::HyperlightError::ExecutionCanceledByHost;
 use crate::hypervisor::metrics::HypervisorMetric::NumberOfCancelledGuestExecutions;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::MemoryRegionFlags;
 use crate::{int_counter_inc, log_then_return, new_error, HyperlightError, Result};
 
 // TODO(danbugs:297): bring back
@@ -160,32 +160,33 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     /// Run the vCPU
     fn run(&mut self) -> Result<HyperlightExit>;
 
-    /// Returns a Some(HyperlightExit::AccessViolation(..)) if the given gpa doesn't have
-    /// access its corresponding region. Returns None otherwise, or if the region is not found.
-    fn get_memory_access_violation(
-        &self,
-        gpa: usize,
-        mem_regions: &[MemoryRegion],
-        access_info: MemoryRegionFlags,
-    ) -> Option<HyperlightExit> {
-        // find the region containing the given gpa
-        let region = mem_regions
-            .iter()
-            .find(|region| region.guest_region.contains(&gpa));
-
-        if let Some(region) = region {
-            if !region.flags.contains(access_info)
-                || region.flags.contains(MemoryRegionFlags::STACK_GUARD)
-            {
-                return Some(HyperlightExit::AccessViolation(
-                    gpa as u64,
-                    access_info,
-                    region.flags,
-                ));
-            }
-        }
-        None
-    }
+    // TODO(danbugs:297): bring back
+    // /// Returns a Some(HyperlightExit::AccessViolation(..)) if the given gpa doesn't have
+    // /// access its corresponding region. Returns None otherwise, or if the region is not found.
+    // fn get_memory_access_violation(
+    //     &self,
+    //     gpa: usize,
+    //     mem_sections: SandboxMemorySections,
+    //     access_info: MemoryRegionFlags,
+    // ) -> Option<HyperlightExit> {
+    //     // find the region containing the given gpa
+    //     let region = mem_sections
+    //         .iter()
+    //         .find(|region| region.guest_region.contains(&gpa));
+    //
+    //     if let Some(region) = region {
+    //         if !region.flags.contains(access_info)
+    //             || region.flags.contains(MemoryRegionFlags::STACK_GUARD)
+    //         {
+    //             return Some(HyperlightExit::AccessViolation(
+    //                 gpa as u64,
+    //                 access_info,
+    //                 region.flags,
+    //             ));
+    //         }
+    //     }
+    //     None
+    // }
 
     /// Get the logging level to pass to the guest entrypoint
     fn get_max_log_level(&self) -> u32 {
@@ -316,65 +317,63 @@ pub(crate) mod tests {
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{new_error, Result};
 
-    // TODO(danbugs:297): use this test in all Hypervisor implementations
-    // then remove this attribute
-    #[allow(dead_code)]
-    pub(crate) fn test_custom_initialise(
-        mem_access_hdl: MemAccessHandlerWrapper,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        let filename = custom_guest_as_string().map_err(|e| new_error!("{}", e))?;
-        let mut sbox_config = SandboxConfiguration::default();
-        sbox_config.set_custom_guest_memory_size(0x2_000_000);
-        let uninitialized_sandbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(filename.clone()),
-            Some(sbox_config),
-            None,
-        )?;
-
-        let (hshm, gshm) = uninitialized_sandbox.mem_mgr.build();
-
-        let custom_memory_offset = gshm.layout.get_custom_guest_memory_offset();
-        let custom_memory_size = gshm.layout.get_custom_guest_memory_size();
-        dbg!(&custom_memory_offset);
-
-        let custom_memory = hshm.get_custom_guest_memory()?;
-        assert_eq!(custom_memory[0], 0);
-
-        let hv_handler_config = HvHandlerConfig {
-            custom_guest_memory_region_address: custom_memory_offset as u64,
-            custom_guest_memory_region_size: custom_memory_size as u64,
-            mem_access_handler: mem_access_hdl,
-            #[cfg(gdb)]
-            dbg_mem_access_handler: dbg_mem_access_fn,
-            page_size: 4096,
-            max_init_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
-            ),
-            max_exec_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
-            ),
-            max_wait_for_cancellation: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
-            ),
-        };
-
-        let mut hv_handler = HypervisorHandler::new(hv_handler_config);
-
-        hv_handler.start_hypervisor_handler(
-            gshm,
-            #[cfg(gdb)]
-            None,
-        )?;
-
-        hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)?;
-
-        let custom_memory = hshm.get_custom_guest_memory()?;
-
-        assert_eq!(custom_memory[0], 1);
-
-        Ok(())
-    }
+    // TODO(danbugs:297): bring back
+    // #[allow(dead_code)]
+    // pub(crate) fn test_custom_initialise(
+    //     mem_access_hdl: MemAccessHandlerWrapper,
+    //     #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    // ) -> Result<()> {
+    //     let filename = custom_guest_as_string().map_err(|e| new_error!("{}", e))?;
+    //     let sbox_config = SandboxConfiguration::default();
+    //     let uninitialized_sandbox = UninitializedSandbox::new(
+    //         GuestBinary::FilePath(filename.clone()),
+    //         sbox_config,
+    //         None,
+    //     )?;
+    //
+    //     let (hshm, gshm) = uninitialized_sandbox.mem_mgr.build();
+    //
+    //     let custom_memory_offset = gshm.layout.get_custom_guest_memory_offset();
+    //     let custom_memory_size = gshm.layout.get_custom_guest_memory_size();
+    //     dbg!(&custom_memory_offset);
+    //
+    //     let custom_memory = hshm.get_custom_guest_memory()?;
+    //     assert_eq!(custom_memory[0], 0);
+    //
+    //     let hv_handler_config = HvHandlerConfig {
+    //         custom_guest_memory_region_address: custom_memory_offset as u64,
+    //         custom_guest_memory_region_size: custom_memory_size as u64,
+    //         mem_access_handler: mem_access_hdl,
+    //         #[cfg(gdb)]
+    //         dbg_mem_access_handler: dbg_mem_access_fn,
+    //         page_size: 4096,
+    //         max_init_time: Duration::from_millis(
+    //             SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
+    //         ),
+    //         max_exec_time: Duration::from_millis(
+    //             SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
+    //         ),
+    //         max_wait_for_cancellation: Duration::from_millis(
+    //             SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
+    //         ),
+    //     };
+    //
+    //     let mut hv_handler = HypervisorHandler::new(hv_handler_config);
+    //
+    //     hv_handler.start_hypervisor_handler(
+    //         gshm,
+    //         #[cfg(gdb)]
+    //         None,
+    //     )?;
+    //
+    //     hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)?;
+    //
+    //     let custom_memory = hshm.get_custom_guest_memory()?;
+    //
+    //     assert_eq!(custom_memory[0], 1);
+    //
+    //     Ok(())
+    // }
 
     // TODO(danbugs:297): bring back
     // pub(crate) fn test_initialise(

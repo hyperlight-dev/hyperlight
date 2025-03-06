@@ -15,23 +15,18 @@ limitations under the License.
 */
 
 use std::fmt::Debug;
-use std::option::Option;
-use std::path::Path;
 
 use tracing::{instrument, Span};
 
 #[cfg(gdb)]
 use super::config::DebugInfo;
-use super::run_options::SandboxRunOptions;
 use super::uninitialized_evolve::evolve_impl_multi_use;
-use crate::error::HyperlightError::GuestBinaryShouldBeAFile;
-use crate::mem::exe::ExeInfo;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox_state::sandbox::{EvolvableSandbox, Sandbox};
 use crate::sandbox_state::transition::Noop;
-use crate::{log_build_details, log_then_return, new_error, MultiUseSandbox, Result};
+use crate::{MultiUseSandbox, Result};
 
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
 ///
@@ -50,7 +45,7 @@ pub struct UninitializedSandbox {
 impl Debug for UninitializedSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UninitializedSandbox")
-            .field("Memory Layout", &self.mem_mgr.layout)
+            .field("Memory Layout", &self.mem_mgr.memory_sections)
             .finish()
     }
 }
@@ -71,132 +66,18 @@ EvolvableSandbox<
     }
 }
 
-/// A `GuestBinary` is either a buffer containing the binary or a path to the binary
-#[derive(Debug)]
-pub enum GuestBinary {
-    /// A buffer containing the guest binary
-    Buffer(Vec<u8>),
-    /// A path to the guest binary
-    FilePath(String),
-}
-
 impl UninitializedSandbox {
-    /// Create a new sandbox configured to run the provided guest binary.
-    ///
-    // - The instrument attribute is used to generate tracing spans and also to emit an error should
-    // the Result be an error.
-    // - The skip attribute is used to skip the guest binary from being printed in the tracing span.
-    // - The name attribute is used to name the tracing span.
-    // - The err attribute is used to emit an error should the Result be an error, it uses the
-    // std::`fmt::Debug trait` to print the error.
-    #[instrument(
-        err(Debug),
-        skip(guest_binary),
-        parent = Span::current()
-    )]
-    pub fn new(
-        guest_binary: GuestBinary,
-        cfg: Option<SandboxConfiguration>,
-        sandbox_run_options: Option<SandboxRunOptions>,
-    ) -> Result<Self> {
-        log_build_details();
-
-        // Hyperlight is only supported on Windows 11 and Windows Server 2022 and later
-        #[cfg(target_os = "windows")]
-        check_windows_version()?;
-
-        // If the guest binary is a file, make sure it exists
-        let guest_binary = match guest_binary {
-            GuestBinary::FilePath(binary_path) => {
-                let path = Path::new(&binary_path)
-                    .canonicalize()
-                    .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?;
-                GuestBinary::FilePath(
-                    path.into_os_string()
-                        .into_string()
-                        .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?,
-                )
-            }
-            buffer @ GuestBinary::Buffer(_) => buffer,
-        };
-
-        let run_opts = sandbox_run_options.unwrap_or_default();
-
-        let run_inprocess = run_opts.in_process();
-        let use_loadlib = run_opts.use_loadlib();
-
-        if run_inprocess && cfg!(not(inprocess)) {
-            log_then_return!(
-                "Inprocess mode is only available in debug builds, and also requires cargo feature 'inprocess'"
-            )
-        }
-
-        if use_loadlib && cfg!(not(all(inprocess, target_os = "windows"))) {
-            log_then_return!("Inprocess mode with LoadLibrary is only available on Windows")
-        }
-
-        let config = cfg.unwrap_or_default();
-
-        #[cfg(gdb)]
-        let debug_info = config.get_guest_debug_info();
-
-        let mut mem_mgr = UninitializedSandbox::load_guest_binary(
-            config,
-            &guest_binary,
-            run_inprocess,
-            use_loadlib,
-        )?;
-
-        let load_addr = mem_mgr.load_addr.clone();
-        mem_mgr.layout.write(&mut mem_mgr.shared_mem, load_addr.try_into()?)?;
-
-        let sandbox = Self {
+    /// Create a new uninitialized sandbox.
+    pub(crate) fn new(
+        mem_mgr: SandboxMemoryManager<ExclusiveSharedMemory>,
+        config: SandboxConfiguration,
+        #[cfg(gdb)] debug_info: Option<DebugInfo>,
+    ) -> Self {
+        Self {
             mem_mgr,
             config,
             #[cfg(gdb)]
             debug_info,
-        };
-
-        //TODO(danbugs:297): bring back host fxns and adding host_printer
-
-        crate::debug!("Sandbox created:  {:#?}", sandbox);
-
-        Ok(sandbox)
-    }
-
-    /// Get guest binary's information, attempt to load it into a
-    /// `SandboxMemoryManager`, and return it.
-    ///
-    /// - If `use_loadlib` is passed as `true`, this code is running
-    /// on Windows, and the user provided a guest binary PE file, then
-    /// this function will call
-    /// `SandboxMemoryManager::load_guest_binary_using_load_library` to
-    /// create the new `SandboxMemoryManager`.
-    ///
-    /// - Otherwise, if `use_loadlib` is passed as `false`, this function
-    /// calls `SandboxMemoryManager::load_guest_binary_into_memory`.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn load_guest_binary(
-        cfg: SandboxConfiguration,
-        guest_binary: &GuestBinary,
-        inprocess: bool,
-        use_loadlib: bool,
-    ) -> Result<SandboxMemoryManager<ExclusiveSharedMemory>> {
-        let mut exe_info = match guest_binary {
-            GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(bin_path_str)?,
-            GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
-        };
-
-        if use_loadlib {
-            let path = match guest_binary {
-                GuestBinary::FilePath(bin_path_str) => bin_path_str,
-                GuestBinary::Buffer(_) => {
-                    log_then_return!(GuestBinaryShouldBeAFile());
-                }
-            };
-            SandboxMemoryManager::load_guest_binary_using_load_library(cfg, path, &mut exe_info)
-        } else {
-            SandboxMemoryManager::load_guest_binary_into_memory(cfg, &mut exe_info, inprocess)
         }
     }
 }

@@ -21,15 +21,13 @@ pub(crate) mod custom_drop;
 pub(crate) mod elf;
 /// A generic wrapper for executable files (PE, ELF, etc)
 pub(crate) mod exe;
-/// Functionality to establish a sandbox's memory layout.
-pub mod layout;
 /// Safe wrapper around an HINSTANCE created by the windows
 /// `LoadLibrary` call
 #[cfg(target_os = "windows")]
 pub(super) mod loaded_lib;
 /// memory regions to be mapped inside a vm
 pub mod memory_region;
-/// Functionality that wraps a `SandboxMemoryLayout` and a
+/// Functionality that wraps `SandboxMemorySections` and a
 /// `SandboxMemoryConfig` to mutate a sandbox's memory as necessary.
 pub mod mgr;
 /// Functionality to read and mutate a PE file in a structured manner.

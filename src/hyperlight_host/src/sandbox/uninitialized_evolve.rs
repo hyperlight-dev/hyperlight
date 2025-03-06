@@ -60,8 +60,8 @@ where
         hv_init(
             gshm,
             Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
-            Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
-            Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
+            Duration::from_millis(u_sbox.config.get_max_execution_time() as u64),
+            Duration::from_millis(u_sbox.config.get_max_wait_for_cancellation() as u64),
             #[cfg(gdb)]
             u_sbox.debug_info,
         )?
@@ -101,8 +101,9 @@ fn hv_init(
 
     let page_size = u32::try_from(page_size::get())?;
     let hv_handler_config = HvHandlerConfig {
-        custom_guest_memory_region_address: gshm.layout.get_custom_guest_memory_offset() as u64,
-        custom_guest_memory_region_size: gshm.layout.get_custom_guest_memory_size() as u64,
+        // TODO(danbugs:297): change this to a more meaningful value
+        custom_guest_memory_region_address: 0x0 as u64,
+        custom_guest_memory_region_size: 0x200_000 as u64,
         mem_access_handler: mem_access_hdl,
         #[cfg(gdb)]
         dbg_mem_access_handler: dbg_mem_access_hdl,
