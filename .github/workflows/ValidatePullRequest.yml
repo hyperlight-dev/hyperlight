@@ -66,3 +66,24 @@ jobs:
     - uses: actions/checkout@v4
     - name: Spell Check Repo
       uses: crate-ci/typos@v1.29.10
+
+  # Gate PR merges on this specific "join-job" which requires all other
+  # jobs to run first. We need this job since we cannot gate on particular jobs
+  # in the workflow, since they can sometimes be skipped (e.g. if the PR only touches docs).
+  # This step fixes this issue by always running.
+  report-ci-status:
+    needs:
+      - docs-pr
+      - rust
+      - fuzzing
+      - spelling
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+    - name: Previous jobs succeeded
+      if: ${{ !(contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+      run: exit 0
+    - name: Previous jobs failed
+      if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+      run: exit 1
+    
