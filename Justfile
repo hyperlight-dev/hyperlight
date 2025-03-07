@@ -198,3 +198,10 @@ fuzz fuzz-target:
 # Fuzzes the given target. Stops after `max_time` seconds
 fuzz-timed fuzz-target max_time:
     cargo +nightly fuzz run {{ fuzz-target }} --release -- -max_total_time={{ max_time }}
+
+# Builds fuzzers for submission to external fuzzing services
+build-fuzzers: (build-fuzzer "fuzz_guest_call") (build-fuzzer "fuzz_host_call") (build-fuzzer "fuzz_host_print")
+
+# Builds the given fuzzer
+build-fuzzer fuzz-target:
+    cargo +nightly fuzz build {{ fuzz-target }} --release -s none

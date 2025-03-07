@@ -6,7 +6,7 @@ You can run the fuzzers with:
 ```sh
 just fuzz <fuzz_target>
 ```
-which evaluates to the following command `cargo +nightly fuzz run host_print --release`. We use the release profile to make sure the release-optimized guest is used. The default fuzz profile which is release+debugsymbols would cause our debug guests to be loaded, since we currently determine which test guest to load based on whether debug symbols are present.
+which evaluates to the following command `cargo +nightly fuzz run fuzz_host_print --release`. We use the release profile to make sure the release-optimized guest is used. The default fuzz profile which is release+debugsymbols would cause our debug guests to be loaded, since we currently determine which test guest to load based on whether debug symbols are present.
 
 As per Microsoft's Offensive Research & Security Engineering (MORSE) team, all host exposed functions that receive or interact with guest data must be continuously fuzzed for, at least, 500 million fuzz test cases without any crashes. Because `cargo-fuzz` doesn't support setting a maximum number of iterations; instead, we use the `--max_total_time` flag to set a maximum time to run the fuzzer. We have a GitHub action (acting like a CRON job) that runs the fuzzers for 24 hours every week.
 

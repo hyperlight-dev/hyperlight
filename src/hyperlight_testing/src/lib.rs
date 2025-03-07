@@ -16,6 +16,7 @@ limitations under the License.
 
 // This crate contains testing utilities which need to be shared across multiple
 // crates in this project.
+use std::env;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
@@ -128,4 +129,27 @@ pub fn c_callback_guest_as_string() -> Result<String> {
     buf.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("couldn't convert callback guest PathBuf to string"))
+}
+
+/// Get a fully qualified path to a simple guest binary preferring a binary
+/// in the same directory as the parent executable. This will be used in
+/// fuzzing scenarios where pre-built binaries will be built and submitted to
+/// a fuzzing framework.
+pub fn simple_guest_for_fuzzing_as_string() -> Result<String> {
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|p| p.to_path_buf()));
+
+    if let Some(exe_dir) = exe_dir {
+        let guest_path = exe_dir.join("simpleguest");
+
+        if guest_path.exists() {
+            return Ok(guest_path
+                .to_str()
+                .ok_or(anyhow!("Invalid path string"))?
+                .to_string());
+        }
+    }
+
+    simple_guest_as_string()
 }

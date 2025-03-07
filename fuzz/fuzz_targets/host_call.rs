@@ -24,7 +24,7 @@ use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{HyperlightError, MultiUseSandbox, UninitializedSandbox};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::simple_guest_for_fuzzing_as_string;
 use libfuzzer_sys::fuzz_target;
 static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 
@@ -33,7 +33,7 @@ static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 fuzz_target!(
     init: {
         let u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            GuestBinary::FilePath(simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing")),
             None,
             None,
             None,

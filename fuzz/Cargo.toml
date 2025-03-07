@@ -13,21 +13,21 @@ hyperlight-testing = { workspace = true }
 hyperlight-host = { workspace = true, default-features = true, features = ["fuzzing"]}
 
 [[bin]]
-name = "host_print"
+name = "fuzz_host_print"
 path = "fuzz_targets/host_print.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "guest_call"
+name = "fuzz_guest_call"
 path = "fuzz_targets/guest_call.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "host_call"
+name = "fuzz_host_call"
 path = "fuzz_targets/host_call.rs"
 test = false
 doc = false
