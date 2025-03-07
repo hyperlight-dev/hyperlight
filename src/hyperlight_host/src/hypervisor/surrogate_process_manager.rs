@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use rust_embed::RustEmbed;
-use tracing::{info, instrument, Span};
+use tracing::{error, info, instrument, Span};
 use windows::core::{s, PCSTR};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
@@ -251,13 +251,16 @@ impl Drop for SurrogateProcessManager {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn drop(&mut self) {
         let handle: HANDLE = self.job_handle.into();
-        unsafe {
+        if unsafe {
             // Terminating the job object will terminate all the surrogate
             // processes.
 
             TerminateJobObject(handle, 0)
         }
-        .expect("surrogate job objects were not all terminated error:");
+        .is_err()
+        {
+            error!("surrogate job objects were not all terminated");
+        }
     }
 }
 

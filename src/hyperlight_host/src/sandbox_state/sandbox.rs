@@ -15,12 +15,11 @@ limitations under the License.
 */
 
 use std::fmt::Debug;
-use std::panic;
 
 use tracing::{instrument, Span};
 
 use super::transition::TransitionMetadata;
-use crate::Result;
+use crate::{new_error, Result};
 
 /// The minimal functionality of a Hyperlight sandbox. Most of the types
 /// and operations within this crate require `Sandbox` implementations.
@@ -48,7 +47,9 @@ pub trait Sandbox: Sized + Debug {
     // The default implementation is provided so that types that implement Sandbox (e.g. JSSandbox) but do not need to implement this trait do not need to provide an implementation
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn check_stack_guard(&self) -> Result<bool> {
-        panic!("check_stack_guard not implemented for this type");
+        Err(new_error!(
+            "check_stack_guard not implemented for this type"
+        ))
     }
 }
 

@@ -104,24 +104,28 @@ impl VMPartition {
         };
 
         regions.iter().try_for_each(|region| unsafe {
+            let flags = region
+                .flags
+                .iter()
+                .map(|flag| match flag {
+                    MemoryRegionFlags::NONE => Ok(WHvMapGpaRangeFlagNone),
+                    MemoryRegionFlags::READ => Ok(WHvMapGpaRangeFlagRead),
+                    MemoryRegionFlags::WRITE => Ok(WHvMapGpaRangeFlagWrite),
+                    MemoryRegionFlags::EXECUTE => Ok(WHvMapGpaRangeFlagExecute),
+                    MemoryRegionFlags::STACK_GUARD => Ok(WHvMapGpaRangeFlagNone),
+                    _ => Err(new_error!("Invalid Memory Region Flag")),
+                })
+                .collect::<Result<Vec<WHV_MAP_GPA_RANGE_FLAGS>>>()?
+                .iter()
+                .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag); // collect using bitwise OR
+
             let res = whvmapgparange2_func(
                 self.0,
                 process_handle,
                 region.host_region.start as *const c_void,
                 region.guest_region.start as u64,
                 (region.guest_region.end - region.guest_region.start) as u64,
-                region
-                    .flags
-                    .iter()
-                    .filter_map(|flag| match flag {
-                        MemoryRegionFlags::NONE => Some(WHvMapGpaRangeFlagNone),
-                        MemoryRegionFlags::READ => Some(WHvMapGpaRangeFlagRead),
-                        MemoryRegionFlags::WRITE => Some(WHvMapGpaRangeFlagWrite),
-                        MemoryRegionFlags::EXECUTE => Some(WHvMapGpaRangeFlagExecute),
-                        MemoryRegionFlags::STACK_GUARD => None,
-                        _ => panic!("Invalid flag"),
-                    })
-                    .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | flag), // collect using bitwise OR,
+                flags,
             );
             if res.is_err() {
                 return Err(new_error!("Call to WHvMapGpaRange2 failed"));
