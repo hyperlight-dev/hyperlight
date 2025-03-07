@@ -16,8 +16,9 @@ limitations under the License.
 
 use gdbstub::common::Signal;
 use gdbstub::conn::ConnectionExt;
-use gdbstub::stub::run_blocking::{self, WaitForStopReasonError};
-use gdbstub::stub::{BaseStopReason, DisconnectReason, GdbStub, SingleThreadStopReason};
+use gdbstub::stub::{
+    run_blocking, BaseStopReason, DisconnectReason, GdbStub, SingleThreadStopReason,
+};
 use libc::{pthread_kill, SIGRTMIN};
 
 use super::x86_64_target::HyperlightSandboxTarget;
@@ -57,13 +58,10 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                             signal: Signal(SIGRTMIN() as u8),
                         },
                         VcpuStopReason::Unknown => {
-                            log::warn!("Unknown stop reason - resuming execution");
+                            log::warn!("Unknown stop reason received");
 
-                            target
-                                .resume_vcpu()
-                                .map_err(WaitForStopReasonError::Target)?;
-
-                            continue;
+                            // Marking as a SwBreak so the gdb inspect where/why it stopped
+                            BaseStopReason::SwBreak(())
                         }
                     };
 
