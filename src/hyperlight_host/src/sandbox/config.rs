@@ -166,7 +166,7 @@ impl SandboxConfiguration {
         self.stack_size_override = stack_size;
     }
 
-    // TODO(danbugs:297): bring back
+    // TODO(danbugs:297): potentially bring back
     // /// If `self.stack_size` is non-zero, return it. Otherwise,
     // /// return `exe_info.stack_reserve()`
     // pub(crate) fn get_stack_size(&self, exe_info: &ExeInfo) -> u64 {
@@ -252,16 +252,11 @@ impl SandboxConfiguration {
         self.max_wait_for_cancellation
     }
 
-
     /// Sets the configuration for the guest debug
     #[cfg(gdb)]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_guest_debug_info(&mut self, debug_info: DebugInfo) {
         self.guest_debug_info = Some(debug_info);
-    }
-    #[cfg(gdb)]
-    pub(crate) fn get_guest_debug_info(&self) -> Option<DebugInfo> {
-        self.guest_debug_info
     }
 }
 

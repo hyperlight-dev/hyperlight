@@ -124,7 +124,7 @@ pub fn get_flatbuffer_result_from_vec(data: &[u8]) -> Vec<u8> {
     let hlsizeprefixedbuffer = Fbhlsizeprefixedbuffer::create(
         &mut builder,
         &FbhlsizeprefixedbufferArgs {
-            size_: data.len() as i32,
+            size: data.len() as i32,
             value: Some(vec_offset),
         },
     );

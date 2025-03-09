@@ -24,7 +24,6 @@ extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
 extern crate mshv_ioctls3 as mshv_ioctls;
 
-
 use bitflags::bitflags;
 #[cfg(mshv)]
 use mshv_bindings::hv_x64_memory_intercept_message;
@@ -197,55 +196,5 @@ impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
 //     /// of memory, in other words, there will be any memory gaps between them.
 //     pub(crate) fn build(self) -> Vec<MemoryRegion> {
 //         self.regions
-//     }
-// }
-//
-// #[cfg(mshv)]
-// impl From<MemoryRegion> for mshv_user_mem_region {
-//     fn from(region: MemoryRegion) -> Self {
-//         let size = (region.guest_region.end - region.guest_region.start) as u64;
-//         let guest_pfn = region.guest_region.start as u64 >> PAGE_SHIFT;
-//         let userspace_addr = region.host_region.start as u64;
-//
-//         #[cfg(mshv2)]
-//         {
-//             let flags = region.flags.iter().fold(0, |acc, flag| {
-//                 let flag_value = match flag {
-//                     MemoryRegionFlags::NONE => HV_MAP_GPA_PERMISSIONS_NONE,
-//                     MemoryRegionFlags::READ => HV_MAP_GPA_READABLE,
-//                     MemoryRegionFlags::WRITE => HV_MAP_GPA_WRITABLE,
-//                     MemoryRegionFlags::EXECUTE => HV_MAP_GPA_EXECUTABLE,
-//                     _ => 0, // ignore any unknown flags
-//                 };
-//                 acc | flag_value
-//             });
-//             mshv_user_mem_region {
-//                 guest_pfn,
-//                 size,
-//                 userspace_addr,
-//                 flags,
-//             }
-//         }
-//         #[cfg(mshv3)]
-//         {
-//             let flags: u8 = region.flags.iter().fold(0, |acc, flag| {
-//                 let flag_value = match flag {
-//                     MemoryRegionFlags::NONE => 1 << MSHV_SET_MEM_BIT_UNMAP,
-//                     MemoryRegionFlags::READ => 0,
-//                     MemoryRegionFlags::WRITE => 1 << MSHV_SET_MEM_BIT_WRITABLE,
-//                     MemoryRegionFlags::EXECUTE => 1 << MSHV_SET_MEM_BIT_EXECUTABLE,
-//                     _ => 0, // ignore any unknown flags
-//                 };
-//                 acc | flag_value
-//             });
-//
-//             mshv_user_mem_region {
-//                 guest_pfn,
-//                 size,
-//                 userspace_addr,
-//                 flags,
-//                 ..Default::default()
-//             }
-//         }
 //     }
 // }

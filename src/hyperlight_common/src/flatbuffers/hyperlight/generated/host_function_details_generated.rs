@@ -5,132 +5,106 @@ extern crate flatbuffers;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::cmp::Ordering;
 use core::mem;
-
+use core::cmp::Ordering;
 use self::flatbuffers::{EndianScalar, Follow};
 use super::*;
 pub enum HostFunctionDetailsOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
 pub struct HostFunctionDetails<'a> {
-    pub _tab: flatbuffers::Table<'a>,
+  pub _tab: flatbuffers::Table<'a>,
 }
 
 impl<'a> flatbuffers::Follow<'a> for HostFunctionDetails<'a> {
-    type Inner = HostFunctionDetails<'a>;
-    #[inline]
-    unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-        Self {
-            _tab: flatbuffers::Table::new(buf, loc),
-        }
-    }
+  type Inner = HostFunctionDetails<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
+  }
 }
 
 impl<'a> HostFunctionDetails<'a> {
-    pub const VT_FUNCTIONS: flatbuffers::VOffsetT = 4;
+  pub const VT_FUNCTIONS: flatbuffers::VOffsetT = 4;
 
-    #[inline]
-    pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
-        HostFunctionDetails { _tab: table }
-    }
-    #[allow(unused_mut)]
-    pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: flatbuffers::Allocator + 'bldr>(
-        _fbb: &'mut_bldr mut flatbuffers::FlatBufferBuilder<'bldr, A>,
-        args: &'args HostFunctionDetailsArgs<'args>,
-    ) -> flatbuffers::WIPOffset<HostFunctionDetails<'bldr>> {
-        let mut builder = HostFunctionDetailsBuilder::new(_fbb);
-        if let Some(x) = args.functions {
-            builder.add_functions(x);
-        }
-        builder.finish()
-    }
+  #[inline]
+  pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
+    HostFunctionDetails { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args HostFunctionDetailsArgs<'args>
+  ) -> flatbuffers::WIPOffset<HostFunctionDetails<'bldr>> {
+    let mut builder = HostFunctionDetailsBuilder::new(_fbb);
+    if let Some(x) = args.functions { builder.add_functions(x); }
+    builder.finish()
+  }
 
-    #[inline]
-    pub fn functions(
-        &self,
-    ) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<HostFunctionDefinition<'a>>>>
-    {
-        // Safety:
-        // Created from valid Table for this object
-        // which contains a valid value in this slot
-        unsafe {
-            self._tab.get::<flatbuffers::ForwardsUOffset<
-                flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<HostFunctionDefinition>>,
-            >>(HostFunctionDetails::VT_FUNCTIONS, None)
-        }
-    }
+
+  #[inline]
+  pub fn functions(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<HostFunctionDefinition<'a>>>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<HostFunctionDefinition>>>>(HostFunctionDetails::VT_FUNCTIONS, None)}
+  }
 }
 
 impl flatbuffers::Verifiable for HostFunctionDetails<'_> {
-    #[inline]
-    fn run_verifier(
-        v: &mut flatbuffers::Verifier,
-        pos: usize,
-    ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
-        use self::flatbuffers::Verifiable;
-        v.visit_table(pos)?
-            .visit_field::<flatbuffers::ForwardsUOffset<
-                flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<HostFunctionDefinition>>,
-            >>("functions", Self::VT_FUNCTIONS, false)?
-            .finish();
-        Ok(())
-    }
+  #[inline]
+  fn run_verifier(
+    v: &mut flatbuffers::Verifier, pos: usize
+  ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
+    use self::flatbuffers::Verifiable;
+    v.visit_table(pos)?
+     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<HostFunctionDefinition>>>>("functions", Self::VT_FUNCTIONS, false)?
+     .finish();
+    Ok(())
+  }
 }
 pub struct HostFunctionDetailsArgs<'a> {
-    pub functions: Option<
-        flatbuffers::WIPOffset<
-            flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<HostFunctionDefinition<'a>>>,
-        >,
-    >,
+    pub functions: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<HostFunctionDefinition<'a>>>>>,
 }
 impl<'a> Default for HostFunctionDetailsArgs<'a> {
-    #[inline]
-    fn default() -> Self {
-        HostFunctionDetailsArgs { functions: None }
+  #[inline]
+  fn default() -> Self {
+    HostFunctionDetailsArgs {
+      functions: None,
     }
+  }
 }
 
 pub struct HostFunctionDetailsBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
-    fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
-    start_: flatbuffers::WIPOffset<flatbuffers::TableUnfinishedWIPOffset>,
+  fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: flatbuffers::WIPOffset<flatbuffers::TableUnfinishedWIPOffset>,
 }
 impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> HostFunctionDetailsBuilder<'a, 'b, A> {
-    #[inline]
-    pub fn add_functions(
-        &mut self,
-        functions: flatbuffers::WIPOffset<
-            flatbuffers::Vector<'b, flatbuffers::ForwardsUOffset<HostFunctionDefinition<'b>>>,
-        >,
-    ) {
-        self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(
-            HostFunctionDetails::VT_FUNCTIONS,
-            functions,
-        );
+  #[inline]
+  pub fn add_functions(&mut self, functions: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<HostFunctionDefinition<'b >>>>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(HostFunctionDetails::VT_FUNCTIONS, functions);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> HostFunctionDetailsBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    HostFunctionDetailsBuilder {
+      fbb_: _fbb,
+      start_: start,
     }
-    #[inline]
-    pub fn new(
-        _fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
-    ) -> HostFunctionDetailsBuilder<'a, 'b, A> {
-        let start = _fbb.start_table();
-        HostFunctionDetailsBuilder {
-            fbb_: _fbb,
-            start_: start,
-        }
-    }
-    #[inline]
-    pub fn finish(self) -> flatbuffers::WIPOffset<HostFunctionDetails<'a>> {
-        let o = self.fbb_.end_table(self.start_);
-        flatbuffers::WIPOffset::new(o.value())
-    }
+  }
+  #[inline]
+  pub fn finish(self) -> flatbuffers::WIPOffset<HostFunctionDetails<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    flatbuffers::WIPOffset::new(o.value())
+  }
 }
 
 impl core::fmt::Debug for HostFunctionDetails<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut ds = f.debug_struct("HostFunctionDetails");
-        ds.field("functions", &self.functions());
-        ds.finish()
-    }
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let mut ds = f.debug_struct("HostFunctionDetails");
+      ds.field("functions", &self.functions());
+      ds.finish()
+  }
 }
 #[inline]
 /// Verifies that a buffer of bytes contains a `HostFunctionDetails`
@@ -139,10 +113,8 @@ impl core::fmt::Debug for HostFunctionDetails<'_> {
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
 /// `root_as_host_function_details_unchecked`.
-pub fn root_as_host_function_details(
-    buf: &[u8],
-) -> Result<HostFunctionDetails, flatbuffers::InvalidFlatbuffer> {
-    flatbuffers::root::<HostFunctionDetails>(buf)
+pub fn root_as_host_function_details(buf: &[u8]) -> Result<HostFunctionDetails, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::root::<HostFunctionDetails>(buf)
 }
 #[inline]
 /// Verifies that a buffer of bytes contains a size prefixed
@@ -151,10 +123,8 @@ pub fn root_as_host_function_details(
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
 /// `size_prefixed_root_as_host_function_details_unchecked`.
-pub fn size_prefixed_root_as_host_function_details(
-    buf: &[u8],
-) -> Result<HostFunctionDetails, flatbuffers::InvalidFlatbuffer> {
-    flatbuffers::size_prefixed_root::<HostFunctionDetails>(buf)
+pub fn size_prefixed_root_as_host_function_details(buf: &[u8]) -> Result<HostFunctionDetails, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::size_prefixed_root::<HostFunctionDetails>(buf)
 }
 #[inline]
 /// Verifies, with the given options, that a buffer of bytes
@@ -164,10 +134,10 @@ pub fn size_prefixed_root_as_host_function_details(
 /// previous, unchecked, behavior use
 /// `root_as_host_function_details_unchecked`.
 pub fn root_as_host_function_details_with_opts<'b, 'o>(
-    opts: &'o flatbuffers::VerifierOptions,
-    buf: &'b [u8],
+  opts: &'o flatbuffers::VerifierOptions,
+  buf: &'b [u8],
 ) -> Result<HostFunctionDetails<'b>, flatbuffers::InvalidFlatbuffer> {
-    flatbuffers::root_with_opts::<HostFunctionDetails<'b>>(opts, buf)
+  flatbuffers::root_with_opts::<HostFunctionDetails<'b>>(opts, buf)
 }
 #[inline]
 /// Verifies, with the given verifier options, that a buffer of
@@ -177,39 +147,33 @@ pub fn root_as_host_function_details_with_opts<'b, 'o>(
 /// previous, unchecked, behavior use
 /// `root_as_host_function_details_unchecked`.
 pub fn size_prefixed_root_as_host_function_details_with_opts<'b, 'o>(
-    opts: &'o flatbuffers::VerifierOptions,
-    buf: &'b [u8],
+  opts: &'o flatbuffers::VerifierOptions,
+  buf: &'b [u8],
 ) -> Result<HostFunctionDetails<'b>, flatbuffers::InvalidFlatbuffer> {
-    flatbuffers::size_prefixed_root_with_opts::<HostFunctionDetails<'b>>(opts, buf)
+  flatbuffers::size_prefixed_root_with_opts::<HostFunctionDetails<'b>>(opts, buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a HostFunctionDetails and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `HostFunctionDetails`.
 pub unsafe fn root_as_host_function_details_unchecked(buf: &[u8]) -> HostFunctionDetails {
-    flatbuffers::root_unchecked::<HostFunctionDetails>(buf)
+  flatbuffers::root_unchecked::<HostFunctionDetails>(buf)
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed HostFunctionDetails and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `HostFunctionDetails`.
-pub unsafe fn size_prefixed_root_as_host_function_details_unchecked(
-    buf: &[u8],
-) -> HostFunctionDetails {
-    flatbuffers::size_prefixed_root_unchecked::<HostFunctionDetails>(buf)
+pub unsafe fn size_prefixed_root_as_host_function_details_unchecked(buf: &[u8]) -> HostFunctionDetails {
+  flatbuffers::size_prefixed_root_unchecked::<HostFunctionDetails>(buf)
 }
 #[inline]
 pub fn finish_host_function_details_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
     fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
-    root: flatbuffers::WIPOffset<HostFunctionDetails<'a>>,
-) {
-    fbb.finish(root, None);
+    root: flatbuffers::WIPOffset<HostFunctionDetails<'a>>) {
+  fbb.finish(root, None);
 }
 
 #[inline]
-pub fn finish_size_prefixed_host_function_details_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
-    fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
-    root: flatbuffers::WIPOffset<HostFunctionDetails<'a>>,
-) {
-    fbb.finish_size_prefixed(root, None);
+pub fn finish_size_prefixed_host_function_details_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>, root: flatbuffers::WIPOffset<HostFunctionDetails<'a>>) {
+  fbb.finish_size_prefixed(root, None);
 }

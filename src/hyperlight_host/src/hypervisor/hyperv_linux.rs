@@ -30,8 +30,8 @@ use std::fmt::{Debug, Formatter};
 use mshv_bindings::hv_message;
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
-    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
-    SegmentRegister, SpecialRegisters, StandardRegisters,
+    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, SegmentRegister,
+    SpecialRegisters, StandardRegisters,
 };
 #[cfg(mshv3)]
 use mshv_bindings::{
@@ -51,8 +51,8 @@ use super::{
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::ptr::GuestPtr;
-use crate::{log_then_return, Result};
 use crate::sandbox::sandbox_builder::SandboxMemorySections;
+use crate::{log_then_return, Result};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -200,7 +200,7 @@ impl Hypervisor for HypervLinuxDriver {
         &mut self,
         custom_guest_memory_region_addr: u64,
         custom_guest_memory_region_size: u64,
-        page_size: u32,
+        seed: u64,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -213,7 +213,7 @@ impl Hypervisor for HypervLinuxDriver {
             // function args
             rcx: custom_guest_memory_region_addr.into(),
             rdx: custom_guest_memory_region_size.into(),
-            r8: page_size.into(),
+            r8: seed.into(),
             r9: self.get_max_log_level().into(),
 
             ..Default::default()

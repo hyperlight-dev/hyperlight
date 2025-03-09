@@ -25,47 +25,43 @@ use crate::hypervisor::handlers::{
 };
 
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub(crate) fn mem_access_handler_wrapper(
-) -> MemAccessHandlerWrapper {
-    let mem_access_func: MemAccessHandlerFunction =
-        Box::new(move || Ok(()));
+pub(crate) fn mem_access_handler_wrapper() -> MemAccessHandlerWrapper {
+    let mem_access_func: MemAccessHandlerFunction = Box::new(move || Ok(()));
     let mem_access_hdl = MemAccessHandler::from(mem_access_func);
     Arc::new(Mutex::new(mem_access_hdl))
 }
 
 #[cfg(gdb)]
 struct DbgMemAccessContainer {
-    wrapper: SandboxMemoryManager<HostSharedMemory>,
+    wrapper: crate::mem::mgr::SandboxMemoryManager<crate::sandbox::HostSharedMemory>,
 }
 
 #[cfg(gdb)]
 impl DbgMemAccessHandlerCaller for DbgMemAccessContainer {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn read(&mut self, addr: usize, data: &mut [u8]) -> Result<()> {
-        self.wrapper
-            .unwrap_mgr_mut()
-            .get_shared_mem_mut()
-            .copy_to_slice(data, addr)
+    fn read(&mut self, addr: usize, data: &mut [u8]) -> crate::Result<()> {
+        self.wrapper.shared_mem.copy_to_slice(data, addr)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn write(&mut self, addr: usize, data: &[u8]) -> Result<()> {
-        self.wrapper
-            .unwrap_mgr_mut()
-            .get_shared_mem_mut()
-            .copy_from_slice(data, addr)
+    fn write(&mut self, addr: usize, data: &[u8]) -> crate::Result<()> {
+        self.wrapper.shared_mem.copy_from_slice(data, addr)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn get_code_offset(&mut self) -> Result<usize> {
-        Ok(self.wrapper.unwrap_mgr().layout.get_guest_code_address())
+    fn get_code_offset(&mut self) -> crate::Result<usize> {
+        Ok(self
+            .wrapper
+            .memory_sections
+            .get_guest_code_offset()
+            .unwrap())
     }
 }
 
 #[cfg(gdb)]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn dbg_mem_access_handler_wrapper(
-    wrapper: SandboxMemoryManager<HostSharedMemory>,
+    wrapper: crate::mem::mgr::SandboxMemoryManager<crate::sandbox::HostSharedMemory>,
 ) -> DbgMemAccessHandlerWrapper {
     let container = DbgMemAccessContainer { wrapper };
 

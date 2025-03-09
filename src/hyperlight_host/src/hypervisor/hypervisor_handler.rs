@@ -32,6 +32,7 @@ use log::{error, info};
 use tracing::{instrument, Span};
 #[cfg(target_os = "linux")]
 use vmm_sys_util::signal::SIGRTMIN;
+use hyperlight_common::flatbuffer_wrappers::hyperlight_peb::HyperlightPEB;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{WHvCancelRunVirtualProcessor, WHV_PARTITION_HANDLE};
 
@@ -47,6 +48,7 @@ use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::Hypervisor;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
@@ -60,7 +62,6 @@ use crate::HyperlightError::{
     HypervisorHandlerExecutionCancelAttemptOnFinishedExecution, NoHypervisorFound,
 };
 use crate::{log_then_return, new_error, HyperlightError, Result};
-use crate::mem::ptr_offset::Offset;
 
 type HypervisorHandlerTx = Sender<HypervisorHandlerAction>;
 type HypervisorHandlerRx = Receiver<HypervisorHandlerAction>;
@@ -135,7 +136,7 @@ impl HvHandlerExecVars {
             .thread_id
             .try_lock()
             .map_err(|_| new_error!("Failed to get_thread_id"))?)
-            .ok_or_else(|| new_error!("thread_id not set"))
+        .ok_or_else(|| new_error!("thread_id not set"))
     }
 
     #[cfg(target_os = "windows")]
@@ -183,9 +184,10 @@ struct HvHandlerCommChannels {
 
 #[derive(Clone)]
 pub(crate) struct HvHandlerConfig {
-    pub(crate) custom_guest_memory_region_address: u64,
-    pub(crate) custom_guest_memory_region_size: u64,
-    pub(crate) page_size: u32,
+    pub(crate) hyperlight_peb: HyperlightPEB,
+    pub(crate) hyperlight_peb_guest_memory_region_address: u64,
+    pub(crate) hyperlight_peb_guest_memory_region_size: u64,
+    pub(crate) seed: u64,
     // TODO(danbugs:297) bring back
     // pub(crate) dispatch_function_addr: Arc<Mutex<Option<RawPtr>>>,
     pub(crate) max_init_time: Duration,
@@ -302,6 +304,7 @@ impl HypervisorHandler {
                             HypervisorHandlerAction::Initialise => {
                                 {
                                     hv = Some(set_up_hypervisor_partition(
+                                        configuration.hyperlight_peb.clone(),
                                         execution_variables.shm.try_lock().unwrap().deref_mut().as_mut().unwrap(),
                                         #[cfg(gdb)]
                                         &debug_info,
@@ -353,9 +356,9 @@ impl HypervisorHandler {
                                     .try_read();
 
                                 let res = hv.initialise(
-                                    configuration.custom_guest_memory_region_address,
-                                    configuration.custom_guest_memory_region_size,
-                                    configuration.page_size,
+                                    configuration.hyperlight_peb_guest_memory_region_address,
+                                    configuration.hyperlight_peb_guest_memory_region_size,
+                                    configuration.seed,
                                     configuration.mem_access_handler.clone(),
                                     Some(hv_handler_clone.clone()),
                                     #[cfg(gdb)]
@@ -804,7 +807,7 @@ impl HypervisorHandler {
                         0,
                         0,
                     )
-                        .map_err(|e| new_error!("Failed to cancel guest execution {:?}", e))?;
+                    .map_err(|e| new_error!("Failed to cancel guest execution {:?}", e))?;
                 }
             }
             // if running in-process on windows, we currently have no way of cancelling the execution
@@ -850,6 +853,7 @@ pub enum HandlerMsg {
 }
 
 fn set_up_hypervisor_partition(
+    hyperlight_peb: HyperlightPEB,
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[cfg(gdb)] debug_info: &Option<DebugInfo>,
 ) -> Result<Box<dyn Hypervisor>> {
@@ -859,7 +863,9 @@ fn set_up_hypervisor_partition(
     let rsp_ptr = GuestPtr::try_from(RawPtr::from(mgr.init_rsp))?;
 
     // TODO(danbugs:297): change unwrap to proper error handling informing paging isn't set up.
-    let pml4_ptr = GuestPtr::try_from(Offset::from(mgr.memory_sections.get_paging_structures_offset().unwrap() as u64))?;
+    let pml4_ptr = GuestPtr::try_from(Offset::from(
+        mgr.memory_sections.get_paging_structures_offset().unwrap() as u64,
+    ))?;
     let entrypoint_ptr = {
         let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_exe_offset;
         GuestPtr::try_from(entrypoint_total_offset)
@@ -872,6 +878,7 @@ fn set_up_hypervisor_partition(
                 use super::inprocess::InprocessArgs;
                 use super::inprocess::InprocessDriver;
 
+                // TODO(danbugs:297): fix in process to properly set up the outb_ptr in HyperlightPEB
                 let hv = InprocessDriver::new(InprocessArgs {
                     entrypoint_raw: u64::from(mgr.load_addr.clone() + mgr.entrypoint_exe_offset),
                     peb_ptr_raw: mgr
@@ -909,6 +916,8 @@ fn set_up_hypervisor_partition(
             None
         };
 
+        mgr.write_hyperlight_peb(hyperlight_peb)?;
+
         match *get_available_hypervisor() {
             #[cfg(mshv)]
             Some(HypervisorType::Mshv) => {
@@ -925,9 +934,9 @@ fn set_up_hypervisor_partition(
             Some(HypervisorType::Kvm) => {
                 let hv = crate::hypervisor::kvm::KVMDriver::new(
                     memory_sections,
+                    rsp_ptr.absolute()?,
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
-                    rsp_ptr.absolute()?,
                     #[cfg(gdb)]
                     gdb_conn,
                 )?;

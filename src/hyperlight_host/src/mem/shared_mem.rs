@@ -21,7 +21,7 @@ use std::io::Error;
 use std::ptr::null_mut;
 use std::sync::{Arc, RwLock};
 
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use hyperlight_common::PAGE_SIZE;
 use tracing::{instrument, Span};
 #[cfg(target_os = "windows")]
 use windows::core::PCSTR;
@@ -325,12 +325,13 @@ impl ExclusiveSharedMemory {
         }
 
         let total_size = min_size_bytes
-            .checked_add(2 * PAGE_SIZE_USIZE) // guard page around the memory
+            .checked_add(2 * PAGE_SIZE) // guard page around the memory
             .ok_or_else(|| new_error!("Memory required for sandbox exceeded usize::MAX"))?;
 
         // Make sure that the total size is a multiple of the page size
         assert_eq!(
-            total_size % PAGE_SIZE_USIZE, 0,
+            total_size % PAGE_SIZE,
+            0,
             "shared memory must be a multiple of 4096"
         );
 
@@ -356,14 +357,14 @@ impl ExclusiveSharedMemory {
         }
 
         // Protect the guard pages
-        let res = unsafe { mprotect(addr, PAGE_SIZE_USIZE, PROT_NONE) };
+        let res = unsafe { mprotect(addr, PAGE_SIZE, PROT_NONE) };
         if res != 0 {
             return Err(MprotectFailed(Error::last_os_error().raw_os_error()));
         }
         let res = unsafe {
             mprotect(
-                (addr as *const u8).add(total_size - PAGE_SIZE_USIZE) as *mut c_void,
-                PAGE_SIZE_USIZE,
+                (addr as *const u8).add(total_size - PAGE_SIZE) as *mut c_void,
+                PAGE_SIZE,
                 PROT_NONE,
             )
         };
@@ -400,10 +401,10 @@ impl ExclusiveSharedMemory {
         }
 
         let total_size = min_size_bytes
-            .checked_add(2 * PAGE_SIZE_USIZE)
+            .checked_add(2 * PAGE_SIZE)
             .ok_or_else(|| new_error!("Memory required for sandbox exceeded {}", usize::MAX))?;
 
-        if total_size % PAGE_SIZE_USIZE != 0 {
+        if total_size % PAGE_SIZE != 0 {
             return Err(new_error!(
                 "shared memory must be a multiple of {}",
                 PAGE_SIZE_USIZE
@@ -472,7 +473,7 @@ impl ExclusiveSharedMemory {
         if let Err(e) = unsafe {
             VirtualProtect(
                 first_guard_page_start,
-                PAGE_SIZE_USIZE,
+                PAGE_SIZE,
                 PAGE_NOACCESS,
                 &mut unused_out_old_prot_flags,
             )
@@ -480,11 +481,11 @@ impl ExclusiveSharedMemory {
             log_then_return!(WindowsAPIError(e.clone()));
         }
 
-        let last_guard_page_start = unsafe { addr.Value.add(total_size - PAGE_SIZE_USIZE) };
+        let last_guard_page_start = unsafe { addr.Value.add(total_size - PAGE_SIZE) };
         if let Err(e) = unsafe {
             VirtualProtect(
                 last_guard_page_start,
-                PAGE_SIZE_USIZE,
+                PAGE_SIZE,
                 PAGE_NOACCESS,
                 &mut unused_out_old_prot_flags,
             )
@@ -687,12 +688,25 @@ pub trait SharedMemory {
     /// Return a readonly reference to the host mapping backing this SharedMemory
     fn region(&self) -> &HostMapping;
 
+    /// Return data as mut slice
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.base_ptr(), self.mem_size()) }
+    }
+
+    /// Copies data into shared memory from a slice starting at offset
+    fn copy_from_slice(&mut self, src: &[u8], offset: usize) -> Result<()> {
+        let data = self.as_mut_slice();
+        bounds_check!(offset, src.len(), data.len());
+        data[offset..offset + src.len()].copy_from_slice(src);
+        Ok(())
+    }
+
     /// Return the base address of the host mapping of this
     /// region. Following the general Rust philosophy, this does not
     /// need to be marked as `unsafe` because doing anything with this
     /// pointer itself requires `unsafe`.
     fn base_addr(&self) -> usize {
-        self.region().ptr as usize + PAGE_SIZE_USIZE
+        self.region().ptr as usize + PAGE_SIZE
     }
 
     /// Return the base address of the host mapping of this region as
@@ -708,7 +722,7 @@ pub trait SharedMemory {
     /// guard pages.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn mem_size(&self) -> usize {
-        self.region().size - 2 * PAGE_SIZE_USIZE
+        self.region().size - 2 * PAGE_SIZE
     }
 
     /// Return the raw base address of the host mapping, including the

@@ -28,7 +28,7 @@ impl<'a> flatbuffers::Follow<'a> for hlsizeprefixedbuffer<'a> {
 }
 
 impl<'a> hlsizeprefixedbuffer<'a> {
-    pub const VT_SIZE_: flatbuffers::VOffsetT = 4;
+    pub const VT_SIZE: flatbuffers::VOffsetT = 4;
     pub const VT_VALUE: flatbuffers::VOffsetT = 6;
 
     #[inline]
@@ -44,18 +44,18 @@ impl<'a> hlsizeprefixedbuffer<'a> {
         if let Some(x) = args.value {
             builder.add_value(x);
         }
-        builder.add_size_(args.size_);
+        builder.add_size(args.size);
         builder.finish()
     }
 
     #[inline]
-    pub fn size_(&self) -> i32 {
+    pub fn size(&self) -> i32 {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
             self._tab
-                .get::<i32>(hlsizeprefixedbuffer::VT_SIZE_, Some(0))
+                .get::<i32>(hlsizeprefixedbuffer::VT_SIZE, Some(0))
                 .unwrap()
         }
     }
@@ -82,7 +82,7 @@ impl flatbuffers::Verifiable for hlsizeprefixedbuffer<'_> {
     ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
         use self::flatbuffers::Verifiable;
         v.visit_table(pos)?
-            .visit_field::<i32>("size_", Self::VT_SIZE_, false)?
+            .visit_field::<i32>("size", Self::VT_SIZE, false)?
             .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u8>>>(
                 "value",
                 Self::VT_VALUE,
@@ -93,14 +93,14 @@ impl flatbuffers::Verifiable for hlsizeprefixedbuffer<'_> {
     }
 }
 pub struct hlsizeprefixedbufferArgs<'a> {
-    pub size_: i32,
+    pub size: i32,
     pub value: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
 }
 impl<'a> Default for hlsizeprefixedbufferArgs<'a> {
     #[inline]
     fn default() -> Self {
         hlsizeprefixedbufferArgs {
-            size_: 0,
+            size: 0,
             value: None,
         }
     }
@@ -112,9 +112,9 @@ pub struct hlsizeprefixedbufferBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + '
 }
 impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> hlsizeprefixedbufferBuilder<'a, 'b, A> {
     #[inline]
-    pub fn add_size_(&mut self, size_: i32) {
+    pub fn add_size(&mut self, size: i32) {
         self.fbb_
-            .push_slot::<i32>(hlsizeprefixedbuffer::VT_SIZE_, size_, 0);
+            .push_slot::<i32>(hlsizeprefixedbuffer::VT_SIZE, size, 0);
     }
     #[inline]
     pub fn add_value(&mut self, value: flatbuffers::WIPOffset<flatbuffers::Vector<'b, u8>>) {
@@ -141,7 +141,7 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> hlsizeprefixedbufferBuilder<'a,
 impl core::fmt::Debug for hlsizeprefixedbuffer<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut ds = f.debug_struct("hlsizeprefixedbuffer");
-        ds.field("size_", &self.size_());
+        ds.field("size", &self.size());
         ds.field("value", &self.value());
         ds.finish()
     }

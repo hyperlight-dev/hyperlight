@@ -15,9 +15,10 @@ limitations under the License.
 */
 
 use core::time::Duration;
-
+use std::sync::{Arc, Mutex};
+use rand::Rng;
 use tracing::{instrument, Span};
-
+use hyperlight_common::flatbuffer_wrappers::hyperlight_peb::HyperlightPEB;
 #[cfg(gdb)]
 use super::mem_access::dbg_mem_access_handler_wrapper;
 use crate::hypervisor::hypervisor_handler::{
@@ -31,6 +32,7 @@ use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::HostSharedMemory;
 use crate::sandbox_state::sandbox::Sandbox;
 use crate::{new_error, MultiUseSandbox, Result, UninitializedSandbox};
+use crate::sandbox::host_funcs::HostFuncsWrapper;
 
 /// The implementation for evolving `UninitializedSandbox`es to
 /// `Sandbox`es.
@@ -49,16 +51,16 @@ fn evolve_impl<TransformFunc, ResSandbox: Sandbox>(
     transform: TransformFunc,
 ) -> Result<ResSandbox>
 where
-    TransformFunc: Fn(
-        SandboxMemoryManager<HostSharedMemory>,
-        HypervisorHandler,
-    ) -> Result<ResSandbox>,
+    TransformFunc:
+        Fn(SandboxMemoryManager<HostSharedMemory>, HypervisorHandler) -> Result<ResSandbox>,
 {
     let (hshm, gshm) = u_sbox.mem_mgr.build();
 
     let hv_handler = {
         hv_init(
-            gshm,
+            (hshm.clone(), gshm),
+            u_sbox.hyperlight_peb,
+            u_sbox.host_funcs.clone(),
             Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
             Duration::from_millis(u_sbox.config.get_max_execution_time() as u64),
             Duration::from_millis(u_sbox.config.get_max_wait_for_cancellation() as u64),
@@ -89,29 +91,42 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 fn hv_init(
-    gshm: SandboxMemoryManager<GuestSharedMemory>,
+    shm: (SandboxMemoryManager<HostSharedMemory>, SandboxMemoryManager<GuestSharedMemory>),
+    hyperlight_peb: HyperlightPEB,
+    _host_funcs: Arc<Mutex<HostFuncsWrapper>>,
     max_init_time: Duration,
     max_exec_time: Duration,
     max_wait_for_cancellation: Duration,
     #[cfg(gdb)] debug_info: Option<DebugInfo>,
 ) -> Result<HypervisorHandler> {
+    let (_hshm, gshm) = shm;
+
+    // TODO(danbugs:297): bring back
+    // let outb_hdl = outb_handler_wrapper(hshm.clone(), host_funcs);
+
     let mem_access_hdl = mem_access_handler_wrapper();
     #[cfg(gdb)]
-    let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(hshm.clone());
+    let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(_hshm.clone());
 
-    let page_size = u32::try_from(page_size::get())?;
+    let seed = {
+        let mut rng = rand::rng();
+        rng.random::<u64>()
+    };
+
     let hv_handler_config = HvHandlerConfig {
-        // TODO(danbugs:297): change this to a more meaningful value
-        custom_guest_memory_region_address: 0x0 as u64,
-        custom_guest_memory_region_size: 0x200_000 as u64,
+        hyperlight_peb,
+        // TODO(danbugs:297): improve error msg
+        hyperlight_peb_guest_memory_region_address: gshm.memory_sections.get_hyperlight_peb_section_offset().unwrap() as u64,
+        hyperlight_peb_guest_memory_region_size: gshm.memory_sections.get_hyperlight_peb_size().unwrap() as u64,
         mem_access_handler: mem_access_hdl,
         #[cfg(gdb)]
         dbg_mem_access_handler: dbg_mem_access_hdl,
-        page_size,
+        seed,
         max_init_time,
         max_exec_time,
         max_wait_for_cancellation,
     };
+
     // Note: `dispatch_function_addr` is set by the Hyperlight guest library, and so it isn't in
     // shared memory at this point in time. We will set it after the execution of `hv_init`.
 

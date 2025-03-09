@@ -54,5 +54,7 @@ pub mod hyperlight {
         pub use self::log_level_generated::*;
         mod guest_log_data_generated;
         pub use self::guest_log_data_generated::*;
-    }
-}
+        mod hyperlight_peb_generated;
+        pub use self::hyperlight_peb_generated::*;
+    } // generated
+} // hyperlight

@@ -14,6 +14,7 @@ default-target := "debug"
 simpleguest_source := "src/tests/rust_guests/simpleguest/target/x86_64-unknown-none"
 simpleguest_msvc_source := "src/tests/rust_guests/simpleguest/target/x86_64-pc-windows-msvc"
 dummyguest_source := "src/tests/rust_guests/dummyguest/target/x86_64-unknown-none"
+# TODO(danbugs:297): Delete
 customguest_source := "src/tests/rust_guests/customguest/target/x86_64-unknown-none"
 callbackguest_source := "src/tests/rust_guests/callbackguest/target/x86_64-unknown-none"
 callbackguest_msvc_source := "src/tests/rust_guests/callbackguest/target/x86_64-pc-windows-msvc"
@@ -36,12 +37,13 @@ tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
 
 # BUILDING
 build-rust-guests target=default-target:
-    cd src/tests/rust_guests/callbackguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
-    cd src/tests/rust_guests/callbackguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}  --target=x86_64-pc-windows-msvc
-    cd src/tests/rust_guests/simpleguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }} 
+    cd src/tests/rust_guests/simpleguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
     cd src/tests/rust_guests/simpleguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }} --target=x86_64-pc-windows-msvc
-    cd src/tests/rust_guests/dummyguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
-    cd src/tests/rust_guests/customguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
+# TODO(danbugs:297): clean up
+#    cd src/tests/rust_guests/callbackguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
+#    cd src/tests/rust_guests/callbackguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}  --target=x86_64-pc-windows-msvc
+#    cd src/tests/rust_guests/dummyguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
+#    cd src/tests/rust_guests/customguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
 
 @move-rust-guests target=default-target:
     cp {{ callbackguest_source }}/{{ target }}/callbackguest* {{ rust_guests_bin_dir }}/{{ target }}/
@@ -49,6 +51,7 @@ build-rust-guests target=default-target:
     cp {{ simpleguest_source }}/{{ target }}/simpleguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ simpleguest_msvc_source }}/{{ target }}/simpleguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ dummyguest_source }}/{{ target }}/dummyguest* {{ rust_guests_bin_dir }}/{{ target }}/
+    # TODO(danbugs:297): Delete
     cp {{ customguest_source }}/{{ target }}/customguest* {{ rust_guests_bin_dir }}/{{ target }}/
 
 build-and-move-rust-guests: (build-rust-guests "debug") (move-rust-guests "debug") (build-rust-guests "release") (move-rust-guests "release")
@@ -72,6 +75,7 @@ clean-rust:
     cargo clean
     cd src/tests/rust_guests/simpleguest && cargo clean
     cd src/tests/rust_guests/dummyguest && cargo clean
+    # TODO(danbugs:297): Delete
     cd src/tests/rust_guests/customguest && cargo clean
     cd src/tests/rust_guests/callbackguest && cargo clean
     git clean -fdx src/tests/c_guests/bin src/tests/rust_guests/bin
@@ -130,6 +134,7 @@ fmt-check:
     cargo +nightly fmt --manifest-path src/tests/rust_guests/callbackguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml -- --check
+    # TODO(danbugs:297): Delete
     cargo +nightly fmt --manifest-path src/tests/rust_guests/customguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml -- --check
 
@@ -138,6 +143,7 @@ fmt-apply:
     cargo +nightly fmt --manifest-path src/tests/rust_guests/callbackguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml
+    # TODO(danbugs:297): Delete
     cargo +nightly fmt --manifest-path src/tests/rust_guests/customguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 

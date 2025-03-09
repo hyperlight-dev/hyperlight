@@ -35,10 +35,10 @@ use super::{
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::sandbox::sandbox_builder::SandboxMemorySections;
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, Result};
-use crate::sandbox::sandbox_builder::SandboxMemorySections;
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -67,7 +67,7 @@ mod debug {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use hyperlight_common::mem::PAGE_SIZE;
+    use hyperlight_common::PAGE_SIZE;
     use kvm_bindings::{
         kvm_guest_debug, kvm_regs, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
         KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
@@ -77,8 +77,8 @@ mod debug {
     use super::KVMDriver;
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-    use crate::{new_error, HyperlightError, Result};
     use crate::sandbox::sandbox_builder::BASE_ADDRESS;
+    use crate::{new_error, HyperlightError, Result};
 
     /// Software Breakpoint size in memory
     pub const SW_BP_SIZE: usize = 1;
@@ -239,12 +239,9 @@ mod debug {
             log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
 
             while !data.is_empty() {
-                let gpa = self.translate_gva(gva)?;
+                let gpa = self.translate_gva(gva)? as usize;
 
-                let read_len = std::cmp::min(
-                    data.len(),
-                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
-                );
+                let read_len = std::cmp::min(data.len(), PAGE_SIZE - (gpa & (PAGE_SIZE - 1)));
                 let offset = gpa as usize - BASE_ADDRESS;
 
                 dbg_mem_access_fn
@@ -269,12 +266,9 @@ mod debug {
             log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
 
             while !data.is_empty() {
-                let gpa = self.translate_gva(gva)?;
+                let gpa = self.translate_gva(gva)? as usize;
 
-                let write_len = std::cmp::min(
-                    data.len(),
-                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
-                );
+                let write_len = std::cmp::min(data.len(), PAGE_SIZE - (gpa & (PAGE_SIZE - 1)));
                 let offset = gpa as usize - BASE_ADDRESS;
 
                 dbg_mem_access_fn
@@ -604,20 +598,23 @@ impl KVMDriver {
         let perm_flags =
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
 
-        mem_sections.iter().enumerate().try_for_each(|(i, region)| {
-            let perm_flags = perm_flags.intersection(region.1.flags);
-            let kvm_region = kvm_userspace_memory_region {
-                slot: i as u32,
-                guest_phys_addr: region.1.page_aligned_guest_offset as u64,
-                memory_size: region.1.page_aligned_size as u64,
-                userspace_addr: region.1.host_address.unwrap() as u64,
-                flags: match perm_flags {
-                    MemoryRegionFlags::READ => KVM_MEM_READONLY,
-                    _ => 0, // normal, RWX
-                },
-            };
-            unsafe { vm_fd.set_user_memory_region(kvm_region) }
-        })?;
+        mem_sections
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, region)| {
+                let perm_flags = perm_flags.intersection(region.1.flags);
+                let kvm_region = kvm_userspace_memory_region {
+                    slot: i as u32,
+                    guest_phys_addr: region.1.page_aligned_guest_offset as u64,
+                    memory_size: region.1.page_aligned_size as u64,
+                    userspace_addr: region.1.host_address.unwrap() as u64,
+                    flags: match perm_flags {
+                        MemoryRegionFlags::READ => KVM_MEM_READONLY,
+                        _ => 0, // normal, RWX
+                    },
+                };
+                unsafe { vm_fd.set_user_memory_region(kvm_region) }
+            })?;
 
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
@@ -697,9 +694,9 @@ impl Hypervisor for KVMDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
         &mut self,
-        custom_guest_memory_region_addr: u64,
-        custom_guest_memory_region_size: u64,
-        page_size: u32,
+        hyperlight_peb_guest_memory_region_address: u64,
+        hyperlight_peb_guest_memory_region_size: u64,
+        seed: u64,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -709,9 +706,9 @@ impl Hypervisor for KVMDriver {
             rsp: self.orig_rsp.absolute()?,
 
             // function args
-            rcx: custom_guest_memory_region_addr.into(),
-            rdx: custom_guest_memory_region_size.into(),
-            r8: page_size.into(),
+            rcx: hyperlight_peb_guest_memory_region_address.into(),
+            rdx: hyperlight_peb_guest_memory_region_size.into(),
+            r8: seed.into(),
             r9: self.get_max_log_level().into(),
 
             ..Default::default()
@@ -897,7 +894,7 @@ impl Hypervisor for KVMDriver {
         stop_reason: VcpuStopReason,
     ) -> Result<()> {
         self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
-            .map_err(|e| new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e))?;
+            .map_err(|e| crate::new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e))?;
 
         loop {
             log::debug!("Debug wait for event to resume vCPU");
@@ -922,7 +919,7 @@ impl Hypervisor for KVMDriver {
             );
 
             self.send_dbg_msg(response)
-                .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+                .map_err(|e| crate::new_error!("Couldn't send response to gdb: {:?}", e))?;
 
             if cont {
                 break;

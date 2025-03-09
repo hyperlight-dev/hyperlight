@@ -13,11 +13,15 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
+use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
-
+use serde_json::from_str;
 use tracing::{instrument, Span};
-
+use hyperlight_common::flatbuffer_wrappers::function_call::validate_guest_function_call_buffer;
+use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
+use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
+use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use hyperlight_common::flatbuffer_wrappers::hyperlight_peb::HyperlightPEB;
 #[cfg(target_os = "windows")]
 use super::loaded_lib::LoadedLib;
 use super::memory_region::MemoryRegionFlags;
@@ -26,8 +30,12 @@ use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use super::shared_mem_snapshot::SharedMemorySnapshot;
 use crate::error::HyperlightError::NoMemorySnapshot;
+use crate::sandbox::sandbox_builder::{
+    SandboxMemorySections, BASE_ADDRESS, PDPT_OFFSET, PD_OFFSET, PT_OFFSET,
+};
 use crate::{log_then_return, new_error, HyperlightError, Result};
-use crate::sandbox::sandbox_builder::{SandboxMemorySections, BASE_ADDRESS, PDPT_OFFSET, PD_OFFSET, PT_OFFSET};
+use crate::error::HyperlightHostError;
+use crate::HyperlightError::{ExceptionDataLengthIncorrect, JsonConversionFailure, UTF8SliceConversionFailure};
 
 /// Paging Flags
 ///
@@ -41,7 +49,7 @@ const PAGE_USER: u64 = 1 << 2; // User/Supervisor (if this bit is set then the p
 const PAGE_NX: u64 = 1 << 63; // Execute Disable (if this bit is set then data in the page cannot be executed)
 
 // The amount of memory that can be mapped per page table
-pub(crate) const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200000;
+pub(crate) const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200_000;
 
 /// SandboxMemoryManager is a struct that pairs a `SharedMemory` and a `SandboxMemorySections` and
 /// allows you to snapshot and restore memory states.
@@ -113,34 +121,27 @@ where
     // TODO: This should perhaps happen earlier and use an
     // ExclusiveSharedMemory from the beginning.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn set_up_shared_memory(
-        &mut self,
-    ) -> Result<()> {
+    pub(crate) fn set_up_shared_memory(&mut self) -> Result<()> {
         let memory_size = self.memory_sections.get_total_size();
         let memory_sections = self.memory_sections.clone();
+
         self.shared_mem.with_exclusivity(|shared_mem| {
             let pml4_offset = self.memory_sections.get_paging_structures_offset().unwrap();
             let pdpt_offset = pml4_offset + PDPT_OFFSET;
-            let pd_offset = pdpt_offset + PD_OFFSET;
-            let pt_offset = pd_offset + PT_OFFSET;
+            let pd_offset = pml4_offset + PD_OFFSET;
+            let pt_offset = pml4_offset + PT_OFFSET;
 
             // Create PML4 table with only 1 PML4E
-            shared_mem.write_u64(
-                pml4_offset,
-                pdpt_offset as u64 | PAGE_PRESENT | PAGE_RW,
-            )?;
+            shared_mem.write_u64(pml4_offset, pdpt_offset as u64 | PAGE_PRESENT | PAGE_RW)?;
 
             // Create PDPT with only 1 PDPTE
-            shared_mem.write_u64(
-                pdpt_offset,
-                pd_offset as u64 | PAGE_PRESENT | PAGE_RW,
-            )?;
+            shared_mem.write_u64(pdpt_offset, pd_offset as u64 | PAGE_PRESENT | PAGE_RW)?;
 
             for i in 0..512 {
                 let offset = pd_offset + (i * 8);
-                let val_to_write: u64 = (pt_offset as u64 + (i * 4096) as u64)
-                    | PAGE_PRESENT
-                    | PAGE_RW;
+
+                let val_to_write: u64 =
+                    (pt_offset as u64 + (i * 4096) as u64) | PAGE_PRESENT | PAGE_RW;
                 shared_mem.write_u64(offset, val_to_write)?;
             }
 
@@ -156,8 +157,10 @@ where
             for p in 0..num_pages {
                 for i in 0..512 {
                     let offset = pt_offset + (p * 4096) + (i * 8);
+
                     // Each PTE maps a 4KB page
-                    let val_to_write = ((p << 21) as u64 | (i << 12) as u64) | Self::get_page_flags(p, i, &memory_sections)?;
+                    let val_to_write = ((p << 21) as u64 | (i << 12) as u64)
+                        | Self::get_page_flags(p, i, &memory_sections);
                     shared_mem.write_u64(offset, val_to_write)?;
                 }
             }
@@ -174,19 +177,19 @@ where
         self.load_addr != RawPtr::from(BASE_ADDRESS as u64)
     }
 
-    fn get_page_flags(
-        p: usize,
-        i: usize,
-        sandbox_memory_sections: &SandboxMemorySections,
-    ) -> Result<u64> {
+    fn get_page_flags(p: usize, i: usize, sandbox_memory_sections: &SandboxMemorySections) -> u64 {
         let addr = (p << 21) + (i << 12);
 
         // Find the memory section that contains this address
         match sandbox_memory_sections.sections.range(..=addr).next_back() {
-            Some((_, section)) if (section.page_aligned_guest_offset..(section.page_aligned_guest_offset + section.page_aligned_size)).contains(&addr) => {
-                Ok(Self::translate_flags(section.flags))
-            }
-            _ => Err(new_error!("Could not find region for address: {}", addr)),
+            Some((_, section))
+            if (section.page_aligned_guest_offset
+                ..(section.page_aligned_guest_offset + section.page_aligned_size))
+                .contains(&addr) =>
+                {
+                    Self::translate_flags(section.flags)
+                }
+            _ => 0, // If no section matches, default to not present
         }
     }
 
@@ -298,6 +301,315 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             },
         )
     }
+
+    /// Writes host function details to memory
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn write_buffer_host_function_details(&mut self, buffer: &[u8]) -> Result<()> {
+        let host_function_details = HostFunctionDetails::try_from(buffer).map_err(|e| {
+            new_error!(
+                "write_buffer_host_function_details: failed to convert buffer to HostFunctionDetails: {}",
+                e
+            )
+        })?;
+
+        let host_function_call_buffer: Vec<u8> = (&host_function_details).try_into().map_err(|_| {
+            new_error!(
+                "write_buffer_host_function_details: failed to convert HostFunctionDetails to Vec<u8>"
+            )
+        })?;
+
+        if host_function_call_buffer.len() > self.memory_sections.get_host_function_details_size().unwrap() {
+            log_then_return!(
+                "Host Function Details buffer is too big for the host_function_definitions buffer"
+            );
+        }
+
+        self.shared_mem.copy_from_slice(
+            host_function_call_buffer.as_slice(),
+            self.memory_sections.get_host_function_details_section_offset().unwrap(),
+        )?;
+        Ok(())
+    }
+}
+
+impl SandboxMemoryManager<GuestSharedMemory> {
+    pub(crate) fn write_hyperlight_peb(&mut self, hyperlight_peb: HyperlightPEB) -> Result<()> {
+        let hyperlight_peb_buffer: Vec<u8> = hyperlight_peb.try_into().map_err(|_| {
+            new_error!("write_hyperlight_peb: failed to convert HyperlightPEB to Vec<u8>")
+        })?;
+
+        if hyperlight_peb_buffer.len() > self.memory_sections.get_hyperlight_peb_size().unwrap() {
+            log_then_return!(
+                "Hyperlight PEB buffer is too big for the hyperlight_peb buffer"
+            );
+        }
+
+        self.shared_mem.copy_from_slice(
+            hyperlight_peb_buffer.as_slice(),
+            self.memory_sections.get_hyperlight_peb_section_offset().unwrap(),
+        )?;
+        Ok(())
+    }
+}
+
+impl SandboxMemoryManager<HostSharedMemory> {
+    // TODO(danbugs:297): bring back
+    // /// Check the stack guard of the memory in `shared_mem`, using
+    // /// `layout` to calculate its location.
+    // ///
+    // /// Return `true`
+    // /// if `shared_mem` could be accessed properly and the guard
+    // /// matches `cookie`. If it could be accessed properly and the
+    // /// guard doesn't match `cookie`, return `false`. Otherwise, return
+    // /// a descriptive error.
+    // ///
+    // /// This method could be an associated function instead. See
+    // /// documentation at the bottom `set_stack_guard` for description
+    // /// of why it isn't.
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    // pub(crate) fn check_stack_guard(&self, cookie: [u8; STACK_COOKIE_LEN]) -> Result<bool> {
+    //     let offset = self.layout.get_top_of_user_stack_offset();
+    //     let test_cookie: [u8; STACK_COOKIE_LEN] = self.shared_mem.read(offset)?;
+    //     let cmp_res = cookie.iter().cmp(test_cookie.iter());
+    //     Ok(cmp_res == Ordering::Equal)
+    // }
+
+    // TODO(danbugs:297): bring back
+    // /// Get the address of the dispatch function in memory
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    // pub(crate) fn get_pointer_to_dispatch_function(&self) -> Result<u64> {
+    //     let guest_dispatch_function_ptr = self
+    //         .shared_mem
+    //         .read::<u64>(self.layout.get_dispatch_function_pointer_offset())?;
+    //
+    //     // This pointer is written by the guest library but is accessible to
+    //     // the guest engine so we should bounds check it before we return it.
+    //     //
+    //     // When executing with in-hypervisor mode, there is no danger from
+    //     // the guest manipulating this memory location because the only
+    //     // addresses that are valid are in its own address space.
+    //     //
+    //     // When executing in-process, manipulating this pointer could cause the
+    //     // host to execute arbitrary functions.
+    //     let guest_ptr = GuestPtr::try_from(RawPtr::from(guest_dispatch_function_ptr))?;
+    //     guest_ptr.absolute()
+    // }
+    //
+    // /// Reads a host function call from memory
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    // pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
+    //     self.shared_mem.try_pop_buffer_into::<FunctionCall>(
+    //         self.layout.output_data_buffer_offset,
+    //         self.layout.sandbox_memory_config.get_output_data_size(),
+    //     )
+    // }
+    //
+    // /// Writes a function call result to memory
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    // pub(crate) fn write_response_from_host_method_call(&mut self, res: &ReturnValue) -> Result<()> {
+    //     let function_call_ret_val_buffer = Vec::<u8>::try_from(res).map_err(|_| {
+    //         new_error!(
+    //             "write_response_from_host_method_call: failed to convert ReturnValue to Vec<u8>"
+    //         )
+    //     })?;
+    //     self.shared_mem.push_buffer(
+    //         self.layout.input_data_buffer_offset,
+    //         self.layout.sandbox_memory_config.get_input_data_size(),
+    //         function_call_ret_val_buffer.as_slice(),
+    //     )
+    // }
+
+    /// Writes a guest function call to memory
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn write_guest_function_call(&mut self, buffer: &[u8]) -> Result<()> {
+        validate_guest_function_call_buffer(buffer).map_err(|e| {
+            new_error!(
+                "Guest function call buffer validation failed: {}",
+                e.to_string()
+            )
+        })?;
+
+        self.shared_mem.push_buffer(
+            self.memory_sections.get_input_section_offset().unwrap(),
+            self.memory_sections.get_input_data_size().unwrap(),
+            buffer,
+        )
+    }
+
+    /// Reads a function call result from memory
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_guest_function_call_result(&mut self) -> Result<ReturnValue> {
+        self.shared_mem.try_pop_buffer_into::<ReturnValue>(
+            self.memory_sections.get_output_section_offset().unwrap(),
+            self.memory_sections.get_output_data_size().unwrap(),
+        )
+    }
+
+    // TODO(danbugs:297): bring back
+    // /// Read guest log data from the `SharedMemory` contained within `self`
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    // pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
+    //     self.shared_mem.try_pop_buffer_into::<GuestLogData>(
+    //         self.layout.output_data_buffer_offset,
+    //         self.layout.sandbox_memory_config.get_output_data_size(),
+    //     )
+    // }
+
+    /// Get the length of the host exception
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn get_host_error_length(&self) -> Result<i32> {
+        let offset = self.memory_sections.get_host_error_section_offset().unwrap();
+        // The host exception field is expected to contain a 32-bit length followed by the exception data.
+        self.shared_mem.read::<i32>(offset)
+    }
+
+    /// Get a bool indicating if there is a host error
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn has_host_error(&self) -> Result<bool> {
+        let offset = self.memory_sections.get_host_error_section_offset().unwrap();
+        // The host exception field is expected to contain a 32-bit length followed by the exception data.
+        let len = self.shared_mem.read::<i32>(offset)?;
+        Ok(len != 0)
+    }
+
+    /// Get the error data that was written by the Hyperlight Host
+    /// Returns a `Result` containing 'Unit' or an error.Error
+    /// Writes the exception data to the buffer at `exception_data_ptr`.
+    ///
+    /// TODO: have this function return a Vec<u8> instead of requiring
+    /// the user pass in a slice of the same length as returned by
+    /// self.get_host_error_length()
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn get_host_error_data(&self, exception_data_slc: &mut [u8]) -> Result<()> {
+        let offset = self.memory_sections.get_host_error_section_offset().unwrap();
+        let len = self.get_host_error_length()?;
+
+        let exception_data_slc_len = exception_data_slc.len();
+        if exception_data_slc_len != len as usize {
+            log_then_return!(ExceptionDataLengthIncorrect(len, exception_data_slc_len));
+        }
+        // The host exception field is expected to contain a 32-bit length followed by the exception data.
+        self.shared_mem
+            .copy_to_slice(exception_data_slc, offset + size_of::<i32>())?;
+        Ok(())
+    }
+
+    /// Look for a `HyperlightError` generated by the host, and return
+    /// an `Ok(Some(the_error))` if we succeeded in looking for one, and
+    /// it was found. Return `Ok(None)` if we succeeded in looking for
+    /// one and it wasn't found. Return an `Err` if we did not succeed
+    /// in looking for one.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_host_error(&self) -> Result<Option<HyperlightHostError>> {
+        if self.has_host_error()? {
+            let host_err_len = {
+                let len_i32 = self.get_host_error_length()?;
+                usize::try_from(len_i32)
+            }?;
+            // create a Vec<u8> of length host_err_len.
+            // it's important we set the length, rather than just
+            // the capacity, because self.get_host_error_data ensures
+            // the length of the vec matches the return value of
+            // self.get_host_error_length()
+            let mut host_err_data: Vec<u8> = vec![0; host_err_len];
+            self.get_host_error_data(&mut host_err_data)?;
+            let host_err_json = from_utf8(&host_err_data).map_err(UTF8SliceConversionFailure)?;
+            let host_err: HyperlightHostError =
+                from_str(host_err_json).map_err(JsonConversionFailure)?;
+            Ok(Some(host_err))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get the guest error data
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_guest_error(&self) -> Result<GuestError> {
+        // get memory buffer max size
+        let err_buffer_size_offset = self.memory_sections.get_guest_error_section_offset().unwrap();
+        let max_err_buffer_size = self.shared_mem.read::<u64>(err_buffer_size_offset)?;
+
+        // get guest error from layout and shared mem
+        let mut guest_error_buffer = vec![b'0'; usize::try_from(max_err_buffer_size)?];
+        let err_msg_offset = self.memory_sections.get_guest_error_section_offset().unwrap();
+        self.shared_mem
+            .copy_to_slice(guest_error_buffer.as_mut_slice(), err_msg_offset)?;
+        GuestError::try_from(guest_error_buffer.as_slice()).map_err(|e| {
+            new_error!(
+                "get_guest_error: failed to convert buffer to GuestError: {}",
+                e
+            )
+        })
+    }
+
+    // TODO(danbugs:297): bring back
+    // /// This function writes an error to guest memory and is intended to be
+    // /// used when the host's outb handler code raises an error.
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    // fn write_outb_error(
+    //     &mut self,
+    //     guest_error_msg: &[u8],
+    //     host_exception_data: &[u8],
+    // ) -> Result<()> {
+    //     let message = String::from_utf8(guest_error_msg.to_owned())?;
+    //     let ge = GuestError::new(ErrorCode::OutbError, message);
+    //
+    //     let guest_error_buffer: Vec<u8> = (&ge)
+    //         .try_into()
+    //         .map_err(|_| new_error!("write_outb_error: failed to convert GuestError to Vec<u8>"))?;
+    //
+    //     let err_buffer_size_offset = self.layout.get_guest_error_buffer_size_offset();
+    //     let max_err_buffer_size = self.shared_mem.read::<u64>(err_buffer_size_offset)?;
+    //
+    //     if guest_error_buffer.len() as u64 > max_err_buffer_size {
+    //         log_then_return!("The guest error message is too large to fit in the shared memory");
+    //     }
+    //     self.shared_mem.copy_from_slice(
+    //         guest_error_buffer.as_slice(),
+    //         self.layout.guest_error_buffer_offset,
+    //     )?;
+    //
+    //     let host_exception_offset = self.layout.get_host_exception_offset();
+    //     let host_exception_size_offset = self.layout.get_host_exception_size_offset();
+    //     let max_host_exception_size = {
+    //         let size_u64 = self.shared_mem.read::<u64>(host_exception_size_offset)?;
+    //         usize::try_from(size_u64)
+    //     }?;
+    //
+    //     // First four bytes of host exception are length
+    //
+    //     if host_exception_data.len() > max_host_exception_size - size_of::<i32>() {
+    //         log_then_return!(ExceptionMessageTooBig(
+    //             host_exception_data.len(),
+    //             max_host_exception_size - size_of::<i32>()
+    //         ));
+    //     }
+    //
+    //     self.shared_mem
+    //         .write::<i32>(host_exception_offset, host_exception_data.len() as i32)?;
+    //     self.shared_mem.copy_from_slice(
+    //         host_exception_data,
+    //         host_exception_offset + size_of::<i32>(),
+    //     )?;
+    //
+    //     Ok(())
+    // }
+    //
+    // /// Read guest panic data from the `SharedMemory` contained within `self`
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    // pub fn read_guest_panic_context_data(&self) -> Result<Vec<u8>> {
+    //     let offset = self.layout.get_guest_panic_context_buffer_offset();
+    //     let buffer_size = {
+    //         let size_u64 = self
+    //             .shared_mem
+    //             .read::<u64>(self.layout.get_guest_panic_context_size_offset())?;
+    //         usize::try_from(size_u64)
+    //     }?;
+    //     let mut vec_out = vec![0; buffer_size];
+    //     self.shared_mem
+    //         .copy_to_slice(vec_out.as_mut_slice(), offset)?;
+    //     Ok(vec_out)
+    // }
 }
 
 // TODO(danbugs:297): bring back

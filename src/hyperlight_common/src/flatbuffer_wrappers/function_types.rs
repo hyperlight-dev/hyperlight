@@ -708,7 +708,7 @@ impl TryFrom<&ReturnValue> for Vec<u8> {
                         &mut builder,
                         &hlsizeprefixedbufferArgs {
                             value: Some(val),
-                            size_: v.len() as i32,
+                            size: v.len() as i32,
                         },
                     )
                 };

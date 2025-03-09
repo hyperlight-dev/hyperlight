@@ -56,6 +56,8 @@ type HLFunc = Arc<Mutex<Box<dyn FnMut(Vec<ParameterValue>) -> Result<ReturnValue
 
 /// Generic HyperlightFunction
 #[derive(Clone)]
+// TODO(danbugs:297): remove
+#[allow(unused)]
 pub struct HyperlightFunction(HLFunc);
 
 impl HyperlightFunction {

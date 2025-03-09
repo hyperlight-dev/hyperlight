@@ -16,8 +16,8 @@ limitations under the License.
 
 use tracing::{instrument, Span};
 
-use crate::Result;
 use crate::sandbox::sandbox_builder::BASE_ADDRESS;
+use crate::Result;
 
 /// A representation of a specific address space
 pub trait AddressSpace: std::cmp::Eq {
@@ -45,8 +45,8 @@ impl AddressSpace for GuestAddressSpace {
 
 #[cfg(test)]
 mod tests {
-    use crate::sandbox::sandbox_builder::BASE_ADDRESS;
     use super::{AddressSpace, GuestAddressSpace};
+    use crate::sandbox::sandbox_builder::BASE_ADDRESS;
 
     #[test]
     fn guest_addr_space_base() {

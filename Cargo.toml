@@ -21,7 +21,7 @@ exclude = [
     "src/tests/rust_guests/callbackguest",
     "src/tests/rust_guests/dummyguest",
     "src/tests/rust_guests/simpleguest",
-    # Note: This is a temporary guest to test
+    # TODO(danbugs:297): This is a temporary guest to test
     # the new memory layout. Once I'm done w/
     # the work, I'll delete it. `simpleguest`
     # and `callbackguest` will be demonstrative

@@ -26,3 +26,4 @@ pub mod host_function_definition;
 /// cbindgen:ignore
 pub mod host_function_details;
 pub mod util;
+pub mod hyperlight_peb;

@@ -24,14 +24,11 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result_from_int;
-use hyperlight_common::mem::RunMode;
 
 use crate::error::{HyperlightGuestError, Result};
 use crate::host_error::check_for_host_error;
 use crate::host_functions::validate_host_function_call;
-use crate::shared_input_data::try_pop_shared_input_data_into;
-use crate::shared_output_data::push_shared_output_data;
-use crate::{OUTB_PTR, OUTB_PTR_WITH_CONTEXT, P_PEB, RUNNING_MODE};
+use crate::{OUTB_PTR, OUTB_PTR_WITH_CONTEXT, PEB, RUNNING_MODE};
 
 pub enum OutBAction {
     Log = 99,
@@ -165,7 +162,7 @@ pub fn outb(port: u16, value: u8) {
             }
             RunMode::InProcessLinux | RunMode::InProcessWindows => {
                 if let Some(outb_func) = OUTB_PTR_WITH_CONTEXT {
-                    if let Some(peb_ptr) = P_PEB {
+                    if let Some(peb_ptr) = PEB {
                         outb_func((*peb_ptr).pOutbContext, port, value);
                     }
                 } else if let Some(outb_func) = OUTB_PTR {

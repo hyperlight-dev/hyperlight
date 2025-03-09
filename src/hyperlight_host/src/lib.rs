@@ -28,10 +28,9 @@ pub(crate) mod built_info {
 /// Dealing with errors, including errors across VM boundaries
 #[deny(dead_code, missing_docs, unused_mut)]
 pub mod error;
-// TODO(danbugs:297): bring back func
-// /// Wrappers for host and guest functions.
-// #[deny(dead_code, missing_docs, unused_mut)]
-// pub mod func;
+/// Wrappers for host and guest functions.
+#[deny(dead_code, missing_docs, unused_mut)]
+pub mod func;
 /// Wrappers for hypervisor implementations
 #[deny(dead_code, missing_docs, unused_mut)]
 pub mod hypervisor;
@@ -50,10 +49,9 @@ pub mod sandbox;
 /// `trait`s and other functionality for dealing with defining sandbox
 /// states and moving between them
 pub mod sandbox_state;
-// TODO(danbugs:297): bring back seccomp
-// /// Utilities for dealing with seccomp on Linux
-// #[cfg(all(feature = "seccomp", target_os = "linux"))]
-// pub(crate) mod seccomp;
+/// Utilities for dealing with seccomp on Linux
+#[cfg(all(feature = "seccomp", target_os = "linux"))]
+pub(crate) mod seccomp;
 /// Signal handling for Linux
 #[cfg(target_os = "linux")]
 pub(crate) mod signal_handlers;

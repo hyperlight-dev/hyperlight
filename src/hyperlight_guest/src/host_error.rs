@@ -19,11 +19,11 @@ use core::slice::from_raw_parts;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 
-use crate::P_PEB;
+use crate::PEB;
 
 pub(crate) fn check_for_host_error() {
     unsafe {
-        let peb_ptr = P_PEB.unwrap();
+        let peb_ptr = PEB.unwrap();
         let guest_error_buffer_ptr = (*peb_ptr).guestErrorData.guestErrorBuffer as *mut u8;
         let guest_error_buffer_size = (*peb_ptr).guestErrorData.guestErrorSize as usize;
 

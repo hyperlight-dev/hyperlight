@@ -16,9 +16,8 @@ limitations under the License.
 
 /// Configuration needed to establish a sandbox.
 pub mod config;
-// TODO(danbugs:297): bring back
-// /// Functionality for reading, but not modifying host functions
-// mod host_funcs;
+/// Functionality for reading, but not modifying host functions
+mod host_funcs;
 /// Functionality for dealing with `Sandbox`es that contain Hypervisors
 pub(crate) mod hypervisor;
 /// Functionality for dealing with initialized sandboxes that can
@@ -50,18 +49,19 @@ pub(crate) mod metrics;
 /// Functionality for creating a sandbox with a specific configuration
 pub mod sandbox_builder;
 
+use std::collections::HashMap;
 /// Re-export for `SandboxConfiguration` type
 pub use config::SandboxConfiguration;
 /// Re-export for the `MultiUseSandbox` type
 pub use initialized_multi_use::MultiUseSandbox;
 /// Re-export for `SandboxRunOptions` type
 pub use run_options::SandboxRunOptions;
-use tracing::{instrument, Span};
 /// Re-export for `GuestBinary` type
 pub use sandbox_builder::GuestBinary;
+use tracing::{instrument, Span};
 /// Re-export for `UninitializedSandbox` type
 pub use uninitialized::UninitializedSandbox;
-
+use crate::func::HyperlightFunction;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::windows_hypervisor_platform;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -83,52 +83,53 @@ pub fn is_supported_platform() -> bool {
     true
 }
 
-// TODO(danbugs:297): bring back
-// /// Alias for the type of extra allowed syscalls.
-// pub type ExtraAllowedSyscall = i64;
-//
-// /// A `HashMap` to map function names to `HyperlightFunction`s and their extra allowed syscalls.
-// ///
-// /// Note: you cannot add extra syscalls on Windows, but the field is still present to avoid a funky
-// /// conditional compilation setup. This isn't a big deal as this struct isn't public facing.
-// #[derive(Clone, Default)]
-// pub(super) struct FunctionsMap(
-//     HashMap<String, (HyperlightFunction, Option<Vec<ExtraAllowedSyscall>>)>,
-// );
-//
-// impl FunctionsMap {
-//     /// Insert a new entry into the map
-//     pub(super) fn insert(
-//         &mut self,
-//         key: String,
-//         value: HyperlightFunction,
-//         extra_syscalls: Option<Vec<ExtraAllowedSyscall>>,
-//     ) {
-//         self.0.insert(key, (value, extra_syscalls));
-//     }
-//
-//     /// Get the value associated with the given key, if it exists.
-//     pub(super) fn get(
-//         &self,
-//         key: &str,
-//     ) -> Option<&(HyperlightFunction, Option<Vec<ExtraAllowedSyscall>>)> {
-//         self.0.get(key)
-//     }
-//
-//     /// Get the length of the map.
-//     fn len(&self) -> usize {
-//         self.0.len()
-//     }
-// }
-//
-// impl PartialEq for FunctionsMap {
-//     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-//     fn eq(&self, other: &Self) -> bool {
-//         self.len() == other.len() && self.0.keys().all(|k| other.0.contains_key(k))
-//     }
-// }
-//
-// impl Eq for FunctionsMap {}
+/// Alias for the type of extra allowed syscalls.
+pub type ExtraAllowedSyscall = i64;
+
+/// A `HashMap` to map function names to `HyperlightFunction`s and their extra allowed syscalls.
+///
+/// Note: you cannot add extra syscalls on Windows, but the field is still present to avoid a funky
+/// conditional compilation setup. This isn't a big deal as this struct isn't public facing.
+#[derive(Clone, Default)]
+pub(super) struct FunctionsMap(
+    HashMap<String, (HyperlightFunction, Option<Vec<ExtraAllowedSyscall>>)>,
+);
+
+impl FunctionsMap {
+    /// Insert a new entry into the map
+    pub(super) fn insert(
+        &mut self,
+        key: String,
+        value: HyperlightFunction,
+        extra_syscalls: Option<Vec<ExtraAllowedSyscall>>,
+    ) {
+        self.0.insert(key, (value, extra_syscalls));
+    }
+
+    /// Get the value associated with the given key, if it exists.
+    // TODO(danbugs:297): remove
+    #[allow(unused)]
+    pub(super) fn get(
+        &self,
+        key: &str,
+    ) -> Option<&(HyperlightFunction, Option<Vec<ExtraAllowedSyscall>>)> {
+        self.0.get(key)
+    }
+
+    /// Get the length of the map.
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl PartialEq for FunctionsMap {
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.0.keys().all(|k| other.0.contains_key(k))
+    }
+}
+
+impl Eq for FunctionsMap {}
 
 /// Determine whether a suitable hypervisor is available to run
 /// this sandbox.

@@ -15,47 +15,51 @@ limitations under the License.
 */
 
 #![no_std]
-// Deps
-use alloc::string::ToString;
-use core::hint::unreachable_unchecked;
-use core::ptr::copy_nonoverlapping;
 
+// Deps
 use buddy_system_allocator::LockedHeap;
 use guest_function_register::GuestFunctionRegister;
-use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::mem::{HyperlightPEB, RunMode};
+use hyperlight_common::flatbuffer_wrappers::hyperlight_peb::{HyperlightPEB, RunMode};
 
-use crate::host_function_call::{outb, OutBAction};
 extern crate alloc;
 
 // Modules
 pub mod entrypoint;
-pub mod shared_input_data;
-pub mod shared_output_data;
-
-pub mod guest_error;
-pub mod guest_function_call;
+// TODO(danbugs:297): bring back
+// pub mod guest_error;
+// TODO(danbugs:297): bring back
+// pub mod guest_function_call;
 pub mod guest_function_definition;
 pub mod guest_function_register;
 
-pub mod host_error;
-pub mod host_function_call;
-pub mod host_functions;
+// TODO(danbugs:297): bring back
+// pub mod host_error;
+// TODO(danbugs:297): bring back
+// pub mod host_function_call;
+// TODO(danbugs:297): bring back
+// pub mod host_functions;
 
-pub(crate) mod guest_logger;
-pub mod memory;
-pub mod print;
-pub(crate) mod security_check;
+// TODO(danbugs:297): bring back
+// pub(crate) mod guest_logger;
+// TODO(danbugs:297): bring back
+// pub mod memory;
+// TODO(danbugs:297): bring back
+// pub mod print;
+// TODO(danbugs:297): bring back
+// pub(crate) mod security_check;
 pub mod setjmp;
 
-pub mod chkstk;
+// TODO(danbugs:297): bring back
+// pub mod chkstk;
 pub mod error;
-pub mod gdt;
-pub mod idt;
-pub mod idtr;
+// TODO(danbugs:297): bring back
+// pub mod gdt;
+// pub mod idt;
+// pub mod idtr;
 pub mod interrupt_entry;
 pub mod interrupt_handlers;
-pub mod logging;
+// TODO(danbugs:297): bring back
+// pub mod logging;
 
 // Unresolved symbols
 ///cbindgen:ignore
@@ -73,17 +77,19 @@ pub(crate) static _fltused: i32 = 0;
 #[allow(clippy::panic)]
 // to satisfy the clippy when cfg == test
 #[allow(dead_code)]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    unsafe {
-        let peb_ptr = P_PEB.unwrap();
-        copy_nonoverlapping(
-            info.to_string().as_ptr(),
-            (*peb_ptr).guestPanicContextData.guestPanicContextDataBuffer as *mut u8,
-            (*peb_ptr).guestPanicContextData.guestPanicContextDataSize as usize,
-        );
-    }
-    outb(OutBAction::Abort as u16, ErrorCode::UnknownError as u8);
-    unsafe { unreachable_unchecked() }
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // TODO(danbugs:297): bring back
+    //     unsafe {
+    //         let peb_ptr = PEB.unwrap();
+    //         copy_nonoverlapping(
+    //             info.to_string().as_ptr(),
+    //             (*peb_ptr).guestPanicContextData.guestPanicContextDataBuffer as *mut u8,
+    //             (*peb_ptr).guestPanicContextData.guestPanicContextDataSize as usize,
+    //         );
+    //     }
+    //     outb(OutBAction::Abort as u16, ErrorCode::UnknownError as u8);
+    //     unsafe { unreachable_unchecked() }
+    loop {}
 }
 
 // Globals
@@ -94,14 +100,13 @@ pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 #[no_mangle]
 pub(crate) static mut __security_cookie: u64 = 0;
 
-pub(crate) static mut P_PEB: Option<*mut HyperlightPEB> = None;
+pub(crate) static mut PEB: Option<HyperlightPEB> = None;
 pub static mut MIN_STACK_ADDRESS: u64 = 0;
-
-pub static mut OS_PAGE_SIZE: u32 = 0;
-pub(crate) static mut OUTB_PTR: Option<extern "win64" fn(u16, u8)> = None;
-pub(crate) static mut OUTB_PTR_WITH_CONTEXT: Option<
-    extern "win64" fn(*mut core::ffi::c_void, u16, u8),
-> = None;
+// TODO(danbugs:297): bring back
+// pub(crate) static mut OUTB_PTR: Option<extern "win64" fn(u16, u8)> = None;
+// pub(crate) static mut OUTB_PTR_WITH_CONTEXT: Option<
+//     extern "win64" fn(*mut core::ffi::c_void, u16, u8),
+// > = None;
 pub static mut RUNNING_MODE: RunMode = RunMode::None;
 
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =

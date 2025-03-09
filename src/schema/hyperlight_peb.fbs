@@ -1,0 +1,32 @@
+namespace Hyperlight.Generated;
+
+table HyperlightPEB {
+    guest_function_dispatch_ptr: uint64;
+
+    host_function_details_ptr: uint64;
+    host_function_details_size: uint64;
+
+    guest_error_data_ptr: uint64;
+    guest_error_data_size: uint64;
+
+    outb_ptr: uint64;
+
+    run_mode: uint64;
+
+    input_data_ptr: uint64;
+    input_data_size: uint64;
+
+    output_data_ptr: uint64;
+    output_data_size: uint64;
+
+    guest_panic_context_ptr: uint64;
+    guest_panic_context_size: uint64;
+
+    guest_heap_data_ptr: uint64;
+    guest_heap_data_size: uint64;
+
+    guest_stack_data_ptr: uint64;
+    guest_stack_data_size: uint64;
+}
+
+root_type HyperlightPEB;

@@ -33,7 +33,7 @@ use crate::Result;
 ///    in this case the state of the sandbox is not reset until the context is finished and the `MultiUseSandbox` is returned.
 pub struct MultiUseSandbox {
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
-    hv_handler: HypervisorHandler,
+    pub(crate) hv_handler: HypervisorHandler,
 }
 
 // We need to implement drop to join the
@@ -57,8 +57,7 @@ impl Drop for MultiUseSandbox {
 
 impl std::fmt::Debug for MultiUseSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MultiUseSandbox")
-            .finish()
+        f.debug_struct("MultiUseSandbox").finish()
     }
 }
 
@@ -174,7 +173,7 @@ impl MultiUseSandbox {
 impl Sandbox for MultiUseSandbox {}
 
 impl DevolvableSandbox<MultiUseSandbox, MultiUseSandbox, Noop<MultiUseSandbox, MultiUseSandbox>>
-for MultiUseSandbox
+    for MultiUseSandbox
 {
     /// Consume `self` and move it back to a `MultiUseSandbox` with previous state.
     ///
@@ -185,8 +184,7 @@ for MultiUseSandbox
     /// The devolve can be used to return the MultiUseSandbox to the state before the code was loaded. Thus avoiding initialisation overhead
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn devolve(mut self, _tsn: Noop<MultiUseSandbox, MultiUseSandbox>) -> Result<MultiUseSandbox> {
-        self.mem_mgr
-            .pop_and_restore_state_from_snapshot()?;
+        self.mem_mgr.pop_and_restore_state_from_snapshot()?;
         Ok(self)
     }
 }

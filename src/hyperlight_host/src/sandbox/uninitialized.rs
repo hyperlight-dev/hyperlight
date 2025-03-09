@@ -15,9 +15,9 @@ limitations under the License.
 */
 
 use std::fmt::Debug;
-
+use std::sync::{Arc, Mutex};
 use tracing::{instrument, Span};
-
+use hyperlight_common::flatbuffer_wrappers::hyperlight_peb::HyperlightPEB;
 #[cfg(gdb)]
 use super::config::DebugInfo;
 use super::uninitialized_evolve::evolve_impl_multi_use;
@@ -27,6 +27,7 @@ use crate::sandbox::SandboxConfiguration;
 use crate::sandbox_state::sandbox::{EvolvableSandbox, Sandbox};
 use crate::sandbox_state::transition::Noop;
 use crate::{MultiUseSandbox, Result};
+use crate::sandbox::host_funcs::HostFuncsWrapper;
 
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
 ///
@@ -36,6 +37,8 @@ use crate::{MultiUseSandbox, Result};
 /// call  `evolve` to transform your `UninitializedSandbox` into an initialized
 /// sandbox.
 pub struct UninitializedSandbox {
+    pub(crate) hyperlight_peb: HyperlightPEB,
+    pub(crate) host_funcs: Arc<Mutex<HostFuncsWrapper>>,
     pub(crate) mem_mgr: SandboxMemoryManager<ExclusiveSharedMemory>,
     pub(crate) config: SandboxConfiguration,
     #[cfg(gdb)]
@@ -53,11 +56,11 @@ impl Debug for UninitializedSandbox {
 impl Sandbox for UninitializedSandbox {}
 
 impl
-EvolvableSandbox<
-    UninitializedSandbox,
-    MultiUseSandbox,
-    Noop<UninitializedSandbox, MultiUseSandbox>,
-> for UninitializedSandbox
+    EvolvableSandbox<
+        UninitializedSandbox,
+        MultiUseSandbox,
+        Noop<UninitializedSandbox, MultiUseSandbox>,
+    > for UninitializedSandbox
 {
     /// Evolve `self` to a `MultiUseSandbox` without any additional metadata.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -69,11 +72,15 @@ EvolvableSandbox<
 impl UninitializedSandbox {
     /// Create a new uninitialized sandbox.
     pub(crate) fn new(
+        hyperlight_peb: HyperlightPEB,
         mem_mgr: SandboxMemoryManager<ExclusiveSharedMemory>,
         config: SandboxConfiguration,
         #[cfg(gdb)] debug_info: Option<DebugInfo>,
     ) -> Self {
+        // TODO(danbugs:297): add registering writer function to SandboxBuilder w/ syscalls and whatnot
         Self {
+            hyperlight_peb,
+            host_funcs: Arc::new(Mutex::new(HostFuncsWrapper::default())),
             mem_mgr,
             config,
             #[cfg(gdb)]
