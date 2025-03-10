@@ -18,7 +18,7 @@ use std::fmt::Debug;
 #[cfg(gdb)]
 use std::sync::{Arc, Mutex};
 
-use kvm_bindings::{kvm_regs, kvm_userspace_memory_region, KVM_MEM_READONLY};
+use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region, KVM_MEM_READONLY};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{instrument, Span};
@@ -39,6 +39,7 @@ use crate::sandbox::sandbox_builder::SandboxMemorySections;
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, Result};
+use crate::hypervisor::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -730,51 +731,50 @@ impl Hypervisor for KVMDriver {
         Ok(())
     }
 
-    // TODO(danbugs:297): bring back
-    // #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    // fn dispatch_call_from_host(
-    //     &mut self,
-    //     dispatch_func_addr: RawPtr,
-    //     outb_handle_fn: OutBHandlerWrapper,
-    //     mem_access_fn: MemAccessHandlerWrapper,
-    //     hv_handler: Option<HypervisorHandler>,
-    //     #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    // ) -> Result<()> {
-    //     // Reset general purpose registers except RSP, then set RIP
-    //     let rsp_before = self.vcpu_fd.get_regs()?.rsp;
-    //     let regs = kvm_regs {
-    //         rip: dispatch_func_addr.into(),
-    //         rsp: rsp_before,
-    //         ..Default::default()
-    //     };
-    //     self.vcpu_fd.set_regs(&regs)?;
-    //
-    //     // reset fpu state
-    //     let fpu = kvm_fpu {
-    //         fcw: FP_CONTROL_WORD_DEFAULT,
-    //         ftwx: FP_TAG_WORD_DEFAULT,
-    //         mxcsr: MXCSR_DEFAULT,
-    //         ..Default::default() // zero out the rest
-    //     };
-    //     self.vcpu_fd.set_fpu(&fpu)?;
-    //
-    //     // run
-    //     VirtualCPU::run(
-    //         self.as_mut_hypervisor(),
-    //         hv_handler,
-    //         outb_handle_fn,
-    //         mem_access_fn,
-    //         #[cfg(gdb)]
-    //         dbg_mem_access_fn,
-    //     )?;
-    //
-    //     // reset RSP to what it was before function call
-    //     self.vcpu_fd.set_regs(&kvm_regs {
-    //         rsp: rsp_before,
-    //         ..Default::default()
-    //     })?;
-    //     Ok(())
-    // }
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    fn dispatch_call_from_host(
+        &mut self,
+        dispatch_func_addr: RawPtr,
+        // outb_handle_fn: OutBHandlerWrapper,
+        mem_access_fn: MemAccessHandlerWrapper,
+        hv_handler: Option<HypervisorHandler>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    ) -> Result<()> {
+        // Reset general purpose registers except RSP, then set RIP
+        let rsp_before = self.vcpu_fd.get_regs()?.rsp;
+        let regs = kvm_regs {
+            rip: dispatch_func_addr.into(),
+            rsp: rsp_before,
+            ..Default::default()
+        };
+        self.vcpu_fd.set_regs(&regs)?;
+
+        // reset fpu state
+        let fpu = kvm_fpu {
+            fcw: FP_CONTROL_WORD_DEFAULT,
+            ftwx: FP_TAG_WORD_DEFAULT,
+            mxcsr: MXCSR_DEFAULT,
+            ..Default::default() // zero out the rest
+        };
+        self.vcpu_fd.set_fpu(&fpu)?;
+
+        // run
+        VirtualCPU::run(
+            self.as_mut_hypervisor(),
+            hv_handler,
+            // outb_handle_fn,
+            mem_access_fn,
+            #[cfg(gdb)]
+            dbg_mem_access_fn,
+        )?;
+
+        // reset RSP to what it was before function call
+        self.vcpu_fd.set_regs(&kvm_regs {
+            rsp: rsp_before,
+            ..Default::default()
+        })?;
+        Ok(())
+    }
     //
     // #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     // fn handle_io(

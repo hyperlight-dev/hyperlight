@@ -13,14 +13,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
+use alloc::vec::Vec;
 use core::arch::asm;
 
 use spin::Once;
-use hyperlight_common::flatbuffer_wrappers::hyperlight_peb::RunMode;
-use crate::{
-    __security_cookie, PEB, RUNNING_MODE,
-};
+use hyperlight_common::flatbuffer_wrappers::hyperlight_peb::{HyperlightPEB, RunMode};
+use crate::{__security_cookie, HEAP_ALLOCATOR, PEB, RUNNING_MODE};
+use crate::guest_function_call::dispatch_function;
 
 #[inline(never)]
 pub fn halt() {
@@ -32,7 +31,6 @@ pub fn halt() {
 }
 
 // TODO(danbugs:297): delete
-pub fn dummy() {}
 #[no_mangle]
 pub fn __chkstk() {}
 
@@ -61,11 +59,11 @@ pub fn __chkstk() {}
 //     outb(OutBAction::Abort as u16, code as u8);
 //     unreachable!()
 // }
-//
-// extern "C" {
-//     fn hyperlight_main();
-//     fn srand(seed: u32);
-// }
+
+extern "C" {
+    fn hyperlight_main();
+    //     fn srand(seed: u32);
+}
 
 static INIT: Once = Once::new();
 
@@ -80,75 +78,91 @@ pub extern "win64" fn entrypoint(
 ) {
     INIT.call_once(|| {
         unsafe {
-            let peb_slice: &[u8] = core::slice::from_raw_parts(
-                hyperlight_peb_ptr as *const u8,
+            let peb_slice: &mut [u8] = core::slice::from_raw_parts_mut(
+                hyperlight_peb_ptr as *mut u8,
                 hyperlight_peb_size as usize,
             );
-            PEB = Some(peb_slice.try_into().unwrap());
-            let val = PEB.clone().unwrap().run_mode.unwrap();
+            let mut peb: HyperlightPEB = peb_slice.try_into().unwrap();
+            let run_mode = peb.run_mode.clone().unwrap();
 
-            __security_cookie = hyperlight_peb_ptr ^ seed;
-            // let srand_seed = ((hyperlight_peb_ptr << 8 ^ seed >> 4) >> 32) as u32;
-            // // Set the seed for the random number generator for C code using rand;
-            // srand(srand_seed);
-            //
-            // // set up the logger
-            // let max_log_level = LevelFilter::iter()
-            //     .nth(max_log_level as usize)
-            //     .expect("Invalid log level");
-            // init_logger(max_log_level);
-            //
-            //         match (*peb_ptr).runMode {
-            //             RunMode::Hypervisor => {
-            RUNNING_MODE = RunMode::Hypervisor;
-            //                 // This static is to make it easier to implement the __chkstk function in assembly.
-            //                 // It also means that should we change the layout of the struct in the future, we
-            //                 // don't have to change the assembly code.
-            //                 MIN_STACK_ADDRESS = (*peb_ptr).gueststackData.minUserStackAddress;
-            //
-            //                 // Setup GDT and IDT
-            //                 load_gdt();
-            //                 load_idt();
-            //             }
-            //             RunMode::InProcessLinux | RunMode::InProcessWindows => {
-            //                 RUNNING_MODE = (*peb_ptr).runMode;
-            //
-            //                 OUTB_PTR = {
-            //                     let outb_ptr: extern "win64" fn(u16, u8) =
-            //                         core::mem::transmute((*peb_ptr).pOutb);
-            //                     Some(outb_ptr)
-            //                 };
-            //
-            //                 if (*peb_ptr).pOutbContext.is_null() {
-            //                     panic!("OutbContext is null");
-            //                 }
-            //
-            //                 OUTB_PTR_WITH_CONTEXT = {
-            //                     let outb_ptr_with_context: extern "win64" fn(*mut c_void, u16, u8) =
-            //                         core::mem::transmute((*peb_ptr).pOutb);
-            //                     Some(outb_ptr_with_context)
-            //                 };
-            //             }
-            //             _ => {
-            //                 panic!("Invalid runmode in PEB");
-            //             }
-            //         }
-            //
-            //         let heap_start = (*peb_ptr).guestheapData.guestHeapBuffer as usize;
-            //         let heap_size = (*peb_ptr).guestheapData.guestHeapSize as usize;
-            //         HEAP_ALLOCATOR
-            //             .try_lock()
-            //             .expect("Failed to access HEAP_ALLOCATOR")
-            //             .init(heap_start, heap_size);
-            //
-            //
-            //         (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
-            //
-            //         reset_error();
-            //
-            //         hyperlight_main();
+            __security_cookie = seed;
+
+            let heap_start = peb.guest_heap_data_ptr.unwrap() as usize;
+            let heap_size = peb.guest_heap_data_size.unwrap() as usize;
+            HEAP_ALLOCATOR
+                .try_lock()
+                .expect("Failed to access HEAP_ALLOCATOR")
+                .init(heap_start, heap_size);
+
+            match run_mode {
+                RunMode::Hypervisor => {
+                    RUNNING_MODE = RunMode::Hypervisor;
+                }
+                RunMode::InProcessLinux | RunMode::InProcessWindows => {
+                    RUNNING_MODE = run_mode;
+                }
+                _ => {
+                    panic!("Invalid runmode in PEB");
+                }
+            }
+
+            dispatch_function();
+
+            peb.guest_function_dispatch_ptr = Some(dispatch_function as usize as u64);
+            PEB = Some(peb.clone());
+            let peb_serialized: Vec<u8> = peb.try_into().unwrap();
+            core::slice::from_raw_parts_mut(hyperlight_peb_ptr as *mut u8, peb_serialized.len())
+                .copy_from_slice(&peb_serialized);
+
+            hyperlight_main();
         }
     });
 
     halt();
 }
+
+// let srand_seed = ((hyperlight_peb_ptr << 8 ^ seed >> 4) >> 32) as u32;
+// // Set the seed for the random number generator for C code using rand;
+// srand(srand_seed);
+//
+// // set up the logger
+// let max_log_level = LevelFilter::iter()
+//     .nth(max_log_level as usize)
+//     .expect("Invalid log level");
+// init_logger(max_log_level);
+
+//                 // This static is to make it easier to implement the __chkstk function in assembly.
+//                 // It also means that should we change the layout of the struct in the future, we
+//                 // don't have to change the assembly code.
+//                 MIN_STACK_ADDRESS = (*peb_ptr).gueststackData.minUserStackAddress;
+//
+//                 // Setup GDT and IDT
+//                 load_gdt();
+//                 load_idt();
+
+//
+//                 OUTB_PTR = {
+//                     let outb_ptr: extern "win64" fn(u16, u8) =
+//                         core::mem::transmute((*peb_ptr).pOutb);
+//                     Some(outb_ptr)
+//                 };
+//
+//                 if (*peb_ptr).pOutbContext.is_null() {
+//                     panic!("OutbContext is null");
+//                 }
+//
+//                 OUTB_PTR_WITH_CONTEXT = {
+//                     let outb_ptr_with_context: extern "win64" fn(*mut c_void, u16, u8) =
+//                         core::mem::transmute((*peb_ptr).pOutb);
+//                     Some(outb_ptr_with_context)
+//                 };
+//
+//         let heap_start = (*peb_ptr).guestheapData.guestHeapBuffer as usize;
+//         let heap_size = (*peb_ptr).guestheapData.guestHeapSize as usize;
+//         HEAP_ALLOCATOR
+//             .try_lock()
+//             .expect("Failed to access HEAP_ALLOCATOR")
+//             .init(heap_start, heap_size);
+//
+//
+//         reset_error();

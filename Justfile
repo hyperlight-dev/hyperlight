@@ -46,13 +46,13 @@ build-rust-guests target=default-target:
 #    cd src/tests/rust_guests/customguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
 
 @move-rust-guests target=default-target:
-    cp {{ callbackguest_source }}/{{ target }}/callbackguest* {{ rust_guests_bin_dir }}/{{ target }}/
-    cp {{ callbackguest_msvc_source }}/{{ target }}/callbackguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ simpleguest_source }}/{{ target }}/simpleguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ simpleguest_msvc_source }}/{{ target }}/simpleguest* {{ rust_guests_bin_dir }}/{{ target }}/
-    cp {{ dummyguest_source }}/{{ target }}/dummyguest* {{ rust_guests_bin_dir }}/{{ target }}/
-    # TODO(danbugs:297): Delete
-    cp {{ customguest_source }}/{{ target }}/customguest* {{ rust_guests_bin_dir }}/{{ target }}/
+# TODO(danbugs:297): Delete
+#    cp {{ callbackguest_source }}/{{ target }}/callbackguest* {{ rust_guests_bin_dir }}/{{ target }}/
+#    cp {{ callbackguest_msvc_source }}/{{ target }}/callbackguest* {{ rust_guests_bin_dir }}/{{ target }}/
+#    cp {{ dummyguest_source }}/{{ target }}/dummyguest* {{ rust_guests_bin_dir }}/{{ target }}/
+#    cp {{ customguest_source }}/{{ target }}/customguest* {{ rust_guests_bin_dir }}/{{ target }}/
 
 build-and-move-rust-guests: (build-rust-guests "debug") (move-rust-guests "debug") (build-rust-guests "release") (move-rust-guests "release")
 build-and-move-c-guests: (build-c-guests "debug") (move-c-guests "debug") (build-c-guests "release") (move-c-guests "release")

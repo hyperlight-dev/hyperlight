@@ -136,7 +136,7 @@ impl HvHandlerExecVars {
             .thread_id
             .try_lock()
             .map_err(|_| new_error!("Failed to get_thread_id"))?)
-        .ok_or_else(|| new_error!("thread_id not set"))
+            .ok_or_else(|| new_error!("thread_id not set"))
     }
 
     #[cfg(target_os = "windows")]
@@ -188,8 +188,6 @@ pub(crate) struct HvHandlerConfig {
     pub(crate) hyperlight_peb_guest_memory_region_address: u64,
     pub(crate) hyperlight_peb_guest_memory_region_size: u64,
     pub(crate) seed: u64,
-    // TODO(danbugs:297) bring back
-    // pub(crate) dispatch_function_addr: Arc<Mutex<Option<RawPtr>>>,
     pub(crate) max_init_time: Duration,
     pub(crate) max_exec_time: Duration,
     pub(crate) mem_access_handler: MemAccessHandlerWrapper,
@@ -247,7 +245,8 @@ impl HypervisorHandler {
         sandbox_memory_manager: SandboxMemoryManager<GuestSharedMemory>,
         #[cfg(gdb)] debug_info: Option<DebugInfo>,
     ) -> Result<()> {
-        let configuration = self.configuration.clone();
+        let mut mem_mgr = sandbox_memory_manager.clone();
+        let mut configuration = self.configuration.clone();
         #[cfg(target_os = "windows")]
         let in_process = sandbox_memory_manager.is_in_process();
 
@@ -283,7 +282,7 @@ impl HypervisorHandler {
         let to_handler_rx = self.communication_channels.to_handler_rx.clone();
         let mut execution_variables = self.execution_variables.clone();
         let from_handler_tx = self.communication_channels.from_handler_tx.clone();
-        let hv_handler_clone = self.clone();
+        let mut hv_handler_clone = self.clone();
 
         // Hyperlight has two signal handlers:
         // (1) for timeouts, and
@@ -298,7 +297,7 @@ impl HypervisorHandler {
             thread::Builder::new()
                 .name("Hypervisor Handler".to_string())
                 .spawn(move || -> Result<()> {
-                    let mut hv: Option<Box<dyn Hypervisor>>;
+                    let mut hv: Option<Box<dyn Hypervisor>> = None;
                     for action in to_handler_rx {
                         match action {
                             HypervisorHandlerAction::Initialise => {
@@ -367,6 +366,11 @@ impl HypervisorHandler {
                                 drop(mem_lock_guard);
                                 drop(evar_lock_guard);
 
+                                // The guest will set the dispatch function address, so, in here, we update the PEB to contain
+                                // the updated value from shared memory.
+                                configuration.hyperlight_peb = mem_mgr.update_peb_after_init()?;
+                                hv_handler_clone.configuration = configuration.clone();
+
                                 execution_variables.running.store(false, Ordering::SeqCst);
 
                                 match res {
@@ -389,115 +393,104 @@ impl HypervisorHandler {
                                     }
                                 }
                             }
-                            HypervisorHandlerAction::DispatchCallFromHost(_function_name) => {
-                                // TODO(danbugs:297): bring back
-                                // let hv = hv.as_mut().unwrap();
-                                //
-                                // // Lock to indicate an action is being performed in the hypervisor
-                                // execution_variables.running.store(true, Ordering::SeqCst);
-                                //
-                                // #[cfg(target_os = "linux")]
-                                // execution_variables.run_cancelled.store(false);
-                                //
-                                // info!("Dispatching call from host: {}", function_name);
-                                //
-                                // let dispatch_function_addr = configuration
-                                //     .dispatch_function_addr
-                                //     .clone()
-                                //     .try_lock()
-                                //     .map_err(|e| {
-                                //         new_error!(
-                                //             "Error locking at {}:{}: {}",
-                                //             file!(),
-                                //             line!(),
-                                //             e
-                                //         )
-                                //     })?
-                                //     .clone()
-                                //     .ok_or_else(|| new_error!("Hypervisor not initialized"))?;
-                                //
-                                // let mut evar_lock_guard =
-                                //     execution_variables.shm.try_lock().map_err(|e| {
-                                //         new_error!(
-                                //             "Error locking exec var shm lock: {}:{}: {}",
-                                //             file!(),
-                                //             line!(),
-                                //             e
-                                //         )
-                                //     })?;
-                                // // This apparently-useless lock is
-                                // // needed to ensure the host does not
-                                // // make unsynchronized accesses while
-                                // // the guest is executing.  See the
-                                // // documentation for
-                                // // GuestSharedMemory::lock.
-                                // let mem_lock_guard = evar_lock_guard
-                                //     .as_mut()
-                                //     .ok_or_else(|| {
-                                //         new_error!("guest shm lock {}:{}", file!(), line!())
-                                //     })?
-                                //     .shared_mem
-                                //     .lock
-                                //     .try_read();
-                                //
-                                // let res = {
-                                //     #[cfg(feature = "function_call_metrics")]
-                                //     {
-                                //         let start = std::time::Instant::now();
-                                //         let result = hv.dispatch_call_from_host(
-                                //             dispatch_function_addr,
-                                //             configuration.outb_handler.clone(),
-                                //             configuration.mem_access_handler.clone(),
-                                //             Some(hv_handler_clone.clone()),
-                                //             #[cfg(gdb)]
-                                //             configuration.dbg_mem_access_handler.clone(),
-                                //         );
-                                //         histogram_vec_observe!(
-                                //             &GuestFunctionCallDurationMicroseconds,
-                                //             &[function_name.as_str()],
-                                //             start.elapsed().as_micros() as f64
-                                //         );
-                                //         result
-                                //     }
-                                //
-                                //     #[cfg(not(feature = "function_call_metrics"))]
-                                //     hv.dispatch_call_from_host(
-                                //         dispatch_function_addr,
-                                //         configuration.outb_handler.clone(),
-                                //         configuration.mem_access_handler.clone(),
-                                //         Some(hv_handler_clone.clone()),
-                                //         #[cfg(gdb)]
-                                //         configuration.dbg_mem_access_handler.clone(),
-                                //     )
-                                // };
-                                // drop(mem_lock_guard);
-                                // drop(evar_lock_guard);
-                                //
-                                // execution_variables.running.store(false, Ordering::SeqCst);
-                                //
-                                // match res {
-                                //     Ok(_) => {
-                                //         log::info!(
-                                //             "Finished dispatching call from host: {}",
-                                //             function_name
-                                //         );
-                                //         from_handler_tx
-                                //             .send(HandlerMsg::FinishedHypervisorHandlerAction)
-                                //             .map_err(|_| {
-                                //                 HyperlightError::HypervisorHandlerCommunicationFailure()
-                                //             })?;
-                                //     }
-                                //     Err(e) => {
-                                //         log::info!(
-                                //             "Error dispatching call from host: {}: {:?}",
-                                //             function_name,
-                                //             e
-                                //         );
-                                //         from_handler_tx.send(HandlerMsg::Error(e)).map_err(|_| {
-                                //             HyperlightError::HypervisorHandlerCommunicationFailure()
-                                //         })?;
-                                //     }
-                                // }
+                            HypervisorHandlerAction::DispatchCallFromHost(function_name) => {
+                                let hv = hv.as_mut().unwrap();
+
+                                // Lock to indicate an action is being performed in the hypervisor
+                                execution_variables.running.store(true, Ordering::SeqCst);
+
+                                #[cfg(target_os = "linux")]
+                                execution_variables.run_cancelled.store(false);
+
+                                info!("Dispatching call from host: {}", function_name);
+
+                                let dispatch_function_addr = RawPtr(configuration
+                                    .hyperlight_peb
+                                    .guest_function_dispatch_ptr
+                                    .ok_or_else(|| new_error!("Hypervisor not initialized"))?);
+
+                                let mut evar_lock_guard =
+                                    execution_variables.shm.try_lock().map_err(|e| {
+                                        new_error!(
+                                            "Error locking exec var shm lock: {}:{}: {}",
+                                            file!(),
+                                            line!(),
+                                            e
+                                        )
+                                    })?;
+                                // This apparently-useless lock is
+                                // needed to ensure the host does not
+                                // make unsynchronized accesses while
+                                // the guest is executing.  See the
+                                // documentation for
+                                // GuestSharedMemory::lock.
+                                let mem_lock_guard = evar_lock_guard
+                                    .as_mut()
+                                    .ok_or_else(|| {
+                                        new_error!("guest shm lock {}:{}", file!(), line!())
+                                    })?
+                                    .shared_mem
+                                    .lock
+                                    .try_read();
+
+                                let res = {
+                                    #[cfg(feature = "function_call_metrics")]
+                                    {
+                                        let start = std::time::Instant::now();
+                                        let result = hv.dispatch_call_from_host(
+                                            dispatch_function_addr,
+                                            // configuration.outb_handler.clone(),
+                                            configuration.mem_access_handler.clone(),
+                                            Some(hv_handler_clone.clone()),
+                                            #[cfg(gdb)]
+                                            configuration.dbg_mem_access_handler.clone(),
+                                        );
+                                        histogram_vec_observe!(
+                                            &GuestFunctionCallDurationMicroseconds,
+                                            &[function_name.as_str()],
+                                            start.elapsed().as_micros() as f64
+                                        );
+                                        result
+                                    }
+
+                                    #[cfg(not(feature = "function_call_metrics"))]
+                                    hv.dispatch_call_from_host(
+                                        dispatch_function_addr,
+                                        // configuration.outb_handler.clone(),
+                                        configuration.mem_access_handler.clone(),
+                                        Some(hv_handler_clone.clone()),
+                                        #[cfg(gdb)]
+                                        configuration.dbg_mem_access_handler.clone(),
+                                    )
+                                };
+                                drop(mem_lock_guard);
+                                drop(evar_lock_guard);
+
+                                execution_variables.running.store(false, Ordering::SeqCst);
+
+                                match res {
+                                    Ok(_) => {
+                                        log::info!(
+                                            "Finished dispatching call from host: {}",
+                                            function_name
+                                        );
+                                        from_handler_tx
+                                            .send(HandlerMsg::FinishedHypervisorHandlerAction)
+                                            .map_err(|_| {
+                                                HyperlightError::HypervisorHandlerCommunicationFailure()
+                                            })?;
+                                    }
+                                    Err(e) => {
+                                        log::info!(
+                                            "Error dispatching call from host: {}: {:?}",
+                                            function_name,
+                                            e
+                                        );
+                                        from_handler_tx.send(HandlerMsg::Error(e)).map_err(|_| {
+                                            HyperlightError::HypervisorHandlerCommunicationFailure()
+                                        })?;
+                                    }
+                                }
                             }
                             HypervisorHandlerAction::TerminateHandlerThread => {
                                 info!("Terminating Hypervisor Handler Thread");
@@ -807,7 +800,7 @@ impl HypervisorHandler {
                         0,
                         0,
                     )
-                    .map_err(|e| new_error!("Failed to cancel guest execution {:?}", e))?;
+                        .map_err(|e| new_error!("Failed to cancel guest execution {:?}", e))?;
                 }
             }
             // if running in-process on windows, we currently have no way of cancelling the execution

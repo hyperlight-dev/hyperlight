@@ -30,9 +30,9 @@ const DEFAULT_GUEST_STACK_SECTION_NAME: &str = "guest stack";
 const DEFAULT_HYPERLIGHT_PEB_SECTION_NAME: &str = "HyperlightPEB";
 const DEFAULT_PAGING_STRUCTURES_SECTION_NAME: &str = "paging structures";
 pub(crate) const BASE_ADDRESS: usize = 0x0;
-pub(crate) const PDPT_OFFSET: usize = 0x1000;
-pub(crate) const PD_OFFSET: usize = 0x2000;
-pub(crate) const PT_OFFSET: usize = 0x3000;
+pub(crate) const PDPT_OFFSET: usize = 0x1000; // this offset is from the PML4 base address
+pub(crate) const PD_OFFSET: usize = 0x2000; // this offset is from the PML4 base address
+pub(crate) const PT_OFFSET: usize = 0x3000; // this offset is from the PML4 base address
 
 /// TODO: comment
 #[derive(Debug, Clone)]
@@ -817,8 +817,20 @@ impl SandboxBuilder {
         );
 
         // Allocate memory on host
-        let exclusive_shared_memory =
+        let mut exclusive_shared_memory =
             ExclusiveSharedMemory::new(sandbox_builder.get_total_page_aligned_memory_size())?;
+
+        // At the start of the input and output data sections, we hold an u64 containing
+        // the pointer to where to write input/output data next. We start at 8 because that's the
+        // size of the u64 itself (i.e., in bytes).
+        exclusive_shared_memory.write_u64(
+            sandbox_builder.memory_sections.get_input_section_offset().unwrap(),
+            8,
+        )?;
+        exclusive_shared_memory.write_u64(
+            sandbox_builder.memory_sections.get_output_section_offset().unwrap(),
+            8,
+        )?;
 
         // Set run mode
         let run_mode = if sandbox_builder.sandbox_run_options.in_process() {
@@ -892,6 +904,7 @@ impl SandboxBuilder {
 mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType, ReturnValue};
     use hyperlight_testing::simple_guest_as_string;
     use crate::func::HostFunction0;
     use super::*;
@@ -900,6 +913,7 @@ mod tests {
 
     #[test]
     fn test_sandbox_builder() -> Result<()> {
+        // Tests building an uninitialized sandbox w/ the sandbox builder
         let sandbox_builder =
             SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?
                 .set_guest_debug_info(DebugInfo { port: 8080 })
@@ -907,6 +921,7 @@ mod tests {
 
         let mut uninitialized_sandbox = sandbox_builder.build()?;
 
+        // Tests registering a host function
         fn sleep_5_secs() -> Result<()> {
             thread::sleep(Duration::from_secs(5));
             Ok(())
@@ -914,7 +929,16 @@ mod tests {
         let host_function = Arc::new(Mutex::new(sleep_5_secs));
         host_function.register(&mut uninitialized_sandbox, "Sleep5Secs")?;
 
-        uninitialized_sandbox.evolve(Noop::default())?;
+        // Tests evolving to a multi-use sandbox
+        let multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+        // let result = multi_use_sandbox.call_guest_function_by_name(
+        //     "SimpleAdd",
+        //     ReturnType::Int,
+        //     Some(vec![ParameterValue::Int(1), ParameterValue::Int(41)]),
+        // )?;
+        //
+        // assert_eq!(result, ReturnValue::Int(42));
 
         Ok(())
     }

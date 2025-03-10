@@ -12,6 +12,7 @@ members = [
     "src/hyperlight_guest_capi",
     "src/hyperlight_testing",
     "src/hyperlight_host/fuzz",
+#    "src/tests/rust_guests/simpleguest",
 ]
 # Because hyperlight-guest has custom linker flags,
 # we exclude it from the default-members list
@@ -20,7 +21,7 @@ members = [
 exclude = [
     "src/tests/rust_guests/callbackguest",
     "src/tests/rust_guests/dummyguest",
-    "src/tests/rust_guests/simpleguest",
+     "src/tests/rust_guests/simpleguest",
     # TODO(danbugs:297): This is a temporary guest to test
     # the new memory layout. Once I'm done w/
     # the work, I'll delete it. `simpleguest`

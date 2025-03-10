@@ -30,8 +30,8 @@ use std::fmt::{Debug, Formatter};
 use mshv_bindings::hv_message;
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
-    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, SegmentRegister,
-    SpecialRegisters, StandardRegisters,
+    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
+    FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters,
 };
 #[cfg(mshv3)]
 use mshv_bindings::{
@@ -50,9 +50,10 @@ use super::{
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
-use crate::mem::ptr::GuestPtr;
+use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::sandbox::sandbox_builder::SandboxMemorySections;
 use crate::{log_then_return, Result};
+use crate::hypervisor::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -237,53 +238,52 @@ impl Hypervisor for HypervLinuxDriver {
         Ok(())
     }
 
-    // TODO(danbugs:297): bring back
-    // #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    // fn dispatch_call_from_host(
-    //     &mut self,
-    //     dispatch_func_addr: RawPtr,
-    //     outb_handle_fn: OutBHandlerWrapper,
-    //     mem_access_fn: MemAccessHandlerWrapper,
-    //     hv_handler: Option<HypervisorHandler>,
-    //     #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    // ) -> Result<()> {
-    //     // Reset general purpose registers except RSP, then set RIP
-    //     let rsp_before = self.vcpu_fd.get_regs()?.rsp;
-    //     let regs = StandardRegisters {
-    //         rip: dispatch_func_addr.into(),
-    //         rsp: rsp_before,
-    //         rflags: 2, //bit 1 of rlags is required to be set
-    //         ..Default::default()
-    //     };
-    //     self.vcpu_fd.set_regs(&regs)?;
-    //
-    //     // reset fpu state
-    //     let fpu = FloatingPointUnit {
-    //         fcw: FP_CONTROL_WORD_DEFAULT,
-    //         ftwx: FP_TAG_WORD_DEFAULT,
-    //         mxcsr: MXCSR_DEFAULT,
-    //         ..Default::default() // zero out the rest
-    //     };
-    //     self.vcpu_fd.set_fpu(&fpu)?;
-    //
-    //     // run
-    //     VirtualCPU::run(
-    //         self.as_mut_hypervisor(),
-    //         hv_handler,
-    //         outb_handle_fn,
-    //         mem_access_fn,
-    //         #[cfg(gdb)]
-    //         dbg_mem_access_fn,
-    //     )?;
-    //
-    //     // reset RSP to what it was before function call
-    //     self.vcpu_fd.set_regs(&StandardRegisters {
-    //         rsp: rsp_before,
-    //         rflags: 2, //bit 1 of rlags is required to be set
-    //         ..Default::default()
-    //     })?;
-    //     Ok(())
-    // }
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    fn dispatch_call_from_host(
+        &mut self,
+        dispatch_func_addr: RawPtr,
+        // outb_handle_fn: OutBHandlerWrapper,
+        mem_access_fn: MemAccessHandlerWrapper,
+        hv_handler: Option<HypervisorHandler>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    ) -> Result<()> {
+        // Reset general purpose registers except RSP, then set RIP
+        let rsp_before = self.vcpu_fd.get_regs()?.rsp;
+        let regs = StandardRegisters {
+            rip: dispatch_func_addr.into(),
+            rsp: rsp_before,
+            rflags: 2, //bit 1 of rlags is required to be set
+            ..Default::default()
+        };
+        self.vcpu_fd.set_regs(&regs)?;
+
+        // reset fpu state
+        let fpu = FloatingPointUnit {
+            fcw: FP_CONTROL_WORD_DEFAULT,
+            ftwx: FP_TAG_WORD_DEFAULT,
+            mxcsr: MXCSR_DEFAULT,
+            ..Default::default() // zero out the rest
+        };
+        self.vcpu_fd.set_fpu(&fpu)?;
+
+        // run
+        VirtualCPU::run(
+            self.as_mut_hypervisor(),
+            hv_handler,
+            // outb_handle_fn,
+            mem_access_fn,
+            #[cfg(gdb)]
+            dbg_mem_access_fn,
+        )?;
+
+        // reset RSP to what it was before function call
+        self.vcpu_fd.set_regs(&StandardRegisters {
+            rsp: rsp_before,
+            rflags: 2, //bit 1 of rlags is required to be set
+            ..Default::default()
+        })?;
+        Ok(())
+    }
     //
     // #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     // fn handle_io(

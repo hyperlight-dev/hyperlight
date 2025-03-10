@@ -15,7 +15,8 @@ limitations under the License.
 */
 
 use tracing::{instrument, Span};
-
+use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType, ReturnValue};
+use crate::func::guest_dispatch::call_function_on_guest;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -150,18 +151,18 @@ impl MultiUseSandbox {
     //     MultiUseGuestCallContext::start(self)
     // }
     //
-    // /// Call a guest function by name, with the given return type and arguments.
-    // #[instrument(err(Debug), skip(self, args), parent = Span::current())]
-    // pub fn call_guest_function_by_name(
-    //     &mut self,
-    //     func_name: &str,
-    //     func_ret_type: ReturnType,
-    //     args: Option<Vec<ParameterValue>>,
-    // ) -> Result<ReturnValue> {
-    //     let res = call_function_on_guest(self, func_name, func_ret_type, args);
-    //     self.restore_state()?;
-    //     res
-    // }
+    /// Call a guest function by name, with the given return type and arguments.
+    #[instrument(err(Debug), skip(self, args), parent = Span::current())]
+    pub fn call_guest_function_by_name(
+        &mut self,
+        func_name: &str,
+        func_ret_type: ReturnType,
+        args: Option<Vec<ParameterValue>>,
+    ) -> Result<ReturnValue> {
+        let res = call_function_on_guest(&mut self.hv_handler, &mut self.mem_mgr, func_name, func_ret_type, args);
+        self.restore_state()?;
+        res
+    }
 
     /// Restore the Sandbox's state
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -173,7 +174,7 @@ impl MultiUseSandbox {
 impl Sandbox for MultiUseSandbox {}
 
 impl DevolvableSandbox<MultiUseSandbox, MultiUseSandbox, Noop<MultiUseSandbox, MultiUseSandbox>>
-    for MultiUseSandbox
+for MultiUseSandbox
 {
     /// Consume `self` and move it back to a `MultiUseSandbox` with previous state.
     ///

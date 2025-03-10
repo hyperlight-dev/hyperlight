@@ -350,6 +350,21 @@ impl SandboxMemoryManager<GuestSharedMemory> {
         )?;
         Ok(())
     }
+
+    /// Updates Hyperlight PEB after initialization
+    pub(crate) fn update_peb_after_init(&mut self) -> Result<HyperlightPEB> {
+        let peb_offset = self.memory_sections.get_hyperlight_peb_section_offset().unwrap();
+        let peb_size = self.memory_sections.get_hyperlight_peb_size().unwrap();
+        let mut peb_buffer = vec![0; peb_size];
+        self.shared_mem
+            .copy_to_slice(peb_buffer.as_mut_slice(), peb_offset)?;
+        HyperlightPEB::try_from(peb_buffer.as_slice()).map_err(|e| {
+            new_error!(
+                "update_peb_after_init: failed to convert buffer to HyperlightPEB: {}",
+                e
+            )
+        })
+    }
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {

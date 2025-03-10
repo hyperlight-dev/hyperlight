@@ -22,10 +22,10 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError}
 use log::error;
 
 use crate::entrypoint::halt;
-use crate::host_function_call::{outb, OutBAction};
 use crate::PEB;
 
 pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
+    let peb = unsafe { PEB.clone().unwrap() };
     let guest_error = GuestError::new(
         error_code.clone(),
         message.map_or("".to_string(), |m| m.to_string()),
@@ -35,20 +35,20 @@ pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
         .expect("Invalid guest_error_buffer, could not be converted to a Vec<u8>");
 
     unsafe {
-        assert!(!(*PEB.unwrap()).guestErrorData.guestErrorBuffer.is_null());
+        assert!(!peb.guest_error_data_ptr.is_some());
         let len = guest_error_buffer.len();
-        if guest_error_buffer.len() > (*PEB.unwrap()).guestErrorData.guestErrorSize as usize {
+        if guest_error_buffer.len() > peb.guest_error_data_size.unwrap() as usize {
             error!(
                 "Guest error buffer is too small to hold the error message: size {} buffer size {} message may be truncated",
                 guest_error_buffer.len(),
-                (*PEB.unwrap()).guestErrorData.guestErrorSize as usize
+                peb.guest_error_data_size.unwrap() as usize
             );
             // get the length of the message
             let message_len = message.map_or("".to_string(), |m| m.to_string()).len();
             // message is too long, truncate it
             let truncate_len = message_len
                 - (guest_error_buffer.len()
-                    - (*PEB.unwrap()).guestErrorData.guestErrorSize as usize);
+                - peb.guest_error_data_size.unwrap() as usize);
             let truncated_message = message
                 .map_or("".to_string(), |m| m.to_string())
                 .chars()
@@ -67,18 +67,18 @@ pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
         // but, because copy_nonoverlapping doesn't return anything, we can't do that.
         // Instead, we do the prior asserts/checks to check the destination pointer isn't null
         // and that there is enough space in the destination buffer for the copy.
-        let dest_ptr = (*PEB.unwrap()).guestErrorData.guestErrorBuffer as *mut u8;
+        let dest_ptr = peb.guest_error_data_ptr.unwrap() as *mut u8;
         core::ptr::copy_nonoverlapping(guest_error_buffer.as_ptr(), dest_ptr, len);
     }
 }
 
 pub(crate) fn reset_error() {
     unsafe {
-        let peb_ptr = PEB.unwrap();
+        let peb = PEB.clone().unwrap();
         core::ptr::write_bytes(
-            (*peb_ptr).guestErrorData.guestErrorBuffer,
+            peb.guest_error_data_ptr.unwrap() as *mut u8,
             0,
-            (*peb_ptr).guestErrorData.guestErrorSize as usize,
+            peb.guest_error_data_size.unwrap() as usize,
         );
     }
 }
@@ -87,15 +87,16 @@ pub(crate) fn set_error(error_code: ErrorCode, message: &str) {
     write_error(error_code, Some(message));
 }
 
-pub(crate) fn set_error_and_halt(error_code: ErrorCode, message: &str) {
-    set_error(error_code, message);
-    halt();
-}
-
-#[no_mangle]
-pub(crate) extern "win64" fn set_stack_allocate_error() {
-    outb(OutBAction::Abort as u16, ErrorCode::StackOverflow as u8);
-}
+// TODO(danbugs:297): bring back
+// pub(crate) fn set_error_and_halt(error_code: ErrorCode, message: &str) {
+//     set_error(error_code, message);
+//     halt();
+// }
+//
+// #[no_mangle]
+// pub(crate) extern "win64" fn set_stack_allocate_error() {
+//     outb(OutBAction::Abort as u16, ErrorCode::StackOverflow as u8);
+// }
 
 #[no_mangle]
 pub(crate) extern "win64" fn set_invalid_runmode_error() {

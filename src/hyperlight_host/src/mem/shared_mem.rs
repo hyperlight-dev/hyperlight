@@ -147,7 +147,7 @@ unsafe impl Send for ExclusiveSharedMemory {}
 /// unit that likely can't be discovered by the compiler) that _rust_
 /// users do not perform racy accesses to the guest communication
 /// buffers that are also accessed by HostSharedMemory.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GuestSharedMemory {
     region: Arc<HostMapping>,
     /// The lock that indicates this shared memory is being used by non-Rust code
@@ -701,6 +701,14 @@ pub trait SharedMemory {
         Ok(())
     }
 
+    /// Copies data from shared memory into a slice starting at offset
+    fn copy_to_slice(&mut self, dst: &mut [u8], offset: usize) -> Result<()> {
+        let data = self.as_mut_slice();
+        bounds_check!(offset, dst.len(), data.len());
+        dst.copy_from_slice(&data[offset..offset + dst.len()]);
+        Ok(())
+    }
+
     /// Return the base address of the host mapping of this
     /// region. Following the general Rust philosophy, this does not
     /// need to be marked as `unsafe` because doing anything with this
@@ -940,7 +948,7 @@ impl HostSharedMemory {
         Ok(())
     }
 
-    /// Pops the given given buffer into a `T` and returns it.
+    /// Pops the given buffer into a `T` and returns it.
     /// NOTE! the data must be a size-prefixed flatbuffer, and
     /// buffer_start_offset must point to the beginning of the buffer
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]

@@ -5,13 +5,13 @@ use flatbuffers::{size_prefixed_root, FlatBufferBuilder};
 use crate::flatbuffers::hyperlight::generated::{HyperlightPEB as FbHyperlightPEB, HyperlightPEBArgs as FbHyperlightPEBArgs};
 
 /// Hyperlight supports 2 primary modes:
-/// (1) Hypervisor mode
-/// (2) In-process mode
+/// 1. Hypervisor mode
+/// 2. In-process mode
 ///
 /// When running in process, there's no hypervisor isolation.
 /// In-process mode is primarily used for debugging and testing.
 #[repr(u64)]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RunMode {
     None = 0,
     Hypervisor = 1,
@@ -48,8 +48,8 @@ pub struct HyperlightPEB {
     pub outb_ptr: Option<u64>,
 
     /// Hyperlight supports two primary modes:
-    /// (1) Hypervisor mode
-    /// (2) In-process mode
+    /// 1. Hypervisor mode
+    /// 2. In-process mode
     ///
     /// When running in process, there's no hypervisor isolation.
     /// It's a mode primarily used for debugging and testing.
@@ -85,6 +85,44 @@ impl TryFrom<&[u8]> for HyperlightPEB {
     type Error = anyhow::Error;
 
     fn try_from(value: &[u8]) -> Result<Self> {
+        let peb_fb = size_prefixed_root::<FbHyperlightPEB>(value)
+            .map_err(|e| anyhow::anyhow!("Error reading HyperlightPEB buffer: {:?}", e))?;
+
+        let run_mode = match peb_fb.run_mode() {
+            0 => Some(RunMode::None),
+            1 => Some(RunMode::Hypervisor),
+            2 => Some(RunMode::InProcessWindows),
+            3 => Some(RunMode::InProcessLinux),
+            4 => Some(RunMode::Invalid),
+            _ => None, // Handles unexpected values gracefully
+        };
+
+        Ok(Self {
+            guest_function_dispatch_ptr: Some(peb_fb.guest_function_dispatch_ptr()).filter(|&v| v != 0),
+            host_function_details_ptr: Some(peb_fb.host_function_details_ptr()).filter(|&v| v != 0),
+            host_function_details_size: Some(peb_fb.host_function_details_size()).filter(|&v| v != 0),
+            guest_error_data_ptr: Some(peb_fb.guest_error_data_ptr()).filter(|&v| v != 0),
+            guest_error_data_size: Some(peb_fb.guest_error_data_size()).filter(|&v| v != 0),
+            outb_ptr: Some(peb_fb.outb_ptr()).filter(|&v| v != 0),
+            run_mode,
+            input_data_ptr: Some(peb_fb.input_data_ptr()).filter(|&v| v != 0),
+            input_data_size: Some(peb_fb.input_data_size()).filter(|&v| v != 0),
+            output_data_ptr: Some(peb_fb.output_data_ptr()).filter(|&v| v != 0),
+            output_data_size: Some(peb_fb.output_data_size()).filter(|&v| v != 0),
+            guest_panic_context_ptr: Some(peb_fb.guest_panic_context_ptr()).filter(|&v| v != 0),
+            guest_panic_context_size: Some(peb_fb.guest_panic_context_size()).filter(|&v| v != 0),
+            guest_heap_data_ptr: Some(peb_fb.guest_heap_data_ptr()).filter(|&v| v != 0),
+            guest_heap_data_size: Some(peb_fb.guest_heap_data_size()).filter(|&v| v != 0),
+            guest_stack_data_ptr: Some(peb_fb.guest_stack_data_ptr()).filter(|&v| v != 0),
+            guest_stack_data_size: Some(peb_fb.guest_stack_data_size()).filter(|&v| v != 0),
+        })
+    }
+}
+
+impl TryFrom<&mut [u8]> for HyperlightPEB {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &mut [u8]) -> Result<Self> {
         let peb_fb = size_prefixed_root::<FbHyperlightPEB>(value)
             .map_err(|e| anyhow::anyhow!("Error reading HyperlightPEB buffer: {:?}", e))?;
 
@@ -162,5 +200,58 @@ impl TryFrom<HyperlightPEB> for Vec<u8> {
         let res = builder.finished_data().to_vec();
 
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use anyhow::Result;
+    use crate::flatbuffer_wrappers::hyperlight_peb::{HyperlightPEB, RunMode};
+
+    #[test]
+    fn test_hyperlight_peb_to_vec_u8() -> Result<()> {
+        let peb = HyperlightPEB {
+            guest_function_dispatch_ptr: Some(0x1000),
+            host_function_details_ptr: Some(0x2000),
+            host_function_details_size: Some(64),
+            guest_error_data_ptr: Some(0x3000),
+            guest_error_data_size: Some(128),
+            outb_ptr: Some(0x4000),
+            run_mode: Some(RunMode::Hypervisor),
+            input_data_ptr: Some(0x5000),
+            input_data_size: Some(256),
+            output_data_ptr: Some(0x6000),
+            output_data_size: Some(512),
+            guest_panic_context_ptr: Some(0x7000),
+            guest_panic_context_size: Some(32),
+            guest_heap_data_ptr: Some(0x8000),
+            guest_heap_data_size: Some(1024),
+            guest_stack_data_ptr: Some(0x9000),
+            guest_stack_data_size: Some(2048),
+        };
+
+        let buffer: Vec<u8> = peb.try_into()?;
+        let parsed_peb = HyperlightPEB::try_from(buffer.as_slice())?;
+
+        assert_eq!(parsed_peb.guest_function_dispatch_ptr, Some(0x1000));
+        assert_eq!(parsed_peb.host_function_details_ptr, Some(0x2000));
+        assert_eq!(parsed_peb.host_function_details_size, Some(64));
+        assert_eq!(parsed_peb.guest_error_data_ptr, Some(0x3000));
+        assert_eq!(parsed_peb.guest_error_data_size, Some(128));
+        assert_eq!(parsed_peb.outb_ptr, Some(0x4000));
+        assert_eq!(parsed_peb.run_mode, Some(RunMode::Hypervisor));
+        assert_eq!(parsed_peb.input_data_ptr, Some(0x5000));
+        assert_eq!(parsed_peb.input_data_size, Some(256));
+        assert_eq!(parsed_peb.output_data_ptr, Some(0x6000));
+        assert_eq!(parsed_peb.output_data_size, Some(512));
+        assert_eq!(parsed_peb.guest_panic_context_ptr, Some(0x7000));
+        assert_eq!(parsed_peb.guest_panic_context_size, Some(32));
+        assert_eq!(parsed_peb.guest_heap_data_ptr, Some(0x8000));
+        assert_eq!(parsed_peb.guest_heap_data_size, Some(1024));
+        assert_eq!(parsed_peb.guest_stack_data_ptr, Some(0x9000));
+        assert_eq!(parsed_peb.guest_stack_data_size, Some(2048));
+
+        Ok(())
     }
 }

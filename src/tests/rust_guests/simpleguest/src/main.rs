@@ -16,9 +16,16 @@ limitations under the License.
 
 #![no_std]
 #![no_main]
+extern crate alloc;
 
-use hyperlight_guest::entrypoint::dummy;
-
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ParameterValue, ReturnType};
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::flatbuffer_wrappers::util::{get_flatbuffer_result_from_int, get_flatbuffer_result_from_void};
+use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
+use hyperlight_guest::guest_function_register::register_function;
 // const DEFAULT_GUEST_STACK_SIZE: i32 = 65536; // default stack size
 // const MAX_BUFFER_SIZE: usize = 1024;
 // // ^^^ arbitrary value for max buffer size
@@ -50,7 +57,7 @@ use hyperlight_guest::entrypoint::dummy;
 // };
 // use hyperlight_common::mem::PAGE_SIZE;
 // use hyperlight_guest::entrypoint::{abort_with_code, abort_with_code_and_message};
-// use hyperlight_guest::error::{HyperlightGuestError, Result};
+use hyperlight_guest::error::{HyperlightGuestError, Result};
 // use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 // use hyperlight_guest::guest_function_register::register_function;
 // use hyperlight_guest::host_function_call::{
@@ -721,10 +728,32 @@ use hyperlight_guest::entrypoint::dummy;
 //         ))
 //     }
 // }
-//
+
+fn simple_add(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let (ParameterValue::Int(a), ParameterValue::Int(b)) = (
+        function_call.parameters.clone().unwrap()[0].clone(),
+        function_call.parameters.clone().unwrap()[1].clone(),
+    ) {
+        let res = a + b;
+        Ok(get_flatbuffer_result_from_int(res))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to simple_add".to_string(),
+        ))
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn hyperlight_main() {
-    dummy();
+    let simple_add_def = GuestFunctionDefinition::new(
+        "SimpleAdd".to_string(),
+        Vec::from(&[ParameterType::Int, ParameterType::Int]),
+        ReturnType::Int,
+        simple_add as i64,
+    );
+    register_function(simple_add_def);
+
 //     let set_static_def = GuestFunctionDefinition::new(
 //         "SetStatic".to_string(),
 //         Vec::new(),
@@ -1114,9 +1143,9 @@ pub extern "C" fn hyperlight_main() {
 //     );
 //     register_function(trigger_exception_def);
 }
-//
-// #[no_mangle]
-// pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
+
+#[no_mangle]
+pub fn guest_dispatch_function(_function_call: FunctionCall) -> Result<Vec<u8>> {
 //     // This test checks the stack behavior of the input/output buffer
 //     // by calling the host before serializing the function call.
 //     // If the stack is not working correctly, the input or output buffer will be
@@ -1156,4 +1185,5 @@ pub extern "C" fn hyperlight_main() {
 //     }
 //
 //     Ok(get_flatbuffer_result_from_int(99))
-// }
+    Ok(get_flatbuffer_result_from_void())
+}

@@ -25,10 +25,8 @@ extern crate alloc;
 
 // Modules
 pub mod entrypoint;
-// TODO(danbugs:297): bring back
-// pub mod guest_error;
-// TODO(danbugs:297): bring back
-// pub mod guest_function_call;
+pub mod guest_error;
+pub mod guest_function_call;
 pub mod guest_function_definition;
 pub mod guest_function_register;
 

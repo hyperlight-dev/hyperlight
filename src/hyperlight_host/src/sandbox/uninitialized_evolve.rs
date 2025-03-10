@@ -52,29 +52,20 @@ fn evolve_impl<TransformFunc, ResSandbox: Sandbox>(
 ) -> Result<ResSandbox>
 where
     TransformFunc:
-        Fn(SandboxMemoryManager<HostSharedMemory>, HypervisorHandler) -> Result<ResSandbox>,
+    Fn(SandboxMemoryManager<HostSharedMemory>, HypervisorHandler) -> Result<ResSandbox>,
 {
     let (hshm, gshm) = u_sbox.mem_mgr.build();
 
-    let hv_handler = {
-        hv_init(
-            (hshm.clone(), gshm),
-            u_sbox.hyperlight_peb,
-            u_sbox.host_funcs.clone(),
-            Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
-            Duration::from_millis(u_sbox.config.get_max_execution_time() as u64),
-            Duration::from_millis(u_sbox.config.get_max_wait_for_cancellation() as u64),
-            #[cfg(gdb)]
-            u_sbox.debug_info,
-        )?
-
-        // TODO(danbugs:297): bring back
-        // {
-        //     let dispatch_function_addr = hshm.as_ref().get_pointer_to_dispatch_function()?;
-        //     assert_ne!(dispatch_function_addr, 0);
-        //     hv_handler.set_dispatch_function_addr(RawPtr::from(dispatch_function_addr))?;
-        // }
-    };
+    let hv_handler = hv_init(
+        (hshm.clone(), gshm),
+        u_sbox.hyperlight_peb.clone(),
+        u_sbox.host_funcs.clone(),
+        Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
+        Duration::from_millis(u_sbox.config.get_max_execution_time() as u64),
+        Duration::from_millis(u_sbox.config.get_max_wait_for_cancellation() as u64),
+        #[cfg(gdb)]
+        u_sbox.debug_info,
+    )?;
 
     transform(hshm, hv_handler)
 }

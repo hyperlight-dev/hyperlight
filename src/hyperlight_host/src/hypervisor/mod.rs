@@ -21,10 +21,9 @@ use crate::hypervisor::metrics::HypervisorMetric::NumberOfCancelledGuestExecutio
 use crate::mem::memory_region::MemoryRegionFlags;
 use crate::{int_counter_inc, log_then_return, new_error, HyperlightError, Result};
 
-// TODO(danbugs:297): bring back
-// /// Util for handling x87 fpu state
-// #[cfg(any(kvm, mshv, target_os = "windows"))]
-// pub mod fpu;
+/// Util for handling x87 fpu state
+#[cfg(any(kvm, mshv, target_os = "windows"))]
+pub mod fpu;
 /// Handlers for Hypervisor custom logic
 pub mod handlers;
 /// HyperV-on-linux functionality
@@ -73,6 +72,7 @@ use gdb::VcpuStopReason;
 use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use self::handlers::{MemAccessHandlerCaller, MemAccessHandlerWrapper};
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
+use crate::mem::ptr::RawPtr;
 
 pub(crate) const CR4_PAE: u64 = 1 << 5;
 pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
@@ -130,21 +130,20 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
 
-    // TODO(danbugs:297): bring back
-    // /// Dispatch a call from the host to the guest using the given pointer
-    // /// to the dispatch function _in the guest's address space_.
-    // ///
-    // /// Do this by setting the instruction pointer to `dispatch_func_addr`
-    // /// and then running the execution loop until a halt instruction.
-    // ///
-    // /// Returns `Ok` if the call succeeded, and an `Err` if it failed
-    // fn dispatch_call_from_host(
-    //     &mut self,
-    //     dispatch_func_addr: RawPtr,
-    //     mem_access_fn: MemAccessHandlerWrapper,
-    //     hv_handler: Option<HypervisorHandler>,
-    //     #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    // ) -> Result<()>;
+    /// Dispatch a call from the host to the guest using the given pointer
+    /// to the dispatch function _in the guest's address space_.
+    ///
+    /// Do this by setting the instruction pointer to `dispatch_func_addr`
+    /// and then running the execution loop until a halt instruction.
+    ///
+    /// Returns `Ok` if the call succeeded, and an `Err` if it failed
+    fn dispatch_call_from_host(
+        &mut self,
+        dispatch_func_addr: RawPtr,
+        mem_access_fn: MemAccessHandlerWrapper,
+        hv_handler: Option<HypervisorHandler>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    ) -> Result<()>;
     //
     // /// Handle an IO exit from the internally stored vCPU.
     // fn handle_io(
