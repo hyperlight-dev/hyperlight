@@ -1,15 +1,11 @@
 # **PRs**  
 
-To categorize PRs, we use GitHub labels. Before a PR can be merged, it must be assigned one of the following **kind/** labels, as these labels are used to generate automatic release notes:  
+To categorize PRs, we use GitHub labels. Before a PR can be merged, it must be assigned one of the following **kind/** labels.
 
 - **kind/enhancement** - For PRs that add new features or improve existing functionality. This label should also be applied to PRs that improve documentation and testing, for example.
 - **kind/bugfix** - For PRs that resolve bugs.  
 - **kind/refactor** - For PRs that improve code without changing its behavior.
 - **kind/dependencies** - For PRs that update dependencies or related components.
-
-## PR release notes 
-
-GitHub release notes are automatically generated from PRs based on the assigned **kind/** labels, along with the PR title. To exclude PRs from release notes, add the **release-notes/ignore** label. 
 
 ---
 
@@ -48,7 +44,7 @@ In addition to lifecycle labels, we use the following labels to further categori
 
 # **Issues & PRs**  
 
-In addition to **kind/*** labels, we use optional **area/*** labels to specify the focus of a PR or issue. These labels are purely for categorization, are not mandatory, and are not used for release notes.  
+In addition to **kind/*** labels, we use optional **area/*** labels to specify the focus of a PR or issue. These labels are purely for categorization, and are not mandatory.
 
 - **area/documentation** – Related to documentation updates or improvements.  
 - **area/API** – Related to the API or public interface.
