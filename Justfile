@@ -209,4 +209,4 @@ build-fuzzers: (build-fuzzer "fuzz_guest_call") (build-fuzzer "fuzz_host_call") 
 
 # Builds the given fuzzer
 build-fuzzer fuzz-target:
-    cargo +nightly fuzz build {{ fuzz-target }} --release
+    cargo +nightly fuzz build {{ fuzz-target }}
