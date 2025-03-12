@@ -11,22 +11,25 @@ use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::GuestFunctionRegister;
 use hyperlight_guest::host_function_call::call_host_function;
+use spin::Mutex;
 
 use crate::types::{FfiFunctionCall, FfiVec};
-static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister = GuestFunctionRegister::new();
+static REGISTERED_C_GUEST_FUNCTIONS: Mutex<GuestFunctionRegister> =
+    Mutex::new(GuestFunctionRegister::new());
 
 type CGuestFunc = extern "C" fn(&FfiFunctionCall) -> Box<FfiVec>;
 
-extern "C" {
+unsafe extern "C" {
     // NOTE *mut FfiVec must be a Box<FfiVec>. This will be the case as long as the guest
     // returns a FfiVec that they created using the c-api hl_flatbuffer_result_from_* functions.
     fn c_guest_dispatch_function(function_call: &FfiFunctionCall) -> *mut FfiVec;
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
-    if let Some(registered_func) =
-        unsafe { REGISTERED_C_GUEST_FUNCTIONS.get(&function_call.function_name) }
+    if let Some(registered_func) = REGISTERED_C_GUEST_FUNCTIONS
+        .lock()
+        .get(&function_call.function_name)
     {
         let function_call_parameter_types: Vec<ParameterType> = function_call
             .parameters
@@ -64,7 +67,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn hl_register_function_definition(
     function_name: *const c_char,
     func_ptr: CGuestFunc,
@@ -79,12 +82,11 @@ pub extern "C" fn hl_register_function_definition(
     let func_def =
         GuestFunctionDefinition::new(func_name, func_params, return_type, func_ptr as usize);
 
-    #[allow(static_mut_refs)]
-    unsafe { &mut REGISTERED_C_GUEST_FUNCTIONS }.register(func_def);
+    REGISTERED_C_GUEST_FUNCTIONS.lock().register(func_def);
 }
 
 /// The caller is responsible for freeing the memory associated with given `FfiFunctionCall`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn hl_call_host_function(function_call: &FfiFunctionCall) {
     let parameters = unsafe { function_call.copy_parameters() };
     let func_name = unsafe { function_call.copy_function_name() };

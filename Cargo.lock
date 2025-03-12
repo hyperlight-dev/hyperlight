@@ -1220,6 +1220,7 @@ dependencies = [
  "hyperlight-common",
  "hyperlight-guest",
  "log",
+ "spin",
 ]
 
 [[package]]
