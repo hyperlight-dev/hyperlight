@@ -181,8 +181,7 @@ where
 
             let mem_size = usize::try_from(mem_size)?;
 
-            let num_pages: usize =
-                ((mem_size + AMOUNT_OF_MEMORY_PER_PT - 1) / AMOUNT_OF_MEMORY_PER_PT) + 1;
+            let num_pages: usize = mem_size.div_ceil(AMOUNT_OF_MEMORY_PER_PT) + 1;
 
             // Create num_pages PT with 512 PTEs
             for p in 0..num_pages {

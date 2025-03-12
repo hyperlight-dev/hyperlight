@@ -79,7 +79,7 @@ pub(crate) struct LeakedOutBWrapper<'a> {
     hdl_ptr: Arc<Mutex<CustomPtrDrop<'a, OutBHandlerWrapper>>>,
 }
 
-impl<'a> LeakedOutBWrapper<'a> {
+impl LeakedOutBWrapper<'_> {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
         mgr: &mut SandboxMemoryManager<GuestSharedMemory>,

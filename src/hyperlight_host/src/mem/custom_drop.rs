@@ -33,7 +33,7 @@ pub(crate) struct CustomPtrDrop<'a, EltT> {
     drop: Box<dyn Fn(*mut EltT) + 'a + Send>,
 }
 
-impl<'a, EltT> CustomPtrDrop<'a, EltT> {
+impl<EltT> CustomPtrDrop<'_, EltT> {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new(elt: *mut EltT, drop_fn: Box<dyn Fn(*mut EltT) + Send>) -> Self {
         Self {
@@ -47,13 +47,13 @@ impl<'a, EltT> CustomPtrDrop<'a, EltT> {
     }
 }
 
-impl<'a, EltT> Debug for CustomPtrDrop<'a, EltT> {
+impl<EltT> Debug for CustomPtrDrop<'_, EltT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CustomDrop").finish()
     }
 }
 
-impl<'a, EltT> Drop for CustomPtrDrop<'a, EltT> {
+impl<EltT> Drop for CustomPtrDrop<'_, EltT> {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn drop(&mut self) {
         let drop_fn = &self.drop;

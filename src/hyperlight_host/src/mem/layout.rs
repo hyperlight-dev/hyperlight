@@ -739,8 +739,7 @@ impl SandboxMemoryLayout {
 
         // Get the number of pages needed for the PTs
 
-        let num_pages: usize = ((total_mapped_memory_size + AMOUNT_OF_MEMORY_PER_PT - 1)
-            / AMOUNT_OF_MEMORY_PER_PT)
+        let num_pages: usize = total_mapped_memory_size.div_ceil(AMOUNT_OF_MEMORY_PER_PT)
             + 1 // Round up
             + 3; // PML4, PDPT, PD
 

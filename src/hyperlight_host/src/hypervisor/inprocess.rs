@@ -66,7 +66,7 @@ impl Debug for InprocessDriver<'_> {
     }
 }
 
-impl<'a> Hypervisor for InprocessDriver<'a> {
+impl Hypervisor for InprocessDriver<'_> {
     fn initialise(
         &mut self,
         _peb_addr: crate::mem::ptr::RawPtr,
