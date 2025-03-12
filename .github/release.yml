@@ -7,5 +7,5 @@ changelog:
         - "*"
     - title: Full Changelog (dependencies)
       labels:
-        - area/dependencies
+        - kind/dependencies
 
