@@ -96,15 +96,15 @@ ok:
 
 /* Adapt the calling convention of the above to the native "C" calling
  * convention. */
-extern "win64" {
+unsafe extern "win64" {
     fn win64_setjmp(x: u64) -> u64;
     fn win64_longjmp(x: u64, y: u64) -> !;
 }
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn setjmp(x: u64) -> u64 {
     unsafe { win64_setjmp(x) }
 }
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn longjmp(x: u64, y: u64) -> ! {
     unsafe { win64_longjmp(x, y) }
 }

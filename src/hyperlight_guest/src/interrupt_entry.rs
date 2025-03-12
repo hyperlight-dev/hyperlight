@@ -21,7 +21,7 @@ use core::arch::global_asm;
 
 use crate::interrupt_handlers::hl_exception_handler;
 
-extern "sysv64" {
+unsafe extern "sysv64" {
     // Exception handlers
     pub(crate) fn _do_excp0();
     pub(crate) fn _do_excp1();
@@ -164,7 +164,7 @@ macro_rules! generate_exceptions {
 //     jmp _do_excp_common
 // ```
 macro_rules! generate_excp {
-    ($num:expr) => {
+    ($num:expr_2021) => {
         concat!(
             ".global _do_excp",
             stringify!($num),
@@ -185,7 +185,7 @@ macro_rules! generate_excp {
             "    jmp _do_excp_common\n"
         )
     };
-    ($num:expr, pusherrcode) => {
+    ($num:expr_2021, pusherrcode) => {
         concat!(
             ".global _do_excp",
             stringify!($num),
@@ -210,7 +210,7 @@ macro_rules! generate_excp {
             "    jmp _do_excp_common\n"
         )
     };
-    ($num:expr, pagefault) => {
+    ($num:expr_2021, pagefault) => {
         concat!(
             ".global _do_excp",
             stringify!($num),

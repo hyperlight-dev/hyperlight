@@ -15,9 +15,9 @@ limitations under the License.
 */
 
 use crate::interrupt_entry::{
-    _do_excp0, _do_excp1, _do_excp2, _do_excp3, _do_excp4, _do_excp5, _do_excp6, _do_excp7,
-    _do_excp8, _do_excp9, _do_excp10, _do_excp11, _do_excp12, _do_excp13, _do_excp14, _do_excp15,
-    _do_excp16, _do_excp17, _do_excp18, _do_excp19, _do_excp20, _do_excp30,
+    _do_excp0, _do_excp1, _do_excp10, _do_excp11, _do_excp12, _do_excp13, _do_excp14, _do_excp15,
+    _do_excp16, _do_excp17, _do_excp18, _do_excp19, _do_excp2, _do_excp20, _do_excp3, _do_excp30,
+    _do_excp4, _do_excp5, _do_excp6, _do_excp7, _do_excp8, _do_excp9,
 };
 
 // An entry in the Interrupt Descriptor Table (IDT)

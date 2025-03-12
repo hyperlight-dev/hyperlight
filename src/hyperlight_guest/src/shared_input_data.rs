@@ -21,8 +21,8 @@ use core::slice::from_raw_parts_mut;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 
-use crate::P_PEB;
 use crate::error::{HyperlightGuestError, Result};
+use crate::P_PEB;
 
 // Pops the top element from the shared input data buffer and returns it as a T
 pub fn try_pop_shared_input_data_into<T>() -> Result<T>

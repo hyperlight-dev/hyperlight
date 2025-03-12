@@ -16,7 +16,7 @@ limitations under the License.
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{CStr, c_char};
+use core::ffi::{c_char, CStr};
 use core::mem;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
@@ -31,38 +31,40 @@ static mut MESSAGE_BUFFER: Vec<u8> = Vec::new();
 ///
 /// # Safety
 /// This function is not thread safe
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(static_mut_refs)]
 pub unsafe extern "C" fn _putchar(c: c_char) {
-    let char = c as u8;
+    unsafe {
+        let char = c as u8;
 
-    // Extend buffer capacity if it's empty (like `with_capacity` in lazy_static).
-    // TODO: replace above Vec::new() with Vec::with_capacity once it's stable in const contexts.
-    if MESSAGE_BUFFER.capacity() == 0 {
-        MESSAGE_BUFFER.reserve(BUFFER_SIZE);
-    }
+        // Extend buffer capacity if it's empty (like `with_capacity` in lazy_static).
+        // TODO: replace above Vec::new() with Vec::with_capacity once it's stable in const contexts.
+        if MESSAGE_BUFFER.capacity() == 0 {
+            MESSAGE_BUFFER.reserve(BUFFER_SIZE);
+        }
 
-    MESSAGE_BUFFER.push(char);
+        MESSAGE_BUFFER.push(char);
 
-    if MESSAGE_BUFFER.len() == BUFFER_SIZE || char == b'\0' {
-        let str = if char == b'\0' {
-            CStr::from_bytes_until_nul(&MESSAGE_BUFFER)
-                .expect("No null byte in buffer")
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            String::from_utf8(mem::take(&mut MESSAGE_BUFFER))
-                .expect("Failed to convert buffer to string")
-        };
+        if MESSAGE_BUFFER.len() == BUFFER_SIZE || char == b'\0' {
+            let str = if char == b'\0' {
+                CStr::from_bytes_until_nul(&MESSAGE_BUFFER)
+                    .expect("No null byte in buffer")
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                String::from_utf8(mem::take(&mut MESSAGE_BUFFER))
+                    .expect("Failed to convert buffer to string")
+            };
 
-        call_host_function(
-            "HostPrint",
-            Some(Vec::from(&[ParameterValue::String(str)])),
-            ReturnType::Void,
-        )
-        .expect("Failed to call HostPrint");
+            call_host_function(
+                "HostPrint",
+                Some(Vec::from(&[ParameterValue::String(str)])),
+                ReturnType::Void,
+            )
+            .expect("Failed to call HostPrint");
 
-        // Clear the buffer after sending
-        MESSAGE_BUFFER.clear();
+            // Clear the buffer after sending
+            MESSAGE_BUFFER.clear();
+        }
     }
 }

@@ -24,8 +24,8 @@ use hyperlight_common::flatbuffer_wrappers::function_types::ParameterType;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 
-use crate::P_PEB;
 use crate::error::{HyperlightGuestError, Result};
+use crate::P_PEB;
 
 pub(crate) fn validate_host_function_call(function_call: &FunctionCall) -> Result<()> {
     // get host function details

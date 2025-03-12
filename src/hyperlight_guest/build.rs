@@ -104,10 +104,13 @@ fn cargo_main() {
             cfg.compiler("clang");
         }
 
-        if cfg!(windows) {
-            env::set_var("AR_x86_64_unknown_none", "llvm-ar");
-        } else {
-            env::set_var("AR_x86_64_pc_windows_msvc", "llvm-lib");
+        // SAFETY: this build script is are single threaded
+        unsafe {
+            if cfg!(windows) {
+                env::set_var("AR_x86_64_unknown_none", "llvm-ar");
+            } else {
+                env::set_var("AR_x86_64_pc_windows_msvc", "llvm-lib");
+            }
         }
 
         cfg.compile("hyperlight_guest");
