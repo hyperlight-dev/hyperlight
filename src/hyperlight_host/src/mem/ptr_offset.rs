@@ -18,10 +18,10 @@ use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::convert::From;
 use std::ops::{Add, Sub};
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
-use crate::error::HyperlightError;
 use crate::Result;
+use crate::error::HyperlightError;
 
 /// An offset into a given address space.
 ///
@@ -201,10 +201,9 @@ impl Sub<Offset> for u64 {
 impl PartialEq<usize> for Offset {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn eq(&self, other: &usize) -> bool {
-        if let Ok(offset_usize) = usize::try_from(self) {
-            offset_usize == *other
-        } else {
-            false
+        match usize::try_from(self) {
+            Ok(offset_usize) => offset_usize == *other,
+            _ => false,
         }
     }
 }

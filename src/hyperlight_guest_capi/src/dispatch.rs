@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::slice;
 use alloc::vec::Vec;
-use core::ffi::{c_char, CStr};
+use core::ffi::{CStr, c_char};
 use core::mem;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;

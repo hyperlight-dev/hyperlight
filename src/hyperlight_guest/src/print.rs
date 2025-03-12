@@ -16,7 +16,7 @@ limitations under the License.
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{c_char, CStr};
+use core::ffi::{CStr, c_char};
 use core::mem;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};

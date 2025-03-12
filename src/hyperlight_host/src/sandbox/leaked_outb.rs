@@ -17,7 +17,7 @@ limitations under the License.
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::hypervisor::handlers::{OutBHandlerCaller, OutBHandlerWrapper};
 use crate::mem::custom_drop::CustomPtrDrop;

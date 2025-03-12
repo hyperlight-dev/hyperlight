@@ -23,7 +23,7 @@ use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{
-    new_error, GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox,
+    GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
 };
 use hyperlight_testing::simple_guest_as_string;
 #[cfg(target_os = "windows")]
@@ -317,7 +317,7 @@ fn multiple_parameters() {
                 "Message: arg1:{} arg2:{} arg3:{} arg4:{} arg5:{} arg6:{} arg7:{} arg8:{} arg9:{} arg10:{} arg11:{}.",
                 "1", 2, 3, "4", "5", true, false, 8, 9, 10, 3.123
             ),
-        )
+        ),
     ];
 
     for mut sandbox in get_simpleguest_sandboxes(Some(&writer_func)).into_iter() {
@@ -482,11 +482,13 @@ fn simple_test_helper() -> Result<()> {
         expected_calls
     );
 
-    assert!(messages
-        .try_lock()
-        .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-        .iter()
-        .all(|msg| msg == message));
+    assert!(
+        messages
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+            .iter()
+            .all(|msg| msg == message)
+    );
     Ok(())
 }
 

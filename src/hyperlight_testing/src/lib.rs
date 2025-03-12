@@ -19,7 +19,7 @@ limitations under the License.
 use std::env;
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 pub const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 pub mod logger;

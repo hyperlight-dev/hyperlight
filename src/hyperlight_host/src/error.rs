@@ -361,7 +361,7 @@ macro_rules! new_error {
         };
         $crate::HyperlightError::Error(__err_msg)
     }};
-    ($fmtstr:expr, $($arg:tt)*) => {{
+    ($fmtstr:expr_2021, $($arg:tt)*) => {{
            let __err_msg = std::format!($fmtstr, $($arg)*);
            $crate::error::HyperlightError::Error(__err_msg)
     }};

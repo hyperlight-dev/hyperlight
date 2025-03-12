@@ -14,14 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use prometheus::{register_histogram_with_registry, Histogram as PHistogram};
-use tracing::{instrument, Span};
+use prometheus::{Histogram as PHistogram, register_histogram_with_registry};
+use tracing::{Span, instrument};
 
 use super::{
-    get_histogram_opts, get_metrics_registry, GetHyperlightMetric, HyperlightMetric,
-    HyperlightMetricOps,
+    GetHyperlightMetric, HyperlightMetric, HyperlightMetricOps, get_histogram_opts,
+    get_metrics_registry,
 };
-use crate::{new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, new_error};
 
 /// A named histogram
 #[derive(Debug)]
@@ -86,7 +86,7 @@ impl From<Histogram> for HyperlightMetric {
 /// Observes a value for a Histogram
 #[macro_export]
 macro_rules! histogram_observe {
-    ($metric:expr, $val:expr) => {{
+    ($metric:expr_2021, $val:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::Histogram>::metric($metric) {
             Ok(val) => {
                 if let Err(e) = val.observe($val) {
@@ -102,7 +102,7 @@ macro_rules! histogram_observe {
 /// Returns 0.0 if the metric is not found
 #[macro_export]
 macro_rules! histogram_sample_sum {
-    ($metric:expr) => {{
+    ($metric:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::Histogram>::metric($metric) {
             Ok(val) => match val.get_sample_sum() {
                 Ok(val) => val,
@@ -124,7 +124,7 @@ macro_rules! histogram_sample_sum {
 /// Returns 0 if the metric is not found
 #[macro_export]
 macro_rules! histogram_sample_count {
-    ($metric:expr) => {{
+    ($metric:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::Histogram>::metric($metric) {
             Ok(val) => match val.get_sample_count() {
                 Ok(val) => val,
@@ -144,7 +144,7 @@ macro_rules! histogram_sample_count {
 /// Observe the time it takes to execute an expression, record that time in microseconds in a Histogram and return the result of that expression
 #[macro_export]
 macro_rules! histogram_time_micros {
-    ($metric:expr, $expr:expr) => {{
+    ($metric:expr_2021, $expr:expr_2021) => {{
         let start = std::time::Instant::now();
         let result = $expr;
         histogram_observe!($metric, start.elapsed().as_micros() as f64);

@@ -20,23 +20,23 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use super::config::DebugInfo;
-use super::host_funcs::{default_writer_func, HostFuncsWrapper};
+use super::host_funcs::{HostFuncsWrapper, default_writer_func};
 use super::mem_mgr::MemMgrWrapper;
 use super::run_options::SandboxRunOptions;
 use super::uninitialized_evolve::evolve_impl_multi_use;
 use crate::error::HyperlightError::GuestBinaryShouldBeAFile;
 use crate::func::host_functions::HostFunction1;
 use crate::mem::exe::ExeInfo;
-use crate::mem::mgr::{SandboxMemoryManager, STACK_COOKIE_LEN};
+use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox_state::sandbox::EvolvableSandbox;
 use crate::sandbox_state::transition::Noop;
-use crate::{log_build_details, log_then_return, new_error, MultiUseSandbox, Result};
+use crate::{MultiUseSandbox, Result, log_build_details, log_then_return, new_error};
 
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
 ///
@@ -304,7 +304,7 @@ impl UninitializedSandbox {
 // Hyperlight is only supported on Windows 11 and Windows Server 2022 and later
 #[cfg(target_os = "windows")]
 fn check_windows_version() -> Result<()> {
-    use windows_version::{is_server, OsVersion};
+    use windows_version::{OsVersion, is_server};
     const WINDOWS_MAJOR: u32 = 10;
     const WINDOWS_MINOR: u32 = 0;
     const WINDOWS_PACK: u32 = 0;
@@ -334,24 +334,24 @@ mod tests {
 
     use crossbeam_queue::ArrayQueue;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
-    use hyperlight_testing::logger::{Logger as TestLogger, LOGGER as TEST_LOGGER};
+    use hyperlight_testing::logger::{LOGGER as TEST_LOGGER, Logger as TestLogger};
     use hyperlight_testing::tracing_subscriber::TracingSubscriber as TestSubcriber;
     use hyperlight_testing::{simple_guest_as_string, simple_guest_exe_as_string};
     use log::Level;
     use serde_json::{Map, Value};
     use serial_test::serial;
     use tracing::Level as tracing_level;
-    use tracing_core::callsite::rebuild_interest_cache;
     use tracing_core::Subscriber;
+    use tracing_core::callsite::rebuild_interest_cache;
     use uuid::Uuid;
 
     use crate::func::{HostFunction1, HostFunction2};
-    use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox::SandboxConfiguration;
+    use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
     use crate::testing::log_values::{test_value_as_str, try_to_strings};
-    use crate::{new_error, MultiUseSandbox, Result, SandboxRunOptions, UninitializedSandbox};
+    use crate::{MultiUseSandbox, Result, SandboxRunOptions, UninitializedSandbox, new_error};
 
     #[test]
     fn test_in_process() {
@@ -1062,9 +1062,11 @@ mod tests {
 
             let logcall = TEST_LOGGER.get_log_call(16).unwrap();
             assert_eq!(Level::Error, logcall.level);
-            assert!(logcall
-                .args
-                .starts_with("error=Error(\"GuestBinary not found:"));
+            assert!(
+                logcall
+                    .args
+                    .starts_with("error=Error(\"GuestBinary not found:")
+            );
             assert_eq!("hyperlight_host::sandbox::uninitialized", logcall.target);
 
             // Log record 18
@@ -1116,9 +1118,11 @@ mod tests {
 
             let logcall = TEST_LOGGER.get_log_call(1).unwrap();
             assert_eq!(Level::Error, logcall.level);
-            assert!(logcall
-                .args
-                .starts_with("error=Error(\"GuestBinary not found:"));
+            assert!(
+                logcall
+                    .args
+                    .starts_with("error=Error(\"GuestBinary not found:")
+            );
             assert_eq!("hyperlight_host::sandbox::uninitialized", logcall.target);
         }
         {

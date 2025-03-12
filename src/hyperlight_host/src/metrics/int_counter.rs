@@ -16,13 +16,13 @@ limitations under the License.
 
 use prometheus::core::{AtomicU64, GenericCounter};
 use prometheus::register_int_counter_with_registry;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::{
-    get_metric_opts, get_metrics_registry, GetHyperlightMetric, HyperlightMetric,
-    HyperlightMetricOps,
+    GetHyperlightMetric, HyperlightMetric, HyperlightMetricOps, get_metric_opts,
+    get_metrics_registry,
 };
-use crate::{new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, new_error};
 
 /// A named counter backed by an `AtomicU64`
 #[derive(Debug)]
@@ -92,7 +92,7 @@ impl From<IntCounter> for HyperlightMetric {
 /// Increments an IntCounter by 1 or logs an error if the metric is not found
 #[macro_export]
 macro_rules! int_counter_inc {
-    ($metric:expr) => {{
+    ($metric:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::IntCounter>::metric($metric) {
             Ok(val) => val.inc(),
             Err(e) => log::error!("error getting metric: {}", e),
@@ -103,7 +103,7 @@ macro_rules! int_counter_inc {
 /// Increments an IntCounter by a given value or logs an error if the metric is not found
 #[macro_export]
 macro_rules! int_counter_inc_by {
-    ($metric:expr, $val:expr) => {{
+    ($metric:expr_2021, $val:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::IntCounter>::metric($metric) {
             Ok(val) => val.inc_by($val),
             Err(e) => log::error!("error getting metric: {}", e),
@@ -114,7 +114,7 @@ macro_rules! int_counter_inc_by {
 /// Gets the value of an IntCounter or logs an error if the metric is not found
 #[macro_export]
 macro_rules! int_counter_get {
-    ($metric:expr) => {{
+    ($metric:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::IntCounter>::metric($metric) {
             Ok(val) => val.get(),
             Err(e) => {
@@ -128,7 +128,7 @@ macro_rules! int_counter_get {
 /// Resets an IntCounter or logs an error if the metric is not found
 #[macro_export]
 macro_rules! int_counter_reset {
-    ($metric:expr) => {{
+    ($metric:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::IntCounter>::metric($metric) {
             Ok(val) => val.reset(),
             Err(e) => log::error!("error getting metric: {}", e),

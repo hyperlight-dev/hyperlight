@@ -28,12 +28,12 @@ pub(crate) mod guest;
 /// The rule will take the `Allow` action if _all_ the conditions are true.
 #[macro_export]
 macro_rules! and {
-    ($($x:expr),*) => (SeccompRule::new(vec![$($x),*]).unwrap())
+    ($($x:expr_2021),*) => (SeccompRule::new(vec![$($x),*]).unwrap())
 }
 
 /// Shorthand for chaining `SeccompRule`s with the `or` operator in a `SeccompFilter`.
 #[macro_export]
 macro_rules! or {
-    ($($x:expr,)*) => (vec![$($x),*]);
-    ($($x:expr),*) => (vec![$($x),*])
+    ($($x:expr_2021,)*) => (vec![$($x),*]);
+    ($($x:expr_2021),*) => (vec![$($x),*])
 }

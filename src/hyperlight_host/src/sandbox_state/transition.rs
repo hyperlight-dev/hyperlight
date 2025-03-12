@@ -16,11 +16,11 @@ limitations under the License.
 
 use std::marker::PhantomData;
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::sandbox::Sandbox;
-use crate::func::call_ctx::MultiUseGuestCallContext;
 use crate::Result;
+use crate::func::call_ctx::MultiUseGuestCallContext;
 
 /// Metadata about an evolution or devolution. Any `Sandbox` implementation
 /// that also implements `EvolvableSandbox` or `DevolvableSandbox`
@@ -143,8 +143,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::Noop;
-    use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
     use crate::Result;
+    use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
 
     #[derive(Debug, Eq, PartialEq, Clone)]
     struct MySandbox1 {}

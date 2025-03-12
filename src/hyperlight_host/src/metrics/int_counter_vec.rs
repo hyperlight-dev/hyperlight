@@ -16,13 +16,13 @@ limitations under the License.
 
 use prometheus::core::{AtomicU64, GenericCounterVec};
 use prometheus::register_int_counter_vec_with_registry;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::{
-    get_metric_opts, get_metrics_registry, GetHyperlightMetric, HyperlightMetric,
-    HyperlightMetricOps,
+    GetHyperlightMetric, HyperlightMetric, HyperlightMetricOps, get_metric_opts,
+    get_metrics_registry,
 };
-use crate::{new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, new_error};
 
 /// A 64-bit counter
 #[derive(Debug)]
@@ -99,7 +99,7 @@ impl From<IntCounterVec> for HyperlightMetric {
 /// Increments an IntCounterVec by 1 or logs an error if the metric is not found
 #[macro_export]
 macro_rules! int_counter_vec_inc {
-    ($metric:expr, $label_vals:expr) => {{
+    ($metric:expr_2021, $label_vals:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::IntCounterVec>::metric(
             $metric,
         ) {
@@ -120,7 +120,7 @@ macro_rules! int_counter_vec_inc {
 /// Increments an IntCounterVec by a value or logs an error if the metric is not found
 #[macro_export]
 macro_rules! int_counter_vec_inc_by {
-    ($metric:expr, $label_vals:expr, $val:expr) => {{
+    ($metric:expr_2021, $label_vals:expr_2021, $val:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::IntCounterVec>::metric(
             $metric,
         ) {
@@ -143,7 +143,7 @@ macro_rules! int_counter_vec_inc_by {
 /// Returns 0 if the metric is not found
 #[macro_export]
 macro_rules! int_counter_vec_get {
-    ($metric:expr, $label_vals:expr) => {{
+    ($metric:expr_2021, $label_vals:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::IntCounterVec>::metric(
             $metric,
         ) {
@@ -166,7 +166,7 @@ macro_rules! int_counter_vec_get {
 /// Resets an IntCounterVec or logs an error if the metric is not found
 #[macro_export]
 macro_rules! int_counter_vec_reset {
-    ($metric:expr, $label_vals:expr) => {{
+    ($metric:expr_2021, $label_vals:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::IntCounterVec>::metric(
             $metric,
         ) {

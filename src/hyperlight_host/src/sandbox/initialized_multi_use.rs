@@ -19,17 +19,17 @@ use std::sync::{Arc, Mutex};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::host_funcs::HostFuncsWrapper;
 use super::{MemMgrWrapper, WrapperGetter};
+use crate::Result;
 use crate::func::call_ctx::MultiUseGuestCallContext;
 use crate::func::guest_dispatch::call_function_on_guest;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
 use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
-use crate::Result;
 
 /// A sandbox that supports being used Multiple times.
 /// The implication of being used multiple times is two-fold:
@@ -59,7 +59,10 @@ impl Drop for MultiUseSandbox {
         match self.hv_handler.kill_hypervisor_handler_thread() {
             Ok(_) => {}
             Err(e) => {
-                log::error!("[POTENTIAL THREAD LEAK] Potentially failed to kill hypervisor handler thread when dropping MultiUseSandbox: {:?}", e);
+                log::error!(
+                    "[POTENTIAL THREAD LEAK] Potentially failed to kill hypervisor handler thread when dropping MultiUseSandbox: {:?}",
+                    e
+                );
             }
         }
     }

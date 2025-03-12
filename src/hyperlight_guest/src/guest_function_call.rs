@@ -21,12 +21,12 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, Functi
 use hyperlight_common::flatbuffer_wrappers::function_types::ParameterType;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 
+use crate::REGISTERED_GUEST_FUNCTIONS;
 use crate::entrypoint::halt;
 use crate::error::{HyperlightGuestError, Result};
 use crate::guest_error::{reset_error, set_error};
 use crate::shared_input_data::try_pop_shared_input_data_into;
 use crate::shared_output_data::push_shared_output_data;
-use crate::REGISTERED_GUEST_FUNCTIONS;
 
 type GuestFunc = fn(&FunctionCall) -> Result<Vec<u8>>;
 

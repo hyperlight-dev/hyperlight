@@ -16,14 +16,14 @@ limitations under the License.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::ffi::{c_char, CStr};
+use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use log::error;
 
-use crate::entrypoint::halt;
-use crate::host_function_call::{outb, OutBAction};
 use crate::P_PEB;
+use crate::entrypoint::halt;
+use crate::host_function_call::{OutBAction, outb};
 
 pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
     let guest_error = GuestError::new(

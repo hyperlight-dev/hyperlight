@@ -16,7 +16,7 @@ limitations under the License.
 
 use std::fmt::Debug;
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 /// A struct that stores a `*mut EltT` and allows the creator of the struct
 /// to specify the functionality to be run when the struct is dropped.

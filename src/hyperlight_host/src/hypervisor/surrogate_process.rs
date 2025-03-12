@@ -16,10 +16,10 @@ limitations under the License.
 
 use core::ffi::c_void;
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Memory::{
-    UnmapViewOfFile2, MEMORY_MAPPED_VIEW_ADDRESS, UNMAP_VIEW_OF_FILE_FLAGS,
+    MEMORY_MAPPED_VIEW_ADDRESS, UNMAP_VIEW_OF_FILE_FLAGS, UnmapViewOfFile2,
 };
 
 use super::surrogate_process_manager::get_surrogate_process_manager;
@@ -78,7 +78,10 @@ impl Drop for SurrogateProcess {
             Ok(manager) => match manager.return_surrogate_process(self.process_handle) {
                 Ok(_) => (),
                 Err(e) => {
-                    tracing::error!("Failed to return surrogate process to surrogate process manager when dropping : {:?}", e);
+                    tracing::error!(
+                        "Failed to return surrogate process to surrogate process manager when dropping : {:?}",
+                        e
+                    );
                     return;
                 }
             },

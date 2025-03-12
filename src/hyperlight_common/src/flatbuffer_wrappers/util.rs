@@ -19,15 +19,15 @@ use alloc::vec::Vec;
 use flatbuffers::FlatBufferBuilder;
 
 use crate::flatbuffers::hyperlight::generated::{
-    hlbool as Fbhlbool, hlboolArgs as FbhlboolArgs, hldouble as Fbhldouble,
-    hldoubleArgs as FbhldoubleArgs, hlfloat as Fbhlfloat, hlfloatArgs as FbhlfloatArgs,
-    hlint as Fbhlint, hlintArgs as FbhlintArgs, hllong as Fbhllong, hllongArgs as FbhllongArgs,
-    hlsizeprefixedbuffer as Fbhlsizeprefixedbuffer,
+    FunctionCallResult as FbFunctionCallResult, FunctionCallResultArgs as FbFunctionCallResultArgs,
+    ReturnValue as FbReturnValue, hlbool as Fbhlbool, hlboolArgs as FbhlboolArgs,
+    hldouble as Fbhldouble, hldoubleArgs as FbhldoubleArgs, hlfloat as Fbhlfloat,
+    hlfloatArgs as FbhlfloatArgs, hlint as Fbhlint, hlintArgs as FbhlintArgs, hllong as Fbhllong,
+    hllongArgs as FbhllongArgs, hlsizeprefixedbuffer as Fbhlsizeprefixedbuffer,
     hlsizeprefixedbufferArgs as FbhlsizeprefixedbufferArgs, hlstring as Fbhlstring,
     hlstringArgs as FbhlstringArgs, hluint as Fbhluint, hluintArgs as FbhluintArgs,
     hlulong as Fbhlulong, hlulongArgs as FbhlulongArgs, hlvoid as Fbhlvoid,
-    hlvoidArgs as FbhlvoidArgs, FunctionCallResult as FbFunctionCallResult,
-    FunctionCallResultArgs as FbFunctionCallResultArgs, ReturnValue as FbReturnValue,
+    hlvoidArgs as FbhlvoidArgs,
 };
 
 /// Flatbuffer-encodes the given value

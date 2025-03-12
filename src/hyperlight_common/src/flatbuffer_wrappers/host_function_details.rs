@@ -17,9 +17,9 @@ limitations under the License.
 use alloc::vec::Vec;
 
 use anyhow::{Error, Result};
-use flatbuffers::{size_prefixed_root, WIPOffset};
+use flatbuffers::{WIPOffset, size_prefixed_root};
 #[cfg(feature = "tracing")]
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::host_function_definition::HostFunctionDefinition;
 use crate::flatbuffers::hyperlight::generated::{

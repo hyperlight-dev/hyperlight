@@ -20,14 +20,14 @@ use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{
-    validate_guest_function_call_buffer, FunctionCall,
+    FunctionCall, validate_guest_function_call_buffer,
 };
 use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use serde_json::from_str;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::exe::ExeInfo;
 use super::layout::SandboxMemoryLayout;
@@ -44,7 +44,7 @@ use crate::error::HyperlightError::{
 };
 use crate::error::HyperlightHostError;
 use crate::sandbox::SandboxConfiguration;
-use crate::{log_then_return, new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, log_then_return, new_error};
 
 /// Paging Flags
 ///
@@ -882,9 +882,10 @@ mod tests {
                 panic!("loadlib with elf should fail");
             }
             Err(err) => {
-                assert!(err
-                    .to_string()
-                    .contains("LoadLibrary can only be used with PE files"));
+                assert!(
+                    err.to_string()
+                        .contains("LoadLibrary can only be used with PE files")
+                );
             }
         }
     }

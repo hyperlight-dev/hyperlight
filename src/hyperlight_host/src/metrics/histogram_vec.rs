@@ -14,14 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use prometheus::{register_histogram_vec_with_registry, HistogramVec as PHistogramVec};
-use tracing::{instrument, Span};
+use prometheus::{HistogramVec as PHistogramVec, register_histogram_vec_with_registry};
+use tracing::{Span, instrument};
 
 use super::{
-    get_histogram_opts, get_metrics_registry, GetHyperlightMetric, HyperlightMetric,
-    HyperlightMetricOps,
+    GetHyperlightMetric, HyperlightMetric, HyperlightMetricOps, get_histogram_opts,
+    get_metrics_registry,
 };
-use crate::{new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, new_error};
 
 /// A named bundle of histograms
 #[derive(Debug)]
@@ -98,7 +98,7 @@ impl From<HistogramVec> for HyperlightMetric {
 /// Observes a value for a HistogramVec
 #[macro_export]
 macro_rules! histogram_vec_observe {
-    ($metric:expr, $label_vals:expr, $val:expr) => {{
+    ($metric:expr_2021, $label_vals:expr_2021, $val:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::HistogramVec>::metric($metric)
         {
             Ok(val) => {
@@ -120,7 +120,7 @@ macro_rules! histogram_vec_observe {
 /// Returns 0.0 if the metric is not found
 #[macro_export]
 macro_rules! histogram_vec_sample_sum {
-    ($metric:expr, $label_vals:expr) => {{
+    ($metric:expr_2021, $label_vals:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::HistogramVec>::metric($metric)
         {
             Ok(val) => match val.get_sample_sum($label_vals) {
@@ -147,7 +147,7 @@ macro_rules! histogram_vec_sample_sum {
 /// Returns 0 if the metric is not found
 #[macro_export]
 macro_rules! histogram_vec_sample_count {
-    ($metric:expr, $label_vals:expr) => {{
+    ($metric:expr_2021, $label_vals:expr_2021) => {{
         match $crate::metrics::GetHyperlightMetric::<$crate::metrics::HistogramVec>::metric($metric)
         {
             Ok(val) => match val.get_sample_count($label_vals) {
@@ -174,7 +174,7 @@ macro_rules! histogram_vec_sample_count {
 /// `HistogramVec`, and return the result of that expression
 #[macro_export]
 macro_rules! histogram_vec_time_micros {
-    ($metric:expr, $label_vals:expr, $expr:expr) => {{
+    ($metric:expr_2021, $label_vals:expr_2021, $expr:expr_2021) => {{
         let start = std::time::Instant::now();
         let result = $expr;
         $crate::histogram_vec_observe!($metric, $label_vals, start.elapsed().as_micros() as f64);

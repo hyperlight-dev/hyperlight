@@ -16,13 +16,13 @@ limitations under the License.
 
 extern crate hyperlight_host;
 use std::sync::{Arc, Mutex};
-use std::thread::{spawn, JoinHandle};
+use std::thread::{JoinHandle, spawn};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{set_metrics_registry, GuestBinary, MultiUseSandbox, Result};
+use hyperlight_host::{GuestBinary, MultiUseSandbox, Result, set_metrics_registry};
 use hyperlight_testing::simple_guest_as_string;
 use lazy_static::lazy_static;
 use prometheus::Registry;

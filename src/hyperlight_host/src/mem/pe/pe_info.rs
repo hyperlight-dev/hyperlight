@@ -17,13 +17,13 @@ limitations under the License.
 use std::io::{Cursor, Read, Write};
 use std::{iter, mem};
 
+use goblin::pe::PE;
 use goblin::pe::optional_header::OptionalHeader;
 use goblin::pe::section_table::SectionTable;
-use goblin::pe::PE;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::mem::pe::base_relocations;
-use crate::{log_then_return, Result};
+use crate::{Result, log_then_return};
 
 const IMAGE_REL_BASED_DIR64: u8 = 10;
 const IMAGE_REL_BASED_ABSOLUTE: u8 = 0;
@@ -81,7 +81,9 @@ impl PEInfo {
         if optional_header.windows_fields.section_alignment
             != optional_header.windows_fields.file_alignment
         {
-            log_then_return!("unsupported PE file, section alignment does not match file alignment make sure to link the .exe with /FILEALIGN and /ALIGN options set to the same value")
+            log_then_return!(
+                "unsupported PE file, section alignment does not match file alignment make sure to link the .exe with /FILEALIGN and /ALIGN options set to the same value"
+            )
         }
 
         if (pe.header.coff_header.characteristics & CHARACTERISTICS_RELOCS_STRIPPED)
@@ -340,7 +342,7 @@ mod tests {
     use hyperlight_testing::{callback_guest_exe_as_string, simple_guest_exe_as_string};
 
     use crate::mem::exe::ExeInfo;
-    use crate::{new_error, Result};
+    use crate::{Result, new_error};
 
     #[allow(dead_code)]
     struct PEFileTest {

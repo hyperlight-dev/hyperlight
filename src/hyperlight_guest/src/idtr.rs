@@ -1,6 +1,6 @@
 use core::ptr::addr_of;
 
-use crate::idt::{init_idt, IdtEntry, IDT};
+use crate::idt::{IDT, IdtEntry, init_idt};
 
 #[repr(C, packed)]
 pub struct Idtr {

@@ -25,7 +25,7 @@ use guest_function_register::GuestFunctionRegister;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::{HyperlightPEB, RunMode};
 
-use crate::host_function_call::{outb, OutBAction};
+use crate::host_function_call::{OutBAction, outb};
 extern crate alloc;
 
 // Modules

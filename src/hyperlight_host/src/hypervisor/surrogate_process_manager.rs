@@ -20,30 +20,30 @@ use std::io::Write;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use rust_embed::RustEmbed;
-use tracing::{info, instrument, Span};
-use windows::core::{s, PCSTR};
+use tracing::{Span, info, instrument};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectA, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectA, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::Memory::{
-    MapViewOfFileNuma2, VirtualProtectEx, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READWRITE,
+    MapViewOfFileNuma2, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, VirtualProtectEx,
 };
 use windows::Win32::System::SystemServices::NUMA_NO_PREFERRED_NODE;
 use windows::Win32::System::Threading::{
-    CreateProcessA, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOA,
+    CREATE_SUSPENDED, CreateProcessA, PROCESS_INFORMATION, STARTUPINFOA,
 };
+use windows::core::{PCSTR, s};
 
 use super::surrogate_process::SurrogateProcess;
 use super::wrappers::{HandleWrapper, PSTRWrapper};
 use crate::HyperlightError::WindowsAPIError;
-use crate::{log_then_return, new_error, Result};
+use crate::{Result, log_then_return, new_error};
 
 // Use the rust-embed crate to embed the hyperlights_surrogate.exe
 // binary in the hyperlight-host library to make dependency management easier.
@@ -415,16 +415,16 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use hyperlight_common::mem::PAGE_SIZE_USIZE;
-    use rand::{rng, Rng};
+    use rand::{Rng, rng};
     use serial_test::serial;
-    use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, INVALID_HANDLE_VALUE};
+    use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, PROCESSENTRY32, Process32First, Process32Next, TH32CS_SNAPPROCESS,
     };
     use windows::Win32::System::JobObjects::IsProcessInJob;
     use windows::Win32::System::Memory::{
-        CreateFileMappingA, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
-        SEC_COMMIT,
+        CreateFileMappingA, FILE_MAP_ALL_ACCESS, MapViewOfFile, PAGE_READWRITE, SEC_COMMIT,
+        UnmapViewOfFile,
     };
 
     use super::*;

@@ -20,31 +20,35 @@ use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::thread::{sleep, JoinHandle};
+use std::thread::{JoinHandle, sleep};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use crossbeam::atomic::AtomicCell;
 use crossbeam_channel::{Receiver, Sender};
 #[cfg(target_os = "linux")]
-use libc::{pthread_kill, pthread_self, ESRCH};
+use libc::{ESRCH, pthread_kill, pthread_self};
 use log::{error, info};
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 #[cfg(target_os = "linux")]
 use vmm_sys_util::signal::SIGRTMIN;
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Hypervisor::{WHvCancelRunVirtualProcessor, WHV_PARTITION_HANDLE};
+use windows::Win32::System::Hypervisor::{WHV_PARTITION_HANDLE, WHvCancelRunVirtualProcessor};
 
 #[cfg(gdb)]
 use super::gdb::create_gdb_thread;
+use crate::HyperlightError::{
+    GuestExecutionHungOnHostFunctionCall,
+    HypervisorHandlerExecutionCancelAttemptOnFinishedExecution, NoHypervisorFound,
+};
 #[cfg(feature = "function_call_metrics")]
 use crate::histogram_vec_observe;
+use crate::hypervisor::Hypervisor;
 #[cfg(gdb)]
 use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
 use crate::hypervisor::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::hypervisor::Hypervisor;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -52,16 +56,12 @@ use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
-use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
+use crate::sandbox::hypervisor::{HypervisorType, get_available_hypervisor};
 #[cfg(feature = "function_call_metrics")]
 use crate::sandbox::metrics::SandboxMetric::GuestFunctionCallDurationMicroseconds;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
-use crate::HyperlightError::{
-    GuestExecutionHungOnHostFunctionCall,
-    HypervisorHandlerExecutionCancelAttemptOnFinishedExecution, NoHypervisorFound,
-};
-use crate::{log_then_return, new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, log_then_return, new_error};
 
 type HypervisorHandlerTx = Sender<HypervisorHandlerAction>;
 type HypervisorHandlerRx = Receiver<HypervisorHandlerAction>;
@@ -985,15 +985,15 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
     use hyperlight_testing::simple_guest_as_string;
 
+    use crate::HyperlightError::HypervisorHandlerExecutionCancelAttemptOnFinishedExecution;
     #[cfg(target_os = "windows")]
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::WrapperGetter;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
-    use crate::HyperlightError::HypervisorHandlerExecutionCancelAttemptOnFinishedExecution;
     use crate::{
-        is_hypervisor_present, GuestBinary, HyperlightError, MultiUseSandbox, Result,
-        UninitializedSandbox,
+        GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox,
+        is_hypervisor_present,
     };
 
     fn create_multi_use_sandbox() -> MultiUseSandbox {
