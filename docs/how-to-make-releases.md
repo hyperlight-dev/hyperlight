@@ -10,9 +10,26 @@ Currently, we need to manually update the workspace `Cargo.toml` version number 
 
 Create a PR with this change and merge it into the main branch.
 
+## Update `CHANGELOG.md`
+
+The `CHANGELOG.md` file is a critical document used to track changes made to Hyperlight. It serves as the foundation for generating release notes, so it's essential to keep it up to date with each release. While not every change needs to be added to this file (since a complete changelog of all PRs will be automatically generated), it's crucial to include all significant updates.
+
+### Steps to Update `CHANGELOG.md`:
+
+- **Manually update the `CHANGELOG.md`** with important changes since the latest release. Ideally, contributors should update this file as part of their PR, but this may not always happen.
+  
+- **Rename the `[Prerelease] - Unreleased` section** to reflect the new version number (if not already done). Ensure that it links to the GitHub comparison between the current and previous versions. For example, `v0.2.0` should link to `https://github.com/hyperlight-dev/hyperlight/compare/v0.1.0...v0.2.0` (see the footer of `CHANGELOG.md`).
+
+- **Add a new `[Prerelease]` section** at the top of the file. This section should initially be empty and will track changes for the next release.
+
+- **Preview the automatically generated release notes** locally using the command:  
+  `just create-release-notes v0.4.0 > notes.md`. Review the notes to ensure everything looks accurate.
+
+- **Create a PR** with the updated `CHANGELOG.md` and merge it into the main branch once all changes are confirmed.
+
 ## Create a tag
 
-When the above PR has merged into `main` branch you should create a tag. ***Make sure you have pulled the recently updated `main` branch***, and do the following on the `main` branch:
+When both above PRs has merged into `main` branch you should create a tag. ***Make sure you have pulled the recently updated `main` branch***, and do the following on the `main` branch:
 
 ```bash
 git tag -a v0.4.0 -m "A brief description of the release"

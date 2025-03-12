@@ -108,7 +108,8 @@ jobs:
           rust-toolchain: "1.81.0"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      
+      # HYPERLIGHT_VERSION does not include the v prefix
       - name: Set HYPERLIGHT_VERSION
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
         id: set_hyperlight_version
@@ -176,12 +177,24 @@ jobs:
           Write-Host "msiexec exited with code $LASTEXITCCODE"
           if ($LASTEXITCODE -ne 0) { cat log.txt; exit 1 }
 
+      - name: Extract release notes from changelog
+        if: ${{ contains(github.ref, 'refs/heads/release/') }}
+        run: |
+          # Extract the changelog from the changelog file
+          just create-release-notes v${{ env.HYPERLIGHT_VERSION }} > RELEASE_NOTES.md
+
+      - name: Extract prerelease notes from changelog
+        if: ${{ github.ref=='refs/heads/main' }}
+        run: |
+          # Extract the changelog from the changelog file
+          just create-release-notes dev-latest > RELEASE_NOTES.md
+
       # Publish the native guests so that its possible to use Hyperlight without building it.
       - name: Create release
         # Only create a release from tag if we are on a release branch
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
         run: |
-            gh release create v${{ env.HYPERLIGHT_VERSION }} -t "Release v${{ env.HYPERLIGHT_VERSION }}" --generate-notes `
+            gh release create v${{ env.HYPERLIGHT_VERSION }} -t "Release v${{ env.HYPERLIGHT_VERSION }}" --notes-file RELEASE_NOTES.md `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest.exe `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest `
@@ -203,7 +216,7 @@ jobs:
         if: ${{ github.ref=='refs/heads/main' }}
         run:  |    
             gh release delete dev-latest -y --cleanup-tag || $true
-            gh release create dev-latest -t "Latest prerelease from main branch" --latest=false -p `
+            gh release create dev-latest -t "Latest prerelease from main branch" --notes-file RELEASE_NOTES.md --latest=false -p `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest.exe `
             src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest `
