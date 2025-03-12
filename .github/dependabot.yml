@@ -10,4 +10,4 @@ updates:
     schedule:
       interval: "daily"
     labels:
-      - "area/dependencies"
+      - "kind/dependencies"
