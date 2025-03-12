@@ -32,6 +32,12 @@ tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
     tar -zcvf hyperlight-guest-c-api-windows.tar.gz -C {{root}}/target/x86_64-pc-windows-msvc/ release/hyperlight_guest_capi.lib -C {{root}}/target/x86_64-pc-windows-msvc/ debug/hyperlight_guest_capi.lib
     tar -zcvf hyperlight-guest-c-api-linux.tar.gz -C {{root}}/target/x86_64-unknown-none/ release/libhyperlight_guest_capi.a -C {{root}}/target/x86_64-unknown-none/ debug/libhyperlight_guest_capi.a
 
+# Create release notes for the given tag. The expected format is a v-prefixed version number, e.g. v0.2.0
+# For prereleases, the version should be "dev-latest"
+@create-release-notes tag:
+    echo "## What's Changed"
+    ./dev/extract-changelog.sh {{ if tag == "dev-latest" { "Prerelease" } else { tag } }}
+    gh api repos/{owner}/{repo}/releases/generate-notes -f tag_name={{ tag }} | jq -r '.body' | sed '1,/## What'"'"'s Changed/d'
 
 # BUILDING
 build-rust-guests target=default-target:
