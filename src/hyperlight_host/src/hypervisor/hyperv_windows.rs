@@ -130,7 +130,7 @@ impl HypervWindowsDriver {
                 WHV_REGISTER_VALUE {
                     Segment: WHV_X64_SEGMENT_REGISTER {
                         Anonymous: WHV_X64_SEGMENT_REGISTER_0 {
-                            Attributes: 0b1011 | 1 << 4 | 1 << 7 | 1 << 13, // Type (11: Execute/Read, accessed) | L (64-bit mode) | P (present) | S (code segment)
+                            Attributes: 0b1011 | (1 << 4) | (1 << 7) | (1 << 13), // Type (11: Execute/Read, accessed) | L (64-bit mode) | P (present) | S (code segment)
                         },
                         ..Default::default() // zero out the rest
                     },
