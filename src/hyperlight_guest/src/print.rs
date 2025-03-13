@@ -18,6 +18,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::{c_char, CStr};
 use core::mem;
+use spin::Mutex;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 
@@ -25,35 +26,34 @@ use crate::host_function_call::call_host_function;
 
 const BUFFER_SIZE: usize = 1000;
 
-static mut MESSAGE_BUFFER: Vec<u8> = Vec::new();
+static MESSAGE_BUFFER: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 /// Exposes a C API to allow the guest to print a string
-///
-/// # Safety
-/// This function is not thread safe
-#[no_mangle]
-#[allow(static_mut_refs)]
-pub unsafe extern "C" fn _putchar(c: c_char) {
+#[unsafe(no_mangle)]
+pub extern "C" fn _putchar(c: c_char) {
     let char = c as u8;
 
+    let mut locked_buffer = MESSAGE_BUFFER.lock();
     // Extend buffer capacity if it's empty (like `with_capacity` in lazy_static).
     // TODO: replace above Vec::new() with Vec::with_capacity once it's stable in const contexts.
-    if MESSAGE_BUFFER.capacity() == 0 {
-        MESSAGE_BUFFER.reserve(BUFFER_SIZE);
+    if locked_buffer.capacity() == 0 {
+        locked_buffer.reserve(BUFFER_SIZE);
     }
 
-    MESSAGE_BUFFER.push(char);
+    locked_buffer.push(char);
 
-    if MESSAGE_BUFFER.len() == BUFFER_SIZE || char == b'\0' {
+    if locked_buffer.len() == BUFFER_SIZE || char == b'\0' {
         let str = if char == b'\0' {
-            CStr::from_bytes_until_nul(&MESSAGE_BUFFER)
-                .expect("No null byte in buffer")
+            CStr::from_bytes_until_nul(&locked_buffer)
+                .expect("No null byte in buffer") // This expect is safe since we know there is a null byte
                 .to_string_lossy()
                 .into_owned()
         } else {
-            String::from_utf8(mem::take(&mut MESSAGE_BUFFER))
+            String::from_utf8(mem::take(&mut locked_buffer))
                 .expect("Failed to convert buffer to string")
         };
+
+        locked_buffer.clear();
 
         call_host_function(
             "HostPrint",
@@ -61,8 +61,5 @@ pub unsafe extern "C" fn _putchar(c: c_char) {
             ReturnType::Void,
         )
         .expect("Failed to call HostPrint");
-
-        // Clear the buffer after sending
-        MESSAGE_BUFFER.clear();
     }
 }

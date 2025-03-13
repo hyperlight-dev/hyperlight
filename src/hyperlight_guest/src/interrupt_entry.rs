@@ -21,7 +21,7 @@ use core::arch::global_asm;
 
 use crate::interrupt_handlers::hl_exception_handler;
 
-extern "sysv64" {
+unsafe extern "sysv64" {
     // Exception handlers
     pub(crate) fn _do_excp0();
     pub(crate) fn _do_excp1();

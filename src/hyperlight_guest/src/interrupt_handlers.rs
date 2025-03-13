@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 /// Exception handler
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "sysv64" fn hl_exception_handler(
     stack_pointer: u64,
     exception_number: u64,

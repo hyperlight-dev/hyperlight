@@ -92,12 +92,12 @@ pub(crate) fn set_error_and_halt(error_code: ErrorCode, message: &str) {
     halt();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub(crate) extern "win64" fn set_stack_allocate_error() {
     outb(OutBAction::Abort as u16, ErrorCode::StackOverflow as u8);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub(crate) extern "win64" fn set_invalid_runmode_error() {
     panic!("Invalid run mode in __chkstk");
 }
@@ -107,7 +107,7 @@ pub(crate) extern "win64" fn set_invalid_runmode_error() {
 /// # Safety
 /// TODO
 /// cbindgen:ignore
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_camel_case_types)]
 pub unsafe extern "C" fn setError(code: u64, message: *const c_char) {
     let error_code = ErrorCode::from(code);

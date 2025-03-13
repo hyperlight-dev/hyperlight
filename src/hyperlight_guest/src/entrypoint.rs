@@ -42,7 +42,7 @@ pub fn halt() {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn abort() -> ! {
     abort_with_code(0)
 }
@@ -57,17 +57,19 @@ pub fn abort_with_code(code: i32) -> ! {
 /// # Safety
 /// This function is unsafe because it dereferences a raw pointer.
 pub unsafe fn abort_with_code_and_message(code: i32, message_ptr: *const c_char) -> ! {
-    let peb_ptr = P_PEB.unwrap();
-    copy_nonoverlapping(
-        message_ptr,
-        (*peb_ptr).guestPanicContextData.guestPanicContextDataBuffer as *mut c_char,
-        CStr::from_ptr(message_ptr).count_bytes() + 1, // +1 for null terminator
-    );
-    outb(OutBAction::Abort as u16, code as u8);
-    unreachable!()
+    unsafe {
+        let peb_ptr = P_PEB.unwrap();
+        copy_nonoverlapping(
+            message_ptr,
+            (*peb_ptr).guestPanicContextData.guestPanicContextDataBuffer as *mut c_char,
+            CStr::from_ptr(message_ptr).count_bytes() + 1, // +1 for null terminator
+        );
+        outb(OutBAction::Abort as u16, code as u8);
+        unreachable!()
+    }
 }
 
-extern "C" {
+unsafe extern "C" {
     fn hyperlight_main();
     fn srand(seed: u32);
 }
@@ -76,7 +78,7 @@ static INIT: Once = Once::new();
 
 // Note: entrypoint cannot currently have a stackframe >4KB, as that will invoke __chkstk on msvc
 //       target without first having setup global `RUNNING_MODE` variable, which __chkstk relies on.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
     if peb_address == 0 {
         panic!("PEB address is null");
@@ -88,7 +90,7 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_
             let peb_ptr = P_PEB.unwrap();
             __security_cookie = peb_address ^ seed;
 
-            let srand_seed = ((peb_address << 8 ^ seed >> 4) >> 32) as u32;
+            let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
 
             // Set the seed for the random number generator for C code using rand;
             srand(srand_seed);

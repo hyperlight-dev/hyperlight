@@ -110,7 +110,7 @@ pub fn outb(port: u16, value: u8) {
     }
 }
 
-extern "win64" {
+unsafe extern "win64" {
     fn hloutb(port: u16, value: u8);
 }
 
