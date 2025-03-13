@@ -12,6 +12,9 @@ description = """
 Library to build guest applications for hyperlight.
 """
 
+[lints]
+workspace = true
+
 [features]
 default = ["libc", "printf"]
 libc = [] # compile musl libc
