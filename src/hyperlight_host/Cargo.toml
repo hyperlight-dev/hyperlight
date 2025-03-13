@@ -42,7 +42,7 @@ hyperlight-common = { workspace = true, default-features = true }
 vmm-sys-util = "0.12.1"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.14"
-thiserror = "2.0.11"
+thiserror = "2.0.12"
 prometheus = "0.13.3"
 strum = { version = "0.27", features = ["derive"] }
 tempfile = { version = "3.18", optional = true }
