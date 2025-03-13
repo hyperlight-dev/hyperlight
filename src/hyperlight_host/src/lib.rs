@@ -13,11 +13,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+#![deny(dead_code, missing_docs, unused_mut)]
+//! This crate contains an SDK that is used to execute specially-
+// compiled binaries within a very lightweight hypervisor environment.
 
 use std::sync::Once;
 
-/// This crate contains an SDK that is used to execute specially-
-/// compiled binaries within a very lightweight hypervisor environment.
 use log::info;
 /// The `built` crate is used to generate a `built.rs` file that contains
 /// information about the build environment. This information is used to
@@ -26,13 +27,10 @@ pub(crate) mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 /// Dealing with errors, including errors across VM boundaries
-#[deny(dead_code, missing_docs, unused_mut)]
 pub mod error;
 /// Wrappers for host and guest functions.
-#[deny(dead_code, missing_docs, unused_mut)]
 pub mod func;
 /// Wrappers for hypervisor implementations
-#[deny(dead_code, missing_docs, unused_mut)]
 pub mod hypervisor;
 /// Functionality to establish and manage an individual sandbox's
 /// memory.
@@ -62,15 +60,12 @@ pub mod hypervisor;
 ///
 /// The pointer passed to the Entrypoint in the Guest application is the 0x200000 + size of page table + size of code,
 /// at this address structs below are laid out in this order
-#[deny(dead_code, missing_docs, unused_mut)]
 pub mod mem;
 /// Metric definitions and helpers
-#[deny(dead_code, missing_docs, unused_mut)]
 pub mod metrics;
 /// The main sandbox implementations. Do not use this module directly in code
 /// outside this file. Types from this module needed for public consumption are
 /// re-exported below.
-#[deny(dead_code, missing_docs, unused_mut)]
 pub mod sandbox;
 /// `trait`s and other functionality for dealing with defining sandbox
 /// states and moving between them
@@ -82,7 +77,6 @@ pub(crate) mod seccomp;
 pub(crate) mod signal_handlers;
 /// Utilities for testing including interacting with `simpleguest.exe`
 /// and `callbackguest.exe`, our two most basic guest binaries for testing
-#[deny(missing_docs, unused_mut)]
 #[cfg(test)]
 pub(crate) mod testing;
 
@@ -110,8 +104,8 @@ pub use crate::func::call_ctx::MultiUseGuestCallContext;
 /// The universal `Result` type used throughout the Hyperlight codebase.
 pub type Result<T> = core::result::Result<T, error::HyperlightError>;
 
-// Logs an error then returns with it , more or less equivalent to the bail! macro in anyhow
-// but for HyperlightError instead of anyhow::Error
+/// Logs an error then returns with it, more or less equivalent to the bail! macro in anyhow
+/// but for HyperlightError instead of anyhow::Error
 #[macro_export]
 macro_rules! log_then_return {
     ($msg:literal $(,)?) => {{
@@ -140,7 +134,7 @@ macro_rules! log_then_return {
     };
 }
 
-// same as log::debug!, but will additionally print to stdout if the print_debug feature is enabled
+/// Same as log::debug!, but will additionally print to stdout if the print_debug feature is enabled
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)+) =>

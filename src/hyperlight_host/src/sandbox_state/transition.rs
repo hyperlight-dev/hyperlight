@@ -121,6 +121,7 @@ impl<'a, Cur: Sandbox, F> MultiUseContextCallback<'a, Cur, F>
 where
     F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()>,
 {
+    /// Invokes the callback on the provided guest context
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn call(self, cur: &mut MultiUseGuestCallContext) -> Result<()> {
         (self.cb)(cur)
