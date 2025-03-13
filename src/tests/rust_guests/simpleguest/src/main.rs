@@ -32,6 +32,7 @@ use alloc::{format, vec};
 use core::ffi::c_char;
 use core::hint::black_box;
 use core::ptr::write_volatile;
+use spin::Mutex;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -52,15 +53,14 @@ use log::{error, LevelFilter};
 
 extern crate hyperlight_guest;
 
-static mut BIGARRAY: [i32; 1024 * 1024] = [0; 1024 * 1024];
+static BIGARRAY: Mutex<[i32; 1024 * 1024]> = Mutex::new([0; 1024 * 1024]);
 
 fn set_static(_: &FunctionCall) -> Result<Vec<u8>> {
-    unsafe {
-        for val in BIGARRAY.iter_mut() {
-            *val = 1;
-        }
-        Ok(get_flatbuffer_result(BIGARRAY.len() as i32))
+    let mut lock = BIGARRAY.lock();
+    for val in lock.iter_mut() {
+        *val = 1;
     }
+    Ok(get_flatbuffer_result(lock.len() as i32))
 }
 
 fn echo_double(function_call: &FunctionCall) -> Result<Vec<u8>> {
@@ -714,7 +714,7 @@ fn add(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn hyperlight_main() {
     let set_static_def = GuestFunctionDefinition::new(
         "SetStatic".to_string(),
@@ -1110,7 +1110,7 @@ pub extern "C" fn hyperlight_main() {
     register_function(trigger_exception_def);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     // This test checks the stack behavior of the input/output buffer
     // by calling the host before serializing the function call.

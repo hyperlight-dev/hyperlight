@@ -7,3 +7,4 @@ edition = "2021"
 hyperlight-guest = { path = "../../../hyperlight_guest" }
 hyperlight-common = { path = "../../../hyperlight_common", default-features = false }
 log = {version = "0.4", default-features = false }
+spin = "0.9.8"
