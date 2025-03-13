@@ -32,7 +32,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.2.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.3.0
         with:
           rust-toolchain: "1.81.0"
         env:
