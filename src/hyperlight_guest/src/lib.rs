@@ -19,14 +19,14 @@ limitations under the License.
 use alloc::string::ToString;
 use core::hint::unreachable_unchecked;
 use core::ptr::copy_nonoverlapping;
-use spin::Mutex;
 
 use buddy_system_allocator::LockedHeap;
 use guest_function_register::GuestFunctionRegister;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::{HyperlightPEB, RunMode};
+use spin::Mutex;
 
-use crate::host_function_call::{outb, OutBAction};
+use crate::host_function_call::{OutBAction, outb};
 extern crate alloc;
 
 // Modules

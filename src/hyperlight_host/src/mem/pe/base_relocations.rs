@@ -16,7 +16,7 @@ limitations under the License.
 
 use goblin::error;
 use goblin::pe::section_table::SectionTable;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::Result;
 

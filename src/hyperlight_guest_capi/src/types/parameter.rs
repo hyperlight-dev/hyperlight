@@ -1,5 +1,5 @@
 use alloc::ffi::CString;
-use core::ffi::{c_char, CStr};
+use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ParameterValue};
 use hyperlight_guest::error::Result;

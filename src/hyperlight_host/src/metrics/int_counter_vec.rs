@@ -16,13 +16,13 @@ limitations under the License.
 
 use prometheus::core::{AtomicU64, GenericCounterVec};
 use prometheus::register_int_counter_vec_with_registry;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::{
-    get_metric_opts, get_metrics_registry, GetHyperlightMetric, HyperlightMetric,
-    HyperlightMetricOps,
+    GetHyperlightMetric, HyperlightMetric, HyperlightMetricOps, get_metric_opts,
+    get_metrics_registry,
 };
-use crate::{new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, new_error};
 
 /// A 64-bit counter
 #[derive(Debug)]

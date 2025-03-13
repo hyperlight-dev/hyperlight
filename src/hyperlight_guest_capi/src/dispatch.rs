@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::slice;
 use alloc::vec::Vec;
-use core::ffi::{c_char, CStr};
+use core::ffi::{CStr, c_char};
 use core::mem;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
@@ -11,7 +11,6 @@ use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::GuestFunctionRegister;
 use hyperlight_guest::host_function_call::call_host_function;
-
 use spin::Mutex;
 
 use crate::types::{FfiFunctionCall, FfiVec};

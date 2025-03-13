@@ -20,11 +20,11 @@ use std::fmt::{Debug, Formatter};
 use std::string::String;
 
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 use windows::Win32::System::Hypervisor::{
-    WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4, WHvX64RegisterCs, WHvX64RegisterEfer,
     WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT,
     WHV_RUN_VP_EXIT_REASON, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
+    WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4, WHvX64RegisterCs, WHvX64RegisterEfer,
 };
 
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
@@ -36,15 +36,15 @@ use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
 use super::wrappers::{HandleWrapper, WHvFPURegisters};
 use super::{
-    HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
-    CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+    CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
+    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE, HyperlightExit, Hypervisor, VirtualCPU,
 };
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::{debug, new_error, Result};
+use crate::{Result, debug, new_error};
 
 /// A Hypervisor driver for HyperV-on-Windows.
 pub(crate) struct HypervWindowsDriver {
@@ -491,9 +491,9 @@ pub mod tests {
 
     use serial_test::serial;
 
+    use crate::Result;
     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
     use crate::hypervisor::tests::test_initialise;
-    use crate::Result;
 
     #[test]
     #[serial]

@@ -17,7 +17,7 @@ limitations under the License.
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::guest_dispatch::call_function_on_guest;
 use crate::{MultiUseSandbox, Result};

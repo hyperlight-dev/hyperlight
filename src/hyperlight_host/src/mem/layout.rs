@@ -16,10 +16,10 @@ limitations under the License.
 use std::fmt::Debug;
 use std::mem::{offset_of, size_of};
 
-use hyperlight_common::mem::{GuestStackData, HyperlightPEB, RunMode, PAGE_SIZE_USIZE};
+use hyperlight_common::mem::{GuestStackData, HyperlightPEB, PAGE_SIZE_USIZE, RunMode};
 use paste::paste;
-use rand::{rng, RngCore};
-use tracing::{instrument, Span};
+use rand::{RngCore, rng};
+use tracing::{Span, instrument};
 
 use super::memory_region::MemoryRegionType::{
     BootStack, Code, GuardPage, GuestErrorData, Heap, HostExceptionData, HostFunctionDefinitions,
@@ -30,7 +30,7 @@ use super::mgr::AMOUNT_OF_MEMORY_PER_PT;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory};
 use crate::error::HyperlightError::{GuestOffsetIsInvalid, MemoryRequestTooBig};
 use crate::sandbox::SandboxConfiguration;
-use crate::{log_then_return, new_error, Result};
+use crate::{Result, log_then_return, new_error};
 
 // +-------------------------------------------+
 // |             Boot Stack (4KiB)             |

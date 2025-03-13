@@ -16,17 +16,17 @@ limitations under the License.
 
 use core::ffi::c_void;
 
-use tracing::{instrument, Span};
-use windows::core::s;
+use tracing::{Span, instrument};
 use windows::Win32::Foundation::{FreeLibrary, HANDLE};
 use windows::Win32::System::Hypervisor::*;
 use windows::Win32::System::LibraryLoader::*;
+use windows::core::s;
 use windows_result::HRESULT;
 
 use super::wrappers::HandleWrapper;
 use crate::hypervisor::wrappers::{WHvFPURegisters, WHvGeneralRegisters, WHvSpecialRegisters};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::{new_error, Result};
+use crate::{Result, new_error};
 
 // We need to pass in a primitive array of register names/values
 // to WHvSetVirtualProcessorRegisters and rust needs to know array size

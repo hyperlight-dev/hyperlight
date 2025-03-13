@@ -30,8 +30,6 @@ use bitflags::bitflags;
 #[cfg(mshv)]
 use hyperlight_common::mem::PAGE_SHIFT;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
-#[cfg(mshv)]
-use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
 #[cfg(mshv2)]
 use mshv_bindings::{
     HV_MAP_GPA_EXECUTABLE, HV_MAP_GPA_PERMISSIONS_NONE, HV_MAP_GPA_READABLE, HV_MAP_GPA_WRITABLE,
@@ -40,6 +38,8 @@ use mshv_bindings::{
 use mshv_bindings::{
     MSHV_SET_MEM_BIT_EXECUTABLE, MSHV_SET_MEM_BIT_UNMAP, MSHV_SET_MEM_BIT_WRITABLE,
 };
+#[cfg(mshv)]
+use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
 

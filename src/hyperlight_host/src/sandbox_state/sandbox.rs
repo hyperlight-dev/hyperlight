@@ -17,7 +17,7 @@ limitations under the License.
 use std::fmt::Debug;
 use std::panic;
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::transition::TransitionMetadata;
 use crate::Result;

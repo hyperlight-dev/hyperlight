@@ -471,7 +471,7 @@ fn recursive_stack_allocate_overflow() {
 #[test]
 #[ignore]
 fn log_message() {
-    use hyperlight_testing::simplelogger::{SimpleLogger, LOGGER};
+    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
     // init
     SimpleLogger::initialize_test_logger();
 

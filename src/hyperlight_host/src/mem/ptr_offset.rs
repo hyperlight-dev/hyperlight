@@ -18,10 +18,10 @@ use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::convert::From;
 use std::ops::{Add, Sub};
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
-use crate::error::HyperlightError;
 use crate::Result;
+use crate::error::HyperlightError;
 
 /// An offset into a given address space.
 ///

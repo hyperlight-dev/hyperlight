@@ -19,7 +19,7 @@ use hyperlight_host::func::call_ctx::MultiUseGuestCallContext;
 use hyperlight_host::sandbox::{MultiUseSandbox, UninitializedSandbox};
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{new_error, GuestBinary, Result};
+use hyperlight_host::{GuestBinary, Result, new_error};
 use hyperlight_testing::simple_guest_as_string;
 
 fn main() {

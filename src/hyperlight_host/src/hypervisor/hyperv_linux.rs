@@ -30,10 +30,10 @@ use log::error;
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 use mshv_bindings::{
-    hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
+    FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters, hv_message_type,
+    hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
     hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
-    FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters,
 };
 #[cfg(mshv3)]
 use mshv_bindings::{
@@ -41,21 +41,21 @@ use mshv_bindings::{
     hv_partition_synthetic_processor_features,
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
-    Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
-    CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+    CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
+    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE, Hypervisor, VirtualCPU,
 };
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
+use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::{log_then_return, new_error, Result};
+use crate::{Result, log_then_return, new_error};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.

@@ -32,7 +32,6 @@ use alloc::{format, vec};
 use core::ffi::c_char;
 use core::hint::black_box;
 use core::ptr::write_volatile;
-use spin::Mutex;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -48,8 +47,9 @@ use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::register_function;
 use hyperlight_guest::host_function_call::{call_host_function, get_host_return_value};
 use hyperlight_guest::memory::malloc;
-use hyperlight_guest::{logging, MIN_STACK_ADDRESS};
-use log::{error, LevelFilter};
+use hyperlight_guest::{MIN_STACK_ADDRESS, logging};
+use log::{LevelFilter, error};
+use spin::Mutex;
 
 extern crate hyperlight_guest;
 
@@ -354,7 +354,10 @@ fn print_ten_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
         function_call.parameters.clone().unwrap()[8].clone(),
         function_call.parameters.clone().unwrap()[9].clone(),
     ) {
-        let message = format!("Message: arg1:{} arg2:{} arg3:{} arg4:{} arg5:{} arg6:{} arg7:{} arg8:{} arg9:{} arg10:{}.", arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+        let message = format!(
+            "Message: arg1:{} arg2:{} arg3:{} arg4:{} arg5:{} arg6:{} arg7:{} arg8:{} arg9:{} arg10:{}.",
+            arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10
+        );
         print_output(&message)
     } else {
         Err(HyperlightGuestError::new(
@@ -390,7 +393,10 @@ fn print_eleven_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
         function_call.parameters.clone().unwrap()[9].clone(),
         function_call.parameters.clone().unwrap()[10].clone(),
     ) {
-        let message = format!("Message: arg1:{} arg2:{} arg3:{} arg4:{} arg5:{} arg6:{} arg7:{} arg8:{} arg9:{} arg10:{} arg11:{:.3}.", arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11);
+        let message = format!(
+            "Message: arg1:{} arg2:{} arg3:{} arg4:{} arg5:{} arg6:{} arg7:{} arg8:{} arg9:{} arg10:{} arg11:{:.3}.",
+            arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11
+        );
         print_output(&message)
     } else {
         Err(HyperlightGuestError::new(
@@ -1168,7 +1174,7 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
             return Err(HyperlightGuestError::new(
                 ErrorCode::GuestFunctionParameterTypeMismatch,
                 "Invalid parameters passed to fuzz_host_function".to_string(),
-            ))
+            ));
         }
     };
     call_host_function(&host_func_name, Some(params), func.expected_return_type)

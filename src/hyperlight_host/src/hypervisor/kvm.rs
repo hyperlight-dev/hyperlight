@@ -19,10 +19,10 @@ use std::fmt::Debug;
 #[cfg(gdb)]
 use std::sync::{Arc, Mutex};
 
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region, KVM_MEM_READONLY};
+use kvm_bindings::{KVM_MEM_READONLY, kvm_fpu, kvm_regs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
@@ -31,15 +31,15 @@ use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
-    HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
-    CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+    CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
+    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE, HyperlightExit, Hypervisor, VirtualCPU,
 };
+#[cfg(gdb)]
+use crate::HyperlightError;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
-#[cfg(gdb)]
-use crate::HyperlightError;
-use crate::{log_then_return, new_error, Result};
+use crate::{Result, log_then_return, new_error};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -70,8 +70,8 @@ mod debug {
 
     use hyperlight_common::mem::PAGE_SIZE;
     use kvm_bindings::{
-        kvm_guest_debug, kvm_regs, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
-        KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
+        KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP,
+        KVM_GUESTDBG_USE_SW_BP, kvm_guest_debug, kvm_regs,
     };
     use kvm_ioctls::VcpuFd;
 
@@ -79,7 +79,7 @@ mod debug {
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::mem::layout::SandboxMemoryLayout;
-    use crate::{new_error, HyperlightError, Result};
+    use crate::{HyperlightError, Result, new_error};
 
     /// Software Breakpoint size in memory
     pub const SW_BP_SIZE: usize = 1;
@@ -923,11 +923,11 @@ impl Hypervisor for KVMDriver {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use crate::Result;
     #[cfg(gdb)]
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
     use crate::hypervisor::tests::test_initialise;
-    use crate::Result;
 
     #[cfg(gdb)]
     struct DbgMemAccessHandler {}

@@ -18,7 +18,7 @@ use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
 use rand::Rng;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use super::mem_access::dbg_mem_access_handler_wrapper;
@@ -35,7 +35,7 @@ use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 use crate::sandbox_state::sandbox::Sandbox;
-use crate::{new_error, MultiUseSandbox, Result, UninitializedSandbox};
+use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
 /// The implementation for evolving `UninitializedSandbox`es to
 /// `Sandbox`es.
@@ -159,8 +159,8 @@ mod tests {
     use hyperlight_testing::{callback_guest_as_string, simple_guest_as_string};
 
     use super::evolve_impl_multi_use;
-    use crate::sandbox::uninitialized::GuestBinary;
     use crate::UninitializedSandbox;
+    use crate::sandbox::uninitialized::GuestBinary;
 
     #[test]
     fn test_evolve() {

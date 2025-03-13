@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 use anyhow::{Error, Result};
 use flatbuffers::size_prefixed_root;
 #[cfg(feature = "tracing")]
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::flatbuffers::hyperlight::generated::{
     ErrorCode as FbErrorCode, GuestError as FbGuestError, GuestErrorArgs,

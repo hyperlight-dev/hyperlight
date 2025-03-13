@@ -17,18 +17,18 @@ limitations under the License.
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{Error, Result, anyhow, bail};
 use flatbuffers::size_prefixed_root;
 #[cfg(feature = "tracing")]
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::flatbuffers::hyperlight::generated::{
-    hlbool, hlboolArgs, hldouble, hldoubleArgs, hlfloat, hlfloatArgs, hlint, hlintArgs, hllong,
-    hllongArgs, hlsizeprefixedbuffer, hlsizeprefixedbufferArgs, hlstring, hlstringArgs, hluint,
-    hluintArgs, hlulong, hlulongArgs, hlvoid, hlvoidArgs,
     FunctionCallResult as FbFunctionCallResult, FunctionCallResultArgs as FbFunctionCallResultArgs,
     Parameter, ParameterType as FbParameterType, ParameterValue as FbParameterValue,
-    ReturnType as FbReturnType, ReturnValue as FbReturnValue,
+    ReturnType as FbReturnType, ReturnValue as FbReturnValue, hlbool, hlboolArgs, hldouble,
+    hldoubleArgs, hlfloat, hlfloatArgs, hlint, hlintArgs, hllong, hllongArgs, hlsizeprefixedbuffer,
+    hlsizeprefixedbufferArgs, hlstring, hlstringArgs, hluint, hluintArgs, hlulong, hlulongArgs,
+    hlvoid, hlvoidArgs,
 };
 
 /// Supported parameter types with values for function calling.

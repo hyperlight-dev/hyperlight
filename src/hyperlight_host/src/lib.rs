@@ -90,10 +90,6 @@ pub(crate) mod testing;
 pub use error::HyperlightError;
 /// The re-export for the set_registry function
 pub use metrics::set_metrics_registry;
-/// The re-export for the `is_hypervisor_present` type
-pub use sandbox::is_hypervisor_present;
-/// The re-export for the `GuestBinary` type
-pub use sandbox::uninitialized::GuestBinary;
 /// Re-export for `HypervisorWrapper` trait
 /// Re-export for `MemMgrWrapper` type
 /// A sandbox that can call be used to make multiple calls to guest functions,
@@ -103,6 +99,10 @@ pub use sandbox::MultiUseSandbox;
 pub use sandbox::SandboxRunOptions;
 /// The re-export for the `UninitializedSandbox` type
 pub use sandbox::UninitializedSandbox;
+/// The re-export for the `is_hypervisor_present` type
+pub use sandbox::is_hypervisor_present;
+/// The re-export for the `GuestBinary` type
+pub use sandbox::uninitialized::GuestBinary;
 
 /// The re-export for the `MultiUseGuestCallContext` type`
 pub use crate::func::call_ctx::MultiUseGuestCallContext;

@@ -21,7 +21,7 @@ limitations under the License.
 use std::sync::{Mutex, Once};
 use std::thread::current;
 
-use log::{set_logger, set_max_level, Level, Log, Metadata, Record};
+use log::{Level, Log, Metadata, Record, set_logger, set_max_level};
 
 pub static LOGGER: SimpleLogger = SimpleLogger {};
 static INITLOGGER: Once = Once::new();

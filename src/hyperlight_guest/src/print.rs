@@ -16,11 +16,11 @@ limitations under the License.
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{c_char, CStr};
+use core::ffi::{CStr, c_char};
 use core::mem;
-use spin::Mutex;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+use spin::Mutex;
 
 use crate::host_function_call::call_host_function;
 
