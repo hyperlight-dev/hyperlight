@@ -18,7 +18,7 @@ limitations under the License.
 // it will only log messages from the hyperlight-guest target. It will not log messages from other targets.
 // this target is only used when handling an outb log request from the guest, so this logger will only capture those messages.
 
-use std::sync::Once;
+use std::sync::{Mutex, Once};
 use std::thread::current;
 
 use log::{set_logger, set_max_level, Level, Log, Metadata, Record};
@@ -35,8 +35,8 @@ pub struct LogCall {
     pub module_path: Option<String>,
 }
 
-static mut LOGCALLS: Vec<LogCall> = Vec::<LogCall>::new();
-static mut NUMBER_OF_ENABLED_CALLS: usize = 0;
+static LOGCALLS: Mutex<Vec<LogCall>> = Mutex::new(Vec::<LogCall>::new());
+static NUMBER_OF_ENABLED_CALLS: Mutex<usize> = Mutex::new(0);
 
 pub struct SimpleLogger {}
 
@@ -49,29 +49,23 @@ impl SimpleLogger {
     }
 
     pub fn num_enabled_calls(&self) -> usize {
-        unsafe { NUMBER_OF_ENABLED_CALLS }
+        *NUMBER_OF_ENABLED_CALLS.lock().unwrap()
     }
 
     pub fn num_log_calls(&self) -> usize {
-        unsafe { LOGCALLS.len() }
+        LOGCALLS.lock().unwrap().len()
     }
     pub fn get_log_call(&self, idx: usize) -> Option<LogCall> {
-        unsafe { LOGCALLS.get(idx).cloned() }
+        LOGCALLS.lock().unwrap().get(idx).cloned()
     }
 
     pub fn clear_log_calls(&self) {
-        unsafe {
-            LOGCALLS.clear();
-            NUMBER_OF_ENABLED_CALLS = 0;
-        }
+        LOGCALLS.lock().unwrap().clear();
+        *NUMBER_OF_ENABLED_CALLS.lock().unwrap() = 0;
     }
 
     pub fn test_log_records<F: Fn(&Vec<LogCall>)>(&self, f: F) {
-        unsafe {
-            // this logger is only used for testing so unsafe is fine here
-            #[allow(static_mut_refs)]
-            f(&LOGCALLS);
-        };
+        f(&LOGCALLS.lock().unwrap());
         self.clear_log_calls();
     }
 }
@@ -82,36 +76,32 @@ impl Log for SimpleLogger {
         // because the guest derives its log level from the host log level then the number times that enabled is called for
         // the "hyperlight-guest" target will be the same as the number of messages logged by the guest.
         // In other words this function should always return true for the "hyperlight-guest" target.
-        unsafe {
-            if metadata.target() == "hyperlight-guest" {
-                NUMBER_OF_ENABLED_CALLS += 1;
-            }
-            metadata.target() == "hyperlight-guest" && metadata.level() <= log::max_level()
+        if metadata.target() == "hyperlight-guest" {
+            *NUMBER_OF_ENABLED_CALLS.lock().unwrap() += 1;
         }
+        metadata.target() == "hyperlight-guest" && metadata.level() <= log::max_level()
     }
     fn log(&self, record: &Record) {
         if !self.enabled(record.metadata()) {
             return;
         }
 
-        unsafe {
-            LOGCALLS.push(LogCall {
-                level: record.level(),
-                args: format!("{}", record.args()),
-                target: record.target().to_string(),
-                line: record.line(),
-                file: match record.file() {
-                    None => record.file_static().map(|file| file.to_string()),
-                    Some(file) => Some(file.to_string()),
-                },
-                module_path: match record.module_path() {
-                    None => record
-                        .module_path_static()
-                        .map(|module_path| module_path.to_string()),
-                    Some(module_path) => Some(module_path.to_string()),
-                },
-            });
-        };
+        LOGCALLS.lock().unwrap().push(LogCall {
+            level: record.level(),
+            args: format!("{}", record.args()),
+            target: record.target().to_string(),
+            line: record.line(),
+            file: match record.file() {
+                None => record.file_static().map(|file| file.to_string()),
+                Some(file) => Some(file.to_string()),
+            },
+            module_path: match record.module_path() {
+                None => record
+                    .module_path_static()
+                    .map(|module_path| module_path.to_string()),
+                Some(module_path) => Some(module_path.to_string()),
+            },
+        });
 
         println!("Thread {:?} {:?}", current().id(), record);
     }
