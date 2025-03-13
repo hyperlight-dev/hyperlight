@@ -1,7 +1,10 @@
 use core::ffi::c_char;
 
-#[no_mangle]
-pub extern "C" fn hl_log(
+/// # Safety
+///
+/// Dereferences the given raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_log(
     level: log::Level,
     message: *const c_char,
     line: i32,
