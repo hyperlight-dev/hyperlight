@@ -161,7 +161,7 @@ fn call_host_spin(_: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn hyperlight_main() {
     let print_output_def = GuestFunctionDefinition::new(
         "PrintOutput".to_string(),
@@ -240,7 +240,7 @@ pub extern "C" fn hyperlight_main() {
     register_function(call_host_spin_def);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     Err(HyperlightGuestError::new(
         ErrorCode::GuestFunctionNotFound,
