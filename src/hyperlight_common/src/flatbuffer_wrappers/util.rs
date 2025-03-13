@@ -45,7 +45,7 @@ pub trait FlatbufferSerializable {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs;
 }
 
-/// Implementations for basic types below
+// Implementations for basic types below
 
 impl FlatbufferSerializable for () {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
