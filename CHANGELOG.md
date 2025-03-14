@@ -50,6 +50,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/releases/tag/dev-latest>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.2.0..HEAD>
 [v0.2.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.1.0...v0.2.0>
 [v0.1.0]: <https://github.com/hyperlight-dev/hyperlight/releases/tag/v0.1.0>
