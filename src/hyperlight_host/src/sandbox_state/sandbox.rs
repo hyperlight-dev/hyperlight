@@ -55,10 +55,13 @@ pub trait Sandbox: Sized + Debug {
 /// A utility trait to recognize a Sandbox that has not yet been initialized.
 /// It allows retrieval of a strongly typed UninitializedSandbox.
 pub trait UninitializedSandbox: Sandbox {
+    /// Retrieves reference to strongly typed `UninitializedSandbox`
     fn get_uninitialized_sandbox(&self) -> &crate::sandbox::UninitializedSandbox;
 
+    /// Retrieves mutable reference to strongly typed `UninitializedSandbox`
     fn get_uninitialized_sandbox_mut(&mut self) -> &mut crate::sandbox::UninitializedSandbox;
 
+    /// Returns `true` if the Sandbox is configured to run in process otherwise `false`
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn is_running_in_process(&self) -> bool {
         self.get_uninitialized_sandbox().run_inprocess
@@ -69,6 +72,7 @@ pub trait UninitializedSandbox: Sandbox {
 pub trait EvolvableSandbox<Cur: Sandbox, Next: Sandbox, T: TransitionMetadata<Cur, Next>>:
     Sandbox
 {
+    /// Evolve `Self` to `Next` providing Metadata.
     fn evolve(self, tsn: T) -> Result<Next>;
 }
 
@@ -76,5 +80,6 @@ pub trait EvolvableSandbox<Cur: Sandbox, Next: Sandbox, T: TransitionMetadata<Cu
 pub trait DevolvableSandbox<Cur: Sandbox, Prev: Sandbox, T: TransitionMetadata<Cur, Prev>>:
     Sandbox
 {
+    /// Devolve `Self` to `Prev` providing Metadata.
     fn devolve(self, tsn: T) -> Result<Prev>;
 }
