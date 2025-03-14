@@ -184,7 +184,6 @@ struct HvHandlerCommChannels {
 pub(crate) struct HvHandlerConfig {
     pub(crate) peb_addr: RawPtr,
     pub(crate) seed: u64,
-    pub(crate) page_size: u32,
     pub(crate) dispatch_function_addr: Arc<Mutex<Option<RawPtr>>>,
     pub(crate) max_init_time: Duration,
     pub(crate) max_exec_time: Duration,
@@ -353,7 +352,6 @@ impl HypervisorHandler {
                                 let res = hv.initialise(
                                     configuration.peb_addr.clone(),
                                     configuration.seed,
-                                    configuration.page_size,
                                     configuration.outb_handler.clone(),
                                     configuration.mem_access_handler.clone(),
                                     Some(hv_handler_clone.clone()),

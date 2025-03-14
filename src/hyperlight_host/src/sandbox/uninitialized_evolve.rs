@@ -119,14 +119,12 @@ fn hv_init(
         let peb_u64 = u64::try_from(gshm.layout.peb_address)?;
         RawPtr::from(peb_u64)
     };
-    let page_size = u32::try_from(page_size::get())?;
     let hv_handler_config = HvHandlerConfig {
         outb_handler: outb_hdl,
         mem_access_handler: mem_access_hdl,
         #[cfg(gdb)]
         dbg_mem_access_handler: dbg_mem_access_hdl,
         seed,
-        page_size,
         peb_addr,
         dispatch_function_addr: Arc::new(Mutex::new(None)),
         max_init_time,
