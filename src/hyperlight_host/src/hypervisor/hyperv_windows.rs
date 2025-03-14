@@ -303,7 +303,6 @@ impl Hypervisor for HypervWindowsDriver {
         &mut self,
         peb_address: RawPtr,
         seed: u64,
-        page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
@@ -316,8 +315,7 @@ impl Hypervisor for HypervWindowsDriver {
             // function args
             rcx: peb_address.into(),
             rdx: seed,
-            r8: page_size.into(),
-            r9: self.get_max_log_level().into(),
+            r8: self.get_max_log_level().into(),
             rflags: 1 << 1, // eflags bit index 1 is reserved and always needs to be 1
 
             ..Default::default()

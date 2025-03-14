@@ -126,7 +126,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         &mut self,
         peb_addr: RawPtr,
         seed: u64,
-        page_size: u32,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
@@ -344,7 +343,6 @@ pub(crate) mod tests {
             #[cfg(gdb)]
             dbg_mem_access_handler: dbg_mem_access_fn,
             seed: 1234567890,
-            page_size: 4096,
             peb_addr: RawPtr::from(0x230000),
             dispatch_function_addr: Arc::new(Mutex::new(None)),
             max_init_time: Duration::from_millis(

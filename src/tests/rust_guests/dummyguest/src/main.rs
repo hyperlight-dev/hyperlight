@@ -43,8 +43,8 @@ fn mmio_read() {
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub extern "win64" fn entrypoint(a: i64, b: i64, c: i32) -> i32 {
-    if a != 0x230000 || b != 1234567890 || c != 4096 {
+pub extern "win64" fn entrypoint(a: u64, b: u64) -> i32 {
+    if a != 0x230000 || b != 1234567890 {
         mmio_read();
     }
     halt();

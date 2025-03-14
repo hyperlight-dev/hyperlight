@@ -71,19 +71,17 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
         &mut self,
         _peb_addr: crate::mem::ptr::RawPtr,
         seed: u64,
-        page_size: u32,
         _outb_handle_fn: super::handlers::OutBHandlerWrapper,
         _mem_access_fn: super::handlers::MemAccessHandlerWrapper,
         _hv_handler: Option<super::hypervisor_handler::HypervisorHandler>,
         #[cfg(gdb)] _dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> crate::Result<()> {
-        let entrypoint_fn: extern "win64" fn(u64, u64, u64, u64) =
+        let entrypoint_fn: extern "win64" fn(u64, u64, u64) =
             unsafe { std::mem::transmute(self.args.entrypoint_raw as *const c_void) };
 
         entrypoint_fn(
             self.args.peb_ptr_raw,
             seed,
-            page_size as u64,
             log::max_level() as u64,
         );
 

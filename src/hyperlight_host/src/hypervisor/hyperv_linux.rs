@@ -201,7 +201,6 @@ impl Hypervisor for HypervLinuxDriver {
         &mut self,
         peb_addr: RawPtr,
         seed: u64,
-        page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
@@ -215,8 +214,7 @@ impl Hypervisor for HypervLinuxDriver {
             // function args
             rcx: peb_addr.into(),
             rdx: seed,
-            r8: page_size.into(),
-            r9: self.get_max_log_level().into(),
+            r8: self.get_max_log_level().into(),
 
             ..Default::default()
         };

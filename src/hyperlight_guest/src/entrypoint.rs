@@ -29,8 +29,8 @@ use crate::guest_logger::init_logger;
 use crate::host_function_call::{outb, OutBAction};
 use crate::idtr::load_idt;
 use crate::{
-    __security_cookie, HEAP_ALLOCATOR, MIN_STACK_ADDRESS, OS_PAGE_SIZE, OUTB_PTR,
-    OUTB_PTR_WITH_CONTEXT, P_PEB, RUNNING_MODE,
+    __security_cookie, HEAP_ALLOCATOR, MIN_STACK_ADDRESS, OUTB_PTR, OUTB_PTR_WITH_CONTEXT, P_PEB,
+    RUNNING_MODE,
 };
 
 #[inline(never)]
@@ -77,7 +77,7 @@ static INIT: Once = Once::new();
 // Note: entrypoint cannot currently have a stackframe >4KB, as that will invoke __chkstk on msvc
 //       target without first having setup global `RUNNING_MODE` variable, which __chkstk relies on.
 #[no_mangle]
-pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
+pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64) {
     if peb_address == 0 {
         panic!("PEB address is null");
     }
@@ -141,8 +141,6 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_
                 .try_lock()
                 .expect("Failed to access HEAP_ALLOCATOR")
                 .init(heap_start, heap_size);
-
-            OS_PAGE_SIZE = ops as u32;
 
             (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
 
