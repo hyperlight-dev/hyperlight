@@ -20,12 +20,12 @@ use std::sync::{Arc, Mutex};
 use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
 use hyperlight_common::flatbuffer_wrappers::host_function_definition::HostFunctionDefinition;
 use paste::paste;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::{HyperlightFunction, SupportedParameterType, SupportedReturnType};
-use crate::sandbox::{ExtraAllowedSyscall, UninitializedSandbox};
 use crate::HyperlightError::UnexpectedNoOfArguments;
-use crate::{log_then_return, new_error, Result};
+use crate::sandbox::{ExtraAllowedSyscall, UninitializedSandbox};
+use crate::{Result, log_then_return, new_error};
 
 macro_rules! host_function {
     // Special case for zero parameters

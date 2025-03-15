@@ -20,10 +20,10 @@ use std::os::raw::c_void;
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::{HyperlightExit, Hypervisor};
+use crate::Result;
 #[cfg(crashdump)]
 use crate::mem::memory_region::MemoryRegion;
 use crate::sandbox::leaked_outb::LeakedOutBWrapper;
-use crate::Result;
 
 /// Arguments passed to inprocess driver
 pub struct InprocessArgs<'a> {
@@ -66,7 +66,7 @@ impl Debug for InprocessDriver<'_> {
     }
 }
 
-impl<'a> Hypervisor for InprocessDriver<'a> {
+impl Hypervisor for InprocessDriver<'_> {
     fn initialise(
         &mut self,
         _peb_addr: crate::mem::ptr::RawPtr,

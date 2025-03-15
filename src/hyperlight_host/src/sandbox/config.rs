@@ -17,7 +17,7 @@ limitations under the License.
 use std::cmp::{max, min};
 use std::time::Duration;
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::mem::exe::ExeInfo;
 

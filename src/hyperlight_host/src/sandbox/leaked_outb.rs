@@ -17,7 +17,7 @@ limitations under the License.
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::hypervisor::handlers::{OutBHandlerCaller, OutBHandlerWrapper};
 use crate::mem::custom_drop::CustomPtrDrop;
@@ -79,7 +79,7 @@ pub(crate) struct LeakedOutBWrapper<'a> {
     hdl_ptr: Arc<Mutex<CustomPtrDrop<'a, OutBHandlerWrapper>>>,
 }
 
-impl<'a> LeakedOutBWrapper<'a> {
+impl LeakedOutBWrapper<'_> {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
         mgr: &mut SandboxMemoryManager<GuestSharedMemory>,

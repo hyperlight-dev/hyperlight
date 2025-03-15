@@ -14,14 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
+use crate::Result;
 use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::mgr::{SandboxMemoryManager, STACK_COOKIE_LEN};
+use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
 use crate::mem::shared_mem::{
     ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory,
 };
-use crate::Result;
 
 /// StackCookie
 pub type StackCookie = [u8; STACK_COOKIE_LEN];

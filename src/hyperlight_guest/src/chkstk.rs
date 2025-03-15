@@ -22,7 +22,7 @@ use hyperlight_common::mem::RunMode;
 use crate::guest_error::{set_invalid_runmode_error, set_stack_allocate_error};
 use crate::{MIN_STACK_ADDRESS, RUNNING_MODE};
 
-extern "win64" {
+unsafe extern "win64" {
     fn __chkstk();
     fn __chkstk_in_proc();
 }

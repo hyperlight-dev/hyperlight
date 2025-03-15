@@ -14,14 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use prometheus::{register_histogram_with_registry, Histogram as PHistogram};
-use tracing::{instrument, Span};
+use prometheus::{Histogram as PHistogram, register_histogram_with_registry};
+use tracing::{Span, instrument};
 
 use super::{
-    get_histogram_opts, get_metrics_registry, GetHyperlightMetric, HyperlightMetric,
-    HyperlightMetricOps,
+    GetHyperlightMetric, HyperlightMetric, HyperlightMetricOps, get_histogram_opts,
+    get_metrics_registry,
 };
-use crate::{new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, new_error};
 
 /// A named histogram
 #[derive(Debug)]

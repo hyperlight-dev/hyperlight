@@ -1,6 +1,11 @@
 [package]
 name = "hyperlight-testing"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 anyhow = "1.0.97"

@@ -21,7 +21,7 @@ use seccompiler::{
 };
 
 use crate::sandbox::ExtraAllowedSyscall;
-use crate::{and, or, Result};
+use crate::{Result, and, or};
 
 fn syscalls_allowlist() -> Result<Vec<(i64, Vec<SeccompRule>)>> {
     Ok(vec![

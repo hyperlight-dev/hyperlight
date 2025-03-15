@@ -21,8 +21,8 @@ use core::slice::from_raw_parts_mut;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 
-use crate::error::{HyperlightGuestError, Result};
 use crate::P_PEB;
+use crate::error::{HyperlightGuestError, Result};
 
 pub fn push_shared_output_data(data: Vec<u8>) -> Result<()> {
     let peb_ptr = unsafe { P_PEB.unwrap() };

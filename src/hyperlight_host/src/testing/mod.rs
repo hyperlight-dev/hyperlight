@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use hyperlight_testing::rust_guest_as_pathbuf;
 
 use crate::mem::exe::ExeInfo;
-use crate::{new_error, Result};
+use crate::{Result, new_error};
 pub(crate) mod log_values;
 
 /// Get an `ExeInfo` representing `simpleguest.exe`

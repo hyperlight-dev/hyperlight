@@ -22,7 +22,7 @@ use std::mem::size_of;
 
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 
-use crate::{log_then_return, new_error, Result};
+use crate::{Result, log_then_return, new_error};
 
 /// A function that knows how to read data of type `T` from a
 /// `SharedMemory` at a specified offset

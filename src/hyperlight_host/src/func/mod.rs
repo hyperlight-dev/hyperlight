@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use crate::{new_error, Result};
+use crate::{Result, new_error};
 /// Context structures used to allow the user to call one or more guest
 /// functions on the same Hyperlight sandbox instance, all from within the
 /// same state and mutual exclusion context.
@@ -50,7 +50,7 @@ pub use hyperlight_common::flatbuffer_wrappers::function_types::ReturnType;
 pub use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 pub use param_type::SupportedParameterType;
 pub use ret_type::SupportedReturnType;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 type HLFunc = Arc<Mutex<Box<dyn FnMut(Vec<ParameterValue>) -> Result<ReturnValue> + Send>>>;
 
@@ -81,8 +81,6 @@ impl HyperlightFunction {
 pub use host_functions::HostFunction0;
 /// Re-export for `HostFunction1` trait
 pub use host_functions::HostFunction1;
-/// Re-export for `HostFunction10` trait
-pub use host_functions::HostFunction10;
 /// Re-export for `HostFunction2` trait
 pub use host_functions::HostFunction2;
 /// Re-export for `HostFunction3` trait
@@ -99,3 +97,5 @@ pub use host_functions::HostFunction7;
 pub use host_functions::HostFunction8;
 /// Re-export for `HostFunction9` trait
 pub use host_functions::HostFunction9;
+/// Re-export for `HostFunction10` trait
+pub use host_functions::HostFunction10;

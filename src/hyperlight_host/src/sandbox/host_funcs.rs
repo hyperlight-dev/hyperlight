@@ -20,14 +20,14 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, Ret
 use hyperlight_common::flatbuffer_wrappers::host_function_definition::HostFunctionDefinition;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::{ExtraAllowedSyscall, FunctionsMap};
+use crate::HyperlightError::HostFunctionNotFound;
 use crate::func::HyperlightFunction;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::ExclusiveSharedMemory;
-use crate::HyperlightError::HostFunctionNotFound;
-use crate::{new_error, Result};
+use crate::{Result, new_error};
 
 #[derive(Default, Clone)]
 /// A Wrapper around details of functions exposed by the Host
