@@ -28,7 +28,7 @@ use crate::flatbuffers::hyperlight::generated::{
     ErrorCode as FbErrorCode, GuestError as FbGuestError, GuestErrorArgs,
 };
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(C)]
 /// `ErrorCode` represents an error that occurred in the Hyperlight Guest.
 pub enum ErrorCode {
@@ -222,7 +222,7 @@ impl TryFrom<&GuestError> for Vec<u8> {
         let guest_error_fb = FbGuestError::create(
             &mut builder,
             &GuestErrorArgs {
-                code: value.code.clone().into(),
+                code: value.code.into(),
                 message: Some(message),
             },
         );

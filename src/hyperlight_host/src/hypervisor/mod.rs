@@ -18,9 +18,9 @@ use log::LevelFilter;
 use tracing::{instrument, Span};
 
 use crate::error::HyperlightError::ExecutionCanceledByHost;
-use crate::hypervisor::metrics::HypervisorMetric::NumberOfCancelledGuestExecutions;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::{int_counter_inc, log_then_return, new_error, HyperlightError, Result};
+use crate::metrics::{CounterMetric, EmittableMetric};
+use crate::{log_then_return, new_error, HyperlightError, Result};
 
 /// Util for handling x87 fpu state
 #[cfg(any(kvm, mshv, target_os = "windows"))]
@@ -45,8 +45,6 @@ pub mod inprocess;
 #[cfg(kvm)]
 /// Functionality to manipulate KVM-based virtual machines
 pub mod kvm;
-/// Metric definitions for Hypervisor module.
-mod metrics;
 #[cfg(target_os = "windows")]
 /// Hyperlight Surrogate Process
 pub(crate) mod surrogate_process;
@@ -313,7 +311,7 @@ impl VirtualCPU {
                         #[cfg(target_os = "linux")]
                         hvh.set_run_cancelled(true);
                     }
-                    int_counter_inc!(&NumberOfCancelledGuestExecutions);
+                    CounterMetric::guest_cancellation().emit();
                     log_then_return!(ExecutionCanceledByHost());
                 }
                 Ok(HyperlightExit::Unknown(reason)) => {

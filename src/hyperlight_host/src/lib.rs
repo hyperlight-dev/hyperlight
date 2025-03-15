@@ -87,8 +87,6 @@ pub(crate) mod testing;
 
 /// The re-export for the `HyperlightError` type
 pub use error::HyperlightError;
-/// The re-export for the set_registry function
-pub use metrics::set_metrics_registry;
 /// The re-export for the `is_hypervisor_present` type
 pub use sandbox::is_hypervisor_present;
 /// The re-export for the `GuestBinary` type

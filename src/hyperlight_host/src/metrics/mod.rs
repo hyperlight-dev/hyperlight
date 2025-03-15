@@ -1,355 +1,367 @@
-/*
-Copyright 2024 The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-use std::collections::HashMap;
 use std::sync::Once;
+use std::time::Duration;
 
-use log::error;
-use once_cell::sync::OnceCell;
-use prometheus::{default_registry, histogram_opts, opts, HistogramOpts, Opts, Registry};
-use strum::{IntoEnumIterator, VariantNames};
+use metrics_macro::NamedMetric;
 
-use crate::error::HyperlightError::{Error, MetricNotFound};
-use crate::{log_then_return, new_error, Result};
-mod int_gauge_vec;
-/// An Integer Gauge Metric for Hyperlight
-///
-pub use int_gauge_vec::IntGaugeVec;
-mod int_gauge;
-/// An Integer Gauge Metric for Hyperlight
-pub use int_gauge::IntGauge;
-mod int_counter_vec;
-/// An Integer Counter Vec for Hyperlight
-pub use int_counter_vec::IntCounterVec;
-mod int_counter;
-/// An Integer Counter for Hyperlight
-pub use int_counter::IntCounter;
-mod histogram_vec;
-/// A Histogram Vec for Hyperlight
-pub use histogram_vec::HistogramVec;
-mod histogram;
-/// AHistogram for Hyperlight
-pub use histogram::Histogram;
-/// A trait that should be implemented by all enums that represent hyperlight metrics
-pub trait HyperlightMetricEnum<T>:
-    IntoEnumIterator + VariantNames + From<T> + Into<&'static str>
-where
-    &'static str: From<Self>,
-    &'static str: for<'a> From<&'a Self>,
-{
-    /// A function that should return a static reference to a Once that is used to guard the initialization of the metrics hashmap.
-    fn get_init_metrics() -> &'static Once;
-    /// A function that should return a static reference to a OnceCell that is used to store the metrics hashmap.
-    fn get_metrics() -> &'static OnceCell<HashMap<&'static str, HyperlightMetric>>;
-    /// A function that should return a static reference to a slice of HyperlightMetricDefinitions that are used to initialize the metrics hashmap.
-    fn get_metric_definitions() -> &'static [HyperlightMetricDefinition];
+#[macro_use]
+mod metrics_macro;
 
-    /// Gets a HyperlightMetric from the hashmap using the enum variant name as the key
-    #[inline]
-    fn get_hyperlight_metric(&self) -> Result<&HyperlightMetric> {
-        Self::get_init_metrics().call_once(|| {
-            let result = init_metrics(Self::get_metric_definitions(), Self::get_metrics());
-            if let Err(e) = result {
-                error!("Error initializing metrics : {0:?}", e);
+// These defines all types of metrics in this crate
+define_metrics! {
+    CounterMetric {
+        GuestErrors { code: u64 } => {
+            name: "guest_errors_total",
+            description: "Number of errors encountered by guests",
+            unit: metrics::Unit::Count,
+        },
+        GuestCancellations => {
+            name: "guest_cancellations_total",
+            description: "Number of times guest execution was cancelled due to timeout",
+            unit: metrics::Unit::Count,
+        },
+    }
+    HistogramMetric {
+        GuestCallDuration { name: String, duration: Duration } => {
+            name: "guest_call_duration_seconds",
+            description: "Duration of guest function calls",
+            unit: metrics::Unit::Seconds,
+        },
+        HostCallDuration { name: String, duration: Duration} => {
+            name: "host_call_duration_seconds",
+            description: "Duration of host function calls",
+            unit: metrics::Unit::Seconds,
+        },
+    }
+}
+
+impl CounterMetric {
+    /// Create a new guest error metric, ready to be emitted
+    #[must_use]
+    pub(crate) fn guest_error(code: u64) -> Self {
+        CounterMetric::GuestErrors { code }
+    }
+    /// Create a new guest cancellation metric, ready to be emitted
+    #[must_use]
+    pub(crate) fn guest_cancellation() -> Self {
+        CounterMetric::GuestCancellations
+    }
+}
+
+impl HistogramMetric {
+    /// Measures the time to execute the given closure, and then emits the duration
+    /// as a guest call metric.
+    ///
+    /// Note: If the `function_call_metrics` feature is not enabled, this function
+    /// will simply execute the closure without measuring time or emitting metrics.
+    pub(crate) fn time_and_emit_guest_call<T, F: FnOnce() -> T>(
+        #[allow(unused_variables)] name: String,
+        f: F,
+    ) -> T {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "function_call_metrics")] {
+                use std::time::Instant;
+
+                let start = Instant::now();
+                let result = f();
+                let duration = start.elapsed();
+                HistogramMetric::GuestCallDuration { name, duration }.emit();
+                result
+            } else {
+                f()
             }
-        });
-        let key: &'static str = <&Self as Into<&'static str>>::into(self);
-        HyperlightMetric::get_metric_using_key(key, Self::get_hash_map()?)
-    }
-    /// Gets the hashmap using the containing the metrics
-    #[inline]
-    fn get_hash_map() -> Result<&'static HashMap<&'static str, HyperlightMetric>> {
-        Self::get_metrics()
-            .get()
-            .ok_or_else(|| Error("metrics hashmap not initialized".to_string()))
-    }
-}
-/// A trait that should be implemented by all enums that represent hyperlight metrics to
-/// convert the enum into a HyperlightMetric
-pub trait HyperlightMetricOps {
-    /// Converts the enum into a HyperlightMetric
-    fn get_metric(&self) -> Result<&HyperlightMetric>;
-}
-
-/// A trait that should be implemented by all hyperlight metric definitions to convert the metric into a HyperlightMetric
-pub trait GetHyperlightMetric<T> {
-    /// Converts the metric into a HyperlightMetric
-    fn metric(&self) -> Result<&T>;
-}
-
-impl<T: HyperlightMetricEnum<T>> HyperlightMetricOps for T
-where
-    &'static str: From<T>,
-    for<'a> &'static str: From<&'a T>,
-{
-    fn get_metric(&self) -> Result<&HyperlightMetric> {
-        self.get_hyperlight_metric()
-    }
-}
-
-/// Initializes the metrics hashmap using the metric definitions
-#[inline]
-fn init_metrics(
-    metric_definitions: &[HyperlightMetricDefinition],
-    metrics: &OnceCell<HashMap<&'static str, HyperlightMetric>>,
-) -> Result<()> {
-    let mut hash_map: HashMap<&'static str, HyperlightMetric> = HashMap::new();
-    register_metrics(metric_definitions, &mut hash_map)?;
-    // the only failure case is if the metrics hashmap is already set which should not be possible
-    // but if it were to happen we dont care.
-    if let Err(e) = metrics.set(hash_map) {
-        error!("metrics hashmap already set : {0:?}", e);
-    }
-    Ok(())
-}
-//TODO: Remove this when we have uses of all metric types
-#[allow(dead_code)]
-#[derive(Debug)]
-/// The types of Hyperlight metrics that can be created
-pub enum HyperlightMetricType {
-    /// A counter that can only be incremented
-    IntCounter,
-    /// A counter that can only be incremented and has labels
-    IntCounterVec,
-    /// A gauge that can be incremented, decremented, set, added to, and subtracted from
-    IntGauge,
-    /// A gauge that can be incremented, decremented, set, added to, and subtracted from and has labels
-    IntGaugeVec,
-    /// A histogram that can observe values for activities   
-    Histogram,
-    /// A histogram that can observe values for activities and has labels
-    HistogramVec,
-}
-
-/// The definition of a Hyperlight metric
-pub struct HyperlightMetricDefinition {
-    /// The name of the metric
-    pub name: &'static str,
-    /// The help text for the metric
-    pub help: &'static str,
-    /// The type of the metric
-    pub metric_type: HyperlightMetricType,
-    /// The labels for the metric
-    pub labels: &'static [&'static str],
-    /// The buckets for the metric
-    pub buckets: &'static [f64],
-}
-
-fn register_metrics(
-    metric_definitions: &[HyperlightMetricDefinition],
-    hash_map: &mut HashMap<&'static str, HyperlightMetric>,
-) -> Result<()> {
-    for metric_definition in metric_definitions {
-        let metric: HyperlightMetric = match &metric_definition.metric_type {
-            HyperlightMetricType::IntGauge => {
-                IntGauge::new(metric_definition.name, metric_definition.help)?.into()
-            }
-
-            HyperlightMetricType::IntCounterVec => IntCounterVec::new(
-                metric_definition.name,
-                metric_definition.help,
-                metric_definition.labels,
-            )?
-            .into(),
-
-            HyperlightMetricType::IntCounter => {
-                IntCounter::new(metric_definition.name, metric_definition.help)?.into()
-            }
-            HyperlightMetricType::HistogramVec => HistogramVec::new(
-                metric_definition.name,
-                metric_definition.help,
-                metric_definition.labels,
-                metric_definition.buckets.to_vec(),
-            )?
-            .into(),
-            HyperlightMetricType::Histogram => Histogram::new(
-                metric_definition.name,
-                metric_definition.help,
-                metric_definition.buckets.to_vec(),
-            )?
-            .into(),
-            HyperlightMetricType::IntGaugeVec => IntGaugeVec::new(
-                metric_definition.name,
-                metric_definition.help,
-                metric_definition.labels,
-            )?
-            .into(),
-        };
-
-        hash_map.insert(metric_definition.name, metric);
-    }
-    Ok(())
-}
-
-#[derive(Debug)]
-/// An instance of a Hyperlight metric
-pub enum HyperlightMetric {
-    /// A counter that can only be incremented
-    IntCounter(IntCounter),
-    /// A counter that can only be incremented and has labels
-    IntCounterVec(IntCounterVec),
-    /// A gauge that can be incremented, decremented, set, added to, and subtracted from
-    IntGauge(IntGauge),
-    /// A gauge that can be incremented, decremented, set, added to, and subtracted from and has labels
-    IntGaugeVec(IntGaugeVec),
-    /// A histogram that can observe values for activities
-    Histogram(Histogram),
-    /// A histogram that can observe values for activities and has labels
-    HistogramVec(HistogramVec),
-}
-
-impl HyperlightMetric {
-    #[inline]
-    fn get_metric_using_key<'a>(
-        key: &'static str,
-        hash_map: &'a HashMap<&'static str, HyperlightMetric>,
-    ) -> Result<&'a HyperlightMetric> {
-        hash_map.get(key).ok_or_else(|| MetricNotFound(key))
-    }
-}
-
-// The registry used for all metrics, this can be set by the user of the library, if its not set then the default will be used.
-
-static REGISTRY: OnceCell<&Registry> = OnceCell::new();
-
-/// Get the registry to be used for all metrics, this can be set by the user of the library, if its not set then the default registry will be used.
-#[inline]
-pub fn get_metrics_registry() -> &'static Registry {
-    REGISTRY.get_or_init(default_registry)
-}
-/// Set the registry to be used for all metrics, this can be set by the user of the library, if its not set then the default registry will be used.
-/// This function should be called before any other function in this module is called.
-///
-/// The user of can then use the registry to gather metrics from the library.
-pub fn set_metrics_registry(registry: &'static Registry) -> Result<()> {
-    match REGISTRY.get() {
-        Some(_) => {
-            log_then_return!("Registry was already set");
         }
-        None => {
-            REGISTRY
-                .set(registry)
-                // This should be impossible
-                .map_err(|e| new_error!("Registry already set : {0:?}", e))
+    }
+
+    /// Measures the time to execute the given closure, and then emits the duration
+    /// as a host call metric.
+    ///
+    /// Note: If the `function_call_metrics` feature is not enabled, this function
+    /// will simply execute the closure without measuring time or emitting metrics.
+    pub(crate) fn time_and_emit_host_call<T, F: FnOnce() -> T>(
+        #[allow(unused_variables)] name: String,
+        f: F,
+    ) -> T {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "function_call_metrics")] {
+                use std::time::Instant;
+
+                let start = Instant::now();
+                let result = f();
+                let duration = start.elapsed();
+                HistogramMetric::HostCallDuration { name, duration }.emit();
+                result
+            } else {
+                f()
+            }
+        }
+    }
+
+    /// Create a new guest call metric, ready to be emitted
+    #[cfg(test)]
+    #[must_use]
+    fn guest_call(name: String, duration: Duration) -> HistogramMetric {
+        HistogramMetric::GuestCallDuration { name, duration }
+    }
+    /// Create a new host call metric, ready to be emitted
+    #[cfg(test)]
+    #[must_use]
+    fn host_call(name: String, duration: Duration) -> HistogramMetric {
+        HistogramMetric::HostCallDuration { name, duration }
+    }
+}
+
+/// A metric which can be emitted to the underlying metrics system
+pub(crate) trait EmittableMetric {
+    /// Emits the metric to the underlying metrics system.
+    /// The first time this is called for a given metric variant, it will
+    /// also describe the metric to the underlying metrics system.
+    fn emit(self);
+}
+
+impl EmittableMetric for CounterMetric {
+    /// Increases the counter represented by `self` by 1
+    fn emit(self) {
+        let name = self.name();
+        let unit = self.unit();
+        let description = self.description();
+
+        match self {
+            CounterMetric::GuestErrors { code } => {
+                // Describe each metric variant only once
+                static DESCRIBE: Once = Once::new();
+                DESCRIBE.call_once(|| {
+                    metrics::describe_counter!(name, unit, description);
+                });
+
+                static LABEL_ERROR_CODE: &str = "code";
+                metrics::counter!(name, LABEL_ERROR_CODE => code.to_string()).increment(1);
+            }
+            CounterMetric::GuestCancellations => {
+                // Describe each metric variant only once
+                static DESCRIBE: Once = Once::new();
+                DESCRIBE.call_once(|| {
+                    metrics::describe_counter!(name, unit, description);
+                });
+
+                metrics::counter!(name).increment(1);
+            }
         }
     }
 }
 
-fn get_metric_opts(name: &str, help: &str) -> Opts {
-    let opts = opts!(name, help);
-    opts.namespace("hyperlight")
+impl EmittableMetric for HistogramMetric {
+    fn emit(self) {
+        let metric_name = self.name();
+        let unit = self.unit();
+        let description = self.description();
+
+        static LABEL_FUNCTION_NAME: &str = "function_name";
+
+        match self {
+            HistogramMetric::GuestCallDuration { name, duration } => {
+                // Describe each metric variant only once
+                static DESCRIBE: Once = Once::new();
+                DESCRIBE.call_once(|| {
+                    metrics::describe_histogram!(metric_name, unit, description);
+                });
+
+                metrics::histogram!(metric_name, LABEL_FUNCTION_NAME => name).record(duration);
+            }
+            HistogramMetric::HostCallDuration { name, duration } => {
+                // Describe each metric variant only once
+                static DESCRIBE: Once = Once::new();
+                DESCRIBE.call_once(|| {
+                    metrics::describe_histogram!(metric_name, unit, description);
+                });
+
+                metrics::histogram!(metric_name, LABEL_FUNCTION_NAME => name).record(duration);
+            }
+        }
+    }
 }
 
-fn get_histogram_opts(name: &str, help: &str, buckets: Vec<f64>) -> HistogramOpts {
-    let mut opts = histogram_opts!(name, help);
-    opts = opts.namespace("hyperlight");
-    opts.buckets(buckets)
-}
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
 
-#[allow(clippy::disallowed_macros)]
-/// Provides functionality to help with testing Hyperlight Metrics
-pub mod tests {
-    use std::collections::HashSet;
+    use metrics::{Counter, Gauge, Histogram, Key, Label};
+    use metrics_util::CompositeKey;
 
     use super::*;
 
-    /// A trait that provides test helper functions for Hyperlight Metrics
-    pub trait HyperlightMetricEnumTest<T>:
-        HyperlightMetricEnum<T> + From<T> + Into<&'static str>
-    where
-        &'static str: From<Self>,
-        &'static str: for<'a> From<&'a Self>,
-    {
-        /// Defines a function that should return the names of all the metric enum variants
-        fn get_enum_variant_names() -> &'static [&'static str];
+    #[test]
+    fn test_counter_and_histogram_metrics() {
+        // Set up the recorder and snapshotter
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
 
-        /// Provides a function to test that all hyperlight metric definitions in a module have a corresponding enum variant
-        /// Should be called in tests in modules that define hyperlight metrics.
-        #[track_caller]
-        fn enum_has_variant_for_all_metrics() {
-            let metric_definitions = Self::get_metric_definitions().iter();
-            for metric_definition in metric_definitions {
-                let metric_definition_name = metric_definition.name;
-                assert!(
-                    Self::get_enum_variant_names().contains(&metric_definition_name),
-                    "Metric Definition Name {} not found",
-                    metric_definition_name,
-                );
+        let metric_1 = CounterMetric::guest_error(404);
+        let metric_2 = CounterMetric::guest_cancellation();
+        let metric_3 =
+            HistogramMetric::guest_call("GuestFunc1".to_string(), Duration::from_secs(1));
+        let metric_4 = HistogramMetric::host_call("HostFunc1".to_string(), Duration::from_secs(3));
+
+        // Perform actions that will update metrics
+        let snapshot = metrics::with_local_recorder(&recorder, || {
+            metric_1.clone().emit();
+            metric_2.clone().emit();
+            metric_3.clone().emit();
+            metric_4.clone().emit();
+
+            snapshotter.snapshot()
+        });
+
+        // Convert snapshot into a hashmap for easier lookup
+        #[expect(clippy::mutable_key_type)]
+        let snapshot = snapshot.into_hashmap();
+        assert_eq!(snapshot.len(), 4, "Expected three metrics in the snapshot");
+
+        // Verify that the counter metrics are recorded correctly
+
+        // metric 1
+        let counter_key = CompositeKey::new(
+            metrics_util::MetricKind::Counter,
+            Key::from_parts(metric_1.name(), vec![Label::new("code", "404")]),
+        );
+        assert_eq!(
+            snapshot.get(&counter_key).unwrap().2,
+            metrics_util::debugging::DebugValue::Counter(1)
+        );
+
+        // metric 2
+        let counter_key =
+            CompositeKey::new(metrics_util::MetricKind::Counter, metric_2.name().into());
+        assert_eq!(
+            snapshot.get(&counter_key).unwrap().2,
+            metrics_util::debugging::DebugValue::Counter(1)
+        );
+
+        // Verify that the histograms metrics are recorded correctly
+
+        // metric 3
+        let histogram_key = CompositeKey::new(
+            metrics_util::MetricKind::Histogram,
+            Key::from_parts(
+                metric_3.name(),
+                vec![Label::new("function_name", "GuestFunc1")],
+            ),
+        );
+        let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
+        assert!(
+            matches!(
+                histogram_value,
+                metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1 && histogram[0].0 == 1.0
+            ),
+            "Histogram metric does not match expected value"
+        );
+
+        // metric 4
+        let histogram_key = CompositeKey::new(
+            metrics_util::MetricKind::Histogram,
+            Key::from_parts(
+                metric_4.name(),
+                vec![Label::new("function_name", "HostFunc1")],
+            ),
+        );
+        let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
+        assert!(
+            matches!(
+                histogram_value,
+                metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1 && histogram[0].0 == 3.0
+            ),
+            "Histogram metric does not match expected value"
+        );
+    }
+
+    /// Makes sure that the description function is called only once for each metric variant.
+    /// This helps performance
+    ///
+    /// This test needs to ran in its own process
+    #[test]
+    #[ignore = "Other tests interfere by initializing the Once statics before our local recorder is installed"]
+    fn test_description_called_once() {
+        struct DescriptionCounterRecorder {
+            num_descriptions: AtomicU64,
+        }
+
+        impl metrics::Recorder for DescriptionCounterRecorder {
+            fn describe_counter(
+                &self,
+                _key: metrics::KeyName,
+                _unit: Option<metrics::Unit>,
+                _description: metrics::SharedString,
+            ) {
+                self.num_descriptions
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            fn describe_gauge(
+                &self,
+                _key: metrics::KeyName,
+                _unit: Option<metrics::Unit>,
+                _description: metrics::SharedString,
+            ) {
+                self.num_descriptions
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            fn describe_histogram(
+                &self,
+                _key: metrics::KeyName,
+                _unit: Option<metrics::Unit>,
+                _description: metrics::SharedString,
+            ) {
+                self.num_descriptions
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            fn register_counter(
+                &self,
+                _key: &Key,
+                _metadata: &metrics::Metadata<'_>,
+            ) -> metrics::Counter {
+                Counter::noop()
+            }
+
+            fn register_gauge(
+                &self,
+                _key: &Key,
+                _metadata: &metrics::Metadata<'_>,
+            ) -> metrics::Gauge {
+                Gauge::noop()
+            }
+
+            fn register_histogram(
+                &self,
+                _key: &Key,
+                _metadata: &metrics::Metadata<'_>,
+            ) -> metrics::Histogram {
+                Histogram::noop()
             }
         }
 
-        /// Provides a function to test that all hyperlight metric definitions have a unique help text
-        /// and that there are the same number of enum variants as metric definitions
-        /// Should be called in tests in modules that define hyperlight metrics.
-        #[track_caller]
-        fn check_metric_definitions() {
-            let sandbox_metric_definitions = Self::get_metric_definitions();
-            let metric_definitions = sandbox_metric_definitions.iter();
-            let mut help_text = HashSet::new();
-            for metric_definition in metric_definitions {
-                assert!(
-                    help_text.insert(metric_definition.help),
-                    "duplicate metric help definition for {}",
-                    metric_definition.name
-                );
-            }
-            assert_eq!(
-                Self::get_enum_variant_names().len(),
-                sandbox_metric_definitions.len()
-            );
-        }
+        let recorder = DescriptionCounterRecorder {
+            num_descriptions: AtomicU64::new(0),
+        };
 
-        /// Gets a named int gauge metric
-        fn get_intguage_metric(name: &str) -> Result<&IntGauge> {
-            Self::get_metrics()
-                .get()
-                .ok_or_else(|| new_error!("metrics hashmap not initialized"))?
-                .get(name)
-                .ok_or_else(|| new_error!("metric not found : {0:?}", name))?
-                .try_into()
-        }
+        metrics::with_local_recorder(&recorder, || {
+            CounterMetric::guest_error(404).emit();
+            CounterMetric::guest_error(500).emit();
+            CounterMetric::GuestCancellations.emit();
+            CounterMetric::GuestCancellations.emit();
+            HistogramMetric::guest_call("GuestFunc1".to_string(), Duration::from_secs(1)).emit();
+            HistogramMetric::guest_call("GuestFunc2".to_string(), Duration::from_secs(2)).emit();
+            HistogramMetric::host_call("HostFunc1".to_string(), Duration::from_secs(3)).emit();
+            HistogramMetric::host_call("HostFunc2".to_string(), Duration::from_secs(4)).emit();
+        });
 
-        /// Gets a named int counter vec metric
-        fn get_intcountervec_metric(name: &str) -> Result<&IntCounterVec> {
-            Self::get_metrics()
-                .get()
-                .ok_or_else(|| new_error!("metrics hashmap not initialized"))?
-                .get(name)
-                .ok_or_else(|| new_error!("metric not found : {0:?}", name))?
-                .try_into()
-        }
-
-        /// Gets a named int counter metric
-        fn get_intcounter_metric(name: &str) -> Result<&IntCounter> {
-            Self::get_metrics()
-                .get()
-                .ok_or_else(|| new_error!("metrics hashmap not initialized"))?
-                .get(name)
-                .ok_or_else(|| new_error!("metric not found : {0:?}", name))?
-                .try_into()
-        }
-
-        /// Gets a named histogram vec metric
-        fn get_histogramvec_metric(name: &str) -> Result<&HistogramVec> {
-            Self::get_metrics()
-                .get()
-                .ok_or_else(|| new_error!("metrics hashmap not initialized"))?
-                .get(name)
-                .ok_or_else(|| new_error!("metric not found : {0:?}", name))?
-                .try_into()
-        }
+        // Despite 8 emitted metrics above, we expect only 4 descriptions to be recorded
+        assert_eq!(
+            recorder
+                .num_descriptions
+                .load(std::sync::atomic::Ordering::Relaxed),
+            4,
+            "Expected each metric variant to be described exactly once"
+        );
     }
 }

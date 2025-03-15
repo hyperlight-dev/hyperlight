@@ -34,7 +34,6 @@ lazy_static = "1.4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 log = "0.4.27"
-once_cell = { version = "1.21.3" }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-core = "0.1.33"
@@ -43,11 +42,10 @@ vmm-sys-util = "0.13.0"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.15"
 thiserror = "2.0.12"
-prometheus = "0.14.0"
-strum = { version = "0.27", features = ["derive"] }
 tempfile = { version = "3.19", optional = true }
 serde_yaml = "0.9"
 anyhow = "1.0"
+metrics = "0.24.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
@@ -103,6 +101,8 @@ opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"] }
 tokio = { version = "1.44.2", features = ["full"] }
 criterion = "0.5.1"
 tracing-chrome = "0.7.2"
+metrics-util = "0.19.0"
+metrics-exporter-prometheus = "0.16.2"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "0.61", features = [
