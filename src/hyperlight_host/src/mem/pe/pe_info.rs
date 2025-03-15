@@ -67,10 +67,10 @@ impl PEInfo {
             log_then_return!("unsupported PE file, not an executable image")
         }
 
-        let optional_header = pe
-            .header
-            .optional_header
-            .expect("unsupported PE file, missing optional header entry");
+        let optional_header = match pe.header.optional_header {
+            Some(optional_header) => optional_header,
+            None => log_then_return!("unsupported PE file, no optional header found"),
+        };
 
         // check that the PE file was built with the option /DYNAMICBASE
 
@@ -117,10 +117,10 @@ impl PEInfo {
                 // we are going to take care of the data section
                 if name == ".data" {
                     // Make sure we fail if we enter this block more than once
-                    assert_eq!(
-                        data_section_additional_bytes, 0,
-                        "Hyperlight currently only supports one .data section"
-                    );
+
+                    if data_section_additional_bytes > 0 {
+                        log_then_return!("Hyperlight currently only supports one .data section")
+                    }
 
                     data_section_raw_pointer = section.pointer_to_raw_data;
                     data_section_additional_bytes = virtual_size - raw_size;
@@ -251,8 +251,7 @@ impl PEInfo {
             }
 
             cur.set_position(patch.offset as u64);
-            cur.write_all(&patch.relocated_virtual_address.to_le_bytes())
-                .expect("failed to write patch to pe file contents");
+            cur.write_all(&patch.relocated_virtual_address.to_le_bytes())?;
             applied += 1;
         }
 
@@ -279,8 +278,7 @@ impl PEInfo {
         }
 
         let relocations =
-            base_relocations::get_base_relocations(&self.payload, &self.reloc_section)
-                .expect("error parsing base relocations");
+            base_relocations::get_base_relocations(&self.payload, &self.reloc_section)?;
         let mut patches = Vec::with_capacity(relocations.len());
 
         for reloc in relocations {

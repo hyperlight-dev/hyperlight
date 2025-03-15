@@ -14,6 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#![cfg_attr(not(any(test, debug_assertions)), warn(clippy::panic))]
+#![cfg_attr(not(any(test, debug_assertions)), warn(clippy::expect_used))]
+
 use std::sync::Once;
 
 /// This crate contains an SDK that is used to execute specially-
