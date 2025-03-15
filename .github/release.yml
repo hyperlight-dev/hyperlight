@@ -1,34 +1,11 @@
 # .github/release.yml
 
 changelog:
-  exclude:
-    labels:
-      - chore
   categories:
-    - title: 🛠 Breaking Changes 
-      labels:
-        - breaking-change
-    - title: 🎉 New Features 
-      labels:
-        - enhancement
-    - title: 🐛 Bug Fixes
-      labels:
-        - bug
-    - title: 🔒 Security Fixes
-      labels:
-        - security
-    - title: 🚀 Performance Improvements
-      labels:
-        - performance
-    - title: 👒 Dependencies
-      labels:
-        - dependencies
-    - title: 📚 Documentation
-      labels:
-        - documentation
-    - title: 🔬 Testing
-      labels:
-        - testing
-    - title: 📝 Other Changes
+    - title: Full Changelog (excl. dependencies)
       labels:
         - "*"
+    - title: Full Changelog (dependencies)
+      labels:
+        - kind/dependencies
+
