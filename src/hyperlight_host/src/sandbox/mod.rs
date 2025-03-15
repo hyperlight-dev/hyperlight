@@ -45,9 +45,6 @@ pub mod uninitialized;
 /// initialized `Sandbox`es.
 pub(crate) mod uninitialized_evolve;
 
-/// Metric definitions for Sandbox module.
-pub(crate) mod metrics;
-
 use std::collections::HashMap;
 
 /// Re-export for `SandboxConfiguration` type
