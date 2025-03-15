@@ -183,13 +183,12 @@ fn call_host_func_impl(
 
         #[cfg(feature = "function_call_metrics")]
         {
+            use crate::metrics::{self, HistogramMetric};
+
             let start = std::time::Instant::now();
             let result = func.call(args.clone());
-            crate::histogram_vec_observe!(
-                &crate::sandbox::metrics::SandboxMetric::HostFunctionCallsDurationMicroseconds,
-                &[name],
-                start.elapsed().as_micros() as f64
-            );
+            let elapsed = start.elapsed();
+            metrics::record_histogram_duration(HistogramMetric::HostCallDuration, elapsed);
             result
         }
 

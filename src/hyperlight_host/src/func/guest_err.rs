@@ -14,15 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use hyperlight_common::flatbuffer_wrappers::guest_error::{
-    ErrorCode, GuestError as GuestErrorStruct,
-};
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 
 use crate::error::HyperlightError::{GuestError, OutBHandlingError, StackOverflow};
 use crate::mem::shared_mem::HostSharedMemory;
+use crate::metrics::{self, CounterMetric};
 use crate::sandbox::mem_mgr::MemMgrWrapper;
-use crate::sandbox::metrics::SandboxMetric::GuestErrorCount;
-use crate::{int_counter_vec_inc, log_then_return, Result};
+use crate::{log_then_return, Result};
 /// Check for a guest error and return an `Err` if one was found,
 /// and `Ok` if one was not found.
 pub(crate) fn check_for_guest_error(mgr: &MemMgrWrapper<HostSharedMemory>) -> Result<()> {
@@ -31,7 +29,7 @@ pub(crate) fn check_for_guest_error(mgr: &MemMgrWrapper<HostSharedMemory>) -> Re
         ErrorCode::NoError => Ok(()),
         ErrorCode::OutbError => match mgr.as_ref().get_host_error()? {
             Some(host_err) => {
-                increment_guest_error_count(&guest_err);
+                metrics::increase_counter(CounterMetric::NumGuestErrors);
                 log_then_return!(OutBHandlingError(
                     host_err.source.clone(),
                     guest_err.message.clone()
@@ -41,23 +39,15 @@ pub(crate) fn check_for_guest_error(mgr: &MemMgrWrapper<HostSharedMemory>) -> Re
             None => Ok(()),
         },
         ErrorCode::StackOverflow => {
-            increment_guest_error_count(&guest_err.clone());
+            metrics::increase_counter(CounterMetric::NumGuestErrors);
             log_then_return!(StackOverflow());
         }
         _ => {
-            increment_guest_error_count(&guest_err.clone());
+            metrics::increase_counter(CounterMetric::NumGuestErrors);
             log_then_return!(GuestError(
                 guest_err.code.clone(),
                 guest_err.message.clone()
             ));
         }
     }
-}
-
-fn increment_guest_error_count(guest_err: &GuestErrorStruct) {
-    let guest_err_code_string: String = guest_err.code.clone().into();
-    int_counter_vec_inc!(
-        &GuestErrorCount,
-        &[&guest_err_code_string, guest_err.message.clone().as_str()]
-    );
 }
