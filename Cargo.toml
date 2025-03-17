@@ -26,7 +26,7 @@ exclude = [
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.80.0"
+rust-version = "1.81.0"
 license = "Apache-2.0"
 homepage = "https://github.com/hyperlight-dev/hyperlight"
 repository = "https://github.com/hyperlight-dev/hyperlight"
