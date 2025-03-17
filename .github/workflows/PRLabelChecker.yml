@@ -12,29 +12,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check for specific labels
+      - name: Ensure exactly one "kind/*" label is applied
         run: |
-          # ignore dependabot PRs
-          if [[ ${{ github.actor }} == "dependabot[bot]" ]]; then
-            echo "Ignoring dependabot PRs."
-            exit 0
-          fi
-          # Fetch repository labels from the GitHub API
-          REPO_LABELS=$(gh api repos/${{ github.repository }}/labels --jq '.[].name')
-
-          # Fetch labels applied to the current PR
+          # Count the number of "kind/*" labels directly from the PR labels
           PR_NUMBER=${{ github.event.pull_request.number }}
-          PR_LABELS=$(gh pr view $PR_NUMBER --json labels -q '.labels.[] | .name')
+          KIND_LABEL_COUNT=$(gh pr view "$PR_NUMBER" --json labels -q '.labels.[].name' | grep -c '^kind/')
 
-          # Check if any PR label matches a repository label
-          for PR_LABEL in $PR_LABELS; do
-            if echo "$REPO_LABELS" | grep -qw "$PR_LABEL"; then
-              echo "Label '$PR_LABEL' matches a repository label."
-              exit 0
-            fi
-          done
-
-          echo "None of the PR labels match repository labels."
-          exit 1
+          if [[ "$KIND_LABEL_COUNT" -eq 1 ]]; then
+            echo "✅ Exactly one 'kind/*' label is applied."
+            exit 0
+          else
+            echo "❌ PR must have exactly one 'kind/*' label, but found $KIND_LABEL_COUNT."
+            exit 1
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
