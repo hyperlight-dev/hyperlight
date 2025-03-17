@@ -468,3 +468,6 @@ hyperlight_guest.h
 .mono
 
 !.gitkeep
+
+# gdb
+.gdbinit
