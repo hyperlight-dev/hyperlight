@@ -22,7 +22,7 @@ use std::sync::Once;
 
 use once_cell::sync::OnceCell;
 use strum::{EnumIter, IntoStaticStr, VariantNames};
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::metrics::{
     HyperlightMetric, HyperlightMetricDefinition, HyperlightMetricEnum, HyperlightMetricType,

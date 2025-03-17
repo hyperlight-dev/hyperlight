@@ -18,12 +18,12 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, Functi
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::guest_err::check_for_guest_error;
+use crate::HyperlightError::GuestExecutionHungOnHostFunctionCall;
 use crate::hypervisor::hypervisor_handler::HypervisorHandlerAction;
 use crate::sandbox::WrapperGetter;
-use crate::HyperlightError::GuestExecutionHungOnHostFunctionCall;
 use crate::{HyperlightError, Result};
 
 /// Call a guest function by name, using the given `wrapper_getter`.
@@ -117,7 +117,7 @@ mod tests {
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
-    use crate::{new_error, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+    use crate::{HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
     // simple function
     fn test_function0(_: MultiUseGuestCallContext) -> Result<i32> {

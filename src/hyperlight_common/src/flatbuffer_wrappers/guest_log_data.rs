@@ -17,10 +17,10 @@ limitations under the License.
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use flatbuffers::size_prefixed_root;
 #[cfg(feature = "tracing")]
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::guest_log_level::LogLevel;
 use crate::flatbuffers::hyperlight::generated::{

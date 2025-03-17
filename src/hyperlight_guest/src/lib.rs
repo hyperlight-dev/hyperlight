@@ -24,8 +24,9 @@ use buddy_system_allocator::LockedHeap;
 use guest_function_register::GuestFunctionRegister;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::{HyperlightPEB, RunMode};
+use spin::Mutex;
 
-use crate::host_function_call::{outb, OutBAction};
+use crate::host_function_call::{OutBAction, outb};
 extern crate alloc;
 
 // Modules
@@ -59,10 +60,10 @@ pub mod logging;
 
 // Unresolved symbols
 ///cbindgen:ignore
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub(crate) extern "C" fn __CxxFrameHandler3() {}
 ///cbindgen:ignore
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub(crate) static _fltused: i32 = 0;
 
 // It looks like rust-analyzer doesn't correctly manage no_std crates,
@@ -91,7 +92,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 
 ///cbindgen:ignore
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub(crate) static mut __security_cookie: u64 = 0;
 
 pub(crate) static mut P_PEB: Option<*mut HyperlightPEB> = None;
@@ -104,5 +105,5 @@ pub(crate) static mut OUTB_PTR_WITH_CONTEXT: Option<
 > = None;
 pub static mut RUNNING_MODE: RunMode = RunMode::None;
 
-pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
-    GuestFunctionRegister::new();
+pub(crate) static REGISTERED_GUEST_FUNCTIONS: Mutex<GuestFunctionRegister> =
+    Mutex::new(GuestFunctionRegister::new());

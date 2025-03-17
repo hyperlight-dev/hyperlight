@@ -3,7 +3,7 @@ use std::io::Write;
 use tempfile::NamedTempFile;
 
 use super::Hypervisor;
-use crate::{new_error, Result};
+use crate::{Result, new_error};
 
 /// Dump registers + memory regions + raw memory to a tempfile
 #[cfg(crashdump)]

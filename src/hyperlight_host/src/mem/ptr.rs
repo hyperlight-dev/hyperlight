@@ -16,12 +16,12 @@ limitations under the License.
 
 use std::ops::Add;
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::ptr_addr_space::{AddressSpace, GuestAddressSpace};
 use super::ptr_offset::Offset;
-use crate::error::HyperlightError::{self, CheckedAddOverflow, RawPointerLessThanBaseAddress};
 use crate::Result;
+use crate::error::HyperlightError::{self, CheckedAddOverflow, RawPointerLessThanBaseAddress};
 
 /// A representation of a raw pointer inside a given address space.
 ///

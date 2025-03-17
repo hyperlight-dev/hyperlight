@@ -14,12 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::error::HyperlightError::ExecutionCanceledByHost;
 use crate::hypervisor::metrics::HypervisorMetric::NumberOfCancelledGuestExecutions;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::{int_counter_inc, log_then_return, new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, int_counter_inc, log_then_return, new_error};
 
 /// Util for handling x87 fpu state
 #[cfg(any(kvm, mshv, target_os = "windows"))]
@@ -318,7 +318,7 @@ pub(crate) mod tests {
     use crate::mem::ptr::RawPtr;
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
-    use crate::{new_error, Result};
+    use crate::{Result, new_error};
 
     pub(crate) fn test_initialise(
         outb_hdl: OutBHandlerWrapper,

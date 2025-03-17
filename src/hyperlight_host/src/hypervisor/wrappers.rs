@@ -16,10 +16,10 @@ limitations under the License.
 
 use std::ffi::CString;
 
-use tracing::{instrument, Span};
-use windows::core::PSTR;
+use tracing::{Span, instrument};
 use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::System::Hypervisor::WHV_REGISTER_VALUE;
+use windows::core::PSTR;
 
 use crate::{HyperlightError, Result};
 

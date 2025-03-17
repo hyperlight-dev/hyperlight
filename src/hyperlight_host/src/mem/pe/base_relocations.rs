@@ -16,7 +16,7 @@ limitations under the License.
 
 use goblin::error;
 use goblin::pe::section_table::SectionTable;
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::Result;
 
@@ -71,7 +71,7 @@ impl<'a> BaseRelocations<'a> {
     }
 }
 
-impl<'a> Iterator for BaseRelocations<'a> {
+impl Iterator for BaseRelocations<'_> {
     type Item = BaseRelocation;
     fn next(&mut self) -> Option<Self::Item> {
         // Check if we can read 2 bytes from the array

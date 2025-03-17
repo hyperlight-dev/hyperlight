@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 /// Configuration options for setting up a new `UninitializedSandbox` and
 /// subsequent initialized sandboxes, including `MultiUseSandbox`.

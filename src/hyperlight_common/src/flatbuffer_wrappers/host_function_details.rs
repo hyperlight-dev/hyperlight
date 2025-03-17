@@ -17,9 +17,9 @@ limitations under the License.
 use alloc::vec::Vec;
 
 use anyhow::{Error, Result};
-use flatbuffers::{size_prefixed_root, WIPOffset};
+use flatbuffers::{WIPOffset, size_prefixed_root};
 #[cfg(feature = "tracing")]
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use super::host_function_definition::HostFunctionDefinition;
 use crate::flatbuffers::hyperlight::generated::{
@@ -57,11 +57,8 @@ impl HostFunctionDetails {
     /// Sort the host functions by name.
     #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
     pub fn sort_host_functions_by_name(&mut self) {
-        match &mut self.host_functions {
-            Some(host_functions) => {
-                host_functions.sort_by(|a, b| a.function_name.cmp(&b.function_name))
-            }
-            None => {}
+        if let Some(host_functions) = &mut self.host_functions {
+            host_functions.sort_by(|a, b| a.function_name.cmp(&b.function_name))
         }
     }
 

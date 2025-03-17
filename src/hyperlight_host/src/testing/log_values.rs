@@ -16,7 +16,7 @@ limitations under the License.
 
 use serde_json::{Map, Value};
 
-use crate::{new_error, Result};
+use crate::{Result, new_error};
 
 /// Call `check_value_as_str` and panic if it returned an `Err`. Otherwise,
 /// do nothing.

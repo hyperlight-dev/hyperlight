@@ -54,11 +54,6 @@ impl GuestFunctionRegister {
 }
 
 pub fn register_function(function_definition: GuestFunctionDefinition) {
-    unsafe {
-        // This is currently safe, because we are single threaded, but we
-        // should find a better way to do this, see issue #808
-        #[allow(static_mut_refs)]
-        let gfd = &mut REGISTERED_GUEST_FUNCTIONS;
-        gfd.register(function_definition);
-    }
+    let mut gfd = REGISTERED_GUEST_FUNCTIONS.lock();
+    gfd.register(function_definition);
 }

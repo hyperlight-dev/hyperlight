@@ -3,7 +3,7 @@ use alloc::ffi::CString;
 use alloc::slice;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{c_char, CStr};
+use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};

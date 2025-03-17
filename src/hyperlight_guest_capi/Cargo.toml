@@ -15,6 +15,7 @@ workspace = true
 hyperlight-guest = { workspace = true, default-features = true }
 hyperlight-common = { workspace = true, default-features = false }
 log = { version = "0.4", default-features = false }
+spin = "0.9.8"
 
 [build-dependencies]
 cbindgen = "0.28.0"

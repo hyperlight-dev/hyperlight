@@ -22,7 +22,7 @@ use crate::error::HyperlightError::{GuestError, OutBHandlingError, StackOverflow
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::sandbox::metrics::SandboxMetric::GuestErrorCount;
-use crate::{int_counter_vec_inc, log_then_return, Result};
+use crate::{Result, int_counter_vec_inc, log_then_return};
 /// Check for a guest error and return an `Err` if one was found,
 /// and `Ok` if one was not found.
 pub(crate) fn check_for_guest_error(mgr: &MemMgrWrapper<HostSharedMemory>) -> Result<()> {

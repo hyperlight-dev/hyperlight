@@ -18,7 +18,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, Ret
 //use opentelemetry_sdk::resource::ResourceBuilder;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use rand::Rng;
-use tracing::{span, Level};
+use tracing::{Level, span};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -26,7 +26,7 @@ extern crate hyperlight_host;
 use std::error::Error;
 use std::io::stdin;
 use std::sync::{Arc, Mutex};
-use std::thread::{self, spawn, JoinHandle};
+use std::thread::{self, JoinHandle, spawn};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
@@ -34,7 +34,7 @@ use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result as HyperlightResult};
 use hyperlight_testing::simple_guest_as_string;
 use opentelemetry::trace::TracerProvider;
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 //use opentelemetry_sdk::runtime::Tokio;
 use opentelemetry_sdk::Resource;

@@ -17,7 +17,7 @@ limitations under the License.
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use serde_json::{json, to_string_pretty, Value};
+use serde_json::{Value, json, to_string_pretty};
 use tracing::Subscriber;
 use tracing_core::event::Event;
 use tracing_core::metadata::Metadata;

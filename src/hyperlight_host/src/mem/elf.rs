@@ -21,7 +21,7 @@ use goblin::elf::reloc::{R_X86_64_NONE, R_X86_64_RELATIVE};
 use goblin::elf::{Elf, ProgramHeaders, Reloc};
 use goblin::elf64::program_header::PT_LOAD;
 
-use crate::{log_then_return, new_error, Result};
+use crate::{Result, log_then_return, new_error};
 
 pub(crate) struct ElfInfo {
     payload: Vec<u8>,

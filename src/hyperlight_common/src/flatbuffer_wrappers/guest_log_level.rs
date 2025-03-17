@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use anyhow::{bail, Error, Result};
+use anyhow::{Error, Result, bail};
 use log::Level;
 use strum::EnumIter;
 #[cfg(feature = "tracing")]
-use tracing::{instrument, Span};
+use tracing::{Span, instrument};
 
 use crate::flatbuffers::hyperlight::generated::LogLevel as FbLogLevel;
 
