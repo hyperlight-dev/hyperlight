@@ -79,11 +79,7 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
         let entrypoint_fn: extern "win64" fn(u64, u64, u64) =
             unsafe { std::mem::transmute(self.args.entrypoint_raw as *const c_void) };
 
-        entrypoint_fn(
-            self.args.peb_ptr_raw,
-            seed,
-            log::max_level() as u64,
-        );
+        entrypoint_fn(self.args.peb_ptr_raw, seed, log::max_level() as u64);
 
         Ok(())
     }
