@@ -24,7 +24,7 @@ workspace = true
 goblin = { version = "0.9" }
 rand = { version = "0.9" }
 cfg-if = { version = "1.0.0" }
-libc = { version = "0.2.170" }
+libc = { version = "0.2.171" }
 paste = "1.0"
 flatbuffers = "25.2.10"
 page_size = "0.6.0"
@@ -34,7 +34,7 @@ lazy_static = "1.4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 log = "0.4.26"
-once_cell = { version = "1.20.3" }
+once_cell = { version = "1.21.1" }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-core = "0.1.33"
@@ -42,10 +42,10 @@ hyperlight-common = { workspace = true, default-features = true }
 vmm-sys-util = "0.12.1"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.14"
-thiserror = "2.0.11"
+thiserror = "2.0.12"
 prometheus = "0.13.3"
 strum = { version = "0.27", features = ["derive"] }
-tempfile = { version = "3.17", optional = true }
+tempfile = { version = "3.19", optional = true }
 serde_yaml = "0.9"
 anyhow = "1.0"
 
@@ -66,28 +66,28 @@ windows = { version = "0.59", features = [
 ] }
 windows-sys = { version = "0.59", features = ["Win32"] }
 windows-result = "0.3"
-rust-embed = { version = "8.3.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
+rust-embed = { version = "8.6.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
 sha256 = "1.6.0"
 windows-version = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-gdbstub = { version = "0.7.3", optional = true }
+gdbstub = { version = "0.7.5", optional = true }
 gdbstub_arch = { version = "0.3.1", optional = true }
-seccompiler = { version = "0.4.0", optional = true }
+seccompiler = { version = "0.5.0", optional = true }
 kvm-bindings = { version = "0.11", features = ["fam-wrappers"], optional = true }
-kvm-ioctls = { version = "0.20", optional = true }
+kvm-ioctls = { version = "0.21", optional = true }
 mshv-bindings2 = { package="mshv-bindings", version = "=0.2.1", optional = true }
 mshv-ioctls2 = { package="mshv-ioctls",  version = "=0.2.1", optional = true}
 mshv-bindings3 = { package="mshv-bindings", version = "=0.3.2", optional = true }
 mshv-ioctls3 = { package="mshv-ioctls",  version = "=0.3.2", optional = true}
 
 [dev-dependencies]
-uuid = { version = "1.15.1", features = ["v4"] }
+uuid = { version = "1.16.0", features = ["v4"] }
 signal-hook-registry = "1.4.1"
 envy = { version = "0.4.2" }
 serde = "1.0"
 proptest = "1.6.0"
-tempfile = "3.17.1"
+tempfile = "3.19.0"
 crossbeam-queue = "0.3.12"
 tracing-serde = "0.2.0"
 serial_test = "3.1.1"
@@ -101,7 +101,7 @@ opentelemetry = "0.28"
 opentelemetry-otlp = { version = "0.28", features = ["default", "grpc-tonic"] }
 opentelemetry-semantic-conventions = "0.28"
 opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
-tokio = { version = "1.43.0", features = ["full"] }
+tokio = { version = "1.44.1", features = ["full"] }
 criterion = "0.5.1"
 tracing-chrome = "0.7.2"
 
@@ -114,7 +114,7 @@ windows = { version = "0.59", features = [
 proc-maps = "0.4.0"
 
 [build-dependencies]
-anyhow = { version = "1.0.96" }
+anyhow = { version = "1.0.97" }
 cfg_aliases = "0.2.1"
 built = { version = "0.7.7", features = ["chrono", "git2"] }
 
@@ -132,6 +132,7 @@ mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]
 inprocess = []
 # This enables easy debug in the guest
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
+fuzzing = ["hyperlight-common/fuzzing"]
 
 [[bench]]
 name = "benchmarks"

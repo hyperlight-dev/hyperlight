@@ -1,4 +1,2 @@
 [toolchain]
 channel = "1.81.0"
-# if you update this, don't forget to change the pinned version
-# of nightly we use in the fuzzing workflow.

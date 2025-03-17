@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.2.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.3.0
         with:
           rust-toolchain: "1.81.0"
         env:
@@ -41,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.2.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.3.0
         with:
           rust-toolchain: "1.81.0"
         env:
@@ -55,12 +55,6 @@ jobs:
 
   build-guest-binaries:
     uses: ./.github/workflows/dep_build_guest_binaries.yml
-    secrets: inherit
-
-  fuzzing:
-    uses: ./.github/workflows/dep_fuzzing.yml
-    with:
-      max_total_time: 3600 # 1 hour in seconds
     secrets: inherit
 
   benchmarks:
@@ -109,7 +103,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.2.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.3.0
         with:
           rust-toolchain: "1.81.0"
         env:

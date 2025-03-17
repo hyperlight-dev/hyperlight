@@ -268,6 +268,10 @@ This project holds fortnightly community meetings to discuss the project's progr
 - **When**: Every other Wednesday 09:00 (PST/PDT) [Convert to your local time](https://dateful.com/convert/pst-pdt-pacific-time?t=09)
 - **Where**: Zoom! - Agenda and information on how to join can be found in the [Hyperlight Community Meeting Notes](https://hackmd.io/blCrncfOSEuqSbRVT9KYkg#Agenda). Please log into hackmd to edit!
 
+## Chat with us on the CNCF Slack
+
+The Hyperlight project Slack is hosted in the CNCF Slack #hyperlight. To join the Slack, [join the CNCF Slack](https://www.cncf.io/membership-faq/#how-do-i-join-cncfs-slack), and join the #hyperlight channel.
+
 ## More Information
 
 For more information, please refer to our compilation of documents in the [`docs/` directory](./docs/README.md).

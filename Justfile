@@ -189,9 +189,24 @@ bench-ci baseline target=default-target features="":
 bench target=default-target features="":
     cargo bench --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {''} else { "--features " + features } }} -- --verbose
 
+#####################################
 # FUZZING
-fuzz:
-    cd src/hyperlight_host && cargo +nightly fuzz run fuzz_target_1
+#####################################
 
-fuzz-timed:
-    cd src/hyperlight_host && cargo +nightly fuzz run fuzz_target_1 -- -max_total_time=300
+# Enough memory (4GB) for the fuzzer to run for 5 hours, with address sanitizer turned on
+fuzz_memory_limit := "4096"
+
+# Fuzzes the given target
+fuzz fuzz-target:
+    cargo +nightly fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }}
+
+# Fuzzes the given target. Stops after `max_time` seconds
+fuzz-timed fuzz-target max_time:
+    cargo +nightly fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }}
+
+# Builds fuzzers for submission to external fuzzing services
+build-fuzzers: (build-fuzzer "fuzz_guest_call") (build-fuzzer "fuzz_host_call") (build-fuzzer "fuzz_host_print")
+
+# Builds the given fuzzer
+build-fuzzer fuzz-target:
+    cargo +nightly fuzz build {{ fuzz-target }}

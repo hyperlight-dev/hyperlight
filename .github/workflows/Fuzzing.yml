@@ -10,9 +10,9 @@ permissions:
   contents: read
   
 jobs:
-
   fuzzing:
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
+      targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call"]' # Pass as a JSON array
       max_total_time: 18000 # 5 hours in seconds
     secrets: inherit

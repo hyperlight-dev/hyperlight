@@ -1,0 +1,34 @@
+[package]
+name = "hyperlight-fuzz"
+version = "0.0.0"
+publish = false
+edition = { workspace = true }
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hyperlight-testing = { workspace = true }
+hyperlight-host = { workspace = true, default-features = true, features = ["fuzzing"]}
+
+[[bin]]
+name = "fuzz_host_print"
+path = "fuzz_targets/host_print.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_guest_call"
+path = "fuzz_targets/guest_call.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_host_call"
+path = "fuzz_targets/host_call.rs"
+test = false
+doc = false
+bench = false

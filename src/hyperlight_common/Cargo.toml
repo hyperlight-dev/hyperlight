@@ -16,13 +16,15 @@ workspace = true
 
 [dependencies]
 flatbuffers = { version = "25.2.10", default-features = false }
-anyhow = { version = "1.0.96", default-features = false }
+anyhow = { version = "1.0.97", default-features = false }
 log = "0.4.26"
 tracing = { version = "0.1.41", optional = true }
 strum = {version = "0.27",  default-features = false, features = ["derive"]}
+arbitrary = {version = "1.4.1", optional = true, features = ["derive"]}
 
 [features]
 default = ["tracing"]
+fuzzing = ["dep:arbitrary"]
 
 [dev-dependencies]
 hyperlight-testing = { workspace = true }

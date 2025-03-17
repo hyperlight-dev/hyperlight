@@ -85,13 +85,24 @@ $ gdb
 ### Using VSCode to debug a Hyperlight guest
 
 To replicate the above behavior using VSCode follow the below steps:
-- install the `gdb` package on the host machine
-- install the `C/C++` extension in VSCode to add debugging capabilities
+- To use gdb: 
+    1. install the `gdb` package on the host machine
+    2. install the [C/C++ Extension Pack](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools-extension-pack) extension in VSCode to add debugging capabilities
+- To use lldb:
+    1. install `lldb` on the host machine
+    2. install the [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) extension in VSCode to add debugging capabilities
 - create a `.vscode/launch.json` file in the project directory with the below content:
     ```json
     {
         "version": "0.2.0",
         "configurations": [
+            {
+                "name": "LLDB",
+                "type": "lldb",
+                "request": "launch",
+                "targetCreateCommands": ["target create ${workspaceFolder}/src/tests/rust_guests/bin/debug/simpleguest"],
+                "processCreateCommands": ["gdb-remote localhost:8080"]
+            },
             {
                 "name": "GDB",
                 "type": "cppdbg",
@@ -122,9 +133,9 @@ To replicate the above behavior using VSCode follow the below steps:
         ]
     }
     ```
-- in `Run and Debug` tab, select the `GDB` configuration and click on the `Run`
+- in `Run and Debug` tab, select either `GDB` or `LLDB` configuration and click on the `Run`
   button to start the debugging session.
-  The gdb client will connect to the Hyperlight sandbox and the guest vCPU will
+  The debugger will connect to the Hyperlight sandbox and the guest vCPU will
   stop at the entry point.
 
 

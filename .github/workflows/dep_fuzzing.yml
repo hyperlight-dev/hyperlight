@@ -7,6 +7,10 @@ on:
         description: Maximum total time for the fuzz run in seconds
         required: true
         type: number
+      targets:
+        description: Fuzz targets to run
+        required: true
+        type: string
       docs_only:
         description: Skip fuzzing if docs only
         required: false
@@ -21,11 +25,14 @@ jobs:
   fuzz:
     if: ${{ inputs.docs_only == 'false' }}
     runs-on: [ self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd" ]
+    strategy:
+      matrix:
+        target: ${{ fromJson(inputs.targets) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.2.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.3.0
         with:
           rust-toolchain: "1.81.0"
         env:
@@ -44,7 +51,7 @@ jobs:
         run: cargo install cargo-fuzz
 
       - name: Run Fuzzing
-        run: cargo +nightly fuzz run --release fuzz_target_1 -- -max_total_time=300
+        run: just fuzz-timed ${{ matrix.target }} ${{ inputs.max_total_time }}
         working-directory: src/hyperlight_host
 
       - name: Upload Crash Artifacts
@@ -52,4 +59,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crash-artifacts
-          path: src/hyperlight_host/fuzz/artifacts/
+          path: fuzz/artifacts/

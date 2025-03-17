@@ -32,6 +32,7 @@ use crate::flatbuffers::hyperlight::generated::{
 };
 
 /// Supported parameter types with values for function calling.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParameterValue {
     /// i32
@@ -104,6 +105,7 @@ pub enum ReturnValue {
 }
 
 /// Supported return types from function calling.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[repr(C)]
 pub enum ReturnType {

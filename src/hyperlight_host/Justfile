@@ -1,9 +1,0 @@
-set windows-shell := ["pwsh.exe", "-NoLogo", "-Command"]
-lib-suffix := if os() == "windows" { ".dll" } else { "" }
-bin-suffix := if os() == "windows" { ".exe" } else { ".out" }
-default-target:= "debug"
-set dotenv-load
-set fallback
-
-build target=default-target:
-    just build-rust {{target}}
