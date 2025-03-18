@@ -65,7 +65,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Spell Check Repo
-      uses: crate-ci/typos@v1.29.10
+      uses: crate-ci/typos@v1.30.0
 
   # Gate PR merges on this specific "join-job" which requires all other
   # jobs to run first. We need this job since we cannot gate on particular jobs
@@ -86,4 +86,3 @@ jobs:
     - name: Previous jobs failed
       if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
       run: exit 1
-    

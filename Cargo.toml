@@ -6,17 +6,10 @@ default-members = [
     "src/hyperlight_testing",
 ]
 members = [
-    "src/hyperlight_common",
-    "src/hyperlight_guest",
-    "src/hyperlight_host",
     "src/hyperlight_guest_capi",
-    "src/hyperlight_testing",
     "fuzz",
 ]
-# Because hyperlight-guest has custom linker flags,
-# we exclude it from the default-members list
-# to avoid cargo test failing on it.
-# Same for the simpleguest and dummyguest tests below.
+# Guests have custom linker flags, so we need to exclude them from the workspace
 exclude = [
     "src/tests/rust_guests/callbackguest",
     "src/tests/rust_guests/dummyguest",
@@ -26,14 +19,13 @@ exclude = [
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.80.0"
+rust-version = "1.81.0"
 license = "Apache-2.0"
 homepage = "https://github.com/hyperlight-dev/hyperlight"
 repository = "https://github.com/hyperlight-dev/hyperlight"
 readme = "README.md"
 
 [workspace.dependencies]
-
 hyperlight-common = { path = "src/hyperlight_common", version = "0.2.0", default-features = false }
 hyperlight-host = { path = "src/hyperlight_host", version = "0.2.0", default-features = false }
 hyperlight-guest = { path = "src/hyperlight_guest", version = "0.2.0", default-features = false }

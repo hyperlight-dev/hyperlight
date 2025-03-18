@@ -121,7 +121,7 @@ impl MultiUseSandbox {
     /// // original `sbox` variable.
     /// let mut ctx = sbox.new_call_context();
     ///
-    /// // Do a guest call with the context. Assues that the loaded binary
+    /// // Do a guest call with the context. Assumes that the loaded binary
     /// // ("some_guest_binary") has a function therein called "SomeGuestFunc"
     /// // that takes a single integer argument and returns an integer.
     /// match ctx.call(

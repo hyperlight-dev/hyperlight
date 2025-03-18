@@ -584,7 +584,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // the guest manipulating this memory location because the only
         // addresses that are valid are in its own address space.
         //
-        // When executing in-process, maniulating this pointer could cause the
+        // When executing in-process, manipulating this pointer could cause the
         // host to execute arbitrary functions.
         let guest_ptr = GuestPtr::try_from(RawPtr::from(guest_dispatch_function_ptr))?;
         guest_ptr.absolute()

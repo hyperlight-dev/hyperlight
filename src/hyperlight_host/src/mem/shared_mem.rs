@@ -229,7 +229,7 @@ unsafe impl Send for GuestSharedMemory {}
 /// sadly, mostly un-adopted for C++23, although that does not concern
 /// us), the paper did not actually redefine volatile accesses or data
 /// races to prevent volatile accesses from racing with other accesses
-/// and causing undefined behaviour.  P1382R1 [5] would have amendend
+/// and causing undefined behaviour.  P1382R1 [5] would have amended
 /// the wording of the data race definition to specifically exclude
 /// volatile, but, unfortunately, despite receiving a
 /// generally-positive reception at its first WG21 meeting more than
@@ -257,7 +257,7 @@ unsafe impl Send for GuestSharedMemory {}
 /// In short, none of the Rust-level operations available to us do the
 /// right thing, at the Rust spec level or the LLVM spec level. Our
 /// major remaining options are therefore:
-///   - Choose one of the options that is avaiblale to us, and accept
+///   - Choose one of the options that is available to us, and accept
 ///     that we are doing something unsound according to the spec, but
 ///     hope that no reasonable compiler could possibly notice.
 ///   - Use inline assembly per architecture, for which we would only
