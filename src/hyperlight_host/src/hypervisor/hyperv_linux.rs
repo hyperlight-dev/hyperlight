@@ -106,19 +106,40 @@ mod debug {
             if let Some(debug) = self.debug.as_mut() {
                 match req {
                     DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
-                        debug.add_hw_breakpoint(&self.vcpu_fd, addr).is_ok(),
+                        debug
+                            .add_hw_breakpoint(&self.vcpu_fd, addr)
+                            .map_err(|e| {
+                                log::error!("Failed to add hw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
                     )),
                     DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
                         debug
                             .add_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                            .map_err(|e| {
+                                log::error!("Failed to add sw breakpoint: {:?}", e);
+
+                                e
+                            })
                             .is_ok(),
                     )),
                     DebugMsg::Continue => {
-                        debug.set_single_step(&self.vcpu_fd, false)?;
+                        debug.set_single_step(&self.vcpu_fd, false).map_err(|e| {
+                            log::error!("Failed to continue execution: {:?}", e);
+
+                            e
+                        })?;
+
                         Ok(DebugResponse::Continue)
                     }
                     DebugMsg::DisableDebug => {
-                        self.disable_debug()?;
+                        self.disable_debug().map_err(|e| {
+                            log::error!("Failed to disable debugging: {:?}", e);
+
+                            e
+                        })?;
 
                         Ok(DebugResponse::DisableDebug)
                     }
@@ -128,14 +149,25 @@ mod debug {
                             .map_err(|e| {
                                 new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
                             })?
-                            .get_code_offset()?;
+                            .get_code_offset()
+                            .map_err(|e| {
+                                log::error!("Failed to get code offset: {:?}", e);
+
+                                e
+                            })?;
 
                         Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
                     }
                     DebugMsg::ReadAddr(addr, len) => {
                         let mut data = vec![0u8; len];
 
-                        debug.read_addrs(&self.vcpu_fd, addr, &mut data, dbg_mem_access_fn)?;
+                        debug
+                            .read_addrs(&self.vcpu_fd, addr, &mut data, dbg_mem_access_fn)
+                            .map_err(|e| {
+                                log::error!("Failed to read from address: {:?}", e);
+
+                                e
+                            })?;
 
                         Ok(DebugResponse::ReadAddr(data))
                     }
@@ -144,27 +176,60 @@ mod debug {
 
                         debug
                             .read_regs(&self.vcpu_fd, &mut regs)
+                            .map_err(|e| {
+                                log::error!("Failed to read registers: {:?}", e);
+
+                                e
+                            })
                             .map(|_| DebugResponse::ReadRegisters(regs))
                     }
                     DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
-                        debug.remove_hw_breakpoint(&self.vcpu_fd, addr).is_ok(),
+                        debug
+                            .remove_hw_breakpoint(&self.vcpu_fd, addr)
+                            .map_err(|e| {
+                                log::error!("Failed to remove hw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
                     )),
                     DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
                         debug
                             .remove_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                            .map_err(|e| {
+                                log::error!("Failed to remove sw breakpoint: {:?}", e);
+
+                                e
+                            })
                             .is_ok(),
                     )),
                     DebugMsg::Step => {
-                        debug.set_single_step(&self.vcpu_fd, true)?;
+                        debug.set_single_step(&self.vcpu_fd, true).map_err(|e| {
+                            log::error!("Failed to enable step instruction: {:?}", e);
+
+                            e
+                        })?;
+
                         Ok(DebugResponse::Step)
                     }
                     DebugMsg::WriteAddr(addr, data) => {
-                        debug.write_addrs(&self.vcpu_fd, addr, &data, dbg_mem_access_fn)?;
+                        debug
+                            .write_addrs(&self.vcpu_fd, addr, &data, dbg_mem_access_fn)
+                            .map_err(|e| {
+                                log::error!("Failed to write to address: {:?}", e);
+
+                                e
+                            })?;
 
                         Ok(DebugResponse::WriteAddr)
                     }
                     DebugMsg::WriteRegisters(regs) => debug
                         .write_regs(&self.vcpu_fd, &regs)
+                        .map_err(|e| {
+                            log::error!("Failed to write registers: {:?}", e);
+
+                            e
+                        })
                         .map(|_| DebugResponse::WriteRegisters),
                 }
             } else {
