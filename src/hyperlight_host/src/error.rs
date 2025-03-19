@@ -41,7 +41,7 @@ use thiserror::Error;
 
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::mem::memory_region::MemoryRegionFlags;
+use crate::sandbox::sandbox_builder::MemoryRegionFlags;
 use crate::mem::ptr::RawPtr;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]

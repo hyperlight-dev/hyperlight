@@ -21,7 +21,7 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use hyperlight_common::mem::PAGE_SIZE;
 use rust_embed::RustEmbed;
 use tracing::{error, info, instrument, Span};
 use windows::core::{s, PCSTR};
@@ -195,7 +195,7 @@ impl SurrogateProcessManager {
             VirtualProtectEx(
                 surrogate_process_handle,
                 first_guard_page_start,
-                PAGE_SIZE_USIZE,
+                PAGE_SIZE,
                 PAGE_NOACCESS,
                 &mut unused_out_old_prot_flags,
             )
@@ -204,12 +204,12 @@ impl SurrogateProcessManager {
         }
 
         // the last page of the raw_size is the guard page
-        let last_guard_page_start = unsafe { raw_source_address.add(raw_size - PAGE_SIZE_USIZE) };
+        let last_guard_page_start = unsafe { raw_source_address.add(raw_size - PAGE_SIZE) };
         if let Err(e) = unsafe {
             VirtualProtectEx(
                 surrogate_process_handle,
                 last_guard_page_start,
-                PAGE_SIZE_USIZE,
+                PAGE_SIZE,
                 PAGE_NOACCESS,
                 &mut unused_out_old_prot_flags,
             )
@@ -429,7 +429,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use hyperlight_common::mem::PAGE_SIZE_USIZE;
+    use hyperlight_common::mem::PAGE_SIZE;
     use rand::{rng, Rng};
     use serial_test::serial;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
@@ -456,7 +456,7 @@ mod tests {
             let thread_handle = thread::spawn(move || -> Result<()> {
                 let surrogate_process_manager_res = get_surrogate_process_manager();
                 let mut rng = rng();
-                let size = PAGE_SIZE_USIZE * 3;
+                let size = PAGE_SIZE * 3;
                 assert!(surrogate_process_manager_res.is_ok());
                 let surrogate_process_manager = surrogate_process_manager_res.unwrap();
                 let job_handle = surrogate_process_manager.job_handle;

@@ -109,7 +109,7 @@ macro_rules! host_function {
                                 .try_lock()
                                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
                                 .register_host_function_with_syscalls(
-                                    sandbox.mgr.as_mut(),
+                                    &mut sandbox.mem_mgr,
                                     &HostFunctionDefinition::new(name.to_string(), None, R::get_hyperlight_type()),
                                     HyperlightFunction::new(func),
                                     _eas,
@@ -126,7 +126,7 @@ macro_rules! host_function {
                         .try_lock()
                         .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
                         .register_host_function(
-                            sandbox.mgr.as_mut(),
+                            &mut sandbox.mem_mgr,
                             &HostFunctionDefinition::new(name.to_string(), None, R::get_hyperlight_type()),
                             HyperlightFunction::new(func),
                         )?;
@@ -236,7 +236,7 @@ macro_rules! host_function {
                                 .try_lock()
                                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
                                 .register_host_function_with_syscalls(
-                                    sandbox.mgr.as_mut(),
+                                    &mut sandbox.mem_mgr,
                                     &HostFunctionDefinition::new(
                                         name.to_string(),
                                         parameter_types,
@@ -257,7 +257,7 @@ macro_rules! host_function {
                         .try_lock()
                         .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
                         .register_host_function(
-                            sandbox.mgr.as_mut(),
+                            &mut sandbox.mem_mgr,
                             &HostFunctionDefinition::new(
                                 name.to_string(),
                                 parameter_types,
