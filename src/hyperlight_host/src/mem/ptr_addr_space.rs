@@ -16,7 +16,7 @@ limitations under the License.
 
 use tracing::{instrument, Span};
 
-use super::layout::SandboxMemoryLayout;
+use crate::sandbox::sandbox_builder::BASE_ADDRESS;
 use crate::Result;
 
 /// A representation of a specific address space
@@ -32,7 +32,7 @@ impl GuestAddressSpace {
     /// Create a new instance of a `GuestAddressSpace`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn new() -> Result<Self> {
-        let base_addr = u64::try_from(SandboxMemoryLayout::BASE_ADDRESS)?;
+        let base_addr = u64::try_from(BASE_ADDRESS)?;
         Ok(Self(base_addr))
     }
 }
@@ -46,11 +46,11 @@ impl AddressSpace for GuestAddressSpace {
 #[cfg(test)]
 mod tests {
     use super::{AddressSpace, GuestAddressSpace};
-    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::sandbox::sandbox_builder::BASE_ADDRESS;
 
     #[test]
     fn guest_addr_space_base() {
         let space = GuestAddressSpace::new().unwrap();
-        assert_eq!(SandboxMemoryLayout::BASE_ADDRESS as u64, space.base());
+        assert_eq!(BASE_ADDRESS as u64, space.base());
     }
 }

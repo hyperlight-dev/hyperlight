@@ -113,7 +113,7 @@ impl HostFuncsWrapper {
 
 fn register_host_function_helper(
     self_: &mut HostFuncsWrapper,
-    mgr: &mut SandboxMemoryManager<ExclusiveSharedMemory>,
+    _mgr: &mut SandboxMemoryManager<ExclusiveSharedMemory>,
     hfd: &HostFunctionDefinition,
     func: HyperlightFunction,
     extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
@@ -142,13 +142,17 @@ fn register_host_function_helper(
     self_
         .get_host_func_details_mut()
         .sort_host_functions_by_name();
-    let buffer: Vec<u8> = self_.get_host_func_details().try_into().map_err(|e| {
-        new_error!(
-            "Error serializing host function details to flatbuffer: {}",
-            e
-        )
-    })?;
-    mgr.write_buffer_host_function_details(&buffer)?;
+
+    // TODO(danbugs:297): host function details section is now determined in the guest, so
+    // we can't write these details to memory at this point in time. Regardless, writing this
+    // stuff to memory is pretty pointless, so we can remove this logic.
+    // let buffer: Vec<u8> = self_.get_host_func_details().try_into().map_err(|e| {
+    //     new_error!(
+    //         "Error serializing host function details to flatbuffer: {}",
+    //         e
+    //     )
+    // })?;
+    // mgr.write_buffer_host_function_details(&buffer)?;
 
     Ok(())
 }
