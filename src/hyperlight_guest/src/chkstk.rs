@@ -17,7 +17,7 @@ limitations under the License.
 use core::arch::global_asm;
 use core::mem::size_of;
 
-use hyperlight_common::mem::RunMode;
+use hyperlight_common::hyperlight_peb::RunMode;
 
 use crate::guest_error::{set_invalid_runmode_error, set_stack_allocate_error};
 use crate::{MIN_STACK_ADDRESS, RUNNING_MODE};
