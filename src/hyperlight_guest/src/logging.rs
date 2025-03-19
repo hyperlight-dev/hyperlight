@@ -21,7 +21,8 @@ use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 
 use crate::host_function_call::{outb, OutBAction};
-use crate::shared_output_data::push_shared_output_data;
+use hyperlight_common::input_output::OutputDataSection;
+use crate::PEB;
 
 fn write_log_data(
     log_level: LogLevel,
@@ -44,7 +45,12 @@ fn write_log_data(
         .try_into()
         .expect("Failed to convert GuestLogData to bytes");
 
-    push_shared_output_data(bytes).expect("Unable to push log data to shared output data");
+    let output_data_section: OutputDataSection =
+        unsafe { (*PEB).clone() }.get_output_data_region().into();
+
+    output_data_section
+        .push_shared_output_data(bytes)
+        .expect("Unable to push log data to shared output data");
 }
 
 pub fn log_message(

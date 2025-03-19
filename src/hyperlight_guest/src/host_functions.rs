@@ -25,7 +25,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 
 use crate::error::{HyperlightGuestError, Result};
-use crate::P_PEB;
+use crate::PEB;
 
 pub(crate) fn validate_host_function_call(function_call: &FunctionCall) -> Result<()> {
     // get host function details
@@ -92,12 +92,10 @@ pub(crate) fn validate_host_function_call(function_call: &FunctionCall) -> Resul
 }
 
 pub fn get_host_function_details() -> HostFunctionDetails {
-    let peb_ptr = unsafe { P_PEB.unwrap() };
-
     let host_function_details_buffer =
-        unsafe { (*peb_ptr).hostFunctionDefinitions.fbHostFunctionDetails } as *const u8;
+        unsafe { (*PEB).host_function_details_ptr } as *const u8;
     let host_function_details_size =
-        unsafe { (*peb_ptr).hostFunctionDefinitions.fbHostFunctionDetailsSize };
+        unsafe { (*PEB).host_function_details_size };
 
     let host_function_details_slice: &[u8] = unsafe {
         from_raw_parts(
