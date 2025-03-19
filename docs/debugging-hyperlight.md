@@ -42,3 +42,7 @@ cargo test --package hyperlight-host --test integration_test --features print_de
 To dump the details of the memory configuration, the virtual processors register state and the contents of the VM memory set the feature `crashdump` and run a debug build. This will result in a dump file being created in the temporary directory. The name and location of the dump file will be printed to the console and logged as an error message.
 
 There are no tools at this time to analyze the dump file, but it can be useful for debugging.
+
+## Debugging guests
+
+For more information on how to debug the Hyperlight guests check the following [link](./how-to-debug-a-hyperlight-guest.md).
