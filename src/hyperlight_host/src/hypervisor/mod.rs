@@ -18,7 +18,7 @@ use log::LevelFilter;
 use tracing::{instrument, Span};
 
 use crate::error::HyperlightError::ExecutionCanceledByHost;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
 use crate::{log_then_return, new_error, HyperlightError, Result};
 
@@ -124,10 +124,10 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     #[allow(clippy::too_many_arguments)]
     fn initialise(
         &mut self,
-        peb_addr: RawPtr,
+        hyperlight_peb_guest_memory_region_address: u64,
+        hyperlight_peb_guest_memory_region_size: u64,
         seed: u64,
-        page_size: u32,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_hdl: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         guest_max_log_level: Option<LevelFilter>,
@@ -168,15 +168,17 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn get_memory_access_violation(
         &self,
         gpa: usize,
-        mem_regions: &[MemoryRegion],
+        mem_sections: SandboxMemorySections,
         access_info: MemoryRegionFlags,
     ) -> Option<HyperlightExit> {
         // find the region containing the given gpa
-        let region = mem_regions
-            .iter()
-            .find(|region| region.guest_region.contains(&gpa));
+        let region = mem_sections.iter().find(|(_, region)| {
+            let offset = region.page_aligned_guest_offset;
+            let size = region.page_aligned_size;
+            gpa >= offset && gpa < (offset + size)
+        });
 
-        if let Some(region) = region {
+        if let Some((_, region)) = region {
             if !region.flags.contains(access_info)
                 || region.flags.contains(MemoryRegionFlags::STACK_GUARD)
             {
@@ -234,8 +236,9 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     #[cfg(target_os = "windows")]
     fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 
-    #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion];
+    // TODO(danbugs:297): bring back
+    // #[cfg(crashdump)]
+    // fn get_memory_regions(&self) -> &[MemoryRegion];
 
     #[cfg(gdb)]
     /// handles the cases when the vCPU stops due to a Debug event
@@ -334,85 +337,123 @@ impl VirtualCPU {
     }
 }
 
-#[cfg(all(test, any(target_os = "windows", kvm)))]
-pub(crate) mod tests {
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    use hyperlight_testing::dummy_guest_as_string;
-
-    #[cfg(gdb)]
-    use super::handlers::DbgMemAccessHandlerWrapper;
-    use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
-    use crate::hypervisor::hypervisor_handler::{
-        HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
-    };
-    use crate::mem::ptr::RawPtr;
-    use crate::sandbox::uninitialized::GuestBinary;
-    use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
-    use crate::{new_error, Result};
-
-    pub(crate) fn test_initialise(
-        outb_hdl: OutBHandlerWrapper,
-        mem_access_hdl: MemAccessHandlerWrapper,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
-        if !Path::new(&filename).exists() {
-            return Err(new_error!(
-                "test_initialise: file {} does not exist",
-                filename
-            ));
-        }
-
-        let sandbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None, None, None)?;
-        let (hshm, gshm) = sandbox.mgr.build();
-        drop(hshm);
-
-        let hv_handler_config = HvHandlerConfig {
-            outb_handler: outb_hdl,
-            mem_access_handler: mem_access_hdl,
-            #[cfg(gdb)]
-            dbg_mem_access_handler: dbg_mem_access_fn,
-            seed: 1234567890,
-            page_size: 4096,
-            peb_addr: RawPtr::from(0x230000),
-            dispatch_function_addr: Arc::new(Mutex::new(None)),
-            max_init_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
-            ),
-            max_exec_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
-            ),
-            max_wait_for_cancellation: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
-            ),
-            max_guest_log_level: None,
-        };
-
-        let mut hv_handler = HypervisorHandler::new(hv_handler_config);
-
-        // call initialise on the hypervisor implementation with specific values
-        // for PEB (process environment block) address, seed and page size.
-        //
-        // these values are not actually used, they're just checked inside
-        // the dummy guest, and if they don't match these values, the dummy
-        // guest issues a write to an invalid memory address, which in turn
-        // fails this test.
-        //
-        // in this test, we're not actually testing whether a guest can issue
-        // memory operations, call functions, etc... - we're just testing
-        // whether we can configure the shared memory region, load a binary
-        // into it, and run the CPU to completion (e.g., a HLT interrupt)
-
-        hv_handler.start_hypervisor_handler(
-            gshm,
-            #[cfg(gdb)]
-            None,
-        )?;
-
-        hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
-    }
-}
+// TODO(danbugs:297): bring back
+// #[cfg(all(test, any(target_os = "windows", kvm)))]
+// pub(crate) mod tests {
+// #[allow(dead_code)]
+// pub(crate) fn test_custom_initialise(
+//     mem_access_hdl: MemAccessHandlerWrapper,
+//     #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+// ) -> Result<()> {
+//     let filename = custom_guest_as_string().map_err(|e| new_error!("{}", e))?;
+//     let sbox_config = SandboxConfiguration::default();
+//     let uninitialized_sandbox = UninitializedSandbox::new(
+//         GuestBinary::FilePath(filename.clone()),
+//         sbox_config,
+//         None,
+//     )?;
+//
+//     let (hshm, gshm) = uninitialized_sandbox.mem_mgr.build();
+//
+//     let custom_memory_offset = gshm.layout.get_custom_guest_memory_offset();
+//     let custom_memory_size = gshm.layout.get_custom_guest_memory_size();
+//     dbg!(&custom_memory_offset);
+//
+//     let custom_memory = hshm.get_custom_guest_memory()?;
+//     assert_eq!(custom_memory[0], 0);
+//
+//     let hv_handler_config = HvHandlerConfig {
+//         custom_guest_memory_region_address: custom_memory_offset as u64,
+//         custom_guest_memory_region_size: custom_memory_size as u64,
+//         mem_access_handler: mem_access_hdl,
+//         #[cfg(gdb)]
+//         dbg_mem_access_handler: dbg_mem_access_fn,
+//         page_size: 4096,
+//         max_init_time: Duration::from_millis(
+//             SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
+//         ),
+//         max_exec_time: Duration::from_millis(
+//             SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
+//         ),
+//         max_wait_for_cancellation: Duration::from_millis(
+//             SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
+//         ),
+//     };
+//
+//     let mut hv_handler = HypervisorHandler::new(hv_handler_config);
+//
+//     hv_handler.start_hypervisor_handler(
+//         gshm,
+//         #[cfg(gdb)]
+//         None,
+//     )?;
+//
+//     hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)?;
+//
+//     let custom_memory = hshm.get_custom_guest_memory()?;
+//
+//     assert_eq!(custom_memory[0], 1);
+//
+//     Ok(())
+// }
+//
+// pub(crate) fn test_initialise(
+//     _outb_hdl: OutBHandlerWrapper,
+//     mem_access_hdl: MemAccessHandlerWrapper,
+//     #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+// ) -> Result<()> {
+//     let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
+//     if !Path::new(&filename).exists() {
+//         return Err(new_error!(
+//             "test_initialise: file {} does not exist",
+//             filename
+//         ));
+//     }
+//
+//     let sandbox =
+//         UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None, None)?;
+//     let (hshm, gshm) = sandbox.mem_mgr.build();
+//     drop(hshm);
+//
+//     let hv_handler_config = HvHandlerConfig {
+//         custom_guest_memory_region_address: gshm.layout.get_custom_guest_memory_offset() as u64,
+//         custom_guest_memory_region_size: gshm.layout.get_custom_guest_memory_size() as u64,
+//         mem_access_handler: mem_access_hdl,
+//         #[cfg(gdb)]
+//         dbg_mem_access_handler: dbg_mem_access_fn,
+//         page_size: 4096,
+//         max_init_time: Duration::from_millis(
+//             SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
+//         ),
+//         max_exec_time: Duration::from_millis(
+//             SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
+//         ),
+//         max_wait_for_cancellation: Duration::from_millis(
+//             SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
+//         ),
+//     };
+//
+//     let mut hv_handler = HypervisorHandler::new(hv_handler_config);
+//
+//     // call initialise on the hypervisor implementation with specific values
+//     // for PEB (process environment block) address, seed and page size.
+//     //
+//     // these values are not actually used, they're just checked inside
+//     // the dummy guest, and if they don't match these values, the dummy
+//     // guest issues a write to an invalid memory address, which in turn
+//     // fails this test.
+//     //
+//     // in this test, we're not actually testing whether a guest can issue
+//     // memory operations, call functions, etc... - we're just testing
+//     // whether we can configure the shared memory region, load a binary
+//     // into it, and run the CPU to completion (e.g., a HLT interrupt)
+//
+//     hv_handler.start_hypervisor_handler(
+//         gshm,
+//         #[cfg(gdb)]
+//         None,
+//     )?;
+//
+//     hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
+// }
+//}

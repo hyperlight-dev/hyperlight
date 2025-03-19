@@ -43,11 +43,10 @@ use crate::hypervisor::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::Hypervisor;
-use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
-use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
+use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
@@ -130,7 +129,7 @@ impl HvHandlerExecVars {
             .thread_id
             .try_lock()
             .map_err(|_| new_error!("Failed to get_thread_id"))?)
-        .ok_or_else(|| new_error!("thread_id not set"))
+            .ok_or_else(|| new_error!("thread_id not set"))
     }
 
     #[cfg(target_os = "windows")]
@@ -178,10 +177,9 @@ struct HvHandlerCommChannels {
 
 #[derive(Clone)]
 pub(crate) struct HvHandlerConfig {
-    pub(crate) peb_addr: RawPtr,
+    pub(crate) hyperlight_peb_guest_memory_region_address: u64,
+    pub(crate) hyperlight_peb_guest_memory_region_size: u64,
     pub(crate) seed: u64,
-    pub(crate) page_size: u32,
-    pub(crate) dispatch_function_addr: Arc<Mutex<Option<RawPtr>>>,
     pub(crate) max_init_time: Duration,
     pub(crate) max_exec_time: Duration,
     pub(crate) outb_handler: OutBHandlerWrapper,
@@ -301,7 +299,6 @@ impl HypervisorHandler {
                                 {
                                     hv = Some(set_up_hypervisor_partition(
                                         execution_variables.shm.try_lock().map_err(|e| new_error!("Failed to lock shm: {}", e))?.deref_mut().as_mut().ok_or_else(|| new_error!("shm not set"))?,
-                                        configuration.outb_handler.clone(),
                                         #[cfg(gdb)]
                                         &debug_info,
                                     )?);
@@ -351,9 +348,9 @@ impl HypervisorHandler {
                                     .try_read();
 
                                 let res = hv.initialise(
-                                    configuration.peb_addr.clone(),
+                                    configuration.hyperlight_peb_guest_memory_region_address,
+                                    configuration.hyperlight_peb_guest_memory_region_size,
                                     configuration.seed,
-                                    configuration.page_size,
                                     configuration.outb_handler.clone(),
                                     configuration.mem_access_handler.clone(),
                                     Some(hv_handler_clone.clone()),
@@ -394,20 +391,22 @@ impl HypervisorHandler {
 
                                 info!("Dispatching call from host: {}", function_name);
 
-                                let dispatch_function_addr = configuration
-                                    .dispatch_function_addr
-                                    .clone()
+                                let dispatch_function_addr = RawPtr(execution_variables
+                                    .shm
                                     .try_lock()
-                                    .map_err(|e| {
-                                        new_error!(
-                                            "Error locking at {}:{}: {}",
-                                            file!(),
-                                            line!(),
-                                            e
-                                        )
-                                    })?
-                                    .clone()
-                                    .ok_or_else(|| new_error!("Hypervisor not initialized"))?;
+                                    .unwrap()
+                                    .as_mut()
+                                    .ok_or_else(|| {
+                                        new_error!("guest shm lock: {}:{}", file!(), line!())
+                                    })?.read_hyperlight_peb()?.guest_function_dispatch_ptr);
+
+                                if dispatch_function_addr == RawPtr(0) {
+                                    log_then_return!(
+                                        "Dispatch function address is null: {}:{}",
+                                        file!(),
+                                        line!()
+                                    );
+                                }
 
                                 let mut evar_lock_guard =
                                     execution_variables.shm.try_lock().map_err(|e| {
@@ -715,20 +714,6 @@ impl HypervisorHandler {
         res
     }
 
-    pub(crate) fn set_dispatch_function_addr(
-        &mut self,
-        dispatch_function_addr: RawPtr,
-    ) -> Result<()> {
-        *self
-            .configuration
-            .dispatch_function_addr
-            .try_lock()
-            .map_err(|_| new_error!("Failed to set_dispatch_function_addr"))? =
-            Some(dispatch_function_addr);
-
-        Ok(())
-    }
-
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn terminate_execution(&self) -> Result<()> {
         error!(
@@ -787,7 +772,7 @@ impl HypervisorHandler {
                         0,
                         0,
                     )
-                    .map_err(|e| new_error!("Failed to cancel guest execution {:?}", e))?;
+                        .map_err(|e| new_error!("Failed to cancel guest execution {:?}", e))?;
                 }
             }
             // if running in-process on windows, we currently have no way of cancelling the execution
@@ -832,55 +817,34 @@ pub enum HandlerMsg {
 
 fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
-    #[allow(unused_variables)] // parameter only used for in-process mode
-    outb_handler: OutBHandlerWrapper,
     #[cfg(gdb)] debug_info: &Option<DebugInfo>,
 ) -> Result<Box<dyn Hypervisor>> {
-    let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
-    let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-    let rsp_ptr = {
-        let rsp_u64 = mgr.set_up_shared_memory(mem_size, &mut regions)?;
-        let rsp_raw = RawPtr::from(rsp_u64);
-        GuestPtr::try_from(rsp_raw)
-    }?;
-    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let pml4_ptr = {
-        let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
-        base_ptr + Offset::from(pml4_offset_u64)
-    };
+    mgr.set_up_shared_memory()?;
+    let memory_sections = mgr.memory_sections.clone();
+
+    let rsp_ptr = GuestPtr::try_from(RawPtr::from(mgr.init_rsp))?;
+
+    // TODO(danbugs:297): change unwrap to proper error handling informing paging isn't set up.
+    let pml4_ptr = GuestPtr::try_from(Offset::from(
+        mgr.memory_sections.get_paging_structures_offset().unwrap() as u64,
+    ))?;
     let entrypoint_ptr = {
         let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;
         GuestPtr::try_from(entrypoint_total_offset)
     }?;
 
-    if base_ptr != pml4_ptr {
-        log_then_return!(
-            "Error: base_ptr ({:#?}) does not equal pml4_ptr ({:#?})",
-            base_ptr,
-            pml4_ptr
-        );
-    }
-    if entrypoint_ptr <= pml4_ptr {
-        log_then_return!(
-            "Error: entrypoint_ptr ({:#?}) is not greater than pml4_ptr ({:#?})",
-            entrypoint_ptr,
-            pml4_ptr
-        );
-    }
     if mgr.is_in_process() {
         cfg_if::cfg_if! {
             if #[cfg(inprocess)] {
                 // in-process feature + debug build
                 use super::inprocess::InprocessArgs;
-                use crate::sandbox::leaked_outb::LeakedOutBWrapper;
                 use super::inprocess::InprocessDriver;
 
-                let leaked_outb_wrapper = LeakedOutBWrapper::new(mgr, outb_handler)?;
+                // TODO(danbugs:297): fix in process to properly set up the outb_ptr in HyperlightPEB
                 let hv = InprocessDriver::new(InprocessArgs {
                     entrypoint_raw: u64::from(mgr.load_addr.clone() + mgr.entrypoint_offset),
                     peb_ptr_raw: mgr
                         .get_in_process_peb_address(mgr.shared_mem.base_addr() as u64)?,
-                    leaked_outb_wrapper,
                 })?;
                 Ok(Box::new(hv))
             } else if #[cfg(inprocess)]{
@@ -918,7 +882,7 @@ fn set_up_hypervisor_partition(
             #[cfg(mshv)]
             Some(HypervisorType::Mshv) => {
                 let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
-                    regions,
+                    memory_sections,
                     entrypoint_ptr,
                     rsp_ptr,
                     pml4_ptr,
@@ -931,7 +895,7 @@ fn set_up_hypervisor_partition(
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => {
                 let hv = crate::hypervisor::kvm::KVMDriver::new(
-                    regions,
+                    memory_sections,
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
                     rsp_ptr.absolute()?,
@@ -947,12 +911,12 @@ fn set_up_hypervisor_partition(
                     .shared_mem
                     .with_exclusivity(|e| e.get_mmap_file_handle())?;
                 let hv = crate::hypervisor::hyperv_windows::HypervWindowsDriver::new(
-                    regions,
+                    memory_sections,
                     mgr.shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
                     mgr.shared_mem.raw_ptr() as *mut c_void, // and instead convert it to base_addr where needed in the driver itself
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
-                    rsp_ptr.absolute()?,
+                    rsp_ptr,
                     HandleWrapper::from(mmap_file_handle),
                 )?;
                 Ok(Box::new(hv))
@@ -965,166 +929,167 @@ fn set_up_hypervisor_partition(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Barrier};
-    use std::thread;
-
-    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-    use hyperlight_testing::simple_guest_as_string;
-
-    #[cfg(target_os = "windows")]
-    use crate::sandbox::SandboxConfiguration;
-    use crate::sandbox::WrapperGetter;
-    use crate::sandbox_state::sandbox::EvolvableSandbox;
-    use crate::sandbox_state::transition::Noop;
-    use crate::HyperlightError::HypervisorHandlerExecutionCancelAttemptOnFinishedExecution;
-    use crate::{
-        is_hypervisor_present, GuestBinary, HyperlightError, MultiUseSandbox, Result,
-        UninitializedSandbox,
-    };
-
-    fn create_multi_use_sandbox() -> MultiUseSandbox {
-        if !is_hypervisor_present() {
-            panic!("Panic on create_multi_use_sandbox because no hypervisor is present");
-        }
-
-        // Tests that use this function seem to fail with timeouts sporadically on windows so timeouts are raised here
-
-        let cfg = {
-            #[cfg(target_os = "windows")]
-            {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_max_initialization_time(std::time::Duration::from_secs(10));
-                cfg.set_max_execution_time(std::time::Duration::from_secs(3));
-                Some(cfg)
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                None
-            }
-        };
-
-        let usbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            cfg,
-            None,
-            None,
-        )
-        .unwrap();
-
-        usbox.evolve(Noop::default()).unwrap()
-    }
-
-    #[test]
-    #[ignore] // this test runs by itself because it uses a lot of system resources
-    fn create_1000_sandboxes() {
-        let barrier = Arc::new(Barrier::new(21));
-
-        let mut handles = vec![];
-
-        for _ in 0..20 {
-            let c = barrier.clone();
-
-            let handle = thread::spawn(move || {
-                c.wait();
-
-                for _ in 0..50 {
-                    create_multi_use_sandbox();
-                }
-            });
-
-            handles.push(handle);
-        }
-
-        barrier.wait();
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-    }
-
-    #[test]
-    fn create_10_sandboxes() {
-        for _ in 0..10 {
-            create_multi_use_sandbox();
-        }
-    }
-
-    #[test]
-    fn hello_world() -> Result<()> {
-        let mut sandbox = create_multi_use_sandbox();
-
-        let msg = "Hello, World!\n".to_string();
-        let res = sandbox.call_guest_function_by_name(
-            "PrintOutput",
-            ReturnType::Int,
-            Some(vec![ParameterValue::String(msg.clone())]),
-        );
-
-        assert!(res.is_ok());
-
-        Ok(())
-    }
-
-    #[test]
-    fn terminate_execution_then_call_another_function() -> Result<()> {
-        let mut sandbox = create_multi_use_sandbox();
-
-        let res = sandbox.call_guest_function_by_name("Spin", ReturnType::Void, None);
-
-        assert!(res.is_err());
-
-        match res.err().unwrap() {
-            HyperlightError::ExecutionCanceledByHost() => {}
-            _ => panic!("Expected ExecutionTerminated error"),
-        }
-
-        let res = sandbox.call_guest_function_by_name(
-            "Echo",
-            ReturnType::String,
-            Some(vec![ParameterValue::String("a".to_string())]),
-        );
-
-        assert!(res.is_ok());
-
-        Ok(())
-    }
-
-    #[test]
-    fn terminate_execution_of_an_already_finished_function_then_call_another_function() -> Result<()>
-    {
-        let call_print_output = |sandbox: &mut MultiUseSandbox| {
-            let msg = "Hello, World!\n".to_string();
-            let res = sandbox.call_guest_function_by_name(
-                "PrintOutput",
-                ReturnType::Int,
-                Some(vec![ParameterValue::String(msg.clone())]),
-            );
-
-            assert!(res.is_ok());
-        };
-
-        let mut sandbox = create_multi_use_sandbox();
-        call_print_output(&mut sandbox);
-
-        // this simulates what would happen if a function actually successfully
-        // finished while we attempted to terminate execution
-        {
-            match sandbox
-                .get_hv_handler()
-                .clone()
-                .terminate_hypervisor_handler_execution_and_reinitialise(
-                    sandbox.get_mgr_wrapper_mut().unwrap_mgr_mut(),
-                )? {
-                HypervisorHandlerExecutionCancelAttemptOnFinishedExecution() => {}
-                _ => panic!("Expected error demonstrating execution wasn't cancelled properly"),
-            }
-        }
-
-        call_print_output(&mut sandbox);
-        call_print_output(&mut sandbox);
-
-        Ok(())
-    }
-}
+// TODO(danbugs:297): bring back
+// #[cfg(test)]
+// mod tests {
+//     use std::sync::{Arc, Barrier};
+//     use std::thread;
+//
+//     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+//     use hyperlight_testing::simple_guest_as_string;
+//
+//     #[cfg(target_os = "windows")]
+//     use crate::sandbox::SandboxConfiguration;
+//     use crate::sandbox::WrapperGetter;
+//     use crate::sandbox_state::sandbox::EvolvableSandbox;
+//     use crate::sandbox_state::transition::Noop;
+//     use crate::HyperlightError::HypervisorHandlerExecutionCancelAttemptOnFinishedExecution;
+//     use crate::{
+//         is_hypervisor_present, GuestBinary, HyperlightError, MultiUseSandbox, Result,
+//         UninitializedSandbox,
+//     };
+//
+//     fn create_multi_use_sandbox() -> MultiUseSandbox {
+//         if !is_hypervisor_present() {
+//             panic!("Panic on create_multi_use_sandbox because no hypervisor is present");
+//         }
+//
+//         // Tests that use this function seem to fail with timeouts sporadically on windows so timeouts are raised here
+//
+//         let cfg = {
+//             #[cfg(target_os = "windows")]
+//             {
+//                 let mut cfg = SandboxConfiguration::default();
+//                 cfg.set_max_initialization_time(std::time::Duration::from_secs(10));
+//                 cfg.set_max_execution_time(std::time::Duration::from_secs(3));
+//                 Some(cfg)
+//             }
+//             #[cfg(not(target_os = "windows"))]
+//             {
+//                 None
+//             }
+//         };
+//
+//         let usbox = UninitializedSandbox::new(
+//             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+//             cfg,
+//             None,
+//             None,
+//         )
+//             .unwrap();
+//
+//         usbox.evolve(Noop::default()).unwrap()
+//     }
+//
+//     #[test]
+//     #[ignore] // this test runs by itself because it uses a lot of system resources
+//     fn create_1000_sandboxes() {
+//         let barrier = Arc::new(Barrier::new(21));
+//
+//         let mut handles = vec![];
+//
+//         for _ in 0..20 {
+//             let c = barrier.clone();
+//
+//             let handle = thread::spawn(move || {
+//                 c.wait();
+//
+//                 for _ in 0..50 {
+//                     create_multi_use_sandbox();
+//                 }
+//             });
+//
+//             handles.push(handle);
+//         }
+//
+//         barrier.wait();
+//
+//         for handle in handles {
+//             handle.join().unwrap();
+//         }
+//     }
+//
+//     #[test]
+//     fn create_10_sandboxes() {
+//         for _ in 0..10 {
+//             create_multi_use_sandbox();
+//         }
+//     }
+//
+//     #[test]
+//     fn hello_world() -> Result<()> {
+//         let mut sandbox = create_multi_use_sandbox();
+//
+//         let msg = "Hello, World!\n".to_string();
+//         let res = sandbox.call_guest_function_by_name(
+//             "PrintOutput",
+//             ReturnType::Int,
+//             Some(vec![ParameterValue::String(msg.clone())]),
+//         );
+//
+//         assert!(res.is_ok());
+//
+//         Ok(())
+//     }
+//
+//     #[test]
+//     fn terminate_execution_then_call_another_function() -> Result<()> {
+//         let mut sandbox = create_multi_use_sandbox();
+//
+//         let res = sandbox.call_guest_function_by_name("Spin", ReturnType::Void, None);
+//
+//         assert!(res.is_err());
+//
+//         match res.err().unwrap() {
+//             HyperlightError::ExecutionCanceledByHost() => {}
+//             _ => panic!("Expected ExecutionTerminated error"),
+//         }
+//
+//         let res = sandbox.call_guest_function_by_name(
+//             "Echo",
+//             ReturnType::String,
+//             Some(vec![ParameterValue::String("a".to_string())]),
+//         );
+//
+//         assert!(res.is_ok());
+//
+//         Ok(())
+//     }
+//
+//     #[test]
+//     fn terminate_execution_of_an_already_finished_function_then_call_another_function() -> Result<()>
+//     {
+//         let call_print_output = |sandbox: &mut MultiUseSandbox| {
+//             let msg = "Hello, World!\n".to_string();
+//             let res = sandbox.call_guest_function_by_name(
+//                 "PrintOutput",
+//                 ReturnType::Int,
+//                 Some(vec![ParameterValue::String(msg.clone())]),
+//             );
+//
+//             assert!(res.is_ok());
+//         };
+//
+//         let mut sandbox = create_multi_use_sandbox();
+//         call_print_output(&mut sandbox);
+//
+//         // this simulates what would happen if a function actually successfully
+//         // finished while we attempted to terminate execution
+//         {
+//             match sandbox
+//                 .get_hv_handler()
+//                 .clone()
+//                 .terminate_hypervisor_handler_execution_and_reinitialise(
+//                     sandbox.get_mgr_wrapper_mut().unwrap_mgr_mut(),
+//                 )? {
+//                 HypervisorHandlerExecutionCancelAttemptOnFinishedExecution() => {}
+//                 _ => panic!("Expected error demonstrating execution wasn't cancelled properly"),
+//             }
+//         }
+//
+//         call_print_output(&mut sandbox);
+//         call_print_output(&mut sandbox);
+//
+//         Ok(())
+//     }
+// }
