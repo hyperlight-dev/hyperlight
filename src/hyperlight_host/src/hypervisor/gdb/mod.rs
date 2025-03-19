@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 mod event_loop;
-pub mod x86_64_target;
+mod x86_64_target;
 
 use std::io::{self, ErrorKind};
 use std::net::TcpListener;
@@ -30,7 +30,7 @@ use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
 #[derive(Debug, Error)]
-pub enum GdbTargetError {
+pub(crate) enum GdbTargetError {
     #[error("Error encountered while binding to address and port")]
     CannotBind,
     #[error("Error encountered while listening for connections")]
@@ -68,25 +68,25 @@ impl From<GdbTargetError> for TargetError<GdbTargetError> {
 
 /// Struct that contains the x86_64 core registers
 #[derive(Debug, Default)]
-pub struct X86_64Regs {
-    pub rax: u64,
-    pub rbx: u64,
-    pub rcx: u64,
-    pub rdx: u64,
-    pub rsi: u64,
-    pub rdi: u64,
-    pub rbp: u64,
-    pub rsp: u64,
-    pub r8: u64,
-    pub r9: u64,
-    pub r10: u64,
-    pub r11: u64,
-    pub r12: u64,
-    pub r13: u64,
-    pub r14: u64,
-    pub r15: u64,
-    pub rip: u64,
-    pub rflags: u64,
+pub(crate) struct X86_64Regs {
+    pub(crate) rax: u64,
+    pub(crate) rbx: u64,
+    pub(crate) rcx: u64,
+    pub(crate) rdx: u64,
+    pub(crate) rsi: u64,
+    pub(crate) rdi: u64,
+    pub(crate) rbp: u64,
+    pub(crate) rsp: u64,
+    pub(crate) r8: u64,
+    pub(crate) r9: u64,
+    pub(crate) r10: u64,
+    pub(crate) r11: u64,
+    pub(crate) r12: u64,
+    pub(crate) r13: u64,
+    pub(crate) r14: u64,
+    pub(crate) r15: u64,
+    pub(crate) rip: u64,
+    pub(crate) rflags: u64,
 }
 
 /// Defines the possible reasons for which a vCPU can be stopped when debugging
@@ -101,7 +101,7 @@ pub enum VcpuStopReason {
 
 /// Enumerates the possible actions that a debugger can ask from a Hypervisor
 #[derive(Debug)]
-pub enum DebugMsg {
+pub(crate) enum DebugMsg {
     AddHwBreakpoint(u64),
     AddSwBreakpoint(u64),
     Continue,
@@ -118,7 +118,7 @@ pub enum DebugMsg {
 
 /// Enumerates the possible responses that a hypervisor can provide to a debugger
 #[derive(Debug)]
-pub enum DebugResponse {
+pub(crate) enum DebugResponse {
     AddHwBreakpoint(bool),
     AddSwBreakpoint(bool),
     Continue,
@@ -137,7 +137,7 @@ pub enum DebugResponse {
 
 /// Debug communication channel that is used for sending a request type and
 /// receive a different response type
-pub struct DebugCommChannel<T, U> {
+pub(crate) struct DebugCommChannel<T, U> {
     /// Transmit channel
     tx: Sender<T>,
     /// Receive channel
@@ -145,7 +145,7 @@ pub struct DebugCommChannel<T, U> {
 }
 
 impl<T, U> DebugCommChannel<T, U> {
-    pub fn unbounded() -> (DebugCommChannel<T, U>, DebugCommChannel<U, T>) {
+    pub(crate) fn unbounded() -> (DebugCommChannel<T, U>, DebugCommChannel<U, T>) {
         let (hyp_tx, gdb_rx): (Sender<U>, Receiver<U>) = crossbeam_channel::unbounded();
         let (gdb_tx, hyp_rx): (Sender<T>, Receiver<T>) = crossbeam_channel::unbounded();
 
@@ -163,23 +163,23 @@ impl<T, U> DebugCommChannel<T, U> {
     }
 
     /// Sends message over the transmit channel and expects a response
-    pub fn send(&self, msg: T) -> Result<(), GdbTargetError> {
+    pub(crate) fn send(&self, msg: T) -> Result<(), GdbTargetError> {
         self.tx.send(msg).map_err(|_| GdbTargetError::CannotSendMsg)
     }
 
     /// Waits for a message over the receive channel
-    pub fn recv(&self) -> Result<U, GdbTargetError> {
+    pub(crate) fn recv(&self) -> Result<U, GdbTargetError> {
         self.rx.recv().map_err(|_| GdbTargetError::CannotReceiveMsg)
     }
 
     /// Checks whether there's a message waiting on the receive channel
-    pub fn try_recv(&self) -> Result<U, TryRecvError> {
+    pub(crate) fn try_recv(&self) -> Result<U, TryRecvError> {
         self.rx.try_recv()
     }
 }
 
 /// Creates a thread that handles gdb protocol
-pub fn create_gdb_thread(
+pub(crate) fn create_gdb_thread(
     port: u16,
     thread_id: u64,
 ) -> Result<DebugCommChannel<DebugResponse, DebugMsg>, GdbTargetError> {

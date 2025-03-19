@@ -32,7 +32,7 @@ use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError, X86_64Regs};
 
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
-pub struct HyperlightSandboxTarget {
+pub(crate) struct HyperlightSandboxTarget {
     /// Hypervisor communication channels
     hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>,
     /// Thread ID
@@ -40,7 +40,7 @@ pub struct HyperlightSandboxTarget {
 }
 
 impl HyperlightSandboxTarget {
-    pub fn new(hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>, thread_id: u64) -> Self {
+    pub(crate) fn new(hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>, thread_id: u64) -> Self {
         HyperlightSandboxTarget {
             hyp_conn,
             thread_id,
@@ -61,23 +61,23 @@ impl HyperlightSandboxTarget {
     }
 
     /// Returns the thread ID
-    pub fn get_thread_id(&self) -> u64 {
+    pub(crate) fn get_thread_id(&self) -> u64 {
         self.thread_id
     }
 
     /// Waits for a response over the communication channel
-    pub fn recv(&self) -> Result<DebugResponse, GdbTargetError> {
+    pub(crate) fn recv(&self) -> Result<DebugResponse, GdbTargetError> {
         self.hyp_conn.recv()
     }
 
     /// Non-Blocking check for a response over the communication channel
-    pub fn try_recv(&self) -> Result<DebugResponse, TryRecvError> {
+    pub(crate) fn try_recv(&self) -> Result<DebugResponse, TryRecvError> {
         self.hyp_conn.try_recv()
     }
 
     /// Sends an event to the Hypervisor that tells it to resume vCPU execution
     /// Note: The method waits for a confirmation message
-    pub fn resume_vcpu(&mut self) -> Result<(), GdbTargetError> {
+    pub(crate) fn resume_vcpu(&mut self) -> Result<(), GdbTargetError> {
         log::info!("Resume vCPU execution");
 
         match self.send_command(DebugMsg::Continue)? {
@@ -92,7 +92,7 @@ impl HyperlightSandboxTarget {
     /// Sends an event to the Hypervisor that tells it to disable debugging
     /// and continue executing
     /// Note: The method waits for a confirmation message
-    pub fn disable_debug(&mut self) -> Result<(), GdbTargetError> {
+    pub(crate) fn disable_debug(&mut self) -> Result<(), GdbTargetError> {
         log::info!("Disable debugging and resume execution");
 
         match self.send_command(DebugMsg::DisableDebug)? {

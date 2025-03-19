@@ -82,17 +82,17 @@ mod debug {
     use crate::{new_error, HyperlightError, Result};
 
     /// Software Breakpoint size in memory
-    pub const SW_BP_SIZE: usize = 1;
+    pub(crate) const SW_BP_SIZE: usize = 1;
     /// Software Breakpoint opcode
     const SW_BP_OP: u8 = 0xCC;
     /// Software Breakpoint written to memory
-    pub const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
+    pub(crate) const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
 
     /// KVM Debug struct
     /// This struct is used to abstract the internal details of the kvm
     /// guest debugging settings
     #[derive(Default)]
-    pub struct KvmDebug {
+    pub(crate) struct KvmDebug {
         /// vCPU stepping state
         single_step: bool,
 
@@ -108,7 +108,7 @@ mod debug {
     impl KvmDebug {
         const MAX_NO_OF_HW_BP: usize = 4;
 
-        pub fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let dbg = kvm_guest_debug {
                 control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP,
                 ..Default::default()
@@ -436,7 +436,7 @@ mod debug {
         /// Gdb expects the target to be stopped when connected.
         /// This method provides a way to set a breakpoint at the entry point
         /// it does not keep this breakpoint set after the vCPU already stopped at the address
-        pub fn set_entrypoint_bp(&self) -> Result<()> {
+        pub(crate) fn set_entrypoint_bp(&self) -> Result<()> {
             if self.debug.is_some() {
                 log::debug!("Setting entrypoint bp {:X}", self.entrypoint);
                 let mut entrypoint_debug = KvmDebug::new();
@@ -449,7 +449,7 @@ mod debug {
         }
 
         /// Get the reason the vCPU has stopped
-        pub fn get_stop_reason(&self) -> Result<VcpuStopReason> {
+        pub(crate) fn get_stop_reason(&self) -> Result<VcpuStopReason> {
             let debug = self
                 .debug
                 .as_ref()
@@ -476,7 +476,7 @@ mod debug {
             Ok(VcpuStopReason::Unknown)
         }
 
-        pub fn process_dbg_request(
+        pub(crate) fn process_dbg_request(
             &mut self,
             req: DebugMsg,
             dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
@@ -539,7 +539,7 @@ mod debug {
             }
         }
 
-        pub fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
+        pub(crate) fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
             let gdb_conn = self
                 .gdb_conn
                 .as_mut()
@@ -553,7 +553,7 @@ mod debug {
             })
         }
 
-        pub fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
+        pub(crate) fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
             log::debug!("Sending {:?}", cmd);
 
             let gdb_conn = self

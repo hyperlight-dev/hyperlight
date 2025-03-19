@@ -23,7 +23,7 @@ use libc::{pthread_kill, SIGRTMIN};
 use super::x86_64_target::HyperlightSandboxTarget;
 use super::{DebugResponse, GdbTargetError, VcpuStopReason};
 
-pub struct GdbBlockingEventLoop;
+struct GdbBlockingEventLoop;
 
 impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
     type Connection = Box<dyn ConnectionExt<Error = std::io::Error>>;
@@ -115,7 +115,7 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
     }
 }
 
-pub fn event_loop_thread(
+pub(crate) fn event_loop_thread(
     debugger: GdbStub<HyperlightSandboxTarget, Box<dyn ConnectionExt<Error = std::io::Error>>>,
     target: &mut HyperlightSandboxTarget,
 ) {
