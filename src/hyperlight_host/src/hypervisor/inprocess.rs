@@ -33,9 +33,10 @@ pub struct InprocessArgs<'a> {
     pub entrypoint_raw: u64,
     /// raw ptr to peb structure. Since we are in-process mode, this is a ptr in the host's address space
     pub peb_ptr_raw: u64,
-    // compiler can't tell that we are actually using this in a deeply unsafe way.
-    #[allow(dead_code)]
-    pub(crate) leaked_outb_wrapper: LeakedOutBWrapper<'a>,
+    // TODO(danbugs:297): bring back
+    // // compiler can't tell that we are actually using this in a deeply unsafe way.
+    // #[allow(dead_code)]
+    // pub(crate) leaked_outb_wrapper: LeakedOutBWrapper<'a>,
 }
 
 /// Arguments passed to inprocess driver
@@ -73,7 +74,6 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
         &mut self,
         _peb_addr: crate::mem::ptr::RawPtr,
         seed: u64,
-        page_size: u32,
         _outb_handle_fn: super::handlers::OutBHandlerWrapper,
         _mem_access_fn: super::handlers::MemAccessHandlerWrapper,
         _hv_handler: Option<super::hypervisor_handler::HypervisorHandler>,
@@ -83,10 +83,11 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
         let entrypoint_fn: extern "win64" fn(u64, u64, u64, u64) =
             unsafe { std::mem::transmute(self.args.entrypoint_raw as *const c_void) };
 
+        // TODO(danbugs:297): fix
         entrypoint_fn(
             self.args.peb_ptr_raw,
             seed,
-            page_size as u64,
+            0x0 as u64,
             log::max_level() as u64,
         );
 

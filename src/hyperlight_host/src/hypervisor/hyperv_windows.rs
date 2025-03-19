@@ -19,7 +19,7 @@ use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
 
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use hyperlight_common::mem::PAGE_SIZE;
 use log::LevelFilter;
 use tracing::{instrument, Span};
 use windows::Win32::System::Hypervisor::{
@@ -93,7 +93,7 @@ impl HypervWindowsDriver {
 
         // subtract 2 pages for the guard pages, since when we copy memory to and from surrogate process,
         // we don't want to copy the guard pages themselves (that would cause access violation)
-        let mem_size = raw_size - 2 * PAGE_SIZE_USIZE;
+        let mem_size = raw_size - 2 * PAGE_SIZE;
         Ok(Self {
             size: mem_size,
             processor: proc,
