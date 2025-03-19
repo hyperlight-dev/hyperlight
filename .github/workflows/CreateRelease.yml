@@ -78,7 +78,7 @@ jobs:
   publish:
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
     if: ${{ contains(github.ref, 'refs/heads/release/') }} ||  ${{ github.ref=='refs/heads/main' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
     needs:
       [
         build-rust-ubuntu,
