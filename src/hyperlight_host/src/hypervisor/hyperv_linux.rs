@@ -38,8 +38,8 @@ use mshv_bindings::{
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
-    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
-    FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters,
+    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, FloatingPointUnit, SegmentRegister,
+    SpecialRegisters, StandardRegisters,
 };
 #[cfg(mshv3)]
 use mshv_bindings::{
@@ -61,7 +61,7 @@ use super::{
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::sandbox::sandbox_builder::SandboxMemorySections;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 #[cfg(gdb)]
 use crate::HyperlightError;
@@ -284,10 +284,12 @@ pub(crate) fn is_hypervisor_present() -> bool {
 /// called the Microsoft Hypervisor (MSHV)
 pub(super) struct HypervLinuxDriver {
     _mshv: Mshv,
+    // TODO(danbugs:297): remove
+    #[allow(dead_code)]
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
     entrypoint: u64,
-    mem_regions: Vec<MemoryRegion>,
+    mem_sections: SandboxMemorySections,
     orig_rsp: GuestPtr,
 
     #[cfg(gdb)]
@@ -307,7 +309,7 @@ impl HypervLinuxDriver {
     /// `initialise` to do it for you.
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn new(
-        mem_regions: Vec<MemoryRegion>,
+        mem_sections: SandboxMemorySections,
         entrypoint_ptr: GuestPtr,
         rsp_ptr: GuestPtr,
         pml4_ptr: GuestPtr,
@@ -372,10 +374,11 @@ impl HypervLinuxDriver {
             (None, None)
         };
 
-        mem_regions.iter().try_for_each(|region| {
-            let mshv_region = region.to_owned().into();
-            vm_fd.map_user_memory(mshv_region)
-        })?;
+        // TODO(danbugs:297): bring back
+        // mem_sections.iter().try_for_each(|region| {
+        //     let mshv_region = region.to_owned().into();
+        //     vm_fd.map_user_memory(mshv_region)
+        // })?;
 
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr.absolute()?)?;
 
@@ -383,7 +386,7 @@ impl HypervLinuxDriver {
             _mshv: mshv,
             vm_fd,
             vcpu_fd,
-            mem_regions,
+            mem_sections,
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
 
@@ -428,7 +431,7 @@ impl Debug for HypervLinuxDriver {
         f.field("Entrypoint", &self.entrypoint)
             .field("Original RSP", &self.orig_rsp);
 
-        for region in &self.mem_regions {
+        for region in self.mem_sections.iter() {
             f.field("Memory Region", &region);
         }
 
@@ -452,9 +455,9 @@ impl Hypervisor for HypervLinuxDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
         &mut self,
-        peb_addr: RawPtr,
+        hyperlight_peb_guest_memory_region_address: u64,
+        hyperlight_peb_guest_memory_region_size: u64,
         seed: u64,
-        page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
@@ -472,9 +475,9 @@ impl Hypervisor for HypervLinuxDriver {
             rflags: 2, //bit 1 of rlags is required to be set
 
             // function args
-            rcx: peb_addr.into(),
-            rdx: seed,
-            r8: page_size.into(),
+            rcx: hyperlight_peb_guest_memory_region_address.into(),
+            rdx: hyperlight_peb_guest_memory_region_size.into(),
+            r8: seed.into(),
             r9: max_guest_log_level,
 
             ..Default::default()
@@ -610,20 +613,24 @@ impl Hypervisor for HypervLinuxDriver {
                 INVALID_GPA_ACCESS_MESSAGE => {
                     let mimo_message = m.to_memory_info()?;
                     let gpa = mimo_message.guest_physical_address;
-                    let access_info = MemoryRegionFlags::try_from(mimo_message)?;
+                    // TODO(danbugs:297): bring back
+                    // let access_info = MemoryRegionFlags::try_from(mimo_message)?;
                     crate::debug!(
                         "mshv MMIO invalid GPA access -Details: Address: {} \n {:#?}",
                         gpa,
                         &self
                     );
-                    match self.get_memory_access_violation(
-                        gpa as usize,
-                        &self.mem_regions,
-                        access_info,
-                    ) {
-                        Some(access_info_violation) => access_info_violation,
-                        None => HyperlightExit::Mmio(gpa),
-                    }
+                    // TODO(danbugs:297): bring back
+                    // match self.get_memory_access_violation(
+                    //     gpa as usize,
+                    //     &self.mem_regions,
+                    //     access_info,
+                    // ) {
+                    //     Some(access_info_violation) => access_info_violation,
+                    //     None => HyperlightExit::Mmio(gpa),
+                    // }
+
+                    HyperlightExit::Mmio(gpa)
                 }
                 // The only case an intercept exit is expected is when debugging is enabled
                 // and the intercepts are installed
@@ -657,10 +664,11 @@ impl Hypervisor for HypervLinuxDriver {
         self as &mut dyn Hypervisor
     }
 
-    #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
-    }
+    // TODO(danbugs:297): bring back
+    // #[cfg(crashdump)]
+    // fn get_memory_regions(&self) -> &[MemoryRegion] {
+    //     &self.mem_sections
+    // }
 
     #[cfg(gdb)]
     fn handle_debug(
@@ -708,71 +716,73 @@ impl Hypervisor for HypervLinuxDriver {
     }
 }
 
-impl Drop for HypervLinuxDriver {
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn drop(&mut self) {
-        for region in &self.mem_regions {
-            let mshv_region: mshv_user_mem_region = region.to_owned().into();
-            match self.vm_fd.unmap_user_memory(mshv_region) {
-                Ok(_) => (),
-                Err(e) => error!("Failed to unmap user memory in HyperVOnLinux ({:?})", e),
-            }
-        }
-    }
-}
+// TODO(danbugs:297): bring back
+// impl Drop for HypervLinuxDriver {
+//     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
+//     fn drop(&mut self) {
+//         for region in self.mem_sections.iter() {
+//             let mshv_region: mshv_user_mem_region = region.to_owned().into();
+//             match self.vm_fd.unmap_user_memory(mshv_region) {
+//                 Ok(_) => (),
+//                 Err(e) => error!("Failed to unmap user memory in HyperVOnLinux ({:?})", e),
+//             }
+//         }
+//     }
+// }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::mem::memory_region::MemoryRegionVecBuilder;
-    use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
-
-    #[rustfmt::skip]
-    const CODE: [u8; 12] = [
-        0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */
-        0x00, 0xd8, /* add %bl, %al */
-        0x04, b'0', /* add $'0', %al */
-        0xee, /* out %al, (%dx) */
-        /* send a 0 to indicate we're done */
-        0xb0, b'\0', /* mov $'\0', %al */
-        0xee, /* out %al, (%dx) */
-        0xf4, /* HLT */
-    ];
-
-    fn shared_mem_with_code(
-        code: &[u8],
-        mem_size: usize,
-        load_offset: usize,
-    ) -> Result<Box<ExclusiveSharedMemory>> {
-        if load_offset > mem_size {
-            log_then_return!(
-                "code load offset ({}) > memory size ({})",
-                load_offset,
-                mem_size
-            );
-        }
-        let mut shared_mem = ExclusiveSharedMemory::new(mem_size)?;
-        shared_mem.copy_from_slice(code, load_offset)?;
-        Ok(Box::new(shared_mem))
-    }
-
-    #[test]
-    fn create_driver() {
-        if !super::is_hypervisor_present() {
-            return;
-        }
-        const MEM_SIZE: usize = 0x3000;
-        let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
-        let rsp_ptr = GuestPtr::try_from(0).unwrap();
-        let pml4_ptr = GuestPtr::try_from(0).unwrap();
-        let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
-        let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
-        regions.push_page_aligned(
-            MEM_SIZE,
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
-            crate::mem::memory_region::MemoryRegionType::Code,
-        );
-        super::HypervLinuxDriver::new(
+// TODO(danbugs:297): bring back
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::mem::memory_region::MemoryRegionVecBuilder;
+//     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+//
+//     #[rustfmt::skip]
+//     const CODE: [u8; 12] = [
+//         0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */
+//         0x00, 0xd8, /* add %bl, %al */
+//         0x04, b'0', /* add $'0', %al */
+//         0xee, /* out %al, (%dx) */
+//         /* send a 0 to indicate we're done */
+//         0xb0, b'\0', /* mov $'\0', %al */
+//         0xee, /* out %al, (%dx) */
+//         0xf4, /* HLT */
+//     ];
+//
+//     fn shared_mem_with_code(
+//         code: &[u8],
+//         mem_size: usize,
+//         load_offset: usize,
+//     ) -> Result<Box<ExclusiveSharedMemory>> {
+//         if load_offset > mem_size {
+//             log_then_return!(
+//                 "code load offset ({}) > memory size ({})",
+//                 load_offset,
+//                 mem_size
+//             );
+//         }
+//         let mut shared_mem = ExclusiveSharedMemory::new(mem_size)?;
+//         shared_mem.copy_from_slice(code, load_offset)?;
+//         Ok(Box::new(shared_mem))
+//     }
+//
+//     #[test]
+//     fn create_driver() {
+//         if !super::is_hypervisor_present() {
+//             return;
+//         }
+//         const MEM_SIZE: usize = 0x3000;
+//         let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
+//         let rsp_ptr = GuestPtr::try_from(0).unwrap();
+//         let pml4_ptr = GuestPtr::try_from(0).unwrap();
+//         let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
+//         let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
+//         regions.push_page_aligned(
+//             MEM_SIZE,
+//             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
+//             crate::mem::memory_region::MemoryRegionType::Code,
+//         );
+//         super::HypervLinuxDriver::new(
             regions.build(),
             entrypoint_ptr,
             rsp_ptr,
@@ -781,5 +791,5 @@ mod tests {
             None,
         )
         .unwrap();
-    }
-}
+//     }
+// }
