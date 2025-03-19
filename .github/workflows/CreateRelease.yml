@@ -78,7 +78,7 @@ jobs:
   publish:
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
     if: ${{ contains(github.ref, 'refs/heads/release/') }} ||  ${{ github.ref=='refs/heads/main' }}
-    runs-on: windows-2022
+    runs-on: ubuntu-latest
     needs:
       [
         build-rust-ubuntu,
@@ -90,13 +90,11 @@ jobs:
     steps:
       - name: Set Debug Configuration
         if: ${{ github.ref=='refs/heads/main' }}
-        run: echo "CONFIG=debug" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
-        shell: pwsh
+        run: echo "CONFIG=debug" >> $GITHUB_ENV
 
       - name: Set Release Configuration
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
-        run: echo "CONFIG=release" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
-        shell: pwsh
+        run: echo "CONFIG=release" >> $GITHUB_ENV
 
       - uses: actions/checkout@v4
         with:
@@ -115,21 +113,9 @@ jobs:
         id: set_hyperlight_version
         run: |
           git fetch --tags
-          $version="${{ github.ref }}"
-          $version=$version -replace "refs/heads/release/v", ""
-          echo "HYPERLIGHT_VERSION=$version" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
-          echo "HYPERLIGHT_VERSION=$Env:HYPERLIGHT_VERSION"
-        shell: pwsh
-
-      - name: Ensure path exists for debug build
-        if: ${{ env.CONFIG }} == "debug"
-        run: mkdir -p target\debug
-        shell: pwsh
-
-      - name: Ensure path exists for release build
-        if: ${{ env.CONFIG }} == "release"
-        run: mkdir -p target\release
-        shell: pwsh
+          version=$(echo "${{ github.ref }}" | sed -E 's#refs/heads/release/v##')
+          echo "HYPERLIGHT_VERSION=$version" >> $GITHUB_ENV
+          echo "HYPERLIGHT_VERSION=$version"
 
       - name: Download Guest Binaries
         uses: actions/download-artifact@v4
@@ -154,7 +140,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: benchmarks_*
-          # note: artifacts retain their upload name, so we don't have to specify the path
 
       - name: Archive benchmarks
         run: |
@@ -163,74 +148,55 @@ jobs:
           tar -zcvf benchmarks_Linux_kvm_amd.tar.gz benchmarks_Linux_kvm_amd
           tar -zcvf benchmarks_Windows_hyperv_intel.tar.gz benchmarks_Windows_hyperv_intel
           tar -zcvf benchmarks_Linux_hyperv_intel.tar.gz benchmarks_Linux_hyperv_intel
-          tar -zcvf benchmarks_Linux_kvm_intel.tar.gz benchmarks_Linux_kvm_intel          
-
-      - name: Install github-cli
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          # check if gh cli is installed
-          $installed = [bool](Get-Command -ErrorAction Ignore -Type Application gh)
-          if ($installed) { Write-Host "gh cli already installed"; exit 0 }
-          # download and install gh cli
-          Invoke-WebRequest https://github.com/cli/cli/releases/download/v2.50.0/gh_2.50.0_windows_amd64.msi -OutFile gh.msi
-          msiexec.exe /i gh.msi /quiet /l log.txt | Out-Null
-          Write-Host "msiexec exited with code $LASTEXITCCODE"
-          if ($LASTEXITCODE -ne 0) { cat log.txt; exit 1 }
+          tar -zcvf benchmarks_Linux_kvm_intel.tar.gz benchmarks_Linux_kvm_intel
 
       - name: Extract release notes from changelog
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
-        run: |
-          # Extract the changelog from the changelog file
-          just create-release-notes v${{ env.HYPERLIGHT_VERSION }} > RELEASE_NOTES.md
+        run: just create-release-notes v${{ env.HYPERLIGHT_VERSION }} > RELEASE_NOTES.md
 
       - name: Extract prerelease notes from changelog
         if: ${{ github.ref=='refs/heads/main' }}
-        run: |
-          # Extract the changelog from the changelog file
-          just create-release-notes dev-latest > RELEASE_NOTES.md
+        run: just create-release-notes dev-latest > RELEASE_NOTES.md
 
-      # Publish the native guests so that its possible to use Hyperlight without building it.
       - name: Create release
-        # Only create a release from tag if we are on a release branch
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
         run: |
-            gh release create v${{ env.HYPERLIGHT_VERSION }} -t "Release v${{ env.HYPERLIGHT_VERSION }}" --notes-file RELEASE_NOTES.md `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest.exe `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest.exe `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/dummyguest `
-            benchmarks_Windows_hyperv_amd.tar.gz `
-            benchmarks_Linux_hyperv_amd.tar.gz `
-            benchmarks_Linux_kvm_amd.tar.gz `
-            benchmarks_Windows_hyperv_intel.tar.gz `
-            benchmarks_Linux_hyperv_intel.tar.gz `
-            benchmarks_Linux_kvm_intel.tar.gz `
-            hyperlight-guest-c-api-linux.tar.gz `
-            hyperlight-guest-c-api-windows.tar.gz `
+            gh release create v${{ env.HYPERLIGHT_VERSION }} -t "Release v${{ env.HYPERLIGHT_VERSION }}" --notes-file RELEASE_NOTES.md \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest.exe \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest.exe \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/dummyguest \
+            benchmarks_Windows_hyperv_amd.tar.gz \
+            benchmarks_Linux_hyperv_amd.tar.gz \
+            benchmarks_Linux_kvm_amd.tar.gz \
+            benchmarks_Windows_hyperv_intel.tar.gz \
+            benchmarks_Linux_hyperv_intel.tar.gz \
+            benchmarks_Linux_kvm_intel.tar.gz \
+            hyperlight-guest-c-api-linux.tar.gz \
+            hyperlight-guest-c-api-windows.tar.gz \
             include.tar.gz
         env:
             GH_TOKEN: ${{ github.token }}
+      
       - name: Create prerelease
-        # Only create a prerelease if we are on the main branch
         if: ${{ github.ref=='refs/heads/main' }}
-        run:  |    
-            gh release delete dev-latest -y --cleanup-tag || $true
-            gh release create dev-latest -t "Latest prerelease from main branch" --notes-file RELEASE_NOTES.md --latest=false -p `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest.exe `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest.exe `
-            src/tests/rust_guests/bin/${{ env.CONFIG }}/dummyguest `
-            benchmarks_Windows_hyperv_amd.tar.gz `
-            benchmarks_Linux_hyperv_amd.tar.gz `
-            benchmarks_Linux_kvm_amd.tar.gz `
-            benchmarks_Windows_hyperv_intel.tar.gz `
-            benchmarks_Linux_hyperv_intel.tar.gz `
-            benchmarks_Linux_kvm_intel.tar.gz `
-            hyperlight-guest-c-api-linux.tar.gz `
-            hyperlight-guest-c-api-windows.tar.gz `
+        run: |
+            gh release delete dev-latest -y --cleanup-tag || true
+            gh release create dev-latest -t "Latest prerelease from main branch" --notes-file RELEASE_NOTES.md --latest=false -p \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/callbackguest.exe \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/simpleguest.exe \
+            src/tests/rust_guests/bin/${{ env.CONFIG }}/dummyguest \
+            benchmarks_Windows_hyperv_amd.tar.gz \
+            benchmarks_Linux_hyperv_amd.tar.gz \
+            benchmarks_Linux_kvm_amd.tar.gz \
+            benchmarks_Windows_hyperv_intel.tar.gz \
+            benchmarks_Linux_hyperv_intel.tar.gz \
+            benchmarks_Linux_kvm_intel.tar.gz \
+            hyperlight-guest-c-api-linux.tar.gz \
+            hyperlight-guest-c-api-windows.tar.gz \
             include.tar.gz
         env:
             GH_TOKEN: ${{ github.token }}
-
