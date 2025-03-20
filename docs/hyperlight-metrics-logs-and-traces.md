@@ -2,37 +2,26 @@
 
 Hyperlight provides the following observability features:
 
-* [Metrics](#metrics) are provided using Prometheus.
+* [Metrics](#metrics) are provided using the [metrics](https://docs.rs/metrics/latest/metrics/index.html) crate, which is a lightweight metrics facade.
 * [Logs](#logs) are provided using the Rust [log crate](https://docs.rs/log/0.4.6/log/), and can be consumed by any Rust logger implementation, including LogTracer which can be used to emit log records as tracing events.
 * [Tracing](#tracing) is provided using the Rust [tracing crate](https://docs.rs/tracing/0.1.37/tracing/), and can be consumed by any Rust tracing implementation. In addition, the [log feature](https://docs.rs/tracing/latest/tracing/#crate-feature-flags) is enabled which means that should a hyperlight host application not want to consume tracing events, you can still consume them as logs.
 
 ## Metrics
 
-Hyperlight provides metrics using Prometheus. The metrics are registered using either the [default_registry](https://docs.rs/prometheus/latest/prometheus/fn.default_registry.html) or a registry instance provided by the host application.
+Metrics are provided using the [metrics](https://docs.rs/metrics/latest/metrics/index.html) crate, which is a lightweight metrics facade. When an executable installs a recorder, Hyperlight will emit its metrics to that record, which allows library authors to seamless emit their own metrics without knowing or caring which exporter implementation is chosen, or even if one is installed. In case no recorder is installed, the metrics will be emitted to the default recorder, which is a no-op implementation with minimal overhead.
 
-To provide a registry to Hyperlight, use the `set_metrics_registry` function and pass a reference to a registry with `static` lifetime:
-
-```rust
-use hyperlight_host::metrics::set_metrics_registry;
-use prometheus::Registry;
-use lazy_static::lazy_static;
-
-lazy_static! {
-    static ref REGISTRY: Registry = Registry::new();
-}
-
-set_metrics_registry(&REGISTRY);
-```
+There are many different implementations of recorders. One example is the [prometheus exporter](https://docs.rs/metrics-exporter-prometheus/latest/metrics_exporter_prometheus/) which can be used to export metrics to a Prometheus server. 
+Hyperlight provides metrics using Prometheus.
 
 The following metrics are provided and are enabled by default:
 
-* `hyperlight_guest_error_count` - a vector of counters that tracks the number of guest errors by code and message.
-* `hyperlight_number_of_cancelled_guest_execution` - a counter that tracks the number of guest executions that have been cancelled because the execution time exceeded the time allowed.
+* `NUM_GUEST_ERRORS` - Counter that tracks the number of guest errors by code and message.
+* `NUM_GUEST_CANCELLATIONS` - Counter that tracks the number of guest executions that have been cancelled because the execution time exceeded the time allowed.
 
 The following metrics are provided but are disabled by default and require the feature `function_call_metrics` to be enabled:
 
-* `hyperlight_guest_function_call_duration_microseconds` - a vector of histograms that tracks the execution time of guest functions in microseconds by function name. The histogram also tracks the number of calls to each function.
-* `hyperlight_host_function_calls_duration_microseconds` - a vector of histograms that tracks the execution time of host functions in microseconds by function name. The histogram also tracks the number of calls to each function.
+* `GUEST_CALL_DURATION` - Histogram that tracks the execution time of guest functions in seconds by function name. The histogram also tracks the number of calls to each function.
+* `HOST_CALL_DURATION` - Histogram that tracks the execution time of host functions in seconds by function name. The histogram also tracks the number of calls to each function.
 
 The rationale for disabling the function call metrics by default is that:
 
@@ -40,9 +29,6 @@ The rationale for disabling the function call metrics by default is that:
 * Enabling a trace subscriber will cause the function call metrics to be emitted as trace events, which may be sufficient for some use cases.
 
 There is an example of how to gather metrics in the [examples/metrics](../src/hyperlight_host/examples/metrics) directory.
-
-The metrics capabilities provided by Hyperlight can also be used by a library or host that is using Hyperlight to provide additional metrics, see the [hypervisor metrics module](../src/hyperlight_host/src/hypervisor/metrics.rs) for an example of how to define metrics.
-
 ## Logs
 
 Hyperlight provides logs using the Rust [log crate](https://docs.rs/log/0.4.6/log/), and can be consumed by any Rust logger implementation, including LogTracer which can be used to emit log records as tracing events(see below for more details). To consume logs, the host application must provide a logger implementation either by using the `set_logger` function directly or using a logger implementation that is compatible with the log crate.

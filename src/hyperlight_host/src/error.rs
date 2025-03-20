@@ -237,10 +237,6 @@ pub enum HyperlightError {
     #[error("Failure processing PE File {0:?}")]
     PEFileProcessingFailure(#[from] goblin::error::Error),
 
-    /// a Prometheus error occurred
-    #[error("Prometheus Error {0:?}")]
-    Prometheus(#[from] prometheus::Error),
-
     /// Raw pointer is less than base address
     #[error("Raw pointer ({0:?}) was less than the base address ({1})")]
     RawPointerLessThanBaseAddress(RawPtr, u64),
