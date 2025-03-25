@@ -20,6 +20,8 @@ limitations under the License.
 // We use Arbitrary during fuzzing, which requires std
 #![cfg_attr(not(feature = "fuzzing"), no_std)]
 
+pub const PAGE_SIZE: usize = 0x1_000; // 4KB
+
 extern crate alloc;
 
 pub mod flatbuffer_wrappers;
@@ -34,5 +36,20 @@ pub mod flatbuffer_wrappers;
     non_camel_case_types
 )]
 mod flatbuffers;
-/// cbindgen:ignore
-pub mod mem;
+
+/// The Hyperlight PEB is a structure configurable by host/guest that determines how
+/// the two will communicate. For example, in the PEB, you can set the address for the
+/// input and output data regions—these regions are imperative for the host and guest to
+/// be able to communicate via function calls.
+pub mod hyperlight_peb;
+
+/// Hyperlight operates with a host-guest execution model.
+///
+/// The host is who creates the hypervisor partition, and the guest is whatever runs
+/// inside said hypervisor partition (i.e., in between a `VMENTER` and `VMEXIT`).
+///
+/// The guest and host communicate through a shared memory region. In particular, the
+/// input and output data sections. A guest can pop data from the input section, and
+/// push data to the output section. On the other hand, the host can push data to the
+/// input section and pop data from the output section.
+pub mod input_output;
