@@ -177,7 +177,7 @@ jobs:
             benchmarks_Windows_hyperv_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \
             benchmarks_Linux_kvm_intel.tar.gz \
-            benchmarks_Linux_mshv_intel.tar.gz.tar.gz \
+            benchmarks_Linux_mshv_intel.tar.gz \
             benchmarks_Linux_mshv_amd.tar.gz \
             benchmarks_Linux_mshv3_amd.tar.gz \
             benchmarks_Linux_mshv3_intel.tar.gz \
@@ -201,7 +201,7 @@ jobs:
             benchmarks_Windows_hyperv_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \
             benchmarks_Linux_kvm_intel.tar.gz \
-            benchmarks_Linux_mshv_intel.tar.gz.tar.gz \
+            benchmarks_Linux_mshv_intel.tar.gz \
             benchmarks_Linux_mshv_amd.tar.gz \
             benchmarks_Linux_mshv3_amd.tar.gz \
             benchmarks_Linux_mshv3_intel.tar.gz \

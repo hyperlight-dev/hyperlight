@@ -65,7 +65,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Spell Check Repo
-      uses: crate-ci/typos@v1.30.2
+      uses: crate-ci/typos@v1.30.3
 
   # Gate PR merges on this specific "join-job" which requires all other
   # jobs to run first. We need this job since we cannot gate on particular jobs

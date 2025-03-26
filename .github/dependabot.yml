@@ -4,7 +4,8 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
-    labels: []
+    labels:
+      - "kind/dependencies"
   - package-ecosystem: "cargo"
     directories: ["/", "src/tests/rust_guests/simpleguest","src/tests/rust_guests/callbackguest"]
     schedule:
