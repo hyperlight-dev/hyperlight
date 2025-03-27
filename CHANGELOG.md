@@ -5,6 +5,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 ### Added  
+-
+
+### Changed
+-
+
+### Removed
+-
+
+### Fixed
+-
+
+## [v.0.3.0] - 2025-03-27
+
+### Added
+- Gdb support for mshv guests #327 by @dblnz in [#327](https://github.com/hyperlight-dev/hyperlight/pull/327)
 - Add fuzzing targets for fuzzing guest and host call parameters and return value by @ludfjig in [#259](https://github.com/hyperlight-dev/hyperlight/pull/259)
 
 ### Changed
@@ -50,6 +65,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.2.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.3.0..HEAD>
+[v0.3.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.2.0...v0.3.0>
 [v0.2.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.1.0...v0.2.0>
 [v0.1.0]: <https://github.com/hyperlight-dev/hyperlight/releases/tag/v0.1.0>
