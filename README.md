@@ -278,7 +278,7 @@ For more information, please refer to our compilation of documents in the [`docs
 
 ## Code of Conduct
 
-See the [Code of Conduct](./CODE_OF_CONDUCT.md).
+See the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md).
 
 [wsl2]: https://docs.microsoft.com/en-us/windows/wsl/install
 
