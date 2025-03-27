@@ -26,9 +26,9 @@ repository = "https://github.com/hyperlight-dev/hyperlight"
 readme = "README.md"
 
 [workspace.dependencies]
-hyperlight-common = { path = "src/hyperlight_common", version = "0.2.0", default-features = false }
-hyperlight-host = { path = "src/hyperlight_host", version = "0.2.0", default-features = false }
-hyperlight-guest = { path = "src/hyperlight_guest", version = "0.2.0", default-features = false }
+hyperlight-common = { path = "src/hyperlight_common", version = "0.3.0", default-features = false }
+hyperlight-host = { path = "src/hyperlight_host", version = "0.3.0", default-features = false }
+hyperlight-guest = { path = "src/hyperlight_guest", version = "0.3.0", default-features = false }
 hyperlight-testing = { path = "src/hyperlight_testing", default-features = false }
 
 [workspace.lints.rust]
