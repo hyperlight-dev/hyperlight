@@ -67,12 +67,13 @@ pub(crate) fn call_function_on_guest<WrapperGetterT: WrapperGetter>(
                 timedout = true;
                 match hv_handler.terminate_hypervisor_handler_execution_and_reinitialise(
                     wrapper_getter.get_mgr_wrapper_mut().unwrap_mgr_mut(),
-                )? {
-                    HyperlightError::HypervisorHandlerExecutionCancelAttemptOnFinishedExecution() =>
-                        {}
+                ) {
+                    Ok(
+                        HyperlightError::HypervisorHandlerExecutionCancelAttemptOnFinishedExecution(),
+                    ) => {}
                     // ^^^ do nothing, we just want to actually get the Flatbuffer return value
                     // from shared memory in this case
-                    e => return Err(e),
+                    Ok(e) | Err(e) => return Err(e),
                 }
             }
             e => return Err(e),
