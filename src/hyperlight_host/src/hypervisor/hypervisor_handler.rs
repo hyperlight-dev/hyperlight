@@ -323,7 +323,6 @@ impl HypervisorHandler {
                                     // call.
                                     execution_variables.set_thread_id(unsafe { pthread_self() })?;
                                 }
-                                execution_variables.running.store(true, Ordering::SeqCst);
 
                                 #[cfg(target_os = "linux")]
                                 execution_variables.run_cancelled.store(false);
@@ -391,9 +390,6 @@ impl HypervisorHandler {
                             }
                             HypervisorHandlerAction::DispatchCallFromHost(function_name) => {
                                 let hv = hv.as_mut().ok_or_else(|| new_error!("Hypervisor not initialized"))?;
-
-                                // Lock to indicate an action is being performed in the hypervisor
-                                execution_variables.running.store(true, Ordering::SeqCst);
 
                                 #[cfg(target_os = "linux")]
                                 execution_variables.run_cancelled.store(false);
@@ -599,6 +595,7 @@ impl HypervisorHandler {
             // `TerminateHandlerThread`.
         }
 
+        self.set_running(true);
         self.communication_channels
             .to_handler_tx
             .send(hypervisor_handler_action)
