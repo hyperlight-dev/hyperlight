@@ -38,7 +38,7 @@ once_cell = { version = "1.21.1" }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-core = "0.1.33"
-hyperlight-common = { workspace = true, default-features = true }
+hyperlight-common = { workspace = true, default-features = true, features = [ "std" ] }
 vmm-sys-util = "0.12.1"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.14"

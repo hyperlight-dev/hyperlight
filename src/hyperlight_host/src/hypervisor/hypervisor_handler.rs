@@ -622,13 +622,20 @@ impl HypervisorHandler {
         // from the handler thread, as the thread may be paused by gdb.
         // In this case, we will wait indefinitely for a message from the handler thread.
         // Note: This applies to all the running sandboxes, not just the one being debugged.
-        #[cfg(gdb)]
-        let response = self.communication_channels.from_handler_rx.recv();
         #[cfg(not(gdb))]
-        let response = self
-            .communication_channels
-            .from_handler_rx
-            .recv_timeout(self.execution_variables.get_timeout()?);
+        let timeout = self.execution_variables.get_timeout()?;
+        #[cfg(gdb)]
+        let timeout = Duration::ZERO;
+        let response = if timeout.is_zero() {
+            self.communication_channels
+                .from_handler_rx
+                .recv()
+                .map_err(Into::into)
+        } else {
+            self.communication_channels
+                .from_handler_rx
+                .recv_timeout(timeout)
+        };
 
         match response {
             Ok(msg) => match msg {

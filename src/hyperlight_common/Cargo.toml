@@ -21,10 +21,12 @@ log = "0.4.26"
 tracing = { version = "0.1.41", optional = true }
 strum = {version = "0.27",  default-features = false, features = ["derive"]}
 arbitrary = {version = "1.4.1", optional = true, features = ["derive"]}
+spin = "0.9.8"
 
 [features]
 default = ["tracing"]
 fuzzing = ["dep:arbitrary"]
+std = []
 
 [dev-dependencies]
 hyperlight-testing = { workspace = true }

@@ -16,7 +16,7 @@ limitations under the License.
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::func::call_ctx::MultiUseGuestCallContext;
-use hyperlight_host::sandbox::{MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::sandbox::{Callable, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{new_error, GuestBinary, Result};

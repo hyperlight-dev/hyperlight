@@ -295,13 +295,15 @@ impl SandboxConfiguration {
         self.kernel_stack_size = max(kernel_stack_size, Self::MIN_KERNEL_STACK_SIZE);
     }
 
-    /// Set the maximum execution time of a guest function execution. If set to 0, the max_execution_time
-    /// will be set to the default value of DEFAULT_MAX_EXECUTION_TIME if the guest execution does not complete within the time specified
-    /// then the execution will be cancelled, the minimum value is MIN_MAX_EXECUTION_TIME
+    /// Set the maximum execution time of a guest function
+    /// execution. If set to 0, the maximum execution time will be
+    /// unlimited. If the guest execution does not complete within the
+    /// time specified, then the execution will be cancelled. The
+    /// minimum value is MIN_MAX_EXECUTION_TIME
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_max_execution_time(&mut self, max_execution_time: Duration) {
         match max_execution_time.as_millis() {
-            0 => self.max_execution_time = Self::DEFAULT_MAX_EXECUTION_TIME,
+            0 => self.max_execution_time = 0,
             1.. => {
                 self.max_execution_time = min(
                     Self::MAX_MAX_EXECUTION_TIME.into(),

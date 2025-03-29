@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
+use hyperlight_host::sandbox::Callable;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result};

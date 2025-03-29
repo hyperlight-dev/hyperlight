@@ -36,3 +36,5 @@ pub mod flatbuffer_wrappers;
 mod flatbuffers;
 /// cbindgen:ignore
 pub mod mem;
+
+pub mod resource;

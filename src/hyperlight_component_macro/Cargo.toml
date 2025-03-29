@@ -1,0 +1,25 @@
+[package]
+name = "hyperlight-component-macro"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = """
+Procedural macros to generate Hyperlight host and guest bindings from component types
+"""
+
+[lib]
+name = "hyperlight_component_macro"
+proc-macro = true
+
+[dependencies]
+wasmparser = { version = "0.224.0" }
+quote = { version = "1.0.38" }
+proc-macro2 = { version = "1.0.93" }
+syn = { version = "2.0.96" }
+itertools = { version = "0.14.0" }
+prettyplease = { version = "0.2.31" }
+hyperlight-component-util = { workspace = true }

@@ -18,7 +18,7 @@ limitations under the License.
 use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
-use hyperlight_common::flatbuffer_wrappers::host_function_definition::HostFunctionDefinition;
+pub use hyperlight_common::flatbuffer_wrappers::host_function_definition::HostFunctionDefinition;
 use paste::paste;
 use tracing::{instrument, Span};
 
@@ -26,6 +26,55 @@ use super::{HyperlightFunction, SupportedParameterType, SupportedReturnType};
 use crate::sandbox::{ExtraAllowedSyscall, UninitializedSandbox};
 use crate::HyperlightError::UnexpectedNoOfArguments;
 use crate::{log_then_return, new_error, Result};
+
+/// A sandbox on which (primitive) host functions can be registered
+///
+/// The details of this trait and the structures it uses are unstable
+/// and subject to change, but it must be `pub` because it is used by
+/// hyperlight-wasm and the component macros.
+pub trait Registerable {
+    /// Register a primitive host function
+    fn register_host_function(
+        &mut self,
+        hfd: &HostFunctionDefinition,
+        hf: HyperlightFunction,
+    ) -> Result<()>;
+    /// Register a primitive host function whose worker thread has
+    /// extra permissive seccomp filters installed
+    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    fn register_host_function_with_syscalls(
+        &mut self,
+        hfd: &HostFunctionDefinition,
+        hf: HyperlightFunction,
+        eas: Vec<ExtraAllowedSyscall>,
+    ) -> Result<()>;
+}
+impl Registerable for UninitializedSandbox {
+    fn register_host_function(
+        &mut self,
+        hfd: &HostFunctionDefinition,
+        hf: HyperlightFunction,
+    ) -> Result<()> {
+        let mut hfs = self
+            .host_funcs
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+        (*hfs).register_host_function(self.mgr.as_mut(), hfd, hf)
+    }
+    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    fn register_host_function_with_syscalls(
+        &mut self,
+        hfd: &HostFunctionDefinition,
+        hf: HyperlightFunction,
+        eas: Vec<ExtraAllowedSyscall>,
+    ) -> Result<()> {
+        let mut hfs = self
+            .host_funcs
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+        (*hfs).register_host_function_with_syscalls(self.mgr.as_mut(), hfd, hf, eas)
+    }
+}
 
 macro_rules! host_function {
     // Special case for zero parameters
@@ -36,7 +85,7 @@ macro_rules! host_function {
                 /// Register the host function with the given name in the sandbox.
                 fn register(
                     &self,
-                    sandbox: &mut UninitializedSandbox,
+                    sandbox: &mut dyn Registerable,
                     name: &str,
                 ) -> Result<()>;
 
@@ -44,7 +93,7 @@ macro_rules! host_function {
                 #[cfg(all(feature = "seccomp", target_os = "linux"))]
                 fn register_with_extra_allowed_syscalls(
                     &self,
-                    sandbox: &mut UninitializedSandbox,
+                    sandbox: &mut dyn Registerable,
                     name: &str,
                     extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
                 ) -> Result<()>;
@@ -60,7 +109,7 @@ macro_rules! host_function {
                 )]
                 fn register(
                     &self,
-                    sandbox: &mut UninitializedSandbox,
+                    sandbox: &mut dyn Registerable,
                     name: &str,
                 ) -> Result<()> {
                     register_host_function_0(self.clone(), sandbox, name, None)
@@ -73,7 +122,7 @@ macro_rules! host_function {
                 )]
                 fn register_with_extra_allowed_syscalls(
                     &self,
-                    sandbox: &mut UninitializedSandbox,
+                    sandbox: &mut dyn Registerable,
                     name: &str,
                     extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
                 ) -> Result<()> {
@@ -83,7 +132,7 @@ macro_rules! host_function {
 
             fn register_host_function_0<T, R>(
                 self_: Arc<Mutex<T>>,
-                sandbox: &mut UninitializedSandbox,
+                sandbox: &mut dyn Registerable,
                 name: &str,
                 extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
             ) -> Result<()>
@@ -104,16 +153,11 @@ macro_rules! host_function {
                         // Register with extra allowed syscalls
                         #[cfg(all(feature = "seccomp", target_os = "linux"))]
                         {
-                            sandbox
-                                .host_funcs
-                                .try_lock()
-                                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                                .register_host_function_with_syscalls(
-                                    sandbox.mgr.as_mut(),
-                                    &HostFunctionDefinition::new(name.to_string(), None, R::get_hyperlight_type()),
-                                    HyperlightFunction::new(func),
-                                    _eas,
-                                )?;
+                            sandbox.register_host_function_with_syscalls(
+                                &HostFunctionDefinition::new(name.to_string(), None, R::get_hyperlight_type()),
+                                HyperlightFunction::new(func),
+                                _eas,
+                            )?;
                         }
                     } else {
                         // Log and return an error
@@ -121,15 +165,10 @@ macro_rules! host_function {
                     }
                 } else {
                     // Register without extra allowed syscalls
-                    sandbox
-                        .host_funcs
-                        .try_lock()
-                        .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                        .register_host_function(
-                            sandbox.mgr.as_mut(),
-                            &HostFunctionDefinition::new(name.to_string(), None, R::get_hyperlight_type()),
-                            HyperlightFunction::new(func),
-                        )?;
+                    sandbox.register_host_function(
+                        &HostFunctionDefinition::new(name.to_string(), None, R::get_hyperlight_type()),
+                        HyperlightFunction::new(func),
+                    )?;
                 }
 
                 Ok(())
@@ -148,7 +187,7 @@ macro_rules! host_function {
                 /// Register the host function with the given name in the sandbox.
                 fn register(
                     &self,
-                    sandbox: &mut UninitializedSandbox,
+                    sandbox: &mut dyn Registerable,
                     name: &str,
                 ) -> Result<()>;
 
@@ -156,7 +195,7 @@ macro_rules! host_function {
                 #[cfg(all(feature = "seccomp", target_os = "linux"))]
                 fn register_with_extra_allowed_syscalls(
                     &self,
-                    sandbox: &mut UninitializedSandbox,
+                    sandbox: &mut dyn Registerable,
                     name: &str,
                     extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
                 ) -> Result<()>;
@@ -173,7 +212,7 @@ macro_rules! host_function {
                 )]
                 fn register(
                     &self,
-                    sandbox: &mut UninitializedSandbox,
+                    sandbox: &mut dyn Registerable,
                     name: &str,
                 ) -> Result<()> {
                     [<register_host_function_ $N>](self.clone(), sandbox, name, None)
@@ -186,7 +225,7 @@ macro_rules! host_function {
                 )]
                 fn register_with_extra_allowed_syscalls(
                     &self,
-                    sandbox: &mut UninitializedSandbox,
+                    sandbox: &mut dyn Registerable,
                     name: &str,
                     extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
                 ) -> Result<()> {
@@ -196,7 +235,7 @@ macro_rules! host_function {
 
             fn [<register_host_function_ $N>]<'a, T, $($P,)* R>(
                 self_: Arc<Mutex<T>>,
-                sandbox: &mut UninitializedSandbox,
+                sandbox: &mut dyn Registerable,
                 name: &str,
                 extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
             ) -> Result<()>
@@ -231,20 +270,15 @@ macro_rules! host_function {
                         // Register with extra allowed syscalls
                         #[cfg(all(feature = "seccomp", target_os = "linux"))]
                         {
-                            sandbox
-                                .host_funcs
-                                .try_lock()
-                                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                                .register_host_function_with_syscalls(
-                                    sandbox.mgr.as_mut(),
-                                    &HostFunctionDefinition::new(
-                                        name.to_string(),
-                                        parameter_types,
-                                        R::get_hyperlight_type(),
-                                    ),
+                            sandbox.register_host_function_with_syscalls(
+                                &HostFunctionDefinition::new(
+                                    name.to_string(),
+                                    parameter_types,
+                                    R::get_hyperlight_type(),
+                                ),
                                     HyperlightFunction::new(func),
-                                    _eas,
-                                )?;
+                                _eas,
+                            )?;
                         }
                     } else {
                         // Log and return an error
@@ -252,19 +286,14 @@ macro_rules! host_function {
                     }
                 } else {
                     // Register without extra allowed syscalls
-                    sandbox
-                        .host_funcs
-                        .try_lock()
-                        .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                        .register_host_function(
-                            sandbox.mgr.as_mut(),
-                            &HostFunctionDefinition::new(
-                                name.to_string(),
-                                parameter_types,
-                                R::get_hyperlight_type(),
-                            ),
-                            HyperlightFunction::new(func),
-                        )?;
+                    sandbox.register_host_function(
+                        &HostFunctionDefinition::new(
+                            name.to_string(),
+                            parameter_types,
+                            R::get_hyperlight_type(),
+                        ),
+                        HyperlightFunction::new(func),
+                    )?;
                 }
 
                 Ok(())

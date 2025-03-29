@@ -48,8 +48,12 @@ pub(crate) mod uninitialized_evolve;
 /// Metric definitions for Sandbox module.
 pub(crate) mod metrics;
 
+/// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
+mod callable;
 use std::collections::HashMap;
 
+/// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
+pub use callable::Callable;
 /// Re-export for `SandboxConfiguration` type
 pub use config::SandboxConfiguration;
 /// Re-export for the `MultiUseSandbox` type

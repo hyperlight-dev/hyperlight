@@ -1,5 +1,5 @@
 [default]
-extend-ignore-identifiers-re = ["Fo"]
+extend-ignore-identifiers-re = ["Fo", "edn", "ue"]
 
 [files]
 extend-exclude = ["**/*.patch", "src/hyperlight_guest/third_party/**/*", "NOTICE.txt"]

@@ -263,7 +263,7 @@ mod tests {
     use hyperlight_testing::simple_guest_as_string;
 
     use crate::func::call_ctx::MultiUseGuestCallContext;
-    use crate::sandbox::SandboxConfiguration;
+    use crate::sandbox::{Callable, SandboxConfiguration};
     use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox};
     use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
     use crate::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
