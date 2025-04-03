@@ -335,7 +335,7 @@ mod tests {
     use crossbeam_queue::ArrayQueue;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
     use hyperlight_testing::logger::{Logger as TestLogger, LOGGER as TEST_LOGGER};
-    use hyperlight_testing::tracing_subscriber::TracingSubscriber as TestSubcriber;
+    use hyperlight_testing::tracing_subscriber::TracingSubscriber as TestSubscriber;
     use hyperlight_testing::{simple_guest_as_string, simple_guest_exe_as_string};
     use log::Level;
     use serde_json::{Map, Value};
@@ -910,7 +910,7 @@ mod tests {
     fn test_trace_trace() {
         TestLogger::initialize_log_tracer();
         rebuild_interest_cache();
-        let subscriber = TestSubcriber::new(tracing_level::TRACE);
+        let subscriber = TestSubscriber::new(tracing_level::TRACE);
         tracing::subscriber::with_default(subscriber.clone(), || {
             let correlation_id = Uuid::new_v4().as_hyphenated().to_string();
             let span = tracing::error_span!("test_trace_logs", correlation_id).entered();

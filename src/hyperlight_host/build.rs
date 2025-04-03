@@ -33,7 +33,7 @@ fn main() -> Result<()> {
         // Build hyperlight_surrogate and
         // Set $HYPERLIGHT_SURROGATE_DIR env var during rust build so we can
         // use it with RustEmbed to specify where hyperlight_surrogate.exe is
-        // to include as an embedded resource in the surrograte_process_manager
+        // to include as an embedded resource in the surrogate_process_manager
 
         // We need to copy/rename the source for hyperlight surrogate into a
         // temp directory because we cannot include a file name `Cargo.toml`
