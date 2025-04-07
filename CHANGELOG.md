@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 -
 
-## [v.0.3.0] - 2025-03-27
+## [v0.3.0] - 2025-03-27
 
 ### Added
 - Gdb support for mshv guests #327 by @dblnz in [#327](https://github.com/hyperlight-dev/hyperlight/pull/327)
