@@ -6,6 +6,7 @@ updates:
       interval: "daily"
     labels:
       - "kind/dependencies"
+    open-pull-requests-limit: 40
   - package-ecosystem: "cargo"
     directories: ["/", "src/tests/rust_guests/simpleguest","src/tests/rust_guests/callbackguest"]
     schedule:
