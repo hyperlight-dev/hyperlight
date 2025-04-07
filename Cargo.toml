@@ -6,7 +6,11 @@ default-members = [
     "src/hyperlight_testing",
 ]
 members = [
+    "src/hyperlight_common",
+    "src/hyperlight_guest",
+    "src/hyperlight_host",
     "src/hyperlight_guest_capi",
+    "src/hyperlight_testing",
     "fuzz",
 ]
 # Guests have custom linker flags, so we need to exclude them from the workspace
