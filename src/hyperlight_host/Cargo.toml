@@ -98,7 +98,7 @@ tracing-subscriber = {version = "0.3.19", features = ["std", "env-filter"]}
 tracing-opentelemetry = "0.29.0"
 opentelemetry = "0.28"
 opentelemetry-otlp = { version = "0.28", features = ["default", "grpc-tonic"] }
-opentelemetry-semantic-conventions = "0.28"
+opentelemetry-semantic-conventions = "0.29"
 opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
 tokio = { version = "1.44.1", features = ["full"] }
 criterion = "0.5.1"
