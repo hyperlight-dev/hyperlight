@@ -139,34 +139,34 @@ fn get_metrics() {
     for metric in metrics.iter() {
         match metric.get_field_type() {
             prometheus::proto::MetricType::COUNTER => {
-                println!("Counter: {:?}", metric.get_help());
+                println!("Counter: {:?}", metric.help());
                 metric.get_metric().iter().for_each(|metric| {
                     let pair = metric.get_label();
                     for pair in pair.iter() {
-                        println!("Label: {:?} Name: {:?}", pair.get_name(), pair.get_value());
+                        println!("Label: {:?} Name: {:?}", pair.name(), pair.value());
                     }
-                    println!("Value: {:?}", metric.get_counter().get_value());
+                    println!("Value: {:?}", metric.get_counter().value());
                 });
             }
             prometheus::proto::MetricType::GAUGE => {
-                println!("Gauge: {:?}", metric.get_help());
+                println!("Gauge: {:?}", metric.help());
                 metric.get_metric().iter().for_each(|metric| {
                     let pair = metric.get_label();
                     for pair in pair.iter() {
-                        println!("Label: {:?} Name: {:?}", pair.get_name(), pair.get_value());
+                        println!("Label: {:?} Name: {:?}", pair.name(), pair.value());
                     }
-                    println!("Value: {:?}", metric.get_gauge().get_value());
+                    println!("Value: {:?}", metric.get_gauge().value());
                 });
             }
             prometheus::proto::MetricType::UNTYPED => {
-                println!("Metric: {:?}", metric.get_help());
+                println!("Metric: {:?}", metric.help());
             }
             prometheus::proto::MetricType::HISTOGRAM => {
-                println!("Histogram: {:?}", metric.get_help());
+                println!("Histogram: {:?}", metric.help());
                 for metric in metric.get_metric() {
                     let pair = metric.get_label();
                     for pair in pair.iter() {
-                        println!("Label: {:?} Name: {:?}", pair.get_name(), pair.get_value());
+                        println!("Label: {:?} Name: {:?}", pair.name(), pair.value());
                     }
                     let count = metric.get_histogram().get_sample_count();
                     println!("Number of observations: {:?}", count);
@@ -179,14 +179,14 @@ fn get_metrics() {
                         .for_each(|bucket| {
                             println!(
                                 "Bucket: {:?} Count: {:?}",
-                                bucket.get_upper_bound(),
-                                bucket.get_cumulative_count()
+                                bucket.upper_bound(),
+                                bucket.cumulative_count()
                             )
                         });
                 }
             }
             prometheus::proto::MetricType::SUMMARY => {
-                println!("Summary: {:?}", metric.get_help());
+                println!("Summary: {:?}", metric.help());
             }
         }
     }
