@@ -43,7 +43,7 @@ vmm-sys-util = "0.12.1"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.14"
 thiserror = "2.0.12"
-prometheus = "0.13.3"
+prometheus = "0.14.0"
 strum = { version = "0.27", features = ["derive"] }
 tempfile = { version = "3.19", optional = true }
 serde_yaml = "0.9"
