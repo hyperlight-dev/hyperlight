@@ -39,7 +39,7 @@ tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-core = "0.1.33"
 hyperlight-common = { workspace = true, default-features = true }
-vmm-sys-util = "0.12.1"
+vmm-sys-util = "0.13.0"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.14"
 thiserror = "2.0.12"
