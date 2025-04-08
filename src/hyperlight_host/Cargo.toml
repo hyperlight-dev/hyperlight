@@ -100,7 +100,7 @@ opentelemetry = "0.28"
 opentelemetry-otlp = { version = "0.28", features = ["default", "grpc-tonic"] }
 opentelemetry-semantic-conventions = "0.29"
 opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
-tokio = { version = "1.44.1", features = ["full"] }
+tokio = { version = "1.44.2", features = ["full"] }
 criterion = "0.5.1"
 tracing-chrome = "0.7.2"
 
