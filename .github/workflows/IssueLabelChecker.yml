@@ -18,17 +18,17 @@ jobs:
         readarray -d $'\0' lifecycles < <(gh issue view ${{ github.event.issue.number }} --json labels -q '[.labels[] | .name | select(startswith("lifecycle/"))] | join("\u0000")' | head -c -1)
         if [[ ${#lifecycles[@]} -ne 1 ]]; then
           if [[ ${#lifecycles[@]} -ge 1 ]]; then
-            echo 'Too many lifecycle labels; replacing all with `lifecycle/needs review`'
+            echo 'Too many lifecycle labels; replacing all with `lifecycle/needs-review`'
           fi
           commands=()
           for label in "${lifecycles[@]}"; do
-            if [[ "$label" != "lifecycle/needs review" ]]; then
+            if [[ "$label" != "lifecycle/needs-review" ]]; then
               echo "Removing label ${label}"
               commands+=("--remove-label" "${label}")
             fi
           done
           echo 'Adding `lifecycle/needs review`'
-          commands+=("--add-label" "lifecycle/needs review")
+          commands+=("--add-label" "lifecycle/needs-review")
           gh issue edit ${{ github.event.issue.number }} "${commands[@]}"
         fi
       env:
