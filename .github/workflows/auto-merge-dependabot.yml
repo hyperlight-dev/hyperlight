@@ -1,0 +1,31 @@
+name: Auto Merge Dependabot PRs
+
+on:
+  schedule:
+    # Run daily at 04:00 UTC since dependabot runs at 03:00 UTC
+    - cron: '0 4 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge-dependabot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup GitHub CLI
+        run: |
+          # GitHub CLI is pre-installed on GitHub-hosted runners
+          gh --version
+      
+      - name: Make script executable
+        run: chmod +x ./dev/auto-approve-dependabot.sh
+      
+      - name: Run auto approve script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./dev/auto-approve-dependabot.sh ${{ github.repository }}

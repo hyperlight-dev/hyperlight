@@ -4,12 +4,14 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+      time: "03:00"
     labels:
       - "kind/dependencies"
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "daily"
+      time: "03:00"
     labels:
       - "kind/dependencies"
     ignore:
