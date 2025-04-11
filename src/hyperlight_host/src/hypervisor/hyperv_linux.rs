@@ -26,7 +26,7 @@ extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
 
-use log::{error, LevelFilter};
+use log::LevelFilter;
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 #[cfg(gdb)]
@@ -61,8 +61,8 @@ use super::{
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
-use crate::sandbox::sandbox_builder::SandboxMemorySections;
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::sandbox::sandbox_builder::SandboxMemorySections;
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -475,9 +475,9 @@ impl Hypervisor for HypervLinuxDriver {
             rflags: 2, //bit 1 of rlags is required to be set
 
             // function args
-            rcx: hyperlight_peb_guest_memory_region_address.into(),
-            rdx: hyperlight_peb_guest_memory_region_size.into(),
-            r8: seed.into(),
+            rcx: hyperlight_peb_guest_memory_region_address,
+            rdx: hyperlight_peb_guest_memory_region_size,
+            r8: seed,
             r9: max_guest_log_level,
 
             ..Default::default()
@@ -783,13 +783,13 @@ impl Hypervisor for HypervLinuxDriver {
 //             crate::mem::memory_region::MemoryRegionType::Code,
 //         );
 //         super::HypervLinuxDriver::new(
-            regions.build(),
-            entrypoint_ptr,
-            rsp_ptr,
-            pml4_ptr,
-            #[cfg(gdb)]
-            None,
-        )
-        .unwrap();
+//             regions.build(),
+//             entrypoint_ptr,
+//             rsp_ptr,
+//             pml4_ptr,
+//             #[cfg(gdb)]
+//             None,
+//         )
+//         .unwrap();
 //     }
 // }
