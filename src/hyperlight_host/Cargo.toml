@@ -66,7 +66,7 @@ windows = { version = "0.61", features = [
 ] }
 windows-sys = { version = "0.59", features = ["Win32"] }
 windows-result = "0.3"
-rust-embed = { version = "8.6.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
+rust-embed = { version = "8.7.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
 sha256 = "1.6.0"
 windows-version = "0.1"
 
