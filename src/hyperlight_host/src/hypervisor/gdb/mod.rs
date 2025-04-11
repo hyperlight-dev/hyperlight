@@ -31,7 +31,7 @@ use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
-use hyperlight_common::mem::PAGE_SIZE;
+use hyperlight_common::PAGE_SIZE;
 #[cfg(kvm)]
 pub(crate) use kvm_debug::KvmDebug;
 #[cfg(mshv)]
@@ -40,7 +40,7 @@ use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
 use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-use crate::mem::layout::SandboxMemoryLayout;
+use crate::sandbox::sandbox_builder::BASE_ADDRESS;
 use crate::{new_error, HyperlightError};
 
 /// Software Breakpoint size in memory
@@ -252,14 +252,16 @@ pub(crate) trait GuestDebug {
 
             let read_len = std::cmp::min(
                 data.len(),
-                (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                (PAGE_SIZE as u64 - (gpa & (PAGE_SIZE as u64 - 1)))
+                    .try_into()
+                    .unwrap(),
             );
             let offset = (gpa as usize)
-                .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
+                .checked_sub(BASE_ADDRESS)
                 .ok_or_else(|| {
                     log::warn!(
                         "gva=0x{:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
-                        gva, gpa, SandboxMemoryLayout::BASE_ADDRESS);
+                        gva, gpa, BASE_ADDRESS);
                     HyperlightError::TranslateGuestAddress(gva)
                 })?;
 
@@ -324,14 +326,16 @@ pub(crate) trait GuestDebug {
 
             let write_len = std::cmp::min(
                 data.len(),
-                (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                (PAGE_SIZE as u64 - (gpa & (PAGE_SIZE as u64 - 1)))
+                    .try_into()
+                    .unwrap(),
             );
             let offset = (gpa as usize)
-                .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
+                .checked_sub(BASE_ADDRESS)
                 .ok_or_else(|| {
                     log::warn!(
                         "gva=0x{:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
-                        gva, gpa, SandboxMemoryLayout::BASE_ADDRESS);
+                        gva, gpa, BASE_ADDRESS);
                     HyperlightError::TranslateGuestAddress(gva)
                 })?;
 
