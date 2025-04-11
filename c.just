@@ -9,7 +9,7 @@ c-flags-release-pe := '/O2 /Gy'
 
 # Elf options
 # We don't support stack protectors at the moment, but Arch Linux clang auto-enables them for -linux platforms, so explicitly disable them.
-c-compile-options-elf := '-nobuiltininc -H --target=x86_64-unknown-linux-none -fno-stack-protector -fstack-clash-protection -mstack-probe-size=4096'
+c-compile-options-elf := '-mgeneral-regs-only -nobuiltininc -H --target=x86_64-unknown-none-elf -fPIC -fno-stack-protector -fstack-clash-protection -mstack-probe-size=4096'
 c-include-flags-elf := replace(c-include-flags-pe, '/I ', '-I ')
 c-linker-options-elf := '--entry "entrypoint" --nostdlib -pie'
 c-flags-debug-elf := '-O0'
