@@ -19,9 +19,9 @@ use alloc::vec::Vec;
 
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
+use hyperlight_common::input_output::OutputDataSection;
 
 use crate::host_function_call::{outb, OutBAction};
-use hyperlight_common::input_output::OutputDataSection;
 use crate::PEB;
 
 fn write_log_data(

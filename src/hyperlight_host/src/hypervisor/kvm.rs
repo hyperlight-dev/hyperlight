@@ -35,8 +35,8 @@ use super::{
     CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
-use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -422,9 +422,9 @@ impl Hypervisor for KVMDriver {
             rsp: self.orig_rsp.absolute()?,
 
             // function args
-            rcx: hyperlight_peb_guest_memory_region_address.into(),
-            rdx: hyperlight_peb_guest_memory_region_size.into(),
-            r8: seed.into(),
+            rcx: hyperlight_peb_guest_memory_region_address,
+            rdx: hyperlight_peb_guest_memory_region_size,
+            r8: seed,
             r9: max_guest_log_level,
 
             ..Default::default()

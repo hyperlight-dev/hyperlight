@@ -65,7 +65,8 @@ where
         Duration::from_millis(u_sbox.config.get_max_initialization_time() as u64),
         Duration::from_millis(u_sbox.config.get_max_execution_time() as u64),
         Duration::from_millis(u_sbox.config.get_max_wait_for_cancellation() as u64),
-        u_sbox.max_guest_log_level,#[cfg(gdb)]
+        u_sbox.max_guest_log_level,
+        #[cfg(gdb)]
         u_sbox.debug_info,
     )?;
 

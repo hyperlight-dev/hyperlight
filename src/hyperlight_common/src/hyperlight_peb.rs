@@ -111,8 +111,8 @@ impl HyperlightPEB {
         let guest_heap_size = self.get_guest_heap_data_size();
 
         self.set_guest_error_data_region(
-            guest_stack_size + guest_heap_size as u64, // start at the end of the host function details
-            PAGE_SIZE as u64,                          // 4KB
+            guest_stack_size + guest_heap_size, // start at the end of the host function details
+            PAGE_SIZE as u64,                   // 4KB
         );
 
         self.set_host_error_data_region(
