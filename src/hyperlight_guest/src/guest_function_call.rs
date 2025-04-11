@@ -98,9 +98,10 @@ fn internal_dispatch_function() -> Result<()> {
         set_error(e.kind.clone(), e.message.as_str());
     })?;
 
-    Ok(output_data_section
+    output_data_section
         .push_shared_output_data(result_vec)
-        .unwrap())
+        .unwrap();
+    Ok(())
 }
 
 // This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()

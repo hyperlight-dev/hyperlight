@@ -129,7 +129,7 @@ impl HvHandlerExecVars {
             .thread_id
             .try_lock()
             .map_err(|_| new_error!("Failed to get_thread_id"))?)
-            .ok_or_else(|| new_error!("thread_id not set"))
+        .ok_or_else(|| new_error!("thread_id not set"))
     }
 
     #[cfg(target_os = "windows")]
@@ -772,7 +772,7 @@ impl HypervisorHandler {
                         0,
                         0,
                     )
-                        .map_err(|e| new_error!("Failed to cancel guest execution {:?}", e))?;
+                    .map_err(|e| new_error!("Failed to cancel guest execution {:?}", e))?;
                 }
             }
             // if running in-process on windows, we currently have no way of cancelling the execution

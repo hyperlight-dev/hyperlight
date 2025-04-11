@@ -41,8 +41,8 @@ use thiserror::Error;
 
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::sandbox::sandbox_builder::MemoryRegionFlags;
 use crate::mem::ptr::RawPtr;
+use crate::sandbox::sandbox_builder::MemoryRegionFlags;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub(crate) struct HyperlightHostError {

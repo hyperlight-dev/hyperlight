@@ -370,9 +370,9 @@ impl SandboxBuilder {
     /// Set the sandbox run mode. Options:
     /// - SandboxRunOptions::RunInHypervisor: Run the sandbox in a hypervisor.
     /// - SandboxRunOptions::RunInProcess(false): Run the sandbox in process (i.e., without a
-    /// hypervisor), but also without using the Windows LoadLibrary to load the guest binary.
+    ///     hypervisor), but also without using the Windows LoadLibrary to load the guest binary.
     /// - SandboxRunOptions::RunInProcess(true): Run the sandbox in process (i.e., without a
-    /// hypervisor), and use the Windows LoadLibrary to load the guest binary.
+    ///     hypervisor), and use the Windows LoadLibrary to load the guest binary.
     pub fn set_sandbox_run_options(
         mut self,
         sandbox_run_options: SandboxRunOptions,
@@ -495,7 +495,7 @@ impl SandboxBuilder {
     /// - +--------------------------+ 0x0
     ///
     /// - Note 1: The guest stack size can be set manually via the `stack_size_override` parameter. If
-    /// not provided, the stack size is set to the default stack reserve size of the guest binary.
+    ///     not provided, the stack size is set to the default stack reserve size of the guest binary.
     fn set_memory_layout(mut self) -> Result<Self> {
         // Name of guard page regions
         const DEFAULT_TMP_STACK_GUARD_PAGE_NAME: &str = "tmp stack guard page";

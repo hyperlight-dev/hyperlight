@@ -23,6 +23,8 @@ use crate::hypervisor::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandler
 use crate::hypervisor::handlers::{
     MemAccessHandler, MemAccessHandlerFunction, MemAccessHandlerWrapper,
 };
+#[cfg(gdb)]
+use crate::mem::mgr::SandboxMemoryManager;
 
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn mem_access_handler_wrapper() -> MemAccessHandlerWrapper {

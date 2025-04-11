@@ -19,10 +19,10 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 };
 use tracing::{instrument, Span};
 
-use crate::mem::mgr::SandboxMemoryManager;
 use crate::func::call_ctx::MultiUseGuestCallContext;
 use crate::func::guest_dispatch::call_function_on_guest;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
 use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};

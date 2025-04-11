@@ -35,6 +35,7 @@ use super::ptr::RawPtr;
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use super::shared_mem_snapshot::SharedMemorySnapshot;
+use crate::error::HyperlightHostError;
 use crate::sandbox::sandbox_builder::{
     MemoryRegionFlags, SandboxMemorySections, BASE_ADDRESS, PDPT_OFFSET, PD_OFFSET, PT_OFFSET,
 };
@@ -42,7 +43,6 @@ use crate::HyperlightError::{
     ExceptionDataLengthIncorrect, ExceptionMessageTooBig, JsonConversionFailure, NoMemorySnapshot,
     UTF8SliceConversionFailure,
 };
-use crate::error::HyperlightHostError;
 use crate::{log_then_return, new_error, HyperlightError, Result};
 
 /// Paging Flags

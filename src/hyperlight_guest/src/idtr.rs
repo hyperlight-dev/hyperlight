@@ -11,11 +11,19 @@ pub struct Idtr {
 static mut IDTR: Idtr = Idtr { limit: 0, base: 0 };
 
 impl Idtr {
+    /// Initializes the IDTR with the given base address and size.
+    ///
+    /// # Safety
+    /// TODO
     pub unsafe fn init(&mut self, base: u64, size: u16) {
         self.limit = size - 1;
         self.base = base;
     }
 
+    /// Loads the IDTR with the current IDT.
+    ///
+    /// # Safety
+    /// TODO
     pub unsafe fn load(&self) {
         core::arch::asm!("lidt [{}]", in(reg) self, options(readonly, nostack, preserves_flags));
     }
