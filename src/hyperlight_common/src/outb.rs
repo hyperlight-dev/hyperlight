@@ -1,5 +1,7 @@
 use core::arch;
+
 use anyhow::{bail, Result};
+
 use crate::hyperlight_peb::RunMode;
 use crate::RUNNING_MODE;
 
@@ -30,7 +32,9 @@ impl TryFrom<u16> for OutBAction {
 
 /// Issues an OUTB instruction to the specified port with the given value.
 fn hloutb(port: u16, val: u8) {
-    unsafe { arch::asm!("out dx, al", in("dx") port, in("al") val, options(preserves_flags, nomem, nostack)); }
+    unsafe {
+        arch::asm!("out dx, al", in("dx") port, in("al") val, options(preserves_flags, nomem, nostack));
+    }
 }
 
 pub fn outb(port: u16, value: u8) {

@@ -19,10 +19,11 @@ use std::sync::{Arc, Mutex};
 use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::outb::OutBAction;
 use log::{Level, Record};
 use tracing::{instrument, Span};
 use tracing_log::format_trace;
-use hyperlight_common::outb::OutBAction;
+
 use super::host_funcs::HostFuncsWrapper;
 use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction, OutBHandlerWrapper};
 use crate::mem::mgr::SandboxMemoryManager;

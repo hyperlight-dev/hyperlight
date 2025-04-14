@@ -96,4 +96,3 @@ pub static mut MIN_STACK_ADDRESS: u64 = 0;
 
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();
-

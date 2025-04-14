@@ -18,10 +18,11 @@ use core::ffi::{c_char, CStr};
 use core::ptr::copy_nonoverlapping;
 
 use hyperlight_common::hyperlight_peb::{HyperlightPEB, RunMode};
-use log::LevelFilter;
-use spin::Once;
 use hyperlight_common::outb::{outb, OutBAction};
 use hyperlight_common::{PEB, RUNNING_MODE};
+use log::LevelFilter;
+use spin::Once;
+
 use crate::gdt::load_gdt;
 use crate::guest_error::reset_error;
 use crate::guest_function_call::dispatch_function;
