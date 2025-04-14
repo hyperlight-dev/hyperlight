@@ -45,10 +45,10 @@ use hyperlight_guest::entrypoint::{abort_with_code, abort_with_code_and_message}
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::register_function;
-use hyperlight_guest::host_function_call::{call_host_function, get_host_return_value};
 use hyperlight_guest::memory::malloc;
 use hyperlight_guest::{logging, MIN_STACK_ADDRESS};
 use log::{error, LevelFilter};
+use hyperlight_common::host_calling::{call_host_function, get_host_return_value, print};
 
 extern crate hyperlight_guest;
 
@@ -86,13 +86,8 @@ fn echo_float(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 fn print_output(message: &str) -> Result<Vec<u8>> {
-    call_host_function(
-        "HostPrint",
-        Some(Vec::from(&[ParameterValue::String(message.to_string())])),
-        ReturnType::Int,
-    )?;
-    let result = get_host_return_value::<i32>()?;
-    Ok(get_flatbuffer_result(result))
+    print(message);
+    Ok(get_flatbuffer_result(()))
 }
 
 fn simple_print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
