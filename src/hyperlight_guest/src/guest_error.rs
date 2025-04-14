@@ -19,9 +19,10 @@ use alloc::vec::Vec;
 use core::ffi::{c_char, CStr};
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
-use log::error;
 use hyperlight_common::outb::{outb, OutBAction};
 use hyperlight_common::PEB;
+use log::error;
+
 use crate::entrypoint::halt;
 
 pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {

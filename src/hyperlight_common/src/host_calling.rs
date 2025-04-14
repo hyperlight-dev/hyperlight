@@ -1,13 +1,14 @@
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use core::ffi::c_char;
+
+use anyhow::Result;
+
+use crate::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use crate::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType, ReturnValue};
 use crate::input_output::{InputDataSection, OutputDataSection};
-use anyhow::Result;
-use crate::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use crate::outb::{outb, OutBAction};
 use crate::PEB;
-
-use alloc::vec::Vec;
-use alloc::string::ToString;
-use core::ffi::c_char;
 
 /// Get a return value from a host function call.
 /// This usually requires a host function to be called first using `call_host_function`.
@@ -19,7 +20,10 @@ pub fn get_host_return_value<T: TryFrom<ReturnValue>>() -> Result<T> {
         .expect("Unable to deserialize a return value from host");
 
     T::try_from(return_value).map_err(|_| {
-        anyhow::anyhow!("Host return value was not a {} as expected", core::any::type_name::<T>())
+        anyhow::anyhow!(
+            "Host return value was not a {} as expected",
+            core::any::type_name::<T>()
+        )
     })
 }
 
@@ -44,8 +48,7 @@ pub fn call_host_function(
 
     let output_data_section: OutputDataSection =
         unsafe { (*PEB).clone() }.get_output_data_region().into();
-    output_data_section
-        .push_shared_output_data(host_function_call_buffer)?;
+    output_data_section.push_shared_output_data(host_function_call_buffer)?;
 
     outb(OutBAction::CallFunction as u16, 0);
 

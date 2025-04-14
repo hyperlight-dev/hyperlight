@@ -40,6 +40,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
+use hyperlight_common::host_calling::{call_host_function, get_host_return_value, print};
 use hyperlight_common::PAGE_SIZE;
 use hyperlight_guest::entrypoint::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
@@ -48,7 +49,6 @@ use hyperlight_guest::guest_function_register::register_function;
 use hyperlight_guest::memory::malloc;
 use hyperlight_guest::{logging, MIN_STACK_ADDRESS};
 use log::{error, LevelFilter};
-use hyperlight_common::host_calling::{call_host_function, get_host_return_value, print};
 
 extern crate hyperlight_guest;
 
