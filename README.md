@@ -27,8 +27,8 @@ By default, Hyperlight restricts guest access to a minimal API. The only _host f
 guest to print messages, which are displayed on the host console or redirected to stdout, as configured. Hosts can
 choose to expose additional host functions, expanding the guest’s capabilities as needed.
 
-Below is an example demonstrating the use of the Hyperlight host library in Rust to execute a simple guest application
-and an example of a simple guest application using the Hyperlight guest library in also written in Rust.
+Below is an example demonstrating the use of the Hyperlight host library in Rust to execute a simple guest application.
+It is followed by an example of a simple guest application using the Hyperlight guest library, also written in Rust.
 
 ### Host
 
