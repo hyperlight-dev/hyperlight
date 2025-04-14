@@ -13,12 +13,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::ToString;
+use anyhow::{bail, Result};
 use alloc::vec::Vec;
 use core::any::type_name;
-use core::error::Error;
 use core::slice::from_raw_parts_mut;
 
 pub struct InputDataSection {
@@ -31,16 +28,14 @@ impl InputDataSection {
         InputDataSection { ptr, len }
     }
 
-    pub fn try_pop_shared_input_data_into<T>(&self) -> Result<T, Box<dyn Error>>
+    pub fn try_pop_shared_input_data_into<T>(&self) -> Result<T>
     where
         T: for<'a> TryFrom<&'a [u8]>,
     {
         let input_data_buffer = unsafe { from_raw_parts_mut(self.ptr, self.len) };
 
         if input_data_buffer.is_empty() {
-            return Err("Got a 0-size buffer in pop_shared_input_data_into"
-                .to_string()
-                .into());
+            bail!("Got a 0-size buffer in pop_shared_input_data_into");
         }
 
         // get relative offset to next free address
@@ -51,11 +46,7 @@ impl InputDataSection {
         );
 
         if stack_ptr_rel > self.len || stack_ptr_rel < 16 {
-            return Err(format!(
-                "Invalid stack pointer: {} in pop_shared_input_data_into",
-                stack_ptr_rel
-            )
-            .into());
+            bail!("Invalid stack pointer: {} in pop_shared_input_data_into", stack_ptr_rel);
         }
 
         // go back 8 bytes and read. This is the offset to the element on top of stack
@@ -71,7 +62,7 @@ impl InputDataSection {
         let type_t = match T::try_from(buffer) {
             Ok(t) => Ok(t),
             Err(_e) => {
-                return Err(format!("Unable to convert buffer to {}", type_name::<T>()).into());
+                bail!("Unable to convert buffer to {}", type_name::<T>());
             }
         };
 
@@ -95,13 +86,11 @@ impl OutputDataSection {
         OutputDataSection { ptr, len }
     }
 
-    pub fn push_shared_output_data(&self, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
+    pub fn push_shared_output_data(&self, data: Vec<u8>) -> Result<()> {
         let output_data_buffer = unsafe { from_raw_parts_mut(self.ptr, self.len) };
 
         if output_data_buffer.is_empty() {
-            return Err("Got a 0-size buffer in push_shared_output_data"
-                .to_string()
-                .into());
+            bail!("Got a 0-size buffer in push_shared_output_data");
         }
 
         // get offset to next free address on the stack
@@ -119,22 +108,14 @@ impl OutputDataSection {
         // It can be equal to the size, but never greater
         // It can never be less than 8. An empty buffer's stack pointer is 8
         if stack_ptr_rel > self.len || stack_ptr_rel < 8 {
-            return Err(format!(
-                "Invalid stack pointer: {} in push_shared_output_data",
-                stack_ptr_rel
-            )
-            .into());
+            bail!("Invalid stack pointer: {} in push_shared_output_data", stack_ptr_rel);
         }
 
         // check if there is enough space in the buffer
         let size_required = data.len() + 8; // the data plus the pointer pointing to the data
         let size_available = self.len - stack_ptr_rel;
         if size_required > size_available {
-            return Err(format!(
-                "Not enough space in shared output buffer. Required: {}, Available: {}",
-                size_required, size_available
-            )
-            .into());
+            bail!("Not enough space in shared output buffer. Required: {}, Available: {}", size_required, size_available);
         }
 
         // write the actual data

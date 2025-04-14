@@ -23,9 +23,9 @@ use core::ptr::copy_nonoverlapping;
 use buddy_system_allocator::LockedHeap;
 use guest_function_register::GuestFunctionRegister;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::hyperlight_peb::{HyperlightPEB, RunMode};
+use hyperlight_common::outb::{outb, OutBAction};
+use hyperlight_common::PEB;
 
-use crate::host_function_call::{outb, OutBAction};
 extern crate alloc;
 
 // Modules
@@ -36,13 +36,9 @@ pub mod guest_function_definition;
 pub mod guest_function_register;
 // TODO(danbugs:297): bring back
 // pub mod host_error;
-pub mod host_function_call;
-// TODO(danbugs:297): bring back
-// pub mod host_functions;
 
 pub(crate) mod guest_logger;
 pub mod memory;
-pub mod print;
 pub(crate) mod security_check;
 pub mod setjmp;
 
@@ -91,9 +87,7 @@ pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 #[no_mangle]
 pub(crate) static mut __security_cookie: u64 = 0;
 
-pub(crate) static mut PEB: *mut HyperlightPEB = core::ptr::null_mut();
 pub static mut MIN_STACK_ADDRESS: u64 = 0;
-pub static mut RUNNING_MODE: RunMode = RunMode::None;
 // TODO(danbugs:297): bring back
 // pub(crate) static mut OUTB_PTR: Option<extern "win64" fn(u16, u8)> = None;
 // pub(crate) static mut OUTB_PTR_WITH_CONTEXT: Option<
@@ -102,3 +96,4 @@ pub static mut RUNNING_MODE: RunMode = RunMode::None;
 
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();
+

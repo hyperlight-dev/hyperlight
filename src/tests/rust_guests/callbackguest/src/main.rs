@@ -31,12 +31,10 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
+use hyperlight_common::host_calling::{call_host_function, get_host_return_value, print};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::register_function;
-use hyperlight_guest::host_function_call::{
-    call_host_function, get_host_return_value, print_output_as_guest_function,
-};
 use hyperlight_guest::logging::log_message;
 
 fn send_message_to_host_method(
@@ -161,13 +159,25 @@ fn call_host_spin(_: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
+fn print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
+        print(&message);
+        Ok(get_flatbuffer_result(()))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestError,
+            "Wrong Parameters passed to print_output_as_guest_function".to_string(),
+        ))
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn hyperlight_main() {
     let print_output_def = GuestFunctionDefinition::new(
         "PrintOutput".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::Int,
-        print_output_as_guest_function as usize,
+        print_output as usize,
     );
     register_function(print_output_def);
 

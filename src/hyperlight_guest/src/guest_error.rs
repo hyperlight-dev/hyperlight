@@ -20,10 +20,9 @@ use core::ffi::{c_char, CStr};
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use log::error;
-
+use hyperlight_common::outb::{outb, OutBAction};
+use hyperlight_common::PEB;
 use crate::entrypoint::halt;
-use crate::host_function_call::{outb, OutBAction};
-use crate::PEB;
 
 pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
     let peb = unsafe { (*PEB).clone() };
