@@ -25,6 +25,8 @@ extern crate mshv_bindings3 as mshv_bindings;
 extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
+#[cfg(crashdump)]
+use std::path::Path;
 
 use log::{error, LevelFilter};
 #[cfg(mshv2)]
@@ -49,6 +51,8 @@ use mshv_bindings::{
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
+#[cfg(crashdump)]
+use super::crashdump;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug};
@@ -63,6 +67,7 @@ use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::sandbox::uninitialized::SandboxMetadata;
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -299,6 +304,8 @@ pub(super) struct HypervLinuxDriver {
     debug: Option<MshvDebug>,
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+    #[allow(dead_code)]
+    metadata: SandboxMetadata,
 }
 
 impl HypervLinuxDriver {
@@ -317,6 +324,7 @@ impl HypervLinuxDriver {
         rsp_ptr: GuestPtr,
         pml4_ptr: GuestPtr,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+        metadata: SandboxMetadata,
     ) -> Result<Self> {
         let mshv = Mshv::new()?;
         let pr = Default::default();
@@ -396,6 +404,7 @@ impl HypervLinuxDriver {
             debug,
             #[cfg(gdb)]
             gdb_conn,
+            metadata,
         })
     }
 
@@ -663,8 +672,56 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
+    fn get_crashdump_context(&self) -> Result<super::crashdump::CrashDumpContext> {
+        let mut regs = [0; 27];
+
+        let vcpu_regs = self.vcpu_fd.get_regs()?;
+        let sregs = self.vcpu_fd.get_sregs()?;
+        let xsave = self.vcpu_fd.get_xsave()?;
+
+        regs[0] = vcpu_regs.r15; // r15
+        regs[1] = vcpu_regs.r14; // r14
+        regs[2] = vcpu_regs.r13; // r13
+        regs[3] = vcpu_regs.r12; // r12
+        regs[4] = vcpu_regs.rbp; // rbp
+        regs[5] = vcpu_regs.rbx; // rbx
+        regs[6] = vcpu_regs.r11; // r11
+        regs[7] = vcpu_regs.r10; // r10
+        regs[8] = vcpu_regs.r9; // r9
+        regs[9] = vcpu_regs.r8; // r8
+        regs[10] = vcpu_regs.rax; // rax
+        regs[11] = vcpu_regs.rcx; // rcx
+        regs[12] = vcpu_regs.rdx; // rdx
+        regs[13] = vcpu_regs.rsi; // rsi
+        regs[14] = vcpu_regs.rdi; // rdi
+        regs[15] = 0; // orig rax
+        regs[16] = vcpu_regs.rip; // rip
+        regs[17] = sregs.cs.selector as u64; // cs
+        regs[18] = vcpu_regs.rflags; // eflags
+        regs[19] = vcpu_regs.rsp; // rsp
+        regs[20] = sregs.ss.selector as u64; // ss
+        regs[21] = sregs.fs.base; // fs_base
+        regs[22] = sregs.gs.base; // gs_base
+        regs[23] = sregs.ds.selector as u64; // ds
+        regs[24] = sregs.es.selector as u64; // es
+        regs[25] = sregs.fs.selector as u64; // fs
+        regs[26] = sregs.gs.selector as u64; // gs
+
+        let filename = self.metadata.binary_path.clone().map(|path| {
+            Path::new(&path)
+                .file_name()
+                .map(|name| name.to_os_string().into_string().unwrap())
+                .unwrap()
+        });
+
+        Ok(crashdump::CrashDumpContext::new(
+            &self.mem_regions,
+            regs,
+            xsave.buffer.to_vec(),
+            self.entrypoint,
+            self.metadata.binary_path.clone(),
+            filename,
+        ))
     }
 
     #[cfg(gdb)]
@@ -784,6 +841,7 @@ mod tests {
             pml4_ptr,
             #[cfg(gdb)]
             None,
+            SandboxMetadata { binary_path: None },
         )
         .unwrap();
     }

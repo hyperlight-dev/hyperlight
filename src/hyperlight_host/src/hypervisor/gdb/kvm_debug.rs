@@ -86,7 +86,7 @@ impl KvmDebug {
         self.dbg_cfg.arch.debugreg = [0; 8];
         for (k, addr) in addrs.iter().enumerate() {
             self.dbg_cfg.arch.debugreg[k] = *addr;
-            self.dbg_cfg.arch.debugreg[7] |= 1 << (k * 2);
+            self.dbg_cfg.arch.debugreg[7] |= 0x03 << (k * 2);
         }
 
         if !addrs.is_empty() {

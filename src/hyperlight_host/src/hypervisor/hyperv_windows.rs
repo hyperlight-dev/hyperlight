@@ -487,8 +487,8 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
+    fn get_crashdump_context(&self) -> Result<crashdump::CrashDumpContext> {
+        unimplemented!("Not implemented for HyperV");
     }
 }
 
