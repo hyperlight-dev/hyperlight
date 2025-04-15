@@ -73,13 +73,7 @@ static INIT: Once = Once::new();
 // Note: entrypoint cannot currently have a stackframe >4KB, as that will invoke __chkstk on msvc
 //       target without first having setup global `RUNNING_MODE` variable, which __chkstk relies on.
 #[no_mangle]
-pub extern "win64" fn entrypoint(
-    peb_address: u64,
-    // TODO(danbugs:297): remove the extra arg
-    _: u64,
-    seed: u64,
-    max_log_level: u64,
-) {
+pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64) {
     INIT.call_once(|| unsafe {
         PEB = peb_address as *mut HyperlightPEB;
         RUNNING_MODE = (*PEB).clone().run_mode;

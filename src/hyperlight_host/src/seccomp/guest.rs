@@ -23,7 +23,7 @@ use seccompiler::{
 use crate::sandbox::ExtraAllowedSyscall;
 use crate::{and, or, Result};
 
-// TODO(danbugs:297): remove
+// TODO(danbugs:297): reconsider
 #[allow(unused)]
 fn syscalls_allowlist() -> Result<Vec<(i64, Vec<SeccompRule>)>> {
     Ok(vec![

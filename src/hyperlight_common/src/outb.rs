@@ -59,8 +59,5 @@ pub fn outb(port: u16, value: u8) {
                 panic!("Tried to call outb in invalid runmode");
             }
         }
-
-        // TODO(danbugs:297): bring back
-        // check_for_host_error();
     }
 }

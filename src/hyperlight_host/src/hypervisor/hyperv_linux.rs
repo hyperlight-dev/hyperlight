@@ -456,7 +456,6 @@ impl Hypervisor for HypervLinuxDriver {
     fn initialise(
         &mut self,
         hyperlight_peb_guest_memory_region_address: u64,
-        hyperlight_peb_guest_memory_region_size: u64,
         seed: u64,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
@@ -476,9 +475,8 @@ impl Hypervisor for HypervLinuxDriver {
 
             // function args
             rcx: hyperlight_peb_guest_memory_region_address,
-            rdx: hyperlight_peb_guest_memory_region_size,
-            r8: seed,
-            r9: max_guest_log_level,
+            rdx: seed,
+            r8: max_guest_log_level,
 
             ..Default::default()
         };

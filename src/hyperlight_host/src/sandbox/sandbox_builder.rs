@@ -85,13 +85,6 @@ impl SandboxMemorySections {
             .map(|(_, section)| section.host_address.unwrap())
     }
 
-    pub(crate) fn get_hyperlight_peb_size(&self) -> Option<usize> {
-        self.sections
-            .iter()
-            .find(|(_, section)| section.name == DEFAULT_HYPERLIGHT_PEB_SECTION_NAME)
-            .map(|(_, section)| section.page_aligned_size)
-    }
-
     pub(crate) fn get_tmp_stack_section_offset(&self) -> Option<usize> {
         self.sections
             .iter()
