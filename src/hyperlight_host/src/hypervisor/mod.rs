@@ -125,7 +125,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn initialise(
         &mut self,
         hyperlight_peb_guest_memory_region_address: u64,
-        hyperlight_peb_guest_memory_region_size: u64,
         seed: u64,
         outb_hdl: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,

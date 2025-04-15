@@ -143,17 +143,6 @@ fn register_host_function_helper(
         .get_host_func_details_mut()
         .sort_host_functions_by_name();
 
-    // TODO(danbugs:297): host function details section is now determined in the guest, so
-    // we can't write these details to memory at this point in time. Regardless, writing this
-    // stuff to memory is pretty pointless, so we can remove this logic.
-    // let buffer: Vec<u8> = self_.get_host_func_details().try_into().map_err(|e| {
-    //     new_error!(
-    //         "Error serializing host function details to flatbuffer: {}",
-    //         e
-    //     )
-    // })?;
-    // mgr.write_buffer_host_function_details(&buffer)?;
-
     Ok(())
 }
 

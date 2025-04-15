@@ -178,7 +178,6 @@ struct HvHandlerCommChannels {
 #[derive(Clone)]
 pub(crate) struct HvHandlerConfig {
     pub(crate) hyperlight_peb_guest_memory_region_address: u64,
-    pub(crate) hyperlight_peb_guest_memory_region_size: u64,
     pub(crate) seed: u64,
     pub(crate) max_init_time: Duration,
     pub(crate) max_exec_time: Duration,
@@ -349,7 +348,6 @@ impl HypervisorHandler {
 
                                 let res = hv.initialise(
                                     configuration.hyperlight_peb_guest_memory_region_address,
-                                    configuration.hyperlight_peb_guest_memory_region_size,
                                     configuration.seed,
                                     configuration.outb_handler.clone(),
                                     configuration.mem_access_handler.clone(),
@@ -824,9 +822,10 @@ fn set_up_hypervisor_partition(
 
     let rsp_ptr = GuestPtr::try_from(RawPtr::from(mgr.init_rsp))?;
 
-    // TODO(danbugs:297): change unwrap to proper error handling informing paging isn't set up.
     let pml4_ptr = GuestPtr::try_from(Offset::from(
-        mgr.memory_sections.get_paging_structures_offset().unwrap() as u64,
+        mgr.memory_sections
+            .get_paging_structures_offset()
+            .ok_or("PML4 offset not found")? as u64,
     ))?;
     let entrypoint_ptr = {
         let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;

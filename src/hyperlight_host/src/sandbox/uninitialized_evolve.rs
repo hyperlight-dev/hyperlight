@@ -113,10 +113,6 @@ fn hv_init(
             .memory_sections
             .get_hyperlight_peb_section_offset()
             .unwrap() as u64,
-        hyperlight_peb_guest_memory_region_size: gshm
-            .memory_sections
-            .get_hyperlight_peb_size()
-            .unwrap() as u64,
         outb_handler: outb_hdl,
         mem_access_handler: mem_access_hdl,
         #[cfg(gdb)]

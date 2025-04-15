@@ -84,7 +84,6 @@ impl UninitializedSandbox {
         config: SandboxConfiguration,
         #[cfg(gdb)] debug_info: Option<DebugInfo>,
     ) -> Self {
-        // TODO(danbugs:297): add registering writer function to SandboxBuilder w/ syscalls and whatnot
         Self {
             host_funcs: Arc::new(Mutex::new(HostFuncsWrapper::default())),
             mem_mgr,

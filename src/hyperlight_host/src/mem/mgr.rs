@@ -139,8 +139,10 @@ where
         let memory_sections = self.memory_sections.clone();
 
         self.shared_mem.with_exclusivity(|shared_mem| {
-            // TODO(danbugs:297): improve error message removing unwrap
-            let pml4_offset = self.memory_sections.get_paging_structures_offset().unwrap();
+            let pml4_offset = self
+                .memory_sections
+                .get_paging_structures_offset()
+                .ok_or("PML4 offset not found")?;
             let pdpt_offset = pml4_offset + PDPT_OFFSET;
             let pd_offset = pml4_offset + PD_OFFSET;
             let pt_offset = pml4_offset + PT_OFFSET;
