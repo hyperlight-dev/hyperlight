@@ -3,7 +3,7 @@ use std::fmt::{Debug, Formatter};
 use std::path::Path;
 use std::time::Duration;
 
-use hyperlight_common::hyperlight_peb::{HyperlightPEB, RunMode};
+use hyperlight_common::peb::{HyperlightPEB, RunMode};
 use hyperlight_common::PAGE_SIZE;
 
 use crate::mem::exe::ExeInfo;
@@ -112,6 +112,21 @@ impl SandboxMemorySections {
         }
 
         offset.unwrap()
+    }
+
+    pub(crate) fn get_custom_guest_memory_section_host_address(&self) -> usize {
+        let host_address = self
+            .sections
+            .iter()
+            .find(|(_, section)| section.name == DEFAULT_CUSTOM_GUEST_MEMORY_SECTION_NAME)
+            .map(|(_, section)| section.host_address.unwrap());
+
+        // if not set, we have a critical error and we should panic
+        if host_address.is_none() {
+            panic!("Custom guest memory section not found");
+        }
+
+        host_address.unwrap()
     }
 
     pub(crate) fn get_custom_guest_memory_size(&self) -> usize {
@@ -711,17 +726,27 @@ impl SandboxBuilder {
         let guest_stack_size = sandbox_builder.guest_binary.to_exe_info()?.stack_reserve();
         let guest_heap_size = sandbox_builder.guest_binary.to_exe_info()?.heap_reserve();
 
+        // Map host addresses to guest addresses
+        sandbox_builder.map_host_addresses(exclusive_shared_memory.base_addr());
+
         let hyperlight_peb = HyperlightPEB {
             run_mode,
 
-            // The `outb_ptr` can only be set once we are evolving the uninitialized sandbox because
+            // The `outb_ptr`/`outb_ptr_ctx` can only be set once we are evolving the uninitialized sandbox because
             // only then we have all host functions registered.
             outb_ptr: 0,
+            outb_ptr_ctx: 0,
+
+            guest_memory_host_base_address: sandbox_builder
+                .memory_sections
+                .get_custom_guest_memory_section_host_address()
+                as u64,
 
             guest_memory_base_address: sandbox_builder
                 .memory_sections
                 .get_custom_guest_memory_section_offset()
                 as u64,
+
             guest_memory_size: sandbox_builder
                 .memory_sections
                 .get_custom_guest_memory_size() as u64,
@@ -729,33 +754,30 @@ impl SandboxBuilder {
             // The `guest_function_dispatch_ptr` is set by the guest
             guest_function_dispatch_ptr: 0,
 
-            guest_error_data_ptr: 0,
+            guest_error_data_offset: 0,
             guest_error_data_size: 0,
 
-            host_error_data_ptr: 0,
+            host_error_data_offset: 0,
             host_error_data_size: 0,
 
-            input_data_ptr: 0,
+            input_data_offset: 0,
             input_data_size: 0,
 
-            output_data_ptr: 0,
+            output_data_offset: 0,
             output_data_size: 0,
 
-            guest_panic_context_ptr: 0,
+            guest_panic_context_offset: 0,
             guest_panic_context_size: 0,
 
-            guest_heap_data_ptr: 0,
+            guest_heap_data_offset: 0,
             guest_heap_data_size: guest_heap_size,
 
-            guest_stack_data_ptr: 0,
+            guest_stack_data_offset: 0,
             guest_stack_data_size: guest_stack_size,
 
-            host_function_details_ptr: 0,
+            host_function_details_offset: 0,
             host_function_details_size: 0,
         };
-
-        // Map host addresses to guest addresses
-        sandbox_builder.map_host_addresses(exclusive_shared_memory.base_addr());
 
         let mut sandbox_memory_manager = sandbox_builder.load_guest_binary(
             sandbox_builder.init_rsp.unwrap(),
@@ -797,6 +819,36 @@ mod tests {
             SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
 
         // let sandbox_builder = sandbox_builder.set_guest_debug_info(DebugInfo { port: 8080 });
+
+        let mut uninitialized_sandbox = sandbox_builder.build()?;
+
+        // Tests registering a host function
+        fn add(a: i32, b: i32) -> Result<i32> {
+            Ok(a + b)
+        }
+        let host_function = Arc::new(Mutex::new(add));
+        host_function.register(&mut uninitialized_sandbox, "HostAdd")?;
+
+        // Tests evolving to a multi-use sandbox
+        let mut multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+        let result = multi_use_sandbox.call_guest_function_by_name(
+            "Add",
+            ReturnType::Int,
+            Some(vec![ParameterValue::Int(1), ParameterValue::Int(41)]),
+        )?;
+
+        assert_eq!(result, ReturnValue::Int(42));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sandbox_builder_in_process() -> Result<()> {
+        // Tests building an uninitialized sandbox w/ the sandbox builder
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?
+                .set_sandbox_run_options(SandboxRunOptions::RunInProcess(false))?;
 
         let mut uninitialized_sandbox = sandbox_builder.build()?;
 

@@ -44,8 +44,9 @@ fn write_log_data(
         .try_into()
         .expect("Failed to convert GuestLogData to bytes");
 
-    let output_data_section: OutputDataSection =
-        unsafe { (*PEB).clone() }.get_output_data_region().into();
+    let output_data_section: OutputDataSection = unsafe { (*PEB).clone() }
+        .get_output_data_guest_region()
+        .into();
 
     output_data_section
         .push_shared_output_data(bytes)

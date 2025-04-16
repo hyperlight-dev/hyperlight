@@ -36,7 +36,7 @@ pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
         .expect("Invalid guest_error_buffer, could not be converted to a Vec<u8>");
 
     unsafe {
-        assert_ne!(!peb.guest_error_data_ptr, 0);
+        assert_ne!(!peb.get_guest_error_data_address(), 0);
         let len = guest_error_buffer.len();
         if guest_error_buffer.len() > peb.guest_error_data_size as usize {
             error!(
@@ -67,7 +67,7 @@ pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
         // but, because copy_nonoverlapping doesn't return anything, we can't do that.
         // Instead, we do the prior asserts/checks to check the destination pointer isn't null
         // and that there is enough space in the destination buffer for the copy.
-        let dest_ptr = peb.guest_error_data_ptr as *mut u8;
+        let dest_ptr = peb.get_guest_error_data_address() as *mut u8;
         core::ptr::copy_nonoverlapping(guest_error_buffer.as_ptr(), dest_ptr, len);
     }
 }
@@ -75,7 +75,7 @@ pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
 pub(crate) fn reset_error() {
     unsafe {
         core::ptr::write_bytes(
-            (*PEB).guest_error_data_ptr as *mut u8,
+            (*PEB).get_guest_error_data_address() as *mut u8,
             0,
             (*PEB).guest_error_data_size as usize,
         );

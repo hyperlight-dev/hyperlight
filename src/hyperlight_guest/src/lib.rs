@@ -71,7 +71,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     unsafe {
         copy_nonoverlapping(
             info.to_string().as_ptr(),
-            (*PEB).guest_panic_context_ptr as *mut u8,
+            (*PEB).get_guest_panic_context_address() as *mut u8,
             (*PEB).guest_panic_context_size as usize,
         );
     }
@@ -88,11 +88,6 @@ pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 pub(crate) static mut __security_cookie: u64 = 0;
 
 pub static mut MIN_STACK_ADDRESS: u64 = 0;
-// TODO(danbugs:297): bring back
-// pub(crate) static mut OUTB_PTR: Option<extern "win64" fn(u16, u8)> = None;
-// pub(crate) static mut OUTB_PTR_WITH_CONTEXT: Option<
-//     extern "win64" fn(*mut core::ffi::c_void, u16, u8),
-// > = None;
 
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();
