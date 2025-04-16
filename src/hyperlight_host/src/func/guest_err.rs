@@ -18,7 +18,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 
 use crate::error::HyperlightError::{GuestError, OutBHandlingError, StackOverflow};
 use crate::mem::shared_mem::HostSharedMemory;
-use crate::metrics::{CounterMetric, EmittableMetric};
+use crate::metrics::{METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE};
 use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::{log_then_return, Result};
 /// Check for a guest error and return an `Err` if one was found,
@@ -29,7 +29,7 @@ pub(crate) fn check_for_guest_error(mgr: &MemMgrWrapper<HostSharedMemory>) -> Re
         ErrorCode::NoError => Ok(()),
         ErrorCode::OutbError => match mgr.as_ref().get_host_error()? {
             Some(host_err) => {
-                CounterMetric::guest_error(guest_err.code.into()).emit();
+                metrics::counter!(METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE => (guest_err.code as u64).to_string()).increment(1);
 
                 log_then_return!(OutBHandlingError(
                     host_err.source.clone(),
@@ -40,11 +40,11 @@ pub(crate) fn check_for_guest_error(mgr: &MemMgrWrapper<HostSharedMemory>) -> Re
             None => Ok(()),
         },
         ErrorCode::StackOverflow => {
-            CounterMetric::guest_error(guest_err.code.into()).emit();
+            metrics::counter!(METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE => (guest_err.code as u64).to_string()).increment(1);
             log_then_return!(StackOverflow());
         }
         _ => {
-            CounterMetric::guest_error(guest_err.code.into()).emit();
+            metrics::counter!(METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE => (guest_err.code as u64).to_string()).increment(1);
             log_then_return!(GuestError(guest_err.code, guest_err.message.clone()));
         }
     }

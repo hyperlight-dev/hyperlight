@@ -25,6 +25,8 @@ use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result};
 use hyperlight_testing::simple_guest_as_string;
 
+// Run this rust example with the flag --features "function_call_metrics" to enable more metrics to be emitted
+
 fn main() {
     // Install prometheus metrics exporter.
     // We only install the metrics recorder here, but you can also use the

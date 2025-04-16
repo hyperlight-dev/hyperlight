@@ -26,7 +26,6 @@ use super::{ExtraAllowedSyscall, FunctionsMap};
 use crate::func::HyperlightFunction;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::ExclusiveSharedMemory;
-use crate::metrics::HistogramMetric;
 use crate::HyperlightError::HostFunctionNotFound;
 use crate::{new_error, Result};
 
@@ -182,7 +181,7 @@ fn call_host_func_impl(
             seccompiler::apply_filter(&seccomp_filter)?;
         }
 
-        HistogramMetric::time_and_emit_host_call(name, || func.call(args))
+        crate::metrics::time_and_emit_host_call(name, || func.call(args))
     }
 
     cfg_if::cfg_if! {

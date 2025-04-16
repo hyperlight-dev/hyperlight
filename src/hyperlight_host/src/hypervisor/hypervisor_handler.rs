@@ -48,7 +48,6 @@ use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
-use crate::metrics::HistogramMetric;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
@@ -434,7 +433,7 @@ impl HypervisorHandler {
                                     .lock
                                         .try_read();
 
-                                let res = HistogramMetric::time_and_emit_guest_call(
+                                let res = crate::metrics::time_and_emit_guest_call(
                                     &function_name,
                                     || {
                                         hv.dispatch_call_from_host(

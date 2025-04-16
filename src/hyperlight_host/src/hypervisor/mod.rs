@@ -19,7 +19,7 @@ use tracing::{instrument, Span};
 
 use crate::error::HyperlightError::ExecutionCanceledByHost;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::metrics::{CounterMetric, EmittableMetric};
+use crate::metrics::METRIC_GUEST_CANCELLATION;
 use crate::{log_then_return, new_error, HyperlightError, Result};
 
 /// Util for handling x87 fpu state
@@ -311,7 +311,7 @@ impl VirtualCPU {
                         #[cfg(target_os = "linux")]
                         hvh.set_run_cancelled(true);
                     }
-                    CounterMetric::guest_cancellation().emit();
+                    metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
                     log_then_return!(ExecutionCanceledByHost());
                 }
                 Ok(HyperlightExit::Unknown(reason)) => {
