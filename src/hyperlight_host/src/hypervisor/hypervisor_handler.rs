@@ -435,7 +435,7 @@ impl HypervisorHandler {
                                         .try_read();
 
                                 let res = HistogramMetric::time_and_emit_guest_call(
-                                    function_name.clone(),
+                                    &function_name,
                                     || {
                                         hv.dispatch_call_from_host(
                                             dispatch_function_addr,
