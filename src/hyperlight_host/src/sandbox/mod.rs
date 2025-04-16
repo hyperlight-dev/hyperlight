@@ -23,13 +23,12 @@ pub(crate) mod hypervisor;
 /// Functionality for dealing with initialized sandboxes that can
 /// call 0 or more guest functions
 pub mod initialized_multi_use;
-// TODO(danbugs:297): bring back
-// /// A container to leak, store and manage outb handlers for in-process
-// /// executions. On non-in-process executions (e.g. windows without
-// /// in-process mode turned on, or linux), the same container is just
-// /// a no-op
-// #[cfg(inprocess)]
-// pub(crate) mod leaked_outb;
+/// A container to leak, store and manage outb handlers for in-process
+/// executions. On non-in-process executions (e.g. windows without
+/// in-process mode turned on, or linux), the same container is just
+/// a no-op
+#[cfg(inprocess)]
+pub(crate) mod leaked_outb;
 /// Functionality for dealing with memory access from the VM guest
 /// executable
 pub(crate) mod mem_access;

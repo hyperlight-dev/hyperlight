@@ -17,9 +17,9 @@ use core::arch::asm;
 use core::ffi::{c_char, CStr};
 use core::ptr::copy_nonoverlapping;
 
-use hyperlight_common::hyperlight_peb::{HyperlightPEB, RunMode};
 use hyperlight_common::outb::{outb, OutBAction};
-use hyperlight_common::{PEB, RUNNING_MODE};
+use hyperlight_common::peb::{HyperlightPEB, RunMode};
+use hyperlight_common::{OUTB_HANDLER, OUTB_HANDLER_CTX, PEB, RUNNING_MODE};
 use log::LevelFilter;
 use spin::Once;
 
@@ -56,7 +56,7 @@ pub fn abort_with_code(code: i32) -> ! {
 pub unsafe fn abort_with_code_and_message(code: i32, message_ptr: *const c_char) -> ! {
     copy_nonoverlapping(
         message_ptr,
-        (*PEB).guest_panic_context_ptr as *mut c_char,
+        (*PEB).get_guest_panic_context_address() as *mut c_char,
         CStr::from_ptr(message_ptr).count_bytes() + 1, // +1 for null terminator
     );
     outb(OutBAction::Abort as u16, code as u8);
@@ -94,11 +94,11 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
             .try_lock()
             .expect("Failed to access HEAP_ALLOCATOR")
             .init(
-                (*PEB).guest_heap_data_ptr as usize,
+                (*PEB).get_heap_data_address() as usize,
                 (*PEB).guest_heap_data_size as usize,
             );
 
-        __security_cookie = seed;
+        __security_cookie = peb_address ^ seed;
 
         // Set the seed for the random number generator for C code using rand;
         let srand_seed = ((peb_address << 8 ^ seed >> 4) >> 32) as u32;
@@ -110,16 +110,36 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
             .expect("Invalid log level");
         init_logger(max_log_level);
 
-        if (*PEB).run_mode == RunMode::Hypervisor {
-            // This static is to make it easier to implement the __chkstk function in assembly.
-            // It also means that, should we change the layout of the struct in the future, we
-            // don't have to change the assembly code. Plus, while this could be accessible via
-            // the PEB, we don't want to expose it entirely to user code.
-            MIN_STACK_ADDRESS = (*PEB).guest_stack_data_ptr;
+        match RUNNING_MODE {
+            RunMode::Hypervisor => {
+                // This static is to make it easier to implement the __chkstk function in assembly.
+                // It also means that, should we change the layout of the struct in the future, we
+                // don't have to change the assembly code. Plus, while this could be accessible via
+                // the PEB, we don't want to expose it entirely to user code.
+                MIN_STACK_ADDRESS = (*PEB).get_stack_data_address();
 
-            // Setup GDT and IDT
-            load_gdt();
-            load_idt();
+                // Setup GDT and IDT
+                load_gdt();
+                load_idt();
+            }
+            RunMode::InProcessLinux | RunMode::InProcessWindows => {
+                OUTB_HANDLER = {
+                    let outb_handler: extern "C" fn(u16, u8) =
+                        core::mem::transmute((*PEB).outb_ptr);
+                    Some(outb_handler)
+                };
+
+                if (*PEB).outb_ptr_ctx == 0 {
+                    panic!("outb_ptr_ctx is null");
+                }
+
+                OUTB_HANDLER_CTX = {
+                    let outb_handler_ctx: extern "C" fn(*mut core::ffi::c_void, u16, u8) =
+                        core::mem::transmute((*PEB).outb_ptr);
+                    Some(outb_handler_ctx)
+                };
+            }
+            _ => panic!("Invalid runmode in PEB"),
         }
 
         reset_error();

@@ -29,7 +29,7 @@ use crate::mem::shared_mem::GuestSharedMemory;
 ///
 /// NOTE: This is not part of the C Hyperlight API , it is intended only to be
 /// called in proc through a pointer passed to the guest.
-extern "win64" fn call_outb(ptr: *mut Arc<Mutex<dyn OutBHandlerCaller>>, port: u16, data: u64) {
+extern "C" fn call_outb(ptr: *mut Arc<Mutex<dyn OutBHandlerCaller>>, port: u16, data: u64) {
     let outb_handlercaller = unsafe { Box::from_raw(ptr) };
     let res = outb_handlercaller
         .try_lock()
@@ -99,7 +99,11 @@ impl<'a> LeakedOutBWrapper<'a> {
         };
 
         let addr: u64 = res.hdl_wrapper_addr()?;
-        mgr.set_outb_address_and_context(Self::outb_addr(), addr)?;
+        let mut peb = mgr.read_hyperlight_peb()?;
+        peb.set_outb_ptr(Self::outb_addr());
+        peb.set_outb_ptr_ctx(addr);
+        mgr.write_hyperlight_peb(peb)?;
+
         Ok(res)
     }
 

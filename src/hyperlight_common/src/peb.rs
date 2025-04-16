@@ -1,4 +1,4 @@
-use crate::PAGE_SIZE;
+use crate::{PAGE_SIZE, RUNNING_MODE};
 
 /// Hyperlight supports 2 primary modes:
 /// 1. Hypervisor mode
@@ -34,8 +34,12 @@ pub struct HyperlightPEB {
     /// Hyperlight, but with no hypervisor isolation. When we
     /// run in-process, we can't rely on the usual mechanism for
     /// host function calls (i.e., `outb`). Instead, we call a
-    /// function directly, which is represented by this pointer.
+    /// function directly, which is represented by these pointers.
     pub outb_ptr: u64,
+    pub outb_ptr_ctx: u64,
+
+    /// The host base address for the custom guest memory region.
+    pub guest_memory_host_base_address: u64,
 
     /// The base address for the guest memory region.
     pub guest_memory_base_address: u64,
@@ -52,43 +56,43 @@ pub struct HyperlightPEB {
 
     /// Guest error data can be used to pass guest error information
     /// between host and the guest.
-    pub guest_error_data_ptr: u64,
+    pub guest_error_data_offset: u64,
     pub guest_error_data_size: u64,
 
     /// Host error data can be used to pass host error information
     /// between the host and the guest.
-    pub host_error_data_ptr: u64,
+    pub host_error_data_offset: u64,
     pub host_error_data_size: u64,
 
     /// The input data pointer is used to pass data from
     /// the host to the guest.
-    pub input_data_ptr: u64,
+    pub input_data_offset: u64,
     pub input_data_size: u64,
 
     /// The output data pointer is used to pass data from
     /// the guest to the host.
-    pub output_data_ptr: u64,
+    pub output_data_offset: u64,
     pub output_data_size: u64,
 
     /// The guest panic context pointer can be used to pass
     /// panic context data from the guest to the host.
-    pub guest_panic_context_ptr: u64,
+    pub guest_panic_context_offset: u64,
     pub guest_panic_context_size: u64,
 
     /// The guest heap data pointer points to a region of
     /// memory in the guest that is used for heap allocations.
-    pub guest_heap_data_ptr: u64,
+    pub guest_heap_data_offset: u64,
     pub guest_heap_data_size: u64,
 
     /// The guest stack data pointer points to a region of
     /// memory in the guest that is used for stack allocations.
-    pub guest_stack_data_ptr: u64,
+    pub guest_stack_data_offset: u64,
     pub guest_stack_data_size: u64,
 
     // Host function details may be used in the guest before
     // issuing a host function call to validate it before
     // ensuing a `VMEXIT`.
-    pub host_function_details_ptr: u64,
+    pub host_function_details_offset: u64,
     pub host_function_details_size: u64,
 }
 
@@ -97,8 +101,8 @@ impl HyperlightPEB {
         // we set the guest stack at the start of the guest memory region to leverage
         // the stack guard page before it
         self.set_guest_stack_data_region(
-            self.guest_memory_base_address, // start at base of custom guest memory region,
-            None,                           // don't override the stack size
+            0x0,  // start at base of custom guest memory region,
+            None, // don't override the stack size
         );
 
         let guest_stack_size = self.get_guest_stack_data_size();
@@ -143,31 +147,31 @@ impl HyperlightPEB {
 
     // Sets the guest error data region, where the guest can write errors to.
     pub fn set_guest_error_data_region(&mut self, ptr: u64, size: u64) {
-        self.guest_error_data_ptr = self.guest_memory_base_address + ptr;
+        self.guest_error_data_offset = ptr;
         self.guest_error_data_size = size;
     }
 
     // Sets the host error data region, where the host can write errors to.
     pub fn set_host_error_data_region(&mut self, ptr: u64, size: u64) {
-        self.host_error_data_ptr = self.guest_memory_base_address + ptr;
+        self.host_error_data_offset = ptr;
         self.host_error_data_size = size;
     }
 
     // Sets the input data region, where the host can write things like function calls to.
     pub fn set_input_data_region(&mut self, ptr: u64, size: u64) {
-        self.input_data_ptr = self.guest_memory_base_address + ptr;
+        self.input_data_offset = ptr;
         self.input_data_size = size;
     }
 
     // Sets the output data region, where the guest can write things like function return values to.
     pub fn set_output_data_region(&mut self, ptr: u64, size: u64) {
-        self.output_data_ptr = self.guest_memory_base_address + ptr;
+        self.output_data_offset = ptr;
         self.output_data_size = size;
     }
 
     // Sets the guest panic context region, where the guest can write panic context data to.
     pub fn set_guest_panic_context_region(&mut self, ptr: u64, size: u64) {
-        self.guest_panic_context_ptr = self.guest_memory_base_address + ptr;
+        self.guest_panic_context_offset = ptr;
         self.guest_panic_context_size = size;
     }
 
@@ -184,7 +188,7 @@ impl HyperlightPEB {
 
     // Sets the guest heap data region.
     pub fn set_guest_heap_data_region(&mut self, ptr: u64, size_override: Option<u64>) {
-        self.guest_heap_data_ptr = self.guest_memory_base_address + ptr;
+        self.guest_heap_data_offset = ptr;
         // the Hyperlight host always sets the heap data size to a default value, the
         // guest has the option to override it.
         if let Some(size) = size_override {
@@ -211,7 +215,7 @@ impl HyperlightPEB {
 
     // Sets the guest stack data region.
     pub fn set_guest_stack_data_region(&mut self, ptr: u64, size_override: Option<u64>) {
-        self.guest_stack_data_ptr = self.guest_memory_base_address + ptr;
+        self.guest_stack_data_offset = ptr;
 
         // the Hyperlight host always sets the stack data size to a default value, the
         // guest has the option to override it.
@@ -228,17 +232,148 @@ impl HyperlightPEB {
 
     // Sets the host function details region, where the guest can write host function details to.
     pub fn set_host_function_details_region(&mut self, ptr: u64, size: u64) {
-        self.host_function_details_ptr = self.guest_memory_base_address + ptr;
+        self.host_function_details_offset = ptr;
         self.host_function_details_size = size;
     }
 
-    // Gets the input data region, where the host can write things like function calls to.
+    // Gets the input data guest region, where the host can write things like function calls to.
+    pub fn get_input_data_guest_region(&self) -> (u64, u64) {
+        (
+            self.input_data_offset + self.guest_memory_base_address,
+            self.input_data_size,
+        )
+    }
+
+    // Gets input data host region.
+    pub fn get_input_data_host_region(&self) -> (u64, u64) {
+        (
+            self.input_data_offset + self.guest_memory_host_base_address,
+            self.input_data_size,
+        )
+    }
+
+    // Gets input data region.
     pub fn get_input_data_region(&self) -> (u64, u64) {
-        (self.input_data_ptr, self.input_data_size)
+        unsafe {
+            match RUNNING_MODE {
+                RunMode::Hypervisor => self.get_input_data_guest_region(),
+                RunMode::InProcessWindows | RunMode::InProcessLinux => {
+                    self.get_input_data_host_region()
+                }
+                _ => panic!("Invalid running mode"),
+            }
+        }
     }
 
     // Gets the output data region, where the guest can write things like function return values to.
+    pub fn get_output_data_guest_region(&self) -> (u64, u64) {
+        (
+            self.output_data_offset + self.guest_memory_base_address,
+            self.output_data_size,
+        )
+    }
+
+    // Gets output data host region.
+    pub fn get_output_data_host_region(&self) -> (u64, u64) {
+        (
+            self.output_data_offset + self.guest_memory_host_base_address,
+            self.output_data_size,
+        )
+    }
+
+    // Gets output data region.
     pub fn get_output_data_region(&self) -> (u64, u64) {
-        (self.output_data_ptr, self.output_data_size)
+        unsafe {
+            match RUNNING_MODE {
+                RunMode::Hypervisor => self.get_output_data_guest_region(),
+                RunMode::InProcessWindows | RunMode::InProcessLinux => {
+                    self.get_output_data_host_region()
+                }
+                _ => panic!("Invalid running mode"),
+            }
+        }
+    }
+
+    // Gets the guest heap data address.
+    pub fn get_heap_data_address(&self) -> u64 {
+        unsafe {
+            match RUNNING_MODE {
+                RunMode::Hypervisor => self.guest_heap_data_offset + self.guest_memory_base_address,
+                RunMode::InProcessWindows | RunMode::InProcessLinux => {
+                    self.guest_heap_data_offset + self.guest_memory_host_base_address
+                }
+                _ => panic!("Invalid running mode"),
+            }
+        }
+    }
+
+    // Gets the guest stack data address.
+    pub fn get_stack_data_address(&self) -> u64 {
+        unsafe {
+            match RUNNING_MODE {
+                RunMode::Hypervisor => {
+                    self.guest_stack_data_offset + self.guest_memory_base_address
+                }
+                RunMode::InProcessWindows | RunMode::InProcessLinux => {
+                    self.guest_stack_data_offset + self.guest_memory_host_base_address
+                }
+                _ => panic!("Invalid running mode"),
+            }
+        }
+    }
+
+    // Gets the guest error data address.
+    pub fn get_guest_error_data_address(&self) -> u64 {
+        unsafe {
+            match RUNNING_MODE {
+                RunMode::Hypervisor => {
+                    self.guest_error_data_offset + self.guest_memory_base_address
+                }
+                RunMode::InProcessWindows | RunMode::InProcessLinux => {
+                    self.guest_error_data_offset + self.guest_memory_host_base_address
+                }
+                _ => panic!("Invalid running mode"),
+            }
+        }
+    }
+
+    // Gets the guest panic context address.
+    pub fn get_guest_panic_context_address(&self) -> u64 {
+        unsafe {
+            match RUNNING_MODE {
+                RunMode::Hypervisor => {
+                    self.guest_panic_context_offset + self.guest_memory_base_address
+                }
+                RunMode::InProcessWindows | RunMode::InProcessLinux => {
+                    self.guest_panic_context_offset + self.guest_memory_host_base_address
+                }
+                _ => panic!("Invalid running mode"),
+            }
+        }
+    }
+
+    // Get host error guest offset.
+    pub fn get_host_error_guest_offset(&self) -> u64 {
+        self.host_error_data_offset + self.guest_memory_base_address
+    }
+
+    // Get guest error guest offset.
+    pub fn get_guest_error_guest_offset(&self) -> u64 {
+        self.guest_error_data_offset + self.guest_memory_base_address
+    }
+
+    // Get guest panic context offset.
+    pub fn get_guest_panic_context_offset(&self) -> u64 {
+        self.guest_panic_context_offset + self.guest_memory_base_address
+    }
+
+    // Sets the outb pointer, which is used for in-process execution.
+    pub fn set_outb_ptr(&mut self, ptr: u64) {
+        self.outb_ptr = ptr;
+    }
+
+    // Sets the outb pointer context, which is used for in-process execution.
+    pub fn set_outb_ptr_ctx(&mut self, ptr: u64) {
+        self.outb_ptr_ctx = ptr;
     }
 }

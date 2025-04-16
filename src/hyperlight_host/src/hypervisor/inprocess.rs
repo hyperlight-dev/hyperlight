@@ -33,10 +33,9 @@ pub struct InprocessArgs<'a> {
     pub entrypoint_raw: u64,
     /// raw ptr to peb structure. Since we are in-process mode, this is a ptr in the host's address space
     pub peb_ptr_raw: u64,
-    // TODO(danbugs:297): bring back
-    // // compiler can't tell that we are actually using this in a deeply unsafe way.
-    // #[allow(dead_code)]
-    // pub(crate) leaked_outb_wrapper: LeakedOutBWrapper<'a>,
+    // compiler can't tell that we are actually using this in a deeply unsafe way.
+    #[allow(dead_code)]
+    pub(crate) leaked_outb_wrapper: LeakedOutBWrapper<'a>,
 }
 
 /// Arguments passed to inprocess driver
@@ -72,7 +71,7 @@ impl Debug for InprocessDriver<'_> {
 impl<'a> Hypervisor for InprocessDriver<'a> {
     fn initialise(
         &mut self,
-        _peb_addr: crate::mem::ptr::RawPtr,
+        _peb_addr: u64,
         seed: u64,
         _outb_handle_fn: super::handlers::OutBHandlerWrapper,
         _mem_access_fn: super::handlers::MemAccessHandlerWrapper,
@@ -80,16 +79,10 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
         _guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] _dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> crate::Result<()> {
-        let entrypoint_fn: extern "win64" fn(u64, u64, u64, u64) =
+        let entrypoint_fn: extern "win64" fn(u64, u64, u64) =
             unsafe { std::mem::transmute(self.args.entrypoint_raw as *const c_void) };
 
-        // TODO(danbugs:297): fix
-        entrypoint_fn(
-            self.args.peb_ptr_raw,
-            seed,
-            0x0 as u64,
-            log::max_level() as u64,
-        );
+        entrypoint_fn(self.args.peb_ptr_raw, seed, log::max_level() as u64);
 
         Ok(())
     }

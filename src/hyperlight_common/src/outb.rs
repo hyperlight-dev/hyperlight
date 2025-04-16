@@ -2,8 +2,8 @@ use core::arch;
 
 use anyhow::{bail, Result};
 
-use crate::hyperlight_peb::RunMode;
-use crate::RUNNING_MODE;
+use crate::peb::RunMode;
+use crate::{OUTB_HANDLER, OUTB_HANDLER_CTX, PEB, RUNNING_MODE};
 
 /// Supported actions when issuing an OUTB actions by Hyperlight.
 /// - Log: for logging,
@@ -44,16 +44,13 @@ pub fn outb(port: u16, value: u8) {
                 hloutb(port, value);
             }
             RunMode::InProcessLinux | RunMode::InProcessWindows => {
-                // TODO(danbugs:297): bring back
-                // if let Some(outb_func) = OUTB_PTR_WITH_CONTEXT {
-                //     if let Some(peb_ptr) = PEB {
-                //         outb_func((*peb_ptr).pOutbContext, port, value);
-                //     }
-                // } else if let Some(outb_func) = OUTB_PTR {
-                //     outb_func(port, value);
-                // } else {
-                //     panic!("Tried to call outb without hypervisor and without outb function ptrs");
-                // }
+                if let Some(outb_func) = OUTB_HANDLER_CTX {
+                    outb_func((*PEB).outb_ptr_ctx as *mut core::ffi::c_void, port, value);
+                } else if let Some(outb_func) = OUTB_HANDLER {
+                    outb_func(port, value);
+                } else {
+                    panic!("Tried to call outb without hypervisor and without outb function ptrs");
+                }
             }
             _ => {
                 panic!("Tried to call outb in invalid runmode");

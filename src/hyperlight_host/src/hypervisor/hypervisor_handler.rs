@@ -298,6 +298,7 @@ impl HypervisorHandler {
                                 {
                                     hv = Some(set_up_hypervisor_partition(
                                         execution_variables.shm.try_lock().map_err(|e| new_error!("Failed to lock shm: {}", e))?.deref_mut().as_mut().ok_or_else(|| new_error!("shm not set"))?,
+                                        configuration.outb_handler.clone(),
                                         #[cfg(gdb)]
                                         &debug_info,
                                     )?);
@@ -815,6 +816,8 @@ pub enum HandlerMsg {
 
 fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
+    #[allow(unused_variables)] // parameter only used for in-process mode
+    outb_handler: OutBHandlerWrapper,
     #[cfg(gdb)] debug_info: &Option<DebugInfo>,
 ) -> Result<Box<dyn Hypervisor>> {
     mgr.set_up_shared_memory()?;
@@ -838,12 +841,14 @@ fn set_up_hypervisor_partition(
                 // in-process feature + debug build
                 use super::inprocess::InprocessArgs;
                 use super::inprocess::InprocessDriver;
+                use crate::sandbox::leaked_outb::LeakedOutBWrapper;
 
-                // TODO(danbugs:297): fix in process to properly set up the outb_ptr in HyperlightPEB
+                let leaked_outb_wrapper = LeakedOutBWrapper::new(mgr, outb_handler)?;
                 let hv = InprocessDriver::new(InprocessArgs {
                     entrypoint_raw: u64::from(mgr.load_addr.clone() + mgr.entrypoint_offset),
-                    peb_ptr_raw: mgr
-                        .get_in_process_peb_address(mgr.shared_mem.base_addr() as u64)?,
+                    peb_ptr_raw: mgr.memory_sections.get_hyperlight_peb_section_host_address().ok_or(
+                        "Hyperlight PEB section not found")? as u64,
+                    leaked_outb_wrapper,
                 })?;
                 Ok(Box::new(hv))
             } else if #[cfg(inprocess)]{

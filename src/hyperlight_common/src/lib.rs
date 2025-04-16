@@ -25,7 +25,7 @@ pub const PAGE_SIZE: usize = 0x1_000; // 4KB
 extern crate alloc;
 extern crate core;
 
-use crate::hyperlight_peb::{HyperlightPEB, RunMode};
+use crate::peb::{HyperlightPEB, RunMode};
 
 pub mod flatbuffer_wrappers;
 /// cbindgen:ignore
@@ -44,7 +44,7 @@ mod flatbuffers;
 /// the two will communicate. For example, in the PEB, you can set the address for the
 /// input and output data regions—these regions are imperative for the host and guest to
 /// be able to communicate via function calls.
-pub mod hyperlight_peb;
+pub mod peb;
 
 /// We keep track of the PEB address in a global variable that references a region of
 /// shared memory.
@@ -53,6 +53,14 @@ pub static mut PEB: *mut HyperlightPEB = core::ptr::null_mut();
 /// Hyperlight supports running in both hypervisor mode and in process mode. We keep track of that
 /// state in this global variable.
 pub static mut RUNNING_MODE: RunMode = RunMode::None;
+
+/// For in-process mode, we can't call the `outb` instruction directly because it is a privileged
+/// instruction. Instead, we use a function pointer to call an `outb_handler` function.
+/// For in-process mode, we can't call the `outb` instruction directly because it is a privileged
+/// instruction. Instead, we use a function pointer to call an `outb_handler` function.
+pub static mut OUTB_HANDLER: Option<extern "C" fn(u16, u8)> = None;
+
+pub static mut OUTB_HANDLER_CTX: Option<extern "C" fn(*mut core::ffi::c_void, u16, u8)> = None;
 
 /// Hyperlight operates with a host-guest execution model.
 ///

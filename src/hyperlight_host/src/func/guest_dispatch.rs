@@ -54,7 +54,7 @@ pub(crate) fn call_function_on_guest(
         .try_into()
         .map_err(|_| HyperlightError::Error("Failed to serialize FunctionCall".to_string()))?;
 
-    let input_data_region = mem_mgr.read_hyperlight_peb()?.get_input_data_region();
+    let input_data_region = mem_mgr.read_hyperlight_peb()?.get_input_data_guest_region();
 
     mem_mgr.write_guest_function_call(input_data_region, &buffer)?;
 
@@ -80,7 +80,9 @@ pub(crate) fn call_function_on_guest(
     mem_mgr.check_stack_guard()?; // <- wrapper around mem_mgr `check_for_stack_guard`
     check_for_guest_error(mem_mgr)?;
 
-    let output_data_region = mem_mgr.read_hyperlight_peb()?.get_output_data_region();
+    let output_data_region = mem_mgr
+        .read_hyperlight_peb()?
+        .get_output_data_guest_region();
 
     mem_mgr
         .get_guest_function_call_result(output_data_region)
