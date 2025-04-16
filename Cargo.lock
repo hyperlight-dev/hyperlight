@@ -584,6 +584,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
+name = "elfcore"
+version = "1.1.5"
+source = "git+https://github.com/dblnz/elfcore.git?branch=split-linux-impl-from-elfcore#4e7fd38b9c393c3b143e0d77d198d111f1afed8d"
+dependencies = [
+ "libc",
+ "nix 0.26.4",
+ "smallvec",
+ "thiserror 1.0.69",
+ "tracing",
+ "zerocopy 0.7.35",
+]
+
+[[package]]
 name = "env_filter"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1055,6 +1068,7 @@ dependencies = [
  "crossbeam",
  "crossbeam-channel",
  "crossbeam-queue",
+ "elfcore",
  "env_logger",
  "flatbuffers",
  "gdbstub",
@@ -1071,6 +1085,7 @@ dependencies = [
  "mshv-bindings 0.3.2",
  "mshv-ioctls 0.2.1",
  "mshv-ioctls 0.3.2",
+ "nix 0.29.0",
  "once_cell",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -1651,6 +1666,29 @@ dependencies = [
  "mshv-bindings 0.3.2",
  "thiserror 2.0.12",
  "vmm-sys-util 0.13.0",
+]
+
+[[package]]
+name = "nix"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
+dependencies = [
+ "bitflags 1.3.2",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.9.0",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]

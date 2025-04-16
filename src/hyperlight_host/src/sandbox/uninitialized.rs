@@ -39,6 +39,11 @@ use crate::sandbox_state::sandbox::EvolvableSandbox;
 use crate::sandbox_state::transition::Noop;
 use crate::{log_build_details, log_then_return, new_error, MultiUseSandbox, Result};
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SandboxMetadata {
+    pub(crate) binary_path: Option<String>,
+}
+
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
 ///
 /// Prior to initializing a full-fledged `Sandbox`, you must create one of
@@ -58,6 +63,7 @@ pub struct UninitializedSandbox {
     pub(crate) max_guest_log_level: Option<LevelFilter>,
     #[cfg(gdb)]
     pub(crate) debug_info: Option<DebugInfo>,
+    pub(crate) metadata: SandboxMetadata,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -136,17 +142,22 @@ impl UninitializedSandbox {
         #[cfg(target_os = "windows")]
         check_windows_version()?;
 
+        // If the guest binary is a file make sure the path is saved
+        let mut metadata = SandboxMetadata::default();
+
         // If the guest binary is a file make sure it exists
         let guest_binary = match guest_binary {
             GuestBinary::FilePath(binary_path) => {
                 let path = Path::new(&binary_path)
                     .canonicalize()
                     .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?;
-                GuestBinary::FilePath(
-                    path.into_os_string()
-                        .into_string()
-                        .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?,
-                )
+                let path = path
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?;
+
+                metadata.binary_path = Some(path.clone());
+                GuestBinary::FilePath(path)
             }
             buffer @ GuestBinary::Buffer(_) => buffer,
         };
@@ -200,6 +211,7 @@ impl UninitializedSandbox {
             max_guest_log_level: None,
             #[cfg(gdb)]
             debug_info,
+            metadata,
         };
 
         // TODO: These only here to accommodate some writer functions.

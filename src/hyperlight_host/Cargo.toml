@@ -48,6 +48,8 @@ strum = { version = "0.27", features = ["derive"] }
 tempfile = { version = "3.19", optional = true }
 serde_yaml = "0.9"
 anyhow = "1.0"
+elfcore = { git = "https://github.com/dblnz/elfcore.git", branch = "split-linux-impl-from-elfcore" }
+nix = { version = "0.29.0", features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
@@ -118,7 +120,7 @@ cfg_aliases = "0.2.1"
 built = { version = "0.7.7", features = ["chrono", "git2"] }
 
 [features]
-default = ["kvm", "mshv2", "seccomp"]
+default = ["crashdump", "gdb", "kvm", "mshv2", "seccomp"]
 seccomp = ["dep:seccompiler"]
 function_call_metrics = []
 executable_heap = []

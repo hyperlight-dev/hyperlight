@@ -237,7 +237,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion];
+    fn get_crashdump_context(&self) -> Result<crashdump::CrashDumpContext>;
 
     #[cfg(gdb)]
     /// handles the cases when the vCPU stops due to a Debug event
@@ -351,7 +351,7 @@ pub(crate) mod tests {
         HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
     };
     use crate::mem::ptr::RawPtr;
-    use crate::sandbox::uninitialized::GuestBinary;
+    use crate::sandbox::uninitialized::{GuestBinary, SandboxMetadata};
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{new_error, Result};
 
@@ -413,6 +413,7 @@ pub(crate) mod tests {
             gshm,
             #[cfg(gdb)]
             None,
+            SandboxMetadata { binary_path: None },
         )?;
 
         hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
