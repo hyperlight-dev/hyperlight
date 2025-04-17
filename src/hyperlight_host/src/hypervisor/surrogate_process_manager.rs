@@ -21,7 +21,7 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use hyperlight_common::mem::PAGE_SIZE;
+use hyperlight_common::PAGE_SIZE;
 use rust_embed::RustEmbed;
 use tracing::{error, info, instrument, Span};
 use windows::core::{s, PCSTR};
@@ -429,7 +429,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use hyperlight_common::mem::PAGE_SIZE;
+    use hyperlight_common::PAGE_SIZE;
     use rand::{rng, Rng};
     use serial_test::serial;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};

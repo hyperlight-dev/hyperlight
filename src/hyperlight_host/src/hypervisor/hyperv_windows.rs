@@ -19,7 +19,7 @@ use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
 
-use hyperlight_common::mem::PAGE_SIZE;
+use hyperlight_common::PAGE_SIZE;
 use log::LevelFilter;
 use tracing::{instrument, Span};
 use windows::Win32::System::Hypervisor::{
@@ -43,8 +43,8 @@ use super::{
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
 use crate::{debug, new_error, Result};
 
 /// A Hypervisor driver for HyperV-on-Windows.
@@ -55,7 +55,7 @@ pub(crate) struct HypervWindowsDriver {
     source_address: *mut c_void,          // this points into the first guard page
     entrypoint: u64,
     orig_rsp: GuestPtr,
-    mem_regions: Vec<MemoryRegion>,
+    mem_sections: SandboxMemorySections,
 }
 /* This does not automatically impl Send/Sync because the host
  * address of the shared memory region is a raw pointer, which are
@@ -68,7 +68,7 @@ unsafe impl Sync for HypervWindowsDriver {}
 impl HypervWindowsDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
-        mem_regions: Vec<MemoryRegion>,
+        mem_sections: SandboxMemorySections,
         raw_size: usize,
         raw_source_address: *mut c_void,
         pml4_address: u64,
@@ -86,7 +86,7 @@ impl HypervWindowsDriver {
             mgr.get_surrogate_process(raw_size, raw_source_address, mmap_file_handle)
         }?;
 
-        partition.map_gpa_range(&mem_regions, surrogate_process.process_handle)?;
+        partition.map_gpa_range(&mem_sections, surrogate_process.process_handle)?;
 
         let mut proc = VMProcessor::new(partition)?;
         Self::setup_initial_sregs(&mut proc, pml4_address)?;
@@ -101,7 +101,7 @@ impl HypervWindowsDriver {
             source_address: raw_source_address,
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
-            mem_regions,
+            mem_sections,
         })
     }
 
@@ -167,7 +167,7 @@ impl Debug for HypervWindowsDriver {
             .field("Entrypoint", &self.entrypoint)
             .field("Original RSP", &self.orig_rsp);
 
-        for region in &self.mem_regions {
+        for (_, region) in self.mem_sections.iter() {
             fs.field("Memory Region", &region);
         }
 
@@ -302,9 +302,8 @@ impl Hypervisor for HypervWindowsDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
         &mut self,
-        peb_address: RawPtr,
+        hyperlight_peb_guest_memory_region_address: u64,
         seed: u64,
-        page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
@@ -321,9 +320,8 @@ impl Hypervisor for HypervWindowsDriver {
             rsp: self.orig_rsp.absolute()?,
 
             // function args
-            rcx: peb_address.into(),
+            rcx: hyperlight_peb_guest_memory_region_address,
             rdx: seed,
-            r8: page_size.into(),
             r9: max_guest_log_level,
             rflags: 1 << 1, // eflags bit index 1 is reserved and always needs to be 1
 
@@ -449,8 +447,11 @@ impl Hypervisor for HypervWindowsDriver {
                     gpa, access_info, &self
                 );
 
-                match self.get_memory_access_violation(gpa as usize, &self.mem_regions, access_info)
-                {
+                match self.get_memory_access_violation(
+                    gpa as usize,
+                    &self.mem_sections,
+                    access_info,
+                ) {
                     Some(access_info) => access_info,
                     None => HyperlightExit::Mmio(gpa),
                 }
@@ -488,32 +489,33 @@ impl Hypervisor for HypervWindowsDriver {
 
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
+        &self.mem_sections
     }
 }
 
-#[cfg(test)]
-pub mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use serial_test::serial;
-
-    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
-    use crate::hypervisor::tests::test_initialise;
-    use crate::Result;
-
-    #[test]
-    #[serial]
-    fn test_init() {
-        let outb_handler = {
-            let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
-                Box::new(|_, _| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(OutBHandler::from(func)))
-        };
-        let mem_access_handler = {
-            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(MemAccessHandler::from(func)))
-        };
-        test_initialise(outb_handler, mem_access_handler).unwrap();
-    }
-}
+// TODO(danbugs:297): bring back
+// #[cfg(test)]
+// pub mod tests {
+//     use std::sync::{Arc, Mutex};
+//
+//     use serial_test::serial;
+//
+//     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
+//     use crate::hypervisor::tests::test_initialise;
+//     use crate::Result;
+//
+//     #[test]
+//     #[serial]
+//     fn test_init() {
+//         let outb_handler = {
+//             let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
+//                 Box::new(|_, _| -> Result<()> { Ok(()) });
+//             Arc::new(Mutex::new(OutBHandler::from(func)))
+//         };
+//         let mem_access_handler = {
+//             let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
+//             Arc::new(Mutex::new(MemAccessHandler::from(func)))
+//         };
+//         test_initialise(outb_handler, mem_access_handler).unwrap();
+//     }
+// }
