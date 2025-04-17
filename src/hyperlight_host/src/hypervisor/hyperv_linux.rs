@@ -26,7 +26,7 @@ extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
 
-use log::LevelFilter;
+use log::{error, LevelFilter};
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 #[cfg(gdb)]
@@ -62,7 +62,7 @@ use super::{
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::sandbox::sandbox_builder::SandboxMemorySections;
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -284,8 +284,6 @@ pub(crate) fn is_hypervisor_present() -> bool {
 /// called the Microsoft Hypervisor (MSHV)
 pub(super) struct HypervLinuxDriver {
     _mshv: Mshv,
-    // TODO(danbugs:297): remove
-    #[allow(dead_code)]
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
     entrypoint: u64,
@@ -374,11 +372,10 @@ impl HypervLinuxDriver {
             (None, None)
         };
 
-        // TODO(danbugs:297): bring back
-        // mem_sections.iter().try_for_each(|region| {
-        //     let mshv_region = region.to_owned().into();
-        //     vm_fd.map_user_memory(mshv_region)
-        // })?;
+        mem_sections.iter().try_for_each(|(_, region)| {
+            let mshv_region = region.to_owned().into();
+            vm_fd.map_user_memory(mshv_region)
+        })?;
 
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr.absolute()?)?;
 
@@ -471,7 +468,7 @@ impl Hypervisor for HypervLinuxDriver {
         let regs = StandardRegisters {
             rip: self.entrypoint,
             rsp: self.orig_rsp.absolute()?,
-            rflags: 2, //bit 1 of rlags is required to be set
+            rflags: 2, //bit 1 of rflags is required to be set
 
             // function args
             rcx: hyperlight_peb_guest_memory_region_address,
@@ -491,6 +488,8 @@ impl Hypervisor for HypervLinuxDriver {
             dbg_mem_access_fn,
         )?;
 
+        // TODO(danbugs:297): here, we should update the rsp to what the guest configured.
+
         Ok(())
     }
 
@@ -507,7 +506,7 @@ impl Hypervisor for HypervLinuxDriver {
         let regs = StandardRegisters {
             rip: dispatch_func_addr.into(),
             rsp: self.orig_rsp.absolute()?,
-            rflags: 2, //bit 1 of rlags is required to be set
+            rflags: 2, //bit 1 of rflags is required to be set
             ..Default::default()
         };
         self.vcpu_fd.set_regs(&regs)?;
@@ -611,24 +610,21 @@ impl Hypervisor for HypervLinuxDriver {
                 INVALID_GPA_ACCESS_MESSAGE => {
                     let mimo_message = m.to_memory_info()?;
                     let gpa = mimo_message.guest_physical_address;
-                    // TODO(danbugs:297): bring back
-                    // let access_info = MemoryRegionFlags::try_from(mimo_message)?;
+                    let access_info = MemoryRegionFlags::try_from(mimo_message)?;
                     crate::debug!(
                         "mshv MMIO invalid GPA access -Details: Address: {} \n {:#?}",
                         gpa,
                         &self
                     );
-                    // TODO(danbugs:297): bring back
-                    // match self.get_memory_access_violation(
-                    //     gpa as usize,
-                    //     &self.mem_regions,
-                    //     access_info,
-                    // ) {
-                    //     Some(access_info_violation) => access_info_violation,
-                    //     None => HyperlightExit::Mmio(gpa),
-                    // }
 
-                    HyperlightExit::Mmio(gpa)
+                    match self.get_memory_access_violation(
+                        gpa as usize,
+                        &self.mem_sections,
+                        access_info,
+                    ) {
+                        Some(access_info_violation) => access_info_violation,
+                        None => HyperlightExit::Mmio(gpa),
+                    }
                 }
                 // The only case an intercept exit is expected is when debugging is enabled
                 // and the intercepts are installed
@@ -714,19 +710,18 @@ impl Hypervisor for HypervLinuxDriver {
     }
 }
 
-// TODO(danbugs:297): bring back
-// impl Drop for HypervLinuxDriver {
-//     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-//     fn drop(&mut self) {
-//         for region in self.mem_sections.iter() {
-//             let mshv_region: mshv_user_mem_region = region.to_owned().into();
-//             match self.vm_fd.unmap_user_memory(mshv_region) {
-//                 Ok(_) => (),
-//                 Err(e) => error!("Failed to unmap user memory in HyperVOnLinux ({:?})", e),
-//             }
-//         }
-//     }
-// }
+impl Drop for HypervLinuxDriver {
+    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
+    fn drop(&mut self) {
+        for region in self.mem_sections.iter() {
+            let mshv_region: mshv_bindings::mshv_user_mem_region = region.1.to_owned().into();
+            match self.vm_fd.unmap_user_memory(mshv_region) {
+                Ok(_) => (),
+                Err(e) => error!("Failed to unmap user memory in HyperVOnLinux ({:?})", e),
+            }
+        }
+    }
+}
 
 // TODO(danbugs:297): bring back
 // #[cfg(test)]
