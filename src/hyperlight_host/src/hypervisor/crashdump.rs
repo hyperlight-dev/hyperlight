@@ -16,15 +16,15 @@ pub(crate) fn crashdump_to_tempfile(hv: &dyn Hypervisor) -> Result<()> {
     temp_file.write_all(b"================ MEMORY DUMP =================\n")?;
 
     // write the raw memory dump for each memory region
-    for region in hv.get_memory_regions() {
-        if region.host_region.start == 0 || region.host_region.is_empty() {
+    for (_, region) in hv.get_memory_sections().iter() {
+        if region.page_aligned_guest_offset == 0 {
             continue;
         }
         // SAFETY: we got this memory region from the hypervisor so should never be invalid
         let region_slice = unsafe {
             std::slice::from_raw_parts(
-                region.host_region.start as *const u8,
-                region.host_region.len(),
+                region.host_address.ok_or("Failed to get host address")? as *const u8,
+                region.page_aligned_size,
             )
         };
         temp_file.write_all(region_slice)?;

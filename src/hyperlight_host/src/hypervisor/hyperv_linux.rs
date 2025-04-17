@@ -658,11 +658,10 @@ impl Hypervisor for HypervLinuxDriver {
         self as &mut dyn Hypervisor
     }
 
-    // TODO(danbugs:297): bring back
-    // #[cfg(crashdump)]
-    // fn get_memory_regions(&self) -> &[MemoryRegion] {
-    //     &self.mem_sections
-    // }
+    #[cfg(crashdump)]
+    fn get_memory_sections(&self) -> &SandboxMemorySections {
+        &self.mem_sections
+    }
 
     #[cfg(gdb)]
     fn handle_debug(

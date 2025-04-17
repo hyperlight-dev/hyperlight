@@ -22,9 +22,9 @@ use log::LevelFilter;
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::{HyperlightExit, Hypervisor};
-#[cfg(crashdump)]
-use crate::mem::memory_region::MemoryRegion;
 use crate::sandbox::leaked_outb::LeakedOutBWrapper;
+#[cfg(crashdump)]
+use crate::sandbox::sandbox_builder::SandboxMemorySections;
 use crate::Result;
 
 /// Arguments passed to inprocess driver
@@ -128,7 +128,7 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
     }
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        unimplemented!("get_memory_regions is not supported since we are in in-process mode")
+    fn get_memory_sections(&self) -> &SandboxMemorySections {
+        unimplemented!("get_memory_sections is not supported since we are in in-process mode")
     }
 }

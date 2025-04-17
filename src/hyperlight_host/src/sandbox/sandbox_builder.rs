@@ -957,4 +957,67 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    #[cfg(crashdump)]
+    fn test_sandbox_builder_crashdump() -> Result<()> {
+        // Capture list of files in /tmp before the test
+        let tmp_dir = Path::new("/tmp");
+        let before_files: std::collections::HashSet<_> = std::fs::read_dir(tmp_dir)
+            .expect("Failed to read /tmp directory")
+            .map(|e| e.unwrap().file_name())
+            .collect();
+
+        // Setup guest sandbox
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+
+        let mut uninitialized_sandbox = sandbox_builder.build()?;
+
+        // Register host function
+        fn add(a: i32, b: i32) -> Result<i32> {
+            Ok(a + b)
+        }
+        let host_function = Arc::new(Mutex::new(add));
+        host_function.register(&mut uninitialized_sandbox, "HostAdd")?;
+
+        // Evolve to multi-use sandbox
+        let mut multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+        // Call the guest function expected to crash
+        let result = multi_use_sandbox.call_guest_function_by_name(
+            "StackOverflow",
+            ReturnType::Void,
+            Some(vec![ParameterValue::Int(512)]),
+        );
+
+        assert!(result.is_err());
+
+        // Capture list of files in /tmp after the crash
+        let after_files: std::collections::HashSet<_> = std::fs::read_dir(tmp_dir)
+            .expect("Failed to read /tmp directory")
+            .map(|e| e.unwrap().file_name())
+            .collect();
+
+        // Find the new files created
+        let new_files: Vec<_> = after_files
+            .difference(&before_files)
+            .filter(|f| f.to_string_lossy().ends_with(".dmp"))
+            .collect();
+
+        assert!(!new_files.is_empty(), "No crashdump file was created.");
+
+        // Check the crashdump file(s)
+        for file_name in new_files {
+            let file_path = tmp_dir.join(file_name);
+            let metadata = std::fs::metadata(&file_path)?;
+            assert!(
+                metadata.len() > 0,
+                "Crashdump file is empty: {:?}",
+                file_path
+            );
+        }
+
+        Ok(())
+    }
 }
