@@ -181,7 +181,7 @@ fn call_host_func_impl(
             seccompiler::apply_filter(&seccomp_filter)?;
         }
 
-        crate::metrics::time_and_emit_host_call(name, || func.call(args))
+        crate::metrics::maybe_time_and_emit_host_call(name, || func.call(args))
     }
 
     cfg_if::cfg_if! {

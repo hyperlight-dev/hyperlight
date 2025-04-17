@@ -29,8 +29,13 @@ pub(crate) static METRIC_GUEST_FUNC_DURATION: &str = "guest_call_duration_second
 #[cfg(feature = "function_call_metrics")]
 pub(crate) static METRIC_HOST_FUNC_DURATION: &str = "host_call_duration_seconds";
 
-/// Utility function to emit a guest call duration metric
-pub(crate) fn time_and_emit_guest_call<T, F: FnOnce() -> T>(
+/// If the the `function_call_metrics` feature is enabled, this function measures
+/// the time it takes to execute the given closure, and will then emit a guest call metric
+/// with the given function name.
+///
+/// If the feature is not enabled, the given closure is executed without any additional metrics being emitted,
+/// and the result of the closure is returned directly.
+pub(crate) fn maybe_time_and_emit_guest_call<T, F: FnOnce() -> T>(
     #[allow(unused_variables)] name: &str,
     f: F,
 ) -> T {
@@ -51,8 +56,13 @@ pub(crate) fn time_and_emit_guest_call<T, F: FnOnce() -> T>(
     }
 }
 
-/// Utility function to emit a host call duration metric
-pub(crate) fn time_and_emit_host_call<T, F: FnOnce() -> T>(
+/// If the the `function_call_metrics` feature is enabled, this function measures
+/// the time it takes to execute the given closure, and will then emit a host call metric
+/// with the given function name.
+///
+/// If the feature is not enabled, the given closure is executed without any additional metrics being emitted,
+/// and the result of the closure is returned directly.
+pub(crate) fn maybe_time_and_emit_host_call<T, F: FnOnce() -> T>(
     #[allow(unused_variables)] name: &str,
     f: F,
 ) -> T {

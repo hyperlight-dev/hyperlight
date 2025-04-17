@@ -433,7 +433,7 @@ impl HypervisorHandler {
                                     .lock
                                         .try_read();
 
-                                let res = crate::metrics::time_and_emit_guest_call(
+                                let res = crate::metrics::maybe_time_and_emit_guest_call(
                                     &function_name,
                                     || {
                                         hv.dispatch_call_from_host(
