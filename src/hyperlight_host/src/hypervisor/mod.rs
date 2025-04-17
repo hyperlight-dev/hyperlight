@@ -235,9 +235,8 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     #[cfg(target_os = "windows")]
     fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 
-    // TODO(danbugs:297): bring back
-    // #[cfg(crashdump)]
-    // fn get_memory_regions(&self) -> &[MemoryRegion];
+    #[cfg(crashdump)]
+    fn get_memory_sections(&self) -> &SandboxMemorySections;
 
     #[cfg(gdb)]
     /// handles the cases when the vCPU stops due to a Debug event

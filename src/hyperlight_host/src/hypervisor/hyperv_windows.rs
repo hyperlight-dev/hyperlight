@@ -488,7 +488,7 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
+    fn get_memory_sections(&self) -> &SandboxMemorySections {
         &self.mem_sections
     }
 }
