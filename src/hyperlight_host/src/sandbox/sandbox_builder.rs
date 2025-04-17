@@ -167,6 +167,26 @@ impl SandboxMemorySections {
             .sum()
     }
 
+    pub(crate) fn read_hyperlight_peb(&self) -> Result<HyperlightPEB> {
+        let peb_offset = self
+            .get_hyperlight_peb_section_host_address()
+            .ok_or(new_error!("Hyperlight PEB section not found"))?
+            as *const HyperlightPEB;
+
+        Ok(unsafe { peb_offset.read() })
+    }
+
+    pub(crate) fn write_hyperlight_peb(&mut self, peb: HyperlightPEB) -> Result<()> {
+        let peb_offset = self
+            .get_hyperlight_peb_section_host_address()
+            .ok_or(new_error!("Hyperlight PEB section not found"))?
+            as *mut HyperlightPEB;
+
+        unsafe { peb_offset.copy_from(&peb, 1) };
+
+        Ok(())
+    }
+
     pub(crate) fn sections(&self) -> impl Iterator<Item = &SandboxMemorySection> {
         self.sections.values()
     }
@@ -547,8 +567,11 @@ impl SandboxBuilder {
 
         // - We need to create a tmp stack section to be able to set the initial RSP value.
         // The guest can later modify this to set up the stack however it wants.
-        let init_rsp =
-            self.memory_sections.get_tmp_stack_section_offset().unwrap() + tmp_stack_size;
+        let init_rsp = self
+            .memory_sections
+            .get_tmp_stack_section_offset()
+            .ok_or("tmp stack section not found")?
+            + tmp_stack_size;
         self = self.set_init_rsp(init_rsp as u64);
 
         // (e) custom guest memory guard page
@@ -735,63 +758,32 @@ impl SandboxBuilder {
         // Map host addresses to guest addresses
         sandbox_builder.map_host_addresses(exclusive_shared_memory.base_addr());
 
-        let hyperlight_peb = HyperlightPEB {
+        let hyperlight_peb = HyperlightPEB::new(
             run_mode,
-
-            // The `outb_ptr`/`outb_ptr_ctx` can only be set once we are evolving the uninitialized sandbox because
-            // only then we have all host functions registered.
-            outb_ptr: 0,
-            outb_ptr_ctx: 0,
-
-            guest_memory_host_base_address: sandbox_builder
+            guest_heap_size,
+            guest_stack_size,
+            sandbox_builder
                 .memory_sections
-                .get_custom_guest_memory_section_host_address()
-                as u64,
-
-            guest_memory_base_address: sandbox_builder
+                .get_custom_guest_memory_section_host_address() as u64,
+            sandbox_builder
                 .memory_sections
-                .get_custom_guest_memory_section_offset()
-                as u64,
-
-            guest_memory_size: sandbox_builder
+                .get_custom_guest_memory_section_offset() as u64,
+            sandbox_builder
                 .memory_sections
                 .get_custom_guest_memory_size() as u64,
-
-            // The `guest_function_dispatch_ptr` is set by the guest
-            guest_function_dispatch_ptr: 0,
-
-            guest_error_data_offset: 0,
-            guest_error_data_size: 0,
-
-            host_error_data_offset: 0,
-            host_error_data_size: 0,
-
-            input_data_offset: 0,
-            input_data_size: 0,
-
-            output_data_offset: 0,
-            output_data_size: 0,
-
-            guest_panic_context_offset: 0,
-            guest_panic_context_size: 0,
-
-            guest_heap_data_offset: 0,
-            guest_heap_data_size: guest_heap_size,
-
-            guest_stack_data_offset: 0,
-            guest_stack_data_size: guest_stack_size,
-
-            host_function_details_offset: 0,
-            host_function_details_size: 0,
-        };
+        );
 
         let mut sandbox_memory_manager = sandbox_builder.load_guest_binary(
-            sandbox_builder.init_rsp.unwrap(),
+            sandbox_builder
+                .init_rsp
+                .ok_or(new_error!("SandboxBuilder: init_rsp not set"))?,
             sandbox_builder.memory_sections.clone(),
             exclusive_shared_memory,
         )?;
 
-        sandbox_memory_manager.write_hyperlight_peb(hyperlight_peb)?;
+        sandbox_memory_manager
+            .memory_sections
+            .write_hyperlight_peb(hyperlight_peb)?;
 
         //TODO(danbugs:297): bring back host functions and adding host_printer
 

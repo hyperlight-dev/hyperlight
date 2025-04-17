@@ -338,6 +338,17 @@ impl Hypervisor for HypervWindowsDriver {
             dbg_mem_access_hdl,
         )?;
 
+        // The guest may have chosen a different stack region. If so, we drop usage of our tmp stack.
+        let hyperlight_peb = self.mem_sections.read_hyperlight_peb()?;
+
+        if let Some(guest_stack_data) = &hyperlight_peb.get_guest_stack_data_region() {
+            if guest_stack_data.offset.is_some() {
+                // If we got here, it means the guest has set up a new stack
+                let rsp = hyperlight_peb.get_top_of_guest_stack_data();
+                self.orig_rsp = GuestPtr::try_from(RawPtr::from(rsp))?;
+            }
+        }
+
         Ok(())
     }
 

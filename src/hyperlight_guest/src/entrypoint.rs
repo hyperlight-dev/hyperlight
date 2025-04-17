@@ -76,7 +76,7 @@ static INIT: Once = Once::new();
 pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64) {
     INIT.call_once(|| unsafe {
         PEB = peb_address as *mut HyperlightPEB;
-        RUNNING_MODE = (*PEB).clone().run_mode;
+        RUNNING_MODE = (*PEB).clone().get_run_mode();
 
         // The guest receives an undifferentiated block of memory that it can address as it sees fit.
         // This 'addressing' is done by writing to the PEB the guest's memory layout via this function,
@@ -87,7 +87,7 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
 
         // The guest sets the address to a "guest function dispatch" function, which is a function
         // that is called by the host to dispatch calls to guest functions.
-        (*PEB).guest_function_dispatch_ptr = dispatch_function as usize as u64;
+        (*PEB).set_guest_function_dispatch_ptr(dispatch_function as u64);
 
         // Set up the guest heap
         HEAP_ALLOCATOR
@@ -95,7 +95,7 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
             .expect("Failed to access HEAP_ALLOCATOR")
             .init(
                 (*PEB).get_heap_data_address() as usize,
-                (*PEB).guest_heap_data_size as usize,
+                (*PEB).get_guest_heap_data_size() as usize,
             );
 
         __security_cookie = peb_address ^ seed;
@@ -125,17 +125,17 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
             RunMode::InProcessLinux | RunMode::InProcessWindows => {
                 OUTB_HANDLER = {
                     let outb_handler: extern "C" fn(u16, u8) =
-                        core::mem::transmute((*PEB).outb_ptr);
+                        core::mem::transmute((*PEB).get_outb_ptr());
                     Some(outb_handler)
                 };
 
-                if (*PEB).outb_ptr_ctx == 0 {
+                if (*PEB).get_outb_ptr_ctx() == 0 {
                     panic!("outb_ptr_ctx is null");
                 }
 
                 OUTB_HANDLER_CTX = {
                     let outb_handler_ctx: extern "C" fn(*mut core::ffi::c_void, u16, u8) =
-                        core::mem::transmute((*PEB).outb_ptr);
+                        core::mem::transmute((*PEB).get_outb_ptr());
                     Some(outb_handler_ctx)
                 };
             }

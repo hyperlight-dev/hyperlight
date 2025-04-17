@@ -18,8 +18,8 @@ use log::LevelFilter;
 use tracing::{instrument, Span};
 
 use crate::error::HyperlightError::ExecutionCanceledByHost;
-use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
 use crate::{log_then_return, new_error, HyperlightError, Result};
 
 /// Util for handling x87 fpu state

@@ -45,7 +45,11 @@ pub fn outb(port: u16, value: u8) {
             }
             RunMode::InProcessLinux | RunMode::InProcessWindows => {
                 if let Some(outb_func) = OUTB_HANDLER_CTX {
-                    outb_func((*PEB).outb_ptr_ctx as *mut core::ffi::c_void, port, value);
+                    outb_func(
+                        (*PEB).get_outb_ptr_ctx() as *mut core::ffi::c_void,
+                        port,
+                        value,
+                    );
                 } else if let Some(outb_func) = OUTB_HANDLER {
                     outb_func(port, value);
                 } else {

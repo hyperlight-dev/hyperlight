@@ -38,17 +38,17 @@ pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
     unsafe {
         assert_ne!(!peb.get_guest_error_data_address(), 0);
         let len = guest_error_buffer.len();
-        if guest_error_buffer.len() > peb.guest_error_data_size as usize {
+        if guest_error_buffer.len() > peb.get_guest_error_data_size() as usize {
             error!(
                 "Guest error buffer is too small to hold the error message: size {} buffer size {} message may be truncated",
                 guest_error_buffer.len(),
-                peb.guest_error_data_size as usize
+                peb.get_guest_error_data_size() as usize
             );
             // get the length of the message
             let message_len = message.map_or("".to_string(), |m| m.to_string()).len();
             // message is too long, truncate it
             let truncate_len =
-                message_len - (guest_error_buffer.len() - peb.guest_error_data_size as usize);
+                message_len - (guest_error_buffer.len() - peb.get_guest_error_data_size() as usize);
             let truncated_message = message
                 .map_or("".to_string(), |m| m.to_string())
                 .chars()
@@ -77,7 +77,7 @@ pub(crate) fn reset_error() {
         core::ptr::write_bytes(
             (*PEB).get_guest_error_data_address() as *mut u8,
             0,
-            (*PEB).guest_error_data_size as usize,
+            (*PEB).get_guest_error_data_size() as usize,
         );
     }
 }

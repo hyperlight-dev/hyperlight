@@ -72,7 +72,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         copy_nonoverlapping(
             info.to_string().as_ptr(),
             (*PEB).get_guest_panic_context_address() as *mut u8,
-            (*PEB).guest_panic_context_size as usize,
+            (*PEB).get_guest_panic_context_size() as usize,
         );
     }
     outb(OutBAction::Abort as u16, ErrorCode::UnknownError as u8);
