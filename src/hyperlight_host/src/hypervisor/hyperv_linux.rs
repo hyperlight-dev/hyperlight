@@ -271,13 +271,8 @@ mod debug {
 /// and functional.
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
 pub(crate) fn is_hypervisor_present() -> bool {
-    match Mshv::open_with_cloexec(true) {
-        Ok(fd) => {
-            unsafe {
-                libc::close(fd);
-            } // must explicitly close fd to avoid a leak
-            true
-        }
+    match Mshv::new() {
+        Ok(_) => true,
         Err(_) => {
             log::info!("MSHV is not available on this system");
             false
