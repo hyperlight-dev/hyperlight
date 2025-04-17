@@ -407,7 +407,7 @@ impl ExclusiveSharedMemory {
         if total_size % PAGE_SIZE != 0 {
             return Err(new_error!(
                 "shared memory must be a multiple of {}",
-                PAGE_SIZE_USIZE
+                PAGE_SIZE
             ));
         }
 

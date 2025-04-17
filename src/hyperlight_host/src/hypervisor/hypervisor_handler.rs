@@ -46,6 +46,8 @@ use crate::hypervisor::Hypervisor;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
+#[cfg(target_os = "windows")]
+use crate::mem::shared_mem::SharedMemory;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
@@ -920,7 +922,7 @@ fn set_up_hypervisor_partition(
                     mgr.shared_mem.raw_ptr() as *mut c_void, // and instead convert it to base_addr where needed in the driver itself
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
-                    rsp_ptr,
+                    rsp_ptr.absolute()?,
                     HandleWrapper::from(mmap_file_handle),
                 )?;
                 Ok(Box::new(hv))

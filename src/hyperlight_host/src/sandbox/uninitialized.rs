@@ -102,31 +102,6 @@ impl UninitializedSandbox {
     }
 }
 
-// Check to see if the current version of Windows is supported
-// Hyperlight is only supported on Windows 11 and Windows Server 2022 and later
-#[cfg(target_os = "windows")]
-fn check_windows_version() -> Result<()> {
-    use windows_version::{is_server, OsVersion};
-    const WINDOWS_MAJOR: u32 = 10;
-    const WINDOWS_MINOR: u32 = 0;
-    const WINDOWS_PACK: u32 = 0;
-
-    // Windows Server 2022 has version numbers 10.0.20348 or greater
-    if is_server() {
-        if OsVersion::current() < OsVersion::new(WINDOWS_MAJOR, WINDOWS_MINOR, WINDOWS_PACK, 20348)
-        {
-            return Err(new_error!(
-                "Hyperlight Requires Windows Server 2022 or newer"
-            ));
-        }
-    } else if OsVersion::current()
-        < OsVersion::new(WINDOWS_MAJOR, WINDOWS_MINOR, WINDOWS_PACK, 22000)
-    {
-        return Err(new_error!("Hyperlight Requires Windows 11 or newer"));
-    }
-    Ok(())
-}
-
 // TODO(danbugs:297): bring back tests
 // #[cfg(test)]
 // mod tests {

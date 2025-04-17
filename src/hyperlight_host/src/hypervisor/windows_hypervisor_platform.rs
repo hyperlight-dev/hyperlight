@@ -25,7 +25,7 @@ use windows_result::HRESULT;
 
 use super::wrappers::HandleWrapper;
 use crate::hypervisor::wrappers::{WHvFPURegisters, WHvGeneralRegisters, WHvSpecialRegisters};
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
 use crate::{new_error, Result};
 
 // We need to pass in a primitive array of register names/values
@@ -92,7 +92,7 @@ impl VMPartition {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn map_gpa_range(
         &mut self,
-        regions: &[MemoryRegion],
+        regions: &SandboxMemorySections,
         process_handle: HandleWrapper,
     ) -> Result<()> {
         let process_handle: HANDLE = process_handle.into();
@@ -106,7 +106,7 @@ impl VMPartition {
             }
         };
 
-        regions.iter().try_for_each(|region| unsafe {
+        regions.iter().try_for_each(|(_, region)| unsafe {
             let flags = region
                 .flags
                 .iter()
@@ -125,9 +125,9 @@ impl VMPartition {
             let res = whvmapgparange2_func(
                 self.0,
                 process_handle,
-                region.host_region.start as *const c_void,
-                region.guest_region.start as u64,
-                (region.guest_region.end - region.guest_region.start) as u64,
+                region.host_address.ok_or("No host address mapping")? as *const c_void,
+                region.page_aligned_guest_offset as u64,
+                region.page_aligned_size as u64,
                 flags,
             );
             if res.is_err() {
