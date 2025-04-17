@@ -99,10 +99,10 @@ impl<'a> LeakedOutBWrapper<'a> {
         };
 
         let addr: u64 = res.hdl_wrapper_addr()?;
-        let mut peb = mgr.read_hyperlight_peb()?;
+        let mut peb = mgr.memory_sections.read_hyperlight_peb()?;
         peb.set_outb_ptr(Self::outb_addr());
         peb.set_outb_ptr_ctx(addr);
-        mgr.write_hyperlight_peb(peb)?;
+        mgr.memory_sections.write_hyperlight_peb(peb)?;
 
         Ok(res)
     }

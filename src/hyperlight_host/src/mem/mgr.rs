@@ -25,7 +25,6 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
-use hyperlight_common::peb::HyperlightPEB;
 use serde_json::from_str;
 use tracing::{instrument, Span};
 
@@ -236,28 +235,6 @@ impl<S> SandboxMemoryManager<S>
 where
     S: SharedMemory,
 {
-    pub(crate) fn write_hyperlight_peb(&mut self, hyperlight_peb: HyperlightPEB) -> Result<()> {
-        let peb_offset = self
-            .memory_sections
-            .get_hyperlight_peb_section_host_address()
-            .unwrap() as *mut HyperlightPEB;
-
-        unsafe {
-            peb_offset.copy_from(&hyperlight_peb, 1);
-        }
-
-        Ok(())
-    }
-
-    pub(crate) fn read_hyperlight_peb(&self) -> Result<HyperlightPEB> {
-        let peb_offset = self
-            .memory_sections
-            .get_hyperlight_peb_section_host_address()
-            .unwrap() as *mut HyperlightPEB;
-
-        Ok(unsafe { peb_offset.read() })
-    }
-
     /// Create a memory snapshot and push it onto the stack of snapshots.
     ///
     /// It should be used when you want to save the state of the memory—for example, when evolving a
@@ -376,7 +353,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
-        let (ptr, size) = self.read_hyperlight_peb()?.get_output_data_guest_region();
+        let (ptr, size) = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_output_data_guest_region();
         self.shared_mem
             .try_pop_buffer_into::<FunctionCall>(ptr as usize, size as usize)
     }
@@ -390,7 +370,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
             )
         })?;
 
-        let (ptr, size) = self.read_hyperlight_peb()?.get_input_data_guest_region();
+        let (ptr, size) = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_input_data_guest_region();
 
         self.shared_mem.push_buffer(
             ptr as usize,
@@ -434,7 +417,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Read guest log data from the `SharedMemory` contained within `self`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
-        let (ptr, size) = self.read_hyperlight_peb()?.get_output_data_guest_region();
+        let (ptr, size) = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_output_data_guest_region();
         self.shared_mem
             .try_pop_buffer_into::<GuestLogData>(ptr as usize, size as usize)
     }
@@ -442,7 +428,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Get the length of the host exception
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn get_host_error_length(&self) -> Result<i32> {
-        let offset = self.read_hyperlight_peb()?.get_host_error_guest_offset() as usize;
+        let offset = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_host_error_guest_address() as usize;
         // The host exception field is expected to contain a 32-bit length followed by the exception data.
         self.shared_mem.read::<i32>(offset)
     }
@@ -450,7 +439,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Get a bool indicating if there is a host error
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn has_host_error(&self) -> Result<bool> {
-        let offset = self.read_hyperlight_peb()?.get_host_error_guest_offset() as usize;
+        let offset = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_host_error_guest_address() as usize;
         // The host exception field is expected to contain a 32-bit length followed by the exception data.
         let len = self.shared_mem.read::<i32>(offset)?;
         Ok(len != 0)
@@ -465,7 +457,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// self.get_host_error_length()
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn get_host_error_data(&self, exception_data_slc: &mut [u8]) -> Result<()> {
-        let offset = self.read_hyperlight_peb()?.get_host_error_guest_offset() as usize;
+        let offset = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_host_error_guest_address() as usize;
         let len = self.get_host_error_length()?;
 
         let exception_data_slc_len = exception_data_slc.len();
@@ -510,9 +505,14 @@ impl SandboxMemoryManager<HostSharedMemory> {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_error(&self) -> Result<GuestError> {
         // get memory buffer max size
-        let guest_error_data_ptr =
-            self.read_hyperlight_peb()?.get_guest_error_guest_offset() as usize;
-        let guest_error_data_size = self.read_hyperlight_peb()?.guest_error_data_size as usize;
+        let guest_error_data_ptr = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_guest_error_guest_address() as usize;
+        let guest_error_data_size = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_guest_error_data_size() as usize;
 
         // get guest error from layout and shared mem
         let mut guest_error_buffer = vec![b'0'; guest_error_data_size];
@@ -541,8 +541,14 @@ impl SandboxMemoryManager<HostSharedMemory> {
             .try_into()
             .map_err(|_| new_error!("write_outb_error: failed to convert GuestError to Vec<u8>"))?;
 
-        let guest_error_data_ptr = self.read_hyperlight_peb()?.get_guest_error_guest_offset();
-        let guest_error_data_size = self.read_hyperlight_peb()?.guest_error_data_size;
+        let guest_error_data_ptr = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_guest_error_guest_address();
+        let guest_error_data_size = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_guest_error_data_size();
 
         if guest_error_buffer.len() as u64 > guest_error_data_size {
             log_then_return!("The guest error message is too large to fit in the shared memory");
@@ -550,9 +556,14 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.shared_mem
             .copy_from_slice(guest_error_buffer.as_slice(), guest_error_data_ptr as usize)?;
 
-        let host_error_data_ptr =
-            self.read_hyperlight_peb()?.get_host_error_guest_offset() as usize;
-        let host_error_data_size = self.read_hyperlight_peb()?.host_error_data_size as usize;
+        let host_error_data_ptr = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_host_error_guest_address() as usize;
+        let host_error_data_size = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_host_error_data_size() as usize;
 
         // First four bytes of host exception are length
 
@@ -574,8 +585,14 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Read guest panic data from the `SharedMemory` contained within `self`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub fn read_guest_panic_context_data(&self) -> Result<Vec<u8>> {
-        let offset = self.read_hyperlight_peb()?.get_guest_panic_context_offset() as usize;
-        let size = self.read_hyperlight_peb()?.guest_panic_context_size as usize;
+        let offset = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_guest_panic_context_guest_address() as usize;
+        let size = self
+            .memory_sections
+            .read_hyperlight_peb()?
+            .get_guest_panic_context_size() as usize;
         let mut vec_out = vec![0; size];
         self.shared_mem
             .copy_to_slice(vec_out.as_mut_slice(), offset)?;

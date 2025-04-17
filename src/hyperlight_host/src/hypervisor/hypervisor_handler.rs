@@ -399,7 +399,7 @@ impl HypervisorHandler {
                                     .as_mut()
                                     .ok_or_else(|| {
                                         new_error!("guest shm lock: {}:{}", file!(), line!())
-                                    })?.read_hyperlight_peb()?.guest_function_dispatch_ptr);
+                                    })?.memory_sections.read_hyperlight_peb()?.get_guest_function_dispatch_ptr());
 
                                 if dispatch_function_addr == RawPtr(0) {
                                     log_then_return!(
