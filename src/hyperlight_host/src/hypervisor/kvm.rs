@@ -528,7 +528,7 @@ impl Hypervisor for KVMDriver {
 
                 match self.get_memory_access_violation(
                     addr as usize,
-                    self.mem_sections.clone(),
+                    &self.mem_sections,
                     MemoryRegionFlags::READ,
                 ) {
                     Some(access_violation_exit) => access_violation_exit,
@@ -540,7 +540,7 @@ impl Hypervisor for KVMDriver {
 
                 match self.get_memory_access_violation(
                     addr as usize,
-                    self.mem_sections.clone(),
+                    &self.mem_sections,
                     MemoryRegionFlags::WRITE,
                 ) {
                     Some(access_violation_exit) => access_violation_exit,

@@ -17,6 +17,22 @@ use crate::{
     log_build_details, log_then_return, new_error, Result, SandboxRunOptions, UninitializedSandbox,
 };
 
+#[cfg(mshv2)]
+extern crate mshv_bindings2 as mshv_bindings;
+
+#[cfg(mshv2)]
+use mshv_bindings::{
+    HV_MAP_GPA_EXECUTABLE, HV_MAP_GPA_PERMISSIONS_NONE, HV_MAP_GPA_READABLE, HV_MAP_GPA_WRITABLE,
+};
+
+#[cfg(mshv3)]
+extern crate mshv_bindings3 as mshv_bindings;
+
+#[cfg(mshv3)]
+use mshv_bindings::{
+    MSHV_SET_MEM_BIT_EXECUTABLE, MSHV_SET_MEM_BIT_UNMAP, MSHV_SET_MEM_BIT_WRITABLE,
+};
+
 const DEFAULT_GUEST_CODE_SECTION_NAME: &str = "guest code";
 const DEFAULT_TMP_STACK_SECTION_NAME: &str = "tmp stack";
 const DEFAULT_HYPERLIGHT_PEB_SECTION_NAME: &str = "HyperlightPEB";
@@ -28,7 +44,7 @@ pub(crate) const PD_OFFSET: usize = 0x2000; // this offset is from the PML4 base
 pub(crate) const PT_OFFSET: usize = 0x3000; // this offset is from the PML4 base address
 const DEFAULT_GUEST_MEMORY_SIZE: usize = 0x200_000; // 2MB
 
-/// TODO: comment
+/// Represents a memory section in the sandbox.
 #[derive(Debug, Clone)]
 pub struct SandboxMemorySection {
     /// Name of the memory section
@@ -163,16 +179,6 @@ impl SandboxMemorySections {
         self.sections.iter()
     }
 }
-
-#[cfg(mshv2)]
-extern crate mshv_bindings2 as mshv_bindings;
-#[cfg(mshv2)]
-extern crate mshv_ioctls2 as mshv_ioctls;
-
-#[cfg(mshv3)]
-extern crate mshv_bindings3 as mshv_bindings;
-#[cfg(mshv3)]
-extern crate mshv_ioctls3 as mshv_ioctls;
 
 use bitflags::bitflags;
 #[cfg(mshv)]
@@ -798,6 +804,60 @@ impl SandboxBuilder {
     }
 }
 
+#[cfg(mshv)]
+impl From<SandboxMemorySection> for mshv_bindings::mshv_user_mem_region {
+    fn from(section: SandboxMemorySection) -> Self {
+        let size = section.page_aligned_size as u64;
+        let guest_pfn = (section.page_aligned_guest_offset as u64) >> 12;
+        let userspace_addr = section.host_address.unwrap_or(0) as u64;
+
+        #[cfg(mshv2)]
+        {
+            let mut flags = 0;
+            if section.flags.contains(MemoryRegionFlags::READ) {
+                flags |= HV_MAP_GPA_READABLE;
+            }
+            if section.flags.contains(MemoryRegionFlags::WRITE) {
+                flags |= HV_MAP_GPA_WRITABLE;
+            }
+            if section.flags.contains(MemoryRegionFlags::EXECUTE) {
+                flags |= HV_MAP_GPA_EXECUTABLE;
+            }
+            if section.flags.is_empty() || section.flags.contains(MemoryRegionFlags::NONE) {
+                flags |= HV_MAP_GPA_PERMISSIONS_NONE;
+            }
+
+            mshv_bindings::mshv_user_mem_region {
+                guest_pfn,
+                size,
+                userspace_addr,
+                flags,
+            }
+        }
+        #[cfg(mshv3)]
+        {
+            let mut flags: u8 = 0;
+            if section.flags.contains(MemoryRegionFlags::WRITE) {
+                flags |= 1 << MSHV_SET_MEM_BIT_WRITABLE;
+            }
+            if section.flags.contains(MemoryRegionFlags::EXECUTE) {
+                flags |= 1 << MSHV_SET_MEM_BIT_EXECUTABLE;
+            }
+            if section.flags.is_empty() || section.flags.contains(MemoryRegionFlags::NONE) {
+                flags |= 1 << MSHV_SET_MEM_BIT_UNMAP;
+            }
+
+            mshv_bindings::mshv_user_mem_region {
+                guest_pfn,
+                size,
+                userspace_addr,
+                flags,
+                ..Default::default()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -873,54 +933,3 @@ mod tests {
         Ok(())
     }
 }
-
-// TODO(danbugs:297): impl
-// #[cfg(mshv)]
-// impl From<MemoryRegion> for mshv_user_mem_region {
-//     fn from(region: MemoryRegion) -> Self {
-//         let size = (region.guest_region.end - region.guest_region.start) as u64;
-//         let guest_pfn = region.guest_region.start as u64 >> 12;
-//         let userspace_addr = region.host_region.start as u64;
-//
-//         #[cfg(mshv2)]
-//         {
-//             let flags = region.flags.iter().fold(0, |acc, flag| {
-//                 let flag_value = match flag {
-//                     MemoryRegionFlags::NONE => HV_MAP_GPA_PERMISSIONS_NONE,
-//                     MemoryRegionFlags::READ => HV_MAP_GPA_READABLE,
-//                     MemoryRegionFlags::WRITE => HV_MAP_GPA_WRITABLE,
-//                     MemoryRegionFlags::EXECUTE => HV_MAP_GPA_EXECUTABLE,
-//                     _ => 0, // ignore any unknown flags
-//                 };
-//                 acc | flag_value
-//             });
-//             mshv_user_mem_region {
-//                 guest_pfn,
-//                 size,
-//                 userspace_addr,
-//                 flags,
-//             }
-//         }
-//         #[cfg(mshv3)]
-//         {
-//             let flags: u8 = region.flags.iter().fold(0, |acc, flag| {
-//                 let flag_value = match flag {
-//                     MemoryRegionFlags::NONE => 1 << MSHV_SET_MEM_BIT_UNMAP,
-//                     MemoryRegionFlags::READ => 0,
-//                     MemoryRegionFlags::WRITE => 1 << MSHV_SET_MEM_BIT_WRITABLE,
-//                     MemoryRegionFlags::EXECUTE => 1 << MSHV_SET_MEM_BIT_EXECUTABLE,
-//                     _ => 0, // ignore any unknown flags
-//                 };
-//                 acc | flag_value
-//             });
-//
-//             mshv_user_mem_region {
-//                 guest_pfn,
-//                 size,
-//                 userspace_addr,
-//                 flags,
-//                 ..Default::default()
-//             }
-//         }
-//     }
-// }

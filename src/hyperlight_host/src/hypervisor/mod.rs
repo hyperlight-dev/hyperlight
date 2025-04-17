@@ -167,7 +167,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn get_memory_access_violation(
         &self,
         gpa: usize,
-        mem_sections: SandboxMemorySections,
+        mem_sections: &SandboxMemorySections,
         access_info: MemoryRegionFlags,
     ) -> Option<HyperlightExit> {
         // find the region containing the given gpa
