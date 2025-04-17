@@ -278,8 +278,8 @@ pub(crate) fn is_hypervisor_present() -> bool {
             } // must explicitly close fd to avoid a leak
             true
         }
-        Err(e) => {
-            log::info!("Error creating MSHV object: {:?}", e);
+        Err(_) => {
+            log::info!("MSHV is not available on this system");
             false
         }
     }

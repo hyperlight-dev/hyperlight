@@ -53,7 +53,10 @@ pub(crate) fn is_hypervisor_present() -> bool {
         )
     } {
         Ok(_) => unsafe { capability.HypervisorPresent.as_bool() },
-        Err(_) => false,
+        Err(_) => {
+            log::info!("Windows Hypervisor Platform is not available on this system");
+            false
+        }
     }
 }
 

@@ -59,7 +59,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
             }
         }
     } else {
-        log::info!("Error creating KVM object");
+        log::info!("KVM is not available on this system");
         false
     }
 }
