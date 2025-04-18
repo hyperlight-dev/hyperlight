@@ -42,7 +42,8 @@ fn main() -> Result<()> {
     // Set up the tracing subscriber.
     // tracing_forest uses the tracing subscriber, which, by default, will consume logs as trace events
     // unless the tracing-log feature is disabled.
-    let layer = ForestLayer::default().with_filter(EnvFilter::from_default_env());
+    let layer = ForestLayer::default()
+        .with_filter(EnvFilter::builder().parse("none,hyperlight=info").unwrap());
     Registry::default().with(layer).init();
     run_example()
 }

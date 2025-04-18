@@ -32,7 +32,9 @@ fn fn_writer(_msg: String) -> Result<i32> {
 // by Hyperlight will also be emitted as log messages.
 
 fn main() -> Result<()> {
-    env_logger::init();
+    env_logger::builder()
+        .parse_filters("none,hyperlight=info")
+        .init();
     // Get the path to a simple guest binary.
     let hyperlight_guest_path =
         simple_guest_as_string().expect("Cannot find the guest binary at the expected location.");

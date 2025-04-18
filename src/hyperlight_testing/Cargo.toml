@@ -15,3 +15,6 @@ serde_json = "1.0"
 
 [lib]
 bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+# reduce noise in test output
+test = false
+doctest = false
