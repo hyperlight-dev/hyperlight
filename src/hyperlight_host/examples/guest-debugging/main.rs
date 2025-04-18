@@ -155,6 +155,7 @@ mod tests {
 
         let mut gdb = Command::new("rust-gdb")
             .arg("--nw")
+            .arg("--batch")
             .arg("-x")
             .arg(cmd_file_path)
             .spawn()
