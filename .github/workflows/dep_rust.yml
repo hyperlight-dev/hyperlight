@@ -85,7 +85,7 @@ jobs:
         run: just build-and-move-c-guests
 
       - name: Build
-        run: just build-rust ${{ matrix.config }}
+        run: just build ${{ matrix.config }}
 
       - name: Verify MSRV
         run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-common
@@ -95,10 +95,10 @@ jobs:
           CARGO_TERM_COLOR: always
         run: |
           # with default features
-          just test-rust ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+          just test ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
 
           # with only one driver enabled (driver mshv/kvm feature is ignored on windows) + seccomp + inprocess
-          just test-rust ${{ matrix.config }} inprocess,seccomp,${{ matrix.hypervisor == 'mshv' && 'mshv2' || matrix.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }} 
+          just test ${{ matrix.config }} inprocess,seccomp,${{ matrix.hypervisor == 'mshv' && 'mshv2' || matrix.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }} 
 
           # make sure certain cargo features compile
           cargo check -p hyperlight-host --features crashdump
@@ -106,7 +106,7 @@ jobs:
           cargo check -p hyperlight-host --features gdb
 
           # without any driver (shouldn't compile)
-          just test-rust-feature-compilation-fail ${{ matrix.config }}
+          just test-compilation-fail ${{ matrix.config }}
 
         # One of the examples is flaky on Windows GH runners, so this allows us to disable it for now
       - name: Run Rust examples - windows
