@@ -15,48 +15,43 @@ limitations under the License.
 */
 
 use std::sync::{Arc, Mutex};
-use std::thread;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-use hyperlight_host::func::HostFunction0;
+use hyperlight_host::func::HostFunction2;
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{GuestBinary, MultiUseSandbox};
+use hyperlight_testing::simple_guest_as_string;
 
 fn main() -> hyperlight_host::Result<()> {
     // Create an uninitialized sandbox with a guest binary
-    let mut uninitialized_sandbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(
-            hyperlight_testing::simple_guest_as_string().unwrap(),
-        ),
-        None, // default configuration
-        None, // default run options
-        None, // default host print function
-    )?;
+    let sandbox_builder = SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
 
-    // Register a host functions
-    fn sleep_5_secs() -> hyperlight_host::Result<()> {
-        thread::sleep(std::time::Duration::from_secs(5));
-        Ok(())
+    let mut uninitialized_sandbox = sandbox_builder.build()?;
+
+    // Register a host function
+    fn add(a: i32, b: i32) -> hyperlight_host::Result<i32> {
+        Ok(a + b)
     }
+    let host_function = Arc::new(Mutex::new(add));
+    host_function.register(&mut uninitialized_sandbox, "HostAdd")?;
 
-    let host_function = Arc::new(Mutex::new(sleep_5_secs));
+    let host_function = Arc::new(Mutex::new(add));
 
-    host_function.register(&mut uninitialized_sandbox, "Sleep5Secs")?;
-    // Note: This function is unused, it's just here for demonstration purposes
+    host_function.register(&mut uninitialized_sandbox, "HostAdd")?;
 
     // Initialize sandbox to be able to call host functions
     let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default())?;
 
     // Call guest function
-    let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
     let result = multi_use_sandbox.call_guest_function_by_name(
-        "PrintOutput", // function must be defined in the guest binary
+        "Add", // function must be defined in the guest binary
         ReturnType::Int,
-        Some(vec![ParameterValue::String(message.clone())]),
-    );
+        Some(vec![ParameterValue::Int(1), ParameterValue::Int(41)]),
+    )?;
 
-    assert!(result.is_ok());
+    println!("Guest function result: 1 + 41 = {:?}", result);
 
     Ok(())
 }

@@ -882,7 +882,9 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::function_types::{
         ParameterValue, ReturnType, ReturnValue,
     };
-    use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::GuestFunctionParameterTypeMismatch;
+    use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::{
+        GuestFunctionNotFound, GuestFunctionParameterTypeMismatch,
+    };
     use hyperlight_testing::simple_guest_as_string;
 
     use super::*;
@@ -1047,6 +1049,32 @@ mod tests {
                 GuestFunctionParameterTypeMismatch { .. },
                 _,
             ))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sandbox_builder_try_calling_nonexistent_guest_function() -> Result<()> {
+        // Tests building an uninitialized sandbox w/ the sandbox builder
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+
+        let uninitialized_sandbox = sandbox_builder.build()?;
+
+        // Tests evolving to a multi-use sandbox
+        let mut multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+        let result = multi_use_sandbox.call_guest_function_by_name(
+            "SomeNonExistentFunction",
+            ReturnType::Void,
+            None,
+        );
+
+        // Should get Error: GuestError(GuestFunctionNotFound, "SomeNonExistentFunction")
+        assert!(matches!(
+            result,
+            Err(HyperlightError::GuestError(GuestFunctionNotFound { .. }, _,))
         ));
 
         Ok(())
