@@ -24,7 +24,7 @@ use hyperlight_common::input_output::{InputDataSection, OutputDataSection};
 
 use crate::entrypoint::halt;
 use crate::error::{HyperlightGuestError, Result};
-use crate::guest_error::{reset_error, set_error};
+use crate::guest_error::set_error;
 use crate::{PEB, REGISTERED_GUEST_FUNCTIONS};
 
 type GuestFunc = fn(&FunctionCall) -> Result<Vec<u8>>;
@@ -80,8 +80,6 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
 #[no_mangle]
 #[inline(never)]
 fn internal_dispatch_function() -> Result<()> {
-    reset_error();
-
     #[cfg(debug_assertions)]
     log::trace!("internal_dispatch_function");
 

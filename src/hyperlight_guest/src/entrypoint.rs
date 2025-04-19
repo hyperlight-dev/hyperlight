@@ -24,7 +24,6 @@ use log::LevelFilter;
 use spin::Once;
 
 use crate::gdt::load_gdt;
-use crate::guest_error::reset_error;
 use crate::guest_function_call::dispatch_function;
 use crate::guest_logger::init_logger;
 use crate::idtr::load_idt;
@@ -141,8 +140,6 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
             }
             _ => panic!("Invalid runmode in PEB"),
         }
-
-        reset_error();
 
         hyperlight_main();
     });

@@ -35,7 +35,6 @@ use crossbeam_channel::{RecvError, SendError};
 use flatbuffers::InvalidFlatbuffer;
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use serde::{Deserialize, Serialize};
 use serde_yaml;
 use thiserror::Error;
 
@@ -43,12 +42,6 @@ use thiserror::Error;
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::ptr::RawPtr;
 use crate::sandbox::sandbox_builder::MemoryRegionFlags;
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
-pub(crate) struct HyperlightHostError {
-    pub(crate) message: String,
-    pub(crate) source: String,
-}
 
 /// The error type for Hyperlight operations
 #[derive(Error, Debug)]
@@ -226,8 +219,8 @@ pub enum HyperlightError {
     NoMemorySnapshot,
 
     /// An error occurred handling an outb message
-    #[error("An error occurred handling an outb message {0:?}: {1}")]
-    OutBHandlingError(String, String),
+    #[error("An error occurred handling an outb message {0:?}")]
+    OutBHandlingError(String),
 
     /// Failed to get value from parameter value
     #[error("Failed To Convert Parameter Value {0:?} to {1:?}")]
