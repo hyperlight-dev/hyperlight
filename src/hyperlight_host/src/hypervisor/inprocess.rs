@@ -22,9 +22,9 @@ use log::LevelFilter;
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::{HyperlightExit, Hypervisor};
-#[cfg(crashdump)]
-use crate::mem::memory_region::MemoryRegion;
 use crate::sandbox::leaked_outb::LeakedOutBWrapper;
+#[cfg(crashdump)]
+use crate::sandbox::sandbox_builder::SandboxMemorySections;
 use crate::Result;
 
 /// Arguments passed to inprocess driver
@@ -71,24 +71,18 @@ impl Debug for InprocessDriver<'_> {
 impl<'a> Hypervisor for InprocessDriver<'a> {
     fn initialise(
         &mut self,
-        _peb_addr: crate::mem::ptr::RawPtr,
+        _peb_addr: u64,
         seed: u64,
-        page_size: u32,
         _outb_handle_fn: super::handlers::OutBHandlerWrapper,
         _mem_access_fn: super::handlers::MemAccessHandlerWrapper,
         _hv_handler: Option<super::hypervisor_handler::HypervisorHandler>,
         _guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] _dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> crate::Result<()> {
-        let entrypoint_fn: extern "win64" fn(u64, u64, u64, u64) =
+        let entrypoint_fn: extern "win64" fn(u64, u64, u64) =
             unsafe { std::mem::transmute(self.args.entrypoint_raw as *const c_void) };
 
-        entrypoint_fn(
-            self.args.peb_ptr_raw,
-            seed,
-            page_size as u64,
-            log::max_level() as u64,
-        );
+        entrypoint_fn(self.args.peb_ptr_raw, seed, log::max_level() as u64);
 
         Ok(())
     }
@@ -134,7 +128,7 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
     }
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        unimplemented!("get_memory_regions is not supported since we are in in-process mode")
+    fn get_memory_sections(&self) -> &SandboxMemorySections {
+        unimplemented!("get_memory_sections is not supported since we are in in-process mode")
     }
 }

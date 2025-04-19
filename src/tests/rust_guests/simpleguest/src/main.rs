@@ -40,12 +40,12 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
-use hyperlight_common::mem::PAGE_SIZE;
+use hyperlight_common::host_calling::{call_host_function, get_host_return_value, print};
+use hyperlight_common::PAGE_SIZE;
 use hyperlight_guest::entrypoint::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::register_function;
-use hyperlight_guest::host_function_call::{call_host_function, get_host_return_value};
 use hyperlight_guest::memory::malloc;
 use hyperlight_guest::{logging, MIN_STACK_ADDRESS};
 use log::{error, LevelFilter};
@@ -86,13 +86,8 @@ fn echo_float(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 fn print_output(message: &str) -> Result<Vec<u8>> {
-    call_host_function(
-        "HostPrint",
-        Some(Vec::from(&[ParameterValue::String(message.to_string())])),
-        ReturnType::Int,
-    )?;
-    let result = get_host_return_value::<i32>()?;
-    Ok(get_flatbuffer_result(result))
+    print(message);
+    Ok(get_flatbuffer_result(()))
 }
 
 fn simple_print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
@@ -557,7 +552,7 @@ fn test_guest_panic(function_call: &FunctionCall) -> Result<Vec<u8>> {
 fn test_write_raw_ptr(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Long(offset) = function_call.parameters.clone().unwrap()[0].clone() {
         let min_stack_addr = unsafe { MIN_STACK_ADDRESS };
-        let page_guard_start = min_stack_addr - PAGE_SIZE;
+        let page_guard_start = min_stack_addr - PAGE_SIZE as u64;
         let addr = {
             let abs = u64::try_from(offset.abs())
                 .map_err(|_| error!("Invalid offset"))
@@ -1132,12 +1127,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         1,
     );
 
-    call_host_function(
-        "HostPrint",
-        Some(Vec::from(&[ParameterValue::String(message.to_string())])),
-        ReturnType::Int,
-    )?;
-    let result = get_host_return_value::<i32>()?;
+    print(message);
     let function_name = function_call.function_name.clone();
     let param_len = function_call.parameters.clone().unwrap_or_default().len();
     let call_type = function_call.function_call_type().clone();
@@ -1145,7 +1135,6 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     if function_name != "ThisIsNotARealFunctionButTheNameIsImportant"
         || param_len != 0
         || call_type != FunctionCallType::Guest
-        || result != 100
     {
         return Err(HyperlightGuestError::new(
             ErrorCode::GuestFunctionNotFound,

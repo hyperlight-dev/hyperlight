@@ -24,6 +24,8 @@ limitations under the License.
 
 use std::sync::Once;
 
+/// This crate contains an SDK that is used to execute specially
+/// compiled binaries within a very lightweight hypervisor environment.
 use log::info;
 /// The `built` crate is used to generate a `built.rs` file that contains
 /// information about the build environment. This information is used to
@@ -39,32 +41,7 @@ pub mod func;
 pub mod hypervisor;
 /// Functionality to establish and manage an individual sandbox's
 /// memory.
-///
-/// The following structs are not used other than to calculate the size of the memory needed
-/// and also to illustrate the layout of the memory:
-///
-/// - `HostFunctionDefinitions`
-/// - `HostExceptionData`
-/// - `GuestError`
-/// - `CodeAndOutBPointers`
-/// - `InputData`
-/// - `OutputData`
-/// - `GuestHeap`
-/// - `GuestStack`
-///
-/// the start of the guest  memory contains the page tables and is always located at the Virtual Address 0x00200000 when
-/// running in a Hypervisor:
-///
-/// Virtual Address
-///
-/// 0x200000    PML4
-/// 0x201000    PDPT
-/// 0x202000    PD
-/// 0x203000    The guest PE code (When the code has been loaded using LoadLibrary to debug the guest this will not be
-/// present and code length will be zero;
-///
-/// The pointer passed to the Entrypoint in the Guest application is the 0x200000 + size of page table + size of code,
-/// at this address structs below are laid out in this order
+#[deny(dead_code, missing_docs, unused_mut)]
 pub mod mem;
 /// Metric definitions and helpers
 pub mod metrics;
@@ -75,6 +52,7 @@ pub mod sandbox;
 /// `trait`s and other functionality for dealing with defining sandbox
 /// states and moving between them
 pub mod sandbox_state;
+/// Utilities for dealing with seccomp on Linux
 #[cfg(all(feature = "seccomp", target_os = "linux"))]
 pub(crate) mod seccomp;
 /// Signal handling for Linux
@@ -90,9 +68,7 @@ pub use error::HyperlightError;
 /// The re-export for the `is_hypervisor_present` type
 pub use sandbox::is_hypervisor_present;
 /// The re-export for the `GuestBinary` type
-pub use sandbox::uninitialized::GuestBinary;
-/// Re-export for `HypervisorWrapper` trait
-/// Re-export for `MemMgrWrapper` type
+pub use sandbox::sandbox_builder::GuestBinary;
 /// A sandbox that can call be used to make multiple calls to guest functions,
 /// and otherwise reused multiple times
 pub use sandbox::MultiUseSandbox;
