@@ -79,21 +79,6 @@ impl HostFuncsWrapper {
         register_host_function_helper(self, mgr, hfd, func, Some(extra_allowed_syscalls))
     }
 
-    /// Assuming a host function called `"HostPrint"` exists, and takes a
-    /// single string parameter, call it with the given `msg` parameter.
-    ///
-    /// Return `Ok` if the function was found and was of the right signature,
-    /// and `Err` otherwise.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn host_print(&mut self, msg: String) -> Result<i32> {
-        let res = call_host_func_impl(
-            self.get_host_funcs(),
-            "HostPrint",
-            vec![ParameterValue::String(msg)],
-        )?;
-        res.try_into()
-            .map_err(|_| HostFunctionNotFound("HostPrint".to_string()))
-    }
     /// From the set of registered host functions, attempt to get the one
     /// named `name`. If it exists, call it with the given arguments list
     /// `args` and return its result.

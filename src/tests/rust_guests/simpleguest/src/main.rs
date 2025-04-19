@@ -1127,12 +1127,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         1,
     );
 
-    call_host_function(
-        "HostPrint",
-        Some(Vec::from(&[ParameterValue::String(message.to_string())])),
-        ReturnType::Int,
-    )?;
-    let result = get_host_return_value::<i32>()?;
+    print(message);
     let function_name = function_call.function_name.clone();
     let param_len = function_call.parameters.clone().unwrap_or_default().len();
     let call_type = function_call.function_call_type().clone();
@@ -1140,7 +1135,6 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     if function_name != "ThisIsNotARealFunctionButTheNameIsImportant"
         || param_len != 0
         || call_type != FunctionCallType::Guest
-        || result != 100
     {
         return Err(HyperlightGuestError::new(
             ErrorCode::GuestFunctionNotFound,
