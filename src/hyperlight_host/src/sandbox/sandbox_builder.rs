@@ -882,12 +882,14 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::function_types::{
         ParameterValue, ReturnType, ReturnValue,
     };
+    use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::GuestFunctionParameterTypeMismatch;
     use hyperlight_testing::simple_guest_as_string;
 
     use super::*;
     use crate::func::HostFunction2;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
+    use crate::HyperlightError;
 
     #[test]
     fn test_sandbox_builder() -> Result<()> {
@@ -1009,6 +1011,43 @@ mod tests {
                 file_path
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sandbox_builder_guest_function_fail() -> Result<()> {
+        // Tests building an uninitialized sandbox w/ the sandbox builder
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+
+        let mut uninitialized_sandbox = sandbox_builder.build()?;
+
+        // Tests registering a host function
+        fn add(a: i32, b: i32) -> Result<i32> {
+            Ok(a + b)
+        }
+        let host_function = Arc::new(Mutex::new(add));
+        host_function.register(&mut uninitialized_sandbox, "HostAdd")?;
+
+        // Tests evolving to a multi-use sandbox
+        let mut multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+        let result = multi_use_sandbox.call_guest_function_by_name(
+            "Add",
+            ReturnType::Int,
+            // Purposefully passing the wrong parameter types
+            Some(vec![ParameterValue::Float(1.0), ParameterValue::Int(41)]),
+        );
+
+        // Should get Error: GuestError(GuestFunctionParameterTypeMismatch, "Expected parameter type Int for parameter index 0 of function Add but got Float.")
+        assert!(matches!(
+            result,
+            Err(HyperlightError::GuestError(
+                GuestFunctionParameterTypeMismatch { .. },
+                _,
+            ))
+        ));
 
         Ok(())
     }

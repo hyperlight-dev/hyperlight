@@ -18,16 +18,20 @@ use core::slice::from_raw_parts_mut;
 
 use anyhow::{bail, Result};
 
+/// The host will use the `InputDataSection` to pass data to the guest. This can be, for example,
+/// the issuing of a function call or the result of calling a host function.
 pub struct InputDataSection {
     ptr: *mut u8,
     len: u64,
 }
 
 impl InputDataSection {
+    /// Creates a new `InputDataSection` with the given pointer and length.
     pub fn new(ptr: *mut u8, len: u64) -> Self {
         InputDataSection { ptr, len }
     }
 
+    /// Tries to pop shared input data into a type `T`. The type `T` must implement the `TryFrom` trait
     pub fn try_pop_shared_input_data_into<T>(&self) -> Result<T>
     where
         T: for<'a> TryFrom<&'a [u8]>,
@@ -79,6 +83,8 @@ impl InputDataSection {
     }
 }
 
+/// The guest will use the `OutputDataSection` to pass data back to the host. This can be, for example,
+/// issuing a host function call or the result of a guest function call.
 pub struct OutputDataSection {
     pub ptr: *mut u8,
     pub len: u64,
@@ -87,10 +93,12 @@ pub struct OutputDataSection {
 impl OutputDataSection {
     const STACK_PTR_SIZE: usize = size_of::<u64>();
 
+    /// Creates a new `OutputDataSection` with the given pointer and length.
     pub fn new(ptr: *mut u8, len: u64) -> Self {
         OutputDataSection { ptr, len }
     }
 
+    /// Pushes shared output data to the output buffer.
     pub fn push_shared_output_data(&self, data: Vec<u8>) -> Result<()> {
         let shared_buffer_size = self.len as usize;
         let odb: &mut [u8] = unsafe { from_raw_parts_mut(self.ptr, shared_buffer_size) };

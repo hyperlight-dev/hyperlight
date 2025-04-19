@@ -25,8 +25,6 @@ pub const PAGE_SIZE: usize = 0x1_000; // 4KB
 extern crate alloc;
 extern crate core;
 
-use crate::peb::{HyperlightPEB, RunMode};
-
 pub mod flatbuffer_wrappers;
 /// cbindgen:ignore
 /// FlatBuffers-related utilities and (mostly) generated code
@@ -48,11 +46,11 @@ pub mod peb;
 
 /// We keep track of the PEB address in a global variable that references a region of
 /// shared memory.
-pub static mut PEB: *mut HyperlightPEB = core::ptr::null_mut();
+pub static mut PEB: *mut peb::HyperlightPEB = core::ptr::null_mut();
 
 /// Hyperlight supports running in both hypervisor mode and in process mode. We keep track of that
 /// state in this global variable.
-pub static mut RUNNING_MODE: RunMode = RunMode::None;
+pub static mut RUNNING_MODE: peb::RunMode = peb::RunMode::None;
 
 /// For in-process mode, we can't call the `outb` instruction directly because it is a privileged
 /// instruction. Instead, we use a function pointer to call an `outb_handler` function.

@@ -34,8 +34,6 @@ pub mod guest_error;
 pub mod guest_function_call;
 pub mod guest_function_definition;
 pub mod guest_function_register;
-// TODO(danbugs:297): bring back
-// pub mod host_error;
 
 pub(crate) mod guest_logger;
 pub mod memory;

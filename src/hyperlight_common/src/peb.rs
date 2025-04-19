@@ -61,14 +61,6 @@ pub struct HyperlightPEB {
     /// before re-entering the guest.
     guest_function_dispatch_ptr: u64,
 
-    /// Guest error data can be used to pass guest error information
-    /// between host and the guest.
-    guest_error_data: Option<MemoryRegion>,
-
-    /// Host error data can be used to pass host error information
-    /// between the host and the guest.
-    host_error_data: Option<MemoryRegion>,
-
     /// The input data pointer is used to pass data from
     /// the host to the guest.
     input_data: Option<MemoryRegion>,
@@ -109,8 +101,6 @@ impl HyperlightPEB {
             guest_memory_base_address,
             guest_memory_size,
             guest_function_dispatch_ptr: 0,
-            guest_error_data: None,
-            host_error_data: None,
             input_data: None,
             output_data: None,
             guest_panic_context: None,
@@ -134,10 +124,6 @@ impl HyperlightPEB {
     /// - +--------------------------+
     /// - | Input data               | 16KB
     /// - +--------------------------+
-    /// - | Host error data          | 4KB
-    /// - +--------------------------+
-    /// - | Guest error data         | 4KB
-    /// - +--------------------------+
     /// - | Guest heap data          | (configurable size)
     /// - +--------------------------+
     /// - | Guest stack data         | (configurable size)
@@ -159,29 +145,19 @@ impl HyperlightPEB {
 
         let guest_heap_size = self.get_guest_heap_data_size();
 
-        self.set_guest_error_data_region(
-            guest_stack_size + guest_heap_size, // start at the end of the host function details
-            PAGE_SIZE as u64,                   // 4KB
-        );
-
-        self.set_host_error_data_region(
-            guest_stack_size + guest_heap_size + PAGE_SIZE as u64, // start at the end of the guest error data
-            PAGE_SIZE as u64,                                      // 4KB
-        );
-
         self.set_input_data_region(
-            guest_stack_size + guest_heap_size + PAGE_SIZE as u64 * 2, // start at the end of the host error data
-            PAGE_SIZE as u64 * 4,                                      // 16KB
+            guest_stack_size + guest_heap_size, // start at the end of the heap
+            PAGE_SIZE as u64 * 4,               // 16KB
         );
 
         self.set_output_data_region(
-            guest_stack_size + guest_heap_size + PAGE_SIZE as u64 * 6, // start at the end of the input data
+            guest_stack_size + guest_heap_size + PAGE_SIZE as u64 * 4, // start at the end of the input data
             PAGE_SIZE as u64 * 4,                                      // 16KB
         );
 
         self.set_guest_panic_context_region(
-            guest_stack_size + guest_heap_size + PAGE_SIZE as u64 * 10, // start at the end of the output data
-            PAGE_SIZE as u64,                                           // 4KB
+            guest_stack_size + guest_heap_size + PAGE_SIZE as u64 * 8, // start at the end of the output data
+            PAGE_SIZE as u64,                                          // 4KB
         );
     }
 
@@ -291,81 +267,12 @@ impl HyperlightPEB {
             .size
     }
 
-    /// Sets the guest error data region.
-    pub fn set_guest_error_data_region(&mut self, offset: u64, size: u64) {
-        self.guest_error_data = Some(MemoryRegion {
-            offset: Some(offset),
-            size,
-        });
-    }
-
-    /// Gets the guest error data region depending on the running mode (i.e., if `RunMode::Hypervisor` this
-    /// returns the same as `get_guest_error_guest_address`. If `RunMode::InProcessWindows` or `RunMode::InProcessLinux`, it
-    /// returns the error data host address).
-    pub fn get_guest_error_data_address(&self) -> u64 {
-        let region = self
-            .guest_error_data
-            .as_ref()
-            .expect("Guest error data region not set");
-        match self.run_mode {
-            RunMode::Hypervisor => self.get_guest_error_guest_address(),
-            RunMode::InProcessWindows | RunMode::InProcessLinux => {
-                region.offset.unwrap() + self.guest_memory_host_base_address
-            }
-            _ => panic!("Invalid running mode"),
-        }
-    }
-
-    /// Gets the guest error data region with guest addresses.
-    pub fn get_guest_error_guest_address(&self) -> u64 {
-        self.guest_error_data
-            .as_ref()
-            .expect("Guest error data region not set")
-            .offset
-            .unwrap()
-            + self.guest_memory_base_address
-    }
-
-    /// Gets the guest error data size.
-    pub fn get_guest_error_data_size(&self) -> u64 {
-        self.guest_error_data
-            .as_ref()
-            .expect("Guest error data region not set")
-            .size
-    }
-
-    /// Sets the host error data region.
-    pub fn set_host_error_data_region(&mut self, offset: u64, size: u64) {
-        self.host_error_data = Some(MemoryRegion {
-            offset: Some(offset),
-            size,
-        });
-    }
-
     /// Sets the input data region.
     pub fn set_input_data_region(&mut self, offset: u64, size: u64) {
         self.input_data = Some(MemoryRegion {
             offset: Some(offset),
             size,
         });
-    }
-
-    /// Gets the host error data region with guest addresses.
-    pub fn get_host_error_guest_address(&self) -> u64 {
-        self.host_error_data
-            .as_ref()
-            .expect("Host error data region not set")
-            .offset
-            .unwrap()
-            + self.guest_memory_base_address
-    }
-
-    /// Gets the host error data size.
-    pub fn get_host_error_data_size(&self) -> u64 {
-        self.host_error_data
-            .as_ref()
-            .expect("Host error data region not set")
-            .size
     }
 
     /// Gets the input data region with guest addresses.
