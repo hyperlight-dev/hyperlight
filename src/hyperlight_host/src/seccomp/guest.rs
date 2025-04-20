@@ -23,7 +23,6 @@ use seccompiler::{
 use crate::sandbox::ExtraAllowedSyscall;
 use crate::{and, or, Result};
 
-// TODO(danbugs:297): reconsider
 #[allow(unused)]
 fn syscalls_allowlist() -> Result<Vec<(i64, Vec<SeccompRule>)>> {
     Ok(vec![
@@ -70,8 +69,6 @@ fn syscalls_allowlist() -> Result<Vec<(i64, Vec<SeccompRule>)>> {
 /// `SeccompRules` for operations we definitely perform but are outside the handler thread
 /// (e.g., `KVM_SET_USER_MEMORY_REGION`, `KVM_GET_API_VERSION`, `KVM_CREATE_VM`,
 /// or `KVM_CREATE_VCPU`).
-// TODO(danbugs:297): reconsider
-#[allow(unused)]
 pub(crate) fn get_seccomp_filter_for_host_function_worker_thread(
     extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
 ) -> Result<BpfProgram> {

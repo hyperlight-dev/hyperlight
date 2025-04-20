@@ -99,7 +99,7 @@ fn hv_init(
 ) -> Result<HypervisorHandler> {
     let (hshm, gshm) = shm;
     let outb_hdl = outb_handler_wrapper(hshm.clone(), host_funcs);
-    let mem_access_hdl = mem_access_handler_wrapper();
+    let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
     #[cfg(gdb)]
     let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(hshm.clone());
 

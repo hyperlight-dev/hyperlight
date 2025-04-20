@@ -18,18 +18,33 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{instrument, Span};
 
+use crate::error::HyperlightError::StackOverflow;
 #[cfg(gdb)]
 use crate::hypervisor::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use crate::hypervisor::handlers::{
     MemAccessHandler, MemAccessHandlerFunction, MemAccessHandlerWrapper,
 };
-#[cfg(gdb)]
 use crate::mem::mgr::SandboxMemoryManager;
+use crate::mem::shared_mem::HostSharedMemory;
+use crate::{log_then_return, Result};
+
+#[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+pub(super) fn handle_mem_access_impl(
+    wrapper: &SandboxMemoryManager<HostSharedMemory>,
+) -> Result<()> {
+    if !wrapper.check_stack_guard()? {
+        log_then_return!(StackOverflow());
+    }
+
+    Ok(())
+}
 
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub(crate) fn mem_access_handler_wrapper() -> MemAccessHandlerWrapper {
-    // TODO(danbugs:297): fix
-    let mem_access_func: MemAccessHandlerFunction = Box::new(move || Ok(()));
+pub(crate) fn mem_access_handler_wrapper(
+    wrapper: SandboxMemoryManager<HostSharedMemory>,
+) -> MemAccessHandlerWrapper {
+    let mem_access_func: MemAccessHandlerFunction =
+        Box::new(move || handle_mem_access_impl(&wrapper));
     let mem_access_hdl = MemAccessHandler::from(mem_access_func);
     Arc::new(Mutex::new(mem_access_hdl))
 }

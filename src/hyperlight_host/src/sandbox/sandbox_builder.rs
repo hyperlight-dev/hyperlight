@@ -888,7 +888,7 @@ mod tests {
     use hyperlight_testing::simple_guest_as_string;
 
     use super::*;
-    use crate::func::HostFunction2;
+    use crate::func::{HostFunction0, HostFunction2};
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
     use crate::HyperlightError;
@@ -1076,6 +1076,89 @@ mod tests {
             result,
             Err(HyperlightError::GuestError(GuestFunctionNotFound { .. }, _,))
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "linux")]
+    fn test_sandbox_builder_violate_seccomp_filters() -> Result<()> {
+        fn make_get_pid_syscall() -> Result<u64> {
+            let pid = unsafe { libc::syscall(libc::SYS_getpid) };
+            Ok(pid as u64)
+        }
+
+        // Tests two flows:
+        // 1. Calling a host function with the seccomp feature turned on, but without
+        // allowing the syscall. This should fail.
+        // 2. Calling a host function with the seccomp feature turned off. This should succeed.
+        {
+            // Tests building an uninitialized sandbox w/ the sandbox builder
+            let sandbox_builder =
+                SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+
+            let mut uninitialized_sandbox = sandbox_builder.build()?;
+
+            let make_get_pid_syscall_func = Arc::new(Mutex::new(make_get_pid_syscall));
+            make_get_pid_syscall_func.register(&mut uninitialized_sandbox, "MakeGetpidSyscall")?;
+
+            // Tests evolving to a multi-use sandbox
+            let mut multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+            let result = multi_use_sandbox.call_guest_function_by_name(
+                "ViolateSeccompFilters",
+                ReturnType::ULong,
+                None,
+            );
+
+            #[cfg(feature = "seccomp")]
+            match result {
+                Ok(_) => panic!("Expected to fail due to seccomp violation"),
+                Err(e) => match e {
+                    HyperlightError::DisallowedSyscall => {}
+                    _ => panic!("Expected DisallowedSyscall error: {}", e),
+                },
+            }
+
+            #[cfg(not(feature = "seccomp"))]
+            match result {
+                Ok(_) => (),
+                Err(e) => panic!("Expected to succeed without seccomp: {}", e),
+            }
+        }
+
+        // Tests calling a host function with the seccomp feature turned on, but allowing
+        // the syscall. This should succeed.
+        #[cfg(feature = "seccomp")]
+        {
+            // Tests building an uninitialized sandbox w/ the sandbox builder
+            let sandbox_builder =
+                SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+
+            let mut uninitialized_sandbox = sandbox_builder.build()?;
+
+            let make_get_pid_syscall_func = Arc::new(Mutex::new(make_get_pid_syscall));
+            make_get_pid_syscall_func.register_with_extra_allowed_syscalls(
+                &mut uninitialized_sandbox,
+                "MakeGetpidSyscall",
+                vec![libc::SYS_getpid],
+            )?;
+
+            // Tests evolving to a multi-use sandbox
+            let mut multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+            let result = multi_use_sandbox.call_guest_function_by_name(
+                "ViolateSeccompFilters",
+                ReturnType::ULong,
+                None,
+            );
+
+            match result {
+                Ok(_) => {}
+                Err(e) => panic!("Expected to succeed due to seccomp violation: {}", e),
+            }
+        }
 
         Ok(())
     }
