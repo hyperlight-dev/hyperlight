@@ -102,7 +102,7 @@ tokio = { version = "1.44.2", features = ["full"] }
 criterion = "0.5.1"
 tracing-chrome = "0.7.2"
 metrics-util = "0.19.1"
-metrics-exporter-prometheus = "0.16.2"
+metrics-exporter-prometheus = "0.17.0"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "0.61", features = [
