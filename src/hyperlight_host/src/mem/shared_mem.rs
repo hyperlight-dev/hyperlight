@@ -688,7 +688,7 @@ pub trait SharedMemory {
     /// Return a readonly reference to the host mapping backing this SharedMemory
     fn region(&self) -> &HostMapping;
 
-    // TODO(danbugs:297) consider how the three functions below fit into the bigger
+    // TODO(see #430) consider how the three functions below fit into the bigger
     // picture w/ implementors of this trait having similar fxns.
     /// Return data as mut slice
     fn as_mut_slice(&mut self) -> &mut [u8] {

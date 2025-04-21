@@ -27,7 +27,7 @@ use crate::Result;
 ///
 /// Use this type to distinguish between an offset and a raw pointer
 #[derive(Debug, Clone, Eq, PartialEq)]
-// TODO(danbugs:297): we should probably rethink these APIs.
+// TODO(see #429): we should probably rethink these APIs.
 pub struct RawPtr(pub u64);
 
 impl From<u64> for RawPtr {
