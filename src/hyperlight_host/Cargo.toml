@@ -45,7 +45,7 @@ thiserror = "2.0.12"
 tempfile = { version = "3.19", optional = true }
 serde_yaml = "0.9"
 anyhow = "1.0"
-metrics = "0.24.1"
+metrics = "0.24.2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
