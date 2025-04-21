@@ -56,9 +56,9 @@ pub static mut RUNNING_MODE: peb::RunMode = peb::RunMode::None;
 /// instruction. Instead, we use a function pointer to call an `outb_handler` function.
 /// For in-process mode, we can't call the `outb` instruction directly because it is a privileged
 /// instruction. Instead, we use a function pointer to call an `outb_handler` function.
-pub static mut OUTB_HANDLER: Option<extern "C" fn(u16, u8)> = None;
+pub static mut OUTB_HANDLER: Option<extern "sysv64" fn(u16, u8)> = None;
 
-pub static mut OUTB_HANDLER_CTX: Option<extern "C" fn(*mut core::ffi::c_void, u16, u8)> = None;
+pub static mut OUTB_HANDLER_CTX: Option<extern "sysv64" fn(*mut core::ffi::c_void, u16, u8)> = None;
 
 /// Hyperlight operates with a host-guest execution model.
 ///

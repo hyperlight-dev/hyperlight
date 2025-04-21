@@ -888,7 +888,7 @@ mod tests {
     use hyperlight_testing::simple_guest_as_string;
 
     use super::*;
-    use crate::func::{HostFunction0, HostFunction2};
+    use crate::func::HostFunction2;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
     use crate::HyperlightError;
@@ -930,6 +930,39 @@ mod tests {
         let sandbox_builder =
             SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?
                 .set_sandbox_run_options(SandboxRunOptions::RunInProcess(false))?;
+
+        let mut uninitialized_sandbox = sandbox_builder.build()?;
+
+        // Tests registering a host function
+        fn add(a: i32, b: i32) -> Result<i32> {
+            Ok(a + b)
+        }
+        let host_function = Arc::new(Mutex::new(add));
+        host_function.register(&mut uninitialized_sandbox, "HostAdd")?;
+
+        // Tests evolving to a multi-use sandbox
+        let mut multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+        let result = multi_use_sandbox.call_guest_function_by_name(
+            "Add",
+            ReturnType::Int,
+            Some(vec![ParameterValue::Int(1), ParameterValue::Int(41)]),
+        )?;
+
+        assert_eq!(result, ReturnValue::Int(42));
+
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_sandbox_builder_in_process_load_library() -> Result<()> {
+        use hyperlight_testing::simple_guest_exe_as_string;
+
+        // Tests building an uninitialized sandbox w/ the sandbox builder
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_exe_as_string()?))?
+                .set_sandbox_run_options(SandboxRunOptions::RunInProcess(true))?;
 
         let mut uninitialized_sandbox = sandbox_builder.build()?;
 
@@ -1084,6 +1117,8 @@ mod tests {
     #[ignore]
     #[cfg(target_os = "linux")]
     fn test_sandbox_builder_violate_seccomp_filters() -> Result<()> {
+        use crate::func::HostFunction0;
+
         fn make_get_pid_syscall() -> Result<u64> {
             let pid = unsafe { libc::syscall(libc::SYS_getpid) };
             Ok(pid as u64)

@@ -123,7 +123,7 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
             }
             RunMode::InProcessLinux | RunMode::InProcessWindows => {
                 OUTB_HANDLER = {
-                    let outb_handler: extern "C" fn(u16, u8) =
+                    let outb_handler: extern "sysv64" fn(u16, u8) =
                         core::mem::transmute((*PEB).get_outb_ptr());
                     Some(outb_handler)
                 };
@@ -133,7 +133,7 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
                 }
 
                 OUTB_HANDLER_CTX = {
-                    let outb_handler_ctx: extern "C" fn(*mut core::ffi::c_void, u16, u8) =
+                    let outb_handler_ctx: extern "sysv64" fn(*mut core::ffi::c_void, u16, u8) =
                         core::mem::transmute((*PEB).get_outb_ptr());
                     Some(outb_handler_ctx)
                 };
