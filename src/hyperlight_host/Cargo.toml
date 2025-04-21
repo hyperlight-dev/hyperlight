@@ -81,7 +81,7 @@ mshv-ioctls3 = { package="mshv-ioctls",  version = "=0.3.2", optional = true}
 
 [dev-dependencies]
 uuid = { version = "1.16.0", features = ["v4"] }
-signal-hook-registry = "1.4.1"
+signal-hook-registry = "1.4.5"
 serde = "1.0"
 proptest = "1.6.0"
 tempfile = "3.19.1"
