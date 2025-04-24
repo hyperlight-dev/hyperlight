@@ -27,7 +27,9 @@ pub struct MemoryRegion {
 #[repr(C)]
 #[derive(Clone, Default)]
 pub struct HyperlightPEB {
+    /// The minimum stack address is the lowest address of the stack.
     pub min_stack_address: u64,
+
     // - Host configured fields
     /// Hyperlight supports two primary modes:
     /// 1. Hypervisor mode
@@ -166,7 +168,7 @@ impl HyperlightPEB {
 
     /// Sets the guest stack data region.
     /// - HyperlightPEB is always set with a default size for stack from the guest binary, there's an
-    /// option to override this size with the `size_override` parameter.
+    ///     option to override this size with the `size_override` parameter.
 
     pub fn set_guest_stack_data_region(&mut self, offset: u64, size_override: Option<u64>) {
         let size = size_override.unwrap_or_else(|| {
@@ -237,7 +239,7 @@ impl HyperlightPEB {
 
     /// Sets the guest heap data region.
     /// - HyperlightPEB is always set with a default size for heap from the guest binary, there's an
-    /// option to override this size with the `size_override` parameter.
+    ///     option to override this size with the `size_override` parameter.
     pub fn set_guest_heap_data_region(&mut self, offset: u64, size_override: Option<u64>) {
         let size = size_override.unwrap_or_else(|| {
             self.guest_heap_data

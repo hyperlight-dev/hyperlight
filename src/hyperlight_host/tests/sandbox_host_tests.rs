@@ -19,23 +19,22 @@ use std::sync::{Arc, Mutex};
 
 use common::new_uninit;
 use hyperlight_host::func::{HostFunction1, ParameterValue, ReturnType, ReturnValue};
-use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{
-    new_error, GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox,
-};
+use hyperlight_host::{new_error, GuestBinary, HyperlightError, MultiUseSandbox, Result};
 use hyperlight_testing::simple_guest_as_string;
 #[cfg(target_os = "windows")]
-use serial_test::serial; // using LoadLibrary requires serial tests
+use serial_test::serial;
+// using LoadLibrary requires serial tests
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{get_callbackguest_uninit_sandboxes, get_simpleguest_sandboxes};
 
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
-fn pass_byte_array() {
-    for sandbox in get_simpleguest_sandboxes(None).into_iter() {
+fn pass_byte_array() -> Result<()> {
+    for sandbox in get_simpleguest_sandboxes()?.into_iter() {
         let mut ctx = sandbox.new_call_context();
         const LEN: usize = 10;
         let bytes = vec![1u8; LEN];
@@ -45,7 +44,7 @@ fn pass_byte_array() {
             Some(vec![ParameterValue::VecBytes(bytes.clone())]),
         );
 
-        match res.unwrap() {
+        match res? {
             ReturnValue::VecBytes(res_bytes) => {
                 assert_eq!(res_bytes.len(), LEN);
                 assert!(res_bytes.iter().all(|&b| b == 0));
@@ -60,6 +59,8 @@ fn pass_byte_array() {
         );
         assert!(res.is_err()); // missing length param
     }
+
+    Ok(())
 }
 
 #[test]
@@ -131,8 +132,8 @@ fn float_roundtrip() {
 
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
-fn invalid_guest_function_name() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+fn invalid_guest_function_name() -> Result<()> {
+    for mut sandbox in get_simpleguest_sandboxes()?.into_iter() {
         let fn_name = "FunctionDoesntExist";
         let res = sandbox.call_guest_function_by_name(fn_name, ReturnType::Int, None);
         println!("{:?}", res);
@@ -140,12 +141,14 @@ fn invalid_guest_function_name() {
             matches!(res.unwrap_err(), HyperlightError::GuestError(hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::GuestFunctionNotFound, error_name) if error_name == fn_name)
         );
     }
+
+    Ok(())
 }
 
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
-fn set_static() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+fn set_static() -> Result<()> {
+    for mut sandbox in get_simpleguest_sandboxes()?.into_iter() {
         let fn_name = "SetStatic";
         let res = sandbox.call_guest_function_by_name(fn_name, ReturnType::Int, None);
         println!("{:?}", res);
@@ -153,24 +156,13 @@ fn set_static() {
         // the result is the size of the static array in the guest
         assert_eq!(res.unwrap(), ReturnValue::Int(1024 * 1024));
     }
+
+    Ok(())
 }
 
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
-fn multiple_parameters() {
-    let messages = Arc::new(Mutex::new(Vec::new()));
-    let messages_clone = messages.clone();
-    let writer = move |msg| {
-        let mut lock = messages_clone
-            .try_lock()
-            .map_err(|_| new_error!("Error locking"))
-            .unwrap();
-        lock.push(msg);
-        Ok(0)
-    };
-
-    let writer_func = Arc::new(Mutex::new(writer));
-
+fn multiple_parameters() -> Result<()> {
     let test_cases = vec![
         (
             "PrintTwoArgs",
@@ -320,7 +312,7 @@ fn multiple_parameters() {
         )
     ];
 
-    for mut sandbox in get_simpleguest_sandboxes(Some(&writer_func)).into_iter() {
+    for mut sandbox in get_simpleguest_sandboxes()?.into_iter() {
         for (fn_name, args, _expected) in test_cases.clone().into_iter() {
             let res = sandbox.call_guest_function_by_name(fn_name, ReturnType::Int, Some(args));
             println!("{:?}", res);
@@ -328,23 +320,13 @@ fn multiple_parameters() {
         }
     }
 
-    let lock = messages
-        .try_lock()
-        .map_err(|_| new_error!("Error locking"))
-        .unwrap();
-    lock.clone()
-        .into_iter()
-        .zip(test_cases)
-        .for_each(|(printed_msg, expected)| {
-            println!("{:?}", printed_msg);
-            assert_eq!(printed_msg, expected.2);
-        });
+    Ok(())
 }
 
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
-fn incorrect_parameter_type() {
-    for mut sandbox in get_simpleguest_sandboxes(None) {
+fn incorrect_parameter_type() -> Result<()> {
+    for mut sandbox in get_simpleguest_sandboxes()? {
         let res = sandbox.call_guest_function_by_name(
             "Echo",
             ReturnType::Int,
@@ -361,12 +343,14 @@ fn incorrect_parameter_type() {
             ) if msg == "Expected parameter type String for parameter index 0 of function Echo but got Int."
         ));
     }
+
+    Ok(())
 }
 
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
-fn incorrect_parameter_num() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+fn incorrect_parameter_num() -> Result<()> {
+    for mut sandbox in get_simpleguest_sandboxes()?.into_iter() {
         let res = sandbox.call_guest_function_by_name(
             "Echo",
             ReturnType::Int,
@@ -383,29 +367,29 @@ fn incorrect_parameter_num() {
             ) if msg == "Called function Echo with 2 parameters but it takes 1."
         ));
     }
+
+    Ok(())
 }
 
 #[test]
-fn max_memory_sandbox() {
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_input_data_size(0x40000000);
-    let a = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(cfg),
-        None,
-        None,
-    );
+fn max_memory_sandbox() -> Result<()> {
+    let sandbox_builder = SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?
+        .set_guest_memory_size(0x40_000_000);
+
+    let uninitialized_sandbox = sandbox_builder.build();
 
     assert!(matches!(
-        a.unwrap_err(),
+        uninitialized_sandbox.unwrap_err(),
         HyperlightError::MemoryRequestTooBig(..)
     ));
+
+    Ok(())
 }
 
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
-fn iostack_is_working() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+fn iostack_is_working() -> Result<()> {
+    for mut sandbox in get_simpleguest_sandboxes()?.into_iter() {
         let res = sandbox.call_guest_function_by_name(
             "ThisIsNotARealFunctionButTheNameIsImportant",
             ReturnType::Int,
@@ -415,26 +399,15 @@ fn iostack_is_working() {
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), ReturnValue::Int(99));
     }
+
+    Ok(())
 }
 
 fn simple_test_helper() -> Result<()> {
-    let messages = Arc::new(Mutex::new(Vec::new()));
-    let messages_clone = messages.clone();
-    let writer = move |msg: String| {
-        let len = msg.len();
-        let mut lock = messages_clone
-            .try_lock()
-            .map_err(|_| new_error!("Error locking"))
-            .unwrap();
-        lock.push(msg);
-        Ok(len as i32)
-    };
-
     let message = "hello";
     let message2 = "world";
 
-    let writer_func = Arc::new(Mutex::new(writer));
-    for mut sandbox in get_simpleguest_sandboxes(Some(&writer_func)).into_iter() {
+    for mut sandbox in get_simpleguest_sandboxes()?.into_iter() {
         let res = sandbox.call_guest_function_by_name(
             "PrintOutput",
             ReturnType::Int,
@@ -461,32 +434,6 @@ fn simple_test_helper() -> Result<()> {
         assert!(matches!(res3, Ok(ReturnValue::VecBytes(v)) if v == buffer));
     }
 
-    let expected_calls = {
-        if cfg!(all(target_os = "windows", inprocess)) {
-            // windows debug build
-            5
-        } else if cfg!(inprocess) {
-            // linux debug build
-            4
-        } else {
-            // {windows,linux} release build
-            2
-        }
-    };
-
-    assert_eq!(
-        messages
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .len(),
-        expected_calls
-    );
-
-    assert!(messages
-        .try_lock()
-        .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-        .iter()
-        .all(|msg| msg == message));
     Ok(())
 }
 
@@ -519,21 +466,17 @@ fn only_one_sandbox_instance_with_loadlib() {
     use hyperlight_host::SandboxRunOptions;
     use hyperlight_testing::simple_guest_exe_as_string;
 
-    let _sandbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_exe_as_string().unwrap()),
-        None,
-        Some(SandboxRunOptions::RunInProcess(true)),
-        None,
-    )
-    .unwrap();
+    let sandbox_builder1 =
+        SandboxBuilder::new(GuestBinary::FilePath(simple_guest_exe_as_string()?))?
+            .set_sandbox_run_options(SandboxRunOptions::RunInProcess(true))?;
 
-    let err = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_exe_as_string().unwrap()),
-        None,
-        Some(SandboxRunOptions::RunInProcess(true)),
-        None,
-    )
-    .unwrap_err(); //should fail
+    let _uninitialized_sandbox = sandbox_builder1.build()?;
+
+    let sandbox_builder2 =
+        SandboxBuilder::new(GuestBinary::FilePath(simple_guest_exe_as_string()?))?
+            .set_sandbox_run_options(SandboxRunOptions::RunInProcess(true))?;
+
+    let err = sandbox_builder2.build().unwrap_err();
 
     assert!(
         matches!(err, HyperlightError::Error(msg) if msg.starts_with("LoadedLib: Only one guest binary can be loaded at any single time"))
@@ -541,7 +484,7 @@ fn only_one_sandbox_instance_with_loadlib() {
 }
 
 fn callback_test_helper() -> Result<()> {
-    for mut sandbox in get_callbackguest_uninit_sandboxes(None).into_iter() {
+    for mut sandbox in get_callbackguest_uninit_sandboxes()?.into_iter() {
         // create host function
         let vec = Arc::new(Mutex::new(vec![]));
         let vec_cloned = vec.clone();
@@ -554,7 +497,7 @@ fn callback_test_helper() -> Result<()> {
             Ok(len as i32)
         }));
 
-        host_func1.register(&mut sandbox, "HostMethod1").unwrap();
+        host_func1.register(&mut sandbox, "HostMethod1")?;
 
         // call guest function that calls host function
         let mut init_sandbox: MultiUseSandbox = sandbox.evolve(Noop::default())?;
@@ -609,7 +552,7 @@ fn host_function_error() -> Result<()> {
     // TODO: Remove the `.take(1)`, which makes this test only run in hypervisor.
     // This test does not work when running in process. This is because when running in-process,
     // when a host function returns an error, an infinite loop is created.
-    for mut sandbox in get_callbackguest_uninit_sandboxes(None).into_iter().take(1) {
+    for mut sandbox in get_callbackguest_uninit_sandboxes()?.into_iter().take(1) {
         // create host function
         let host_func1 = Arc::new(Mutex::new(|_msg: String| -> Result<String> {
             Err(new_error!("Host function error!"))

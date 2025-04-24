@@ -222,8 +222,8 @@ int guest_abort_with_msg(int32_t code, const char *message) {
 }
 
 int execute_on_stack(void) {
-  uint8_t hlt = 0xF4;
-  ((void (*)()) & hlt)();
+  uint8_t stack_fn = 0x90;
+  ((void (*)()) & stack_fn)();
   return -1;
 }
 

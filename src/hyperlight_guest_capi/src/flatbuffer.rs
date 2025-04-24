@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use core::ffi::{c_char, CStr};
 
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
-use hyperlight_guest::host_function_call::get_host_return_value;
+use hyperlight_common::host_calling::get_host_return_value;
 
 use crate::types::FfiVec;
 

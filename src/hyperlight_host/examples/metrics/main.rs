@@ -1,24 +1,23 @@
-/*
-Copyright 2024 The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// /*
+// Copyright 2024 The Hyperlight Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// */
 extern crate hyperlight_host;
-use std::sync::{Arc, Mutex};
 use std::thread::{spawn, JoinHandle};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -53,15 +52,12 @@ fn do_hyperlight_stuff() {
 
     for _ in 0..20 {
         let path = hyperlight_guest_path.clone();
-        let writer_func = Arc::new(Mutex::new(fn_writer));
         let handle = spawn(move || -> Result<()> {
             // Create a new sandbox.
-            let usandbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(path),
-                None,
-                None,
-                Some(&writer_func),
-            )?;
+            let usandbox = SandboxBuilder::new(GuestBinary::FilePath(path.clone()))
+                .expect("Failed to create sandbox")
+                .build()
+                .expect("Failed to build sandbox");
 
             // Initialize the sandbox.
 
@@ -99,13 +95,10 @@ fn do_hyperlight_stuff() {
     }
 
     // Create a new sandbox.
-    let usandbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(hyperlight_guest_path.clone()),
-        None,
-        None,
-        None,
-    )
-    .expect("Failed to create UninitializedSandbox");
+    let usandbox = SandboxBuilder::new(GuestBinary::FilePath(hyperlight_guest_path.clone()))
+        .expect("Failed to create sandbox")
+        .build()
+        .expect("Failed to build sandbox");
 
     // Initialize the sandbox.
 
@@ -129,8 +122,4 @@ fn do_hyperlight_stuff() {
         let result = join_handle.join();
         assert!(result.is_ok());
     }
-}
-
-fn fn_writer(_msg: String) -> Result<i32> {
-    Ok(0)
 }

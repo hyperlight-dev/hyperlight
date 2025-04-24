@@ -121,7 +121,6 @@ built = { version = "0.7.7", features = ["chrono", "git2"] }
 default = ["kvm", "mshv2", "seccomp"]
 seccomp = ["dep:seccompiler"]
 function_call_metrics = []
-executable_heap = []
 # This feature enables printing of debug information to stdout in debug builds
 print_debug = []
 crashdump = ["dep:tempfile"] # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged. This feature can only be used in debug builds.

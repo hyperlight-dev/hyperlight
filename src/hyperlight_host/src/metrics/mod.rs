@@ -83,139 +83,143 @@ pub(crate) fn maybe_time_and_emit_host_call<T, F: FnOnce() -> T>(
     }
 }
 
-// TODO(danbugs:297): bring back
-// #[cfg(test)]
-// mod tests {
-//     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-//     use hyperlight_testing::simple_guest_as_string;
-//     use metrics::Key;
-//     use metrics_util::CompositeKey;
-//
-//     use super::*;
-//     use crate::sandbox_state::sandbox::EvolvableSandbox;
-//     use crate::sandbox_state::transition::Noop;
-//     use crate::{GuestBinary, UninitializedSandbox};
-//
-//     #[test]
-//     #[ignore = "This test needs to be run separately to avoid having other tests interfere with it"]
-//     fn test_metrics_are_emitted() {
-//         // Set up the recorder and snapshotter
-//         let recorder = metrics_util::debugging::DebuggingRecorder::new();
-//         let snapshotter = recorder.snapshotter();
-//
-//         // we cannot use with_local_recorder, since that won't capture the metrics
-//         // emitted by the hypervisor-thread (which is all of them)
-//         recorder.install().unwrap();
-//
-//         let snapshot = {
-//             let uninit = UninitializedSandbox::new(
-//                 GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-//                 None,
-//                 None,
-//                 None,
-//             )
-//             .unwrap();
-//
-//             let mut multi = uninit.evolve(Noop::default()).unwrap();
-//
-//             multi
-//                 .call_guest_function_by_name(
-//                     "PrintOutput",
-//                     ReturnType::Int,
-//                     Some(vec![ParameterValue::String("Hello".to_string())]),
-//                 )
-//                 .unwrap();
-//
-//             multi
-//                 .call_guest_function_by_name("Spin", ReturnType::Int, None)
-//                 .unwrap_err();
-//
-//             snapshotter.snapshot()
-//         };
-//
-//         // Convert snapshot into a hashmap for easier lookup
-//         #[expect(clippy::mutable_key_type)]
-//         let snapshot = snapshot.into_hashmap();
-//
-//         cfg_if::cfg_if! {
-//             if #[cfg(feature = "function_call_metrics")] {
-//                 use metrics::Label;
-//                 // Verify that the histogram metrics are recorded correctly
-//                 assert_eq!(snapshot.len(), 4, "Expected two metrics in the snapshot");
-//
-//                 // 1. Host print duration
-//                 let histogram_key = CompositeKey::new(
-//                     metrics_util::MetricKind::Histogram,
-//                     Key::from_parts(
-//                         METRIC_HOST_FUNC_DURATION,
-//                         vec![Label::new("function_name", "HostPrint")],
-//                     ),
-//                 );
-//                 let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
-//                 assert!(
-//                     matches!(
-//                         histogram_value,
-//                         metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1
-//                     ),
-//                     "Histogram metric does not match expected value"
-//                 );
-//
-//                 // 2. Guest call duration
-//                 let histogram_key = CompositeKey::new(
-//                     metrics_util::MetricKind::Histogram,
-//                     Key::from_parts(
-//                         METRIC_GUEST_FUNC_DURATION,
-//                         vec![Label::new("function_name", "PrintOutput")],
-//                     ),
-//                 );
-//                 let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
-//                 assert!(
-//                     matches!(
-//                         histogram_value,
-//                         metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1
-//                     ),
-//                     "Histogram metric does not match expected value"
-//                 );
-//
-//                 // 3. Guest cancellation
-//                 let counter_key = CompositeKey::new(
-//                     metrics_util::MetricKind::Counter,
-//                     Key::from_name(METRIC_GUEST_CANCELLATION),
-//                 );
-//                 assert_eq!(
-//                     snapshot.get(&counter_key).unwrap().2,
-//                     metrics_util::debugging::DebugValue::Counter(1)
-//                 );
-//
-//                 // 4. Guest call duration
-//                 let histogram_key = CompositeKey::new(
-//                     metrics_util::MetricKind::Histogram,
-//                     Key::from_parts(
-//                         METRIC_GUEST_FUNC_DURATION,
-//                         vec![Label::new("function_name", "Spin")],
-//                     ),
-//                 );
-//                 let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
-//                 assert!(
-//                     matches!(
-//                         histogram_value,
-//                         metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1
-//                     ),
-//                     "Histogram metric does not match expected value"
-//                 );
-//             } else {
-//                 // Verify that the counter metrics are recorded correctly
-//                 assert_eq!(snapshot.len(), 1, "Expected two metrics in the snapshot");
-//
-//                 let counter_key = CompositeKey::new(
-//                     metrics_util::MetricKind::Counter,
-//                     Key::from_name(METRIC_GUEST_CANCELLATION),
-//                 );
-//                 assert_eq!(
-//                     snapshot.get(&counter_key).unwrap().2,
-//                     metrics_util::debugging::DebugValue::Counter(1)
-//                 );
-//             }
-//         }
-//     }
-// }
+mod tests {
+    #[test]
+    #[ignore = "This test needs to be run separately to avoid having other tests interfere with it"]
+    fn test_metrics_are_emitted() -> crate::Result<()> {
+        use std::sync::{Arc, Mutex};
+
+        use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+        use hyperlight_testing::simple_guest_as_string;
+        use metrics::Key;
+        use metrics_util::CompositeKey;
+
+        use super::*;
+        use crate::func::HostFunction2;
+        use crate::sandbox::sandbox_builder::SandboxBuilder;
+        use crate::sandbox_state::sandbox::EvolvableSandbox;
+        use crate::sandbox_state::transition::Noop;
+        use crate::GuestBinary;
+
+        // Set up the recorder and snapshotter
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        // we cannot use with_local_recorder, since that won't capture the metrics
+        // emitted by the hypervisor-thread (which is all of them)
+        recorder.install().unwrap();
+
+        let snapshot = {
+            let sandbox_builder =
+                SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+            let mut uninit = sandbox_builder.build()?;
+
+            fn add(a: i32, b: i32) -> crate::Result<i32> {
+                Ok(a + b)
+            }
+            let host_function = Arc::new(Mutex::new(add));
+            host_function.register(&mut uninit, "HostAdd")?;
+
+            let mut multi = uninit.evolve(Noop::default()).unwrap();
+
+            multi.call_guest_function_by_name(
+                "Add",
+                ReturnType::Int,
+                Some(vec![ParameterValue::Int(1), ParameterValue::Int(2)]),
+            )?;
+
+            multi
+                .call_guest_function_by_name("Spin", ReturnType::Int, None)
+                .unwrap_err();
+
+            snapshotter.snapshot()
+        };
+
+        // Convert snapshot into a hashmap for easier lookup
+        #[expect(clippy::mutable_key_type)]
+        let snapshot = snapshot.into_hashmap();
+
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "function_call_metrics")] {
+                use metrics::Label;
+                // Verify that the histogram metrics are recorded correctly
+                assert_eq!(snapshot.len(), 4, "Expected two metrics in the snapshot");
+
+                // 1. Host add duration
+                let histogram_key = CompositeKey::new(
+                    metrics_util::MetricKind::Histogram,
+                    Key::from_parts(
+                        METRIC_HOST_FUNC_DURATION,
+                        vec![Label::new("function_name", "HostAdd")],
+                    ),
+                );
+                let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
+                assert!(
+                    matches!(
+                        histogram_value,
+                        metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1
+                    ),
+                    "Histogram metric does not match expected value"
+                );
+
+                // 2. Guest call duration
+                let histogram_key = CompositeKey::new(
+                    metrics_util::MetricKind::Histogram,
+                    Key::from_parts(
+                        METRIC_GUEST_FUNC_DURATION,
+                        vec![Label::new("function_name", "Add")],
+                    ),
+                );
+                let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
+                assert!(
+                    matches!(
+                        histogram_value,
+                        metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1
+                    ),
+                    "Histogram metric does not match expected value"
+                );
+
+                // 3. Guest cancellation
+                let counter_key = CompositeKey::new(
+                    metrics_util::MetricKind::Counter,
+                    Key::from_name(METRIC_GUEST_CANCELLATION),
+                );
+                assert_eq!(
+                    snapshot.get(&counter_key).unwrap().2,
+                    metrics_util::debugging::DebugValue::Counter(1)
+                );
+
+                // 4. Guest call duration
+                let histogram_key = CompositeKey::new(
+                    metrics_util::MetricKind::Histogram,
+                    Key::from_parts(
+                        METRIC_GUEST_FUNC_DURATION,
+                        vec![Label::new("function_name", "Spin")],
+                    ),
+                );
+                let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
+                assert!(
+                    matches!(
+                        histogram_value,
+                        metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1
+                    ),
+                    "Histogram metric does not match expected value"
+                );
+            } else {
+                // Verify that the counter metrics are recorded correctly
+                assert_eq!(snapshot.len(), 1, "Expected two metrics in the snapshot");
+
+                let counter_key = CompositeKey::new(
+                    metrics_util::MetricKind::Counter,
+                    Key::from_name(METRIC_GUEST_CANCELLATION),
+                );
+                assert_eq!(
+                    snapshot.get(&counter_key).unwrap().2,
+                    metrics_util::debugging::DebugValue::Counter(1)
+                );
+            }
+        }
+
+        Ok(())
+    }
+}

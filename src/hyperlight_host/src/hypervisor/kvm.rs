@@ -584,8 +584,14 @@ impl Hypervisor for KVMDriver {
                 }
             },
             Ok(other) => {
-                crate::debug!("KVM Other Exit {:?}", other);
-                HyperlightExit::Unknown(format!("Unexpected KVM Exit {:?}", other))
+                let exit_reason =
+                    HyperlightExit::Unknown(format!("Unexpected KVM Exit {:?}", other));
+
+                // Print the registers for debugging
+                let regs = self.vcpu_fd.get_regs()?;
+                crate::debug!("KVM - Registers: {:#?}", &regs);
+
+                exit_reason
             }
         };
         Ok(result)

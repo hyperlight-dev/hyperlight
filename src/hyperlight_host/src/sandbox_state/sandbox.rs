@@ -16,10 +16,8 @@ limitations under the License.
 
 use std::fmt::Debug;
 
-use tracing::{instrument, Span};
-
 use super::transition::TransitionMetadata;
-use crate::{new_error, Result};
+use crate::Result;
 
 /// The minimal functionality of a Hyperlight sandbox. Most of the types
 /// and operations within this crate require `Sandbox` implementations.
@@ -33,25 +31,7 @@ use crate::{new_error, Result};
 /// These transitions are expressed as `EvolvableSandbox` and
 /// `DevolvableSandbox` implementations any `Sandbox` implementation can
 /// opt into.
-pub trait Sandbox: Sized + Debug {
-    /// Check to ensure the current stack cookie matches the one that
-    /// was selected when the stack was constructed.
-    ///
-    /// Return an `Err` if there was an error inspecting the stack, `Ok(false)`
-    /// if there was no such error but the stack guard doesn't match, and
-    /// `Ok(true)` in the same situation where the stack guard does match.
-    ///
-
-    // NOTE: this is only needed for UninitializedSandbox and MultiUseSandbox
-    // Those are the only types that need implement this trait
-    // The default implementation is provided so that types that implement Sandbox (e.g. JSSandbox) but do not need to implement this trait do not need to provide an implementation
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn check_stack_guard(&self) -> Result<bool> {
-        Err(new_error!(
-            "check_stack_guard not implemented for this type"
-        ))
-    }
-}
+pub trait Sandbox: Sized + Debug {}
 
 /// A utility trait to recognize a Sandbox that has not yet been initialized.
 /// It allows retrieval of a strongly typed UninitializedSandbox.

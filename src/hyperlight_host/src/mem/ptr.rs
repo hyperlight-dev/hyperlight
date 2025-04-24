@@ -225,31 +225,19 @@ impl<T: AddressSpace> TryFrom<Ptr<T>> for usize {
     }
 }
 
-// TODO(danbugs:297): bring back
-// #[cfg(test)]
-// mod tests {
-//     use super::{GuestPtr, RawPtr};
-//     use crate::mem::layout::SandboxMemoryLayout;
-//     const OFFSET: u64 = 1;
-//
-//     #[test]
-//     fn ptr_basic_ops() {
-//         {
-//             let raw_guest_ptr = RawPtr(OFFSET + SandboxMemoryLayout::BASE_ADDRESS as u64);
-//             let guest_ptr = GuestPtr::try_from(raw_guest_ptr).unwrap();
-//             assert_eq!(
-//                 OFFSET + SandboxMemoryLayout::BASE_ADDRESS as u64,
-//                 guest_ptr.absolute().unwrap()
-//             );
-//         }
-//     }
-//
-//     #[test]
-//     fn ptr_fail() {
-//         {
-//             let raw_guest_ptr = RawPtr(SandboxMemoryLayout::BASE_ADDRESS as u64 - 1);
-//             let guest_ptr = GuestPtr::try_from(raw_guest_ptr);
-//             assert!(guest_ptr.is_err());
-//         }
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::{GuestPtr, RawPtr};
+    use crate::sandbox::sandbox_builder::BASE_ADDRESS;
+
+    const OFFSET: u64 = 1;
+
+    #[test]
+    fn ptr_basic_ops() {
+        {
+            let raw_guest_ptr = RawPtr(OFFSET + BASE_ADDRESS as u64);
+            let guest_ptr = GuestPtr::try_from(raw_guest_ptr).unwrap();
+            assert_eq!(OFFSET + BASE_ADDRESS as u64, guest_ptr.absolute().unwrap());
+        }
+    }
+}

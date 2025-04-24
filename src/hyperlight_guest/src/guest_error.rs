@@ -30,7 +30,7 @@ pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
     let output_data: OutputDataSection = peb.get_output_data_region().into();
 
     let guest_error = GuestError::new(
-        error_code.clone(),
+        error_code,
         message.map_or("".to_string(), |m| m.to_string()),
     );
 

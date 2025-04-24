@@ -93,7 +93,7 @@ fn internal_dispatch_function() -> Result<()> {
         .expect("Function call deserialization failed");
 
     let result_vec = call_guest_function(function_call).inspect_err(|e| {
-        set_error(e.kind.clone(), e.message.as_str());
+        set_error(e.kind, e.message.as_str());
     })?;
 
     output_data_section

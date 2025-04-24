@@ -87,7 +87,7 @@ fn echo_float(function_call: &FunctionCall) -> Result<Vec<u8>> {
 
 fn print_output(message: &str) -> Result<Vec<u8>> {
     print(message);
-    Ok(get_flatbuffer_result(()))
+    Ok(get_flatbuffer_result(message.len() as i32))
 }
 
 fn simple_print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {

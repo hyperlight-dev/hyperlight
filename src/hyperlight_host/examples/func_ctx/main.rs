@@ -1,22 +1,22 @@
-/*
-Copyright 2024 The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// /*
+// Copyright 2024 The Hyperlight Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// */
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::func::call_ctx::MultiUseGuestCallContext;
-use hyperlight_host::sandbox::{MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
+use hyperlight_host::sandbox::MultiUseSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{new_error, GuestBinary, Result};
@@ -27,8 +27,10 @@ fn main() {
     // test guest binary
     let sbox1: MultiUseSandbox = {
         let path = simple_guest_as_string().unwrap();
-        let u_sbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(path), None, None, None).unwrap();
+        let u_sbox = SandboxBuilder::new(GuestBinary::FilePath(path.clone()))
+            .expect("Failed to create sandbox")
+            .build()
+            .expect("Failed to build sandbox");
         u_sbox.evolve(Noop::default())
     }
     .unwrap();

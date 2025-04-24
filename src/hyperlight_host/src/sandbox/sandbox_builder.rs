@@ -46,6 +46,7 @@ pub(crate) const PD_OFFSET: usize = 0x2000; // this offset is from the PML4 base
 pub(crate) const PT_OFFSET: usize = 0x3000; // this offset is from the PML4 base address
 const DEFAULT_GUEST_MEMORY_SIZE: usize = 0x200_000; // 2MB
 const MAX_GUEST_MEMORY_SIZE: usize = 0x40_000_000; // 64MB
+const DEFAULT_TMP_STACK_SIZE: usize = 65536; // 64KB
 pub(crate) const STACK_ALIGNMENT: u64 = 0x28; // For MSVC, move rsp down by 0x28.  This gives the called 'main'
                                               // function the appearance that rsp was 16 byte aligned before
                                               // the 'call' that calls main (note we don't really have a return value
@@ -555,7 +556,7 @@ impl SandboxBuilder {
         const DEFAULT_TMP_STACK_GUARD_PAGE_NAME: &str = "tmp stack guard page";
         const DEFAULT_CUSTOM_GUEST_MEMORY_GUARD_PAGE_NAME: &str = "custom guest memory guard page";
 
-        let tmp_stack_size = 0x200_000;
+        let tmp_stack_size = DEFAULT_TMP_STACK_SIZE;
         let guest_memory_size = self.guest_memory_size;
 
         // (a) guest code added on `new`

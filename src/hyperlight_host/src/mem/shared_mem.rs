@@ -1041,301 +1041,300 @@ impl SharedMemory for HostSharedMemory {
     }
 }
 
-// TODO(danbugs:297): bring back the tests
-// #[cfg(test)]
-// mod tests {
-//     use hyperlight_common::mem::PAGE_SIZE_USIZE;
-//     use proptest::prelude::*;
-//
-//     use super::{ExclusiveSharedMemory, HostSharedMemory, SharedMemory};
-//     use crate::mem::shared_mem_tests::read_write_test_suite;
-//     use crate::Result;
-//
-//     #[test]
-//     fn fill() {
-//         let mem_size: usize = 4096;
-//         let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
-//         let (mut hshm, _) = eshm.build();
-//
-//         hshm.fill(1, 0, 1024).unwrap();
-//         hshm.fill(2, 1024, 1024).unwrap();
-//         hshm.fill(3, 2048, 1024).unwrap();
-//         hshm.fill(4, 3072, 1024).unwrap();
-//
-//         let vec = hshm
-//             .with_exclusivity(|e| e.copy_all_to_vec().unwrap())
-//             .unwrap();
-//
-//         assert!(vec[0..1024].iter().all(|&x| x == 1));
-//         assert!(vec[1024..2048].iter().all(|&x| x == 2));
-//         assert!(vec[2048..3072].iter().all(|&x| x == 3));
-//         assert!(vec[3072..4096].iter().all(|&x| x == 4));
-//
-//         hshm.fill(5, 0, 4096).unwrap();
-//
-//         let vec2 = hshm
-//             .with_exclusivity(|e| e.copy_all_to_vec().unwrap())
-//             .unwrap();
-//         assert!(vec2.iter().all(|&x| x == 5));
-//
-//         assert!(hshm.fill(0, 0, mem_size + 1).is_err());
-//         assert!(hshm.fill(0, mem_size, 1).is_err());
-//     }
-//
-//     #[test]
-//     fn copy_into_from() -> Result<()> {
-//         let mem_size: usize = 4096;
-//         let vec_len = 10;
-//         let eshm = ExclusiveSharedMemory::new(mem_size)?;
-//         let (hshm, _) = eshm.build();
-//         let vec = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-//         // write the value to the memory at the beginning.
-//         hshm.copy_from_slice(&vec, 0)?;
-//
-//         let mut vec2 = vec![0; vec_len];
-//         // read the value back from the memory at the beginning.
-//         hshm.copy_to_slice(vec2.as_mut_slice(), 0)?;
-//         assert_eq!(vec, vec2);
-//
-//         let offset = mem_size - vec.len();
-//         // write the value to the memory at the end.
-//         hshm.copy_from_slice(&vec, offset)?;
-//
-//         let mut vec3 = vec![0; vec_len];
-//         // read the value back from the memory at the end.
-//         hshm.copy_to_slice(&mut vec3, offset)?;
-//         assert_eq!(vec, vec3);
-//
-//         let offset = mem_size / 2;
-//         // write the value to the memory at the middle.
-//         hshm.copy_from_slice(&vec, offset)?;
-//
-//         let mut vec4 = vec![0; vec_len];
-//         // read the value back from the memory at the middle.
-//         hshm.copy_to_slice(&mut vec4, offset)?;
-//         assert_eq!(vec, vec4);
-//
-//         // try and read a value from an offset that is beyond the end of the memory.
-//         let mut vec5 = vec![0; vec_len];
-//         assert!(hshm.copy_to_slice(&mut vec5, mem_size).is_err());
-//
-//         // try and write a value to an offset that is beyond the end of the memory.
-//         assert!(hshm.copy_from_slice(&vec5, mem_size).is_err());
-//
-//         // try and read a value from an offset that is too large.
-//         let mut vec6 = vec![0; vec_len];
-//         assert!(hshm.copy_to_slice(&mut vec6, mem_size * 2).is_err());
-//
-//         // try and write a value to an offset that is too large.
-//         assert!(hshm.copy_from_slice(&vec6, mem_size * 2).is_err());
-//
-//         // try and read a value that is too large.
-//         let mut vec7 = vec![0; mem_size * 2];
-//         assert!(hshm.copy_to_slice(&mut vec7, 0).is_err());
-//
-//         // try and write a value that is too large.
-//         assert!(hshm.copy_from_slice(&vec7, 0).is_err());
-//
-//         Ok(())
-//     }
-//
-//     proptest! {
-//         #[test]
-//         fn read_write_i32(val in -0x1000_i32..0x1000_i32) {
-//             read_write_test_suite(
-//                 val,
-//                 ExclusiveSharedMemory::new,
-//                 Box::new(ExclusiveSharedMemory::read_i32),
-//                 Box::new(ExclusiveSharedMemory::write_i32),
-//             )
-//             .unwrap();
-//             read_write_test_suite(
-//                 val,
-//                 |s| {
-//                     let e = ExclusiveSharedMemory::new(s)?;
-//                     let (h, _) = e.build();
-//                     Ok(h)
-//                 },
-//                 Box::new(HostSharedMemory::read::<i32>),
-//                 Box::new(|h, o, v| h.write::<i32>(o, v)),
-//             )
-//             .unwrap();
-//         }
-//     }
-//
-//     #[test]
-//     fn alloc_fail() {
-//         let gm = ExclusiveSharedMemory::new(0);
-//         assert!(gm.is_err());
-//         let gm = ExclusiveSharedMemory::new(usize::MAX);
-//         assert!(gm.is_err());
-//     }
-//
-//     #[test]
-//     fn clone() {
-//         let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
-//         let (hshm1, _) = eshm.build();
-//         let hshm2 = hshm1.clone();
-//
-//         // after hshm1 is cloned, hshm1 and hshm2 should have identical
-//         // memory sizes and pointers.
-//         assert_eq!(hshm1.mem_size(), hshm2.mem_size());
-//         assert_eq!(hshm1.base_addr(), hshm2.base_addr());
-//
-//         // we should be able to copy a byte array into both hshm1 and hshm2,
-//         // and have both changes be reflected in all clones
-//         hshm1.copy_from_slice(b"a", 0).unwrap();
-//         hshm2.copy_from_slice(b"b", 1).unwrap();
-//
-//         // at this point, both hshm1 and hshm2 should have
-//         // offset 0 = 'a', offset 1 = 'b'
-//         for (raw_offset, expected) in &[(0, b'a'), (1, b'b')] {
-//             assert_eq!(hshm1.read::<u8>(*raw_offset).unwrap(), *expected);
-//             assert_eq!(hshm2.read::<u8>(*raw_offset).unwrap(), *expected);
-//         }
-//
-//         // after we drop hshm1, hshm2 should still exist, be valid,
-//         // and have all contents from before hshm1 was dropped
-//         drop(hshm1);
-//
-//         // at this point, hshm2 should still have offset 0 = 'a', offset 1 = 'b'
-//         for (raw_offset, expected) in &[(0, b'a'), (1, b'b')] {
-//             assert_eq!(hshm2.read::<u8>(*raw_offset).unwrap(), *expected);
-//         }
-//         hshm2.copy_from_slice(b"c", 2).unwrap();
-//         assert_eq!(hshm2.read::<u8>(2).unwrap(), b'c');
-//         drop(hshm2);
-//     }
-//
-//     #[test]
-//     fn copy_all_to_vec() {
-//         let mut data = vec![b'a', b'b', b'c'];
-//         data.resize(4096, 0);
-//         let mut eshm = ExclusiveSharedMemory::new(data.len()).unwrap();
-//         eshm.copy_from_slice(data.as_slice(), 0).unwrap();
-//         let ret_vec = eshm.copy_all_to_vec().unwrap();
-//         assert_eq!(data, ret_vec);
-//     }
-//
-//     /// A test to ensure that, if a `SharedMem` instance is cloned
-//     /// and _all_ clones are dropped, the memory region will no longer
-//     /// be valid.
-//     ///
-//     /// This test is ignored because it is incompatible with other tests as
-//     /// they may be allocating memory at the same time.
-//     ///
-//     /// Marking this test as ignored means that running `cargo test` will not
-//     /// run it. This feature will allow a developer who runs that command
-//     /// from their workstation to be successful without needing to know about
-//     /// test interdependencies. This test will, however, be run explicitly as a
-//     /// part of the CI pipeline.
-//     #[test]
-//     #[ignore]
-//     #[cfg(target_os = "linux")]
-//     fn test_drop() {
-//         use proc_maps::maps_contain_addr;
-//
-//         let pid = std::process::id();
-//
-//         let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
-//         let (hshm1, gshm) = eshm.build();
-//         let hshm2 = hshm1.clone();
-//         let addr = hshm1.raw_ptr() as usize;
-//
-//         // ensure the address is in the process's virtual memory
-//         let maps_before_drop = proc_maps::get_process_maps(pid.try_into().unwrap()).unwrap();
-//         assert!(
-//             maps_contain_addr(addr, &maps_before_drop),
-//             "shared memory address {:#x} was not found in process map, but should be",
-//             addr,
-//         );
-//         // drop both shared memory instances, which should result
-//         // in freeing the memory region
-//         drop(hshm1);
-//         drop(hshm2);
-//         drop(gshm);
-//
-//         let maps_after_drop = proc_maps::get_process_maps(pid.try_into().unwrap()).unwrap();
-//         // now, ensure the address is not in the process's virtual memory
-//         assert!(
-//             !maps_contain_addr(addr, &maps_after_drop),
-//             "shared memory address {:#x} was found in the process map, but shouldn't be",
-//             addr
-//         );
-//     }
-//
-//     #[cfg(target_os = "linux")]
-//     mod guard_page_crash_test {
-//         use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
-//
-//         const TEST_EXIT_CODE: u8 = 211; // an uncommon exit code, used for testing purposes
-//
-//         /// hook sigsegv to exit with status code, to make it testable, rather than have it exit from a signal
-//         /// NOTE: We CANNOT panic!() in the handler, and make the tests #[should_panic], because
-//         ///     the test harness process will crash anyway after the test passes
-//         fn setup_signal_handler() {
-//             unsafe {
-//                 signal_hook_registry::register_signal_unchecked(libc::SIGSEGV, || {
-//                     std::process::exit(TEST_EXIT_CODE.into());
-//                 })
-//                     .unwrap();
-//             }
-//         }
-//
-//         #[test]
-//         #[ignore] // this test is ignored because it will crash the running process
-//         fn read() {
-//             setup_signal_handler();
-//
-//             let eshm = ExclusiveSharedMemory::new(4096).unwrap();
-//             let (hshm, _) = eshm.build();
-//             let guard_page_ptr = hshm.raw_ptr();
-//             unsafe { std::ptr::read_volatile(guard_page_ptr) };
-//         }
-//
-//         #[test]
-//         #[ignore] // this test is ignored because it will crash the running process
-//         fn write() {
-//             setup_signal_handler();
-//
-//             let eshm = ExclusiveSharedMemory::new(4096).unwrap();
-//             let (hshm, _) = eshm.build();
-//             let guard_page_ptr = hshm.raw_ptr();
-//             unsafe { std::ptr::write_volatile(guard_page_ptr, 0u8) };
-//         }
-//
-//         #[test]
-//         #[ignore] // this test is ignored because it will crash the running process
-//         fn exec() {
-//             setup_signal_handler();
-//
-//             let eshm = ExclusiveSharedMemory::new(4096).unwrap();
-//             let (hshm, _) = eshm.build();
-//             let guard_page_ptr = hshm.raw_ptr();
-//             let func: fn() = unsafe { std::mem::transmute(guard_page_ptr) };
-//             func();
-//         }
-//
-//         // provides a way for running the above tests in a separate process since they expect to crash
-//         #[test]
-//         fn guard_page_testing_shim() {
-//             let tests = vec!["read", "write", "exec"];
-//
-//             for test in tests {
-//                 let status = std::process::Command::new("cargo")
-//                     .args(["test", "-p", "hyperlight-host", "--", "--ignored", test])
-//                     .stdin(std::process::Stdio::null())
-//                     .stdout(std::process::Stdio::null())
-//                     .stderr(std::process::Stdio::null())
-//                     .status()
-//                     .expect("Unable to launch tests");
-//                 assert_eq!(
-//                     status.code(),
-//                     Some(TEST_EXIT_CODE.into()),
-//                     "Guard Page test failed: {}",
-//                     test
-//                 );
-//             }
-//         }
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use hyperlight_common::PAGE_SIZE;
+    use proptest::prelude::*;
+
+    use super::{ExclusiveSharedMemory, HostSharedMemory, SharedMemory};
+    use crate::mem::shared_mem_tests::read_write_test_suite;
+    use crate::Result;
+
+    #[test]
+    fn fill() {
+        let mem_size: usize = 4096;
+        let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+        let (mut hshm, _) = eshm.build();
+
+        hshm.fill(1, 0, 1024).unwrap();
+        hshm.fill(2, 1024, 1024).unwrap();
+        hshm.fill(3, 2048, 1024).unwrap();
+        hshm.fill(4, 3072, 1024).unwrap();
+
+        let vec = hshm
+            .with_exclusivity(|e| e.copy_all_to_vec().unwrap())
+            .unwrap();
+
+        assert!(vec[0..1024].iter().all(|&x| x == 1));
+        assert!(vec[1024..2048].iter().all(|&x| x == 2));
+        assert!(vec[2048..3072].iter().all(|&x| x == 3));
+        assert!(vec[3072..4096].iter().all(|&x| x == 4));
+
+        hshm.fill(5, 0, 4096).unwrap();
+
+        let vec2 = hshm
+            .with_exclusivity(|e| e.copy_all_to_vec().unwrap())
+            .unwrap();
+        assert!(vec2.iter().all(|&x| x == 5));
+
+        assert!(hshm.fill(0, 0, mem_size + 1).is_err());
+        assert!(hshm.fill(0, mem_size, 1).is_err());
+    }
+
+    #[test]
+    fn copy_into_from() -> Result<()> {
+        let mem_size: usize = 4096;
+        let vec_len = 10;
+        let eshm = ExclusiveSharedMemory::new(mem_size)?;
+        let (hshm, _) = eshm.build();
+        let vec = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        // write the value to the memory at the beginning.
+        hshm.copy_from_slice(&vec, 0)?;
+
+        let mut vec2 = vec![0; vec_len];
+        // read the value back from the memory at the beginning.
+        hshm.copy_to_slice(vec2.as_mut_slice(), 0)?;
+        assert_eq!(vec, vec2);
+
+        let offset = mem_size - vec.len();
+        // write the value to the memory at the end.
+        hshm.copy_from_slice(&vec, offset)?;
+
+        let mut vec3 = vec![0; vec_len];
+        // read the value back from the memory at the end.
+        hshm.copy_to_slice(&mut vec3, offset)?;
+        assert_eq!(vec, vec3);
+
+        let offset = mem_size / 2;
+        // write the value to the memory at the middle.
+        hshm.copy_from_slice(&vec, offset)?;
+
+        let mut vec4 = vec![0; vec_len];
+        // read the value back from the memory at the middle.
+        hshm.copy_to_slice(&mut vec4, offset)?;
+        assert_eq!(vec, vec4);
+
+        // try and read a value from an offset that is beyond the end of the memory.
+        let mut vec5 = vec![0; vec_len];
+        assert!(hshm.copy_to_slice(&mut vec5, mem_size).is_err());
+
+        // try and write a value to an offset that is beyond the end of the memory.
+        assert!(hshm.copy_from_slice(&vec5, mem_size).is_err());
+
+        // try and read a value from an offset that is too large.
+        let mut vec6 = vec![0; vec_len];
+        assert!(hshm.copy_to_slice(&mut vec6, mem_size * 2).is_err());
+
+        // try and write a value to an offset that is too large.
+        assert!(hshm.copy_from_slice(&vec6, mem_size * 2).is_err());
+
+        // try and read a value that is too large.
+        let mut vec7 = vec![0; mem_size * 2];
+        assert!(hshm.copy_to_slice(&mut vec7, 0).is_err());
+
+        // try and write a value that is too large.
+        assert!(hshm.copy_from_slice(&vec7, 0).is_err());
+
+        Ok(())
+    }
+
+    proptest! {
+        #[test]
+        fn read_write_i32(val in -0x1000_i32..0x1000_i32) {
+            read_write_test_suite(
+                val,
+                ExclusiveSharedMemory::new,
+                Box::new(ExclusiveSharedMemory::read_i32),
+                Box::new(ExclusiveSharedMemory::write_i32),
+            )
+            .unwrap();
+            read_write_test_suite(
+                val,
+                |s| {
+                    let e = ExclusiveSharedMemory::new(s)?;
+                    let (h, _) = e.build();
+                    Ok(h)
+                },
+                Box::new(HostSharedMemory::read::<i32>),
+                Box::new(|h, o, v| h.write::<i32>(o, v)),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn alloc_fail() {
+        let gm = ExclusiveSharedMemory::new(0);
+        assert!(gm.is_err());
+        let gm = ExclusiveSharedMemory::new(usize::MAX);
+        assert!(gm.is_err());
+    }
+
+    #[test]
+    fn clone() {
+        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE).unwrap();
+        let (hshm1, _) = eshm.build();
+        let hshm2 = hshm1.clone();
+
+        // after hshm1 is cloned, hshm1 and hshm2 should have identical
+        // memory sizes and pointers.
+        assert_eq!(hshm1.mem_size(), hshm2.mem_size());
+        assert_eq!(hshm1.base_addr(), hshm2.base_addr());
+
+        // we should be able to copy a byte array into both hshm1 and hshm2,
+        // and have both changes be reflected in all clones
+        hshm1.copy_from_slice(b"a", 0).unwrap();
+        hshm2.copy_from_slice(b"b", 1).unwrap();
+
+        // at this point, both hshm1 and hshm2 should have
+        // offset 0 = 'a', offset 1 = 'b'
+        for (raw_offset, expected) in &[(0, b'a'), (1, b'b')] {
+            assert_eq!(hshm1.read::<u8>(*raw_offset).unwrap(), *expected);
+            assert_eq!(hshm2.read::<u8>(*raw_offset).unwrap(), *expected);
+        }
+
+        // after we drop hshm1, hshm2 should still exist, be valid,
+        // and have all contents from before hshm1 was dropped
+        drop(hshm1);
+
+        // at this point, hshm2 should still have offset 0 = 'a', offset 1 = 'b'
+        for (raw_offset, expected) in &[(0, b'a'), (1, b'b')] {
+            assert_eq!(hshm2.read::<u8>(*raw_offset).unwrap(), *expected);
+        }
+        hshm2.copy_from_slice(b"c", 2).unwrap();
+        assert_eq!(hshm2.read::<u8>(2).unwrap(), b'c');
+        drop(hshm2);
+    }
+
+    #[test]
+    fn copy_all_to_vec() {
+        let mut data = vec![b'a', b'b', b'c'];
+        data.resize(4096, 0);
+        let mut eshm = ExclusiveSharedMemory::new(data.len()).unwrap();
+        eshm.copy_from_slice(data.as_slice(), 0).unwrap();
+        let ret_vec = eshm.copy_all_to_vec().unwrap();
+        assert_eq!(data, ret_vec);
+    }
+
+    /// A test to ensure that, if a `SharedMem` instance is cloned
+    /// and _all_ clones are dropped, the memory region will no longer
+    /// be valid.
+    ///
+    /// This test is ignored because it is incompatible with other tests as
+    /// they may be allocating memory at the same time.
+    ///
+    /// Marking this test as ignored means that running `cargo test` will not
+    /// run it. This feature will allow a developer who runs that command
+    /// from their workstation to be successful without needing to know about
+    /// test interdependencies. This test will, however, be run explicitly as a
+    /// part of the CI pipeline.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "linux")]
+    fn test_drop() {
+        use proc_maps::maps_contain_addr;
+
+        let pid = std::process::id();
+
+        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE).unwrap();
+        let (hshm1, gshm) = eshm.build();
+        let hshm2 = hshm1.clone();
+        let addr = hshm1.raw_ptr() as usize;
+
+        // ensure the address is in the process's virtual memory
+        let maps_before_drop = proc_maps::get_process_maps(pid.try_into().unwrap()).unwrap();
+        assert!(
+            maps_contain_addr(addr, &maps_before_drop),
+            "shared memory address {:#x} was not found in process map, but should be",
+            addr,
+        );
+        // drop both shared memory instances, which should result
+        // in freeing the memory region
+        drop(hshm1);
+        drop(hshm2);
+        drop(gshm);
+
+        let maps_after_drop = proc_maps::get_process_maps(pid.try_into().unwrap()).unwrap();
+        // now, ensure the address is not in the process's virtual memory
+        assert!(
+            !maps_contain_addr(addr, &maps_after_drop),
+            "shared memory address {:#x} was found in the process map, but shouldn't be",
+            addr
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    mod guard_page_crash_test {
+        use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+
+        const TEST_EXIT_CODE: u8 = 211; // an uncommon exit code, used for testing purposes
+
+        /// hook sigsegv to exit with status code, to make it testable, rather than have it exit from a signal
+        /// NOTE: We CANNOT panic!() in the handler, and make the tests #[should_panic], because
+        ///     the test harness process will crash anyway after the test passes
+        fn setup_signal_handler() {
+            unsafe {
+                signal_hook_registry::register_signal_unchecked(libc::SIGSEGV, || {
+                    std::process::exit(TEST_EXIT_CODE.into());
+                })
+                .unwrap();
+            }
+        }
+
+        #[test]
+        #[ignore] // this test is ignored because it will crash the running process
+        fn read() {
+            setup_signal_handler();
+
+            let eshm = ExclusiveSharedMemory::new(4096).unwrap();
+            let (hshm, _) = eshm.build();
+            let guard_page_ptr = hshm.raw_ptr();
+            unsafe { std::ptr::read_volatile(guard_page_ptr) };
+        }
+
+        #[test]
+        #[ignore] // this test is ignored because it will crash the running process
+        fn write() {
+            setup_signal_handler();
+
+            let eshm = ExclusiveSharedMemory::new(4096).unwrap();
+            let (hshm, _) = eshm.build();
+            let guard_page_ptr = hshm.raw_ptr();
+            unsafe { std::ptr::write_volatile(guard_page_ptr, 0u8) };
+        }
+
+        #[test]
+        #[ignore] // this test is ignored because it will crash the running process
+        fn exec() {
+            setup_signal_handler();
+
+            let eshm = ExclusiveSharedMemory::new(4096).unwrap();
+            let (hshm, _) = eshm.build();
+            let guard_page_ptr = hshm.raw_ptr();
+            let func: fn() = unsafe { std::mem::transmute(guard_page_ptr) };
+            func();
+        }
+
+        // provides a way for running the above tests in a separate process since they expect to crash
+        #[test]
+        fn guard_page_testing_shim() {
+            let tests = vec!["read", "write", "exec"];
+
+            for test in tests {
+                let status = std::process::Command::new("cargo")
+                    .args(["test", "-p", "hyperlight-host", "--", "--ignored", test])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .expect("Unable to launch tests");
+                assert_eq!(
+                    status.code(),
+                    Some(TEST_EXIT_CODE.into()),
+                    "Guard Page test failed: {}",
+                    test
+                );
+            }
+        }
+    }
+}

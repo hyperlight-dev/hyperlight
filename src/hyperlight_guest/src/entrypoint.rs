@@ -86,7 +86,7 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
 
         // The guest sets the address to a "guest function dispatch" function, which is a function
         // that is called by the host to dispatch calls to guest functions.
-        (*PEB).set_guest_function_dispatch_ptr(dispatch_function as u64);
+        (*PEB).set_guest_function_dispatch_ptr(dispatch_function as usize as u64);
 
         // Set up the guest heap
         HEAP_ALLOCATOR

@@ -335,123 +335,83 @@ impl VirtualCPU {
     }
 }
 
-// TODO(danbugs:297): bring back
-// #[cfg(all(test, any(target_os = "windows", kvm)))]
-// pub(crate) mod tests {
-// #[allow(dead_code)]
-// pub(crate) fn test_custom_initialise(
-//     mem_access_hdl: MemAccessHandlerWrapper,
-//     #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-// ) -> Result<()> {
-//     let filename = custom_guest_as_string().map_err(|e| new_error!("{}", e))?;
-//     let sbox_config = SandboxConfiguration::default();
-//     let uninitialized_sandbox = UninitializedSandbox::new(
-//         GuestBinary::FilePath(filename.clone()),
-//         sbox_config,
-//         None,
-//     )?;
-//
-//     let (hshm, gshm) = uninitialized_sandbox.mem_mgr.build();
-//
-//     let custom_memory_offset = gshm.layout.get_custom_guest_memory_offset();
-//     let custom_memory_size = gshm.layout.get_custom_guest_memory_size();
-//     dbg!(&custom_memory_offset);
-//
-//     let custom_memory = hshm.get_custom_guest_memory()?;
-//     assert_eq!(custom_memory[0], 0);
-//
-//     let hv_handler_config = HvHandlerConfig {
-//         custom_guest_memory_region_address: custom_memory_offset as u64,
-//         custom_guest_memory_region_size: custom_memory_size as u64,
-//         mem_access_handler: mem_access_hdl,
-//         #[cfg(gdb)]
-//         dbg_mem_access_handler: dbg_mem_access_fn,
-//         page_size: 4096,
-//         max_init_time: Duration::from_millis(
-//             SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
-//         ),
-//         max_exec_time: Duration::from_millis(
-//             SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
-//         ),
-//         max_wait_for_cancellation: Duration::from_millis(
-//             SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
-//         ),
-//     };
-//
-//     let mut hv_handler = HypervisorHandler::new(hv_handler_config);
-//
-//     hv_handler.start_hypervisor_handler(
-//         gshm,
-//         #[cfg(gdb)]
-//         None,
-//     )?;
-//
-//     hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)?;
-//
-//     let custom_memory = hshm.get_custom_guest_memory()?;
-//
-//     assert_eq!(custom_memory[0], 1);
-//
-//     Ok(())
-// }
-//
-// pub(crate) fn test_initialise(
-//     _outb_hdl: OutBHandlerWrapper,
-//     mem_access_hdl: MemAccessHandlerWrapper,
-//     #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-// ) -> Result<()> {
-//     let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
-//     if !Path::new(&filename).exists() {
-//         return Err(new_error!(
-//             "test_initialise: file {} does not exist",
-//             filename
-//         ));
-//     }
-//
-//     let sandbox =
-//         UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None, None)?;
-//     let (hshm, gshm) = sandbox.mem_mgr.build();
-//     drop(hshm);
-//
-//     let hv_handler_config = HvHandlerConfig {
-//         custom_guest_memory_region_address: gshm.layout.get_custom_guest_memory_offset() as u64,
-//         custom_guest_memory_region_size: gshm.layout.get_custom_guest_memory_size() as u64,
-//         mem_access_handler: mem_access_hdl,
-//         #[cfg(gdb)]
-//         dbg_mem_access_handler: dbg_mem_access_fn,
-//         page_size: 4096,
-//         max_init_time: Duration::from_millis(
-//             SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
-//         ),
-//         max_exec_time: Duration::from_millis(
-//             SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
-//         ),
-//         max_wait_for_cancellation: Duration::from_millis(
-//             SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
-//         ),
-//     };
-//
-//     let mut hv_handler = HypervisorHandler::new(hv_handler_config);
-//
-//     // call initialise on the hypervisor implementation with specific values
-//     // for PEB (process environment block) address, seed and page size.
-//     //
-//     // these values are not actually used, they're just checked inside
-//     // the dummy guest, and if they don't match these values, the dummy
-//     // guest issues a write to an invalid memory address, which in turn
-//     // fails this test.
-//     //
-//     // in this test, we're not actually testing whether a guest can issue
-//     // memory operations, call functions, etc... - we're just testing
-//     // whether we can configure the shared memory region, load a binary
-//     // into it, and run the CPU to completion (e.g., a HLT interrupt)
-//
-//     hv_handler.start_hypervisor_handler(
-//         gshm,
-//         #[cfg(gdb)]
-//         None,
-//     )?;
-//
-//     hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
-// }
-//}
+#[cfg(all(test, any(target_os = "windows", kvm)))]
+pub(crate) mod tests {
+    use std::path::Path;
+    use std::time::Duration;
+
+    use hyperlight_testing::dummy_guest_as_string;
+
+    #[cfg(gdb)]
+    use super::handlers::DbgMemAccessHandlerWrapper;
+    use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+    use crate::hypervisor::hypervisor_handler::{
+        HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
+    };
+    use crate::sandbox::config::SandboxConfiguration;
+    use crate::sandbox::sandbox_builder::SandboxBuilder;
+    use crate::{new_error, GuestBinary, Result};
+
+    pub(crate) fn test_initialise(
+        outb_hdl: OutBHandlerWrapper,
+        mem_access_hdl: MemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    ) -> Result<()> {
+        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
+        if !Path::new(&filename).exists() {
+            return Err(new_error!(
+                "test_initialise: file {} does not exist",
+                filename
+            ));
+        }
+
+        let sandbox_builder = SandboxBuilder::new(GuestBinary::FilePath(filename))?;
+
+        let sandbox = sandbox_builder.build()?;
+
+        let (hshm, gshm) = sandbox.mem_mgr.build();
+        drop(hshm);
+
+        let hv_handler_config = HvHandlerConfig {
+            hyperlight_peb_guest_memory_region_address: 0x230000,
+            seed: 1234567890,
+            max_guest_log_level: None,
+            outb_handler: outb_hdl,
+            mem_access_handler: mem_access_hdl,
+            #[cfg(gdb)]
+            dbg_mem_access_handler: dbg_mem_access_fn,
+            max_init_time: Duration::from_millis(
+                SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
+            ),
+            max_exec_time: Duration::from_millis(
+                SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
+            ),
+            max_wait_for_cancellation: Duration::from_millis(
+                SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
+            ),
+        };
+
+        let mut hv_handler = HypervisorHandler::new(hv_handler_config);
+
+        // call initialise on the hypervisor implementation with specific values
+        // for PEB (process environment block) address, seed and page size.
+        //
+        // these values are not actually used, they're just checked inside
+        // the dummy guest, and if they don't match these values, the dummy
+        // guest issues a write to an invalid memory address, which in turn
+        // fails this test.
+        //
+        // in this test, we're not actually testing whether a guest can issue
+        // memory operations, call functions, etc... - we're just testing
+        // whether we can configure the shared memory region, load a binary
+        // into it, and run the CPU to completion (e.g., a HLT interrupt)
+
+        hv_handler.start_hypervisor_handler(
+            gshm,
+            #[cfg(gdb)]
+            None,
+        )?;
+
+        hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
+    }
+}

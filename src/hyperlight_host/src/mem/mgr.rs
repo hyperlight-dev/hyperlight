@@ -212,6 +212,10 @@ where
             page_flags |= PAGE_RW; // Allow read/write
         }
 
+        if flags.contains(MemoryRegionFlags::STACK_GUARD) {
+            page_flags |= PAGE_RW; // The guard page is marked RW so that if it gets written to we can detect it in the host
+        }
+
         if flags.contains(MemoryRegionFlags::EXECUTE) {
             page_flags |= PAGE_USER; // Allow user access
         } else {
@@ -318,20 +322,20 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
-    /// Check the stack guard of the memory in `shared_mem`, using
-    /// `layout` to calculate its location.
-    ///
-    /// Return `true`
-    /// if `shared_mem` could be accessed properly and the guard
-    /// matches `cookie`. If it could be accessed properly and the
-    /// guard doesn't match `cookie`, return `false`. Otherwise, return
-    /// a descriptive error.
-    ///
-    /// This method could be an associated function instead. See
-    /// documentation at the bottom `set_stack_guard` for description
-    /// of why it isn't.
+    /// Set the stack guard of the guest's custom guest memory region to a cookie.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn check_stack_guard(&self) -> Result<bool> {
+    pub(crate) fn set_stack_guard(&mut self) -> Result<()> {
+        let cookie = self.stack_guard;
+        let offset = self
+            .memory_sections
+            .get_custom_guest_memory_section_offset();
+        self.shared_mem.copy_from_slice(&cookie, offset)
+    }
+
+    /// Check the stack guard of the guest's custom guest memory region to
+    /// ensure no stack overflows have occurred.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn check_stack_guard(&self) -> Result<()> {
         let cookie = self.stack_guard;
         // There's a stack guard right before the custom guest memory section
         let offset = self
@@ -339,7 +343,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
             .get_custom_guest_memory_section_offset();
         let test_cookie: [u8; STACK_COOKIE_LEN] = self.shared_mem.read(offset)?;
         let cmp_res = cookie.iter().cmp(test_cookie.iter());
-        Ok(cmp_res == Ordering::Equal)
+        match cmp_res {
+            Ordering::Equal => Ok(()),
+            _ => Err(HyperlightError::StackOverflow()),
+        }
     }
 
     /// Reads a host function call from memory

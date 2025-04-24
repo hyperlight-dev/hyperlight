@@ -935,167 +935,143 @@ fn set_up_hypervisor_partition(
     }
 }
 
-// TODO(danbugs:297): bring back
-// #[cfg(test)]
-// mod tests {
-//     use std::sync::{Arc, Barrier};
-//     use std::thread;
-//
-//     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-//     use hyperlight_testing::simple_guest_as_string;
-//
-//     #[cfg(target_os = "windows")]
-//     use crate::sandbox::SandboxConfiguration;
-//     use crate::sandbox::WrapperGetter;
-//     use crate::sandbox_state::sandbox::EvolvableSandbox;
-//     use crate::sandbox_state::transition::Noop;
-//     use crate::HyperlightError::HypervisorHandlerExecutionCancelAttemptOnFinishedExecution;
-//     use crate::{
-//         is_hypervisor_present, GuestBinary, HyperlightError, MultiUseSandbox, Result,
-//         UninitializedSandbox,
-//     };
-//
-//     fn create_multi_use_sandbox() -> MultiUseSandbox {
-//         if !is_hypervisor_present() {
-//             panic!("Panic on create_multi_use_sandbox because no hypervisor is present");
-//         }
-//
-//         // Tests that use this function seem to fail with timeouts sporadically on windows so timeouts are raised here
-//
-//         let cfg = {
-//             #[cfg(target_os = "windows")]
-//             {
-//                 let mut cfg = SandboxConfiguration::default();
-//                 cfg.set_max_initialization_time(std::time::Duration::from_secs(10));
-//                 cfg.set_max_execution_time(std::time::Duration::from_secs(3));
-//                 Some(cfg)
-//             }
-//             #[cfg(not(target_os = "windows"))]
-//             {
-//                 None
-//             }
-//         };
-//
-//         let usbox = UninitializedSandbox::new(
-//             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-//             cfg,
-//             None,
-//             None,
-//         )
-//             .unwrap();
-//
-//         usbox.evolve(Noop::default()).unwrap()
-//     }
-//
-//     #[test]
-//     #[ignore] // this test runs by itself because it uses a lot of system resources
-//     fn create_1000_sandboxes() {
-//         let barrier = Arc::new(Barrier::new(21));
-//
-//         let mut handles = vec![];
-//
-//         for _ in 0..20 {
-//             let c = barrier.clone();
-//
-//             let handle = thread::spawn(move || {
-//                 c.wait();
-//
-//                 for _ in 0..50 {
-//                     create_multi_use_sandbox();
-//                 }
-//             });
-//
-//             handles.push(handle);
-//         }
-//
-//         barrier.wait();
-//
-//         for handle in handles {
-//             handle.join().unwrap();
-//         }
-//     }
-//
-//     #[test]
-//     fn create_10_sandboxes() {
-//         for _ in 0..10 {
-//             create_multi_use_sandbox();
-//         }
-//     }
-//
-//     #[test]
-//     fn hello_world() -> Result<()> {
-//         let mut sandbox = create_multi_use_sandbox();
-//
-//         let msg = "Hello, World!\n".to_string();
-//         let res = sandbox.call_guest_function_by_name(
-//             "PrintOutput",
-//             ReturnType::Int,
-//             Some(vec![ParameterValue::String(msg.clone())]),
-//         );
-//
-//         assert!(res.is_ok());
-//
-//         Ok(())
-//     }
-//
-//     #[test]
-//     fn terminate_execution_then_call_another_function() -> Result<()> {
-//         let mut sandbox = create_multi_use_sandbox();
-//
-//         let res = sandbox.call_guest_function_by_name("Spin", ReturnType::Void, None);
-//
-//         assert!(res.is_err());
-//
-//         match res.err().unwrap() {
-//             HyperlightError::ExecutionCanceledByHost() => {}
-//             _ => panic!("Expected ExecutionTerminated error"),
-//         }
-//
-//         let res = sandbox.call_guest_function_by_name(
-//             "Echo",
-//             ReturnType::String,
-//             Some(vec![ParameterValue::String("a".to_string())]),
-//         );
-//
-//         assert!(res.is_ok());
-//
-//         Ok(())
-//     }
-//
-//     #[test]
-//     fn terminate_execution_of_an_already_finished_function_then_call_another_function() -> Result<()>
-//     {
-//         let call_print_output = |sandbox: &mut MultiUseSandbox| {
-//             let msg = "Hello, World!\n".to_string();
-//             let res = sandbox.call_guest_function_by_name(
-//                 "PrintOutput",
-//                 ReturnType::Int,
-//                 Some(vec![ParameterValue::String(msg.clone())]),
-//             );
-//
-//             assert!(res.is_ok());
-//         };
-//
-//         let mut sandbox = create_multi_use_sandbox();
-//         call_print_output(&mut sandbox);
-//
-//         // this simulates what would happen if a function actually successfully
-//         // finished while we attempted to terminate execution
-//         {
-//             match sandbox
-//                 .get_hv_handler()
-//                 .clone()
-//                 .terminate_hypervisor_handler_execution_and_reinitialise(
-//                     sandbox.get_mgr_wrapper_mut().unwrap_mgr_mut(),
-//                 )? {
-//                 HypervisorHandlerExecutionCancelAttemptOnFinishedExecution() => {}
-//                 _ => panic!("Expected error demonstrating execution wasn't cancelled properly"),
-//             }
-//         }
-//
-//         call_print_output(&mut sandbox);
-//         call_print_output(&mut sandbox);
-//
-//         Ok(())
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+    use hyperlight_testing::simple_guest_as_string;
+
+    use crate::sandbox::sandbox_builder::SandboxBuilder;
+    use crate::sandbox_state::sandbox::EvolvableSandbox;
+    use crate::sandbox_state::transition::Noop;
+    use crate::HyperlightError::HypervisorHandlerExecutionCancelAttemptOnFinishedExecution;
+    use crate::{is_hypervisor_present, GuestBinary, HyperlightError, MultiUseSandbox, Result};
+
+    fn create_multi_use_sandbox() -> Result<MultiUseSandbox> {
+        if !is_hypervisor_present() {
+            panic!("Panic on create_multi_use_sandbox because no hypervisor is present");
+        }
+
+        // Tests that use this function seem to fail with timeouts sporadically on windows so timeouts are raised here
+
+        let sandbox_builder = {
+            #[cfg(target_os = "windows")]
+            {
+                SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?
+                    .set_max_initialization_time(10_000) // 10 seconds
+                    .set_max_execution_time(3_000) // 3 seconds
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?
+            }
+        };
+
+        let uninitialized_sandbox = sandbox_builder.build()?;
+
+        uninitialized_sandbox.evolve(Noop::default())
+    }
+
+    #[test]
+    #[ignore] // this test runs by itself because it uses a lot of system resources
+    fn create_1000_sandboxes() -> Result<()> {
+        let barrier = Arc::new(Barrier::new(21));
+
+        let mut handles = vec![];
+
+        for _ in 0..20 {
+            let c = barrier.clone();
+
+            let handle = thread::spawn(move || -> Result<()> {
+                c.wait();
+
+                for _ in 0..50 {
+                    create_multi_use_sandbox()?;
+                }
+
+                Ok(())
+            });
+
+            handles.push(handle);
+        }
+
+        barrier.wait();
+
+        for handle in handles {
+            handle.join().unwrap()?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_10_sandboxes() -> Result<()> {
+        for _ in 0..10 {
+            create_multi_use_sandbox()?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn terminate_execution_then_call_another_function() -> Result<()> {
+        let mut sandbox = create_multi_use_sandbox()?;
+
+        let res = sandbox.call_guest_function_by_name("Spin", ReturnType::Void, None);
+
+        assert!(res.is_err());
+
+        match res.err().unwrap() {
+            HyperlightError::ExecutionCanceledByHost() => {}
+            _ => panic!("Expected ExecutionTerminated error"),
+        }
+
+        let res = sandbox.call_guest_function_by_name(
+            "Echo",
+            ReturnType::String,
+            Some(vec![ParameterValue::String("a".to_string())]),
+        );
+
+        assert!(res.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn terminate_execution_of_an_already_finished_function_then_call_another_function() -> Result<()>
+    {
+        let call_print_output = |sandbox: &mut MultiUseSandbox| {
+            let msg = "Hello, World!\n".to_string();
+            let res = sandbox.call_guest_function_by_name(
+                "PrintOutput",
+                ReturnType::Int,
+                Some(vec![ParameterValue::String(msg.clone())]),
+            );
+
+            assert!(res.is_ok());
+        };
+
+        let mut sandbox = create_multi_use_sandbox()?;
+        call_print_output(&mut sandbox);
+
+        // this simulates what would happen if a function actually successfully
+        // finished while we attempted to terminate execution
+        {
+            match sandbox
+                .get_hv_handler()
+                .clone()
+                .terminate_hypervisor_handler_execution_and_reinitialise(&mut sandbox.mem_mgr)?
+            {
+                HypervisorHandlerExecutionCancelAttemptOnFinishedExecution() => {}
+                _ => panic!("Expected error demonstrating execution wasn't cancelled properly"),
+            }
+        }
+
+        call_print_output(&mut sandbox);
+        call_print_output(&mut sandbox);
+
+        Ok(())
+    }
+}

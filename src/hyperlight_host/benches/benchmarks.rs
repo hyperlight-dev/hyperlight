@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use criterion::{criterion_group, criterion_main, Criterion};
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::func::HostFunction2;
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox::{MultiUseSandbox, UninitializedSandbox};
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -26,8 +27,12 @@ use hyperlight_host::GuestBinary;
 use hyperlight_testing::simple_guest_as_string;
 
 fn create_uninit_sandbox() -> UninitializedSandbox {
-    let path = simple_guest_as_string().unwrap();
-    UninitializedSandbox::new(GuestBinary::FilePath(path), None, None, None).unwrap()
+    SandboxBuilder::new(GuestBinary::FilePath(
+        simple_guest_as_string().expect("Guest Binary Missing"),
+    ))
+    .expect("Failed to create sandbox")
+    .build()
+    .expect("Failed to build sandbox")
 }
 
 fn create_multiuse_sandbox() -> MultiUseSandbox {

@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{instrument, Span};
 
-use crate::error::HyperlightError::StackOverflow;
 #[cfg(gdb)]
 use crate::hypervisor::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use crate::hypervisor::handlers::{
@@ -26,17 +25,13 @@ use crate::hypervisor::handlers::{
 };
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
-use crate::{log_then_return, Result};
+use crate::Result;
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 pub(super) fn handle_mem_access_impl(
     wrapper: &SandboxMemoryManager<HostSharedMemory>,
 ) -> Result<()> {
-    if !wrapper.check_stack_guard()? {
-        log_then_return!(StackOverflow());
-    }
-
-    Ok(())
+    wrapper.check_stack_guard()
 }
 
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]

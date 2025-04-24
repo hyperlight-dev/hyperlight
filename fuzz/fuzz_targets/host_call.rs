@@ -19,11 +19,9 @@ limitations under the License.
 use std::sync::{Mutex, OnceLock};
 
 use hyperlight_host::func::{ParameterValue, ReturnType};
-use hyperlight_host::sandbox::uninitialized::GuestBinary;
-use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{HyperlightError, MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{HyperlightError, MultiUseSandbox};
 use hyperlight_testing::simple_guest_for_fuzzing_as_string;
 use libfuzzer_sys::fuzz_target;
 static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
@@ -32,13 +30,15 @@ static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 // For fuzzing efficiency, we create one Sandbox and reuse it for all fuzzing iterations.
 fuzz_target!(
     init: {
-        let u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing")),
-            None,
-            None,
-            None,
+        let u_sbox = SandboxBuilder::new(
+            GuestBinary::FilePath(
+                simple_guest_for_fuzzing_as_string()
+                    .expect("Guest Binary Missing")
+            )
         )
-        .unwrap();
+            .expect("Failed to create sandbox")
+            .build()
+            .expect("Failed to build sandbox");
 
         let mu_sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();

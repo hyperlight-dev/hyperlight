@@ -93,22 +93,21 @@ impl MultiUseSandbox {
     /// Example usage (compiled as a "no_run" doctest since the test binary
     /// will not be found):
     ///
-    /// // TODO(danbugs:297): update docs
-    /// // ```no_run
-    /// use hyperlight_host::sandbox::{UninitializedSandbox, MultiUseSandbox};
+    /// ```no_run
+    /// use hyperlight_host::sandbox:: MultiUseSandbox;
     /// use hyperlight_common::flatbuffer_wrappers::function_types::{ReturnType, ParameterValue, ReturnValue};
     /// use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
     /// use hyperlight_host::sandbox_state::transition::Noop;
     /// use hyperlight_host::GuestBinary;
+    /// use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
+    /// use hyperlight_testing::simple_guest_as_string;
     ///
     /// // First, create a new uninitialized sandbox, then evolve it to become
     /// // an initialized, single-use one.
-    /// let u_sbox = UninitializedSandbox::new(
-    ///     GuestBinary::FilePath("some_guest_binary".to_string()),
-    ///     None,
-    ///     None,
-    ///     None,
-    /// ).unwrap();
+    /// let sandbox_builder =
+    /// SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string().unwrap())).unwrap();
+    ///
+    /// let mut u_sbox = sandbox_builder.build().unwrap();
     /// let sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
     /// // Next, create a new call context from the single-use sandbox.
     /// // After this line, your code will not compile if you try to use the
@@ -119,7 +118,7 @@ impl MultiUseSandbox {
     /// // ("some_guest_binary") has a function therein called "SomeGuestFunc"
     /// // that takes a single integer argument and returns an integer.
     /// match ctx.call(
-    ///     "SomeGuestFunc",
+    ///     "PrintOutput",
     ///     ReturnType::Int,
     ///     Some(vec![ParameterValue::Int(1)])
     /// ) {
@@ -143,7 +142,7 @@ impl MultiUseSandbox {
     /// let _orig_sbox = ctx.finish();
     /// // Now, you can operate on the original sandbox again (i.e. add more
     /// // host functions etc...), create new contexts, and so on.
-    /// // ```
+    /// ```
     #[instrument(skip_all, parent = Span::current())]
     pub fn new_call_context(self) -> MultiUseGuestCallContext {
         MultiUseGuestCallContext::start(self)
@@ -173,13 +172,14 @@ impl MultiUseSandbox {
     pub(crate) fn restore_state(&mut self) -> Result<()> {
         self.mem_mgr.restore_state_from_last_snapshot()
     }
-}
 
-impl Sandbox for MultiUseSandbox {
-    fn check_stack_guard(&self) -> Result<bool> {
-        self.mem_mgr.check_stack_guard()
+    #[cfg(test)]
+    pub(crate) fn get_hv_handler(&self) -> &HypervisorHandler {
+        &self.hv_handler
     }
 }
+
+impl Sandbox for MultiUseSandbox {}
 
 impl std::fmt::Debug for MultiUseSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -237,101 +237,51 @@ where
     }
 }
 
-// TODO(danbugs:297): bring back
-// #[cfg(test)]
-// mod tests {
-//     use hyperlight_common::flatbuffer_wrappers::function_types::{
-//         ParameterValue, ReturnType, ReturnValue,
-//     };
-//     use hyperlight_testing::simple_guest_as_string;
-//
-//     use crate::func::call_ctx::MultiUseGuestCallContext;
-//     use crate::sandbox::SandboxConfiguration;
-//     use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox};
-//     use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
-//     use crate::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
-//
-//     // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
-//     // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
-//     #[test]
-//     fn test_with_small_stack_and_heap() {
-//         let mut cfg = SandboxConfiguration::default();
-//         cfg.set_heap_size(20 * 1024);
-//         cfg.set_stack_size(16 * 1024);
-//
-//         let sbox1: MultiUseSandbox = {
-//             let path = simple_guest_as_string().unwrap();
-//             let u_sbox =
-//                 UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg), None, None)
-//                     .unwrap();
-//             u_sbox.evolve(Noop::default())
-//         }
-//         .unwrap();
-//
-//         let mut ctx = sbox1.new_call_context();
-//
-//         for _ in 0..1000 {
-//             ctx.call(
-//                 "Echo",
-//                 ReturnType::String,
-//                 Some(vec![ParameterValue::String("hello".to_string())]),
-//             )
-//             .unwrap();
-//         }
-//
-//         let sbox2: MultiUseSandbox = {
-//             let path = simple_guest_as_string().unwrap();
-//             let u_sbox =
-//                 UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg), None, None)
-//                     .unwrap();
-//             u_sbox.evolve(Noop::default())
-//         }
-//         .unwrap();
-//
-//         let mut ctx = sbox2.new_call_context();
-//
-//         for i in 0..1000 {
-//             ctx.call(
-//                 "PrintUsingPrintf",
-//                 ReturnType::Int,
-//                 Some(vec![ParameterValue::String(
-//                     format!("Hello World {}\n", i).to_string(),
-//                 )]),
-//             )
-//             .unwrap();
-//         }
-//     }
-//
-//     /// Tests that evolving from MultiUseSandbox to MultiUseSandbox creates a new state
-//     /// and devolving from MultiUseSandbox to MultiUseSandbox restores the previous state
-//     #[test]
-//     fn evolve_devolve_handles_state_correctly() {
-//         let sbox1: MultiUseSandbox = {
-//             let path = simple_guest_as_string().unwrap();
-//             let u_sbox =
-//                 UninitializedSandbox::new(GuestBinary::FilePath(path), None, None, None).unwrap();
-//             u_sbox.evolve(Noop::default())
-//         }
-//         .unwrap();
-//
-//         let func = Box::new(|call_ctx: &mut MultiUseGuestCallContext| {
-//             call_ctx.call(
-//                 "AddToStatic",
-//                 ReturnType::Int,
-//                 Some(vec![ParameterValue::Int(5)]),
-//             )?;
-//             Ok(())
-//         });
-//         let transition_func = MultiUseContextCallback::from(func);
-//         let mut sbox2 = sbox1.evolve(transition_func).unwrap();
-//         let res = sbox2
-//             .call_guest_function_by_name("GetStatic", ReturnType::Int, None)
-//             .unwrap();
-//         assert_eq!(res, ReturnValue::Int(5));
-//         let mut sbox3: MultiUseSandbox = sbox2.devolve(Noop::default()).unwrap();
-//         let res = sbox3
-//             .call_guest_function_by_name("GetStatic", ReturnType::Int, None)
-//             .unwrap();
-//         assert_eq!(res, ReturnValue::Int(0));
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use hyperlight_common::flatbuffer_wrappers::function_types::{
+        ParameterValue, ReturnType, ReturnValue,
+    };
+    use hyperlight_testing::simple_guest_as_string;
+
+    use crate::func::call_ctx::MultiUseGuestCallContext;
+    use crate::sandbox::sandbox_builder::SandboxBuilder;
+    use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox};
+    use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
+    use crate::{GuestBinary, MultiUseSandbox};
+
+    /// Tests that evolving from MultiUseSandbox to MultiUseSandbox creates a new state
+    /// and devolving from MultiUseSandbox to MultiUseSandbox restores the previous state
+    #[test]
+    fn evolve_devolve_handles_state_correctly() {
+        let sbox1: MultiUseSandbox = {
+            let sandbox_builder =
+                SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string().unwrap()))
+                    .unwrap();
+
+            let u_sbox = sandbox_builder.build().unwrap();
+            u_sbox.evolve(Noop::default())
+        }
+        .unwrap();
+
+        let func = Box::new(|call_ctx: &mut MultiUseGuestCallContext| {
+            call_ctx.call(
+                "AddToStatic",
+                ReturnType::Int,
+                Some(vec![ParameterValue::Int(5)]),
+            )?;
+            Ok(())
+        });
+        let transition_func = MultiUseContextCallback::from(func);
+        let mut sbox2 = sbox1.evolve(transition_func).unwrap();
+        let res = sbox2
+            .call_guest_function_by_name("GetStatic", ReturnType::Int, None)
+            .unwrap();
+        assert_eq!(res, ReturnValue::Int(5));
+        let mut sbox3: MultiUseSandbox = sbox2.devolve(Noop::default()).unwrap();
+        let res = sbox3
+            .call_guest_function_by_name("GetStatic", ReturnType::Int, None)
+            .unwrap();
+        assert_eq!(res, ReturnValue::Int(0));
+    }
+}

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use hyperlight_host::func::HostFunction1;
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result, UninitializedSandbox};
@@ -27,121 +27,78 @@ use hyperlight_testing::{
 /// Uses rust guest by default. Run test with environment variable GUEST="c" to use the c version
 /// If a test is only applicable to rust, use `new_uninit_rust`` instead
 pub fn new_uninit() -> Result<UninitializedSandbox> {
-    UninitializedSandbox::new(
-        GuestBinary::FilePath(get_c_or_rust_simpleguest_path()),
-        None,
-        None,
-        None,
-    )
+    let sandbox_builder =
+        SandboxBuilder::new(GuestBinary::FilePath(get_c_or_rust_simpleguest_path()))?;
+    sandbox_builder.build()
 }
 
 /// Use this instead of the `new_uninit` if you want your test to only run with the rust guest, not the c guest
 pub fn new_uninit_rust() -> Result<UninitializedSandbox> {
-    UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        None,
-        None,
-        None,
-    )
+    SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?.build()
 }
 
-pub fn get_simpleguest_sandboxes(
-    writer: Option<&dyn HostFunction1<String, i32>>, // An optional writer to make sure correct info is passed to the host printer
-) -> Vec<MultiUseSandbox> {
+pub fn get_simpleguest_sandboxes() -> Result<Vec<MultiUseSandbox>> {
     let elf_path = get_c_or_rust_simpleguest_path();
     let exe_path = format!("{elf_path}.exe");
 
-    vec![
+    Ok(vec![
         // in hypervisor elf
-        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None, None, writer)
-            .unwrap()
-            .evolve(Noop::default())
-            .unwrap(),
+        SandboxBuilder::new(GuestBinary::FilePath(elf_path.clone()))?
+            .build()?
+            .evolve(Noop::default())?,
         // in hypervisor exe
-        UninitializedSandbox::new(GuestBinary::FilePath(exe_path.clone()), None, None, writer)
-            .unwrap()
-            .evolve(Noop::default())
-            .unwrap(),
+        SandboxBuilder::new(GuestBinary::FilePath(exe_path.clone()))?
+            .build()?
+            .evolve(Noop::default())?,
         // in-process elf
         #[cfg(inprocess)]
-        UninitializedSandbox::new(
-            GuestBinary::FilePath(elf_path.clone()),
-            None,
-            Some(hyperlight_host::SandboxRunOptions::RunInProcess(false)),
-            writer,
-        )
-        .unwrap()
-        .evolve(Noop::default())
-        .unwrap(),
+        SandboxBuilder::new(GuestBinary::FilePath(elf_path.clone()))?
+            .set_sandbox_run_options(hyperlight_host::SandboxRunOptions::RunInProcess(false))?
+            .build()?
+            .evolve(Noop::default())?,
         //in-process exe
         #[cfg(inprocess)]
-        UninitializedSandbox::new(
-            GuestBinary::FilePath(exe_path.clone()),
-            None,
-            Some(hyperlight_host::SandboxRunOptions::RunInProcess(false)),
-            writer,
-        )
-        .unwrap()
-        .evolve(Noop::default())
-        .unwrap(),
+        SandboxBuilder::new(GuestBinary::FilePath(exe_path.clone()))?
+            .set_sandbox_run_options(hyperlight_host::SandboxRunOptions::RunInProcess(false))?
+            .build()?
+            .evolve(Noop::default())?,
         // loadlib in process
         #[cfg(all(target_os = "windows", inprocess))]
-        UninitializedSandbox::new(
-            GuestBinary::FilePath(exe_path.clone()),
-            None,
-            Some(hyperlight_host::SandboxRunOptions::RunInProcess(true)),
-            writer,
-        )
-        .unwrap()
-        .evolve(Noop::default())
-        .unwrap(),
-    ]
+        SandboxBuilder::new(GuestBinary::FilePath(exe_path.clone()))?
+            .set_sandbox_run_options(hyperlight_host::SandboxRunOptions::RunInProcess(true))?
+            .build()?
+            .evolve(Noop::default())?,
+    ])
 }
 
-pub fn get_callbackguest_uninit_sandboxes(
-    writer: Option<&dyn HostFunction1<String, i32>>, // An optional writer to make sure correct info is passed to the host printer
-) -> Vec<UninitializedSandbox> {
+pub fn get_callbackguest_uninit_sandboxes() -> Result<Vec<UninitializedSandbox>> {
     let elf_path = get_c_or_rust_callbackguest_path();
     let exe_path = format!("{elf_path}.exe");
 
-    vec![
+    Ok(vec![
         // in hypervisor elf
-        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None, None, writer)
-            .unwrap(),
+        SandboxBuilder::new(GuestBinary::FilePath(elf_path.clone()))?.build()?,
         // in hypervisor exe
-        UninitializedSandbox::new(GuestBinary::FilePath(exe_path.clone()), None, None, writer)
-            .unwrap(),
+        SandboxBuilder::new(GuestBinary::FilePath(exe_path.clone()))?.build()?,
         // in-process elf
         #[cfg(inprocess)]
-        UninitializedSandbox::new(
-            GuestBinary::FilePath(elf_path.clone()),
-            None,
-            Some(hyperlight_host::SandboxRunOptions::RunInProcess(false)),
-            writer,
-        )
-        .unwrap(),
+        SandboxBuilder::new(GuestBinary::FilePath(elf_path.clone()))?
+            .set_sandbox_run_options(hyperlight_host::SandboxRunOptions::RunInProcess(false))?
+            .build()?,
         //in-process exe
         #[cfg(inprocess)]
-        UninitializedSandbox::new(
-            GuestBinary::FilePath(exe_path.clone()),
-            None,
-            Some(hyperlight_host::SandboxRunOptions::RunInProcess(false)),
-            writer,
-        )
-        .unwrap(),
+        SandboxBuilder::new(GuestBinary::FilePath(exe_path.clone()))?
+            .set_sandbox_run_options(hyperlight_host::SandboxRunOptions::RunInProcess(false))?
+            .build()?,
         // loadlib in process
         #[cfg(all(target_os = "windows", inprocess))]
-        UninitializedSandbox::new(
-            GuestBinary::FilePath(exe_path.clone()),
-            None,
-            Some(hyperlight_host::SandboxRunOptions::RunInProcess(true)),
-            writer,
-        )
-        .unwrap(),
-    ]
+        SandboxBuilder::new(GuestBinary::FilePath(exe_path.clone()))?
+            .set_sandbox_run_options(hyperlight_host::SandboxRunOptions::RunInProcess(true))?
+            .build()?,
+    ])
 }
 
-// returns the the path of simpleguest binary. Picks rust/c version depending on environment variable GUEST (or rust by default if unset)
+// returns the path of simpleguest binary. Picks rust/c version depending on environment variable GUEST (or rust by default if unset)
 pub(crate) fn get_c_or_rust_simpleguest_path() -> String {
     let guest_type = std::env::var("GUEST").unwrap_or("rust".to_string());
     match guest_type.as_str() {
@@ -151,7 +108,7 @@ pub(crate) fn get_c_or_rust_simpleguest_path() -> String {
     }
 }
 
-// returns the the path of callbackguest binary. Picks rust/ version depending on environment variable GUEST (or rust by default if unset)
+// returns the path of callbackguest binary. Picks rust/ version depending on environment variable GUEST (or rust by default if unset)
 fn get_c_or_rust_callbackguest_path() -> String {
     let guest_type = std::env::var("GUEST").unwrap_or("rust".to_string());
     match guest_type.as_str() {

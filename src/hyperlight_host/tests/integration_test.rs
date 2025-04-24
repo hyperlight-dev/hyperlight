@@ -1,26 +1,25 @@
-/*
-Copyright 2024 The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// /*
+// Copyright 2024 The Hyperlight Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// */
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::mem::PAGE_SIZE;
+use hyperlight_common::PAGE_SIZE;
 use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
-use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, Result};
 use hyperlight_testing::simplelogger::{SimpleLogger, LOGGER};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 use log::LevelFilter;
@@ -29,11 +28,11 @@ pub mod common; // pub to disable dead_code warning
 use crate::common::{new_uninit, new_uninit_rust};
 
 #[test]
-fn print_four_args_c_guest() {
+fn print_four_args_c_guest() -> Result<()> {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
-    let uninit = UninitializedSandbox::new(guest_path, None, None, None);
-    let mut sbox1 = uninit.unwrap().evolve(Noop::default()).unwrap();
+    let uninit = SandboxBuilder::new(guest_path)?.build()?;
+    let mut sbox1 = uninit.evolve(Noop::default()).unwrap();
 
     let res = sbox1.call_guest_function_by_name(
         "PrintFourArgs",
@@ -47,6 +46,8 @@ fn print_four_args_c_guest() {
     );
     println!("{:?}", res);
     assert!(matches!(res, Ok(ReturnValue::Int(46))));
+
+    Ok(())
 }
 
 // Checks that guest can abort with a specific code.
@@ -143,11 +144,11 @@ fn guest_abort_with_context2() {
 // Just run this manually for now since we only build c guests on Windows and will
 // hopefully be removing the c guest library soon.
 #[test]
-fn guest_abort_c_guest() {
+fn guest_abort_c_guest() -> Result<()> {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
-    let uninit = UninitializedSandbox::new(guest_path, None, None, None);
-    let mut sbox1 = uninit.unwrap().evolve(Noop::default()).unwrap();
+    let uninit = SandboxBuilder::new(guest_path)?.build()?;
+    let mut sbox1 = uninit.evolve(Noop::default()).unwrap();
 
     let res = sbox1
         .call_guest_function_by_name(
@@ -163,6 +164,8 @@ fn guest_abort_c_guest() {
     assert!(
         matches!(res, HyperlightError::GuestAborted(code, message) if (code == 75 && message == "This is a test error message"))
     );
+
+    Ok(())
 }
 
 #[test]
@@ -220,7 +223,7 @@ fn guest_allocate_vec() {
 
 // checks that malloc failures are captured correctly
 #[test]
-fn guest_malloc_abort() {
+fn guest_malloc_abort() -> Result<()> {
     let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
 
     let size = 20000000; // some big number that should fail when allocated
@@ -238,25 +241,18 @@ fn guest_malloc_abort() {
     );
 
     // allocate a vector (on heap) that is bigger than the heap
-    let heap_size = 0x4000;
-    let size_to_allocate = 0x10000;
+    let heap_size = 131072;
+    let size_to_allocate = heap_size * 2;
     assert!(size_to_allocate > heap_size);
 
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_heap_size(heap_size);
-    let uninit = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(cfg),
-        None,
-        None,
-    )
-    .unwrap();
-    let mut sbox2 = uninit.evolve(Noop::default()).unwrap();
+    let uninit = SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?.build()?;
+
+    let mut sbox2 = uninit.evolve(Noop::default())?;
 
     let res = sbox2.call_guest_function_by_name(
         "CallMalloc", // uses the rust allocator to allocate a vector on heap
         ReturnType::Int,
-        Some(vec![ParameterValue::Int(size_to_allocate as i32)]),
+        Some(vec![ParameterValue::Int(size_to_allocate)]),
     );
     println!("{:?}", res);
     assert!(matches!(
@@ -264,15 +260,17 @@ fn guest_malloc_abort() {
         // OOM memory errors in rust allocator are panics. Our panic handler returns ErrorCode::UnknownError on panic
         HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ")
     ));
+
+    Ok(())
 }
 
 // Tests libc alloca
 #[test]
-fn dynamic_stack_allocate_c_guest() {
-    let path = c_simple_guest_as_string().unwrap();
+fn dynamic_stack_allocate_c_guest() -> Result<()> {
+    let path = c_simple_guest_as_string()?;
     let guest_path = GuestBinary::FilePath(path);
-    let uninit = UninitializedSandbox::new(guest_path, None, None, None);
-    let mut sbox1: MultiUseSandbox = uninit.unwrap().evolve(Noop::default()).unwrap();
+    let uninit = SandboxBuilder::new(guest_path)?.build()?;
+    let mut sbox1: MultiUseSandbox = uninit.evolve(Noop::default())?;
 
     let res2 = sbox1
         .call_guest_function_by_name(
@@ -281,6 +279,7 @@ fn dynamic_stack_allocate_c_guest() {
             Some(vec![ParameterValue::Int(100)]),
         )
         .unwrap();
+
     assert!(matches!(res2, ReturnValue::Int(n) if n == 100));
 
     let res = sbox1
@@ -291,6 +290,8 @@ fn dynamic_stack_allocate_c_guest() {
         )
         .unwrap_err();
     assert!(matches!(res, HyperlightError::StackOverflow()));
+
+    Ok(())
 }
 
 // checks that a small buffer on stack works
@@ -308,6 +309,7 @@ fn static_stack_allocate() {
 #[test]
 fn static_stack_allocate_overflow() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+
     let res = sbox1
         .call_guest_function_by_name("LargeVar", ReturnType::Int, Some(Vec::new()))
         .unwrap_err();
@@ -338,15 +340,17 @@ fn guard_page_check() {
     let offsets_from_page_guard_start: Vec<i64> = vec![
         -1024,
         -1,
-        0,                    // should fail
-        1,                    // should fail
-        1024,                 // should fail
-        PAGE_SIZE as i64 - 1, // should fail
-        PAGE_SIZE as i64,
+        0,                      // should fail
+        1,                      // should fail
+        1024,                   // should fail
+        PAGE_SIZE as i64 - 1,   // should fail
+        PAGE_SIZE as i64,       // should fail because it corrupts the stack cookie
+        PAGE_SIZE as i64 + 127, // should fail because it corrupts the stack cookie
+        PAGE_SIZE as i64 + 128, // passes because the stack cookie is 16-bytes long
         PAGE_SIZE as i64 + 1024,
     ];
 
-    let guard_range = 0..PAGE_SIZE as i64;
+    let guard_range = 0..(PAGE_SIZE as i64 + 127);
 
     for offset in offsets_from_page_guard_start {
         // we have to create a sandbox each iteration because can't reuse after MMIO error in release mode
@@ -404,6 +408,7 @@ fn execute_on_stack() {
     #[cfg(not(inprocess))]
     {
         let err = result.to_string();
+        println!("{:?}", err);
         assert!(
             // exception that indicates a page fault
             err.contains("EXCEPTION: 0xe")
@@ -412,23 +417,13 @@ fn execute_on_stack() {
 }
 
 #[test]
-#[ignore] // ran from Justfile because requires feature "executable_heap"
 fn execute_on_heap() {
     let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
     let result =
         sbox1.call_guest_function_by_name("ExecuteOnHeap", ReturnType::String, Some(vec![]));
 
     println!("{:#?}", result);
-    #[cfg(feature = "executable_heap")]
     assert!(result.is_ok());
-
-    #[cfg(not(feature = "executable_heap"))]
-    {
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-
-        assert!(err.to_string().contains("EXCEPTION: 0xe"));
-    }
 }
 
 #[test]
@@ -447,7 +442,7 @@ fn memory_resets_after_failed_guestcall() {
     );
 }
 
-// checks that a recursive function with stack allocation eventually fails with stackoverflow
+// // checks that a recursive function with stack allocation eventually fails with stackoverflow
 #[test]
 fn recursive_stack_allocate_overflow() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();

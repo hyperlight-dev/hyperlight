@@ -1,19 +1,18 @@
-/*
-Copyright 2024 The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// /*
+// Copyright 2024 The Hyperlight Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// */
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -21,38 +20,24 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, Ret
 use hyperlight_host::func::HostFunction0;
 #[cfg(gdb)]
 use hyperlight_host::sandbox::config::DebugInfo;
-use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
-
-/// Build a sandbox configuration that enables GDB debugging when the `gdb` feature is enabled.
-fn get_sandbox_cfg() -> Option<SandboxConfiguration> {
-    #[cfg(gdb)]
-    {
-        let mut cfg = SandboxConfiguration::default();
-        let debug_info = DebugInfo { port: 8080 };
-        cfg.set_guest_debug_info(debug_info);
-
-        Some(cfg)
-    }
-
-    #[cfg(not(gdb))]
-    None
-}
+use hyperlight_host::{GuestBinary, MultiUseSandbox};
+use hyperlight_testing::simple_guest_as_string;
 
 fn main() -> hyperlight_host::Result<()> {
-    let cfg = get_sandbox_cfg();
-
     // Create an uninitialized sandbox with a guest binary
-    let mut uninitialized_sandbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(
-            hyperlight_testing::simple_guest_as_string().unwrap(),
-        ),
-        cfg,  // sandbox configuration
-        None, // default run options
-        None, // default host print function
-    )?;
+    #[allow(unused_mut)]
+    let mut sandbox_builder =
+        SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+
+    #[cfg(gdb)]
+    {
+        sandbox_builder = sandbox_builder.set_guest_debug_info(DebugInfo { port: 8080 });
+    }
+
+    let mut uninitialized_sandbox = sandbox_builder.build()?;
 
     // Register a host functions
     fn sleep_5_secs() -> hyperlight_host::Result<()> {
