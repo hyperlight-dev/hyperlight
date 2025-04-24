@@ -36,7 +36,7 @@ use super::{
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections, STACK_ALIGNMENT};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -439,13 +439,17 @@ impl Hypervisor for KVMDriver {
         )?;
 
         // The guest may have chosen a different stack region. If so, we drop usage of our tmp stack.
-        let hyperlight_peb = self.mem_sections.read_hyperlight_peb()?;
+        let mut hyperlight_peb = self.mem_sections.read_hyperlight_peb()?;
 
         if let Some(guest_stack_data) = &hyperlight_peb.get_guest_stack_data_region() {
             if guest_stack_data.offset.is_some() {
                 // If we got here, it means the guest has set up a new stack
                 let rsp = hyperlight_peb.get_top_of_guest_stack_data();
-                self.orig_rsp = GuestPtr::try_from(RawPtr::from(rsp))?;
+                self.orig_rsp = GuestPtr::try_from(RawPtr::from(rsp - STACK_ALIGNMENT))?;
+
+                // Need to update the min stack address from tmp_stack address to the new stack
+                hyperlight_peb.min_stack_address = hyperlight_peb.calculate_min_stack_address();
+                self.mem_sections.write_hyperlight_peb(hyperlight_peb)?;
             }
         }
 
@@ -642,86 +646,58 @@ impl Hypervisor for KVMDriver {
     }
 }
 
-// TODO(danbugs:297): bring back
-// #[cfg(test)]
-// mod tests {
-//     use std::sync::{Arc, Mutex};
-//
-//     #[cfg(gdb)]
-//     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-//     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
-//     use crate::hypervisor::tests::{test_custom_initialise, test_initialise};
-//     use crate::Result;
-//
-//     #[cfg(gdb)]
-//     struct DbgMemAccessHandler {}
-//
-//     #[cfg(gdb)]
-//     impl DbgMemAccessHandlerCaller for DbgMemAccessHandler {
-//         fn read(&mut self, _offset: usize, _data: &mut [u8]) -> Result<()> {
-//             Ok(())
-//         }
-//
-//         fn write(&mut self, _offset: usize, _data: &[u8]) -> Result<()> {
-//             Ok(())
-//         }
-//
-//         fn get_code_offset(&mut self) -> Result<usize> {
-//             Ok(0)
-//         }
-//     }
-//
-//     #[test]
-//     fn test_init() {
-//         if !super::is_hypervisor_present() {
-//             return;
-//         }
-//
-//         let outb_handler: Arc<Mutex<OutBHandler>> = {
-//             let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
-//                 Box::new(|_, _| -> Result<()> { Ok(()) });
-//             Arc::new(Mutex::new(OutBHandler::from(func)))
-//         };
-//         let mem_access_handler = {
-//             let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
-//             Arc::new(Mutex::new(MemAccessHandler::from(func)))
-//         };
-//         #[cfg(gdb)]
-//         let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
-//
-//         test_initialise(
-//             outb_handler,
-//             mem_access_handler,
-//             #[cfg(gdb)]
-//             dbg_mem_access_handler,
-//         )
-//         .unwrap();
-//     }
-//
-//     #[test]
-//     fn test_custom_init() {
-//         if !super::is_hypervisor_present() {
-//             return;
-//         }
-//
-//         let outb_handler: Arc<Mutex<OutBHandler>> = {
-//             let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
-//                 Box::new(|_, _| -> Result<()> { Ok(()) });
-//             Arc::new(Mutex::new(OutBHandler::from(func)))
-//         };
-//         let mem_access_handler = {
-//             let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
-//             Arc::new(Mutex::new(MemAccessHandler::from(func)))
-//         };
-//         #[cfg(gdb)]
-//         let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
-//
-//         test_custom_initialise(
-//             outb_handler,
-//             mem_access_handler,
-//             #[cfg(gdb)]
-//             dbg_mem_access_handler,
-//         )
-//         .unwrap();
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    #[cfg(gdb)]
+    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
+    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
+    use crate::hypervisor::tests::test_initialise;
+    use crate::Result;
+
+    #[cfg(gdb)]
+    struct DbgMemAccessHandler {}
+
+    #[cfg(gdb)]
+    impl DbgMemAccessHandlerCaller for DbgMemAccessHandler {
+        fn read(&mut self, _offset: usize, _data: &mut [u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn write(&mut self, _offset: usize, _data: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_code_offset(&mut self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn test_init() {
+        if !super::is_hypervisor_present() {
+            return;
+        }
+
+        let outb_handler: Arc<Mutex<OutBHandler>> = {
+            let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
+                Box::new(|_, _| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(OutBHandler::from(func)))
+        };
+        let mem_access_handler = {
+            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(MemAccessHandler::from(func)))
+        };
+        #[cfg(gdb)]
+        let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
+
+        test_initialise(
+            outb_handler,
+            mem_access_handler,
+            #[cfg(gdb)]
+            dbg_mem_access_handler,
+        )
+        .unwrap();
+    }
+}

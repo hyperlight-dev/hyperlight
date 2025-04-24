@@ -27,7 +27,7 @@ use crate::gdt::load_gdt;
 use crate::guest_function_call::dispatch_function;
 use crate::guest_logger::init_logger;
 use crate::idtr::load_idt;
-use crate::{__security_cookie, HEAP_ALLOCATOR, MIN_STACK_ADDRESS};
+use crate::{__security_cookie, HEAP_ALLOCATOR};
 
 #[inline(never)]
 pub fn halt() {
@@ -111,12 +111,6 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
 
         match RUNNING_MODE {
             RunMode::Hypervisor => {
-                // This static is to make it easier to implement the __chkstk function in assembly.
-                // It also means that, should we change the layout of the struct in the future, we
-                // don't have to change the assembly code. Plus, while this could be accessible via
-                // the PEB, we don't want to expose it entirely to user code.
-                MIN_STACK_ADDRESS = (*PEB).get_stack_data_address();
-
                 // Setup GDT and IDT
                 load_gdt();
                 load_idt();

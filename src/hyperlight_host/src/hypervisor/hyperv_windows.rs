@@ -44,7 +44,7 @@ use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections, STACK_ALIGNMENT};
 use crate::{debug, new_error, Result};
 
 /// A Hypervisor driver for HyperV-on-Windows.
@@ -339,13 +339,17 @@ impl Hypervisor for HypervWindowsDriver {
         )?;
 
         // The guest may have chosen a different stack region. If so, we drop usage of our tmp stack.
-        let hyperlight_peb = self.mem_sections.read_hyperlight_peb()?;
+        let mut hyperlight_peb = self.mem_sections.read_hyperlight_peb()?;
 
         if let Some(guest_stack_data) = &hyperlight_peb.get_guest_stack_data_region() {
             if guest_stack_data.offset.is_some() {
                 // If we got here, it means the guest has set up a new stack
                 let rsp = hyperlight_peb.get_top_of_guest_stack_data();
-                self.orig_rsp = GuestPtr::try_from(RawPtr::from(rsp))?;
+                self.orig_rsp = GuestPtr::try_from(RawPtr::from(rsp - STACK_ALIGNMENT))?;
+
+                // Need to update the min stack address from tmp_stack address to the new stack
+                hyperlight_peb.min_stack_address = hyperlight_peb.calculate_min_stack_address();
+                self.mem_sections.write_hyperlight_peb(hyperlight_peb)?;
             }
         }
 
@@ -504,29 +508,28 @@ impl Hypervisor for HypervWindowsDriver {
     }
 }
 
-// TODO(danbugs:297): bring back
-// #[cfg(test)]
-// pub mod tests {
-//     use std::sync::{Arc, Mutex};
-//
-//     use serial_test::serial;
-//
-//     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
-//     use crate::hypervisor::tests::test_initialise;
-//     use crate::Result;
-//
-//     #[test]
-//     #[serial]
-//     fn test_init() {
-//         let outb_handler = {
-//             let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
-//                 Box::new(|_, _| -> Result<()> { Ok(()) });
-//             Arc::new(Mutex::new(OutBHandler::from(func)))
-//         };
-//         let mem_access_handler = {
-//             let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
-//             Arc::new(Mutex::new(MemAccessHandler::from(func)))
-//         };
-//         test_initialise(outb_handler, mem_access_handler).unwrap();
-//     }
-// }
+#[cfg(test)]
+pub mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use serial_test::serial;
+
+    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
+    use crate::hypervisor::tests::test_initialise;
+    use crate::Result;
+
+    #[test]
+    #[serial]
+    fn test_init() {
+        let outb_handler = {
+            let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
+                Box::new(|_, _| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(OutBHandler::from(func)))
+        };
+        let mem_access_handler = {
+            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(MemAccessHandler::from(func)))
+        };
+        test_initialise(outb_handler, mem_access_handler).unwrap();
+    }
+}

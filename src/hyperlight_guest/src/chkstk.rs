@@ -15,13 +15,12 @@ limitations under the License.
 */
 
 use core::arch::global_asm;
-use core::mem::size_of;
+use core::mem::{offset_of, size_of};
 
-use hyperlight_common::peb::RunMode;
-use hyperlight_common::RUNNING_MODE;
+use hyperlight_common::peb::{HyperlightPEB, RunMode};
+use hyperlight_common::{PEB, RUNNING_MODE};
 
 use crate::guest_error::{set_invalid_runmode_error, set_stack_allocate_error};
-use crate::MIN_STACK_ADDRESS;
 
 extern "win64" {
     fn __chkstk();
@@ -52,20 +51,22 @@ global_asm!(
 
     handle_hypervisor:
         /* Load the minimum stack address from the PEB */
-        mov r11, [rip+{min_stack_addr}]  
+        /* min_stack_address is offset 0x0 in the PEB struct */
+        mov r11, [rip+{peb_ptr}]
+        mov r11, qword ptr [r11]
 
         /* Get the current stack pointer */
-        lea r10, [rsp+0x18]  
+        lea r10, [rsp+0x18]
 
         /* Calculate what the new stack pointer will be */
         sub r10, rax
-        
+
         /* If result is negative, cause StackOverflow */
         js call_set_error
-        
+
         /* Compare the new stack pointer with the minimum stack address */
-        cmp r10, r11   
-        /* If the new stack pointer is greater or equal to the minimum stack address,  
+        cmp r10, r11
+        /* If the new stack pointer is greater or equal to the minimum stack address,
             then we are good. Otherwise set the error code to 9 (stack overflow) call set_error and halt */
         jae cs_ret
 
@@ -90,7 +91,7 @@ global_asm!(
         cmp r10, r11
         jne csip_stackprobe
     cs_ret:
-        /* Restore RAX, R11 */
+        /* Restore R10, R11 */
         pop r11
         pop r10
         ret
@@ -104,7 +105,7 @@ global_asm!(
     handle_invalid:
         call {invalid_runmode}",
     run_mode = sym RUNNING_MODE,
-    min_stack_addr = sym MIN_STACK_ADDRESS,
+    peb_ptr = sym PEB,
     set_error = sym set_stack_allocate_error,
     invalid_runmode = sym set_invalid_runmode_error
 );
@@ -118,4 +119,5 @@ const _: () = {
     assert!(RunMode::InProcessWindows as u64 == 2);
     assert!(RunMode::InProcessLinux as u64 == 3);
     assert!(RunMode::Invalid as u64 == 4);
+    assert!(offset_of!(HyperlightPEB, min_stack_address) == 0x0);
 };

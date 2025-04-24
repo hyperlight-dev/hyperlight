@@ -12,9 +12,11 @@ use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
-use crate::sandbox::SandboxConfiguration;
+use crate::sandbox::config::SandboxConfiguration;
+use crate::sandbox::Span;
 use crate::{
-    log_build_details, log_then_return, new_error, Result, SandboxRunOptions, UninitializedSandbox,
+    log_build_details, log_then_return, new_error, HyperlightError, Result, SandboxRunOptions,
+    UninitializedSandbox,
 };
 
 #[cfg(mshv2)]
@@ -43,6 +45,19 @@ pub(crate) const PDPT_OFFSET: usize = 0x1000; // this offset is from the PML4 ba
 pub(crate) const PD_OFFSET: usize = 0x2000; // this offset is from the PML4 base address
 pub(crate) const PT_OFFSET: usize = 0x3000; // this offset is from the PML4 base address
 const DEFAULT_GUEST_MEMORY_SIZE: usize = 0x200_000; // 2MB
+const MAX_GUEST_MEMORY_SIZE: usize = 0x40_000_000; // 64MB
+pub(crate) const STACK_ALIGNMENT: u64 = 0x28; // For MSVC, move rsp down by 0x28.  This gives the called 'main'
+                                              // function the appearance that rsp was 16 byte aligned before
+                                              // the 'call' that calls main (note we don't really have a return value
+                                              // on the stack but some assembly instructions are expecting rsp have
+                                              // started 0x8 bytes off of 16 byte alignment when 'main' is invoked.
+                                              // We do 0x28 instead of 0x8 because MSVC can expect that there are
+                                              // 0x20 bytes of space to write to by the called function.
+                                              // I am not sure if this happens with the 'main' method, but we do this
+                                              // just in case.
+                                              //
+                                              // NOTE: We do this also for GCC freestanding binaries because we
+                                              // specify __attribute__((ms_abi)) on the start method
 
 /// Represents a memory section in the sandbox.
 #[derive(Debug, Clone)]
@@ -203,6 +218,7 @@ impl SandboxMemorySections {
 use bitflags::bitflags;
 #[cfg(mshv)]
 use mshv_bindings::hv_x64_memory_intercept_message;
+use tracing::instrument;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
 bitflags! {
@@ -304,15 +320,18 @@ impl GuestBinary {
 /// A builder for creating a sandbox.
 ///
 /// - Example usage:
-/// ```norun
-/// let sandbox_builder = SandboxBuilder::new(GuestBinary::FilePath("path/to/binary"))
+/// ```no_run
+/// use hyperlight_host::{GuestBinary, SandboxRunOptions};
+/// use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
+/// use hyperlight_testing::simple_guest_as_string;
+///
+/// let sandbox_builder = SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string().unwrap())).unwrap()
 ///     .set_guest_memory_size(0x200_000)
 ///     .set_max_initialization_time(2000)
 ///     .set_max_execution_time(1000)
-///     .set_sandbox_run_options(SandboxRunOptions::RunInHypervisor)
-///     .set_guest_debug_info(DebugInfo { port: 8080 });
+///     .set_sandbox_run_options(SandboxRunOptions::RunInHypervisor).unwrap();
 ///
-/// let uninitialized_sandbox = sandbox_builder.build()?;
+/// let uninitialized_sandbox = sandbox_builder.build().unwrap();
 /// ```
 pub struct SandboxBuilder {
     guest_binary: GuestBinary,
@@ -333,6 +352,7 @@ impl SandboxBuilder {
     /// - Resolves the path of the guest binary if it is a file.
     /// - Sets the sandbox to run in Hyperlight mode by default.
     /// - Adds a memory section for the guest binary.
+    #[instrument(err(Debug), skip(guest_binary), parent = Span::current())]
     pub fn new(guest_binary: GuestBinary) -> Result<SandboxBuilder> {
         // If the guest binary is a file, resolve the path
         let guest_binary = match guest_binary {
@@ -386,8 +406,8 @@ impl SandboxBuilder {
     /// can take 2000ms to initialize.
     // TODO: change this to make the default be that the
     // sandbox can take as long as it needs to initialize.
-    pub fn set_max_initialization_time(mut self, max_initialization_time: u64) -> Self {
-        self.max_initialization_time = Duration::from_millis(max_initialization_time);
+    pub fn set_max_initialization_time(mut self, max_initialization_time_millis: u64) -> Self {
+        self.max_initialization_time = Duration::from_millis(max_initialization_time_millis);
         self
     }
 
@@ -396,8 +416,8 @@ impl SandboxBuilder {
     /// the sandbox can 1000ms to execute a guest function.
     // TODO: change this to make the default be that the
     // sandbox can take as long as it needs to execute a guest function.
-    pub fn set_max_execution_time(mut self, max_execution_time: u64) -> Self {
-        self.max_initialization_time = Duration::from_millis(max_execution_time);
+    pub fn set_max_execution_time(mut self, max_execution_time_millis: u64) -> Self {
+        self.max_initialization_time = Duration::from_millis(max_execution_time_millis);
         self
     }
 
@@ -437,7 +457,7 @@ impl SandboxBuilder {
 
     /// Sets the initial RSP value.
     fn set_init_rsp(mut self, init_rsp: u64) -> Self {
-        self.init_rsp = Some(init_rsp);
+        self.init_rsp = Some(init_rsp - STACK_ALIGNMENT);
         self
     }
 
@@ -733,6 +753,15 @@ impl SandboxBuilder {
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
         );
 
+        // Check total size to make sure it is smaller than the maximum size (MAX_GUEST_MEMORY_SIZE)
+        let total_size = sandbox_builder.memory_sections.get_total_size();
+        if total_size > MAX_GUEST_MEMORY_SIZE {
+            return Err(HyperlightError::MemoryRequestTooBig(
+                total_size,
+                MAX_GUEST_MEMORY_SIZE,
+            ));
+        }
+
         // Allocate memory on host
         let exclusive_shared_memory =
             ExclusiveSharedMemory::new(sandbox_builder.memory_sections.get_total_size())?;
@@ -759,6 +788,10 @@ impl SandboxBuilder {
         sandbox_builder.map_host_addresses(exclusive_shared_memory.base_addr());
 
         let hyperlight_peb = HyperlightPEB::new(
+            sandbox_builder
+                .memory_sections
+                .get_tmp_stack_section_offset()
+                .unwrap() as u64,
             run_mode,
             guest_heap_size,
             guest_stack_size,
@@ -879,13 +912,14 @@ fn check_windows_version() -> Result<()> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use cfg_if::cfg_if;
     use hyperlight_common::flatbuffer_wrappers::function_types::{
         ParameterValue, ReturnType, ReturnValue,
     };
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::{
         GuestFunctionNotFound, GuestFunctionParameterTypeMismatch,
     };
-    use hyperlight_testing::simple_guest_as_string;
+    use hyperlight_testing::{simple_guest_as_string, simple_guest_exe_as_string};
 
     use super::*;
     use crate::func::HostFunction2;
@@ -925,10 +959,79 @@ mod tests {
     }
 
     #[test]
+    fn test_sandbox_builder_with_exe() -> Result<()> {
+        // Tests building an uninitialized sandbox w/ the sandbox builder
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_exe_as_string()?))?;
+
+        // let sandbox_builder = sandbox_builder.set_guest_debug_info(DebugInfo { port: 8080 });
+
+        let mut uninitialized_sandbox = sandbox_builder.build()?;
+
+        // Tests registering a host function
+        fn add(a: i32, b: i32) -> Result<i32> {
+            Ok(a + b)
+        }
+        let host_function = Arc::new(Mutex::new(add));
+        host_function.register(&mut uninitialized_sandbox, "HostAdd")?;
+
+        // Tests evolving to a multi-use sandbox
+        let mut multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+        let result = multi_use_sandbox.call_guest_function_by_name(
+            "Add",
+            ReturnType::Int,
+            Some(vec![ParameterValue::Int(1), ParameterValue::Int(41)]),
+        )?;
+
+        assert_eq!(result, ReturnValue::Int(42));
+
+        Ok(())
+    }
+
+    #[test]
     fn test_sandbox_builder_in_process() -> Result<()> {
         // Tests building an uninitialized sandbox w/ the sandbox builder
         let sandbox_builder =
             SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?
+                .set_sandbox_run_options(SandboxRunOptions::RunInProcess(false));
+
+        cfg_if! {
+            if #[cfg(inprocess)] {
+                let mut uninitialized_sandbox = sandbox_builder?.build()?;
+
+                // Tests registering a host function
+                fn add(a: i32, b: i32) -> Result<i32> {
+                    Ok(a + b)
+                }
+                let host_function = Arc::new(Mutex::new(add));
+                host_function.register(&mut uninitialized_sandbox, "HostAdd")?;
+
+                // Tests evolving to a multi-use sandbox
+                let mut multi_use_sandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
+                let result = multi_use_sandbox.call_guest_function_by_name(
+                    "Add",
+                    ReturnType::Int,
+                    Some(vec![ParameterValue::Int(1), ParameterValue::Int(41)]),
+                )?;
+
+                assert_eq!(result, ReturnValue::Int(42));
+
+                Ok(())
+            } else {
+                assert!(sandbox_builder.is_err());
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(inprocess)]
+    fn test_sandbox_builder_with_exe_in_process() -> Result<()> {
+        // Tests building an uninitialized sandbox w/ the sandbox builder
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_exe_as_string()?))?
                 .set_sandbox_run_options(SandboxRunOptions::RunInProcess(false))?;
 
         let mut uninitialized_sandbox = sandbox_builder.build()?;

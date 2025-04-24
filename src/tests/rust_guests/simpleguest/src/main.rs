@@ -41,13 +41,13 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::host_calling::{call_host_function, get_host_return_value, print};
-use hyperlight_common::PAGE_SIZE;
+use hyperlight_common::{PAGE_SIZE, PEB};
 use hyperlight_guest::entrypoint::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::register_function;
+use hyperlight_guest::logging;
 use hyperlight_guest::memory::malloc;
-use hyperlight_guest::{logging, MIN_STACK_ADDRESS};
 use log::{error, LevelFilter};
 
 extern crate hyperlight_guest;
@@ -551,7 +551,7 @@ fn test_guest_panic(function_call: &FunctionCall) -> Result<Vec<u8>> {
 
 fn test_write_raw_ptr(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Long(offset) = function_call.parameters.clone().unwrap()[0].clone() {
-        let min_stack_addr = unsafe { MIN_STACK_ADDRESS };
+        let min_stack_addr = unsafe { (*PEB).min_stack_address };
         let page_guard_start = min_stack_addr - PAGE_SIZE as u64;
         let addr = {
             let abs = u64::try_from(offset.abs())

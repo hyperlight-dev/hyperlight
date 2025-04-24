@@ -85,7 +85,5 @@ pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 #[no_mangle]
 pub(crate) static mut __security_cookie: u64 = 0;
 
-pub static mut MIN_STACK_ADDRESS: u64 = 0;
-
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();

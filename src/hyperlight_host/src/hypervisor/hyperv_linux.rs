@@ -62,7 +62,7 @@ use super::{
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections, STACK_ALIGNMENT};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -489,13 +489,17 @@ impl Hypervisor for HypervLinuxDriver {
         )?;
 
         // The guest may have chosen a different stack region. If so, we drop usage of our tmp stack.
-        let hyperlight_peb = self.mem_sections.read_hyperlight_peb()?;
+        let mut hyperlight_peb = self.mem_sections.read_hyperlight_peb()?;
 
         if let Some(guest_stack_data) = &hyperlight_peb.get_guest_stack_data_region() {
             if guest_stack_data.offset.is_some() {
                 // If we got here, it means the guest has set up a new stack
                 let rsp = hyperlight_peb.get_top_of_guest_stack_data();
-                self.orig_rsp = GuestPtr::try_from(RawPtr::from(rsp))?;
+                self.orig_rsp = GuestPtr::try_from(RawPtr::from(rsp - STACK_ALIGNMENT))?;
+
+                // Need to update the min stack address from tmp_stack address to the new stack
+                hyperlight_peb.min_stack_address = hyperlight_peb.calculate_min_stack_address();
+                self.mem_sections.write_hyperlight_peb(hyperlight_peb)?;
             }
         }
 
@@ -730,67 +734,3 @@ impl Drop for HypervLinuxDriver {
         }
     }
 }
-
-// TODO(danbugs:297): bring back
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::mem::memory_region::MemoryRegionVecBuilder;
-//     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
-//
-//     #[rustfmt::skip]
-//     const CODE: [u8; 12] = [
-//         0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */
-//         0x00, 0xd8, /* add %bl, %al */
-//         0x04, b'0', /* add $'0', %al */
-//         0xee, /* out %al, (%dx) */
-//         /* send a 0 to indicate we're done */
-//         0xb0, b'\0', /* mov $'\0', %al */
-//         0xee, /* out %al, (%dx) */
-//         0xf4, /* HLT */
-//     ];
-//
-//     fn shared_mem_with_code(
-//         code: &[u8],
-//         mem_size: usize,
-//         load_offset: usize,
-//     ) -> Result<Box<ExclusiveSharedMemory>> {
-//         if load_offset > mem_size {
-//             log_then_return!(
-//                 "code load offset ({}) > memory size ({})",
-//                 load_offset,
-//                 mem_size
-//             );
-//         }
-//         let mut shared_mem = ExclusiveSharedMemory::new(mem_size)?;
-//         shared_mem.copy_from_slice(code, load_offset)?;
-//         Ok(Box::new(shared_mem))
-//     }
-//
-//     #[test]
-//     fn create_driver() {
-//         if !super::is_hypervisor_present() {
-//             return;
-//         }
-//         const MEM_SIZE: usize = 0x3000;
-//         let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
-//         let rsp_ptr = GuestPtr::try_from(0).unwrap();
-//         let pml4_ptr = GuestPtr::try_from(0).unwrap();
-//         let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
-//         let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
-//         regions.push_page_aligned(
-//             MEM_SIZE,
-//             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
-//             crate::mem::memory_region::MemoryRegionType::Code,
-//         );
-//         super::HypervLinuxDriver::new(
-//             regions.build(),
-//             entrypoint_ptr,
-//             rsp_ptr,
-//             pml4_ptr,
-//             #[cfg(gdb)]
-//             None,
-//         )
-//         .unwrap();
-//     }
-// }

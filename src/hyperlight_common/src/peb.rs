@@ -27,6 +27,7 @@ pub struct MemoryRegion {
 #[repr(C)]
 #[derive(Clone, Default)]
 pub struct HyperlightPEB {
+    pub min_stack_address: u64,
     // - Host configured fields
     /// Hyperlight supports two primary modes:
     /// 1. Hypervisor mode
@@ -86,6 +87,7 @@ impl HyperlightPEB {
     /// Creates a new HyperlightPEB with the basic configuration based on the provided guest memory
     /// layout and default guest heap/stack sizes. The guest can later fill additional fields.
     pub fn new(
+        min_stack_address: u64,
         run_mode: RunMode,
         guest_heap_size: u64,
         guest_stack_size: u64,
@@ -94,6 +96,7 @@ impl HyperlightPEB {
         guest_memory_size: u64,
     ) -> Self {
         Self {
+            min_stack_address,
             run_mode,
             outb_ptr: 0,
             outb_ptr_ctx: 0,
@@ -220,6 +223,16 @@ impl HyperlightPEB {
             .as_ref()
             .expect("Guest stack data region not set");
         region.offset.unwrap() + self.guest_memory_base_address + region.size
+    }
+
+    /// Calculate the minimum guest stack address (start of guest stack data region in the guest
+    /// address space).
+    pub fn calculate_min_stack_address(&self) -> u64 {
+        let region = self
+            .guest_stack_data
+            .as_ref()
+            .expect("Guest stack data region not set");
+        region.offset.unwrap() + self.guest_memory_base_address
     }
 
     /// Sets the guest heap data region.
