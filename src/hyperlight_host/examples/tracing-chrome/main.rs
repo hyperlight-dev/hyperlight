@@ -23,7 +23,7 @@ use hyperlight_testing::simple_guest_as_string;
 use tracing_chrome::ChromeLayerBuilder;
 use tracing_subscriber::prelude::*;
 
-// This example can be run with `cargo run --package hyperlight_host --example chrome-tracing --release`
+// This example can be run with `cargo run --package hyperlight_host --example tracing-chrome --release`
 fn main() -> Result<()> {
     // set up tracer
     let (chrome_layer, _guard) = ChromeLayerBuilder::new().build();
