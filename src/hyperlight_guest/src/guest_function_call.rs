@@ -20,13 +20,12 @@ use alloc::vec::Vec;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::ParameterType;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::input_output::{InputDataSection, OutputDataSection};
 
 use crate::entrypoint::halt;
 use crate::error::{HyperlightGuestError, Result};
-use crate::guest_error::{reset_error, set_error};
-use crate::shared_input_data::try_pop_shared_input_data_into;
-use crate::shared_output_data::push_shared_output_data;
-use crate::REGISTERED_GUEST_FUNCTIONS;
+use crate::guest_error::set_error;
+use crate::{PEB, REGISTERED_GUEST_FUNCTIONS};
 
 type GuestFunc = fn(&FunctionCall) -> Result<Vec<u8>>;
 
@@ -81,19 +80,32 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
 #[no_mangle]
 #[inline(never)]
 fn internal_dispatch_function() -> Result<()> {
-    reset_error();
-
     #[cfg(debug_assertions)]
     log::trace!("internal_dispatch_function");
 
-    let function_call = try_pop_shared_input_data_into::<FunctionCall>()
+    let peb = unsafe { (*PEB).clone() };
+
+    let input_data_section: InputDataSection = peb
+        .get_input_data_region()
+        .expect("Failed to get input data region")
+        .into();
+    let output_data_section: OutputDataSection = peb
+        .get_output_data_region()
+        .expect("Failed to get output data region")
+        .into();
+
+    let function_call = input_data_section
+        .try_pop_shared_input_data_into::<FunctionCall>()
         .expect("Function call deserialization failed");
 
     let result_vec = call_guest_function(function_call).inspect_err(|e| {
-        set_error(e.kind.clone(), e.message.as_str());
+        set_error(e.kind, e.message.as_str());
     })?;
 
-    push_shared_output_data(result_vec)
+    output_data_section
+        .push_shared_output_data(result_vec)
+        .expect("Failed to push output data");
+    Ok(())
 }
 
 // This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()

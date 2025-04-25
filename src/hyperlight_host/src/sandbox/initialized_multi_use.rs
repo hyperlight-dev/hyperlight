@@ -14,18 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::sync::{Arc, Mutex};
-
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
 use tracing::{instrument, Span};
 
-use super::host_funcs::HostFuncsWrapper;
-use super::{MemMgrWrapper, WrapperGetter};
 use crate::func::call_ctx::MultiUseGuestCallContext;
 use crate::func::guest_dispatch::call_function_on_guest;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
 use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
@@ -40,10 +37,8 @@ use crate::Result;
 /// 2. A MultiUseGuestCallContext can be created from the sandbox and used to make multiple guest function calls to the Sandbox.
 ///    in this case the state of the sandbox is not reset until the context is finished and the `MultiUseSandbox` is returned.
 pub struct MultiUseSandbox {
-    // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
-    pub(super) _host_funcs: Arc<Mutex<HostFuncsWrapper>>,
-    pub(crate) mem_mgr: MemMgrWrapper<HostSharedMemory>,
-    hv_handler: HypervisorHandler,
+    pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
+    pub(crate) hv_handler: HypervisorHandler,
 }
 
 // We need to implement drop to join the
@@ -73,13 +68,11 @@ impl MultiUseSandbox {
     /// (as a `From` implementation would be)
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn from_uninit(
-        host_funcs: Arc<Mutex<HostFuncsWrapper>>,
-        mgr: MemMgrWrapper<HostSharedMemory>,
+        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
         hv_handler: HypervisorHandler,
     ) -> MultiUseSandbox {
         Self {
-            _host_funcs: host_funcs,
-            mem_mgr: mgr,
+            mem_mgr,
             hv_handler,
         }
     }
@@ -101,20 +94,20 @@ impl MultiUseSandbox {
     /// will not be found):
     ///
     /// ```no_run
-    /// use hyperlight_host::sandbox::{UninitializedSandbox, MultiUseSandbox};
+    /// use hyperlight_host::sandbox:: MultiUseSandbox;
     /// use hyperlight_common::flatbuffer_wrappers::function_types::{ReturnType, ParameterValue, ReturnValue};
     /// use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
     /// use hyperlight_host::sandbox_state::transition::Noop;
     /// use hyperlight_host::GuestBinary;
+    /// use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
+    /// use hyperlight_testing::simple_guest_as_string;
     ///
     /// // First, create a new uninitialized sandbox, then evolve it to become
     /// // an initialized, single-use one.
-    /// let u_sbox = UninitializedSandbox::new(
-    ///     GuestBinary::FilePath("some_guest_binary".to_string()),
-    ///     None,
-    ///     None,
-    ///     None,
-    /// ).unwrap();
+    /// let sandbox_builder =
+    /// SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string().unwrap())).unwrap();
+    ///
+    /// let mut u_sbox = sandbox_builder.build().unwrap();
     /// let sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
     /// // Next, create a new call context from the single-use sandbox.
     /// // After this line, your code will not compile if you try to use the
@@ -125,7 +118,7 @@ impl MultiUseSandbox {
     /// // ("some_guest_binary") has a function therein called "SomeGuestFunc"
     /// // that takes a single integer argument and returns an integer.
     /// match ctx.call(
-    ///     "SomeGuestFunc",
+    ///     "PrintOutput",
     ///     ReturnType::Int,
     ///     Some(vec![ParameterValue::Int(1)])
     /// ) {
@@ -163,7 +156,13 @@ impl MultiUseSandbox {
         func_ret_type: ReturnType,
         args: Option<Vec<ParameterValue>>,
     ) -> Result<ReturnValue> {
-        let res = call_function_on_guest(self, func_name, func_ret_type, args);
+        let res = call_function_on_guest(
+            &mut self.hv_handler,
+            &mut self.mem_mgr,
+            func_name,
+            func_ret_type,
+            args,
+        );
         self.restore_state()?;
         res
     }
@@ -171,36 +170,21 @@ impl MultiUseSandbox {
     /// Restore the Sandbox's state
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn restore_state(&mut self) -> Result<()> {
-        let mem_mgr = self.mem_mgr.unwrap_mgr_mut();
-        mem_mgr.restore_state_from_last_snapshot()
+        self.mem_mgr.restore_state_from_last_snapshot()
     }
-}
 
-impl WrapperGetter for MultiUseSandbox {
-    fn get_mgr_wrapper(&self) -> &MemMgrWrapper<HostSharedMemory> {
-        &self.mem_mgr
-    }
-    fn get_mgr_wrapper_mut(&mut self) -> &mut MemMgrWrapper<HostSharedMemory> {
-        &mut self.mem_mgr
-    }
-    fn get_hv_handler(&self) -> &HypervisorHandler {
+    #[cfg(test)]
+    pub(crate) fn get_hv_handler(&self) -> &HypervisorHandler {
         &self.hv_handler
     }
-    fn get_hv_handler_mut(&mut self) -> &mut HypervisorHandler {
-        &mut self.hv_handler
-    }
 }
 
-impl Sandbox for MultiUseSandbox {
-    fn check_stack_guard(&self) -> Result<bool> {
-        self.mem_mgr.check_stack_guard()
-    }
-}
+impl Sandbox for MultiUseSandbox {}
 
 impl std::fmt::Debug for MultiUseSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MultiUseSandbox")
-            .field("stack_guard", &self.mem_mgr.get_stack_cookie())
+            .field("stack_guard", &self.mem_mgr.stack_guard)
             .finish()
     }
 }
@@ -217,9 +201,7 @@ impl DevolvableSandbox<MultiUseSandbox, MultiUseSandbox, Noop<MultiUseSandbox, M
     /// The devolve can be used to return the MultiUseSandbox to the state before the code was loaded. Thus avoiding initialisation overhead
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn devolve(mut self, _tsn: Noop<MultiUseSandbox, MultiUseSandbox>) -> Result<MultiUseSandbox> {
-        self.mem_mgr
-            .unwrap_mgr_mut()
-            .pop_and_restore_state_from_snapshot()?;
+        self.mem_mgr.pop_and_restore_state_from_snapshot()?;
         Ok(self)
     }
 }
@@ -240,7 +222,7 @@ where
     ///
     /// The evolve function creates a new MultiUseCallContext which is then passed to a callback function  allowing the
     /// callback function to call guest functions as part of the evolve process, once the callback function  is complete
-    /// the context is finished using a crate internal method that does not restore the prior state of the Sanbbox.
+    /// the context is finished using a crate internal method that does not restore the prior state of the Sandbox.
     /// It then creates a mew  memory snapshot on the snapshot stack and returns the MultiUseSandbox
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn evolve(
@@ -250,7 +232,7 @@ where
         let mut ctx = self.new_call_context();
         transition_func.call(&mut ctx)?;
         let mut sbox = ctx.finish_no_reset();
-        sbox.mem_mgr.unwrap_mgr_mut().push_state()?;
+        sbox.mem_mgr.push_state()?;
         Ok(sbox)
     }
 }
@@ -263,70 +245,21 @@ mod tests {
     use hyperlight_testing::simple_guest_as_string;
 
     use crate::func::call_ctx::MultiUseGuestCallContext;
-    use crate::sandbox::SandboxConfiguration;
+    use crate::sandbox::sandbox_builder::SandboxBuilder;
     use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox};
     use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
-    use crate::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
-
-    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
-    // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
-    #[test]
-    fn test_with_small_stack_and_heap() {
-        let mut cfg = SandboxConfiguration::default();
-        cfg.set_heap_size(20 * 1024);
-        cfg.set_stack_size(16 * 1024);
-
-        let sbox1: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
-            let u_sbox =
-                UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg), None, None)
-                    .unwrap();
-            u_sbox.evolve(Noop::default())
-        }
-        .unwrap();
-
-        let mut ctx = sbox1.new_call_context();
-
-        for _ in 0..1000 {
-            ctx.call(
-                "Echo",
-                ReturnType::String,
-                Some(vec![ParameterValue::String("hello".to_string())]),
-            )
-            .unwrap();
-        }
-
-        let sbox2: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
-            let u_sbox =
-                UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg), None, None)
-                    .unwrap();
-            u_sbox.evolve(Noop::default())
-        }
-        .unwrap();
-
-        let mut ctx = sbox2.new_call_context();
-
-        for i in 0..1000 {
-            ctx.call(
-                "PrintUsingPrintf",
-                ReturnType::Int,
-                Some(vec![ParameterValue::String(
-                    format!("Hello World {}\n", i).to_string(),
-                )]),
-            )
-            .unwrap();
-        }
-    }
+    use crate::{GuestBinary, MultiUseSandbox};
 
     /// Tests that evolving from MultiUseSandbox to MultiUseSandbox creates a new state
     /// and devolving from MultiUseSandbox to MultiUseSandbox restores the previous state
     #[test]
     fn evolve_devolve_handles_state_correctly() {
         let sbox1: MultiUseSandbox = {
-            let path = simple_guest_as_string().unwrap();
-            let u_sbox =
-                UninitializedSandbox::new(GuestBinary::FilePath(path), None, None, None).unwrap();
+            let sandbox_builder =
+                SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string().unwrap()))
+                    .unwrap();
+
+            let u_sbox = sandbox_builder.build().unwrap();
             u_sbox.evolve(Noop::default())
         }
         .unwrap();

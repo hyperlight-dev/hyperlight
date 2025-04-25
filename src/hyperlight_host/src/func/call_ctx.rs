@@ -72,7 +72,13 @@ impl MultiUseGuestCallContext {
         // !Send (and !Sync), we also don't need to worry about
         // synchronization
 
-        call_function_on_guest(&mut self.sbox, func_name, func_ret_type, args)
+        call_function_on_guest(
+            &mut self.sbox.hv_handler,
+            &mut self.sbox.mem_mgr,
+            func_name,
+            func_ret_type,
+            args,
+        )
     }
 
     /// Close out the context and get back the internally-stored
@@ -93,7 +99,6 @@ impl MultiUseGuestCallContext {
     /// and is not intended to be called publicly. It allows the state of the guest to be altered
     /// during the evolution of one sandbox state to another, enabling the new state created
     /// to be captured and stored in the Sandboxes state stack.
-    ///
     pub(crate) fn finish_no_reset(self) -> MultiUseSandbox {
         self.sbox
     }
@@ -109,15 +114,16 @@ mod tests {
     };
     use hyperlight_testing::simple_guest_as_string;
 
+    use crate::sandbox::sandbox_builder::SandboxBuilder;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
-    use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+    use crate::{GuestBinary, MultiUseSandbox, Result, UninitializedSandbox};
 
     fn new_uninit() -> Result<UninitializedSandbox> {
-        let path = simple_guest_as_string().map_err(|e| {
-            HyperlightError::Error(format!("failed to get simple guest path ({e:?})"))
-        })?;
-        UninitializedSandbox::new(GuestBinary::FilePath(path), None, None, None)
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+
+        sandbox_builder.build()
     }
 
     /// Test to create a `MultiUseSandbox`, then call several guest functions

@@ -83,21 +83,24 @@ pub(crate) fn maybe_time_and_emit_host_call<T, F: FnOnce() -> T>(
     }
 }
 
-#[cfg(test)]
 mod tests {
-    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-    use hyperlight_testing::simple_guest_as_string;
-    use metrics::Key;
-    use metrics_util::CompositeKey;
-
-    use super::*;
-    use crate::sandbox_state::sandbox::EvolvableSandbox;
-    use crate::sandbox_state::transition::Noop;
-    use crate::{GuestBinary, UninitializedSandbox};
-
     #[test]
     #[ignore = "This test needs to be run separately to avoid having other tests interfere with it"]
-    fn test_metrics_are_emitted() {
+    fn test_metrics_are_emitted() -> crate::Result<()> {
+        use std::sync::{Arc, Mutex};
+
+        use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+        use hyperlight_testing::simple_guest_as_string;
+        use metrics::Key;
+        use metrics_util::CompositeKey;
+
+        use super::*;
+        use crate::func::HostFunction2;
+        use crate::sandbox::sandbox_builder::SandboxBuilder;
+        use crate::sandbox_state::sandbox::EvolvableSandbox;
+        use crate::sandbox_state::transition::Noop;
+        use crate::GuestBinary;
+
         // Set up the recorder and snapshotter
         let recorder = metrics_util::debugging::DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
@@ -107,23 +110,23 @@ mod tests {
         recorder.install().unwrap();
 
         let snapshot = {
-            let uninit = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+            let sandbox_builder =
+                SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+            let mut uninit = sandbox_builder.build()?;
+
+            fn add(a: i32, b: i32) -> crate::Result<i32> {
+                Ok(a + b)
+            }
+            let host_function = Arc::new(Mutex::new(add));
+            host_function.register(&mut uninit, "HostAdd")?;
 
             let mut multi = uninit.evolve(Noop::default()).unwrap();
 
-            multi
-                .call_guest_function_by_name(
-                    "PrintOutput",
-                    ReturnType::Int,
-                    Some(vec![ParameterValue::String("Hello".to_string())]),
-                )
-                .unwrap();
+            multi.call_guest_function_by_name(
+                "Add",
+                ReturnType::Int,
+                Some(vec![ParameterValue::Int(1), ParameterValue::Int(2)]),
+            )?;
 
             multi
                 .call_guest_function_by_name("Spin", ReturnType::Int, None)
@@ -142,12 +145,12 @@ mod tests {
                 // Verify that the histogram metrics are recorded correctly
                 assert_eq!(snapshot.len(), 4, "Expected two metrics in the snapshot");
 
-                // 1. Host print duration
+                // 1. Host add duration
                 let histogram_key = CompositeKey::new(
                     metrics_util::MetricKind::Histogram,
                     Key::from_parts(
                         METRIC_HOST_FUNC_DURATION,
-                        vec![Label::new("function_name", "HostPrint")],
+                        vec![Label::new("function_name", "HostAdd")],
                     ),
                 );
                 let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
@@ -164,7 +167,7 @@ mod tests {
                     metrics_util::MetricKind::Histogram,
                     Key::from_parts(
                         METRIC_GUEST_FUNC_DURATION,
-                        vec![Label::new("function_name", "PrintOutput")],
+                        vec![Label::new("function_name", "Add")],
                     ),
                 );
                 let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
@@ -216,5 +219,7 @@ mod tests {
                 );
             }
         }
+
+        Ok(())
     }
 }

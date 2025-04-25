@@ -23,28 +23,20 @@ use core::ptr::copy_nonoverlapping;
 use buddy_system_allocator::LockedHeap;
 use guest_function_register::GuestFunctionRegister;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::mem::{HyperlightPEB, RunMode};
+use hyperlight_common::outb::{outb, OutBAction};
+use hyperlight_common::PEB;
 
-use crate::host_function_call::{outb, OutBAction};
 extern crate alloc;
 
 // Modules
 pub mod entrypoint;
-pub mod shared_input_data;
-pub mod shared_output_data;
-
 pub mod guest_error;
 pub mod guest_function_call;
 pub mod guest_function_definition;
 pub mod guest_function_register;
 
-pub mod host_error;
-pub mod host_function_call;
-pub mod host_functions;
-
 pub(crate) mod guest_logger;
 pub mod memory;
-pub mod print;
 pub(crate) mod security_check;
 pub mod setjmp;
 
@@ -75,14 +67,17 @@ pub(crate) static _fltused: i32 = 0;
 #[allow(dead_code)]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     unsafe {
-        let peb_ptr = P_PEB.unwrap();
         copy_nonoverlapping(
             info.to_string().as_ptr(),
-            (*peb_ptr).guestPanicContextData.guestPanicContextDataBuffer as *mut u8,
-            (*peb_ptr).guestPanicContextData.guestPanicContextDataSize as usize,
+            (*PEB)
+                .get_guest_panic_context_address()
+                .expect("Failed to get panic context") as *mut u8,
+            (*PEB)
+                .get_guest_panic_context_size()
+                .expect("Failed to get panic context size") as usize,
         );
     }
-    outb(OutBAction::Abort as u16, ErrorCode::UnknownError as u8);
+    outb(OutBAction::Abort as u16, ErrorCode::UnknownError as u8).expect("Failed to send outb");
     unsafe { unreachable_unchecked() }
 }
 
@@ -93,16 +88,6 @@ pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 ///cbindgen:ignore
 #[no_mangle]
 pub(crate) static mut __security_cookie: u64 = 0;
-
-pub(crate) static mut P_PEB: Option<*mut HyperlightPEB> = None;
-pub static mut MIN_STACK_ADDRESS: u64 = 0;
-
-pub static mut OS_PAGE_SIZE: u32 = 0;
-pub(crate) static mut OUTB_PTR: Option<extern "win64" fn(u16, u8)> = None;
-pub(crate) static mut OUTB_PTR_WITH_CONTEXT: Option<
-    extern "win64" fn(*mut core::ffi::c_void, u16, u8),
-> = None;
-pub static mut RUNNING_MODE: RunMode = RunMode::None;
 
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();

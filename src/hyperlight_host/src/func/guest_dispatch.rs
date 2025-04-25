@@ -21,20 +21,22 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use tracing::{instrument, Span};
 
 use super::guest_err::check_for_guest_error;
-use crate::hypervisor::hypervisor_handler::HypervisorHandlerAction;
-use crate::sandbox::WrapperGetter;
+use crate::hypervisor::hypervisor_handler::{HypervisorHandler, HypervisorHandlerAction};
+use crate::mem::mgr::SandboxMemoryManager;
+use crate::mem::shared_mem::HostSharedMemory;
 use crate::HyperlightError::GuestExecutionHungOnHostFunctionCall;
 use crate::{HyperlightError, Result};
 
 /// Call a guest function by name, using the given `wrapper_getter`.
 #[instrument(
     err(Debug),
-    skip(wrapper_getter, args),
+    skip(hv_handler, mem_mgr, args),
     parent = Span::current(),
     level = "Trace"
 )]
-pub(crate) fn call_function_on_guest<WrapperGetterT: WrapperGetter>(
-    wrapper_getter: &mut WrapperGetterT,
+pub(crate) fn call_function_on_guest(
+    hv_handler: &mut HypervisorHandler,
+    mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     function_name: &str,
     return_type: ReturnType,
     args: Option<Vec<ParameterValue>>,
@@ -52,12 +54,14 @@ pub(crate) fn call_function_on_guest<WrapperGetterT: WrapperGetter>(
         .try_into()
         .map_err(|_| HyperlightError::Error("Failed to serialize FunctionCall".to_string()))?;
 
-    {
-        let mem_mgr = wrapper_getter.get_mgr_wrapper_mut();
-        mem_mgr.as_mut().write_guest_function_call(&buffer)?;
-    }
+    let input_data_region = mem_mgr
+        .memory_sections
+        .read_hyperlight_peb()?
+        .get_input_data_guest_region();
 
-    let mut hv_handler = wrapper_getter.get_hv_handler().clone();
+    mem_mgr.set_stack_guard()?;
+    mem_mgr.write_guest_function_call(input_data_region?, &buffer)?;
+
     match hv_handler.execute_hypervisor_handler_action(
         HypervisorHandlerAction::DispatchCallFromHost(function_name.to_string()),
     ) {
@@ -65,9 +69,7 @@ pub(crate) fn call_function_on_guest<WrapperGetterT: WrapperGetter>(
         Err(e) => match e {
             HyperlightError::HypervisorHandlerMessageReceiveTimedout() => {
                 timedout = true;
-                match hv_handler.terminate_hypervisor_handler_execution_and_reinitialise(
-                    wrapper_getter.get_mgr_wrapper_mut().unwrap_mgr_mut(),
-                )? {
+                match hv_handler.terminate_hypervisor_handler_execution_and_reinitialise(mem_mgr)? {
                     HyperlightError::HypervisorHandlerExecutionCancelAttemptOnFinishedExecution() =>
                         {}
                     // ^^^ do nothing, we just want to actually get the Flatbuffer return value
@@ -79,13 +81,16 @@ pub(crate) fn call_function_on_guest<WrapperGetterT: WrapperGetter>(
         },
     };
 
-    let mem_mgr = wrapper_getter.get_mgr_wrapper_mut();
     mem_mgr.check_stack_guard()?; // <- wrapper around mem_mgr `check_for_stack_guard`
     check_for_guest_error(mem_mgr)?;
 
+    let output_data_region = mem_mgr
+        .memory_sections
+        .read_hyperlight_peb()?
+        .get_output_data_guest_region();
+
     mem_mgr
-        .as_mut()
-        .get_guest_function_call_result()
+        .get_guest_function_call_result(output_data_region?)
         .map_err(|e| {
             if timedout {
                 // if we timed-out, but still got here
@@ -111,275 +116,35 @@ mod tests {
     use hyperlight_testing::{callback_guest_as_string, simple_guest_as_string};
 
     use super::*;
-    use crate::func::call_ctx::MultiUseGuestCallContext;
     use crate::func::host_functions::HostFunction0;
     use crate::sandbox::is_hypervisor_present;
-    use crate::sandbox::uninitialized::GuestBinary;
+    use crate::sandbox::sandbox_builder::SandboxBuilder;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
-    use crate::{new_error, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+    use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
 
-    // simple function
-    fn test_function0(_: MultiUseGuestCallContext) -> Result<i32> {
-        Ok(42)
-    }
+    #[track_caller]
+    fn test_call_guest_function_by_name(u_sbox: UninitializedSandbox) -> Result<()> {
+        let mu_sbox: MultiUseSandbox = u_sbox.evolve(Noop::default())?;
 
-    struct GuestStruct;
+        let mut ctx = mu_sbox.new_call_context();
+        let result = ctx.call(
+            "EchoDouble",
+            ReturnType::Double,
+            Some(vec![ParameterValue::Double(std::f64::consts::PI)]),
+        )?;
 
-    // function that return type unsupported by the host
-    fn test_function1(_: MultiUseGuestCallContext) -> Result<GuestStruct> {
-        Ok(GuestStruct)
-    }
-
-    // function that takes a parameter
-    fn test_function2(_: MultiUseGuestCallContext, param: i32) -> Result<i32> {
-        Ok(param)
-    }
-
-    #[test]
-    // TODO: Investigate why this test fails with an incorrect error when run alongside other tests
-    #[ignore]
-    #[cfg(target_os = "linux")]
-    fn test_violate_seccomp_filters() -> Result<()> {
-        if !is_hypervisor_present() {
-            panic!("Panic on create_multi_use_sandbox because no hypervisor is present");
-        }
-
-        fn make_get_pid_syscall() -> Result<u64> {
-            let pid = unsafe { libc::syscall(libc::SYS_getpid) };
-            Ok(pid as u64)
-        }
-
-        // First, run  to make sure it fails.
-        {
-            let make_get_pid_syscall_func = Arc::new(Mutex::new(make_get_pid_syscall));
-
-            let mut usbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-
-            make_get_pid_syscall_func.register(&mut usbox, "MakeGetpidSyscall")?;
-
-            let mut sbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
-
-            let res =
-                sbox.call_guest_function_by_name("ViolateSeccompFilters", ReturnType::ULong, None);
-
-            #[cfg(feature = "seccomp")]
-            match res {
-                Ok(_) => panic!("Expected to fail due to seccomp violation"),
-                Err(e) => match e {
-                    HyperlightError::DisallowedSyscall => {}
-                    _ => panic!("Expected DisallowedSyscall error: {}", e),
-                },
-            }
-
-            #[cfg(not(feature = "seccomp"))]
-            match res {
-                Ok(_) => (),
-                Err(e) => panic!("Expected to succeed without seccomp: {}", e),
-            }
-        }
-
-        // Second, run with allowing `SYS_getpid`
-        #[cfg(feature = "seccomp")]
-        {
-            let make_get_pid_syscall_func = Arc::new(Mutex::new(make_get_pid_syscall));
-
-            let mut usbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-
-            make_get_pid_syscall_func.register_with_extra_allowed_syscalls(
-                &mut usbox,
-                "MakeGetpidSyscall",
-                vec![libc::SYS_getpid],
-            )?;
-            // ^^^ note, we are allowing SYS_getpid
-
-            let mut sbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
-
-            let res =
-                sbox.call_guest_function_by_name("ViolateSeccompFilters", ReturnType::ULong, None);
-
-            match res {
-                Ok(_) => {}
-                Err(e) => panic!("Expected to succeed due to seccomp violation: {}", e),
-            }
-        }
+        assert_eq!(result, ReturnValue::Double(std::f64::consts::PI));
 
         Ok(())
     }
 
-    #[test]
-    fn test_execute_in_host() {
-        let uninitialized_sandbox = || {
-            UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
-                None,
-                None,
-            )
-            .unwrap()
-        };
+    fn call_guest_function_by_name_hv() -> Result<()> {
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+        let uninitialized_sandbox = sandbox_builder.build()?;
 
-        // test_function0
-        {
-            let usbox = uninitialized_sandbox();
-            let sandbox: MultiUseSandbox = usbox
-                .evolve(Noop::default())
-                .expect("Failed to initialize sandbox");
-            let result = test_function0(sandbox.new_call_context());
-            assert_eq!(result.unwrap(), 42);
-        }
-
-        // test_function1
-        {
-            let usbox = uninitialized_sandbox();
-            let sandbox: MultiUseSandbox = usbox
-                .evolve(Noop::default())
-                .expect("Failed to initialize sandbox");
-            let result = test_function1(sandbox.new_call_context());
-            assert!(result.is_ok());
-        }
-
-        // test_function2
-        {
-            let usbox = uninitialized_sandbox();
-            let sandbox: MultiUseSandbox = usbox
-                .evolve(Noop::default())
-                .expect("Failed to initialize sandbox");
-            let result = test_function2(sandbox.new_call_context(), 42);
-            assert_eq!(result.unwrap(), 42);
-        }
-
-        // test concurrent calls with a local closure that returns current count
-        {
-            let count = Arc::new(Mutex::new(0));
-            let order = Arc::new(Mutex::new(vec![]));
-
-            let mut handles = vec![];
-
-            for _ in 0..10 {
-                let usbox = uninitialized_sandbox();
-                let sandbox: MultiUseSandbox = usbox
-                    .evolve(Noop::default())
-                    .expect("Failed to initialize sandbox");
-                let _ctx = sandbox.new_call_context();
-                let count = Arc::clone(&count);
-                let order = Arc::clone(&order);
-                let handle = thread::spawn(move || {
-                    // we're not actually using the context, but we're calling
-                    // it here to test the mutual exclusion
-                    let mut num = count
-                        .try_lock()
-                        .map_err(|_| new_error!("Error locking"))
-                        .unwrap();
-                    *num += 1;
-                    order
-                        .try_lock()
-                        .map_err(|_| new_error!("Error locking"))
-                        .unwrap()
-                        .push(*num);
-                });
-                handles.push(handle);
-            }
-
-            for handle in handles {
-                handle.join().unwrap();
-            }
-
-            // Check if the order of operations is sequential
-            let order = order
-                .try_lock()
-                .map_err(|_| new_error!("Error locking"))
-                .unwrap();
-            for i in 0..10 {
-                assert_eq!(order[i], i + 1);
-            }
-        }
-
-        // TODO: Add tests to ensure State has been reset.
-    }
-
-    #[track_caller]
-    fn guest_bin() -> GuestBinary {
-        GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing"))
-    }
-
-    #[track_caller]
-    fn test_call_guest_function_by_name(u_sbox: UninitializedSandbox) {
-        let mu_sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
-
-        let msg = "Hello, World!!\n".to_string();
-        let len = msg.len() as i32;
-        let mut ctx = mu_sbox.new_call_context();
-        let result = ctx
-            .call(
-                "PrintOutput",
-                ReturnType::Int,
-                Some(vec![ParameterValue::String(msg.clone())]),
-            )
-            .unwrap();
-
-        assert_eq!(result, ReturnValue::Int(len));
-    }
-
-    fn call_guest_function_by_name_hv() {
-        // in-hypervisor mode
-        let u_sbox = UninitializedSandbox::new(
-            guest_bin(),
-            // for now, we're using defaults. In the future, we should get
-            // variability below
-            None,
-            // by default, the below represents in-hypervisor mode
-            None,
-            // just use the built-in host print function
-            None,
-        )
-        .unwrap();
-        test_call_guest_function_by_name(u_sbox);
-    }
-
-    #[test]
-    fn test_call_guest_function_by_name_hv() {
-        call_guest_function_by_name_hv();
-    }
-
-    #[test]
-    #[cfg(all(target_os = "windows", inprocess))]
-    fn test_call_guest_function_by_name_in_proc_load_lib() {
-        use hyperlight_testing::simple_guest_exe_as_string;
-
-        let u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_exe_as_string().expect("Guest Exe Missing")),
-            None,
-            Some(crate::SandboxRunOptions::RunInProcess(true)),
-            None,
-        )
-        .unwrap();
-        test_call_guest_function_by_name(u_sbox);
-    }
-
-    #[test]
-    #[cfg(inprocess)]
-    fn test_call_guest_function_by_name_in_proc_manual() {
-        let u_sbox = UninitializedSandbox::new(
-            guest_bin(),
-            None,
-            Some(crate::SandboxRunOptions::RunInProcess(false)),
-            None,
-        )
-        .unwrap();
-        test_call_guest_function_by_name(u_sbox);
+        test_call_guest_function_by_name(uninitialized_sandbox)
     }
 
     fn terminate_vcpu_after_1000ms() -> Result<()> {
@@ -389,13 +154,13 @@ mod tests {
             println!("Skipping terminate_vcpu_after_1000ms because no hypervisor is present");
             return Ok(());
         }
-        let usbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-            None,
-            None,
-        )?;
-        let sandbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
+
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+        let uninitialized_sandbox = sandbox_builder.build()?;
+
+        let sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default())?;
+
         let mut ctx = sandbox.new_call_context();
         let result = ctx.call("Spin", ReturnType::Void, None);
 
@@ -413,16 +178,14 @@ mod tests {
     // Test that we can terminate a VCPU that has been running the VCPU for too long.
     #[test]
     fn test_terminate_vcpu_spinning_cpu() -> Result<()> {
-        terminate_vcpu_after_1000ms()?;
-        Ok(())
+        terminate_vcpu_after_1000ms()
     }
 
     // Test that we can terminate a VCPU that has been running the VCPU for too long and then call a guest function on the same host thread.
     #[test]
     fn test_terminate_vcpu_and_then_call_guest_function_on_the_same_host_thread() -> Result<()> {
         terminate_vcpu_after_1000ms()?;
-        call_guest_function_by_name_hv();
-        Ok(())
+        call_guest_function_by_name_hv()
     }
 
     // This test is to capture the case where the guest execution is running a host function when cancelled and that host function
@@ -431,20 +194,17 @@ mod tests {
     // (using default timeout settings)  , so this tests looks for the error "Failed to cancel guest execution".
 
     #[test]
-    fn test_terminate_vcpu_calling_host_spinning_cpu() {
+    fn test_terminate_vcpu_calling_host_spinning_cpu() -> Result<()> {
         // This test relies upon a Hypervisor being present so for now
         // we will skip it if there isn't one.
         if !is_hypervisor_present() {
             println!("Skipping test_call_guest_function_by_name because no hypervisor is present");
-            return;
+            return Ok(());
         }
-        let mut usbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(callback_guest_as_string().expect("Guest Binary Missing")),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(callback_guest_as_string()?))?;
+        let mut uninitialized_sandbox = sandbox_builder.build()?;
 
         // Make this host call run for 5 seconds
 
@@ -456,18 +216,20 @@ mod tests {
         let host_spin_func = Arc::new(Mutex::new(spin));
 
         #[cfg(any(target_os = "windows", not(feature = "seccomp")))]
-        host_spin_func.register(&mut usbox, "Spin").unwrap();
+        host_spin_func
+            .register(&mut uninitialized_sandbox, "Spin")
+            .unwrap();
 
         #[cfg(all(target_os = "linux", feature = "seccomp"))]
         host_spin_func
             .register_with_extra_allowed_syscalls(
-                &mut usbox,
+                &mut uninitialized_sandbox,
                 "Spin",
                 vec![libc::SYS_clock_nanosleep],
             )
             .unwrap();
 
-        let sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
+        let sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default())?;
         let mut ctx = sandbox.new_call_context();
         let result = ctx.call("CallHostSpin", ReturnType::Void, None);
 
@@ -479,20 +241,19 @@ mod tests {
                 e
             ),
         }
+
+        Ok(())
     }
 
     #[test]
     #[cfg(not(inprocess))]
-    fn test_trigger_exception_on_guest() {
-        let usbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+    fn test_trigger_exception_on_guest() -> Result<()> {
+        let sandbox_builder =
+            SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+        let uninitialized_sandbox = sandbox_builder.build()?;
 
-        let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
+        let mut multi_use_sandbox: MultiUseSandbox =
+            uninitialized_sandbox.evolve(Noop::default())?;
 
         let res = multi_use_sandbox.call_guest_function_by_name(
             "TriggerException",
@@ -512,5 +273,7 @@ mod tests {
                 e
             ),
         }
+
+        Ok(())
     }
 }

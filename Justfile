@@ -62,6 +62,22 @@ clean-rust:
 
 # Note: most testing recipes take an optional "features" comma separated list argument. If provided, these will be passed to cargo as **THE ONLY FEATURES**, i.e. default features will be disabled.
 
+# run full CI test matrix
+test-like-ci config=default-target hypervisor="kvm":
+    @# with default features
+    just test {{config}} {{ if hypervisor == "mshv3" {"mshv3"} else {""} }}
+
+    @# with only one driver enabled + seccomp + inprocess
+    just test {{config}} inprocess,seccomp,{{ if hypervisor == "mshv" {"mshv2"} else if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
+
+    @# make sure certain cargo features compile
+    cargo check -p hyperlight-host --features crashdump
+    cargo check -p hyperlight-host --features print_debug
+    cargo check -p hyperlight-host --features gdb
+
+    @# without any driver (should fail to compile)
+    just test-compilation-fail {{config}}
+
 # runs all tests
 test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-seccomp target features)
 
@@ -83,11 +99,6 @@ test-isolated target=default-target features="":
     
 # runs integration tests. Guest can either be "rust" or "c"
 test-integration guest target=default-target features="":
-    @# run execute_on_heap test with feature "executable_heap" on and off
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} cargo test --profile={{ if target == "debug" { "dev" } else { target } }} --test integration_test execute_on_heap {{ if features =="" {" --features executable_heap"} else {"--features executable_heap," + features} }} -- --ignored
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} cargo test --profile={{ if target == "debug" { "dev" } else { target } }} --test integration_test execute_on_heap {{ if features =="" {""} else {"--features " + features} }} -- --ignored
-    
-    @# run the rest of the integration tests
     {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} cargo test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} --test '*'
 
 # runs seccomp tests

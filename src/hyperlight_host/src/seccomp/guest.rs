@@ -23,6 +23,7 @@ use seccompiler::{
 use crate::sandbox::ExtraAllowedSyscall;
 use crate::{and, or, Result};
 
+#[allow(unused)]
 fn syscalls_allowlist() -> Result<Vec<(i64, Vec<SeccompRule>)>> {
     Ok(vec![
         // SYS_signalstack, SYS_munmap, SYS_rt_sigprocmask, SYS_madvise, and SYS_exit

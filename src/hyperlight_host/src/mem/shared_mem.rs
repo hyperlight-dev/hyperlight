@@ -21,7 +21,7 @@ use std::io::Error;
 use std::ptr::null_mut;
 use std::sync::{Arc, RwLock};
 
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use hyperlight_common::PAGE_SIZE;
 use tracing::{instrument, Span};
 #[cfg(target_os = "windows")]
 use windows::core::PCSTR;
@@ -325,23 +325,23 @@ impl ExclusiveSharedMemory {
         }
 
         let total_size = min_size_bytes
-            .checked_add(2 * PAGE_SIZE_USIZE) // guard page around the memory
+            .checked_add(2 * PAGE_SIZE) // guard page around the memory
             .ok_or_else(|| new_error!("Memory required for sandbox exceeded usize::MAX"))?;
 
-        if total_size % PAGE_SIZE_USIZE != 0 {
+        if total_size % PAGE_SIZE != 0 {
             return Err(new_error!(
                 "shared memory must be a multiple of {}",
-                PAGE_SIZE_USIZE
+                PAGE_SIZE
             ));
         }
 
-        // usize and isize are guaranteed to be the same size, and
-        // isize::MAX should be positive, so this cast should be safe.
+        // `usize` and `isize` are guaranteed to be the same size, and
+        // `isize::MAX` should be positive, so this cast should be safe.
         if total_size > isize::MAX as usize {
             return Err(MemoryRequestTooBig(total_size, isize::MAX as usize));
         }
 
-        // allocate the memory
+        // Allocate the memory
         let addr = unsafe {
             mmap(
                 null_mut(),
@@ -356,16 +356,15 @@ impl ExclusiveSharedMemory {
             log_then_return!(MmapFailed(Error::last_os_error().raw_os_error()));
         }
 
-        // protect the guard pages
-
-        let res = unsafe { mprotect(addr, PAGE_SIZE_USIZE, PROT_NONE) };
+        // Protect the guard pages
+        let res = unsafe { mprotect(addr, PAGE_SIZE, PROT_NONE) };
         if res != 0 {
             return Err(MprotectFailed(Error::last_os_error().raw_os_error()));
         }
         let res = unsafe {
             mprotect(
-                (addr as *const u8).add(total_size - PAGE_SIZE_USIZE) as *mut c_void,
-                PAGE_SIZE_USIZE,
+                (addr as *const u8).add(total_size - PAGE_SIZE) as *mut c_void,
+                PAGE_SIZE,
                 PROT_NONE,
             )
         };
@@ -402,13 +401,13 @@ impl ExclusiveSharedMemory {
         }
 
         let total_size = min_size_bytes
-            .checked_add(2 * PAGE_SIZE_USIZE)
+            .checked_add(2 * PAGE_SIZE)
             .ok_or_else(|| new_error!("Memory required for sandbox exceeded {}", usize::MAX))?;
 
-        if total_size % PAGE_SIZE_USIZE != 0 {
+        if total_size % PAGE_SIZE != 0 {
             return Err(new_error!(
                 "shared memory must be a multiple of {}",
-                PAGE_SIZE_USIZE
+                PAGE_SIZE
             ));
         }
 
@@ -474,7 +473,7 @@ impl ExclusiveSharedMemory {
         if let Err(e) = unsafe {
             VirtualProtect(
                 first_guard_page_start,
-                PAGE_SIZE_USIZE,
+                PAGE_SIZE,
                 PAGE_NOACCESS,
                 &mut unused_out_old_prot_flags,
             )
@@ -482,11 +481,11 @@ impl ExclusiveSharedMemory {
             log_then_return!(WindowsAPIError(e.clone()));
         }
 
-        let last_guard_page_start = unsafe { addr.Value.add(total_size - PAGE_SIZE_USIZE) };
+        let last_guard_page_start = unsafe { addr.Value.add(total_size - PAGE_SIZE) };
         if let Err(e) = unsafe {
             VirtualProtect(
                 last_guard_page_start,
-                PAGE_SIZE_USIZE,
+                PAGE_SIZE,
                 PAGE_NOACCESS,
                 &mut unused_out_old_prot_flags,
             )
@@ -512,7 +511,7 @@ impl ExclusiveSharedMemory {
         })
     }
 
-    pub(super) fn make_memory_executable(&self) -> Result<()> {
+    pub(crate) fn make_memory_executable(&self) -> Result<()> {
         #[cfg(target_os = "windows")]
         {
             let mut _old_flags = PAGE_PROTECTION_FLAGS::default();
@@ -587,7 +586,7 @@ impl ExclusiveSharedMemory {
     ///
     ///   This is ensured by a check in ::new()
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn as_mut_slice<'a>(&'a mut self) -> &'a mut [u8] {
+    pub(crate) fn as_mut_slice<'a>(&'a mut self) -> &'a mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.base_ptr(), self.mem_size()) }
     }
 
@@ -689,12 +688,35 @@ pub trait SharedMemory {
     /// Return a readonly reference to the host mapping backing this SharedMemory
     fn region(&self) -> &HostMapping;
 
+    // TODO(see #430) consider how the three functions below fit into the bigger
+    // picture w/ implementors of this trait having similar fxns.
+    /// Return data as mut slice
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.base_ptr(), self.mem_size()) }
+    }
+
+    /// Copies data into shared memory from a slice starting at offset
+    fn copy_from_slice(&mut self, src: &[u8], offset: usize) -> Result<()> {
+        let data = self.as_mut_slice();
+        bounds_check!(offset, src.len(), data.len());
+        data[offset..offset + src.len()].copy_from_slice(src);
+        Ok(())
+    }
+
+    /// Copies data from shared memory into a slice starting at offset
+    fn copy_to_slice(&mut self, dst: &mut [u8], offset: usize) -> Result<()> {
+        let data = self.as_mut_slice();
+        bounds_check!(offset, dst.len(), data.len());
+        dst.copy_from_slice(&data[offset..offset + dst.len()]);
+        Ok(())
+    }
+
     /// Return the base address of the host mapping of this
     /// region. Following the general Rust philosophy, this does not
     /// need to be marked as `unsafe` because doing anything with this
     /// pointer itself requires `unsafe`.
     fn base_addr(&self) -> usize {
-        self.region().ptr as usize + PAGE_SIZE_USIZE
+        self.region().ptr as usize + PAGE_SIZE
     }
 
     /// Return the base address of the host mapping of this region as
@@ -710,7 +732,7 @@ pub trait SharedMemory {
     /// guard pages.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn mem_size(&self) -> usize {
-        self.region().size - 2 * PAGE_SIZE_USIZE
+        self.region().size - 2 * PAGE_SIZE
     }
 
     /// Return the raw base address of the host mapping, including the
@@ -888,7 +910,13 @@ impl HostSharedMemory {
         buffer_size: usize,
         data: &[u8],
     ) -> Result<()> {
-        let stack_pointer_rel = self.read::<u64>(buffer_start_offset)? as usize;
+        let mut stack_pointer_rel = self.read::<u64>(buffer_start_offset)? as usize;
+
+        // If stack_pointer_rel is 0, it means this is our first read, and we should set it to 8.
+        // This is because the first 8 bytes are used to store the offset to the top of the stack.
+        if stack_pointer_rel == 0 {
+            stack_pointer_rel = 8;
+        }
         let buffer_size_u64: u64 = buffer_size.try_into()?;
 
         if stack_pointer_rel > buffer_size || stack_pointer_rel < 8 {
@@ -928,7 +956,7 @@ impl HostSharedMemory {
         Ok(())
     }
 
-    /// Pops the given given buffer into a `T` and returns it.
+    /// Pops the given buffer into a `T` and returns it.
     /// NOTE! the data must be a size-prefixed flatbuffer, and
     /// buffer_start_offset must point to the beginning of the buffer
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
@@ -1015,7 +1043,7 @@ impl SharedMemory for HostSharedMemory {
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_common::mem::PAGE_SIZE_USIZE;
+    use hyperlight_common::PAGE_SIZE;
     use proptest::prelude::*;
 
     use super::{ExclusiveSharedMemory, HostSharedMemory, SharedMemory};
@@ -1144,7 +1172,7 @@ mod tests {
 
     #[test]
     fn clone() {
-        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE).unwrap();
         let (hshm1, _) = eshm.build();
         let hshm2 = hshm1.clone();
 
@@ -1208,7 +1236,7 @@ mod tests {
 
         let pid = std::process::id();
 
-        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE).unwrap();
         let (hshm1, gshm) = eshm.build();
         let hshm2 = hshm1.clone();
         let addr = hshm1.raw_ptr() as usize;

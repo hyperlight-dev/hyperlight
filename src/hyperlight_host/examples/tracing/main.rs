@@ -1,25 +1,24 @@
-/*
-Copyright 2024 The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// /*
+// Copyright 2024 The Hyperlight Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// */
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use tracing::{span, Level};
 extern crate hyperlight_host;
-use std::sync::{Arc, Mutex};
 use std::thread::{spawn, JoinHandle};
 
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -30,10 +29,6 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, Registry};
 use uuid::Uuid;
-
-fn fn_writer(_msg: String) -> Result<i32> {
-    Ok(0)
-}
 
 // Shows how to consume trace events from Hyperlight using the tracing-subscriber crate.
 // and also how to consume logs as trace events.
@@ -60,7 +55,6 @@ fn run_example() -> Result<()> {
 
     for i in 0..10 {
         let path = hyperlight_guest_path.clone();
-        let writer_func = Arc::new(Mutex::new(fn_writer));
         let handle = spawn(move || -> Result<()> {
             // Construct a new span named "hyperlight tracing example thread" with INFO  level.
             let id = Uuid::new_v4();
@@ -73,12 +67,7 @@ fn run_example() -> Result<()> {
             let _entered = span.enter();
 
             // Create a new sandbox.
-            let usandbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(path),
-                None,
-                None,
-                Some(&writer_func),
-            )?;
+            let usandbox = SandboxBuilder::new(GuestBinary::FilePath(path))?.build()?;
 
             // Initialize the sandbox.
 
@@ -115,12 +104,8 @@ fn run_example() -> Result<()> {
     }
 
     // Create a new sandbox.
-    let usandbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(hyperlight_guest_path.clone()),
-        None,
-        None,
-        None,
-    )?;
+    let usandbox =
+        SandboxBuilder::new(GuestBinary::FilePath(hyperlight_guest_path.clone()))?.build()?;
 
     // Initialize the sandbox.
 

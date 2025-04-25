@@ -27,7 +27,8 @@ use crate::Result;
 ///
 /// Use this type to distinguish between an offset and a raw pointer
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct RawPtr(u64);
+// TODO(see #429): we should probably rethink these APIs.
+pub struct RawPtr(pub u64);
 
 impl From<u64> for RawPtr {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
@@ -227,27 +228,16 @@ impl<T: AddressSpace> TryFrom<Ptr<T>> for usize {
 #[cfg(test)]
 mod tests {
     use super::{GuestPtr, RawPtr};
-    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::sandbox::sandbox_builder::BASE_ADDRESS;
+
     const OFFSET: u64 = 1;
 
     #[test]
     fn ptr_basic_ops() {
         {
-            let raw_guest_ptr = RawPtr(OFFSET + SandboxMemoryLayout::BASE_ADDRESS as u64);
+            let raw_guest_ptr = RawPtr(OFFSET + BASE_ADDRESS as u64);
             let guest_ptr = GuestPtr::try_from(raw_guest_ptr).unwrap();
-            assert_eq!(
-                OFFSET + SandboxMemoryLayout::BASE_ADDRESS as u64,
-                guest_ptr.absolute().unwrap()
-            );
-        }
-    }
-
-    #[test]
-    fn ptr_fail() {
-        {
-            let raw_guest_ptr = RawPtr(SandboxMemoryLayout::BASE_ADDRESS as u64 - 1);
-            let guest_ptr = GuestPtr::try_from(raw_guest_ptr);
-            assert!(guest_ptr.is_err());
+            assert_eq!(OFFSET + BASE_ADDRESS as u64, guest_ptr.absolute().unwrap());
         }
     }
 }

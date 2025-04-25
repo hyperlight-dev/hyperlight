@@ -20,7 +20,10 @@ limitations under the License.
 // We use Arbitrary during fuzzing, which requires std
 #![cfg_attr(not(feature = "fuzzing"), no_std)]
 
+pub const PAGE_SIZE: usize = 0x1_000; // 4KB
+
 extern crate alloc;
+extern crate core;
 
 pub mod flatbuffer_wrappers;
 /// cbindgen:ignore
@@ -34,5 +37,44 @@ pub mod flatbuffer_wrappers;
     non_camel_case_types
 )]
 mod flatbuffers;
-/// cbindgen:ignore
-pub mod mem;
+
+/// The Hyperlight PEB is a structure configurable by host/guest that determines how
+/// the two will communicate. For example, in the PEB, you can set the address for the
+/// input and output data regions—these regions are imperative for the host and guest to
+/// be able to communicate via function calls.
+pub mod peb;
+
+/// We keep track of the PEB address in a global variable that references a region of
+/// shared memory.
+pub static mut PEB: *mut peb::HyperlightPEB = core::ptr::null_mut();
+
+/// Hyperlight supports running in both hypervisor mode and in process mode. We keep track of that
+/// state in this global variable.
+pub static mut RUNNING_MODE: peb::RunMode = peb::RunMode::None;
+
+/// For in-process mode, we can't call the `outb` instruction directly because it is a privileged
+/// instruction. Instead, we use a function pointer to call an `outb_handler` function.
+/// For in-process mode, we can't call the `outb` instruction directly because it is a privileged
+/// instruction. Instead, we use a function pointer to call an `outb_handler` function.
+pub static mut OUTB_HANDLER: Option<extern "sysv64" fn(u16, u8)> = None;
+
+pub static mut OUTB_HANDLER_CTX: Option<extern "sysv64" fn(*mut core::ffi::c_void, u16, u8)> = None;
+
+/// Hyperlight operates with a host-guest execution model.
+///
+/// The host is who creates the hypervisor partition, and the guest is whatever runs
+/// inside said hypervisor partition (i.e., in between a `VMENTER` and `VMEXIT`).
+///
+/// The guest and host communicate through a shared memory region. In particular, the
+/// input and output data sections. A guest can pop data from the input section, and
+/// push data to the output section. On the other hand, the host can push data to the
+/// input section and pop data from the output section.
+pub mod input_output;
+
+/// `outb` is the mechanism that Hyperlight uses to cause a VM exit to execute host functions and
+/// similar functionality.
+pub mod outb;
+
+/// Hyperlight provides abstractions for performing a VM exits with the intent of calling
+/// functionality in the host.
+pub mod host_calling;

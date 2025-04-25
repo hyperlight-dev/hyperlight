@@ -32,9 +32,6 @@ pub(crate) mod leaked_outb;
 /// Functionality for dealing with memory access from the VM guest
 /// executable
 pub(crate) mod mem_access;
-/// Functionality for interacting with a sandbox's internally-stored
-/// `SandboxMemoryManager`
-pub(crate) mod mem_mgr;
 pub(crate) mod outb;
 /// Options for configuring a sandbox
 mod run_options;
@@ -45,23 +42,22 @@ pub mod uninitialized;
 /// initialized `Sandbox`es.
 pub(crate) mod uninitialized_evolve;
 
+/// Functionality for creating a sandbox with a specific configuration
+pub mod sandbox_builder;
+
 use std::collections::HashMap;
 
-/// Re-export for `SandboxConfiguration` type
-pub use config::SandboxConfiguration;
 /// Re-export for the `MultiUseSandbox` type
 pub use initialized_multi_use::MultiUseSandbox;
 /// Re-export for `SandboxRunOptions` type
 pub use run_options::SandboxRunOptions;
-use tracing::{instrument, Span};
 /// Re-export for `GuestBinary` type
-pub use uninitialized::GuestBinary;
+pub use sandbox_builder::GuestBinary;
+use tracing::{instrument, Span};
 /// Re-export for `UninitializedSandbox` type
 pub use uninitialized::UninitializedSandbox;
 
-use self::mem_mgr::MemMgrWrapper;
 use crate::func::HyperlightFunction;
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::windows_hypervisor_platform;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -138,27 +134,20 @@ pub fn is_hypervisor_present() -> bool {
     hypervisor::get_available_hypervisor().is_some()
 }
 
-pub(crate) trait WrapperGetter {
-    #[allow(dead_code)]
-    fn get_mgr_wrapper(&self) -> &MemMgrWrapper<HostSharedMemory>;
-    fn get_mgr_wrapper_mut(&mut self) -> &mut MemMgrWrapper<HostSharedMemory>;
-    fn get_hv_handler(&self) -> &HypervisorHandler;
-    #[allow(dead_code)]
-    fn get_hv_handler_mut(&mut self) -> &mut HypervisorHandler;
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::thread;
 
     use crossbeam_queue::ArrayQueue;
+    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
     use hyperlight_testing::simple_guest_as_string;
 
-    use crate::sandbox::uninitialized::GuestBinary;
+    use crate::func::HostFunction2;
+    use crate::sandbox::sandbox_builder::SandboxBuilder;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
-    use crate::{new_error, MultiUseSandbox, UninitializedSandbox};
+    use crate::{GuestBinary, MultiUseSandbox, Result, UninitializedSandbox};
 
     #[test]
     // TODO: add support for testing on WHP
@@ -180,22 +169,24 @@ mod tests {
     }
 
     #[test]
-    fn check_create_and_use_sandbox_on_different_threads() {
+    fn check_create_and_use_sandbox_on_different_threads() -> Result<()> {
         let unintializedsandbox_queue = Arc::new(ArrayQueue::<UninitializedSandbox>::new(10));
         let sandbox_queue = Arc::new(ArrayQueue::<MultiUseSandbox>::new(10));
 
         for i in 0..10 {
-            let simple_guest_path = simple_guest_as_string().expect("Guest Binary Missing");
-            let unintializedsandbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(simple_guest_path),
-                None,
-                None,
-                None,
-            )
-            .unwrap_or_else(|_| panic!("Failed to create UninitializedSandbox {}", i));
+            let sandbox_builder =
+                SandboxBuilder::new(GuestBinary::FilePath(simple_guest_as_string()?))?;
+
+            let mut uninitialized_sandbox = sandbox_builder.build()?;
+
+            fn add(a: i32, b: i32) -> crate::Result<i32> {
+                Ok(a + b)
+            }
+            let host_function = Arc::new(Mutex::new(add));
+            host_function.register(&mut uninitialized_sandbox, "HostAdd")?;
 
             unintializedsandbox_queue
-                .push(unintializedsandbox)
+                .push(uninitialized_sandbox)
                 .unwrap_or_else(|_| panic!("Failed to push UninitializedSandbox {}", i));
         }
 
@@ -207,20 +198,6 @@ mod tests {
                     let uninitialized_sandbox = uq.pop().unwrap_or_else(|| {
                         panic!("Failed to pop UninitializedSandbox thread {}", i)
                     });
-                    let host_funcs = uninitialized_sandbox
-                        .host_funcs
-                        .try_lock()
-                        .map_err(|_| new_error!("Error locking"));
-
-                    assert!(host_funcs.is_ok());
-
-                    host_funcs
-                        .unwrap()
-                        .host_print(format!(
-                            "Printing from UninitializedSandbox on Thread {}\n",
-                            i
-                        ))
-                        .unwrap();
 
                     let sandbox = uninitialized_sandbox
                         .evolve(Noop::default())
@@ -243,20 +220,17 @@ mod tests {
             .map(|i| {
                 let sq = sandbox_queue.clone();
                 thread::spawn(move || {
-                    let sandbox = sq
+                    let mut sandbox = sq
                         .pop()
                         .unwrap_or_else(|| panic!("Failed to pop Sandbox thread {}", i));
-                    let host_funcs = sandbox
-                        ._host_funcs
-                        .try_lock()
-                        .map_err(|_| new_error!("Error locking"));
 
-                    assert!(host_funcs.is_ok());
+                    let result = sandbox.call_guest_function_by_name(
+                        "Add",
+                        ReturnType::Int,
+                        Some(vec![ParameterValue::Int(1), ParameterValue::Int(2)]),
+                    );
 
-                    host_funcs
-                        .unwrap()
-                        .host_print(format!("Print from Sandbox on Thread {}\n", i))
-                        .unwrap();
+                    result.unwrap_or_else(|_| panic!("Failed to call guest function thread {}", i));
                 })
             })
             .collect::<Vec<_>>();
@@ -264,5 +238,7 @@ mod tests {
         for handle in thread_handles {
             handle.join().unwrap();
         }
+
+        Ok(())
     }
 }

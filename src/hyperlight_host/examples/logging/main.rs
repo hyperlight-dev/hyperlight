@@ -1,32 +1,27 @@
-/*
-Copyright 2024 The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// /*
+// Copyright 2024 The Hyperlight Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// */
 extern crate hyperlight_host;
-use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result};
 use hyperlight_testing::simple_guest_as_string;
-
-fn fn_writer(_msg: String) -> Result<i32> {
-    Ok(0)
-}
 
 // This example demonstrates how to use the env_logger crate to emit log messages from hyperlight. As no tracing subscriber is set up any trace events that are created
 // by Hyperlight will also be emitted as log messages.
@@ -41,15 +36,9 @@ fn main() -> Result<()> {
 
     for _ in 0..20 {
         let path = hyperlight_guest_path.clone();
-        let writer_func = Arc::new(Mutex::new(fn_writer));
         let res: Result<()> = {
             // Create a new sandbox.
-            let usandbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(path),
-                None,
-                None,
-                Some(&writer_func),
-            )?;
+            let usandbox = SandboxBuilder::new(GuestBinary::FilePath(path.clone()))?.build()?;
 
             // Initialize the sandbox.
 
@@ -87,12 +76,8 @@ fn main() -> Result<()> {
     }
 
     // Create a new sandbox.
-    let usandbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(hyperlight_guest_path.clone()),
-        None,
-        None,
-        None,
-    )?;
+    let usandbox =
+        SandboxBuilder::new(GuestBinary::FilePath(hyperlight_guest_path.clone()))?.build()?;
 
     // Initialize the sandbox.
 

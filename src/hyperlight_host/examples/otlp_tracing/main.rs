@@ -1,19 +1,18 @@
-/*
-Copyright 2024 The Hyperlight Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// /*
+// Copyright 2024 The Hyperlight Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// */
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 //use opentelemetry_sdk::resource::ResourceBuilder;
 use opentelemetry_sdk::trace::SdkTracerProvider;
@@ -28,6 +27,7 @@ use std::io::stdin;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, spawn, JoinHandle};
 
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -43,10 +43,6 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 const ENDPOINT_ADDR: &str = "http://localhost:4317";
-
-fn fn_writer(_msg: String) -> HyperlightResult<i32> {
-    Ok(0)
-}
 
 // Shows how to send tracing events to an OTLP collector using the opentelemetry crate.
 
@@ -116,7 +112,6 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
     for i in 0..10 {
         let path = hyperlight_guest_path.clone();
         let exit = Arc::clone(&should_exit);
-        let writer_func = Arc::new(Mutex::new(fn_writer));
         let handle = spawn(move || -> HyperlightResult<()> {
             while !*exit.try_lock().unwrap() {
                 // Construct a new span named "hyperlight tracing example thread" with INFO  level.
@@ -130,12 +125,7 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                 let _entered = span.enter();
 
                 // Create a new sandbox.
-                let usandbox = UninitializedSandbox::new(
-                    GuestBinary::FilePath(path.clone()),
-                    None,
-                    None,
-                    Some(&writer_func),
-                )?;
+                let usandbox = SandboxBuilder::new(GuestBinary::FilePath(path.clone()))?.build()?;
 
                 // Initialize the sandbox.
 

@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::convert::TryFrom;
 use std::fmt::Debug;
 #[cfg(gdb)]
 use std::sync::{Arc, Mutex};
@@ -36,8 +35,8 @@ use super::{
     CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections, STACK_ALIGNMENT};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -280,7 +279,7 @@ pub(super) struct KVMDriver {
     vcpu_fd: VcpuFd,
     entrypoint: u64,
     orig_rsp: GuestPtr,
-    mem_regions: Vec<MemoryRegion>,
+    mem_sections: SandboxMemorySections,
 
     #[cfg(gdb)]
     debug: Option<KvmDebug>,
@@ -294,7 +293,7 @@ impl KVMDriver {
     /// be called to do so.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn new(
-        mem_regions: Vec<MemoryRegion>,
+        mem_sections: SandboxMemorySections,
         pml4_addr: u64,
         entrypoint: u64,
         rsp: u64,
@@ -307,20 +306,24 @@ impl KVMDriver {
         let perm_flags =
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
 
-        mem_regions.iter().enumerate().try_for_each(|(i, region)| {
-            let perm_flags = perm_flags.intersection(region.flags);
-            let kvm_region = kvm_userspace_memory_region {
-                slot: i as u32,
-                guest_phys_addr: region.guest_region.start as u64,
-                memory_size: (region.guest_region.end - region.guest_region.start) as u64,
-                userspace_addr: region.host_region.start as u64,
-                flags: match perm_flags {
-                    MemoryRegionFlags::READ => KVM_MEM_READONLY,
-                    _ => 0, // normal, RWX
-                },
-            };
-            unsafe { vm_fd.set_user_memory_region(kvm_region) }
-        })?;
+        mem_sections
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, region)| {
+                let perm_flags = perm_flags.intersection(region.1.flags);
+                let kvm_region = kvm_userspace_memory_region {
+                    slot: i as u32,
+                    guest_phys_addr: region.1.page_aligned_guest_offset as u64,
+                    memory_size: region.1.page_aligned_size as u64,
+                    #[allow(clippy::unwrap_used)] // this is safe because we set the host addresses when creating the uninitialized sandbox
+                    userspace_addr: region.1.host_address.unwrap() as u64,
+                    flags: match perm_flags {
+                        MemoryRegionFlags::READ => KVM_MEM_READONLY,
+                        _ => 0, // normal, RWX
+                    },
+                };
+                unsafe { vm_fd.set_user_memory_region(kvm_region) }
+            })?;
 
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
@@ -344,7 +347,7 @@ impl KVMDriver {
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
-            mem_regions,
+            mem_sections,
 
             #[cfg(gdb)]
             debug,
@@ -374,7 +377,7 @@ impl Debug for KVMDriver {
         let mut f = f.debug_struct("KVM Driver");
         // Output each memory region
 
-        for region in &self.mem_regions {
+        for region in self.mem_sections.sections.iter() {
             f.field("Memory Region", &region);
         }
         let regs = self.vcpu_fd.get_regs();
@@ -401,9 +404,8 @@ impl Hypervisor for KVMDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
         &mut self,
-        peb_addr: RawPtr,
+        hyperlight_peb_guest_memory_region_address: u64,
         seed: u64,
-        page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
@@ -420,10 +422,9 @@ impl Hypervisor for KVMDriver {
             rsp: self.orig_rsp.absolute()?,
 
             // function args
-            rcx: peb_addr.into(),
+            rcx: hyperlight_peb_guest_memory_region_address,
             rdx: seed,
-            r8: page_size.into(),
-            r9: max_guest_log_level,
+            r8: max_guest_log_level,
 
             ..Default::default()
         };
@@ -437,6 +438,21 @@ impl Hypervisor for KVMDriver {
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )?;
+
+        // The guest may have chosen a different stack region. If so, we drop usage of our tmp stack.
+        let mut hyperlight_peb = self.mem_sections.read_hyperlight_peb()?;
+
+        if let Some(guest_stack_data) = &hyperlight_peb.get_guest_stack_data_region() {
+            if guest_stack_data.get_offset().is_ok() {
+                // If we got here, it means the guest has set up a new stack
+                let rsp = hyperlight_peb.get_top_of_guest_stack_data()?;
+                self.orig_rsp = GuestPtr::try_from(RawPtr::from(rsp - STACK_ALIGNMENT))?;
+
+                // Need to update the min stack address from tmp_stack address to the new stack
+                hyperlight_peb.min_stack_address = hyperlight_peb.calculate_min_stack_address()?;
+                self.mem_sections.write_hyperlight_peb(hyperlight_peb)?;
+            }
+        }
 
         Ok(())
     }
@@ -526,7 +542,7 @@ impl Hypervisor for KVMDriver {
 
                 match self.get_memory_access_violation(
                     addr as usize,
-                    &self.mem_regions,
+                    &self.mem_sections,
                     MemoryRegionFlags::READ,
                 ) {
                     Some(access_violation_exit) => access_violation_exit,
@@ -538,7 +554,7 @@ impl Hypervisor for KVMDriver {
 
                 match self.get_memory_access_violation(
                     addr as usize,
-                    &self.mem_regions,
+                    &self.mem_sections,
                     MemoryRegionFlags::WRITE,
                 ) {
                     Some(access_violation_exit) => access_violation_exit,
@@ -569,8 +585,14 @@ impl Hypervisor for KVMDriver {
                 }
             },
             Ok(other) => {
-                crate::debug!("KVM Other Exit {:?}", other);
-                HyperlightExit::Unknown(format!("Unexpected KVM Exit {:?}", other))
+                let exit_reason =
+                    HyperlightExit::Unknown(format!("Unexpected KVM Exit {:?}", other));
+
+                // Print the registers for debugging
+                let regs = self.vcpu_fd.get_regs()?;
+                crate::debug!("KVM - Registers: {:#?}", &regs);
+
+                exit_reason
             }
         };
         Ok(result)
@@ -582,8 +604,8 @@ impl Hypervisor for KVMDriver {
     }
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
+    fn get_memory_sections(&self) -> &SandboxMemorySections {
+        &self.mem_sections
     }
 
     #[cfg(gdb)]
@@ -593,7 +615,9 @@ impl Hypervisor for KVMDriver {
         stop_reason: VcpuStopReason,
     ) -> Result<()> {
         self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
-            .map_err(|e| new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e))?;
+            .map_err(|e| {
+                crate::new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
+            })?;
 
         loop {
             log::debug!("Debug wait for event to resume vCPU");

@@ -18,8 +18,8 @@ use log::LevelFilter;
 use tracing::{instrument, Span};
 
 use crate::error::HyperlightError::ExecutionCanceledByHost;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
+use crate::sandbox::sandbox_builder::{MemoryRegionFlags, SandboxMemorySections};
 use crate::{log_then_return, new_error, HyperlightError, Result};
 
 /// Util for handling x87 fpu state
@@ -124,10 +124,9 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     #[allow(clippy::too_many_arguments)]
     fn initialise(
         &mut self,
-        peb_addr: RawPtr,
+        hyperlight_peb_guest_memory_region_address: u64,
         seed: u64,
-        page_size: u32,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_hdl: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         guest_max_log_level: Option<LevelFilter>,
@@ -168,15 +167,17 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn get_memory_access_violation(
         &self,
         gpa: usize,
-        mem_regions: &[MemoryRegion],
+        mem_sections: &SandboxMemorySections,
         access_info: MemoryRegionFlags,
     ) -> Option<HyperlightExit> {
         // find the region containing the given gpa
-        let region = mem_regions
-            .iter()
-            .find(|region| region.guest_region.contains(&gpa));
+        let region = mem_sections.iter().find(|(_, region)| {
+            let offset = region.page_aligned_guest_offset;
+            let size = region.page_aligned_size;
+            gpa >= offset && gpa < (offset + size)
+        });
 
-        if let Some(region) = region {
+        if let Some((_, region)) = region {
             if !region.flags.contains(access_info)
                 || region.flags.contains(MemoryRegionFlags::STACK_GUARD)
             {
@@ -235,7 +236,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion];
+    fn get_memory_sections(&self) -> &SandboxMemorySections;
 
     #[cfg(gdb)]
     /// handles the cases when the vCPU stops due to a Debug event
@@ -337,7 +338,6 @@ impl VirtualCPU {
 #[cfg(all(test, any(target_os = "windows", kvm)))]
 pub(crate) mod tests {
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use hyperlight_testing::dummy_guest_as_string;
@@ -348,10 +348,9 @@ pub(crate) mod tests {
     use crate::hypervisor::hypervisor_handler::{
         HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
     };
-    use crate::mem::ptr::RawPtr;
-    use crate::sandbox::uninitialized::GuestBinary;
-    use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
-    use crate::{new_error, Result};
+    use crate::sandbox::config::SandboxConfiguration;
+    use crate::sandbox::sandbox_builder::SandboxBuilder;
+    use crate::{new_error, GuestBinary, Result};
 
     pub(crate) fn test_initialise(
         outb_hdl: OutBHandlerWrapper,
@@ -366,20 +365,21 @@ pub(crate) mod tests {
             ));
         }
 
-        let sandbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None, None, None)?;
-        let (hshm, gshm) = sandbox.mgr.build();
+        let sandbox_builder = SandboxBuilder::new(GuestBinary::FilePath(filename))?;
+
+        let sandbox = sandbox_builder.build()?;
+
+        let (hshm, gshm) = sandbox.mem_mgr.build();
         drop(hshm);
 
         let hv_handler_config = HvHandlerConfig {
+            hyperlight_peb_guest_memory_region_address: 0x230000,
+            seed: 1234567890,
+            max_guest_log_level: None,
             outb_handler: outb_hdl,
             mem_access_handler: mem_access_hdl,
             #[cfg(gdb)]
             dbg_mem_access_handler: dbg_mem_access_fn,
-            seed: 1234567890,
-            page_size: 4096,
-            peb_addr: RawPtr::from(0x230000),
-            dispatch_function_addr: Arc::new(Mutex::new(None)),
             max_init_time: Duration::from_millis(
                 SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
             ),
@@ -389,7 +389,6 @@ pub(crate) mod tests {
             max_wait_for_cancellation: Duration::from_millis(
                 SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
             ),
-            max_guest_log_level: None,
         };
 
         let mut hv_handler = HypervisorHandler::new(hv_handler_config);

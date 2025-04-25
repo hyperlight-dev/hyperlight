@@ -66,7 +66,7 @@ impl LoadedLib {
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn base_addr(&self) -> RawPtr {
+    pub(crate) fn base_addr(&self) -> RawPtr {
         self.inner.base_addr()
     }
 }
