@@ -221,12 +221,6 @@ int guest_abort_with_msg(int32_t code, const char *message) {
   return -1;
 }
 
-int execute_on_stack(void) {
-  uint8_t stack_fn = 0x90;
-  ((void (*)()) & stack_fn)();
-  return -1;
-}
-
 int log_message(const char *message, int64_t level) {
   LOG((hl_Level)level, message);
   return -1;
@@ -258,7 +252,6 @@ HYPERLIGHT_WRAP_FUNCTION(set_static, Int, 0)
 // HYPERLIGHT_WRAP_FUNCTION(get_size_prefixed_buffer, Int, 1, VecBytes) is not valid for functions that return VecBytes
 HYPERLIGHT_WRAP_FUNCTION(guest_abort_with_msg, Int, 2, Int, String)
 HYPERLIGHT_WRAP_FUNCTION(guest_abort_with_code, Int, 1, Int)
-HYPERLIGHT_WRAP_FUNCTION(execute_on_stack, Int, 0)
 HYPERLIGHT_WRAP_FUNCTION(log_message, Int, 2, String, Long)
 
 void hyperlight_main(void)
@@ -293,7 +286,6 @@ void hyperlight_main(void)
     hl_register_function_definition("GetSizePrefixedBuffer", get_size_prefixed_buffer, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
     HYPERLIGHT_REGISTER_FUNCTION("GuestAbortWithCode", guest_abort_with_code);
     HYPERLIGHT_REGISTER_FUNCTION("GuestAbortWithMessage", guest_abort_with_msg);
-    HYPERLIGHT_REGISTER_FUNCTION("ExecuteOnStack", execute_on_stack);
     HYPERLIGHT_REGISTER_FUNCTION("LogMessage", log_message);
 }
 

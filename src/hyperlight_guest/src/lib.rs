@@ -69,11 +69,15 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     unsafe {
         copy_nonoverlapping(
             info.to_string().as_ptr(),
-            (*PEB).get_guest_panic_context_address() as *mut u8,
-            (*PEB).get_guest_panic_context_size() as usize,
+            (*PEB)
+                .get_guest_panic_context_address()
+                .expect("Failed to get panic context") as *mut u8,
+            (*PEB)
+                .get_guest_panic_context_size()
+                .expect("Failed to get panic context size") as usize,
         );
     }
-    outb(OutBAction::Abort as u16, ErrorCode::UnknownError as u8);
+    outb(OutBAction::Abort as u16, ErrorCode::UnknownError as u8).expect("Failed to send outb");
     unsafe { unreachable_unchecked() }
 }
 

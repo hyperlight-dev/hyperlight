@@ -19,11 +19,13 @@ limitations under the License.
 use std::sync::{Mutex, OnceLock};
 
 use hyperlight_host::func::{ParameterValue, ReturnType};
+use hyperlight_host::sandbox::sandbox_builder::SandboxBuilder;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{HyperlightError, MultiUseSandbox};
+use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox};
 use hyperlight_testing::simple_guest_for_fuzzing_as_string;
 use libfuzzer_sys::fuzz_target;
+
 static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 
 // This fuzz target tests all combinations of ReturnType and Parameters for `call_guest_function_by_name`.

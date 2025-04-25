@@ -385,38 +385,6 @@ fn guard_page_check_2() {
 }
 
 #[test]
-fn execute_on_stack() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
-
-    let result = sbox1
-        .call_guest_function_by_name("ExecuteOnStack", ReturnType::String, Some(vec![]))
-        .unwrap_err();
-
-    #[cfg(inprocess)]
-    if let HyperlightError::Error(message) = result {
-        cfg_if::cfg_if! {
-            if #[cfg(target_os = "linux")] {
-                assert!(message.starts_with("Unexpected VM Exit") || message.starts_with("unknown Hyper-V run message type"));
-            } else if #[cfg(target_os = "windows")] {
-                assert!(message.starts_with("Unexpected VM Exit \"Did not receive a halt from Hypervisor as expected - Received WHV_RUN_VP_EXIT_REASON(4)"));
-            } else {
-                panic!("Unexpected");
-            }
-        }
-    }
-
-    #[cfg(not(inprocess))]
-    {
-        let err = result.to_string();
-        println!("{:?}", err);
-        assert!(
-            // exception that indicates a page fault
-            err.contains("EXCEPTION: 0xe")
-        );
-    }
-}
-
-#[test]
 fn execute_on_heap() {
     let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
     let result =

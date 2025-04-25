@@ -27,7 +27,10 @@ use crate::entrypoint::halt;
 
 pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
     let peb = unsafe { (*PEB).clone() };
-    let output_data: OutputDataSection = peb.get_output_data_region().into();
+    let output_data: OutputDataSection = peb
+        .get_output_data_region()
+        .expect("Failed to get output data region")
+        .into();
 
     let guest_error = GuestError::new(
         error_code,
@@ -54,7 +57,8 @@ pub(crate) fn set_error_and_halt(error_code: ErrorCode, message: &str) {
 
 #[no_mangle]
 pub(crate) extern "win64" fn set_stack_allocate_error() {
-    outb(OutBAction::Abort as u16, ErrorCode::StackOverflow as u8);
+    outb(OutBAction::Abort as u16, ErrorCode::StackOverflow as u8)
+        .expect("Failed to write to outb");
 }
 
 #[no_mangle]

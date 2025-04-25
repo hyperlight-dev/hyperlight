@@ -44,8 +44,10 @@ fn write_log_data(
         .try_into()
         .expect("Failed to convert GuestLogData to bytes");
 
-    let output_data_section: OutputDataSection =
-        unsafe { (*PEB).clone() }.get_output_data_region().into();
+    let output_data_section: OutputDataSection = unsafe { (*PEB).clone() }
+        .get_output_data_region()
+        .expect("Unable to get output data region")
+        .into();
 
     output_data_section
         .push_shared_output_data(bytes)
@@ -61,5 +63,5 @@ pub fn log_message(
     line: u32,
 ) {
     write_log_data(log_level, message, source, caller, source_file, line);
-    outb(OutBAction::Log as u16, 0);
+    outb(OutBAction::Log as u16, 0).expect("Failed to send log message to outb");
 }

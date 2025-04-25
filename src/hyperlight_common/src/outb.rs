@@ -37,7 +37,7 @@ fn hloutb(port: u16, val: u8) {
     }
 }
 
-pub fn outb(port: u16, value: u8) {
+pub fn outb(port: u16, value: u8) -> Result<()> {
     unsafe {
         match RUNNING_MODE {
             RunMode::Hypervisor => {
@@ -53,12 +53,14 @@ pub fn outb(port: u16, value: u8) {
                 } else if let Some(outb_func) = OUTB_HANDLER {
                     outb_func(port, value);
                 } else {
-                    panic!("Tried to call outb without hypervisor and without outb function ptrs");
+                    bail!("Tried to call outb without hypervisor and without outb function ptrs");
                 }
             }
             _ => {
-                panic!("Tried to call outb in invalid runmode");
+                bail!("Tried to call outb in invalid runmode");
             }
         }
     }
+
+    Ok(())
 }

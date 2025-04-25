@@ -114,7 +114,11 @@ impl SandboxMemorySections {
         self.sections
             .iter()
             .find(|(_, section)| section.name == DEFAULT_HYPERLIGHT_PEB_SECTION_NAME)
-            .map(|(_, section)| section.host_address.unwrap())
+            .map(|(_, section)| {
+                #[allow(clippy::unwrap_used)]
+                // this is safe because we set the host addresses when creating the uninitialized sandbox
+                section.host_address.unwrap()
+            })
     }
 
     pub(crate) fn get_tmp_stack_section_offset(&self) -> Option<usize> {
@@ -138,11 +142,8 @@ impl SandboxMemorySections {
             .find(|(_, section)| section.name == DEFAULT_CUSTOM_GUEST_MEMORY_SECTION_NAME)
             .map(|(_, section)| section.page_aligned_guest_offset);
 
-        // if not set, we have a critical error and we should panic
-        if offset.is_none() {
-            panic!("Custom guest memory section not found");
-        }
-
+        #[allow(clippy::unwrap_used)]
+        // this is safe because create the custom guest memory section w/ the SandboxBuilder usage
         offset.unwrap()
     }
 
@@ -151,13 +152,14 @@ impl SandboxMemorySections {
             .sections
             .iter()
             .find(|(_, section)| section.name == DEFAULT_CUSTOM_GUEST_MEMORY_SECTION_NAME)
-            .map(|(_, section)| section.host_address.unwrap());
+            .map(|(_, section)| {
+                #[allow(clippy::unwrap_used)]
+                // this is safe because we set the host addresses when creating the uninitialized sandbox
+                section.host_address.unwrap()
+            });
 
-        // if not set, we have a critical error and we should panic
-        if host_address.is_none() {
-            panic!("Custom guest memory section not found");
-        }
-
+        #[allow(clippy::unwrap_used)]
+        // this is safe because we set the host addresses when creating the uninitialized sandbox
         host_address.unwrap()
     }
 
@@ -168,11 +170,8 @@ impl SandboxMemorySections {
             .find(|(_, section)| section.name == DEFAULT_CUSTOM_GUEST_MEMORY_SECTION_NAME)
             .map(|(_, section)| section.page_aligned_size);
 
-        // if not set, we have a critical error and we should panic
-        if size.is_none() {
-            panic!("Custom guest memory section not found");
-        }
-
+        #[allow(clippy::unwrap_used)]
+        // this is safe because create the custom guest memory section w/ the SandboxBuilder usage
         size.unwrap()
     }
 
@@ -709,11 +708,16 @@ impl SandboxBuilder {
     fn map_host_addresses(&mut self, host_base_address: usize) {
         for (_, section) in self.memory_sections.clone().iter() {
             let host_address = host_base_address + section.page_aligned_guest_offset;
-            self.memory_sections
+
+            #[allow(clippy::unwrap_used)]
+            // this is safe because we set the memory sections w/ the SandboxBuilder usage
+            let mem_section = self
+                .memory_sections
                 .sections
                 .get_mut(&section.page_aligned_guest_offset)
-                .unwrap()
-                .host_address = Some(host_address);
+                .unwrap();
+
+            mem_section.host_address = Some(host_address);
         }
     }
 
@@ -792,7 +796,7 @@ impl SandboxBuilder {
             sandbox_builder
                 .memory_sections
                 .get_tmp_stack_section_offset()
-                .unwrap() as u64,
+                .ok_or(new_error!("SandboxBuilder: tmp stack section not set"))? as u64,
             run_mode,
             guest_heap_size,
             guest_stack_size,

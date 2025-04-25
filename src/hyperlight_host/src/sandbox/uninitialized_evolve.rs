@@ -112,7 +112,9 @@ fn hv_init(
         hyperlight_peb_guest_memory_region_address: gshm
             .memory_sections
             .get_hyperlight_peb_section_offset()
-            .unwrap() as u64,
+            .ok_or(new_error!(
+                "Failed to get hyperlight peb guest memory region address"
+            ))? as u64,
         outb_handler: outb_hdl,
         mem_access_handler: mem_access_hdl,
         #[cfg(gdb)]

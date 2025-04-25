@@ -492,13 +492,13 @@ impl Hypervisor for HypervLinuxDriver {
         let mut hyperlight_peb = self.mem_sections.read_hyperlight_peb()?;
 
         if let Some(guest_stack_data) = &hyperlight_peb.get_guest_stack_data_region() {
-            if guest_stack_data.offset.is_some() {
+            if guest_stack_data.get_offset().is_ok() {
                 // If we got here, it means the guest has set up a new stack
-                let rsp = hyperlight_peb.get_top_of_guest_stack_data();
+                let rsp = hyperlight_peb.get_top_of_guest_stack_data()?;
                 self.orig_rsp = GuestPtr::try_from(RawPtr::from(rsp - STACK_ALIGNMENT))?;
 
                 // Need to update the min stack address from tmp_stack address to the new stack
-                hyperlight_peb.min_stack_address = hyperlight_peb.calculate_min_stack_address();
+                hyperlight_peb.min_stack_address = hyperlight_peb.calculate_min_stack_address()?;
                 self.mem_sections.write_hyperlight_peb(hyperlight_peb)?;
             }
         }

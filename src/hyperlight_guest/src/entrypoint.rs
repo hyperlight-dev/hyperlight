@@ -44,7 +44,7 @@ pub extern "C" fn abort() -> ! {
 }
 
 pub fn abort_with_code(code: i32) -> ! {
-    outb(OutBAction::Abort as u16, code as u8);
+    outb(OutBAction::Abort as u16, code as u8).expect("Failed to send abort signal");
     unreachable!()
 }
 
@@ -55,10 +55,12 @@ pub fn abort_with_code(code: i32) -> ! {
 pub unsafe fn abort_with_code_and_message(code: i32, message_ptr: *const c_char) -> ! {
     copy_nonoverlapping(
         message_ptr,
-        (*PEB).get_guest_panic_context_address() as *mut c_char,
+        (*PEB)
+            .get_guest_panic_context_address()
+            .expect("panic context is null") as *mut c_char,
         CStr::from_ptr(message_ptr).count_bytes() + 1, // +1 for null terminator
     );
-    outb(OutBAction::Abort as u16, code as u8);
+    outb(OutBAction::Abort as u16, code as u8).expect("Failed to send abort signal");
     unreachable!()
 }
 
@@ -82,7 +84,9 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
         // or by directly altering the PEB. `set_default_memory_layout` will configure the PEB to
         // with a memory layout that is compatible with the expectations of guests that use the
         // `hyperlight_guest` library (e.g., simpleguest, and callbackguest).
-        (*PEB).set_default_memory_layout();
+        (*PEB)
+            .set_default_memory_layout()
+            .expect("Failed to set default memory layout");
 
         // The guest sets the address to a "guest function dispatch" function, which is a function
         // that is called by the host to dispatch calls to guest functions.
@@ -93,8 +97,12 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, max_log_level: u64
             .try_lock()
             .expect("Failed to access HEAP_ALLOCATOR")
             .init(
-                (*PEB).get_heap_data_address() as usize,
-                (*PEB).get_guest_heap_data_size() as usize,
+                (*PEB)
+                    .get_heap_data_address()
+                    .expect("heap_data_address is null") as usize,
+                (*PEB)
+                    .get_guest_heap_data_size()
+                    .expect("guest_heap_data_size is null") as usize,
             );
 
         __security_cookie = peb_address ^ seed;

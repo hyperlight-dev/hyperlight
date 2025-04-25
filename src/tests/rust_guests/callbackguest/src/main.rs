@@ -161,7 +161,7 @@ fn call_host_spin(_: &FunctionCall) -> Result<Vec<u8>> {
 
 fn print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
-        print(&message);
+        print(&message)?;
         Ok(get_flatbuffer_result(()))
     } else {
         Err(HyperlightGuestError::new(

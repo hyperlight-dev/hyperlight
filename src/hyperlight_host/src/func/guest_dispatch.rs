@@ -60,7 +60,7 @@ pub(crate) fn call_function_on_guest(
         .get_input_data_guest_region();
 
     mem_mgr.set_stack_guard()?;
-    mem_mgr.write_guest_function_call(input_data_region, &buffer)?;
+    mem_mgr.write_guest_function_call(input_data_region?, &buffer)?;
 
     match hv_handler.execute_hypervisor_handler_action(
         HypervisorHandlerAction::DispatchCallFromHost(function_name.to_string()),
@@ -90,7 +90,7 @@ pub(crate) fn call_function_on_guest(
         .get_output_data_guest_region();
 
     mem_mgr
-        .get_guest_function_call_result(output_data_region)
+        .get_guest_function_call_result(output_data_region?)
         .map_err(|e| {
             if timedout {
                 // if we timed-out, but still got here

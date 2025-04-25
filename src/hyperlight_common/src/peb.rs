@@ -1,3 +1,5 @@
+use anyhow::{bail, Result};
+
 use crate::PAGE_SIZE;
 
 /// Hyperlight supports 2 primary modes:
@@ -19,9 +21,26 @@ pub enum RunMode {
 
 /// Represents a memory region with an offset and a size.
 #[derive(Clone, Debug, Default)]
-pub struct MemoryRegion {
-    pub offset: Option<u64>,
-    pub size: u64,
+pub struct GuestMemoryRegion {
+    offset: Option<u64>,
+    size: u64,
+}
+
+impl GuestMemoryRegion {
+    fn new(offset: Option<u64>, size: u64) -> Self {
+        Self { offset, size }
+    }
+
+    /// Gets the offset of the memory region.
+    /// Returns an error if the offset is not set.
+    pub fn get_offset(&self) -> Result<u64> {
+        self.offset.ok_or_else(|| anyhow::anyhow!("Offset not set"))
+    }
+
+    /// Gets the size of the memory region.
+    pub fn get_size(&self) -> u64 {
+        self.size
+    }
 }
 
 #[repr(C)]
@@ -66,23 +85,23 @@ pub struct HyperlightPEB {
 
     /// The input data pointer is used to pass data from
     /// the host to the guest.
-    input_data: Option<MemoryRegion>,
+    input_data: Option<GuestMemoryRegion>,
 
     /// The output data pointer is used to pass data from
     /// the guest to the host.
-    output_data: Option<MemoryRegion>,
+    output_data: Option<GuestMemoryRegion>,
 
     /// The guest panic context pointer can be used to pass
     /// panic context data from the guest to the host.
-    guest_panic_context: Option<MemoryRegion>,
+    guest_panic_context: Option<GuestMemoryRegion>,
 
     /// The guest heap data pointer points to a region of
     /// memory in the guest that is used for heap allocations.
-    guest_heap_data: Option<MemoryRegion>,
+    guest_heap_data: Option<GuestMemoryRegion>,
 
     /// The guest stack data pointer points to a region of
     /// memory in the guest that is used for stack allocations.
-    guest_stack_data: Option<MemoryRegion>,
+    guest_stack_data: Option<GuestMemoryRegion>,
 }
 
 impl HyperlightPEB {
@@ -109,14 +128,8 @@ impl HyperlightPEB {
             input_data: None,
             output_data: None,
             guest_panic_context: None,
-            guest_heap_data: Some(MemoryRegion {
-                offset: None,
-                size: guest_heap_size,
-            }),
-            guest_stack_data: Some(MemoryRegion {
-                offset: None,
-                size: guest_stack_size,
-            }),
+            guest_heap_data: Some(GuestMemoryRegion::new(None, guest_heap_size)),
+            guest_stack_data: Some(GuestMemoryRegion::new(None, guest_stack_size)),
         }
     }
 
@@ -133,22 +146,22 @@ impl HyperlightPEB {
     /// - +--------------------------+
     /// - | Guest stack data         | (configurable size)
     /// - +--------------------------+
-    pub fn set_default_memory_layout(&mut self) {
+    pub fn set_default_memory_layout(&mut self) -> Result<()> {
         // we set the guest stack at the start of the guest memory region to leverage
         // the stack guard page before it
         self.set_guest_stack_data_region(
             0x0,  // start at base of custom guest memory region,
             None, // don't override the stack size
-        );
+        )?;
 
-        let guest_stack_size = self.get_guest_stack_data_size();
+        let guest_stack_size = self.get_guest_stack_data_size()?;
 
         self.set_guest_heap_data_region(
             guest_stack_size, // start at the end of the stack
             None,             // don't override the heap size
-        );
+        )?;
 
-        let guest_heap_size = self.get_guest_heap_data_size();
+        let guest_heap_size = self.get_guest_heap_data_size()?;
 
         self.set_input_data_region(
             guest_stack_size + guest_heap_size, // start at the end of the heap
@@ -164,249 +177,261 @@ impl HyperlightPEB {
             guest_stack_size + guest_heap_size + PAGE_SIZE as u64 * 8, // start at the end of the output data
             PAGE_SIZE as u64,                                          // 4KB
         );
+
+        Ok(())
     }
 
     /// Sets the guest stack data region.
     /// - HyperlightPEB is always set with a default size for stack from the guest binary, there's an
     ///     option to override this size with the `size_override` parameter.
 
-    pub fn set_guest_stack_data_region(&mut self, offset: u64, size_override: Option<u64>) {
-        let size = size_override.unwrap_or_else(|| {
-            self.guest_stack_data
-                .as_ref()
-                .expect("Guest stack region must be defined")
-                .size
-        });
-        self.guest_stack_data = Some(MemoryRegion {
-            offset: Some(offset),
-            size,
-        });
+    pub fn set_guest_stack_data_region(
+        &mut self,
+        offset: u64,
+        size_override: Option<u64>,
+    ) -> Result<()> {
+        let orig_size = self
+            .guest_stack_data
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Guest stack region must be defined"))?
+            .get_size();
+
+        let size = size_override.unwrap_or(orig_size);
+        self.guest_stack_data = Some(GuestMemoryRegion::new(Some(offset), size));
 
         if size == 0 {
-            panic!("Stack data size is 0 after setting guest stack data region");
+            bail!("Guest stack size cannot be 0");
         }
+
+        Ok(())
     }
 
     /// Get guest stack data region (offset + size).
-    pub fn get_guest_stack_data_region(&self) -> Option<MemoryRegion> {
+    pub fn get_guest_stack_data_region(&self) -> Option<GuestMemoryRegion> {
         self.guest_stack_data.clone()
     }
 
     /// Gets the guest stack data region depending on the running mode (i.e., if `RunMode::Hypervisor` this
     /// returns the stack data guest address. If `RunMode::InProcessWindows` or `RunMode::InProcessLinux`, it
     /// returns the stack data host address).
-    pub fn get_stack_data_address(&self) -> u64 {
+    pub fn get_stack_data_address(&self) -> Result<u64> {
         let region = self
             .guest_stack_data
             .as_ref()
-            .expect("Stack data region not set");
+            .ok_or_else(|| anyhow::anyhow!("Stack data region not set"))?;
         match self.run_mode {
-            RunMode::Hypervisor => region.offset.unwrap() + self.guest_memory_base_address,
+            RunMode::Hypervisor => Ok(region.get_offset()? + self.guest_memory_base_address),
             RunMode::InProcessWindows | RunMode::InProcessLinux => {
-                region.offset.unwrap() + self.guest_memory_host_base_address
+                Ok(region.get_offset()? + self.guest_memory_host_base_address)
             }
-            _ => panic!("Invalid running mode"),
+            _ => bail!("Invalid running mode"),
         }
     }
 
     /// Returns the size of the guest stack data region. Panics if region is not set.
-    pub fn get_guest_stack_data_size(&self) -> u64 {
-        self.guest_stack_data
+    pub fn get_guest_stack_data_size(&self) -> Result<u64> {
+        Ok(self
+            .guest_stack_data
             .as_ref()
-            .expect("Stack data region is not set")
-            .size
+            .ok_or_else(|| anyhow::anyhow!("Stack data region is not set"))?
+            .get_size())
     }
 
     /// Gets the top of the guest stack data region (i.e., guest memory base address + guest stack
     /// offset + guest stack size).
-    pub fn get_top_of_guest_stack_data(&self) -> u64 {
+    pub fn get_top_of_guest_stack_data(&self) -> Result<u64> {
         let region = self
             .guest_stack_data
             .as_ref()
-            .expect("Guest stack data region not set");
-        region.offset.unwrap() + self.guest_memory_base_address + region.size
+            .ok_or_else(|| anyhow::anyhow!("Stack data region not set"))?;
+        Ok(region.get_offset()? + self.guest_memory_base_address + region.get_size())
     }
 
     /// Calculate the minimum guest stack address (start of guest stack data region in the guest
     /// address space).
-    pub fn calculate_min_stack_address(&self) -> u64 {
+    pub fn calculate_min_stack_address(&self) -> Result<u64> {
         let region = self
             .guest_stack_data
             .as_ref()
-            .expect("Guest stack data region not set");
-        region.offset.unwrap() + self.guest_memory_base_address
+            .ok_or_else(|| anyhow::anyhow!("Stack data region not set"))?;
+        Ok(region.get_offset()? + self.guest_memory_base_address)
     }
 
     /// Sets the guest heap data region.
     /// - HyperlightPEB is always set with a default size for heap from the guest binary, there's an
     ///     option to override this size with the `size_override` parameter.
-    pub fn set_guest_heap_data_region(&mut self, offset: u64, size_override: Option<u64>) {
-        let size = size_override.unwrap_or_else(|| {
-            self.guest_heap_data
-                .as_ref()
-                .expect("Guest heap region must be defined")
-                .size
-        });
-        self.guest_heap_data = Some(MemoryRegion {
-            offset: Some(offset),
-            size,
-        });
+    pub fn set_guest_heap_data_region(
+        &mut self,
+        offset: u64,
+        size_override: Option<u64>,
+    ) -> Result<()> {
+        let orig_size = self
+            .guest_heap_data
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Guest heap region must be defined"))?
+            .get_size();
+
+        let size = size_override.unwrap_or(orig_size);
+
+        self.guest_heap_data = Some(GuestMemoryRegion::new(Some(offset), size));
 
         if size == 0 {
-            panic!("Heap data size is 0 after setting guest heap data region");
+            bail!("Guest heap size cannot be 0");
         }
+
+        Ok(())
     }
 
     /// Gets the guest heap data region depending on the running mode (i.e., if `RunMode::Hypervisor` this
     /// returns the heap data guest address. If `RunMode::InProcessWindows` or `RunMode::InProcessLinux`, it
     /// returns the heap data host address).
-    pub fn get_heap_data_address(&self) -> u64 {
+    pub fn get_heap_data_address(&self) -> Result<u64> {
         let region = self
             .guest_heap_data
             .as_ref()
-            .expect("Heap data region not set");
+            .ok_or_else(|| anyhow::anyhow!("Heap data region not set"))?;
+
         match self.run_mode {
-            RunMode::Hypervisor => region.offset.unwrap() + self.guest_memory_base_address,
+            RunMode::Hypervisor => Ok(region.get_offset()? + self.guest_memory_base_address),
             RunMode::InProcessWindows | RunMode::InProcessLinux => {
-                region.offset.unwrap() + self.guest_memory_host_base_address
+                Ok(region.get_offset()? + self.guest_memory_host_base_address)
             }
-            _ => panic!("Invalid running mode"),
+            _ => bail!("Invalid running mode"),
         }
     }
 
     /// Returns the size of the guest heap data region. Panics if region is not set.
-    pub fn get_guest_heap_data_size(&self) -> u64 {
-        self.guest_heap_data
+    pub fn get_guest_heap_data_size(&self) -> Result<u64> {
+        Ok(self
+            .guest_heap_data
             .as_ref()
-            .expect("Heap data region is not set")
-            .size
+            .ok_or_else(|| anyhow::anyhow!("Heap data region is not set"))?
+            .get_size())
     }
 
     /// Sets the input data region.
     pub fn set_input_data_region(&mut self, offset: u64, size: u64) {
-        self.input_data = Some(MemoryRegion {
-            offset: Some(offset),
-            size,
-        });
+        self.input_data = Some(GuestMemoryRegion::new(Some(offset), size));
     }
 
     /// Gets the input data region with guest addresses.
-    pub fn get_input_data_guest_region(&self) -> (u64, u64) {
-        let region = self.input_data.as_ref().expect("Input data region not set");
-        (
-            region.offset.unwrap() + self.guest_memory_base_address,
-            region.size,
-        )
+    pub fn get_input_data_guest_region(&self) -> Result<(u64, u64)> {
+        let region = self
+            .input_data
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Input data region not set"))?;
+        Ok((
+            region.get_offset()? + self.guest_memory_base_address,
+            region.get_size(),
+        ))
     }
 
     /// Gets the input data region with host addresses.
-    pub fn get_input_data_host_region(&self) -> (u64, u64) {
-        let region = self.input_data.as_ref().expect("Input data region not set");
-        (
-            region.offset.unwrap() + self.guest_memory_host_base_address,
-            region.size,
-        )
+    pub fn get_input_data_host_region(&self) -> Result<(u64, u64)> {
+        let region = self
+            .input_data
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Input data region not set"))?;
+        Ok((
+            region.get_offset()? + self.guest_memory_host_base_address,
+            region.get_size(),
+        ))
     }
 
     /// Gets the input data region based on the running mode (i.e., if `RunMode::Hypervisor` this
     /// function outputs the same as `get_input_data_guest_region`. If `RunMode::InProcessWindows`
     /// or `RunMode::InProcessLinux`, it outputs the same as `get_input_data_host_region`).
-    pub fn get_input_data_region(&self) -> (u64, u64) {
+    pub fn get_input_data_region(&self) -> Result<(u64, u64)> {
         match self.run_mode {
             RunMode::Hypervisor => self.get_input_data_guest_region(),
             RunMode::InProcessWindows | RunMode::InProcessLinux => {
                 self.get_input_data_host_region()
             }
-            _ => panic!("Invalid running mode"),
+            _ => bail!("Invalid running mode"),
         }
     }
 
     /// Sets the output data region.
     pub fn set_output_data_region(&mut self, offset: u64, size: u64) {
-        self.output_data = Some(MemoryRegion {
-            offset: Some(offset),
-            size,
-        });
+        self.output_data = Some(GuestMemoryRegion::new(Some(offset), size));
     }
 
     /// Gets the output data region with guest addresses.
-    pub fn get_output_data_guest_region(&self) -> (u64, u64) {
+    pub fn get_output_data_guest_region(&self) -> Result<(u64, u64)> {
         let region = self
             .output_data
             .as_ref()
-            .expect("Output data region not set");
-        (
-            region.offset.unwrap() + self.guest_memory_base_address,
-            region.size,
-        )
+            .ok_or_else(|| anyhow::anyhow!("Output data region not set"))?;
+        Ok((
+            region.get_offset()? + self.guest_memory_base_address,
+            region.get_size(),
+        ))
     }
 
     /// Gets the output data region with host addresses.
-    pub fn get_output_data_host_region(&self) -> (u64, u64) {
+    pub fn get_output_data_host_region(&self) -> Result<(u64, u64)> {
         let region = self
             .output_data
             .as_ref()
-            .expect("Output data region not set");
-        (
-            region.offset.unwrap() + self.guest_memory_host_base_address,
-            region.size,
-        )
+            .ok_or_else(|| anyhow::anyhow!("Output data region not set"))?;
+        Ok((
+            region.get_offset()? + self.guest_memory_host_base_address,
+            region.get_size(),
+        ))
     }
 
     /// Gets the output data region based on the running mode (i.e., if `RunMode::Hypervisor` this
     /// returns the same as `get_output_data_guest_region`. If `RunMode::InProcessWindows`
     /// or `RunMode::InProcessLinux`, it returns the same as `get_output_data_host_region`).
-    pub fn get_output_data_region(&self) -> (u64, u64) {
+    pub fn get_output_data_region(&self) -> Result<(u64, u64)> {
         match self.run_mode {
             RunMode::Hypervisor => self.get_output_data_guest_region(),
             RunMode::InProcessWindows | RunMode::InProcessLinux => {
                 self.get_output_data_host_region()
             }
-            _ => panic!("Invalid running mode"),
+            _ => bail!("Invalid running mode"),
         }
     }
 
     /// Sets the guest panic context region.
     pub fn set_guest_panic_context_region(&mut self, offset: u64, size: u64) {
-        self.guest_panic_context = Some(MemoryRegion {
-            offset: Some(offset),
-            size,
-        });
+        self.guest_panic_context = Some(GuestMemoryRegion::new(Some(offset), size));
     }
 
     /// Gets the guest panic context region depending on the running mode (i.e., if `RunMode::Hypervisor` this
     /// returns the same as `get_guest_panic_context_guest_address`. If `RunMode::InProcessWindows` or `RunMode::InProcessLinux`, it
     /// returns the panic context host address).
-    pub fn get_guest_panic_context_address(&self) -> u64 {
+    pub fn get_guest_panic_context_address(&self) -> Result<u64> {
         let region = self
             .guest_panic_context
             .as_ref()
-            .expect("Guest panic context region not set");
+            .ok_or_else(|| anyhow::anyhow!("Guest panic context region not set"))?;
         match self.run_mode {
             RunMode::Hypervisor => self.get_guest_panic_context_guest_address(),
             RunMode::InProcessWindows | RunMode::InProcessLinux => {
-                region.offset.unwrap() + self.guest_memory_host_base_address
+                Ok(region.get_offset()? + self.guest_memory_host_base_address)
             }
-            _ => panic!("Invalid running mode"),
+            _ => bail!("Invalid running mode"),
         }
     }
 
     /// Gets the guest panic context region with guest addresses.
-    pub fn get_guest_panic_context_guest_address(&self) -> u64 {
-        self.guest_panic_context
+    pub fn get_guest_panic_context_guest_address(&self) -> Result<u64> {
+        Ok(self
+            .guest_panic_context
             .as_ref()
-            .expect("Guest panic context region not set")
-            .offset
-            .unwrap()
-            + self.guest_memory_base_address
+            .ok_or_else(|| anyhow::anyhow!("Guest panic context region not set"))?
+            .get_offset()?
+            + self.guest_memory_base_address)
     }
 
     /// Gets the guest panic context size.
-    pub fn get_guest_panic_context_size(&self) -> u64 {
-        self.guest_panic_context
+    pub fn get_guest_panic_context_size(&self) -> Result<u64> {
+        Ok(self
+            .guest_panic_context
             .as_ref()
-            .expect("Guest panic context region not set")
-            .size
+            .ok_or_else(|| anyhow::anyhow!("Guest panic context region not set"))?
+            .get_size())
     }
 
     /// Sets the pointer to the outb handler function used to simulate the outb instruction when running

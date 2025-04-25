@@ -86,7 +86,7 @@ fn echo_float(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 fn print_output(message: &str) -> Result<Vec<u8>> {
-    print(message);
+    print(message)?;
     Ok(get_flatbuffer_result(message.len() as i32))
 }
 
@@ -572,15 +572,6 @@ fn test_write_raw_ptr(function_call: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result("fail"))
 }
 
-fn execute_on_stack(_function_call: &FunctionCall) -> Result<Vec<u8>> {
-    unsafe {
-        let mut noop: u8 = 0x90;
-        let stack_fn: fn() = core::mem::transmute(&mut noop as *mut u8);
-        stack_fn();
-    };
-    Ok(get_flatbuffer_result("fail"))
-}
-
 fn execute_on_heap(_function_call: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
         // NO-OP followed by RET
@@ -1024,14 +1015,6 @@ pub extern "C" fn hyperlight_main() {
     );
     register_function(test_write_raw_ptr_def);
 
-    let execute_on_stack_def = GuestFunctionDefinition::new(
-        "ExecuteOnStack".to_string(),
-        Vec::new(),
-        ReturnType::String,
-        execute_on_stack as usize,
-    );
-    register_function(execute_on_stack_def);
-
     let execute_on_heap_def = GuestFunctionDefinition::new(
         "ExecuteOnHeap".to_string(),
         Vec::new(),
@@ -1127,7 +1110,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         1,
     );
 
-    print(message);
+    print(message)?;
     let function_name = function_call.function_name.clone();
     let param_len = function_call.parameters.clone().unwrap_or_default().len();
     let call_type = function_call.function_call_type().clone();

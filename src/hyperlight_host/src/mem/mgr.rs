@@ -355,7 +355,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let (ptr, size) = self
             .memory_sections
             .read_hyperlight_peb()?
-            .get_output_data_guest_region();
+            .get_output_data_guest_region()?;
         self.shared_mem
             .try_pop_buffer_into::<FunctionCall>(ptr as usize, size as usize)
     }
@@ -372,7 +372,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let (ptr, size) = self
             .memory_sections
             .read_hyperlight_peb()?
-            .get_input_data_guest_region();
+            .get_input_data_guest_region()?;
 
         self.shared_mem.push_buffer(
             ptr as usize,
@@ -419,7 +419,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let (ptr, size) = self
             .memory_sections
             .read_hyperlight_peb()?
-            .get_output_data_guest_region();
+            .get_output_data_guest_region()?;
         self.shared_mem
             .try_pop_buffer_into::<GuestLogData>(ptr as usize, size as usize)
     }
@@ -430,11 +430,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let offset = self
             .memory_sections
             .read_hyperlight_peb()?
-            .get_guest_panic_context_guest_address() as usize;
+            .get_guest_panic_context_guest_address()? as usize;
         let size = self
             .memory_sections
             .read_hyperlight_peb()?
-            .get_guest_panic_context_size() as usize;
+            .get_guest_panic_context_size()? as usize;
         let mut vec_out = vec![0; size];
         self.shared_mem
             .copy_to_slice(vec_out.as_mut_slice(), offset)?;

@@ -395,8 +395,14 @@ impl HypervisorHandler {
                                 let dispatch_function_addr = RawPtr(execution_variables
                                     .shm
                                     .try_lock()
-                                    .unwrap()
-                                    .as_mut()
+                                    .map_err(|e| {
+                                        new_error!(
+                                            "Error locking at {}:{}: {}",
+                                            file!(),
+                                            line!(),
+                                            e
+                                        )
+                                    })?.as_mut()
                                     .ok_or_else(|| {
                                         new_error!("guest shm lock: {}:{}", file!(), line!())
                                     })?.memory_sections.read_hyperlight_peb()?.get_guest_function_dispatch_ptr());
@@ -431,7 +437,7 @@ impl HypervisorHandler {
                                     })?
                                     .shared_mem
                                     .lock
-                                        .try_read();
+                                    .try_read();
 
                                 let res = crate::metrics::maybe_time_and_emit_guest_call(
                                     &function_name,

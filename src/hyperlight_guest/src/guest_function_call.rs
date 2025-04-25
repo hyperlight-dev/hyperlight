@@ -85,8 +85,14 @@ fn internal_dispatch_function() -> Result<()> {
 
     let peb = unsafe { (*PEB).clone() };
 
-    let input_data_section: InputDataSection = peb.get_input_data_region().into();
-    let output_data_section: OutputDataSection = peb.get_output_data_region().into();
+    let input_data_section: InputDataSection = peb
+        .get_input_data_region()
+        .expect("Failed to get input data region")
+        .into();
+    let output_data_section: OutputDataSection = peb
+        .get_output_data_region()
+        .expect("Failed to get output data region")
+        .into();
 
     let function_call = input_data_section
         .try_pop_shared_input_data_into::<FunctionCall>()
@@ -98,7 +104,7 @@ fn internal_dispatch_function() -> Result<()> {
 
     output_data_section
         .push_shared_output_data(result_vec)
-        .unwrap();
+        .expect("Failed to push output data");
     Ok(())
 }
 

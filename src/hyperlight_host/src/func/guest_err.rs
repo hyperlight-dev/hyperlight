@@ -28,7 +28,7 @@ pub(crate) fn check_for_guest_error(
     mgr: &mut SandboxMemoryManager<HostSharedMemory>,
 ) -> Result<()> {
     let peb = mgr.memory_sections.read_hyperlight_peb()?;
-    let (odr_buffer, odr_size) = peb.get_output_data_guest_region();
+    let (odr_buffer, odr_size) = peb.get_output_data_guest_region()?;
     let maybe_guest_err = mgr
         .shared_mem
         .try_pop_buffer_into::<FbGuestError>(odr_buffer as usize, odr_size as usize);
