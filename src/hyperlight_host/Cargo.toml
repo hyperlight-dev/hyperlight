@@ -103,6 +103,7 @@ criterion = "0.5.1"
 tracing-chrome = "0.7.2"
 metrics-util = "0.19.1"
 metrics-exporter-prometheus = "0.17.0"
+tracing-tracy = "0.11.4"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "0.61", features = [
