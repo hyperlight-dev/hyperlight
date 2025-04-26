@@ -404,7 +404,7 @@ pub fn emit_hl_marshal_toplevel_value(
 pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStream {
     match vt {
         Value::Bool => quote! {
-            alloc::vec::vec![if #id { 1u8 } else { 0u8 }]
+            alloc::vec![if #id { 1u8 } else { 0u8 }]
         },
         Value::S(_) | Value::U(_) | Value::F(_) => {
             let (tid, _) = rtypes::numeric_rtype(vt);
