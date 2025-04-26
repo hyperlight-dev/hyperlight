@@ -137,7 +137,7 @@ pub fn resolve_handleable_to_resource(s: &mut State, ht: &Handleable) -> u32 {
 
 pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStream {
     match vt {
-        Value::Bool => quote! { if #id[0] != 0 { true } else { false } },
+        Value::Bool => quote! { (if #id[0] != 0 { true } else { false }, 1) },
         Value::S(_) | Value::U(_) | Value::F(_) => {
             let (tid, width) = rtypes::numeric_rtype(vt);
             let blen = width as usize / 8;
