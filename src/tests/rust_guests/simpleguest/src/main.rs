@@ -395,7 +395,7 @@ fn print_eleven_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     } else {
         Err(HyperlightGuestError::new(
             ErrorCode::GuestFunctionParameterTypeMismatch,
-            "Invalid parameters passed to print_ten_args".to_string(),
+            "Invalid parameters passed to print_eleven_args".to_string(),
         ))
     }
 }
