@@ -4,17 +4,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
-### Added  
--
+
+## [v0.4.0] - Unreleased
 
 ### Changed
--
-
-### Removed
--
+- Metrics are now emitted using the [metrics](https://crates.io/crates/metrics) crate by @ludfjig in [#361](https://github.com/hyperlight-dev/hyperlight/pull/361)
 
 ### Fixed
--
+- Fixed race condition causing thread to incorrectly believe it finished executing by @ludfjig in [#385](https://github.com/hyperlight-dev/hyperlight/pull/385)
+- Fixed incorrect logging levels in guest by @simongdavies in [#410](https://github.com/hyperlight-dev/hyperlight/pull/410)
+- Fixed missing compiler flags for building c guests by @prydt in [#421](https://github.com/hyperlight-dev/hyperlight/pull/421) 
 
 ## [v0.3.0] - 2025-03-27
 
@@ -65,7 +64,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.3.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.4.0..HEAD>
+[v0.4.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.3.0...v0.4.0>
 [v0.3.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.2.0...v0.3.0>
 [v0.2.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.1.0...v0.2.0>
 [v0.1.0]: <https://github.com/hyperlight-dev/hyperlight/releases/tag/v0.1.0>
