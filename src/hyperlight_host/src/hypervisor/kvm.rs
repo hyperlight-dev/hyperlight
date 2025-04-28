@@ -24,9 +24,9 @@ use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::LevelFilter;
 use tracing::{instrument, Span};
-
 #[cfg(crashdump)]
-use super::crashdump;
+use {super::crashdump, crate::sandbox::uninitialized::SandboxMetadata, std::path::Path};
+
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
@@ -288,6 +288,8 @@ pub(super) struct KVMDriver {
     debug: Option<KvmDebug>,
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+    #[cfg(crashdump)]
+    metadata: SandboxMetadata,
 }
 
 impl KVMDriver {
@@ -301,6 +303,7 @@ impl KVMDriver {
         entrypoint: u64,
         rsp: u64,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+        #[cfg(crashdump)] metadata: SandboxMetadata,
     ) -> Result<Self> {
         let kvm = Kvm::new()?;
 
@@ -352,6 +355,8 @@ impl KVMDriver {
             debug,
             #[cfg(gdb)]
             gdb_conn,
+            #[cfg(crashdump)]
+            metadata,
         };
 
         Ok(ret)
@@ -621,6 +626,13 @@ impl Hypervisor for KVMDriver {
         regs[25] = sregs.fs.selector as u64; // fs
         regs[26] = sregs.gs.selector as u64; // gs
 
+        // Get the filename from the metadata
+        let filename = self.metadata.binary_path.clone().and_then(|path| {
+            Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_os_string().into_string().ok())
+        });
+
         // The [`CrashDumpContext`] accepts xsave as a vector of u8, so we need to convert the
         // xsave region to a vector of u8
         Ok(crashdump::CrashDumpContext::new(
@@ -633,6 +645,8 @@ impl Hypervisor for KVMDriver {
                 acc
             }),
             self.entrypoint,
+            self.metadata.binary_path.clone(),
+            filename,
         ))
     }
 

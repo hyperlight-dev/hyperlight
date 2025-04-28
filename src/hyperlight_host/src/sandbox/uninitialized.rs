@@ -39,6 +39,12 @@ use crate::sandbox_state::sandbox::EvolvableSandbox;
 use crate::sandbox_state::transition::Noop;
 use crate::{log_build_details, log_then_return, new_error, MultiUseSandbox, Result};
 
+#[cfg(crashdump)]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SandboxMetadata {
+    pub(crate) binary_path: Option<String>,
+}
+
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
 ///
 /// Prior to initializing a full-fledged `Sandbox`, you must create one of
@@ -58,6 +64,8 @@ pub struct UninitializedSandbox {
     pub(crate) max_guest_log_level: Option<LevelFilter>,
     #[cfg(gdb)]
     pub(crate) debug_info: Option<DebugInfo>,
+    #[cfg(crashdump)]
+    pub(crate) metadata: SandboxMetadata,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -142,13 +150,23 @@ impl UninitializedSandbox {
                 let path = Path::new(&binary_path)
                     .canonicalize()
                     .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?;
-                GuestBinary::FilePath(
-                    path.into_os_string()
-                        .into_string()
-                        .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?,
-                )
+                let path = path
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?;
+
+                GuestBinary::FilePath(path)
             }
             buffer @ GuestBinary::Buffer(_) => buffer,
+        };
+
+        #[cfg(crashdump)]
+        let metadata = if let GuestBinary::FilePath(ref path) = guest_binary {
+            SandboxMetadata {
+                binary_path: Some(path.clone()),
+            }
+        } else {
+            SandboxMetadata::default()
         };
 
         let run_opts = sandbox_run_options.unwrap_or_default();
@@ -200,6 +218,8 @@ impl UninitializedSandbox {
             max_guest_log_level: None,
             #[cfg(gdb)]
             debug_info,
+            #[cfg(crashdump)]
+            metadata,
         };
 
         // TODO: These only here to accommodate some writer functions.

@@ -350,6 +350,8 @@ pub(crate) mod tests {
     };
     use crate::mem::ptr::RawPtr;
     use crate::sandbox::uninitialized::GuestBinary;
+    #[cfg(crashdump)]
+    use crate::sandbox::uninitialized::SandboxMetadata;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{new_error, Result};
 
@@ -411,6 +413,8 @@ pub(crate) mod tests {
             gshm,
             #[cfg(gdb)]
             None,
+            #[cfg(crashdump)]
+            SandboxMetadata { binary_path: None },
         )?;
 
         hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
