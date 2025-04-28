@@ -51,6 +51,8 @@ use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
+#[cfg(crashdump)]
+use crate::sandbox::uninitialized::SandboxMetadata;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::HyperlightError::{
@@ -238,6 +240,7 @@ impl HypervisorHandler {
         &mut self,
         sandbox_memory_manager: SandboxMemoryManager<GuestSharedMemory>,
         #[cfg(gdb)] debug_info: Option<DebugInfo>,
+        #[cfg(crashdump)] metadata: SandboxMetadata,
     ) -> Result<()> {
         let configuration = self.configuration.clone();
 
@@ -301,6 +304,8 @@ impl HypervisorHandler {
                                         execution_variables.shm.try_lock().map_err(|e| new_error!("Failed to lock shm: {}", e))?.deref_mut().as_mut().ok_or_else(|| new_error!("shm not set"))?,
                                         #[cfg(gdb)]
                                         &debug_info,
+                                        #[cfg(crashdump)]
+                                        &metadata,
                                     )?);
                                 }
                                 let hv = hv.as_mut().ok_or_else(|| new_error!("Hypervisor not set"))?;
@@ -822,6 +827,7 @@ pub enum HandlerMsg {
 fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[cfg(gdb)] debug_info: &Option<DebugInfo>,
+    #[cfg(crashdump)] metadata: &SandboxMetadata,
 ) -> Result<Box<dyn Hypervisor>> {
     let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
     let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
@@ -884,6 +890,8 @@ fn set_up_hypervisor_partition(
                 pml4_ptr,
                 #[cfg(gdb)]
                 gdb_conn,
+                #[cfg(crashdump)]
+                metadata.clone(),
             )?;
             Ok(Box::new(hv))
         }
@@ -897,6 +905,8 @@ fn set_up_hypervisor_partition(
                 rsp_ptr.absolute()?,
                 #[cfg(gdb)]
                 gdb_conn,
+                #[cfg(crashdump)]
+                metadata.clone(),
             )?;
             Ok(Box::new(hv))
         }
@@ -914,6 +924,8 @@ fn set_up_hypervisor_partition(
                 entrypoint_ptr.absolute()?,
                 rsp_ptr.absolute()?,
                 HandleWrapper::from(mmap_file_handle),
+                #[cfg(crashdump)]
+                metadata.clone(),
             )?;
             Ok(Box::new(hv))
         }

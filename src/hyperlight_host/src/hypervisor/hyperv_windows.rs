@@ -27,9 +27,9 @@ use windows::Win32::System::Hypervisor::{
     WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT,
     WHV_RUN_VP_EXIT_REASON, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
 };
-
 #[cfg(crashdump)]
-use super::crashdump;
+use {super::crashdump, crate::sandbox::uninitialized::SandboxMetadata, std::path::Path};
+
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
@@ -58,6 +58,8 @@ pub(crate) struct HypervWindowsDriver {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
+    #[cfg(crashdump)]
+    metadata: SandboxMetadata,
 }
 /* This does not automatically impl Send/Sync because the host
  * address of the shared memory region is a raw pointer, which are
@@ -68,6 +70,7 @@ unsafe impl Send for HypervWindowsDriver {}
 unsafe impl Sync for HypervWindowsDriver {}
 
 impl HypervWindowsDriver {
+    #[allow(clippy::too_many_arguments)]
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
@@ -77,6 +80,7 @@ impl HypervWindowsDriver {
         entrypoint: u64,
         rsp: u64,
         mmap_file_handle: HandleWrapper,
+        #[cfg(crashdump)] metadata: SandboxMetadata,
     ) -> Result<Self> {
         // create and setup hypervisor partition
         let mut partition = VMPartition::new(1)?;
@@ -104,6 +108,8 @@ impl HypervWindowsDriver {
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
             mem_regions,
+            #[cfg(crashdump)]
+            metadata,
         })
     }
 
@@ -529,11 +535,20 @@ impl Hypervisor for HypervWindowsDriver {
         regs[25] = unsafe { sregs.fs.Segment.Selector } as u64; // fs
         regs[26] = unsafe { sregs.gs.Segment.Selector } as u64; // gs
 
+        // Get the filename from the metadata
+        let filename = self.metadata.binary_path.clone().and_then(|path| {
+            Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_os_string().into_string().ok())
+        });
+
         Ok(crashdump::CrashDumpContext::new(
             &self.mem_regions,
             regs,
             xsave,
             self.entrypoint,
+            self.metadata.binary_path.clone(),
+            filename,
         ))
     }
 }
