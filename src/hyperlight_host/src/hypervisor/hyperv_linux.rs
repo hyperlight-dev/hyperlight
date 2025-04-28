@@ -51,6 +51,8 @@ use mshv_bindings::{
 use mshv_ioctls::{Mshv, MshvError, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
+#[cfg(crashdump)]
+use super::crashdump;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug};
@@ -750,8 +752,48 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
+    fn crashdump_context(&self) -> Result<super::crashdump::CrashDumpContext> {
+        let mut regs = [0; 27];
+
+        let vcpu_regs = self.vcpu_fd.get_regs()?;
+        let sregs = self.vcpu_fd.get_sregs()?;
+        let xsave = self.vcpu_fd.get_xsave()?;
+
+        // Set up the registers for the crash dump
+        regs[0] = vcpu_regs.r15; // r15
+        regs[1] = vcpu_regs.r14; // r14
+        regs[2] = vcpu_regs.r13; // r13
+        regs[3] = vcpu_regs.r12; // r12
+        regs[4] = vcpu_regs.rbp; // rbp
+        regs[5] = vcpu_regs.rbx; // rbx
+        regs[6] = vcpu_regs.r11; // r11
+        regs[7] = vcpu_regs.r10; // r10
+        regs[8] = vcpu_regs.r9; // r9
+        regs[9] = vcpu_regs.r8; // r8
+        regs[10] = vcpu_regs.rax; // rax
+        regs[11] = vcpu_regs.rcx; // rcx
+        regs[12] = vcpu_regs.rdx; // rdx
+        regs[13] = vcpu_regs.rsi; // rsi
+        regs[14] = vcpu_regs.rdi; // rdi
+        regs[15] = 0; // orig rax
+        regs[16] = vcpu_regs.rip; // rip
+        regs[17] = sregs.cs.selector as u64; // cs
+        regs[18] = vcpu_regs.rflags; // eflags
+        regs[19] = vcpu_regs.rsp; // rsp
+        regs[20] = sregs.ss.selector as u64; // ss
+        regs[21] = sregs.fs.base; // fs_base
+        regs[22] = sregs.gs.base; // gs_base
+        regs[23] = sregs.ds.selector as u64; // ds
+        regs[24] = sregs.es.selector as u64; // es
+        regs[25] = sregs.fs.selector as u64; // fs
+        regs[26] = sregs.gs.selector as u64; // gs
+
+        Ok(crashdump::CrashDumpContext::new(
+            &self.mem_regions,
+            regs,
+            xsave.buffer.to_vec(),
+            self.entrypoint,
+        ))
     }
 
     #[cfg(gdb)]
