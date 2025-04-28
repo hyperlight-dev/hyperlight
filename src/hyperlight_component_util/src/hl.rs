@@ -151,7 +151,7 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
         },
         Value::String => quote! {
             let n = u32::from_ne_bytes(#id[0..4].try_into().unwrap()) as usize;
-            let s = ::core::str::from_utf8(&#id[0..n]).unwrap().to_string(); // todo: better error handling
+            let s = ::core::str::from_utf8(&#id[4..4 + n]).unwrap().to_string(); // todo: better error handling
             (s, n + 4)
         },
         Value::List(vt) => {
