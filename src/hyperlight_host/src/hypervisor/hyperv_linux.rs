@@ -50,9 +50,9 @@ use mshv_bindings::{
 };
 use mshv_ioctls::{Mshv, MshvError, VcpuFd, VmFd};
 use tracing::{Span, instrument};
-
 #[cfg(crashdump)]
-use super::crashdump;
+use {super::crashdump, crate::sandbox::uninitialized::SandboxMetadata, std::path::Path};
+
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug};
@@ -304,6 +304,8 @@ pub(crate) struct HypervLinuxDriver {
     debug: Option<MshvDebug>,
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+    #[cfg(crashdump)]
+    metadata: SandboxMetadata,
 }
 
 impl HypervLinuxDriver {
@@ -323,6 +325,7 @@ impl HypervLinuxDriver {
         pml4_ptr: GuestPtr,
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+        #[cfg(crashdump)] metadata: SandboxMetadata,
     ) -> Result<Self> {
         let mshv = Mshv::new()?;
         let pr = Default::default();
@@ -410,6 +413,8 @@ impl HypervLinuxDriver {
             debug,
             #[cfg(gdb)]
             gdb_conn,
+            #[cfg(crashdump)]
+            metadata,
         })
     }
 
@@ -788,11 +793,20 @@ impl Hypervisor for HypervLinuxDriver {
         regs[25] = sregs.fs.selector as u64; // fs
         regs[26] = sregs.gs.selector as u64; // gs
 
+        // Get the filename from the binary path
+        let filename = self.metadata.binary_path.clone().and_then(|path| {
+            Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_os_string().into_string().ok())
+        });
+
         Ok(crashdump::CrashDumpContext::new(
             &self.mem_regions,
             regs,
             xsave.buffer.to_vec(),
             self.entrypoint,
+            self.metadata.binary_path.clone(),
+            filename,
         ))
     }
 
@@ -917,6 +931,8 @@ mod tests {
             &config,
             #[cfg(gdb)]
             None,
+            #[cfg(crashdump)]
+            SandboxMetadata { binary_path: None },
         )
         .unwrap();
     }

@@ -36,6 +36,8 @@ use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
+#[cfg(crashdump)]
+use crate::sandbox::uninitialized::SandboxMetadata;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 use crate::sandbox_state::sandbox::Sandbox;
 #[cfg(target_os = "linux")]
@@ -69,7 +71,12 @@ where
     ) -> Result<ResSandbox>,
 {
     let (hshm, mut gshm) = u_sbox.mgr.build();
-    let mut vm = set_up_hypervisor_partition(&mut gshm, &u_sbox.config)?;
+    let mut vm = set_up_hypervisor_partition(
+        &mut gshm,
+        &u_sbox.config,
+        #[cfg(crashdump)]
+        &u_sbox.metadata,
+    )?;
     let outb_hdl = outb_handler_wrapper(hshm.clone(), u_sbox.host_funcs.clone());
 
     let seed = {
@@ -141,6 +148,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 pub(crate) fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
+    #[cfg(crashdump)] metadata: &SandboxMetadata,
 ) -> Result<Box<dyn Hypervisor>> {
     let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
     let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
@@ -206,6 +214,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 config,
                 #[cfg(gdb)]
                 gdb_conn,
+                #[cfg(crashdump)]
+                metadata.clone(),
             )?;
             Ok(Box::new(hv))
         }
@@ -220,6 +230,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 config,
                 #[cfg(gdb)]
                 gdb_conn,
+                #[cfg(crashdump)]
+                metadata.clone(),
             )?;
             Ok(Box::new(hv))
         }
@@ -241,6 +253,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 entrypoint_ptr.absolute()?,
                 rsp_ptr.absolute()?,
                 HandleWrapper::from(mmap_file_handle),
+                #[cfg(crashdump)]
+                metadata.clone(),
             )?;
             Ok(Box::new(hv))
         }

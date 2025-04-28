@@ -52,6 +52,12 @@ const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
     libc::SYS_close,
 ];
 
+#[cfg(crashdump)]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SandboxMetadata {
+    pub(crate) binary_path: Option<String>,
+}
+
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
 ///
 /// Prior to initializing a full-fledged `Sandbox`, you must create one of
@@ -66,6 +72,8 @@ pub struct UninitializedSandbox {
     pub(crate) mgr: MemMgrWrapper<ExclusiveSharedMemory>,
     pub(crate) max_guest_log_level: Option<LevelFilter>,
     pub(crate) config: SandboxConfiguration,
+    #[cfg(crashdump)]
+    pub(crate) metadata: SandboxMetadata,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -146,13 +154,23 @@ impl UninitializedSandbox {
                 let path = Path::new(&binary_path)
                     .canonicalize()
                     .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?;
-                GuestBinary::FilePath(
-                    path.into_os_string()
-                        .into_string()
-                        .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?,
-                )
+                let path = path
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?;
+
+                GuestBinary::FilePath(path)
             }
             buffer @ GuestBinary::Buffer(_) => buffer,
+        };
+
+        #[cfg(crashdump)]
+        let metadata = if let GuestBinary::FilePath(ref path) = guest_binary {
+            SandboxMetadata {
+                binary_path: Some(path.clone()),
+            }
+        } else {
+            SandboxMetadata::default()
         };
 
         let sandbox_cfg = cfg.unwrap_or_default();
@@ -173,6 +191,8 @@ impl UninitializedSandbox {
             mgr: mem_mgr_wrapper,
             max_guest_log_level: None,
             config: sandbox_cfg,
+            #[cfg(crashdump)]
+            metadata,
         };
 
         // If we were passed a writer for host print register it otherwise use the default.

@@ -455,6 +455,8 @@ pub(crate) mod tests {
     use crate::hypervisor::DbgMemAccessHandlerCaller;
     use crate::mem::ptr::RawPtr;
     use crate::sandbox::uninitialized::GuestBinary;
+    #[cfg(crashdump)]
+    use crate::sandbox::uninitialized::SandboxMetadata;
     use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{Result, is_hypervisor_present, new_error};
@@ -501,7 +503,14 @@ pub(crate) mod tests {
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
         let (_hshm, mut gshm) = sandbox.mgr.build();
-        let mut vm = set_up_hypervisor_partition(&mut gshm, &config)?;
+        #[cfg(crashdump)]
+        let metadata = SandboxMetadata { binary_path: None };
+        let mut vm = set_up_hypervisor_partition(
+            &mut gshm,
+            &config,
+            #[cfg(crashdump)]
+            &metadata,
+        )?;
         vm.initialise(
             RawPtr::from(0x230000),
             1234567890,
