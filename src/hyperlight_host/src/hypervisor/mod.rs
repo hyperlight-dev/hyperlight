@@ -455,6 +455,8 @@ pub(crate) mod tests {
     use crate::hypervisor::DbgMemAccessHandlerCaller;
     use crate::mem::ptr::RawPtr;
     use crate::sandbox::uninitialized::GuestBinary;
+    #[cfg(crashdump)]
+    use crate::sandbox::uninitialized::SandboxMetadata;
     use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{is_hypervisor_present, new_error, Result};
@@ -511,6 +513,8 @@ pub(crate) mod tests {
             None,
             #[cfg(gdb)]
             dbg_mem_access_handler,
+            #[cfg(crashdump)]
+            SandboxMetadata { binary_path: None },
         )
     }
 }
