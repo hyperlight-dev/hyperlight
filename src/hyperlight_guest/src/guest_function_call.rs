@@ -93,7 +93,7 @@ fn internal_dispatch_function() -> Result<()> {
         set_error(e.kind.clone(), e.message.as_str());
     })?;
 
-    push_shared_output_data(result_vec)
+    push_shared_output_data(&result_vec)
 }
 
 // This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()

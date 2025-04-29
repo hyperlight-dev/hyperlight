@@ -18,6 +18,7 @@ use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::arch::global_asm;
+use flatbuffers::FlatBufferBuilder;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -73,11 +74,8 @@ pub fn call_host_function(
 
     validate_host_function_call(&host_function_call)?;
 
-    let host_function_call_buffer: Vec<u8> = host_function_call
-        .try_into()
-        .expect("Unable to serialize host function call");
-
-    push_shared_output_data(host_function_call_buffer)?;
+    let mut builder = FlatBufferBuilder::new();
+    push_shared_output_data(host_function_call.encode(&mut builder))?;
 
     outb(OutBAction::CallFunction as u16, 0);
 

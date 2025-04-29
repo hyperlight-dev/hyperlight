@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
@@ -48,13 +49,12 @@ pub(crate) fn call_function_on_guest<WrapperGetterT: WrapperGetter>(
         return_type,
     );
 
-    let buffer: Vec<u8> = fc
-        .try_into()
-        .map_err(|_| HyperlightError::Error("Failed to serialize FunctionCall".to_string()))?;
-
     {
+        let mut builder = FlatBufferBuilder::new();
         let mem_mgr = wrapper_getter.get_mgr_wrapper_mut();
-        mem_mgr.as_mut().write_guest_function_call(&buffer)?;
+        mem_mgr
+            .as_mut()
+            .write_guest_function_call(fc.encode(&mut builder))?;
     }
 
     let mut hv_handler = wrapper_getter.get_hv_handler().clone();

@@ -16,7 +16,6 @@ limitations under the License.
 
 use alloc::format;
 use alloc::string::ToString;
-use alloc::vec::Vec;
 use core::slice::from_raw_parts_mut;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
@@ -24,7 +23,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use crate::error::{HyperlightGuestError, Result};
 use crate::P_PEB;
 
-pub fn push_shared_output_data(data: Vec<u8>) -> Result<()> {
+pub fn push_shared_output_data(data: &[u8]) -> Result<()> {
     let peb_ptr = unsafe { P_PEB.unwrap() };
     let shared_buffer_size = unsafe { (*peb_ptr).outputdata.outputDataSize as usize };
     let odb = unsafe {
