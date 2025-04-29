@@ -19,12 +19,12 @@ use std::cmp::Ordering;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use hyperlight_common::FlatBufferBuilder;
 use serde_json::from_str;
 use tracing::{instrument, Span};
 

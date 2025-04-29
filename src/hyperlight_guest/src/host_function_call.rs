@@ -18,7 +18,6 @@ use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::arch::global_asm;
-use flatbuffers::FlatBufferBuilder;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -27,6 +26,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::mem::RunMode;
+use hyperlight_common::FlatBufferBuilder;
 
 use crate::error::{HyperlightGuestError, Result};
 use crate::host_error::check_for_host_error;

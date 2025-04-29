@@ -24,7 +24,6 @@ buddy_system_allocator = "0.11.0"
 hyperlight-common = { workspace = true }
 spin = "0.10.0"
 log = { version = "0.4", default-features = false }
-flatbuffers = { version= "25.2.10", default-features = false }
 
 [build-dependencies]
 cc = "1.2"
