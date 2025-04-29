@@ -227,30 +227,6 @@ impl FunctionCall {
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-pub fn validate_guest_function_call_buffer(function_call_buffer: &[u8]) -> Result<()> {
-    let guest_function_call_fb = size_prefixed_root::<FbFunctionCall>(function_call_buffer)
-        .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
-    match guest_function_call_fb.function_call_type() {
-        FbFunctionCallType::guest => Ok(()),
-        other => {
-            bail!("Invalid function call type: {:?}", other);
-        }
-    }
-}
-
-#[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-pub fn validate_host_function_call_buffer(function_call_buffer: &[u8]) -> Result<()> {
-    let host_function_call_fb = size_prefixed_root::<FbFunctionCall>(function_call_buffer)
-        .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
-    match host_function_call_fb.function_call_type() {
-        FbFunctionCallType::host => Ok(()),
-        other => {
-            bail!("Invalid function call type: {:?}", other);
-        }
-    }
-}
-
 impl TryFrom<&[u8]> for FunctionCall {
     type Error = Error;
     #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]

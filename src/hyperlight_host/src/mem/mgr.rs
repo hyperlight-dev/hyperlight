@@ -19,9 +19,8 @@ use std::cmp::Ordering;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 
-use hyperlight_common::flatbuffer_wrappers::function_call::{
-    validate_guest_function_call_buffer, FunctionCall,
-};
+use flatbuffers::FlatBufferBuilder;
+use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
@@ -617,18 +616,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
     /// Writes a guest function call to memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_guest_function_call(&mut self, buffer: &[u8]) -> Result<()> {
-        validate_guest_function_call_buffer(buffer).map_err(|e| {
-            new_error!(
-                "Guest function call buffer validation failed: {}",
-                e.to_string()
-            )
-        })?;
-
+    pub(crate) fn write_guest_function_call(&mut self, function_call: &FunctionCall) -> Result<()> {
+        match function_call.function_call_type() {
+            FunctionCallType::Host => {
+                log_then_return!(
+                    "Tried to serialize a host function call as a guest function call"
+                );
+            }
+            FunctionCallType::Guest => {}
+        };
+        let mut builder = FlatBufferBuilder::new();
         self.shared_mem.push_buffer(
             self.layout.input_data_buffer_offset,
             self.layout.sandbox_memory_config.get_input_data_size(),
-            buffer,
+            function_call.encode(&mut builder),
         )
     }
 
