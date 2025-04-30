@@ -159,10 +159,14 @@ jobs:
       - name: Extract release notes from changelog
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
         run: just create-release-notes v${{ env.HYPERLIGHT_VERSION }} > RELEASE_NOTES.md
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Extract prerelease notes from changelog
         if: ${{ github.ref=='refs/heads/main' }}
         run: just create-release-notes dev-latest > RELEASE_NOTES.md
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Create release
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
