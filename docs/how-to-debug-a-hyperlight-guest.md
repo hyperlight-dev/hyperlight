@@ -201,3 +201,74 @@ involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or 
      └─┘                       │          |                                           |                                 |      │
       |                        └───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Dumping the guest state to an ELF core dump when an unhandled crash occurs
+
+When a guest crashes, the vCPU state is dumped to an `ELF` core dump file. This can be used to inspect the state of the guest at the time of the crash.
+
+To dump the state of the vCPU (general purpose registers, registers) to an `ELF` core dump file set the feature `crashdump` and run a debug build. This will result in a dump file being created in the temporary directory.
+The name and location of the dump file will be printed to the console and logged as an error message.
+
+### Inspecting the core dump
+
+After the core dump has been created, to inspect the state of the guest, load the core dump file using `gdb` or `lldb`.
+A `gdb` version later than `15.0` and `lldb` version later than `17` have been used to test this feature.
+
+To do this in vscode, the following configuration can be used to add debug configurations:
+
+```vscode
+{
+    "version": "0.2.0",
+    "inputs": [
+        {
+            "id": "core_dump",
+            "type": "promptString",
+            "description": "Path to the core dump file",
+        },
+        {
+            "id": "program",
+            "type": "promptString",
+            "description": "Path to the program to debug",
+        }
+    ],
+    "configurations": [
+        {
+            "name": "[GDB] Load core dump file",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${input:program}",
+            "coreDumpPath": "${input:core_dump}",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "externalConsole": false,
+            "miDebuggerPath": "/usr/bin/gdb",
+            "setupCommands": [
+            {
+                "description": "Enable pretty-printing for gdb",
+                "text": "-enable-pretty-printing",
+                "ignoreFailures": true
+            },
+            {
+                "description": "Set Disassembly Flavor to Intel",
+                "text": "-gdb-set disassembly-flavor intel",
+                "ignoreFailures": true
+            }
+            ]
+        },
+        {
+        "name": "[LLDB] Load core dump file",
+        "type": "lldb",
+        "request": "launch",
+        "stopOnEntry": true,
+        "processCreateCommands": [],
+        "targetCreateCommands": [
+            "target create -c ${input:core_dump} ${input:program}",
+        ],
+        },
+    ]
+}
+```
+NOTE: The `CodeLldb` debug session does not stop after launching. To see the code, stack frames and registers you need to
+press the `pause` button. This is a known issue with the `CodeLldb` extension [#1245](https://github.com/vadimcn/codelldb/issues/1245).
+The `cppdbg` extension works as expected and stops at the entry point of the program.
+
