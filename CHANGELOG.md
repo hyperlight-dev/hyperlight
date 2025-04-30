@@ -5,7 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Prerelease] - Unreleased
 
 
-## [v0.4.0] - Unreleased
+## [v0.4.0] - 2025-04-30
 
 ### Changed
 - Metrics are now emitted using the [metrics](https://crates.io/crates/metrics) crate by @ludfjig in [#361](https://github.com/hyperlight-dev/hyperlight/pull/361)
