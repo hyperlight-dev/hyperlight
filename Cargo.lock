@@ -1208,7 +1208,6 @@ dependencies = [
  "crossbeam-channel",
  "crossbeam-queue",
  "env_logger",
- "flatbuffers",
  "gdbstub",
  "gdbstub_arch",
  "goblin",

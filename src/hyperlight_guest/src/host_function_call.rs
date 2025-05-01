@@ -26,6 +26,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::mem::RunMode;
+use hyperlight_common::FlatBufferBuilder;
 
 use crate::error::{HyperlightGuestError, Result};
 use crate::host_error::check_for_host_error;
@@ -73,11 +74,8 @@ pub fn call_host_function(
 
     validate_host_function_call(&host_function_call)?;
 
-    let host_function_call_buffer: Vec<u8> = host_function_call
-        .try_into()
-        .expect("Unable to serialize host function call");
-
-    push_shared_output_data(host_function_call_buffer)?;
+    let mut builder = FlatBufferBuilder::new();
+    push_shared_output_data(host_function_call.encode(&mut builder))?;
 
     outb(OutBAction::CallFunction as u16, 0);
 

@@ -18,7 +18,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use anyhow::{bail, Error, Result};
-use flatbuffers::{size_prefixed_root, WIPOffset};
+use flatbuffers::{size_prefixed_root, FlatBufferBuilder, WIPOffset};
 #[cfg(feature = "tracing")]
 use tracing::{instrument, Span};
 
@@ -41,7 +41,6 @@ pub enum FunctionCallType {
 }
 
 /// `Functioncall` represents a call to a function in the guest or host.
-#[derive(Clone)]
 pub struct FunctionCall {
     /// The function name
     pub function_name: String,
@@ -72,81 +71,19 @@ impl FunctionCall {
     pub fn function_call_type(&self) -> FunctionCallType {
         self.function_call_type.clone()
     }
-}
 
-#[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-pub fn validate_guest_function_call_buffer(function_call_buffer: &[u8]) -> Result<()> {
-    let guest_function_call_fb = size_prefixed_root::<FbFunctionCall>(function_call_buffer)
-        .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
-    match guest_function_call_fb.function_call_type() {
-        FbFunctionCallType::guest => Ok(()),
-        other => {
-            bail!("Invalid function call type: {:?}", other);
-        }
-    }
-}
+    /// Encodes self into the given builder and returns the encoded data.
+    pub fn encode<'a>(&self, builder: &'a mut FlatBufferBuilder) -> &'a [u8] {
+        let function_name = builder.create_string(&self.function_name);
 
-#[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-pub fn validate_host_function_call_buffer(function_call_buffer: &[u8]) -> Result<()> {
-    let host_function_call_fb = size_prefixed_root::<FbFunctionCall>(function_call_buffer)
-        .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
-    match host_function_call_fb.function_call_type() {
-        FbFunctionCallType::host => Ok(()),
-        other => {
-            bail!("Invalid function call type: {:?}", other);
-        }
-    }
-}
-
-impl TryFrom<&[u8]> for FunctionCall {
-    type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-    fn try_from(value: &[u8]) -> Result<Self> {
-        let function_call_fb = size_prefixed_root::<FbFunctionCall>(value)
-            .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
-        let function_name = function_call_fb.function_name();
-        let function_call_type = match function_call_fb.function_call_type() {
-            FbFunctionCallType::guest => FunctionCallType::Guest,
-            FbFunctionCallType::host => FunctionCallType::Host,
-            other => {
-                bail!("Invalid function call type: {:?}", other);
-            }
-        };
-        let expected_return_type = function_call_fb.expected_return_type().try_into()?;
-
-        let parameters = function_call_fb
-            .parameters()
-            .map(|v| {
-                v.iter()
-                    .map(|p| p.try_into())
-                    .collect::<Result<Vec<ParameterValue>>>()
-            })
-            .transpose()?;
-
-        Ok(Self {
-            function_name: function_name.to_string(),
-            parameters,
-            function_call_type,
-            expected_return_type,
-        })
-    }
-}
-
-impl TryFrom<FunctionCall> for Vec<u8> {
-    type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-    fn try_from(value: FunctionCall) -> Result<Vec<u8>> {
-        let mut builder = flatbuffers::FlatBufferBuilder::new();
-        let function_name = builder.create_string(&value.function_name);
-
-        let function_call_type = match value.function_call_type {
+        let function_call_type = match self.function_call_type {
             FunctionCallType::Guest => FbFunctionCallType::guest,
             FunctionCallType::Host => FbFunctionCallType::host,
         };
 
-        let expected_return_type = value.expected_return_type.into();
+        let expected_return_type = self.expected_return_type.into();
 
-        let parameters = match &value.parameters {
+        let parameters = match &self.parameters {
             Some(p) => {
                 let num_items = p.len();
                 let mut parameters: Vec<WIPOffset<Parameter>> = Vec::with_capacity(num_items);
@@ -154,9 +91,9 @@ impl TryFrom<FunctionCall> for Vec<u8> {
                 for param in p {
                     match param {
                         ParameterValue::Int(i) => {
-                            let hlint = hlint::create(&mut builder, &hlintArgs { value: *i });
+                            let hlint = hlint::create(builder, &hlintArgs { value: *i });
                             let parameter = Parameter::create(
-                                &mut builder,
+                                builder,
                                 &ParameterArgs {
                                     value_type: FbParameterValue::hlint,
                                     value: Some(hlint.as_union_value()),
@@ -165,9 +102,9 @@ impl TryFrom<FunctionCall> for Vec<u8> {
                             parameters.push(parameter);
                         }
                         ParameterValue::UInt(ui) => {
-                            let hluint = hluint::create(&mut builder, &hluintArgs { value: *ui });
+                            let hluint = hluint::create(builder, &hluintArgs { value: *ui });
                             let parameter = Parameter::create(
-                                &mut builder,
+                                builder,
                                 &ParameterArgs {
                                     value_type: FbParameterValue::hluint,
                                     value: Some(hluint.as_union_value()),
@@ -176,9 +113,9 @@ impl TryFrom<FunctionCall> for Vec<u8> {
                             parameters.push(parameter);
                         }
                         ParameterValue::Long(l) => {
-                            let hllong = hllong::create(&mut builder, &hllongArgs { value: *l });
+                            let hllong = hllong::create(builder, &hllongArgs { value: *l });
                             let parameter = Parameter::create(
-                                &mut builder,
+                                builder,
                                 &ParameterArgs {
                                     value_type: FbParameterValue::hllong,
                                     value: Some(hllong.as_union_value()),
@@ -187,10 +124,9 @@ impl TryFrom<FunctionCall> for Vec<u8> {
                             parameters.push(parameter);
                         }
                         ParameterValue::ULong(ul) => {
-                            let hlulong =
-                                hlulong::create(&mut builder, &hlulongArgs { value: *ul });
+                            let hlulong = hlulong::create(builder, &hlulongArgs { value: *ul });
                             let parameter = Parameter::create(
-                                &mut builder,
+                                builder,
                                 &ParameterArgs {
                                     value_type: FbParameterValue::hlulong,
                                     value: Some(hlulong.as_union_value()),
@@ -199,9 +135,9 @@ impl TryFrom<FunctionCall> for Vec<u8> {
                             parameters.push(parameter);
                         }
                         ParameterValue::Float(f) => {
-                            let hlfloat = hlfloat::create(&mut builder, &hlfloatArgs { value: *f });
+                            let hlfloat = hlfloat::create(builder, &hlfloatArgs { value: *f });
                             let parameter = Parameter::create(
-                                &mut builder,
+                                builder,
                                 &ParameterArgs {
                                     value_type: FbParameterValue::hlfloat,
                                     value: Some(hlfloat.as_union_value()),
@@ -210,10 +146,9 @@ impl TryFrom<FunctionCall> for Vec<u8> {
                             parameters.push(parameter);
                         }
                         ParameterValue::Double(d) => {
-                            let hldouble =
-                                hldouble::create(&mut builder, &hldoubleArgs { value: *d });
+                            let hldouble = hldouble::create(builder, &hldoubleArgs { value: *d });
                             let parameter = Parameter::create(
-                                &mut builder,
+                                builder,
                                 &ParameterArgs {
                                     value_type: FbParameterValue::hldouble,
                                     value: Some(hldouble.as_union_value()),
@@ -223,9 +158,9 @@ impl TryFrom<FunctionCall> for Vec<u8> {
                         }
                         ParameterValue::Bool(b) => {
                             let hlbool: WIPOffset<hlbool<'_>> =
-                                hlbool::create(&mut builder, &hlboolArgs { value: *b });
+                                hlbool::create(builder, &hlboolArgs { value: *b });
                             let parameter = Parameter::create(
-                                &mut builder,
+                                builder,
                                 &ParameterArgs {
                                     value_type: FbParameterValue::hlbool,
                                     value: Some(hlbool.as_union_value()),
@@ -236,10 +171,10 @@ impl TryFrom<FunctionCall> for Vec<u8> {
                         ParameterValue::String(s) => {
                             let hlstring = {
                                 let val = builder.create_string(s.as_str());
-                                hlstring::create(&mut builder, &hlstringArgs { value: Some(val) })
+                                hlstring::create(builder, &hlstringArgs { value: Some(val) })
                             };
                             let parameter = Parameter::create(
-                                &mut builder,
+                                builder,
                                 &ParameterArgs {
                                     value_type: FbParameterValue::hlstring,
                                     value: Some(hlstring.as_union_value()),
@@ -251,13 +186,13 @@ impl TryFrom<FunctionCall> for Vec<u8> {
                             let vec_bytes = builder.create_vector(v);
 
                             let hlvecbytes = hlvecbytes::create(
-                                &mut builder,
+                                builder,
                                 &hlvecbytesArgs {
                                     value: Some(vec_bytes),
                                 },
                             );
                             let parameter = Parameter::create(
-                                &mut builder,
+                                builder,
                                 &ParameterArgs {
                                     value_type: FbParameterValue::hlvecbytes,
                                     value: Some(hlvecbytes.as_union_value()),
@@ -279,7 +214,7 @@ impl TryFrom<FunctionCall> for Vec<u8> {
         };
 
         let function_call = FbFunctionCall::create(
-            &mut builder,
+            builder,
             &FbFunctionCallArgs {
                 function_name: Some(function_name),
                 parameters,
@@ -288,9 +223,40 @@ impl TryFrom<FunctionCall> for Vec<u8> {
             },
         );
         builder.finish_size_prefixed(function_call, None);
-        let res = builder.finished_data().to_vec();
+        builder.finished_data()
+    }
+}
 
-        Ok(res)
+impl TryFrom<&[u8]> for FunctionCall {
+    type Error = Error;
+    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    fn try_from(value: &[u8]) -> Result<Self> {
+        let function_call_fb = size_prefixed_root::<FbFunctionCall>(value)
+            .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
+        let function_name = function_call_fb.function_name();
+        let function_call_type = match function_call_fb.function_call_type() {
+            FbFunctionCallType::guest => FunctionCallType::Guest,
+            FbFunctionCallType::host => FunctionCallType::Host,
+            other => {
+                bail!("Invalid function call type: {:?}", other);
+            }
+        };
+        let expected_return_type = function_call_fb.expected_return_type().try_into()?;
+        let parameters = function_call_fb
+            .parameters()
+            .map(|v| {
+                v.iter()
+                    .map(|p| p.try_into())
+                    .collect::<Result<Vec<ParameterValue>>>()
+            })
+            .transpose()?;
+
+        Ok(Self {
+            function_name: function_name.to_string(),
+            parameters,
+            function_call_type,
+            expected_return_type,
+        })
     }
 }
 
@@ -303,7 +269,8 @@ mod tests {
 
     #[test]
     fn read_from_flatbuffer() -> Result<()> {
-        let test_data: Vec<u8> = FunctionCall::new(
+        let mut builder = FlatBufferBuilder::new();
+        let test_data = FunctionCall::new(
             "PrintTwelveArgs".to_string(),
             Some(vec![
                 ParameterValue::String("1".to_string()),
@@ -322,10 +289,9 @@ mod tests {
             FunctionCallType::Guest,
             ReturnType::Int,
         )
-        .try_into()
-        .unwrap();
+        .encode(&mut builder);
 
-        let function_call = FunctionCall::try_from(test_data.as_slice())?;
+        let function_call = FunctionCall::try_from(test_data)?;
         assert_eq!(function_call.function_name, "PrintTwelveArgs");
         assert!(function_call.parameters.is_some());
         let parameters = function_call.parameters.unwrap();

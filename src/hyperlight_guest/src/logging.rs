@@ -44,7 +44,7 @@ fn write_log_data(
         .try_into()
         .expect("Failed to convert GuestLogData to bytes");
 
-    push_shared_output_data(bytes).expect("Unable to push log data to shared output data");
+    push_shared_output_data(&bytes).expect("Unable to push log data to shared output data");
 }
 
 pub fn log_message(

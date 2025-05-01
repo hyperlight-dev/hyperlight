@@ -36,3 +36,6 @@ pub mod flatbuffer_wrappers;
 mod flatbuffers;
 /// cbindgen:ignore
 pub mod mem;
+
+extern crate flatbuffers as fb;
+pub use fb::FlatBufferBuilder;

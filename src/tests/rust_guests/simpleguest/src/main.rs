@@ -714,6 +714,22 @@ fn add(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+// Does nothing, but used for testing large parameters
+fn large_parameters(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let (ParameterValue::VecBytes(v), ParameterValue::String(s)) = (
+        function_call.parameters.clone().unwrap()[0].clone(),
+        function_call.parameters.clone().unwrap()[1].clone(),
+    ) {
+        black_box((v, s));
+        Ok(get_flatbuffer_result(()))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to large_parameters".to_string(),
+        ))
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn hyperlight_main() {
     let set_static_def = GuestFunctionDefinition::new(
@@ -1108,6 +1124,14 @@ pub extern "C" fn hyperlight_main() {
         trigger_exception as usize,
     );
     register_function(trigger_exception_def);
+
+    let large_parameters_def = GuestFunctionDefinition::new(
+        "LargeParameters".to_string(),
+        Vec::from(&[ParameterType::VecBytes, ParameterType::String]),
+        ReturnType::Void,
+        large_parameters as usize,
+    );
+    register_function(large_parameters_def);
 }
 
 #[no_mangle]
