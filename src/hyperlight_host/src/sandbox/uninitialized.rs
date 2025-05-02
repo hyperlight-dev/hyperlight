@@ -153,8 +153,7 @@ impl UninitializedSandbox {
             GuestBinary::FilePath(binary_path) => {
                 let path = Path::new(&binary_path)
                     .canonicalize()
-                    .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?;
-                let path = path
+                    .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?
                     .into_os_string()
                     .into_string()
                     .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?;
