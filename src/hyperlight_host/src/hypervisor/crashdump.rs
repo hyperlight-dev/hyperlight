@@ -26,9 +26,18 @@ use super::Hypervisor;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
 
+/// This constant is used to identify the XSAVE state in the core dump
 const NT_X86_XSTATE: u32 = 0x202;
+/// This constant identifies the entry point of the program in an Auxiliary Vector
+/// note of ELF. This tells a debugger whether the entry point of the program changed
+/// so it can load the symbols correctly.
 const AT_ENTRY: u64 = 9;
+/// This constant is used to mark the end of the Auxiliary Vector note
 const AT_NULL: u64 = 0;
+/// The PID of the core dump process - this is a placeholder value
+const CORE_DUMP_PID: i32 = 1;
+/// The page size of the core dump
+const CORE_DUMP_PAGE_SIZE: usize = 0x1000;
 
 /// Structure to hold the crash dump context
 /// This structure contains the information needed to create a core dump
@@ -152,13 +161,13 @@ impl GuestView {
 
 impl ProcessInfoSource for GuestView {
     fn pid(&self) -> i32 {
-        1
+        CORE_DUMP_PID
     }
     fn threads(&self) -> &[elfcore::ThreadView] {
         &self.threads
     }
     fn page_size(&self) -> usize {
-        0x1000
+        CORE_DUMP_PAGE_SIZE
     }
     fn aux_vector(&self) -> Option<&[elfcore::Elf64_Auxv]> {
         Some(&self.aux_vector)
@@ -167,6 +176,7 @@ impl ProcessInfoSource for GuestView {
         &self.regions
     }
     fn mapped_files(&self) -> Option<&[elfcore::MappedFile]> {
+        // We don't have mapped files
         None
     }
 }
