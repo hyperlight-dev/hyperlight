@@ -32,7 +32,7 @@ use mshv_bindings::{
 };
 use mshv_ioctls::VcpuFd;
 
-use super::arch::{DR6_BS_FLAG_MASK, DR6_HW_BP_FLAGS_MASK, MAX_NO_OF_HW_BP, SW_BP_SIZE};
+use super::arch::{vcpu_stop_reason, MAX_NO_OF_HW_BP, SW_BP_SIZE};
 use super::{GuestDebug, VcpuStopReason, X86_64Regs};
 use crate::{new_error, HyperlightError, Result};
 
@@ -131,10 +131,9 @@ impl MshvDebug {
     pub(crate) fn get_stop_reason(
         &mut self,
         vcpu_fd: &VcpuFd,
+        exception: u16,
         entrypoint: u64,
     ) -> Result<VcpuStopReason> {
-        // MSHV does not provide info on the vCPU exits but the debug
-        // information can be retrieved from the DEBUG REGISTERS
         let regs = vcpu_fd
             .get_debug_regs()
             .map_err(|e| new_error!("Cannot retrieve debug registers from vCPU: {}", e))?;
@@ -142,41 +141,28 @@ impl MshvDebug {
         // DR6 register contains debug state related information
         let debug_status = regs.dr6;
 
-        // If the BS flag in DR6 register is set, it means a single step
-        // instruction triggered the exit
-        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-        // Architectures Software Developer's Manual
-        if debug_status & DR6_BS_FLAG_MASK != 0 && self.single_step {
-            return Ok(VcpuStopReason::DoneStep);
-        }
+        let rip = self.get_instruction_pointer(vcpu_fd)?;
+        let rip = self.translate_gva(vcpu_fd, rip)?;
 
-        let ip = self.get_instruction_pointer(vcpu_fd)?;
-        let gpa = self.translate_gva(vcpu_fd, ip)?;
+        let reason = vcpu_stop_reason(
+            self.single_step,
+            rip,
+            debug_status,
+            entrypoint,
+            exception as u32,
+            &self.hw_breakpoints,
+            &self.sw_breakpoints,
+        );
 
-        // If any of the B0-B3 flags in DR6 register is set, it means a
-        // hardware breakpoint triggered the exit
-        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-        // Architectures Software Developer's Manual
-        if debug_status & DR6_HW_BP_FLAGS_MASK != 0 && self.hw_breakpoints.contains(&gpa) {
+        if let VcpuStopReason::EntryPointBp = reason {
             // In case the hw breakpoint is the entry point, remove it to
             // avoid hanging here as gdb does not remove breakpoints it
             // has not set.
             // Gdb expects the target to be stopped when connected.
-            if gpa == entrypoint {
-                self.remove_hw_breakpoint(vcpu_fd, entrypoint)?;
-            }
-            return Ok(VcpuStopReason::HwBp);
+            self.remove_hw_breakpoint(vcpu_fd, entrypoint)?;
         }
 
-        // mshv does not provide a way to specify which exception triggered the
-        // vCPU exit as the mshv intercepts both #DB and #BP
-        // We check against the SW breakpoints Hashmap to detect whether the
-        // vCPU exited due to a SW breakpoint
-        if self.sw_breakpoints.contains_key(&gpa) {
-            return Ok(VcpuStopReason::SwBp);
-        }
-
-        Ok(VcpuStopReason::Unknown)
+        Ok(reason)
     }
 }
 

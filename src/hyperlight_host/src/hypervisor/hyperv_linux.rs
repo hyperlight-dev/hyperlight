@@ -71,6 +71,7 @@ use crate::{log_then_return, new_error, Result};
 mod debug {
     use std::sync::{Arc, Mutex};
 
+    use super::mshv_bindings::hv_x64_exception_intercept_message;
     use super::{HypervLinuxDriver, *};
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
@@ -89,13 +90,16 @@ mod debug {
         }
 
         /// Get the reason the vCPU has stopped
-        pub(crate) fn get_stop_reason(&mut self) -> Result<VcpuStopReason> {
+        pub(crate) fn get_stop_reason(
+            &mut self,
+            ex_info: hv_x64_exception_intercept_message,
+        ) -> Result<VcpuStopReason> {
             let debug = self
                 .debug
                 .as_mut()
                 .ok_or_else(|| new_error!("Debug is not enabled"))?;
 
-            debug.get_stop_reason(&self.vcpu_fd, self.entrypoint)
+            debug.get_stop_reason(&self.vcpu_fd, ex_info.exception_vector, self.entrypoint)
         }
 
         pub(crate) fn process_dbg_request(
@@ -626,14 +630,27 @@ impl Hypervisor for HypervLinuxDriver {
                     }
                 }
                 // The only case an intercept exit is expected is when debugging is enabled
-                // and the intercepts are installed
+                // and the intercepts are installed.
+                // Provide the extra information about the exception to accurately determine
+                // the stop reason
                 #[cfg(gdb)]
-                EXCEPTION_INTERCEPT => match self.get_stop_reason() {
-                    Ok(reason) => HyperlightExit::Debug(reason),
-                    Err(e) => {
-                        log_then_return!("Error getting stop reason: {:?}", e);
+                EXCEPTION_INTERCEPT => {
+                    // Extract exception info from the message so we can figure out
+                    // more information about the vCPU state
+                    let ex_info = match m.to_exception_info() {
+                        Ok(info) => info,
+                        Err(e) => {
+                            log_then_return!("Error converting to exception info: {:?}", e);
+                        }
+                    };
+
+                    match self.get_stop_reason(ex_info) {
+                        Ok(reason) => HyperlightExit::Debug(reason),
+                        Err(e) => {
+                            log_then_return!("Error getting stop reason: {:?}", e);
+                        }
                     }
-                },
+                }
                 other => {
                     crate::debug!("mshv Other Exit: Exit: {:#?} \n {:#?}", other, &self);
                     log_then_return!("unknown Hyper-V run message type {:?}", other);
