@@ -22,12 +22,9 @@ use kvm_bindings::{
 };
 use kvm_ioctls::VcpuFd;
 
-use super::arch::{DR6_BS_FLAG_MASK, DR6_HW_BP_FLAGS_MASK, MAX_NO_OF_HW_BP, SW_BP_SIZE};
+use super::arch::{vcpu_stop_reason, MAX_NO_OF_HW_BP, SW_BP_SIZE};
 use super::{GuestDebug, VcpuStopReason, X86_64Regs};
 use crate::{new_error, HyperlightError, Result};
-
-/// Exception id for SW breakpoint
-const SW_BP_ID: u32 = 3;
 
 /// KVM Debug struct
 /// This struct is used to abstract the internal details of the kvm
@@ -116,51 +113,29 @@ impl KvmDebug {
         debug_exit: kvm_debug_exit_arch,
         entrypoint: u64,
     ) -> Result<VcpuStopReason> {
-        // If the BS flag in DR6 register is set, it means a single step
-        // instruction triggered the exit
-        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-        // Architectures Software Developer's Manual
-        if debug_exit.dr6 & DR6_BS_FLAG_MASK != 0 && self.single_step {
-            return Ok(VcpuStopReason::DoneStep);
-        }
+        let rip = self.get_instruction_pointer(vcpu_fd)?;
+        let rip = self.translate_gva(vcpu_fd, rip)?;
 
-        let ip = self.get_instruction_pointer(vcpu_fd)?;
-        let gpa = self.translate_gva(vcpu_fd, ip)?;
+        // Check if the vCPU stopped because of a hardware breakpoint
+        let reason = vcpu_stop_reason(
+            self.single_step,
+            rip,
+            debug_exit.dr6,
+            entrypoint,
+            debug_exit.exception,
+            &self.hw_breakpoints,
+            &self.sw_breakpoints,
+        );
 
-        // If any of the B0-B3 flags in DR6 register is set, it means a
-        // hardware breakpoint triggered the exit
-        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-        // Architectures Software Developer's Manual
-        if DR6_HW_BP_FLAGS_MASK & debug_exit.dr6 != 0 && self.hw_breakpoints.contains(&gpa) {
+        if let VcpuStopReason::EntryPointBp = reason {
             // In case the hw breakpoint is the entry point, remove it to
             // avoid hanging here as gdb does not remove breakpoints it
             // has not set.
             // Gdb expects the target to be stopped when connected.
-            if gpa == entrypoint {
-                self.remove_hw_breakpoint(vcpu_fd, entrypoint)?;
-            }
-            return Ok(VcpuStopReason::HwBp);
+            self.remove_hw_breakpoint(vcpu_fd, entrypoint)?;
         }
 
-        // If the exception ID matches #BP (3) - it means a software breakpoint
-        // caused the exit
-        if SW_BP_ID == debug_exit.exception && self.sw_breakpoints.contains_key(&gpa) {
-            return Ok(VcpuStopReason::SwBp);
-        }
-
-        // Log an error and provide internal debugging info for fixing
-        log::error!(
-            r"The vCPU exited because of an unknown reason:
-            kvm_debug_exit_arch: {:?}
-            single_step: {:?}
-            hw_breakpoints: {:?}
-            sw_breakpoints: {:?}",
-            debug_exit,
-            self.single_step,
-            self.hw_breakpoints,
-            self.sw_breakpoints,
-        );
-        Ok(VcpuStopReason::Unknown)
+        Ok(reason)
     }
 }
 
