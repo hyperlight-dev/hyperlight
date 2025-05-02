@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+mod arch;
 mod event_loop;
 #[cfg(kvm)]
 mod kvm_debug;
@@ -26,6 +27,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use arch::{SW_BP, SW_BP_SIZE};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
@@ -42,28 +44,6 @@ use x86_64_target::HyperlightSandboxTarget;
 use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::{new_error, HyperlightError};
-
-/// Software Breakpoint size in memory
-const SW_BP_SIZE: usize = 1;
-/// Software Breakpoint opcode - INT3
-/// Check page 7-28 Vol. 3A of Intel 64 and IA-32
-/// Architectures Software Developer's Manual
-const SW_BP_OP: u8 = 0xCC;
-/// Software Breakpoint written to memory
-const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
-/// Maximum number of supported hardware breakpoints
-const MAX_NO_OF_HW_BP: usize = 4;
-
-/// Check page 19-4 Vol. 3B of Intel 64 and IA-32
-/// Architectures Software Developer's Manual
-/// Bit position of BS flag in DR6 debug register
-const DR6_BS_FLAG_POS: usize = 14;
-/// Bit mask of BS flag in DR6 debug register
-const DR6_BS_FLAG_MASK: u64 = 1 << DR6_BS_FLAG_POS;
-/// Bit position of HW breakpoints status in DR6 debug register
-const DR6_HW_BP_FLAGS_POS: usize = 0;
-/// Bit mask of HW breakpoints status in DR6 debug register
-const DR6_HW_BP_FLAGS_MASK: u64 = 0x0F << DR6_HW_BP_FLAGS_POS;
 
 #[derive(Debug, Error)]
 pub(crate) enum GdbTargetError {

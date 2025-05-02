@@ -22,10 +22,8 @@ use kvm_bindings::{
 };
 use kvm_ioctls::VcpuFd;
 
-use super::{
-    GuestDebug, VcpuStopReason, X86_64Regs, DR6_BS_FLAG_MASK, DR6_HW_BP_FLAGS_MASK,
-    MAX_NO_OF_HW_BP, SW_BP_SIZE,
-};
+use super::arch::{DR6_BS_FLAG_MASK, DR6_HW_BP_FLAGS_MASK, MAX_NO_OF_HW_BP, SW_BP_SIZE};
+use super::{GuestDebug, VcpuStopReason, X86_64Regs};
 use crate::{new_error, HyperlightError, Result};
 
 /// Exception id for SW breakpoint
