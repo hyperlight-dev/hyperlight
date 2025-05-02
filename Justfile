@@ -62,6 +62,22 @@ clean-rust:
 
 # Note: most testing recipes take an optional "features" comma separated list argument. If provided, these will be passed to cargo as **THE ONLY FEATURES**, i.e. default features will be disabled.
 
+# convenience recipe to run all tests with the given target and features (similar to CI)
+test-like-ci config=default-target hypervisor="kvm":
+    @# with default features
+    just test {{config}} {{ if hypervisor == "mshv3" {"mshv3"} else {""} }}
+
+    @# with only one driver enabled + seccomp + inprocess
+    just test {{config}} inprocess,seccomp,{{ if hypervisor == "mshv" {"mshv2"} else if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
+
+    @# make sure certain cargo features compile
+    cargo check -p hyperlight-host --features crashdump
+    cargo check -p hyperlight-host --features print_debug
+    cargo check -p hyperlight-host --features gdb
+
+    @# without any driver (should fail to compile)
+    just test-compilation-fail {{config}}
+
 # runs all tests
 test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-seccomp target features)
 

@@ -22,8 +22,8 @@ use rand::{rng, RngCore};
 use tracing::{instrument, Span};
 
 use super::memory_region::MemoryRegionType::{
-    BootStack, Code, GuardPage, GuestErrorData, Heap, HostExceptionData, HostFunctionDefinitions,
-    InputData, KernelStack, OutputData, PageTables, PanicContext, Peb, Stack,
+    Code, GuardPage, GuestErrorData, Heap, HostExceptionData, HostFunctionDefinitions, InputData,
+    OutputData, PageTables, PanicContext, Peb, Stack,
 };
 use super::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionVecBuilder};
 use super::mgr::AMOUNT_OF_MEMORY_PER_PT;
@@ -32,14 +32,6 @@ use crate::error::HyperlightError::{GuestOffsetIsInvalid, MemoryRequestTooBig};
 use crate::sandbox::SandboxConfiguration;
 use crate::{log_then_return, new_error, Result};
 
-// +-------------------------------------------+
-// |             Boot Stack (4KiB)             |
-// +-------------------------------------------+
-// |       Kernel Stack Guard Page (4KiB)      |
-// +-------------------------------------------+
-// |             Kernel Stack                  |
-// +-------------------------------------------+
-// |        Guest Stack Guard Page (4KiB)      |
 // +-------------------------------------------+
 // |             Guest (User) Stack            |
 // +-------------------------------------------+
@@ -64,17 +56,13 @@ use crate::{log_then_return, new_error, Result};
 // |               Guest Code                  |
 // +-------------------------------------------+
 // |                    PT                     |
-// +-------------------------------------------+ 0x203_000
+// +-------------------------------------------+ 0x3_000
 // |                    PD                     |
-// +-------------------------------------------+ 0x202_000
+// +-------------------------------------------+ 0x2_000
 // |                   PDPT                    |
-// +-------------------------------------------+ 0x201_000
+// +-------------------------------------------+ 0x1_000
 // |                   PML4                    |
-// +-------------------------------------------+ 0x200_000
-// |                    ⋮                      |
-// |                 Unmapped                  |
-// |                    ⋮                      |
-// +-------------------------------------------+ 0x0
+// +-------------------------------------------+ 0x0_000
 
 ///
 /// - `HostDefinitions` - the length of this is the `HostFunctionDefinitionSize`
@@ -106,11 +94,6 @@ use crate::{log_then_return, new_error, Result};
 /// - `GuestPanicContext` - contains a buffer for context associated with any guest
 ///   panic that occurred.
 ///   the length of this field is returned by the `guest_panic_context_size()` fn of this struct.
-///
-/// Boot Stack - this is the stack that is used before the TSS is set up. It is fixed to 4K
-/// Kernel Stack Guard Page is to Guard against boot stack overflow so we dont corrupt the kernel stack
-/// Kernel Stack - this is the stack that is used for kernel mode operations we switch to this early in the initialization function
-/// Guest Stack Guard Page is to Guard against kernel stack overflow so we dont corrupt the user stack
 
 #[derive(Copy, Clone)]
 pub(crate) struct SandboxMemoryLayout {
@@ -147,12 +130,6 @@ pub(crate) struct SandboxMemoryLayout {
     guest_heap_buffer_offset: usize,
     guard_page_offset: usize,
     guest_user_stack_buffer_offset: usize, // the lowest address of the user stack
-    user_stack_guard_page_offset: usize,
-    kernel_stack_buffer_offset: usize,
-    kernel_stack_guard_page_offset: usize,
-    #[allow(dead_code)]
-    pub(super) kernel_stack_size_rounded: usize,
-    boot_stack_buffer_offset: usize,
 
     // other
     pub(crate) peb_address: usize,
@@ -263,22 +240,6 @@ impl Debug for SandboxMemoryLayout {
                 "Guest Code Offset",
                 &format_args!("{:#x}", self.guest_code_offset),
             )
-            .field(
-                "User Stack Guard Page Offset",
-                &format_args!("{:#x}", self.user_stack_guard_page_offset),
-            )
-            .field(
-                "Kernel Stack Buffer Offset",
-                &format_args!("{:#x}", self.kernel_stack_buffer_offset),
-            )
-            .field(
-                "Kernel Stack Guard Page Offset",
-                &format_args!("{:#x}", self.kernel_stack_guard_page_offset),
-            )
-            .field(
-                "Boot Stack Buffer Offset",
-                &format_args!("{:#x}", self.boot_stack_buffer_offset),
-            )
             .finish()
     }
 }
@@ -308,7 +269,7 @@ impl SandboxMemoryLayout {
     const MAX_MEMORY_SIZE: usize = 0x40000000 - Self::BASE_ADDRESS;
 
     /// The base address of the sandbox's memory.
-    pub(crate) const BASE_ADDRESS: usize = 0x0200000;
+    pub(crate) const BASE_ADDRESS: usize = 0x0;
 
     // the offset into a sandbox's input/output buffer where the stack starts
     const STACK_POINTER_SIZE_BYTES: u64 = 8;
@@ -384,12 +345,6 @@ impl SandboxMemoryLayout {
         // round up stack size to page size. This is needed for MemoryRegion
         let stack_size_rounded = round_up_to(stack_size, PAGE_SIZE_USIZE);
 
-        let user_stack_guard_page_offset = guest_user_stack_buffer_offset + stack_size_rounded;
-        let kernel_stack_buffer_offset = user_stack_guard_page_offset + PAGE_SIZE_USIZE;
-        let kernel_stack_size_rounded = round_up_to(cfg.get_kernel_stack_size(), PAGE_SIZE_USIZE);
-        let kernel_stack_guard_page_offset = kernel_stack_buffer_offset + kernel_stack_size_rounded;
-        let boot_stack_buffer_offset = kernel_stack_guard_page_offset + PAGE_SIZE_USIZE;
-
         Ok(Self {
             peb_offset,
             stack_size: stack_size_rounded,
@@ -420,11 +375,6 @@ impl SandboxMemoryLayout {
             guard_page_offset,
             total_page_table_size,
             guest_code_offset,
-            user_stack_guard_page_offset,
-            kernel_stack_buffer_offset,
-            kernel_stack_guard_page_offset,
-            kernel_stack_size_rounded,
-            boot_stack_buffer_offset,
         })
     }
 
@@ -591,22 +541,6 @@ impl SandboxMemoryLayout {
         self.get_min_guest_stack_address_offset() + size_of::<u64>()
     }
 
-    /// Get the offset of the kernel stack pointer in guest memory,
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_kernel_stack_pointer_offset(&self) -> usize {
-        // The kernelStackAddress is immediately after the
-        // userStackAddress in the `GuestStackData` struct which is a `u64`.
-        self.get_user_stack_pointer_offset() + size_of::<u64>()
-    }
-
-    /// Get the offset of the boot stack pointer in guest memory,
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_boot_stack_pointer_offset(&self) -> usize {
-        // The bootStackAddress is immediately after the
-        // kernelStackAddress in the `GuestStackData` struct which is a `u64`.
-        self.get_kernel_stack_pointer_offset() + size_of::<u64>()
-    }
-
     // Get the offset in guest memory to the start of the guest panic context data
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_panic_context_offset(&self) -> usize {
@@ -644,7 +578,7 @@ impl SandboxMemoryLayout {
     /// layout.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_unaligned_memory_size(&self) -> usize {
-        self.get_boot_stack_buffer_offset() + PAGE_SIZE_USIZE
+        self.get_top_of_user_stack_offset() + self.stack_size
     }
 
     /// get the code offset
@@ -660,34 +594,6 @@ impl SandboxMemoryLayout {
         Self::BASE_ADDRESS + self.guest_code_offset
     }
 
-    /// Get the offset in guest memory to the user stack guard page
-    /// This is the offset in the sandbox memory where the user stack guard page starts
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_user_stack_guard_page_offset(&self) -> usize {
-        self.user_stack_guard_page_offset
-    }
-
-    /// Get the offset in guest memory to the kernel stack buffer
-    /// This is the offset in the sandbox memory where the kernel stack starts
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_kernel_stack_buffer_offset(&self) -> usize {
-        self.kernel_stack_buffer_offset
-    }
-
-    /// Get the offset in guest memory to the kernel stack guard page
-    /// This is the offset in the sandbox memory where the kernel stack guard page starts
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_kernel_stack_guard_page_offset(&self) -> usize {
-        self.kernel_stack_guard_page_offset
-    }
-
-    /// Get the offset in guest memory to the boot stack buffer
-    /// This is the offset in the sandbox memory where the boot stack starts
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_boot_stack_buffer_offset(&self) -> usize {
-        self.boot_stack_buffer_offset
-    }
-
     #[cfg(test)]
     /// Get the page table size
     fn get_page_table_size(&self) -> usize {
@@ -699,12 +605,10 @@ impl SandboxMemoryLayout {
     // The size of a single table is 4K, we can map up to 1GB total memory which requires 1 PML4, 1 PDPT, 1 PD and 512 PTs
     // but we only need enough PTs to map the memory we are using. (In other words we only need 512 PTs to map the memory if the memory size is 1GB)
     //
-    // Because we always start the physical address space at 0x200_000
-    // we can calculate the amount of memory needed for the PTs by calculating how much memory is needed for the sandbox configuration in total,
-    // then add 0x200_000 to that (as we start at 0x200_000),
+    // We can calculate the amount of memory needed for the PTs by calculating how much memory is needed for the sandbox configuration in total,
     // and then add 3 * 4K (for the PML4, PDPT and PD)  to that,
     // then add 2MB to that (the maximum size of memory required for the PTs themselves is 2MB when we map 1GB of memory in 4K pages),
-    // then divide that by 0x200_000 (as we can map 2MB in each PT) and then round the result up by 1 .
+    // then divide that by 0x200_000 (as we can map 2MB in each PT).
     // This will give us the total size of the PTs required for the sandbox to which we can add the size of the PML4, PDPT and PD.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_total_page_table_size(
@@ -741,7 +645,6 @@ impl SandboxMemoryLayout {
 
         let num_pages: usize = ((total_mapped_memory_size + AMOUNT_OF_MEMORY_PER_PT - 1)
             / AMOUNT_OF_MEMORY_PER_PT)
-            + 1 // Round up
             + 3; // PML4, PDPT, PD
 
         num_pages * PAGE_SIZE_USIZE
@@ -974,78 +877,10 @@ impl SandboxMemoryLayout {
         }
 
         // stack
-        let user_stack_guard_page_offset = builder.push_page_aligned(
+        let final_offset = builder.push_page_aligned(
             self.get_guest_stack_size(),
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
             Stack,
-        );
-
-        let expected_user_stack_guard_page_offset =
-            TryInto::<usize>::try_into(self.get_top_of_user_stack_offset())?
-                + self.get_guest_stack_size();
-
-        if user_stack_guard_page_offset != expected_user_stack_guard_page_offset {
-            return Err(new_error!(
-                "User Guard Page offset does not match expected User Guard Page offset expected:  {}, actual:  {}",
-                expected_user_stack_guard_page_offset,
-                user_stack_guard_page_offset
-            ));
-        }
-
-        let kernel_stack_offset = builder.push_page_aligned(
-            PAGE_SIZE_USIZE,
-            MemoryRegionFlags::READ | MemoryRegionFlags::STACK_GUARD,
-            GuardPage,
-        );
-
-        let expected_kernel_stack_offset =
-            TryInto::<usize>::try_into(self.kernel_stack_buffer_offset)?;
-
-        if kernel_stack_offset != expected_kernel_stack_offset {
-            return Err(new_error!(
-                "Kernel Stack offset does not match expected Kernel Stack offset expected:  {}, actual:  {}",
-                expected_kernel_stack_offset,
-                kernel_stack_offset
-            ));
-        }
-
-        let kernel_stack_guard_page_offset = builder.push_page_aligned(
-            self.kernel_stack_size_rounded,
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            KernelStack,
-        );
-
-        let expected_kernel_stack_guard_page_offset =
-            TryInto::<usize>::try_into(self.kernel_stack_guard_page_offset)?;
-
-        if kernel_stack_guard_page_offset != expected_kernel_stack_guard_page_offset {
-            return Err(new_error!(
-                "Kernel Guard Page offset does not match expected Kernel Guard Page offset expected:  {}, actual:  {}",
-                expected_kernel_stack_guard_page_offset,
-                kernel_stack_guard_page_offset
-            ));
-        }
-
-        let boot_stack_offset = builder.push_page_aligned(
-            PAGE_SIZE_USIZE,
-            MemoryRegionFlags::READ | MemoryRegionFlags::STACK_GUARD,
-            GuardPage,
-        );
-
-        let expected_boot_stack_offset = TryInto::<usize>::try_into(self.boot_stack_buffer_offset)?;
-
-        if boot_stack_offset != expected_boot_stack_offset {
-            return Err(new_error!(
-                "Boot Stack offset does not match expected Boot Stack offset expected:  {}, actual:  {}",
-                expected_boot_stack_offset,
-                boot_stack_offset
-            ));
-        }
-
-        let final_offset = builder.push_page_aligned(
-            PAGE_SIZE_USIZE,
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            BootStack,
         );
 
         let expected_final_offset = TryInto::<usize>::try_into(self.get_memory_size()?)?;
@@ -1077,7 +912,7 @@ impl SandboxMemoryLayout {
         macro_rules! get_address {
             ($something:ident) => {
                 paste! {
-                    if guest_offset == 0 {
+                    if run_inprocess {
                         let offset = self.[<$something _offset>];
                         let calculated_addr = shared_mem.calculate_address(offset)?;
                         u64::try_from(calculated_addr)?
@@ -1190,17 +1025,9 @@ impl SandboxMemoryLayout {
 
         // The top of the user stack is calculated as the size of the guest memory + the guest offset which gives us the
         // address at the bottom of the guest memory.
-        // we then subtract the size of the stack, the size of the kernel stack,
-        // the size of the boot stack, the size of the user stack guard page and the size of the kernel stack guard page
-        // which are all 4K
 
         let bottom = guest_offset + size;
-        let min_user_stack_address = bottom
-            - self.stack_size
-            - self.kernel_stack_size_rounded
-            - PAGE_SIZE_USIZE
-            - PAGE_SIZE_USIZE
-            - PAGE_SIZE_USIZE;
+        let min_user_stack_address = bottom - self.stack_size;
 
         // Top of user stack
 
@@ -1214,26 +1041,6 @@ impl SandboxMemoryLayout {
         let start_of_user_stack: u64 = (min_user_stack_address + self.stack_size).try_into()?;
 
         shared_mem.write_u64(self.get_user_stack_pointer_offset(), start_of_user_stack)?;
-
-        // Start of kernel stack
-
-        // There is a guard page between the user stack and the kernel stack and then we need to add the size of the kernel stack
-
-        let start_of_kernel_stack: u64 =
-            start_of_user_stack + (PAGE_SIZE_USIZE + self.kernel_stack_size_rounded) as u64;
-
-        shared_mem.write_u64(
-            self.get_kernel_stack_pointer_offset(),
-            start_of_kernel_stack,
-        )?;
-
-        // Start of boot stack
-
-        // There is a guard page between the kernel stack and the boot stack and then we need to add the size of the boot stack
-
-        let start_of_boot_stack: u64 = start_of_kernel_stack + (PAGE_SIZE_USIZE * 2) as u64;
-
-        shared_mem.write_u64(self.get_boot_stack_pointer_offset(), start_of_boot_stack)?;
 
         // End of setting up the PEB
 
@@ -1308,14 +1115,6 @@ mod tests {
         expected_size += PAGE_SIZE_USIZE; // guard page
 
         expected_size += round_up_to(layout.stack_size, PAGE_SIZE_USIZE);
-
-        expected_size += PAGE_SIZE_USIZE; // user stack guard page
-
-        expected_size += round_up_to(layout.kernel_stack_size_rounded, PAGE_SIZE_USIZE);
-
-        expected_size += PAGE_SIZE_USIZE; // kernel stack guard page
-
-        expected_size += PAGE_SIZE_USIZE; // boot stack
 
         expected_size
     }

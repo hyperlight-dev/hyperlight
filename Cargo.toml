@@ -21,7 +21,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.81.0"
 license = "Apache-2.0"
@@ -30,9 +30,9 @@ repository = "https://github.com/hyperlight-dev/hyperlight"
 readme = "README.md"
 
 [workspace.dependencies]
-hyperlight-common = { path = "src/hyperlight_common", version = "0.3.0", default-features = false }
-hyperlight-host = { path = "src/hyperlight_host", version = "0.3.0", default-features = false }
-hyperlight-guest = { path = "src/hyperlight_guest", version = "0.3.0", default-features = false }
+hyperlight-common = { path = "src/hyperlight_common", version = "0.4.0", default-features = false }
+hyperlight-host = { path = "src/hyperlight_host", version = "0.4.0", default-features = false }
+hyperlight-guest = { path = "src/hyperlight_guest", version = "0.4.0", default-features = false }
 hyperlight-testing = { path = "src/hyperlight_testing", default-features = false }
 
 [workspace.lints.rust]

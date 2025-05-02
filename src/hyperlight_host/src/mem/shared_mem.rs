@@ -78,7 +78,6 @@ macro_rules! generate_writer {
     ($fname:ident, $ty:ty) => {
         /// Write a value of type `$ty` to the memory at the given offset.
         #[allow(dead_code)]
-        #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
         pub(crate) fn $fname(&mut self, offset: usize, value: $ty) -> Result<()> {
             let data = self.as_mut_slice();
             bounds_check!(offset, std::mem::size_of::<$ty>(), data.len());
@@ -586,8 +585,7 @@ impl ExclusiveSharedMemory {
     ///   the safety documentation of pointer::offset.
     ///
     ///   This is ensured by a check in ::new()
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn as_mut_slice<'a>(&'a mut self) -> &'a mut [u8] {
+    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.base_ptr(), self.mem_size()) }
     }
 
@@ -708,7 +706,6 @@ pub trait SharedMemory {
     /// Return the length of usable memory contained in `self`.
     /// The returned size does not include the size of the surrounding
     /// guard pages.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn mem_size(&self) -> usize {
         self.region().size - 2 * PAGE_SIZE_USIZE
     }

@@ -20,14 +20,20 @@ use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result};
 use hyperlight_testing::simple_guest_as_string;
-use tracing_chrome::ChromeLayerBuilder;
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::EnvFilter;
 
-// This example can be run with `cargo run --package hyperlight_host --example chrome-tracing --release`
+// An example of how to get tracy tracing working with hyperlight.
+// Run with:
+// TRACY_NO_EXIT=1 RUST_LOG=trace cargo run --package hyperlight-host --example tracing-tracy --profile release-with-debug,
+// and then open the `tracy-profiler` GUI, and there should be an option to load the client created by this example.
 fn main() -> Result<()> {
-    // set up tracer
-    let (chrome_layer, _guard) = ChromeLayerBuilder::new().build();
-    tracing_subscriber::registry().with(chrome_layer).init();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(EnvFilter::from_default_env())
+            .with(tracing_tracy::TracyLayer::default()),
+    )
+    .expect("setup tracy layer");
 
     let simple_guest_path =
         simple_guest_as_string().expect("Cannot find the guest binary at the expected location.");

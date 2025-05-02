@@ -103,6 +103,7 @@ criterion = "0.5.1"
 tracing-chrome = "0.7.2"
 metrics-util = "0.19.1"
 metrics-exporter-prometheus = "0.17.0"
+tracing-tracy = "0.11.4"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "0.61", features = [
@@ -115,7 +116,7 @@ proc-maps = "0.4.0"
 [build-dependencies]
 anyhow = { version = "1.0.98" }
 cfg_aliases = "0.2.1"
-built = { version = "0.7.7", features = ["chrono", "git2"] }
+built = { version = "0.8.0", features = ["chrono", "git2"] }
 
 [features]
 default = ["kvm", "mshv2", "seccomp"]

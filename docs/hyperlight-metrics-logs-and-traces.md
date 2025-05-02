@@ -62,18 +62,18 @@ $env:RUST_LOG='none,hyperlight_host=info,tracing=info'; cargo run --example trac
 
 ### Using OTLP exporter and Jaeger
 
-In the [examples/otlp_tracing](../src/hyperlight_host/examples/otlp_tracing) directory, there is an example that shows how to capture and send trace and log information to an otlp_collector using the opentelemetry_otlp crate. With this example the following commands can be used to set the verbosity of the trace output to `INFO` and run the example to generate trace data:
+In the [examples/tracing-otlp](../src/hyperlight_host/examples/tracing-otlp) directory, there is an example that shows how to capture and send trace and log information to an otlp_collector using the opentelemetry_otlp crate. With this example the following commands can be used to set the verbosity of the trace output to `INFO` and run the example to generate trace data:
 
 #### Linux
 
 ```bash
-RUST_LOG='none,hyperlight_host=info,tracing=info' cargo run --example otlp_tracing
+RUST_LOG='none,hyperlight_host=info,tracing=info' cargo run --example tracing-otlp
 ```
 
 #### Windows
 
 ```powershell
-$env:RUST_LOG='none,hyperlight_host=info,tracing=info';cargo run --example otlp_tracing
+$env:RUST_LOG='none,hyperlight_host=info,tracing=info';cargo run --example tracing-otlp
 ```
 
 The sample will run and generate trace data until any key is pressed.

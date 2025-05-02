@@ -149,10 +149,6 @@ pub enum MemoryRegionType {
     GuardPage,
     /// The region contains the Stack
     Stack,
-    /// The region contains the Kernel Stack
-    KernelStack,
-    /// The region contains the Boot Stack
-    BootStack,
 }
 
 /// represents a single memory region inside the guest. All memory within a region has
