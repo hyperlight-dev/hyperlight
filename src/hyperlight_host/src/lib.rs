@@ -57,13 +57,13 @@ pub mod hypervisor;
 ///
 /// Virtual Address
 ///
-/// 0x200000    PML4
-/// 0x201000    PDPT
-/// 0x202000    PD
-/// 0x203000    The guest PE code (When the code has been loaded using LoadLibrary to debug the guest this will not be
+/// 0x0000    PML4
+/// 0x1000    PDPT
+/// 0x2000    PD
+/// 0x3000    The guest PE code (When the code has been loaded using LoadLibrary to debug the guest this will not be
 /// present and code length will be zero;
 ///
-/// The pointer passed to the Entrypoint in the Guest application is the 0x200000 + size of page table + size of code,
+/// The pointer passed to the Entrypoint in the Guest application is the ize of page table + size of code,
 /// at this address structs below are laid out in this order
 pub mod mem;
 /// Metric definitions and helpers

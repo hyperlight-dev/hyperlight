@@ -58,7 +58,7 @@ const PAGE_USER: u64 = 1 << 2; // User/Supervisor (if this bit is set then the p
 const PAGE_NX: u64 = 1 << 63; // Execute Disable (if this bit is set then data in the page cannot be executed)
 
 // The amount of memory that can be mapped per page table
-pub(super) const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200000;
+pub(super) const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200_000;
 /// Read/write permissions flag for the 64-bit PDE
 /// The page size for the 64-bit PDE
 /// The size of stack guard cookies
@@ -134,7 +134,6 @@ where
         mem_size: u64,
         regions: &mut [MemoryRegion],
     ) -> Result<u64> {
-        // Add 0x200000 because that's the start of mapped memory
         // For MSVC, move rsp down by 0x28.  This gives the called 'main'
         // function the appearance that rsp was 16 byte aligned before
         // the 'call' that calls main (note we don't really have a return value
@@ -177,60 +176,48 @@ where
             // We only need to create enough PTEs to map the amount of memory we have
             // We need one PT for every 2MB of memory that is mapped
             // We can use the memory size to calculate the number of PTs we need
-            // We round up mem_size/2MB and then we need to add 1 as we start our memory mapping at 0x200000
+            // We round up mem_size/2MB
 
             let mem_size = usize::try_from(mem_size)?;
 
             let num_pages: usize =
-                ((mem_size + AMOUNT_OF_MEMORY_PER_PT - 1) / AMOUNT_OF_MEMORY_PER_PT) + 1;
+                (mem_size + AMOUNT_OF_MEMORY_PER_PT - 1) / AMOUNT_OF_MEMORY_PER_PT;
 
             // Create num_pages PT with 512 PTEs
             for p in 0..num_pages {
                 for i in 0..512 {
                     let offset = SandboxMemoryLayout::PT_OFFSET + (p * 4096) + (i * 8);
                     // Each PTE maps a 4KB page
-                    let val_to_write = if p == 0 {
-                        (p << 21) as u64 | (i << 12) as u64
-                    } else {
-                        let flags = match Self::get_page_flags(p, i, regions) {
-                            Ok(region_type) => match region_type {
-                                // TODO: We parse and load the exe according to its sections and then
-                                // have the correct flags set rather than just marking the entire binary as executable
-                                MemoryRegionType::Code => PAGE_PRESENT | PAGE_RW | PAGE_USER,
-                                MemoryRegionType::Stack => {
-                                    PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX
-                                }
-                                #[cfg(feature = "executable_heap")]
-                                MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER,
-                                #[cfg(not(feature = "executable_heap"))]
-                                MemoryRegionType::Heap => {
-                                    PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX
-                                }
-                                // The guard page is marked RW and User so that if it gets written to we can detect it in the host
-                                // If/When we implement an interrupt handler for page faults in the guest then we can remove this access and handle things properly there
-                                MemoryRegionType::GuardPage => {
-                                    PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX
-                                }
-                                MemoryRegionType::InputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                                MemoryRegionType::OutputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                                MemoryRegionType::Peb => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                                // Host Function Definitions are readonly in the guest
-                                MemoryRegionType::HostFunctionDefinitions => PAGE_PRESENT | PAGE_NX,
-                                MemoryRegionType::PanicContext => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                                MemoryRegionType::GuestErrorData => {
-                                    PAGE_PRESENT | PAGE_RW | PAGE_NX
-                                }
-                                // Host Exception Data are readonly in the guest
-                                MemoryRegionType::HostExceptionData => PAGE_PRESENT | PAGE_NX,
-                                MemoryRegionType::PageTables => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                                MemoryRegionType::KernelStack => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                                MemoryRegionType::BootStack => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                            },
-                            // If there is an error then the address isn't mapped so mark it as not present
-                            Err(_) => 0,
-                        };
-                        ((p << 21) as u64 | (i << 12) as u64) | flags
+                    let flags = match Self::get_page_flags(p, i, regions) {
+                        Ok(region_type) => match region_type {
+                            // TODO: We parse and load the exe according to its sections and then
+                            // have the correct flags set rather than just marking the entire binary as executable
+                            MemoryRegionType::Code => PAGE_PRESENT | PAGE_RW | PAGE_USER,
+                            MemoryRegionType::Stack => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
+                            #[cfg(feature = "executable_heap")]
+                            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER,
+                            #[cfg(not(feature = "executable_heap"))]
+                            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
+                            // The guard page is marked RW and User so that if it gets written to we can detect it in the host
+                            // If/When we implement an interrupt handler for page faults in the guest then we can remove this access and handle things properly there
+                            MemoryRegionType::GuardPage => {
+                                PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX
+                            }
+                            MemoryRegionType::InputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+                            MemoryRegionType::OutputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+                            MemoryRegionType::Peb => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+                            // Host Function Definitions are readonly in the guest
+                            MemoryRegionType::HostFunctionDefinitions => PAGE_PRESENT | PAGE_NX,
+                            MemoryRegionType::PanicContext => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+                            MemoryRegionType::GuestErrorData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+                            // Host Exception Data are readonly in the guest
+                            MemoryRegionType::HostExceptionData => PAGE_PRESENT | PAGE_NX,
+                            MemoryRegionType::PageTables => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+                        },
+                        // If there is an error then the address isn't mapped so mark it as not present
+                        Err(_) => 0,
                     };
+                    let val_to_write = ((p << 21) as u64 | (i << 12) as u64) | flags;
                     shared_mem.write_u64(offset, val_to_write)?;
                 }
             }

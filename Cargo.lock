@@ -291,9 +291,9 @@ dependencies = [
 
 [[package]]
 name = "built"
-version = "0.7.7"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56ed6191a7e78c36abdb16ab65341eefd73d64d303fffccdbb00d51e4205967b"
+checksum = "f4ad8f11f288f48ca24471bbd51ac257aaeaaa07adae295591266b792902ae64"
 dependencies = [
  "chrono",
  "git2",
@@ -344,9 +344,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.20"
+version = "1.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04da6a0d40b948dfc4fa8f5bbf402b0fc1a64a28dbf7d12ffd683550f2c1b63a"
+checksum = "8691782945451c1c383942c4874dbe63814f61cb57ef773cda2972682b7bb3c0"
 dependencies = [
  "jobserver",
  "libc",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-common"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "buddy_system_allocator",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-host"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bitflags 2.9.0",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight_guest_capi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cbindgen",
  "hyperlight-common",

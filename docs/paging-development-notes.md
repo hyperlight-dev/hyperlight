@@ -9,7 +9,7 @@ Hyperlight uses paging, which means the all addresses inside a Hyperlight VM are
 
 ## Host-to-Guest memory mapping
 
-Into each Hyperlight VM, memory from the host is mapped into the VM as physical memory. The physical memory inside the VM starts at address `0x200_000` and extends linearly to however much memory was mapped into the VM (depends on various parameters).
+Into each Hyperlight VM, memory from the host is mapped into the VM as physical memory. The physical memory inside the VM starts at address `0x0` and extends linearly to however much memory was mapped into the VM (depends on various parameters).
 
 ## Page table setup
 
@@ -17,27 +17,27 @@ The following page table structs are set up in memory before running a Hyperligh
 
 ### PML4 (Page Map Level 4) Table
 
-The PML4 table is located at physical address specified in CR3. In Hyperlight we set `CR3=0x200_000`, which means the PML4 table is located at physical address `0x200_000`. The PML4 table comprises 512 64-bit entries.
+The PML4 table is located at physical address specified in CR3. In Hyperlight we set `CR3=0x0`, which means the PML4 table is located at physical address `0x0`. The PML4 table comprises 512 64-bit entries.
 
-In Hyperlight, we only initialize the first entry (at address `0x200_000`), with value `0x201_000`, implying that we only have a single PDPT.
+In Hyperlight, we only initialize the first entry (at address `0x0`), with value `0x1_000`, implying that we only have a single PDPT.
 
 ### PDPT (Page-directory-pointer Table)
 
-The first and only PDPT is located at physical address `0x201_000`. The PDPT comprises 512 64-bit entries. In Hyperlight, we only initialize the first entry of the PDPT (at address `0x201_000`), with the value `0x202_000`, implying that we only have a single PD.
+The first and only PDPT is located at physical address `0x1_000`. The PDPT comprises 512 64-bit entries. In Hyperlight, we only initialize the first entry of the PDPT (at address `0x1_000`), with the value `0x2_000`, implying that we only have a single PD.
 
 ### PD (Page Directory)
 
-The first and only PD is located at physical address `0x202_000`. The PD comprises 512 64-bit entries, each entry `i` is set to the value `(i * 0x1000) + 0x203_000`. Thus, the first entry is `0x203_000`, the second entry is `0x204_000` and so on.
+The first and only PD is located at physical address `0x2_000`. The PD comprises 512 64-bit entries, each entry `i` is set to the value `(i * 0x1000) + 0x3_000`. Thus, the first entry is `0x3_000`, the second entry is `0x4_000` and so on.
 
 ### PT (Page Table)
 
-The page tables start at physical address `0x203_000`. Each page table has 512 64-bit entries. Each entry is set to the value `p << 21|i << 12` where `p` is the page table number and `i` is the index of the entry in the page table. Thus, the first entry of the first page table is `0x000_000`, the second entry is `0x000_000 + 0x1000`, and so on. The first entry of the second page table is `0x200_000 + 0x1000`, the second entry is `0x200_000 + 0x2000`, and so on. Enough page tables are created to cover the size of memory mapped into the VM.
+The page tables start at physical address `0x3_000`. Each page table has 512 64-bit entries. Each entry is set to the value `p << 21|i << 12` where `p` is the page table number and `i` is the index of the entry in the page table. Thus, the first entry of the first page table is `0x000_000`, the second entry is `0x000_000 + 0x1000`, and so on. The first entry of the second page table is `0x200_000 + 0x1000`, the second entry is `0x200_000 + 0x2000`, and so on. Enough page tables are created to cover the size of memory mapped into the VM.
 
 ## Address Translation
 
 Given a 64-bit virtual address X, the corresponding physical address is obtained as follows:
 
-1. PML4 table's physical address is located using CR3 (CR3 is `0x200_000`).
+1. PML4 table's physical address is located using CR3 (CR3 is `0x0`).
 2. Bits 47:39 of X are used to index into PML4, giving us the address of the PDPT.
 3. Bits 38:30 of X are used to index into PDPT, giving us the address of the PD.
 4. Bits 29:21 of X are used to index into PD, giving us the address of the PT.
@@ -63,7 +63,7 @@ In addition to providing addresses, page table entries also contain access flags
 
 PML4E, PDPTE, and PD Entries have the present flag set to 1, and the rest of the flags are not set.
 
-PTE Entries all have the present flag set to 1, apart from those for the address range `0x000_000` to `0x1FF_000` which have the present flag set to 0 as we do not map memory below physical address `0x200_000`. 
+PTE Entries all have the present flag set to 1.
 
 In addition, the following flags are set according to the type of memory being mapped:
 

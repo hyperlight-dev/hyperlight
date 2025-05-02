@@ -569,8 +569,9 @@ impl Hypervisor for KVMDriver {
                 }
             },
             Ok(other) => {
-                crate::debug!("KVM Other Exit {:?}", other);
-                HyperlightExit::Unknown(format!("Unexpected KVM Exit {:?}", other))
+                let err_msg = format!("Unexpected KVM Exit {:?}", other);
+                crate::debug!("KVM Other Exit Details: {:#?}", &self);
+                HyperlightExit::Unknown(err_msg)
             }
         };
         Ok(result)
