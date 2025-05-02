@@ -100,16 +100,15 @@ impl GuestView {
             })
             .collect();
 
-        // The filename and command line are set to null-terminated strings
         let filename = ctx
             .filename
-            .clone()
-            .map_or_else(|| "\0".to_string(), |s| format!("{}\0", s));
+            .as_ref()
+            .map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
 
         let cmd = ctx
             .binary
-            .clone()
-            .map_or_else(|| "\0".to_string(), |s| format!("{}\0", s));
+            .as_ref()
+            .map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
 
         // The xsave state is checked as it can be empty
         let mut components = vec![];
