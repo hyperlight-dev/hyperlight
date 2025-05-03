@@ -535,8 +535,13 @@ fn emit_extern_decl<'a, 'b, 'c>(
                     let mut sv = s.with_needs_vars(&mut needs_vars);
                     match n {
                         ResourceItemName::Constructor => {
+                            let params = ft
+                                .params
+                                .iter()
+                                .map(|p| emit_func_param(&mut sv, p))
+                                .collect::<Vec<_>>();
                             sv.cur_trait().items.extend(quote! {
-                                fn new(&mut self) -> Self::T;
+                                fn new(&mut self, #(#params),*) -> Self::T;
                             });
                         }
                         ResourceItemName::Method(n) => {
