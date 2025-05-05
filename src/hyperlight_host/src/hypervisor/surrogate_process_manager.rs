@@ -169,8 +169,11 @@ impl SurrogateProcessManager {
         };
 
         if allocated_address.Value.is_null() {
+            // Safety: `MapViewOfFileNuma2` will set the last error code if it fails.
+            let error = unsafe { windows::Win32::Foundation::GetLastError() };
             log_then_return!(
-                "MapViewOfFileNuma2 failed for mem address {:?}",
+                "MapViewOfFileNuma2 failed with error code: {:?} for mem address {:?} ",
+                error,
                 raw_source_address
             );
         }
