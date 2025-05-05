@@ -691,7 +691,7 @@ mod tests {
             "test"
         );
 
-        // There may be cases where a mutable reference to the captured variable is not required to be used outside the closue
+        // There may be cases where a mutable reference to the captured variable is not required to be used outside the closure
         // e.g. if the function is writing to a file or a socket etc.
 
         // writer as a FnMut closure mutating a captured variable but not trying to access the captured variable

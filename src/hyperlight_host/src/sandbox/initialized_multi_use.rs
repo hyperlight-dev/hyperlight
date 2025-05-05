@@ -240,7 +240,7 @@ where
     ///
     /// The evolve function creates a new MultiUseCallContext which is then passed to a callback function  allowing the
     /// callback function to call guest functions as part of the evolve process, once the callback function  is complete
-    /// the context is finished using a crate internal method that does not restore the prior state of the Sanbbox.
+    /// the context is finished using a crate internal method that does not restore the prior state of the Sandbox.
     /// It then creates a mew  memory snapshot on the snapshot stack and returns the MultiUseSandbox
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn evolve(
