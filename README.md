@@ -47,16 +47,11 @@ fn main() -> hyperlight_host::Result<()> {
         None, // default host print function
     )?;
 
-    // Register a host function
-    fn sleep_5_secs() -> hyperlight_host::Result<()> {
+    // Registering a host function makes it available to be called by the guest
+    uninitialized_sandbox.register("Sleep5Secs", || {
         thread::sleep(std::time::Duration::from_secs(5));
         Ok(())
-    }
-
-    let host_function = Arc::new(Mutex::new(sleep_5_secs));
-
-    // Registering a host function makes it available to be called by the guest
-    host_function.register(&mut uninitialized_sandbox, "Sleep5Secs")?;
+    })?;
     // Note: This function is unused by the guest code below, it's just here for demonstration purposes
 
     // Initialize sandbox to be able to call host functions

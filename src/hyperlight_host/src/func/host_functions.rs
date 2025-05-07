@@ -68,6 +68,15 @@ pub trait HostFunction<R, Args> {
     ) -> Result<()>;
 }
 
+/// Tait for types that can be converted into types implementing `HostFunction`.
+pub trait IntoHostFunction<R, Args> {
+    /// Concrete type of the returned host function
+    type Output: HostFunction<R, Args>;
+
+    /// Convert the type into a host function
+    fn into_host_function(self) -> Self::Output;
+}
+
 macro_rules! impl_host_function {
     (@count) => { 0 };
     (@count $P:ident $(, $R:ident)*) => {
@@ -106,6 +115,42 @@ macro_rules! impl_host_function {
                     extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
                 ) -> Result<()> {
                     register_host_function(self.clone(), sandbox, name, Some(extra_allowed_syscalls))
+                }
+            }
+
+            impl<R $(, $P)*, F> IntoHostFunction<R, ($($P,)*)> for F
+            where
+                F: FnMut($($P),*) -> Result<R> + Send + 'static,
+                Arc<Mutex<F>>: HostFunction<R, ($($P,)*)>,
+            {
+                type Output = Arc<Mutex<F>>;
+
+                fn into_host_function(self) -> Self::Output {
+                    Arc::new(Mutex::new(self))
+                }
+            }
+
+            impl<R $(, $P)*, F> IntoHostFunction<R, ($($P,)*)> for Arc<Mutex<F>>
+            where
+                F: FnMut($($P),*) -> Result<R> + Send + 'static,
+                Arc<Mutex<F>>: HostFunction<R, ($($P,)*)>,
+            {
+                type Output = Arc<Mutex<F>>;
+
+                fn into_host_function(self) -> Self::Output {
+                    self
+                }
+            }
+
+            impl<R $(, $P)*, F> IntoHostFunction<R, ($($P,)*)> for &Arc<Mutex<F>>
+            where
+                F: FnMut($($P),*) -> Result<R> + Send + 'static,
+                Arc<Mutex<F>>: HostFunction<R, ($($P,)*)>,
+            {
+                type Output = Arc<Mutex<F>>;
+
+                fn into_host_function(self) -> Self::Output {
+                    self.clone()
                 }
             }
 

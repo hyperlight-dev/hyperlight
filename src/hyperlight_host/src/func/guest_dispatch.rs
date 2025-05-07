@@ -112,7 +112,6 @@ mod tests {
 
     use super::*;
     use crate::func::call_ctx::MultiUseGuestCallContext;
-    use crate::func::host_functions::HostFunction;
     use crate::sandbox::is_hypervisor_present;
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
@@ -152,8 +151,6 @@ mod tests {
 
         // First, run  to make sure it fails.
         {
-            let make_get_pid_syscall_func = Arc::new(Mutex::new(make_get_pid_syscall));
-
             let mut usbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 None,
@@ -162,7 +159,7 @@ mod tests {
             )
             .unwrap();
 
-            make_get_pid_syscall_func.register(&mut usbox, "MakeGetpidSyscall")?;
+            usbox.register("MakeGetpidSyscall", make_get_pid_syscall)?;
 
             let mut sbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
 
@@ -188,8 +185,6 @@ mod tests {
         // Second, run with allowing `SYS_getpid`
         #[cfg(feature = "seccomp")]
         {
-            let make_get_pid_syscall_func = Arc::new(Mutex::new(make_get_pid_syscall));
-
             let mut usbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 None,
@@ -198,9 +193,9 @@ mod tests {
             )
             .unwrap();
 
-            make_get_pid_syscall_func.register_with_extra_allowed_syscalls(
-                &mut usbox,
+            usbox.register_with_extra_allowed_syscalls(
                 "MakeGetpidSyscall",
+                make_get_pid_syscall,
                 vec![libc::SYS_getpid],
             )?;
             // ^^^ note, we are allowing SYS_getpid
@@ -453,18 +448,12 @@ mod tests {
             Ok(())
         }
 
-        let host_spin_func = Arc::new(Mutex::new(spin));
-
         #[cfg(any(target_os = "windows", not(feature = "seccomp")))]
-        host_spin_func.register(&mut usbox, "Spin").unwrap();
+        usbox.register("Spin", spin).unwrap();
 
         #[cfg(all(target_os = "linux", feature = "seccomp"))]
-        host_spin_func
-            .register_with_extra_allowed_syscalls(
-                &mut usbox,
-                "Spin",
-                vec![libc::SYS_clock_nanosleep],
-            )
+        usbox
+            .register_with_extra_allowed_syscalls("Spin", spin, vec![libc::SYS_clock_nanosleep])
             .unwrap();
 
         let sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();

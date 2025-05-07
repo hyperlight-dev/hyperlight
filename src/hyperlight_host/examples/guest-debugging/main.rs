@@ -14,11 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-use hyperlight_host::func::HostFunction;
 #[cfg(gdb)]
 use hyperlight_host::sandbox::config::DebugInfo;
 use hyperlight_host::sandbox::SandboxConfiguration;
@@ -55,14 +53,10 @@ fn main() -> hyperlight_host::Result<()> {
     )?;
 
     // Register a host functions
-    fn sleep_5_secs() -> hyperlight_host::Result<()> {
+    uninitialized_sandbox.register("Sleep5Secs", || {
         thread::sleep(std::time::Duration::from_secs(5));
         Ok(())
-    }
-
-    let host_function = Arc::new(Mutex::new(sleep_5_secs));
-
-    host_function.register(&mut uninitialized_sandbox, "Sleep5Secs")?;
+    })?;
     // Note: This function is unused, it's just here for demonstration purposes
 
     // Initialize sandbox to be able to call host functions

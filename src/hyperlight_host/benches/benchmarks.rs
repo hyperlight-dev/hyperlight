@@ -14,12 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-use hyperlight_host::func::HostFunction;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -110,12 +108,8 @@ fn guest_call_benchmark(c: &mut Criterion) {
         let mut uninitialized_sandbox = create_uninit_sandbox();
 
         // Define a host function that adds two integers and register it.
-        fn add(a: i32, b: i32) -> hyperlight_host::Result<i32> {
-            Ok(a + b)
-        }
-        let host_function = Arc::new(Mutex::new(add));
-        host_function
-            .register(&mut uninitialized_sandbox, "HostAdd")
+        uninitialized_sandbox
+            .register("HostAdd", |a: i32, b: i32| Ok(a + b))
             .unwrap();
 
         let multiuse_sandbox: MultiUseSandbox =

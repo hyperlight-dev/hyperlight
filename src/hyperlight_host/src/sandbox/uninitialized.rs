@@ -30,7 +30,7 @@ use super::mem_mgr::MemMgrWrapper;
 use super::run_options::SandboxRunOptions;
 use super::uninitialized_evolve::evolve_impl_multi_use;
 use crate::error::HyperlightError::GuestBinaryShouldBeAFile;
-use crate::func::host_functions::HostFunction;
+use crate::func::host_functions::{HostFunction, IntoHostFunction};
 use crate::mem::exe::ExeInfo;
 use crate::mem::mgr::{SandboxMemoryManager, STACK_COOKIE_LEN};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
@@ -224,24 +224,15 @@ impl UninitializedSandbox {
         // If we were passed a writer for host print register it otherwise use the default.
         match host_print_writer {
             Some(writer_func) => {
-                #[allow(clippy::arc_with_non_send_sync)]
-                let writer_func = Arc::new(Mutex::new(writer_func));
-
                 #[cfg(any(target_os = "windows", not(feature = "seccomp")))]
-                writer_func
-                    .try_lock()
-                    .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                    .register(&mut sandbox, "HostPrint")?;
+                writer_func.register(&mut sandbox, "HostPrint")?;
 
                 #[cfg(all(target_os = "linux", feature = "seccomp"))]
-                writer_func
-                    .try_lock()
-                    .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                    .register_with_extra_allowed_syscalls(
-                        &mut sandbox,
-                        "HostPrint",
-                        extra_allowed_syscalls_for_writer_func,
-                    )?;
+                writer_func.register_with_extra_allowed_syscalls(
+                    &mut sandbox,
+                    "HostPrint",
+                    extra_allowed_syscalls_for_writer_func,
+                )?;
             }
             None => {
                 let default_writer = Arc::new(Mutex::new(default_writer_func));
@@ -309,6 +300,31 @@ impl UninitializedSandbox {
     pub fn set_max_guest_log_level(&mut self, log_level: LevelFilter) {
         self.max_guest_log_level = Some(log_level);
     }
+
+    /// Register a host function with the given name in the sandbox.
+    pub fn register<F, R, Args>(&mut self, name: impl AsRef<str>, host_func: F) -> Result<()>
+    where
+        F: IntoHostFunction<R, Args>,
+    {
+        host_func.into_host_function().register(self, name.as_ref())
+    }
+
+    /// Register the host function with the given name in the sandbox, allowing extra syscalls.
+    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    pub fn register_with_extra_allowed_syscalls<F, R, Args>(
+        &mut self,
+        name: impl AsRef<str>,
+        host_func: F,
+        extra_allowed_syscalls: impl IntoIterator<Item = crate::sandbox::ExtraAllowedSyscall>,
+    ) -> Result<()>
+    where
+        F: IntoHostFunction<R, Args>,
+    {
+        let extra_allowed_syscalls: Vec<_> = extra_allowed_syscalls.into_iter().collect();
+        host_func
+            .into_host_function()
+            .register_with_extra_allowed_syscalls(self, name.as_ref(), extra_allowed_syscalls)
+    }
 }
 // Check to see if the current version of Windows is supported
 // Hyperlight is only supported on Windows 11 and Windows Server 2022 and later
@@ -355,7 +371,6 @@ mod tests {
     use tracing_core::Subscriber;
     use uuid::Uuid;
 
-    use crate::func::HostFunction;
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
@@ -516,9 +531,8 @@ mod tests {
         // simple register + call
         {
             let mut usbox = uninitialized_sandbox();
-            let test0 = |arg: i32| -> Result<i32> { Ok(arg + 1) };
-            let test_func0 = Arc::new(Mutex::new(test0));
-            test_func0.register(&mut usbox, "test0").unwrap();
+
+            usbox.register("test0", |arg: i32| Ok(arg + 1)).unwrap();
 
             let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
             assert!(sandbox.is_ok());
@@ -542,9 +556,8 @@ mod tests {
         // multiple parameters register + call
         {
             let mut usbox = uninitialized_sandbox();
-            let test1 = |arg1: i32, arg2: i32| -> Result<i32> { Ok(arg1 + arg2) };
-            let test_func1 = Arc::new(Mutex::new(test1));
-            test_func1.register(&mut usbox, "test1").unwrap();
+
+            usbox.register("test1", |a: i32, b: i32| Ok(a + b)).unwrap();
 
             let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
             assert!(sandbox.is_ok());
@@ -571,12 +584,13 @@ mod tests {
         // incorrect arguments register + call
         {
             let mut usbox = uninitialized_sandbox();
-            let test2 = |arg1: String| -> Result<()> {
-                println!("test2 called: {}", arg1);
-                Ok(())
-            };
-            let test_func2 = Arc::new(Mutex::new(test2));
-            test_func2.register(&mut usbox, "test2").unwrap();
+
+            usbox
+                .register("test2", |msg: String| {
+                    println!("test2 called: {}", msg);
+                    Ok(())
+                })
+                .unwrap();
 
             let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
             assert!(sandbox.is_ok());
