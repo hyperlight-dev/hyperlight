@@ -42,7 +42,7 @@ tempfile = { version = "3.20", optional = true }
 anyhow = "1.0"
 metrics = "0.24.2"
 serde_json = "1.0"
-elfcore = { git = "https://github.com/dblnz/elfcore.git", branch = "split-linux-impl-from-elfcore" }
+elfcore = { git = "https://github.com/dblnz/elfcore.git", rev = "1a57f04272dd54bc06df638f4027debe6d0f694f" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

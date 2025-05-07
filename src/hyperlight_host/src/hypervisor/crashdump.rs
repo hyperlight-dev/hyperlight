@@ -276,10 +276,7 @@ pub(crate) fn crashdump_to_tempfile(hv: &dyn Hypervisor) -> Result<()> {
     let memory_reader = GuestMemReader::new(&ctx);
 
     // Create and write core dump
-    let core_builder = CoreDumpBuilder::from_source(
-        Box::new(guest_view) as Box<dyn ProcessInfoSource>,
-        Box::new(memory_reader) as Box<dyn ReadProcessMemory>,
-    );
+    let core_builder = CoreDumpBuilder::from_source(guest_view, memory_reader);
 
     core_builder
         .write(&temp_file)
