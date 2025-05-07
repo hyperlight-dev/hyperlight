@@ -30,7 +30,7 @@ use super::mem_mgr::MemMgrWrapper;
 use super::run_options::SandboxRunOptions;
 use super::uninitialized_evolve::evolve_impl_multi_use;
 use crate::error::HyperlightError::GuestBinaryShouldBeAFile;
-use crate::func::host_functions::HostFunction1;
+use crate::func::host_functions::HostFunction;
 use crate::mem::exe::ExeInfo;
 use crate::mem::mgr::{SandboxMemoryManager, STACK_COOKIE_LEN};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
@@ -128,7 +128,7 @@ impl UninitializedSandbox {
         guest_binary: GuestBinary,
         cfg: Option<SandboxConfiguration>,
         sandbox_run_options: Option<SandboxRunOptions>,
-        host_print_writer: Option<&dyn HostFunction1<String, i32>>,
+        host_print_writer: Option<&dyn HostFunction<i32, (String,)>>,
     ) -> Result<Self> {
         log_build_details();
 
@@ -355,7 +355,7 @@ mod tests {
     use tracing_core::Subscriber;
     use uuid::Uuid;
 
-    use crate::func::{HostFunction1, HostFunction2};
+    use crate::func::HostFunction;
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox_state::sandbox::EvolvableSandbox;

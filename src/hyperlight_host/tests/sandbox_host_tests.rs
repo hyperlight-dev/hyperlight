@@ -18,7 +18,7 @@ use core::f64;
 use std::sync::{Arc, Mutex};
 
 use common::new_uninit;
-use hyperlight_host::func::{HostFunction1, ParameterValue, ReturnType, ReturnValue};
+use hyperlight_host::func::{HostFunction, ParameterValue, ReturnType, ReturnValue};
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;

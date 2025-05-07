@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-use hyperlight_host::func::HostFunction0;
+use hyperlight_host::func::HostFunction;
 #[cfg(gdb)]
 use hyperlight_host::sandbox::config::DebugInfo;
 use hyperlight_host::sandbox::SandboxConfiguration;

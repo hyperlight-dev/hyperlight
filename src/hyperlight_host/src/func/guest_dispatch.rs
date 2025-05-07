@@ -112,7 +112,7 @@ mod tests {
 
     use super::*;
     use crate::func::call_ctx::MultiUseGuestCallContext;
-    use crate::func::host_functions::HostFunction0;
+    use crate::func::host_functions::HostFunction;
     use crate::sandbox::is_hypervisor_present;
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox_state::sandbox::EvolvableSandbox;

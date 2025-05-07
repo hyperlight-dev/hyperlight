@@ -77,25 +77,5 @@ impl HyperlightFunction {
     }
 }
 
-/// Re-export for `HostFunction0` trait
-pub use host_functions::HostFunction0;
-/// Re-export for `HostFunction1` trait
-pub use host_functions::HostFunction1;
-/// Re-export for `HostFunction10` trait
-pub use host_functions::HostFunction10;
-/// Re-export for `HostFunction2` trait
-pub use host_functions::HostFunction2;
-/// Re-export for `HostFunction3` trait
-pub use host_functions::HostFunction3;
-/// Re-export for `HostFunction4` trait
-pub use host_functions::HostFunction4;
-/// Re-export for `HostFunction5` trait
-pub use host_functions::HostFunction5;
-/// Re-export for `HostFunction6` trait
-pub use host_functions::HostFunction6;
-/// Re-export for `HostFunction7` trait
-pub use host_functions::HostFunction7;
-/// Re-export for `HostFunction8` trait
-pub use host_functions::HostFunction8;
-/// Re-export for `HostFunction9` trait
-pub use host_functions::HostFunction9;
+/// Re-export for `HostFunction` trait
+pub use host_functions::HostFunction;
