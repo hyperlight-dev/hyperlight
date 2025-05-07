@@ -14,36 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::convert::TryFrom;
-use std::fmt::Debug;
-#[cfg(gdb)]
-use std::sync::{Arc, Mutex};
-
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region, KVM_MEM_READONLY};
+use kvm_bindings::{kvm_fpu, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use log::LevelFilter;
 use tracing::{instrument, Span};
 
-use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
-#[cfg(gdb)]
-use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
-#[cfg(gdb)]
-use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
-use super::{
-    HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
-    CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
-};
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::ptr::{GuestPtr, RawPtr};
-#[cfg(gdb)]
-use crate::HyperlightError;
-use crate::{log_then_return, new_error, Result};
+use super::HyperlightExit;
+use crate::regs::Registers;
+use crate::vm::Vm;
+use crate::{log_then_return, Result};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
-#[instrument(skip_all, parent = Span::current(), level = "Trace")]
 pub(crate) fn is_hypervisor_present() -> bool {
     if let Ok(kvm) = Kvm::new() {
         let api_version = kvm.get_api_version();
@@ -77,7 +58,7 @@ mod debug {
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::{new_error, Result};
 
-    impl KVMDriver {
+    impl KvmVm {
         /// Resets the debug information to disable debugging
         fn disable_debug(&mut self) -> Result<()> {
             let mut debug = KvmDebug::default();
@@ -273,282 +254,71 @@ mod debug {
     }
 }
 
-/// A Hypervisor driver for KVM on Linux
-pub(super) struct KVMDriver {
-    _kvm: Kvm,
-    _vm_fd: VmFd,
+/// A KVM implementation of a single-vcpu VM
+#[derive(Debug)]
+pub(super) struct KvmVm {
+    kvm_fd: Kvm,
+    vm_fd: VmFd,
     vcpu_fd: VcpuFd,
-    entrypoint: u64,
-    orig_rsp: GuestPtr,
-    mem_regions: Vec<MemoryRegion>,
-
-    #[cfg(gdb)]
-    debug: Option<KvmDebug>,
-    #[cfg(gdb)]
-    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
 }
 
-impl KVMDriver {
-    /// Create a new instance of a `KVMDriver`, with only control registers
-    /// set. Standard registers will not be set, and `initialise` must
-    /// be called to do so.
+impl KvmVm {
+    /// Create a new instance of a `KvmVm`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn new(
-        mem_regions: Vec<MemoryRegion>,
-        pml4_addr: u64,
-        entrypoint: u64,
-        rsp: u64,
-        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-    ) -> Result<Self> {
-        let kvm = Kvm::new()?;
+    pub(super) fn new() -> Result<Self> {
+        let kvm_fd = Kvm::new()?;
+        let vm_fd = kvm_fd.create_vm_with_type(0)?;
+        let vcpu_fd = vm_fd.create_vcpu(0)?;
 
-        let vm_fd = kvm.create_vm_with_type(0)?;
-
-        let perm_flags =
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
-
-        mem_regions.iter().enumerate().try_for_each(|(i, region)| {
-            let perm_flags = perm_flags.intersection(region.flags);
-            let kvm_region = kvm_userspace_memory_region {
-                slot: i as u32,
-                guest_phys_addr: region.guest_region.start as u64,
-                memory_size: (region.guest_region.end - region.guest_region.start) as u64,
-                userspace_addr: region.host_region.start as u64,
-                flags: match perm_flags {
-                    MemoryRegionFlags::READ => KVM_MEM_READONLY,
-                    _ => 0, // normal, RWX
-                },
-            };
-            unsafe { vm_fd.set_user_memory_region(kvm_region) }
-        })?;
-
-        let mut vcpu_fd = vm_fd.create_vcpu(0)?;
-        Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
-
-        #[cfg(gdb)]
-        let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
-            let mut debug = KvmDebug::new();
-            // Add breakpoint to the entry point address
-            debug.add_hw_breakpoint(&vcpu_fd, entrypoint)?;
-
-            (Some(debug), Some(gdb_conn))
-        } else {
-            (None, None)
-        };
-
-        let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
-
-        let ret = Self {
-            _kvm: kvm,
-            _vm_fd: vm_fd,
+        Ok(Self {
+            kvm_fd,
+            vm_fd,
             vcpu_fd,
-            entrypoint,
-            orig_rsp: rsp_gp,
-            mem_regions,
-
-            #[cfg(gdb)]
-            debug,
-            #[cfg(gdb)]
-            gdb_conn,
-        };
-
-        Ok(ret)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn setup_initial_sregs(vcpu_fd: &mut VcpuFd, pml4_addr: u64) -> Result<()> {
-        // setup paging and IA-32e (64-bit) mode
-        let mut sregs = vcpu_fd.get_sregs()?;
-        sregs.cr3 = pml4_addr;
-        sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT;
-        sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP;
-        sregs.efer = EFER_LME | EFER_LMA | EFER_SCE | EFER_NX;
-        sregs.cs.l = 1; // required for 64-bit mode
-        vcpu_fd.set_sregs(&sregs)?;
-        Ok(())
+        })
     }
 }
 
-impl Debug for KVMDriver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut f = f.debug_struct("KVM Driver");
-        // Output each memory region
-
-        for region in &self.mem_regions {
-            f.field("Memory Region", &region);
-        }
-        let regs = self.vcpu_fd.get_regs();
-        // check that regs is OK and then set field in debug struct
-
-        if let Ok(regs) = regs {
-            f.field("Registers", &regs);
-        }
-
-        let sregs = self.vcpu_fd.get_sregs();
-
-        // check that sregs is OK and then set field in debug struct
-
-        if let Ok(sregs) = sregs {
-            f.field("Special Registers", &sregs);
-        }
-
-        f.finish()
-    }
-}
-
-impl Hypervisor for KVMDriver {
-    /// Implementation of initialise for Hypervisor trait.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn initialise(
-        &mut self,
-        peb_addr: RawPtr,
-        seed: u64,
-        page_size: u32,
-        outb_hdl: OutBHandlerWrapper,
-        mem_access_hdl: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
-        max_guest_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        let max_guest_log_level: u64 = match max_guest_log_level {
-            Some(level) => level as u64,
-            None => self.get_max_log_level().into(),
-        };
-
-        let regs = kvm_regs {
-            rip: self.entrypoint,
-            rsp: self.orig_rsp.absolute()?,
-
-            // function args
-            rcx: peb_addr.into(),
-            rdx: seed,
-            r8: page_size.into(),
-            r9: max_guest_log_level,
-
-            ..Default::default()
-        };
-        self.vcpu_fd.set_regs(&regs)?;
-
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            hv_handler,
-            outb_hdl,
-            mem_access_hdl,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )?;
-
-        Ok(())
+impl Vm for KvmVm {
+    fn regs(&self) -> Result<Registers> {
+        let kvm_regs = self.vcpu_fd.get_regs()?;
+        Ok(kvm_regs.into())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn dispatch_call_from_host(
-        &mut self,
-        dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
-        mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        // Reset general purpose registers, then set RIP and RSP
-        let regs = kvm_regs {
-            rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
-            ..Default::default()
-        };
-        self.vcpu_fd.set_regs(&regs)?;
-
-        // reset fpu state
-        let fpu = kvm_fpu {
-            fcw: FP_CONTROL_WORD_DEFAULT,
-            ftwx: FP_TAG_WORD_DEFAULT,
-            mxcsr: MXCSR_DEFAULT,
-            ..Default::default() // zero out the rest
-        };
-        self.vcpu_fd.set_fpu(&fpu)?;
-
-        // run
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            hv_handler,
-            outb_handle_fn,
-            mem_access_fn,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )?;
-
-        Ok(())
+    fn set_regs(&self, regs: &Registers) -> Result<()> {
+        let kvm_regs = regs.into();
+        Ok(self.vcpu_fd.set_regs(&kvm_regs)?)
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        _rip: u64,
-        _instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
-    ) -> Result<()> {
-        // KVM does not need RIP or instruction length, as it automatically sets the RIP
-
-        // The payload param for the outb_handle_fn is the first byte
-        // of the data array cast to an u64. Thus, we need to make sure
-        // the data array has at least one u8, then convert that to an u64
-        if data.is_empty() {
-            log_then_return!("no data was given in IO interrupt");
-        } else {
-            let payload_u64 = u64::from(data[0]);
-            outb_handle_fn
-                .try_lock()
-                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .call(port, payload_u64)?;
-        }
-
-        Ok(())
+    fn sregs_kvm(&self) -> Result<kvm_sregs> {
+        Ok(self.vcpu_fd.get_sregs()?)
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(&mut self) -> Result<HyperlightExit> {
-        let exit_reason = self.vcpu_fd.run();
-        let result = match exit_reason {
-            Ok(VcpuExit::Hlt) => {
-                crate::debug!("KVM - Halt Details : {:#?}", &self);
-                HyperlightExit::Halt()
-            }
-            Ok(VcpuExit::IoOut(port, data)) => {
-                // because vcpufd.run() mutably borrows self we cannot pass self to crate::debug! macro here
-                crate::debug!("KVM IO Details : \nPort : {}\nData : {:?}", port, data);
-                // KVM does not need to set RIP or instruction length so these are set to 0
-                HyperlightExit::IoOut(port, data.to_vec(), 0, 0)
-            }
-            Ok(VcpuExit::MmioRead(addr, _)) => {
-                crate::debug!("KVM MMIO Read -Details: Address: {} \n {:#?}", addr, &self);
+    fn set_sregs_kvm(&self, sregs: &kvm_sregs) -> Result<()> {
+        Ok(self.vcpu_fd.set_sregs(sregs)?)
+    }
 
-                match self.get_memory_access_violation(
-                    addr as usize,
-                    &self.mem_regions,
-                    MemoryRegionFlags::READ,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
-            }
-            Ok(VcpuExit::MmioWrite(addr, _)) => {
-                crate::debug!("KVM MMIO Write -Details: Address: {} \n {:#?}", addr, &self);
+    fn fpu_regs(&self) -> Result<kvm_fpu> {
+        Ok(self.vcpu_fd.get_fpu()?)
+    }
 
-                match self.get_memory_access_violation(
-                    addr as usize,
-                    &self.mem_regions,
-                    MemoryRegionFlags::WRITE,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
-            }
+    fn set_fpu_regs(&self, fpu: &kvm_fpu) -> Result<()> {
+        Ok(self.vcpu_fd.set_fpu(fpu)?)
+    }
+
+    unsafe fn map_memory_kvm(&self, region: kvm_userspace_memory_region) -> Result<()> {
+        unsafe { Ok(self.vm_fd.set_user_memory_region(region)?) }
+    }
+
+    fn run_vcpu(&mut self) -> Result<VcpuExit> {
+        match self.vcpu_fd.run() {
+            Ok(VcpuExit::Hlt) => Ok(VcpuExit::Halt()),
+            Ok(VcpuExit::IoOut(port, data)) => Ok(VcpuExit::IoOut(port, data.to_vec(), 0, 0)),
+            Ok(VcpuExit::MmioRead(addr, _)) => Ok(VcpuExit::MmioRead(addr)),
+            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VcpuExit::MmioWrite(addr)),
             #[cfg(gdb)]
             // KVM provides architecture specific information about the vCPU state when exiting
             Ok(VcpuExit::Debug(debug_exit)) => match self.get_stop_reason(debug_exit) {
-                Ok(reason) => HyperlightExit::Debug(reason),
+                Ok(reason) => VcpuExit::Debug(reason),
                 Err(e) => {
                     log_then_return!("Error getting stop reason: {:?}", e);
                 }
@@ -558,11 +328,11 @@ impl Hypervisor for KVMDriver {
                 // exit is because of a signal sent from the gdb thread to the
                 // hypervisor thread to cancel execution
                 #[cfg(gdb)]
-                libc::EINTR => HyperlightExit::Debug(VcpuStopReason::Interrupt),
+                libc::EINTR => VcpuExit::Debug(VcpuStopReason::Interrupt),
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
                 #[cfg(not(gdb))]
-                libc::EINTR => HyperlightExit::Cancelled(),
-                libc::EAGAIN => HyperlightExit::Retry(),
+                libc::EINTR => Ok(VcpuExit::Cancelled()),
+                libc::EAGAIN => Ok(VcpuExit::Retry()),
                 _ => {
                     crate::debug!("KVM Error -Details: Address: {} \n {:#?}", e, &self);
                     log_then_return!("Error running VCPU {:?}", e);
@@ -571,117 +341,12 @@ impl Hypervisor for KVMDriver {
             Ok(other) => {
                 let err_msg = format!("Unexpected KVM Exit {:?}", other);
                 crate::debug!("KVM Other Exit Details: {:#?}", &self);
-                HyperlightExit::Unknown(err_msg)
-            }
-        };
-        Ok(result)
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
-    }
-
-    #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
-    }
-
-    #[cfg(gdb)]
-    fn handle_debug(
-        &mut self,
-        dbg_mem_access_fn: Arc<Mutex<dyn super::handlers::DbgMemAccessHandlerCaller>>,
-        stop_reason: VcpuStopReason,
-    ) -> Result<()> {
-        self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
-            .map_err(|e| new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e))?;
-
-        loop {
-            log::debug!("Debug wait for event to resume vCPU");
-            // Wait for a message from gdb
-            let req = self.recv_dbg_msg()?;
-
-            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
-
-            let response = match result {
-                Ok(response) => response,
-                // Treat non fatal errors separately so the guest doesn't fail
-                Err(HyperlightError::TranslateGuestAddress(_)) => DebugResponse::ErrorOccurred,
-                Err(e) => {
-                    return Err(e);
-                }
-            };
-
-            // If the command was either step or continue, we need to run the vcpu
-            let cont = matches!(
-                response,
-                DebugResponse::Step | DebugResponse::Continue | DebugResponse::DisableDebug
-            );
-
-            self.send_dbg_msg(response)
-                .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
-
-            if cont {
-                break;
+                Ok(VcpuExit::Unknown(err_msg))
             }
         }
-
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-
-    #[cfg(gdb)]
-    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
-    use crate::hypervisor::tests::test_initialise;
-    use crate::Result;
-
-    #[cfg(gdb)]
-    struct DbgMemAccessHandler {}
-
-    #[cfg(gdb)]
-    impl DbgMemAccessHandlerCaller for DbgMemAccessHandler {
-        fn read(&mut self, _offset: usize, _data: &mut [u8]) -> Result<()> {
-            Ok(())
-        }
-
-        fn write(&mut self, _offset: usize, _data: &[u8]) -> Result<()> {
-            Ok(())
-        }
-
-        fn get_code_offset(&mut self) -> Result<usize> {
-            Ok(0)
-        }
     }
 
-    #[test]
-    fn test_init() {
-        if !super::is_hypervisor_present() {
-            return;
-        }
-
-        let outb_handler: Arc<Mutex<OutBHandler>> = {
-            let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
-                Box::new(|_, _| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(OutBHandler::from(func)))
-        };
-        let mem_access_handler = {
-            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(MemAccessHandler::from(func)))
-        };
-        #[cfg(gdb)]
-        let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
-
-        test_initialise(
-            outb_handler,
-            mem_access_handler,
-            #[cfg(gdb)]
-            dbg_mem_access_handler,
-        )
-        .unwrap();
+    fn interrupt_handle(&self) -> crate::vm::InterruptHandle {
+        todo!()
     }
 }

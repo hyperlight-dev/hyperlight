@@ -13,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#![deny(dead_code, missing_docs, unused_mut)]
 //! This crate contains an SDK that is used to execute specially-
 // compiled binaries within a very lightweight hypervisor environment.
 
@@ -84,6 +83,9 @@ pub(crate) mod signal_handlers;
 /// and `callbackguest.exe`, our two most basic guest binaries for testing
 #[cfg(test)]
 pub(crate) mod testing;
+
+pub(crate) mod regs;
+pub(crate) mod vm;
 
 /// The re-export for the `HyperlightError` type
 pub use error::HyperlightError;

@@ -56,7 +56,7 @@ use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebu
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
-    Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
+    HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
     CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
@@ -448,7 +448,7 @@ impl Debug for HypervLinuxDriver {
     }
 }
 
-impl Hypervisor for HypervLinuxDriver {
+impl HyperlightVm for HypervLinuxDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
         &mut self,
@@ -653,8 +653,8 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
+    fn as_mut_hypervisor(&mut self) -> &mut dyn HyperlightVm {
+        self as &mut dyn HyperlightVm
     }
 
     #[cfg(crashdump)]

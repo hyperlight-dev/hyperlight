@@ -37,12 +37,13 @@ use windows::Win32::System::Hypervisor::{WHvCancelRunVirtualProcessor, WHV_PARTI
 
 #[cfg(gdb)]
 use super::gdb::create_gdb_thread;
+use super::hyperlight_vm::HyperlightSandbox;
 #[cfg(gdb)]
 use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
 use crate::hypervisor::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::hypervisor::Hypervisor;
+use crate::hypervisor::HyperlightVm;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -294,7 +295,7 @@ impl HypervisorHandler {
             thread::Builder::new()
                 .name("Hypervisor Handler".to_string())
                 .spawn(move || -> Result<()> {
-                    let mut hv: Option<Box<dyn Hypervisor>> = None;
+                    let mut hv: Option<Box<dyn HyperlightVm>> = None;
                     for action in to_handler_rx {
                         match action {
                             HypervisorHandlerAction::Initialise => {
@@ -835,7 +836,7 @@ fn set_up_hypervisor_partition(
     #[allow(unused_variables)] // parameter only used for in-process mode
     outb_handler: OutBHandlerWrapper,
     #[cfg(gdb)] debug_info: &Option<DebugInfo>,
-) -> Result<Box<dyn Hypervisor>> {
+) -> Result<Box<dyn HyperlightVm>> {
     let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
     let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
     let rsp_ptr = {
@@ -930,7 +931,7 @@ fn set_up_hypervisor_partition(
 
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => {
-                let hv = crate::hypervisor::kvm::KVMDriver::new(
+                let hv = HyperlightSandbox::new(
                     regions,
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
