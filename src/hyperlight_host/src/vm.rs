@@ -2,12 +2,14 @@
 use libc::SIGUSR1;
 
 use std::fmt::Debug;
+use std::sync::Mutex;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 
 use crate::fpuregs::CommonFpu;
+use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::MemoryRegion;
 use crate::regs::CommonRegisters;
@@ -24,11 +26,37 @@ pub(crate) trait Vm: Send + Sync + Debug {
     fn get_fpu(&self) -> Result<CommonFpu>;
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()>;
 
+    // Safety: Should only be called once, since memory slots will otherwise be overwritten on KVM
     unsafe fn map_memory(&self, region: &[MemoryRegion]) -> Result<()>;
 
     fn run_vcpu(&mut self) -> Result<HyperlightExit>;
 
+    fn translate_gva(&self, gva: u64) -> Result<u64>;
+
     fn interrupt_handle(&self) -> InterruptHandle;
+
+    // DEBUGGING
+    fn enable_debug(&mut self) -> Result<()>;
+
+    fn disable_debug(&mut self) -> Result<()>;
+
+    fn set_single_step(&mut self, enable: bool) -> Result<()>;
+
+    fn add_sw_breakpoint(
+        &mut self,
+        addr: u64,
+        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> Result<()>;
+
+    fn remove_sw_breakpoint(
+        &mut self,
+        addr: u64,
+        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> Result<()>;
+
+    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()>;
+
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()>;
 }
 
 pub(crate) struct InterruptHandle {

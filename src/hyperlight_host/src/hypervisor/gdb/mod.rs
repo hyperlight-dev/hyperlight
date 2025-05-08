@@ -15,10 +15,7 @@ limitations under the License.
 */
 
 mod event_loop;
-#[cfg(kvm)]
-mod kvm_debug;
-#[cfg(mshv)]
-mod mshv_debug;
+
 mod x86_64_target;
 
 use std::io::{self, ErrorKind};
@@ -32,38 +29,36 @@ use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
 use hyperlight_common::mem::PAGE_SIZE;
-#[cfg(kvm)]
-pub(crate) use kvm_debug::KvmDebug;
-#[cfg(mshv)]
-pub(crate) use mshv_debug::MshvDebug;
+
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
 use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
 use crate::mem::layout::SandboxMemoryLayout;
+use crate::regs::CommonRegisters;
 use crate::{new_error, HyperlightError};
 
 /// Software Breakpoint size in memory
-const SW_BP_SIZE: usize = 1;
+pub(crate) const SW_BP_SIZE: usize = 1;
 /// Software Breakpoint opcode - INT3
 /// Check page 7-28 Vol. 3A of Intel 64 and IA-32
 /// Architectures Software Developer's Manual
-const SW_BP_OP: u8 = 0xCC;
+pub(crate) const SW_BP_OP: u8 = 0xCC;
 /// Software Breakpoint written to memory
-const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
+pub(crate) const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
 /// Maximum number of supported hardware breakpoints
-const MAX_NO_OF_HW_BP: usize = 4;
+pub(crate) const MAX_NO_OF_HW_BP: usize = 4;
 
 /// Check page 19-4 Vol. 3B of Intel 64 and IA-32
 /// Architectures Software Developer's Manual
 /// Bit position of BS flag in DR6 debug register
-const DR6_BS_FLAG_POS: usize = 14;
+pub(crate) const DR6_BS_FLAG_POS: usize = 14;
 /// Bit mask of BS flag in DR6 debug register
-const DR6_BS_FLAG_MASK: u64 = 1 << DR6_BS_FLAG_POS;
+pub(crate) const DR6_BS_FLAG_MASK: u64 = 1 << DR6_BS_FLAG_POS;
 /// Bit position of HW breakpoints status in DR6 debug register
-const DR6_HW_BP_FLAGS_POS: usize = 0;
+pub(crate) const DR6_HW_BP_FLAGS_POS: usize = 0;
 /// Bit mask of HW breakpoints status in DR6 debug register
-const DR6_HW_BP_FLAGS_MASK: u64 = 0x0F << DR6_HW_BP_FLAGS_POS;
+pub(crate) const DR6_HW_BP_FLAGS_MASK: u64 = 0x0F << DR6_HW_BP_FLAGS_POS;
 
 #[derive(Debug, Error)]
 pub(crate) enum GdbTargetError {
@@ -149,7 +144,7 @@ pub(crate) enum DebugMsg {
     RemoveSwBreakpoint(u64),
     Step,
     WriteAddr(u64, Vec<u8>),
-    WriteRegisters(X86_64Regs),
+    WriteRegisters(CommonRegisters),
 }
 
 /// Enumerates the possible responses that a hypervisor can provide to a debugger
@@ -162,7 +157,7 @@ pub(crate) enum DebugResponse {
     ErrorOccurred,
     GetCodeSectionOffset(u64),
     ReadAddr(Vec<u8>),
-    ReadRegisters(X86_64Regs),
+    ReadRegisters(CommonRegisters),
     RemoveHwBreakpoint(bool),
     RemoveSwBreakpoint(bool),
     Step,
@@ -350,6 +345,7 @@ pub(crate) trait GuestDebug {
 
 /// Debug communication channel that is used for sending a request type and
 /// receive a different response type
+#[derive(Debug)]
 pub(crate) struct DebugCommChannel<T, U> {
     /// Transmit channel
     tx: Sender<T>,
@@ -444,7 +440,7 @@ mod tests {
         let res = gdb_conn.try_recv();
         assert!(res.is_err());
 
-        let res = hyp_conn.send(DebugResponse::ReadRegisters(X86_64Regs::default()));
+        let res = hyp_conn.send(DebugResponse::ReadRegisters(CommonRegisters::default()));
         assert!(res.is_ok());
 
         let res = gdb_conn.recv();

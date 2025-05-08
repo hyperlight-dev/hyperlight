@@ -47,219 +47,18 @@ use mshv_bindings2::{hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
-#[cfg(gdb)]
-use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug};
-#[cfg(gdb)]
-use super::handlers::DbgMemAccessHandlerWrapper;
+use super::gdb::{
+    DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, VcpuStopReason, DR6_BS_FLAG_MASK,
+    DR6_HW_BP_FLAGS_MASK,
+};
+use super::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use super::HyperlightExit;
 use crate::fpuregs::CommonFpu;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::regs::CommonRegisters;
 use crate::sregs::CommonSpecialRegisters;
 use crate::vm::Vm;
-#[cfg(gdb)]
-use crate::HyperlightError;
-use crate::{log_then_return, HyperlightError, Result};
-
-#[cfg(gdb)]
-mod debug {
-    use std::sync::{Arc, Mutex};
-
-    use super::{HypervLinuxDriver, *};
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
-    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-    use crate::{new_error, Result};
-
-    impl MshvVm {
-        /// Resets the debug information to disable debugging
-        fn disable_debug(&mut self) -> Result<()> {
-            let mut debug = MshvDebug::default();
-
-            debug.set_single_step(&self.vcpu_fd, false)?;
-
-            self.debug = Some(debug);
-
-            Ok(())
-        }
-
-        /// Get the reason the vCPU has stopped
-        pub(crate) fn get_stop_reason(&mut self) -> Result<VcpuStopReason> {
-            let debug = self
-                .debug
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            debug.get_stop_reason(&self.vcpu_fd, self.entrypoint)
-        }
-
-        pub(crate) fn process_dbg_request(
-            &mut self,
-            req: DebugMsg,
-            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
-        ) -> Result<DebugResponse> {
-            if let Some(debug) = self.debug.as_mut() {
-                match req {
-                    DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
-                        debug
-                            .add_hw_breakpoint(&self.vcpu_fd, addr)
-                            .map_err(|e| {
-                                log::error!("Failed to add hw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
-                        debug
-                            .add_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to add sw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::Continue => {
-                        debug.set_single_step(&self.vcpu_fd, false).map_err(|e| {
-                            log::error!("Failed to continue execution: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::Continue)
-                    }
-                    DebugMsg::DisableDebug => {
-                        self.disable_debug().map_err(|e| {
-                            log::error!("Failed to disable debugging: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::DisableDebug)
-                    }
-                    DebugMsg::GetCodeSectionOffset => {
-                        let offset = dbg_mem_access_fn
-                            .try_lock()
-                            .map_err(|e| {
-                                new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
-                            })?
-                            .get_code_offset()
-                            .map_err(|e| {
-                                log::error!("Failed to get code offset: {:?}", e);
-
-                                e
-                            })?;
-
-                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
-                    }
-                    DebugMsg::ReadAddr(addr, len) => {
-                        let mut data = vec![0u8; len];
-
-                        debug
-                            .read_addrs(&self.vcpu_fd, addr, &mut data, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to read from address: {:?}", e);
-
-                                e
-                            })?;
-
-                        Ok(DebugResponse::ReadAddr(data))
-                    }
-                    DebugMsg::ReadRegisters => {
-                        let mut regs = X86_64Regs::default();
-
-                        debug
-                            .read_regs(&self.vcpu_fd, &mut regs)
-                            .map_err(|e| {
-                                log::error!("Failed to read registers: {:?}", e);
-
-                                e
-                            })
-                            .map(|_| DebugResponse::ReadRegisters(regs))
-                    }
-                    DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
-                        debug
-                            .remove_hw_breakpoint(&self.vcpu_fd, addr)
-                            .map_err(|e| {
-                                log::error!("Failed to remove hw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
-                        debug
-                            .remove_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to remove sw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::Step => {
-                        debug.set_single_step(&self.vcpu_fd, true).map_err(|e| {
-                            log::error!("Failed to enable step instruction: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::Step)
-                    }
-                    DebugMsg::WriteAddr(addr, data) => {
-                        debug
-                            .write_addrs(&self.vcpu_fd, addr, &data, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to write to address: {:?}", e);
-
-                                e
-                            })?;
-
-                        Ok(DebugResponse::WriteAddr)
-                    }
-                    DebugMsg::WriteRegisters(regs) => debug
-                        .write_regs(&self.vcpu_fd, &regs)
-                        .map_err(|e| {
-                            log::error!("Failed to write registers: {:?}", e);
-
-                            e
-                        })
-                        .map(|_| DebugResponse::WriteRegisters),
-                }
-            } else {
-                Err(new_error!("Debugging is not enabled"))
-            }
-        }
-
-        pub(crate) fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
-            let gdb_conn = self
-                .gdb_conn
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            gdb_conn.recv().map_err(|e| {
-                new_error!(
-                    "Got an error while waiting to receive a
-                    message: {:?}",
-                    e
-                )
-            })
-        }
-
-        pub(crate) fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
-            log::debug!("Sending {:?}", cmd);
-
-            let gdb_conn = self
-                .gdb_conn
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            gdb_conn
-                .send(cmd)
-                .map_err(|e| new_error!("Got an error while sending a response message {:?}", e))
-        }
-    }
-}
+use crate::{log_then_return, new_error, HyperlightError, Result};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -315,31 +114,46 @@ impl MshvVm {
         })
     }
 
-    // #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    // fn setup_initial_sregs(vcpu: &mut VcpuFd, pml4_addr: u64) -> Result<()> {
-    //     let sregs = SpecialRegisters {
-    //         cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
-    //         cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
-    //         cr3: pml4_addr,
-    //         efer: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
-    //         cs: SegmentRegister {
-    //             type_: 11,
-    //             present: 1,
-    //             s: 1,
-    //             l: 1,
-    //             ..Default::default()
-    //         },
-    //         tr: SegmentRegister {
-    //             limit: 65535,
-    //             type_: 11,
-    //             present: 1,
-    //             ..Default::default()
-    //         },
-    //         ..Default::default()
-    //     };
-    //     vcpu.set_sregs(&sregs)?;
-    //     Ok(())
-    // }
+    /// TODO this has been slightly modified in this PR
+    pub(crate) fn get_stop_reason(&mut self) -> Result<VcpuStopReason> {
+        // MSHV does not provide info on the vCPU exits but the debug
+        // information can be retrieved from the DEBUG REGISTERS
+        let regs = self
+            .vcpu_fd
+            .get_debug_regs()
+            .map_err(|e| new_error!("Cannot retrieve debug registers from vCPU: {}", e))?;
+
+        // DR6 register contains debug state related information
+        let debug_status = regs.dr6;
+
+        // If the BS flag in DR6 register is set, it means a single step
+        // instruction triggered the exit
+        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
+        // Architectures Software Developer's Manual
+        if debug_status & DR6_BS_FLAG_MASK != 0 {
+            return Ok(VcpuStopReason::DoneStep);
+        }
+
+        // If any of the B0-B3 flags in DR6 register is set, it means a
+        // hardware breakpoint triggered the exit
+        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
+        // Architectures Software Developer's Manual
+        if debug_status & DR6_HW_BP_FLAGS_MASK != 0 {
+            return Ok(VcpuStopReason::HwBp);
+        }
+
+        // TODO fix this
+
+        // mshv does not provide a way to specify which exception triggered the
+        // vCPU exit as the mshv intercepts both #DB and #BP
+        // We check against the SW breakpoints Hashmap to detect whether the
+        // vCPU exited due to a SW breakpoint
+        // if self.sw_breakpoints.contains_key(&gpa) {
+        //     return Ok(VcpuStopReason::SwBp);
+        // }
+
+        Ok(VcpuStopReason::Unknown)
+    }
 }
 
 impl Vm for MshvVm {
@@ -477,6 +291,46 @@ impl Vm for MshvVm {
     }
 
     fn interrupt_handle(&self) -> crate::vm::InterruptHandle {
+        todo!()
+    }
+
+    fn translate_gva(&self, gva: u64) -> Result<u64> {
+        todo!()
+    }
+
+    fn enable_debug(&mut self) -> Result<()> {
+        todo!()
+    }
+
+    fn disable_debug(&mut self) -> Result<()> {
+        todo!()
+    }
+
+    fn set_single_step(&mut self, enable: bool) -> Result<()> {
+        todo!()
+    }
+
+    fn add_sw_breakpoint(
+        &mut self,
+        addr: u64,
+        dbg_mem_access_fn: std::sync::Arc<std::sync::Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    fn remove_sw_breakpoint(
+        &mut self,
+        addr: u64,
+        dbg_mem_access_fn: std::sync::Arc<std::sync::Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        todo!()
+    }
+
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         todo!()
     }
 }

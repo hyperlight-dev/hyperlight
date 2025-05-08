@@ -161,6 +161,7 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
         hv_handler: Option<HypervisorHandler>,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
 
     /// Get the logging level to pass to the guest entrypoint
@@ -213,9 +214,7 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
         &mut self,
         _dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         _stop_reason: VcpuStopReason,
-    ) -> Result<()> {
-        unimplemented!()
-    }
+    ) -> Result<()>;
 }
 
 #[cfg(all(test, any(target_os = "windows", kvm)))]

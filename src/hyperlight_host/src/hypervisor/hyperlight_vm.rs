@@ -20,15 +20,13 @@ use crate::HyperlightError::ExecutionCanceledByHost;
 use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
-#[cfg(gdb)]
-use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
 use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
+use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, VcpuStopReason};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{
@@ -46,58 +44,32 @@ use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
 use crate::regs::CommonRegisters;
 use crate::vm::Vm;
-#[cfg(gdb)]
 use crate::HyperlightError;
-use crate::{log_then_return, new_error, HyperlightError, Result};
+use crate::{log_then_return, new_error, Result};
 
 #[cfg(gdb)]
 mod debug {
     use std::sync::{Arc, Mutex};
 
-    use kvm_bindings::kvm_debug_exit_arch;
+    use hyperlight_common::mem::PAGE_SIZE;
 
-    use super::KVMDriver;
-    use crate::hypervisor::gdb::{
-        DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason, X86_64Regs,
-    };
+    use super::HyperlightSandbox;
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, GuestDebug, VcpuStopReason, X86_64Regs};
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-    use crate::{new_error, Result};
+    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::{new_error, HyperlightError, Result};
 
     impl HyperlightSandbox {
-        /// Resets the debug information to disable debugging
-        fn disable_debug(&mut self) -> Result<()> {
-            let mut debug = KvmDebug::default();
-
-            debug.set_single_step(&self.vcpu_fd, false)?;
-
-            self.debug = Some(debug);
-
-            Ok(())
-        }
-
-        /// Get the reason the vCPU has stopped
-        pub(crate) fn get_stop_reason(
-            &mut self,
-            debug_exit: kvm_debug_exit_arch,
-        ) -> Result<VcpuStopReason> {
-            let debug = self
-                .debug
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            debug.get_stop_reason(&self.vcpu_fd, debug_exit, self.entrypoint)
-        }
-
         pub(crate) fn process_dbg_request(
             &mut self,
             req: DebugMsg,
             dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         ) -> Result<DebugResponse> {
-            if let Some(debug) = self.debug.as_mut() {
+            if let Some(debug) = self.gdb_conn.as_mut() {
                 match req {
                     DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
-                        debug
-                            .add_hw_breakpoint(&self.vcpu_fd, addr)
+                        self.vm
+                            .add_hw_breakpoint(addr)
                             .map_err(|e| {
                                 log::error!("Failed to add hw breakpoint: {:?}", e);
 
@@ -106,8 +78,8 @@ mod debug {
                             .is_ok(),
                     )),
                     DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
-                        debug
-                            .add_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                        self.vm
+                            .add_sw_breakpoint(addr, dbg_mem_access_fn)
                             .map_err(|e| {
                                 log::error!("Failed to add sw breakpoint: {:?}", e);
 
@@ -116,7 +88,7 @@ mod debug {
                             .is_ok(),
                     )),
                     DebugMsg::Continue => {
-                        debug.set_single_step(&self.vcpu_fd, false).map_err(|e| {
+                        self.vm.set_single_step(false).map_err(|e| {
                             log::error!("Failed to continue execution: {:?}", e);
 
                             e
@@ -125,7 +97,7 @@ mod debug {
                         Ok(DebugResponse::Continue)
                     }
                     DebugMsg::DisableDebug => {
-                        self.disable_debug().map_err(|e| {
+                        self.vm.disable_debug().map_err(|e| {
                             log::error!("Failed to disable debugging: {:?}", e);
 
                             e
@@ -151,8 +123,7 @@ mod debug {
                     DebugMsg::ReadAddr(addr, len) => {
                         let mut data = vec![0u8; len];
 
-                        debug
-                            .read_addrs(&self.vcpu_fd, addr, &mut data, dbg_mem_access_fn)
+                        self.read_addrs(addr, &mut data, dbg_mem_access_fn)
                             .map_err(|e| {
                                 log::error!("Failed to read from address: {:?}", e);
 
@@ -161,21 +132,18 @@ mod debug {
 
                         Ok(DebugResponse::ReadAddr(data))
                     }
-                    DebugMsg::ReadRegisters => {
-                        let mut regs = X86_64Regs::default();
+                    DebugMsg::ReadRegisters => self
+                        .vm
+                        .get_regs()
+                        .map_err(|e| {
+                            log::error!("Failed to read registers: {:?}", e);
 
-                        debug
-                            .read_regs(&self.vcpu_fd, &mut regs)
-                            .map_err(|e| {
-                                log::error!("Failed to read registers: {:?}", e);
-
-                                e
-                            })
-                            .map(|_| DebugResponse::ReadRegisters(regs))
-                    }
+                            e
+                        })
+                        .map(|regs| DebugResponse::ReadRegisters(regs)),
                     DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
-                        debug
-                            .remove_hw_breakpoint(&self.vcpu_fd, addr)
+                        self.vm
+                            .remove_hw_breakpoint(addr)
                             .map_err(|e| {
                                 log::error!("Failed to remove hw breakpoint: {:?}", e);
 
@@ -184,8 +152,8 @@ mod debug {
                             .is_ok(),
                     )),
                     DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
-                        debug
-                            .remove_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                        self.vm
+                            .remove_sw_breakpoint(addr, dbg_mem_access_fn)
                             .map_err(|e| {
                                 log::error!("Failed to remove sw breakpoint: {:?}", e);
 
@@ -194,7 +162,7 @@ mod debug {
                             .is_ok(),
                     )),
                     DebugMsg::Step => {
-                        debug.set_single_step(&self.vcpu_fd, true).map_err(|e| {
+                        self.vm.set_single_step(true).map_err(|e| {
                             log::error!("Failed to enable step instruction: {:?}", e);
 
                             e
@@ -203,8 +171,7 @@ mod debug {
                         Ok(DebugResponse::Step)
                     }
                     DebugMsg::WriteAddr(addr, data) => {
-                        debug
-                            .write_addrs(&self.vcpu_fd, addr, &data, dbg_mem_access_fn)
+                        self.write_addrs(addr, &data, dbg_mem_access_fn)
                             .map_err(|e| {
                                 log::error!("Failed to write to address: {:?}", e);
 
@@ -213,8 +180,9 @@ mod debug {
 
                         Ok(DebugResponse::WriteAddr)
                     }
-                    DebugMsg::WriteRegisters(regs) => debug
-                        .write_regs(&self.vcpu_fd, &regs)
+                    DebugMsg::WriteRegisters(regs) => self
+                        .vm
+                        .set_regs(&regs)
                         .map_err(|e| {
                             log::error!("Failed to write registers: {:?}", e);
 
@@ -256,6 +224,82 @@ mod debug {
                 )
             })
         }
+
+        fn read_addrs(
+            &mut self,
+            mut gva: u64,
+            mut data: &mut [u8],
+            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        ) -> crate::Result<()> {
+            let data_len = data.len();
+            log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
+
+            while !data.is_empty() {
+                let gpa = self.vm.translate_gva(gva)?;
+
+                let read_len = std::cmp::min(
+                    data.len(),
+                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                );
+                let offset = (gpa as usize)
+                    .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
+                    .ok_or_else(|| {
+                        log::warn!(
+                            "gva=0x{:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
+                            gva, gpa, SandboxMemoryLayout::BASE_ADDRESS);
+                        HyperlightError::TranslateGuestAddress(gva)
+                    })?;
+
+                dbg_mem_access_fn
+                    .try_lock()
+                    .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                    .read(offset, &mut data[..read_len])?;
+
+                data = &mut data[read_len..];
+                gva += read_len as u64;
+            }
+
+            Ok(())
+        }
+
+        /// Copies the data from the provided slice to the guest memory address
+        /// The address is checked to be a valid guest address
+        fn write_addrs(
+            &mut self,
+            mut gva: u64,
+            mut data: &[u8],
+            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        ) -> crate::Result<()> {
+            let data_len = data.len();
+            log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
+
+            while !data.is_empty() {
+                let gpa = self.vm.translate_gva(gva)?;
+
+                let write_len = std::cmp::min(
+                    data.len(),
+                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                );
+                let offset = (gpa as usize)
+                .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
+                .ok_or_else(|| {
+                    log::warn!(
+                        "gva=0x{:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
+                        gva, gpa, SandboxMemoryLayout::BASE_ADDRESS);
+                    HyperlightError::TranslateGuestAddress(gva)
+                })?;
+
+                dbg_mem_access_fn
+                    .try_lock()
+                    .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                    .write(offset, data)?;
+
+                data = &data[write_len..];
+                gva += write_len as u64;
+            }
+
+            Ok(())
+        }
     }
 }
 
@@ -266,9 +310,6 @@ pub(super) struct HyperlightSandbox {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
-
-    #[cfg(gdb)]
-    debug: Option<KvmDebug>,
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
 }
@@ -283,7 +324,7 @@ impl HyperlightSandbox {
         rsp: u64,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
-        let vm: Box<dyn Vm> = match hv {
+        let mut vm: Box<dyn Vm> = match hv {
             HypervisorType::Kvm => Box::new(KvmVm::new()?),
             HypervisorType::Mshv => Box::new(MshvVm::new()?),
             _ => {
@@ -305,14 +346,14 @@ impl HyperlightSandbox {
         vm.set_sregs(&sregs)?;
 
         #[cfg(gdb)]
-        let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
-            let mut debug = KvmDebug::new();
+        let gdb_conn = if let Some(gdb_conn) = gdb_conn {
             // Add breakpoint to the entry point address
-            debug.add_hw_breakpoint(&vcpu_fd, entrypoint)?;
+            vm.enable_debug()?;
+            vm.add_hw_breakpoint(entrypoint)?;
 
-            (Some(debug), Some(gdb_conn))
+            Some(gdb_conn)
         } else {
-            (None, None)
+            None
         };
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
@@ -323,8 +364,6 @@ impl HyperlightSandbox {
             orig_rsp: rsp_gp,
             mem_regions: mem_regions,
 
-            #[cfg(gdb)]
-            debug,
             #[cfg(gdb)]
             gdb_conn,
         };
@@ -446,12 +485,13 @@ impl HyperlightVm for HyperlightSandbox {
         hv_handler: Option<HypervisorHandler>,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         loop {
             match self.vm.run_vcpu() {
                 #[cfg(gdb)]
                 Ok(HyperlightExit::Debug(stop_reason)) => {
-                    if let Err(e) = hv.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
+                    if let Err(e) = self.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
                         log_then_return!(e);
                     }
                 }
@@ -583,6 +623,7 @@ impl HyperlightVm for HyperlightSandbox {
             log::debug!("Debug wait for event to resume vCPU");
             // Wait for a message from gdb
             let req = self.recv_dbg_msg()?;
+            log::info!("GDB request: {:?}", req);
 
             let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
 
