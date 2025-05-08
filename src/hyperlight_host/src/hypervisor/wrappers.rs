@@ -80,6 +80,18 @@ pub(super) struct WHvGeneralRegisters {
     pub rflags: u64,
 }
 
+/// only used on widos for handling debug registers with the VMProcessor
+#[cfg(gdb)]
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub(super) struct WHvDebugRegisters {
+    pub dr0: u64,
+    pub dr1: u64,
+    pub dr2: u64,
+    pub dr3: u64,
+    pub dr6: u64,
+    pub dr7: u64,
+}
+
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub(super) struct WHvFPURegisters {
     pub xmm0: u128,
