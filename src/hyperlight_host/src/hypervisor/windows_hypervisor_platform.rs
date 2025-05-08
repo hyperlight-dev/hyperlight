@@ -518,14 +518,19 @@ impl VMProcessor {
             WHV_REGISTER_VALUE { Reg64: regs.dr7 },
         ];
 
-        unsafe {
+        let ret_val = unsafe {
             WHvSetVirtualProcessorRegisters(
                 self.get_partition_hdl(),
                 0,
                 names.as_ptr(),
                 LEN as u32,
                 values.as_ptr(),
-            )?
+            )
+        };
+
+        if ret_val.is_err() {
+            println!("Failed to set debug registers: {:?}", ret_val);
+            return Err(new_error!("Call to WHvSetVirtualProcessorRegisters failed"));
         }
 
         Ok(())
