@@ -20,7 +20,7 @@ use gdbstub::stub::{
     BaseStopReason, DisconnectReason, GdbStub, SingleThreadStopReason, run_blocking,
 };
 #[cfg(target_os = "linux")]
-use libc::{SIGRTMIN, pthread_kill};
+use libc::SIGRTMIN;
 
 use super::x86_64_target::HyperlightSandboxTarget;
 use super::{DebugResponse, GdbTargetError, VcpuStopReason};
@@ -55,14 +55,14 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                         VcpuStopReason::EntryPointBp => BaseStopReason::HwBreak(()),
                         // This is a consequence of the GDB client sending an interrupt signal
                         // to the target thread
-                        VcpuStopReason::Interrupt => BaseStopReason::SignalWithThread {
-                            tid: (),
+                        VcpuStopReason::Interrupt => {
                             #[cfg(target_os = "linux")]
-                            signal: Signal(SIGRTMIN() as u8),
+                            let signal = Signal(SIGRTMIN() as u8);
                             #[cfg(target_os = "windows")]
-                            // TODO: Handle the signal properly
-                            signal: Signal(53u8),
-                        },
+                            let signal = Signal(53u8); // SIGINT on Windows
+
+                            BaseStopReason::SignalWithThread { tid: (), signal }
+                        }
                         VcpuStopReason::Unknown => {
                             log::warn!("Unknown stop reason received");
 
@@ -106,18 +106,9 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
         log::info!("Received interrupt from GDB client - sending signal to target thread");
 
         // Send a signal to the target thread to interrupt it
-        #[cfg(target_os = "linux")]
-        let ret = unsafe { pthread_kill(target.get_thread_id(), SIGRTMIN()) };
+        let res = target.interrupt_vcpu();
 
-        #[cfg(target_os = "windows")]
-        let ret = {
-            // TODO: Implement Windows signal sending
-            libc::ESRCH
-        };
-
-        log::info!("pthread_kill returned {}", ret);
-
-        if ret < 0 && ret != libc::ESRCH {
+        if !res {
             log::error!("Failed to send signal to target thread");
             return Err(GdbTargetError::SendSignalError);
         }

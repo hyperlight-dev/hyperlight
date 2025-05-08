@@ -319,7 +319,7 @@ impl VirtualCPU {
 }
 
 /// A trait for handling interrupts to a sandbox's vcpu
-pub trait InterruptHandle: Send + Sync {
+pub trait InterruptHandle: Debug + Send + Sync {
     /// Interrupt the corresponding sandbox from running.
     ///
     /// - If this is called while the vcpu is running, then it will interrupt the vcpu and return `true`.

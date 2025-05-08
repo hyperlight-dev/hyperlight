@@ -18,11 +18,11 @@ use std::collections::HashMap;
 
 use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
 
-use super::arch::{vcpu_stop_reason, MAX_NO_OF_HW_BP};
-use super::{GuestDebug, VcpuStopReason, X86_64Regs, SW_BP_SIZE};
+use super::arch::{MAX_NO_OF_HW_BP, vcpu_stop_reason};
+use super::{GuestDebug, SW_BP_SIZE, VcpuStopReason, X86_64Regs};
 use crate::hypervisor::windows_hypervisor_platform::VMProcessor;
 use crate::hypervisor::wrappers::{WHvDebugRegisters, WHvGeneralRegisters};
-use crate::{new_error, HyperlightError, Result};
+use crate::{HyperlightError, Result, new_error};
 
 /// KVM Debug struct
 /// This struct is used to abstract the internal details of the kvm
