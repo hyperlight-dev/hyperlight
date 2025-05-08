@@ -898,7 +898,13 @@ fn set_up_hypervisor_partition(
         // This is only done when the hypervisor is not in-process
         #[cfg(gdb)]
         let gdb_conn = if let Some(DebugInfo { port }) = debug_info {
-            let gdb_conn = create_gdb_thread(*port, unsafe { pthread_self() });
+            #[cfg(target_os = "linux")]
+            let thread_id = unsafe { pthread_self() };
+            #[cfg(target_os = "windows")]
+            // TODO: Implement Windows thread id retrieval
+            let thread_id = 0;
+
+            let gdb_conn = create_gdb_thread(*port, thread_id);
 
             // in case the gdb thread creation fails, we still want to continue
             // without gdb
@@ -954,6 +960,8 @@ fn set_up_hypervisor_partition(
                     entrypoint_ptr.absolute()?,
                     rsp_ptr.absolute()?,
                     HandleWrapper::from(mmap_file_handle),
+                    #[cfg(gdb)]
+                    gdb_conn,
                 )?;
                 Ok(Box::new(hv))
             }

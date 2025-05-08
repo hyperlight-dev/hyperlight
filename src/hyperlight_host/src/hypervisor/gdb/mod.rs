@@ -16,6 +16,8 @@ limitations under the License.
 
 mod arch;
 mod event_loop;
+#[cfg(target_os = "windows")]
+mod hyperv_debug;
 #[cfg(kvm)]
 mod kvm_debug;
 #[cfg(mshv)]
@@ -34,6 +36,8 @@ use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
 use hyperlight_common::mem::PAGE_SIZE;
+#[cfg(target_os = "windows")]
+pub(crate) use hyperv_debug::HypervDebug;
 #[cfg(kvm)]
 pub(crate) use kvm_debug::KvmDebug;
 #[cfg(mshv)]
@@ -156,7 +160,7 @@ pub(crate) enum DebugResponse {
 }
 
 /// This trait is used to define common debugging functionality for Hypervisors
-pub(crate) trait GuestDebug {
+pub(super) trait GuestDebug {
     /// Type that wraps the vCPU functionality
     type Vcpu;
 
