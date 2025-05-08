@@ -87,8 +87,8 @@ macro_rules! impl_host_function {
             impl<R $(, $P)*, F> HostFunction<R, ($($P,)*)> for Arc<Mutex<F>>
             where
                 F: FnMut($($P),*) -> Result<R> + Send + 'static,
-                $($P: SupportedParameterType<$P> + Clone,)*
-                R: SupportedReturnType<R>,
+                $($P: SupportedParameterType + Clone,)*
+                R: SupportedReturnType,
             {
                 /// Register the host function with the given name in the sandbox.
                 #[instrument(
@@ -162,8 +162,8 @@ macro_rules! impl_host_function {
             ) -> Result<()>
             where
                 T: FnMut($($P),*) -> Result<R> + Send + 'static,
-                $($P: SupportedParameterType<$P> + Clone,)*
-                R: SupportedReturnType<R>,
+                $($P: SupportedParameterType + Clone,)*
+                R: SupportedReturnType,
             {
                 const N: usize = impl_host_function!(@count $($P),*);
                 let cloned = self_.clone();

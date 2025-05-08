@@ -21,7 +21,7 @@ use crate::HyperlightError::ReturnValueConversionFailure;
 use crate::{log_then_return, Result};
 
 /// This is a marker trait that is used to indicate that a type is a valid Hyperlight return type.
-pub trait SupportedReturnType<T> {
+pub trait SupportedReturnType: Sized {
     /// Gets the return type of the supported return value
     fn get_hyperlight_type() -> ReturnType;
 
@@ -29,10 +29,10 @@ pub trait SupportedReturnType<T> {
     fn get_hyperlight_value(&self) -> ReturnValue;
 
     /// Gets the inner value of the supported return type
-    fn get_inner(a: ReturnValue) -> Result<T>;
+    fn get_inner(a: ReturnValue) -> Result<Self>;
 }
 
-impl SupportedReturnType<()> for () {
+impl SupportedReturnType for () {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_hyperlight_type() -> ReturnType {
         ReturnType::Void
@@ -54,7 +54,7 @@ impl SupportedReturnType<()> for () {
     }
 }
 
-impl SupportedReturnType<String> for String {
+impl SupportedReturnType for String {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_hyperlight_type() -> ReturnType {
         ReturnType::String
@@ -76,7 +76,7 @@ impl SupportedReturnType<String> for String {
     }
 }
 
-impl SupportedReturnType<i32> for i32 {
+impl SupportedReturnType for i32 {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_hyperlight_type() -> ReturnType {
         ReturnType::Int
@@ -98,7 +98,7 @@ impl SupportedReturnType<i32> for i32 {
     }
 }
 
-impl SupportedReturnType<u32> for u32 {
+impl SupportedReturnType for u32 {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_hyperlight_type() -> ReturnType {
         ReturnType::UInt
@@ -120,7 +120,7 @@ impl SupportedReturnType<u32> for u32 {
     }
 }
 
-impl SupportedReturnType<i64> for i64 {
+impl SupportedReturnType for i64 {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_hyperlight_type() -> ReturnType {
         ReturnType::Long
@@ -142,7 +142,7 @@ impl SupportedReturnType<i64> for i64 {
     }
 }
 
-impl SupportedReturnType<u64> for u64 {
+impl SupportedReturnType for u64 {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_hyperlight_type() -> ReturnType {
         ReturnType::ULong
@@ -164,7 +164,7 @@ impl SupportedReturnType<u64> for u64 {
     }
 }
 
-impl SupportedReturnType<bool> for bool {
+impl SupportedReturnType for bool {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_hyperlight_type() -> ReturnType {
         ReturnType::Bool
@@ -186,7 +186,7 @@ impl SupportedReturnType<bool> for bool {
     }
 }
 
-impl SupportedReturnType<Vec<u8>> for Vec<u8> {
+impl SupportedReturnType for Vec<u8> {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_hyperlight_type() -> ReturnType {
         ReturnType::VecBytes
