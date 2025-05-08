@@ -16,7 +16,6 @@ limitations under the License.
 
 use log::LevelFilter;
 
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::Result;
 
 /// Util for handling x87 fpu state
@@ -98,7 +97,7 @@ pub enum HyperlightExit {
     /// The vCPU has halted
     Halt(),
     /// The vCPU has issued a write to the given port with the given value
-    IoOut(u16, Vec<u8>, u64, u64),
+    IoOut(u16, Vec<u8>),
     /// The vCPU tried to read from the given (unmapped) addr
     MmioRead(u64),
     /// The vCPU tried to write to the given (unmapped) addr
@@ -153,8 +152,6 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
         &mut self,
         port: u16,
         data: Vec<u8>,
-        rip: u64,
-        instruction_length: u64,
         outb_handle_fn: OutBHandlerWrapper,
     ) -> Result<()>;
 
@@ -202,9 +199,6 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
         // If no value is found, default to Error
         LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
     }
-
-    /// get a mutable trait object from self
-    fn as_mut_hypervisor(&mut self) -> &mut dyn HyperlightVm;
 
     /// Get the partition handle for WHP
     #[cfg(target_os = "windows")]

@@ -14,13 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use kvm_bindings::{kvm_fpu, kvm_sregs, kvm_userspace_memory_region};
+use kvm_bindings::{kvm_userspace_memory_region, KVM_MEM_READONLY};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
 use super::HyperlightExit;
-use crate::regs::Registers;
+use crate::fpuregs::CommonFpu;
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::regs::CommonRegisters;
+use crate::sregs::CommonSpecialRegisters;
 use crate::vm::Vm;
 use crate::{log_then_return, Result};
 
@@ -279,42 +282,55 @@ impl KvmVm {
 }
 
 impl Vm for KvmVm {
-    fn regs(&self) -> Result<Registers> {
+    fn get_regs(&self) -> Result<CommonRegisters> {
         let kvm_regs = self.vcpu_fd.get_regs()?;
         Ok(kvm_regs.into())
     }
 
-    fn set_regs(&self, regs: &Registers) -> Result<()> {
-        let kvm_regs = regs.into();
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
+        let kvm_regs = regs.clone().into();
         Ok(self.vcpu_fd.set_regs(&kvm_regs)?)
     }
 
-    fn sregs_kvm(&self) -> Result<kvm_sregs> {
-        Ok(self.vcpu_fd.get_sregs()?)
+    fn get_sregs(&self) -> Result<CommonSpecialRegisters> {
+        Ok(self.vcpu_fd.get_sregs()?.into())
     }
 
-    fn set_sregs_kvm(&self, sregs: &kvm_sregs) -> Result<()> {
-        Ok(self.vcpu_fd.set_sregs(sregs)?)
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
+        Ok(self.vcpu_fd.set_sregs(&sregs.clone().into())?)
     }
 
-    fn fpu_regs(&self) -> Result<kvm_fpu> {
-        Ok(self.vcpu_fd.get_fpu()?)
+    fn get_fpu(&self) -> Result<CommonFpu> {
+        Ok(self.vcpu_fd.get_fpu()?.into())
     }
 
-    fn set_fpu_regs(&self, fpu: &kvm_fpu) -> Result<()> {
-        Ok(self.vcpu_fd.set_fpu(fpu)?)
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
+        Ok(self.vcpu_fd.set_fpu(&fpu.clone().into())?)
     }
 
-    unsafe fn map_memory_kvm(&self, region: kvm_userspace_memory_region) -> Result<()> {
-        unsafe { Ok(self.vm_fd.set_user_memory_region(region)?) }
+    unsafe fn map_memory(&self, regions: &[MemoryRegion]) -> Result<()> {
+        regions.iter().enumerate().try_for_each(|(i, region)| {
+            let kvm_region = kvm_userspace_memory_region {
+                slot: i as u32,
+                guest_phys_addr: region.guest_region.start as u64,
+                memory_size: (region.guest_region.end - region.guest_region.start) as u64,
+                userspace_addr: region.host_region.start as u64,
+                flags: match region.flags {
+                    MemoryRegionFlags::READ => KVM_MEM_READONLY,
+                    _ => 0, // normal, RWX
+                },
+            };
+            unsafe { self.vm_fd.set_user_memory_region(kvm_region) }
+        })?;
+        Ok(())
     }
 
-    fn run_vcpu(&mut self) -> Result<VcpuExit> {
+    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
         match self.vcpu_fd.run() {
-            Ok(VcpuExit::Hlt) => Ok(VcpuExit::Halt()),
-            Ok(VcpuExit::IoOut(port, data)) => Ok(VcpuExit::IoOut(port, data.to_vec(), 0, 0)),
-            Ok(VcpuExit::MmioRead(addr, _)) => Ok(VcpuExit::MmioRead(addr)),
-            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VcpuExit::MmioWrite(addr)),
+            Ok(VcpuExit::Hlt) => Ok(HyperlightExit::Halt()),
+            Ok(VcpuExit::IoOut(port, data)) => Ok(HyperlightExit::IoOut(port, data.to_vec())),
+            Ok(VcpuExit::MmioRead(addr, _)) => Ok(HyperlightExit::MmioRead(addr)),
+            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(HyperlightExit::MmioWrite(addr)),
             #[cfg(gdb)]
             // KVM provides architecture specific information about the vCPU state when exiting
             Ok(VcpuExit::Debug(debug_exit)) => match self.get_stop_reason(debug_exit) {
@@ -331,8 +347,8 @@ impl Vm for KvmVm {
                 libc::EINTR => VcpuExit::Debug(VcpuStopReason::Interrupt),
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
                 #[cfg(not(gdb))]
-                libc::EINTR => Ok(VcpuExit::Cancelled()),
-                libc::EAGAIN => Ok(VcpuExit::Retry()),
+                libc::EINTR => Ok(HyperlightExit::Cancelled()),
+                libc::EAGAIN => Ok(HyperlightExit::Retry()),
                 _ => {
                     crate::debug!("KVM Error -Details: Address: {} \n {:#?}", e, &self);
                     log_then_return!("Error running VCPU {:?}", e);
@@ -341,7 +357,7 @@ impl Vm for KvmVm {
             Ok(other) => {
                 let err_msg = format!("Unexpected KVM Exit {:?}", other);
                 crate::debug!("KVM Other Exit Details: {:#?}", &self);
-                Ok(VcpuExit::Unknown(err_msg))
+                Ok(HyperlightExit::Unknown(err_msg))
             }
         }
     }

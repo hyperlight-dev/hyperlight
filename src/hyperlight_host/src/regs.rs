@@ -1,7 +1,8 @@
-use kvm_bindings::{kvm_regs, kvm_sregs};
+use kvm_bindings::kvm_regs;
+use mshv_bindings2::StandardRegisters;
 
-#[derive(Debug, Default)]
-pub(crate) struct Registers {
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub(crate) struct CommonRegisters {
     pub rax: u64,
     pub rbx: u64,
     pub rcx: u64,
@@ -22,9 +23,11 @@ pub(crate) struct Registers {
     pub rflags: u64,
 }
 
-impl From<kvm_regs> for Registers {
+// --- KVM ---
+
+impl From<kvm_regs> for CommonRegisters {
     fn from(kvm_regs: kvm_regs) -> Self {
-        Registers {
+        CommonRegisters {
             rax: kvm_regs.rax,
             rbx: kvm_regs.rbx,
             rcx: kvm_regs.rcx,
@@ -47,8 +50,8 @@ impl From<kvm_regs> for Registers {
     }
 }
 
-impl From<&Registers> for kvm_regs {
-    fn from(regs: &Registers) -> Self {
+impl From<CommonRegisters> for kvm_regs {
+    fn from(regs: CommonRegisters) -> Self {
         kvm_regs {
             rax: regs.rax,
             rbx: regs.rbx,
@@ -72,33 +75,54 @@ impl From<&Registers> for kvm_regs {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct SpecialRegisters {
-    pub cr0: u64,
-    pub cr3: u64,
-    pub cr4: u64,
-    pub efer: u64,
-}
+// --- MSHV ---
 
-impl From<&SpecialRegisters> for kvm_sregs {
-    fn from(sregs: &SpecialRegisters) -> Self {
-        kvm_sregs {
-            cr0: sregs.cr0,
-            cr3: sregs.cr3,
-            cr4: sregs.cr4,
-            efer: sregs.efer,
-            ..Default::default()
+impl From<StandardRegisters> for CommonRegisters {
+    fn from(mshv_regs: StandardRegisters) -> Self {
+        CommonRegisters {
+            rax: mshv_regs.rax,
+            rbx: mshv_regs.rbx,
+            rcx: mshv_regs.rcx,
+            rdx: mshv_regs.rdx,
+            rsi: mshv_regs.rsi,
+            rdi: mshv_regs.rdi,
+            rsp: mshv_regs.rsp,
+            rbp: mshv_regs.rbp,
+            r8: mshv_regs.r8,
+            r9: mshv_regs.r9,
+            r10: mshv_regs.r10,
+            r11: mshv_regs.r11,
+            r12: mshv_regs.r12,
+            r13: mshv_regs.r13,
+            r14: mshv_regs.r14,
+            r15: mshv_regs.r15,
+            rip: mshv_regs.rip,
+            rflags: mshv_regs.rflags,
         }
     }
 }
 
-impl From<kvm_sregs> for SpecialRegisters {
-    fn from(kvm_sregs: kvm_sregs) -> Self {
-        SpecialRegisters {
-            cr0: kvm_sregs.cr0,
-            cr3: kvm_sregs.cr3,
-            cr4: kvm_sregs.cr4,
-            efer: kvm_sregs.efer,
+impl From<CommonRegisters> for StandardRegisters {
+    fn from(regs: CommonRegisters) -> Self {
+        StandardRegisters {
+            rax: regs.rax,
+            rbx: regs.rbx,
+            rcx: regs.rcx,
+            rdx: regs.rdx,
+            rsi: regs.rsi,
+            rdi: regs.rdi,
+            rsp: regs.rsp,
+            rbp: regs.rbp,
+            r8: regs.r8,
+            r9: regs.r9,
+            r10: regs.r10,
+            r11: regs.r11,
+            r12: regs.r12,
+            r13: regs.r13,
+            r14: regs.r14,
+            r15: regs.r15,
+            rip: regs.rip,
+            rflags: regs.rflags,
         }
     }
 }

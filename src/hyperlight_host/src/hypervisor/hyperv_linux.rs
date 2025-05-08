@@ -24,9 +24,8 @@ extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
 extern crate mshv_ioctls3 as mshv_ioctls;
 
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 
-use log::{error, LevelFilter};
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 #[cfg(gdb)]
@@ -37,35 +36,30 @@ use mshv_bindings::{
 };
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
-    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
-    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
-    FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters,
+    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
 };
 #[cfg(mshv3)]
 use mshv_bindings::{
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features,
 };
+use mshv_bindings2::{hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
-use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
-use super::{
-    HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
-    CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
-};
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
-use crate::hypervisor::HyperlightExit;
+use super::HyperlightExit;
+use crate::fpuregs::CommonFpu;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::regs::CommonRegisters;
+use crate::sregs::CommonSpecialRegisters;
+use crate::vm::Vm;
 #[cfg(gdb)]
 use crate::HyperlightError;
-use crate::{log_then_return, new_error, Result};
+use crate::{log_then_return, HyperlightError, Result};
 
 #[cfg(gdb)]
 mod debug {
@@ -76,7 +70,7 @@ mod debug {
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::{new_error, Result};
 
-    impl HypervLinuxDriver {
+    impl MshvVm {
         /// Resets the debug information to disable debugging
         fn disable_debug(&mut self) -> Result<()> {
             let mut debug = MshvDebug::default();
@@ -280,43 +274,22 @@ pub(crate) fn is_hypervisor_present() -> bool {
     }
 }
 
-/// A Hypervisor driver for HyperV-on-Linux. This hypervisor is often
-/// called the Microsoft Hypervisor (MSHV)
-pub(super) struct HypervLinuxDriver {
-    _mshv: Mshv,
+/// A MSHV implementation of a single-vcpu VM
+#[derive(Debug)]
+pub(super) struct MshvVm {
+    mshv_fd: Mshv,
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
-    entrypoint: u64,
-    mem_regions: Vec<MemoryRegion>,
-    orig_rsp: GuestPtr,
-
-    #[cfg(gdb)]
-    debug: Option<MshvDebug>,
-    #[cfg(gdb)]
-    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
 }
 
-impl HypervLinuxDriver {
-    /// Create a new `HypervLinuxDriver`, complete with all registers
-    /// set up to execute a Hyperlight binary inside a HyperV-powered
-    /// sandbox on Linux.
-    ///
-    /// While registers are set up, they will not have been applied to
-    /// the underlying virtual CPU after this function returns. Call the
-    /// `apply_registers` method to do that, or more likely call
-    /// `initialise` to do it for you.
+impl MshvVm {
+    /// Create a new instance of a MshvVm
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn new(
-        mem_regions: Vec<MemoryRegion>,
-        entrypoint_ptr: GuestPtr,
-        rsp_ptr: GuestPtr,
-        pml4_ptr: GuestPtr,
-        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-    ) -> Result<Self> {
-        let mshv = Mshv::new()?;
+    pub(super) fn new() -> Result<Self> {
+        let mshv_fd = Mshv::new()?;
         let pr = Default::default();
         #[cfg(mshv2)]
-        let vm_fd = mshv.create_vm_with_config(&pr)?;
+        let vm_fd = mshv_fd.create_vm_with_config(&pr)?;
         #[cfg(mshv3)]
         let vm_fd = {
             // It's important to avoid create_vm() and explicitly use
@@ -333,234 +306,82 @@ impl HypervLinuxDriver {
             vm_fd
         };
 
-        let mut vcpu_fd = vm_fd.create_vcpu(0)?;
-
-        #[cfg(gdb)]
-        let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
-            let mut debug = MshvDebug::new();
-            debug.add_hw_breakpoint(&vcpu_fd, entrypoint_ptr.absolute()?)?;
-
-            // The bellow intercepts make the vCPU exit with the Exception Intercept exit code
-            // Check Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
-            // of Intel 64 and IA-32 Architectures Software Developer's Manual
-            // Install intercept for #DB (1) exception
-            vm_fd
-                .install_intercept(mshv_install_intercept {
-                    access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                    intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
-                    // Exception handler #DB (1)
-                    intercept_parameter: hv_intercept_parameters {
-                        exception_vector: 0x1,
-                    },
-                })
-                .map_err(|e| new_error!("Cannot install debug exception intercept: {}", e))?;
-
-            // Install intercept for #BP (3) exception
-            vm_fd
-                .install_intercept(mshv_install_intercept {
-                    access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                    intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
-                    // Exception handler #BP (3)
-                    intercept_parameter: hv_intercept_parameters {
-                        exception_vector: 0x3,
-                    },
-                })
-                .map_err(|e| new_error!("Cannot install breakpoint exception intercept: {}", e))?;
-
-            (Some(debug), Some(gdb_conn))
-        } else {
-            (None, None)
-        };
-
-        mem_regions.iter().try_for_each(|region| {
-            let mshv_region = region.to_owned().into();
-            vm_fd.map_user_memory(mshv_region)
-        })?;
-
-        Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr.absolute()?)?;
+        let vcpu_fd = vm_fd.create_vcpu(0)?;
 
         Ok(Self {
-            _mshv: mshv,
+            mshv_fd: mshv_fd,
             vm_fd,
             vcpu_fd,
-            mem_regions,
-            entrypoint: entrypoint_ptr.absolute()?,
-            orig_rsp: rsp_ptr,
-
-            #[cfg(gdb)]
-            debug,
-            #[cfg(gdb)]
-            gdb_conn,
         })
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn setup_initial_sregs(vcpu: &mut VcpuFd, pml4_addr: u64) -> Result<()> {
-        let sregs = SpecialRegisters {
-            cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
-            cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
-            cr3: pml4_addr,
-            efer: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
-            cs: SegmentRegister {
-                type_: 11,
-                present: 1,
-                s: 1,
-                l: 1,
-                ..Default::default()
-            },
-            tr: SegmentRegister {
-                limit: 65535,
-                type_: 11,
-                present: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        vcpu.set_sregs(&sregs)?;
-        Ok(())
-    }
+    // #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    // fn setup_initial_sregs(vcpu: &mut VcpuFd, pml4_addr: u64) -> Result<()> {
+    //     let sregs = SpecialRegisters {
+    //         cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
+    //         cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
+    //         cr3: pml4_addr,
+    //         efer: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
+    //         cs: SegmentRegister {
+    //             type_: 11,
+    //             present: 1,
+    //             s: 1,
+    //             l: 1,
+    //             ..Default::default()
+    //         },
+    //         tr: SegmentRegister {
+    //             limit: 65535,
+    //             type_: 11,
+    //             present: 1,
+    //             ..Default::default()
+    //         },
+    //         ..Default::default()
+    //     };
+    //     vcpu.set_sregs(&sregs)?;
+    //     Ok(())
+    // }
 }
 
-impl Debug for HypervLinuxDriver {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut f = f.debug_struct("Hyperv Linux Driver");
-
-        f.field("Entrypoint", &self.entrypoint)
-            .field("Original RSP", &self.orig_rsp);
-
-        for region in &self.mem_regions {
-            f.field("Memory Region", &region);
-        }
-
-        let regs = self.vcpu_fd.get_regs();
-
-        if let Ok(regs) = regs {
-            f.field("Registers", &regs);
-        }
-
-        let sregs = self.vcpu_fd.get_sregs();
-
-        if let Ok(sregs) = sregs {
-            f.field("Special Registers", &sregs);
-        }
-
-        f.finish()
+impl Vm for MshvVm {
+    fn get_regs(&self) -> Result<CommonRegisters> {
+        let mshv_regs = self.vcpu_fd.get_regs()?;
+        Ok(mshv_regs.into())
     }
-}
 
-impl HyperlightVm for HypervLinuxDriver {
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn initialise(
-        &mut self,
-        peb_addr: RawPtr,
-        seed: u64,
-        page_size: u32,
-        outb_hdl: OutBHandlerWrapper,
-        mem_access_hdl: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
-        max_guest_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        let max_guest_log_level: u64 = match max_guest_log_level {
-            Some(level) => level as u64,
-            None => self.get_max_log_level().into(),
-        };
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
+        let mshv_regs = regs.clone().into();
+        Ok(self.vcpu_fd.set_regs(&mshv_regs)?)
+    }
 
-        let regs = StandardRegisters {
-            rip: self.entrypoint,
-            rsp: self.orig_rsp.absolute()?,
-            rflags: 2, //bit 1 of rlags is required to be set
+    fn get_sregs(&self) -> Result<CommonSpecialRegisters> {
+        let mshv_sregs = self.vcpu_fd.get_sregs()?;
+        Ok(mshv_sregs.into())
+    }
 
-            // function args
-            rcx: peb_addr.into(),
-            rdx: seed,
-            r8: page_size.into(),
-            r9: max_guest_log_level,
-
-            ..Default::default()
-        };
-        self.vcpu_fd.set_regs(&regs)?;
-
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            hv_handler,
-            outb_hdl,
-            mem_access_hdl,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )?;
-
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
+        let mshv_sregs = sregs.clone().into();
+        self.vcpu_fd.set_sregs(&mshv_sregs)?;
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn dispatch_call_from_host(
-        &mut self,
-        dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
-        mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        // Reset general purpose registers, then set RIP and RSP
-        let regs = StandardRegisters {
-            rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
-            rflags: 2, //bit 1 of rlags is required to be set
-            ..Default::default()
-        };
-        self.vcpu_fd.set_regs(&regs)?;
+    fn get_fpu(&self) -> Result<CommonFpu> {
+        Ok(self.vcpu_fd.get_fpu()?.into())
+    }
 
-        // reset fpu state
-        let fpu = FloatingPointUnit {
-            fcw: FP_CONTROL_WORD_DEFAULT,
-            ftwx: FP_TAG_WORD_DEFAULT,
-            mxcsr: MXCSR_DEFAULT,
-            ..Default::default() // zero out the rest
-        };
-        self.vcpu_fd.set_fpu(&fpu)?;
-
-        // run
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            hv_handler,
-            outb_handle_fn,
-            mem_access_fn,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )?;
-
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
+        self.vcpu_fd.set_fpu(&fpu.clone().into())?;
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        rip: u64,
-        instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
-    ) -> Result<()> {
-        let payload = data[..8].try_into()?;
-        outb_handle_fn
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .call(port, u64::from_le_bytes(payload))?;
-
-        // update rip
-        self.vcpu_fd.set_reg(&[hv_register_assoc {
-            name: hv_register_name_HV_X64_REGISTER_RIP,
-            value: hv_register_value {
-                reg64: rip + instruction_length,
-            },
-            ..Default::default()
-        }])?;
+    unsafe fn map_memory(&self, regions: &[MemoryRegion]) -> Result<()> {
+        regions.iter().try_for_each(|region| {
+            let mshv_region = region.clone().into();
+            self.vm_fd.map_user_memory(mshv_region)
+        })?;
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(&mut self) -> Result<super::HyperlightExit> {
+    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
         const HALT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_HALT;
         const IO_PORT_INTERCEPT_MESSAGE: hv_message_type =
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
@@ -586,16 +407,18 @@ impl HyperlightVm for HypervLinuxDriver {
                 IO_PORT_INTERCEPT_MESSAGE => {
                     let io_message = m.to_ioport_info()?;
                     let port_number = io_message.port_number;
-                    let rip = io_message.header.rip;
                     let rax = io_message.rax;
-                    let instruction_length = io_message.header.instruction_length() as u64;
+                    // mshv, unlike kvm, does not automatically increment RIP
+                    self.vcpu_fd.set_reg(&[hv_register_assoc {
+                        name: hv_register_name_HV_X64_REGISTER_RIP,
+                        value: hv_register_value {
+                            reg64: io_message.header.rip
+                                + io_message.header.instruction_length() as u64,
+                        },
+                        ..Default::default()
+                    }])?;
                     crate::debug!("mshv IO Details : \nPort : {}\n{:#?}", port_number, &self);
-                    HyperlightExit::IoOut(
-                        port_number,
-                        rax.to_le_bytes().to_vec(),
-                        rip,
-                        instruction_length,
-                    )
+                    HyperlightExit::IoOut(port_number, rax.to_le_bytes().to_vec())
                 }
                 UNMAPPED_GPA_MESSAGE => {
                     let mimo_message = m.to_memory_info()?;
@@ -605,7 +428,11 @@ impl HyperlightVm for HypervLinuxDriver {
                         addr,
                         &self
                     );
-                    HyperlightExit::Mmio(addr)
+                    match MemoryRegionFlags::try_from(mimo_message)? {
+                        MemoryRegionFlags::READ => HyperlightExit::MmioRead(addr),
+                        MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(addr),
+                        _ => HyperlightExit::Unknown("Unknown MMIO access".to_string()),
+                    }
                 }
                 INVALID_GPA_ACCESS_MESSAGE => {
                     let mimo_message = m.to_memory_info()?;
@@ -616,14 +443,11 @@ impl HyperlightVm for HypervLinuxDriver {
                         gpa,
                         &self
                     );
-                    match self.get_memory_access_violation(
-                        gpa as usize,
-                        &self.mem_regions,
+                    log_then_return!(HyperlightError::MemoryAccessViolation(
+                        gpa,
                         access_info,
-                    ) {
-                        Some(access_info_violation) => access_info_violation,
-                        None => HyperlightExit::Mmio(gpa),
-                    }
+                        todo!(),
+                    ));
                 }
                 // The only case an intercept exit is expected is when debugging is enabled
                 // and the intercepts are installed
@@ -652,72 +476,8 @@ impl HyperlightVm for HypervLinuxDriver {
         Ok(result)
     }
 
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn HyperlightVm {
-        self as &mut dyn HyperlightVm
-    }
-
-    #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        &self.mem_regions
-    }
-
-    #[cfg(gdb)]
-    fn handle_debug(
-        &mut self,
-        dbg_mem_access_fn: std::sync::Arc<
-            std::sync::Mutex<dyn super::handlers::DbgMemAccessHandlerCaller>,
-        >,
-        stop_reason: super::gdb::VcpuStopReason,
-    ) -> Result<()> {
-        self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
-            .map_err(|e| new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e))?;
-
-        loop {
-            log::debug!("Debug wait for event to resume vCPU");
-
-            // Wait for a message from gdb
-            let req = self.recv_dbg_msg()?;
-
-            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
-
-            let response = match result {
-                Ok(response) => response,
-                // Treat non fatal errors separately so the guest doesn't fail
-                Err(HyperlightError::TranslateGuestAddress(_)) => DebugResponse::ErrorOccurred,
-                Err(e) => {
-                    return Err(e);
-                }
-            };
-
-            // If the command was either step or continue, we need to run the vcpu
-            let cont = matches!(
-                response,
-                DebugResponse::Step | DebugResponse::Continue | DebugResponse::DisableDebug
-            );
-
-            self.send_dbg_msg(response)
-                .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
-
-            if cont {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl Drop for HypervLinuxDriver {
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn drop(&mut self) {
-        for region in &self.mem_regions {
-            let mshv_region: mshv_user_mem_region = region.to_owned().into();
-            match self.vm_fd.unmap_user_memory(mshv_region) {
-                Ok(_) => (),
-                Err(e) => error!("Failed to unmap user memory in HyperVOnLinux ({:?})", e),
-            }
-        }
+    fn interrupt_handle(&self) -> crate::vm::InterruptHandle {
+        todo!()
     }
 }
 
@@ -756,30 +516,30 @@ mod tests {
         Ok(Box::new(shared_mem))
     }
 
-    #[test]
-    fn create_driver() {
-        if !super::is_hypervisor_present() {
-            return;
-        }
-        const MEM_SIZE: usize = 0x3000;
-        let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
-        let rsp_ptr = GuestPtr::try_from(0).unwrap();
-        let pml4_ptr = GuestPtr::try_from(0).unwrap();
-        let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
-        let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
-        regions.push_page_aligned(
-            MEM_SIZE,
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
-            crate::mem::memory_region::MemoryRegionType::Code,
-        );
-        super::HypervLinuxDriver::new(
-            regions.build(),
-            entrypoint_ptr,
-            rsp_ptr,
-            pml4_ptr,
-            #[cfg(gdb)]
-            None,
-        )
-        .unwrap();
-    }
+    // #[test]
+    // fn create_driver() {
+    //     if !super::is_hypervisor_present() {
+    //         return;
+    //     }
+    //     const MEM_SIZE: usize = 0x3000;
+    //     let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
+    //     let rsp_ptr = GuestPtr::try_from(0).unwrap();
+    //     let pml4_ptr = GuestPtr::try_from(0).unwrap();
+    //     let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
+    //     let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
+    //     regions.push_page_aligned(
+    //         MEM_SIZE,
+    //         MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
+    //         crate::mem::memory_region::MemoryRegionType::Code,
+    //     );
+    //     super::MshvVm::new(
+    //         regions.build(),
+    //         entrypoint_ptr,
+    //         rsp_ptr,
+    //         pml4_ptr,
+    //         #[cfg(gdb)]
+    //         None,
+    //     )
+    //     .unwrap();
+    // }
 }

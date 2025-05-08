@@ -51,7 +51,7 @@ use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
-use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
+use crate::sandbox::hypervisor::get_available_hypervisor;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::HyperlightError::{
@@ -915,46 +915,16 @@ fn set_up_hypervisor_partition(
             None
         };
 
-        match *get_available_hypervisor() {
-            #[cfg(mshv)]
-            Some(HypervisorType::Mshv) => {
-                let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
-                    regions,
-                    entrypoint_ptr,
-                    rsp_ptr,
-                    pml4_ptr,
-                    #[cfg(gdb)]
-                    gdb_conn,
-                )?;
-                Ok(Box::new(hv))
-            }
-
-            #[cfg(kvm)]
-            Some(HypervisorType::Kvm) => {
+        match get_available_hypervisor() {
+            Some(hv_type) => {
                 let hv = HyperlightSandbox::new(
+                    hv_type,
                     regions,
                     pml4_ptr.absolute()?,
                     entrypoint_ptr.absolute()?,
                     rsp_ptr.absolute()?,
                     #[cfg(gdb)]
                     gdb_conn,
-                )?;
-                Ok(Box::new(hv))
-            }
-
-            #[cfg(target_os = "windows")]
-            Some(HypervisorType::Whp) => {
-                let mmap_file_handle = mgr
-                    .shared_mem
-                    .with_exclusivity(|e| e.get_mmap_file_handle())?;
-                let hv = crate::hypervisor::hyperv_windows::HypervWindowsDriver::new(
-                    regions,
-                    mgr.shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
-                    mgr.shared_mem.raw_ptr() as *mut c_void, // and instead convert it to base_addr where needed in the driver itself
-                    pml4_ptr.absolute()?,
-                    entrypoint_ptr.absolute()?,
-                    rsp_ptr.absolute()?,
-                    HandleWrapper::from(mmap_file_handle),
                 )?;
                 Ok(Box::new(hv))
             }

@@ -1,6 +1,4 @@
-use kvm_bindings::kvm_fpu;
 #[cfg(feature = "kvm")]
-use kvm_bindings::{kvm_sregs, kvm_userspace_memory_region};
 use libc::SIGUSR1;
 
 use std::fmt::Debug;
@@ -9,21 +7,24 @@ use std::sync::{
     Arc,
 };
 
+use crate::fpuregs::CommonFpu;
 use crate::hypervisor::HyperlightExit;
-use crate::regs::Registers;
+use crate::mem::memory_region::MemoryRegion;
+use crate::regs::CommonRegisters;
+use crate::sregs::CommonSpecialRegisters;
 use crate::Result;
 
 pub(crate) trait Vm: Send + Sync + Debug {
-    fn regs(&self) -> Result<Registers>;
-    fn set_regs(&self, regs: &Registers) -> Result<()>;
+    fn get_regs(&self) -> Result<CommonRegisters>;
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()>;
 
-    fn sregs_kvm(&self) -> Result<kvm_sregs>;
-    fn set_sregs_kvm(&self, sregs: &kvm_sregs) -> Result<()>;
+    fn get_sregs(&self) -> Result<CommonSpecialRegisters>;
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
 
-    fn fpu_regs(&self) -> Result<kvm_fpu>;
-    fn set_fpu_regs(&self, fpu: &kvm_fpu) -> Result<()>;
+    fn get_fpu(&self) -> Result<CommonFpu>;
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()>;
 
-    unsafe fn map_memory_kvm(&self, region: kvm_userspace_memory_region) -> Result<()>;
+    unsafe fn map_memory(&self, region: &[MemoryRegion]) -> Result<()>;
 
     fn run_vcpu(&mut self) -> Result<HyperlightExit>;
 

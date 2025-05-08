@@ -1,3 +1,6 @@
+use crate::fpuregs::CommonFpu;
+use crate::sandbox::hypervisor::HypervisorType;
+use crate::sregs::{CommonSegmentRegister, CommonSpecialRegisters};
 /*
 Copyright 2024 The Hyperlight Authors.
 
@@ -20,9 +23,6 @@ use std::sync::{Arc, Mutex};
 #[cfg(gdb)]
 use std::sync::{Arc, Mutex};
 
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region, KVM_MEM_READONLY};
-use kvm_ioctls::Cap::UserMemory;
-use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::LevelFilter;
 use tracing::{instrument, Span};
 
@@ -34,6 +34,7 @@ use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{
     MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
 };
+use super::hyperv_linux::MshvVm;
 use super::kvm::KvmVm;
 use super::{
     HyperlightExit, HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
@@ -43,7 +44,7 @@ use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
-use crate::regs::Registers;
+use crate::regs::CommonRegisters;
 use crate::vm::Vm;
 #[cfg(gdb)]
 use crate::HyperlightError;
@@ -273,44 +274,35 @@ pub(super) struct HyperlightSandbox {
 }
 
 impl HyperlightSandbox {
-    /// Create a new instance of a `KVMDriver`, with only control registers
-    /// set. Standard registers will not be set, and `initialise` must
-    /// be called to do so.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn new(
+        hv: &HypervisorType,
         mem_regions: Vec<MemoryRegion>,
         pml4_addr: u64,
         entrypoint: u64,
         rsp: u64,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
-        let kvm_vm = KvmVm::new()?;
+        let vm: Box<dyn Vm> = match hv {
+            HypervisorType::Kvm => Box::new(KvmVm::new()?),
+            HypervisorType::Mshv => Box::new(MshvVm::new()?),
+            _ => {
+                return Err(new_error!("Unsupported hypervisor type"));
+            }
+        };
 
-        let perm_flags =
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
+        // Safety: We haven't called this before and the regions are valid
+        unsafe {
+            vm.map_memory(&mem_regions)?;
+        }
 
-        mem_regions.iter().enumerate().try_for_each(|(i, region)| {
-            let perm_flags = perm_flags.intersection(region.flags);
-            let kvm_region = kvm_userspace_memory_region {
-                slot: i as u32,
-                guest_phys_addr: region.guest_region.start as u64,
-                memory_size: (region.guest_region.end - region.guest_region.start) as u64,
-                userspace_addr: region.host_region.start as u64,
-                flags: match perm_flags {
-                    MemoryRegionFlags::READ => KVM_MEM_READONLY,
-                    _ => 0, // normal, RWX
-                },
-            };
-            unsafe { kvm_vm.map_memory_kvm(kvm_region) }
-        })?;
-
-        let mut sregs = kvm_vm.sregs_kvm()?;
+        let mut sregs = vm.get_sregs()?;
         sregs.cr3 = pml4_addr;
         sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT;
         sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP;
         sregs.efer = EFER_LME | EFER_LMA | EFER_SCE | EFER_NX;
         sregs.cs.l = 1; // required for 64-bit mode
-        kvm_vm.set_sregs_kvm(&sregs)?;
+        vm.set_sregs(&sregs)?;
 
         #[cfg(gdb)]
         let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
@@ -326,7 +318,7 @@ impl HyperlightSandbox {
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
 
         let ret = Self {
-            vm: Box::new(kvm_vm),
+            vm,
             entrypoint,
             orig_rsp: rsp_gp,
             mem_regions: mem_regions,
@@ -360,7 +352,7 @@ impl HyperlightVm for HyperlightSandbox {
             None => self.get_max_log_level().into(),
         };
 
-        let regs = Registers {
+        let regs = CommonRegisters {
             rip: self.entrypoint,
             rsp: self.orig_rsp.absolute()?,
 
@@ -395,21 +387,22 @@ impl HyperlightVm for HyperlightSandbox {
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
-        let regs = Registers {
+        let regs = CommonRegisters {
             rip: dispatch_func_addr.into(),
             rsp: self.orig_rsp.absolute()?,
+            rflags: 2,
             ..Default::default()
         };
         self.vm.set_regs(&regs)?;
 
         // reset fpu state
-        let fpu = kvm_fpu {
+        let fpu = CommonFpu {
             fcw: FP_CONTROL_WORD_DEFAULT,
             ftwx: FP_TAG_WORD_DEFAULT,
             mxcsr: MXCSR_DEFAULT,
             ..Default::default() // zero out the rest
         };
-        self.vm.set_fpu_regs(&fpu)?;
+        self.vm.set_fpu(&fpu)?;
 
         // run
         self.run(
@@ -428,8 +421,6 @@ impl HyperlightVm for HyperlightSandbox {
         &mut self,
         port: u16,
         data: Vec<u8>,
-        _rip: u64,
-        _instruction_length: u64,
         outb_handle_fn: OutBHandlerWrapper,
     ) -> Result<()> {
         // KVM does not need RIP or instruction length, as it automatically sets the RIP
@@ -468,8 +459,8 @@ impl HyperlightVm for HyperlightSandbox {
                 Ok(HyperlightExit::Halt()) => {
                     break;
                 }
-                Ok(HyperlightExit::IoOut(port, data, rip, instruction_length)) => {
-                    self.handle_io(port, data, rip, instruction_length, outb_handle_fn.clone())?
+                Ok(HyperlightExit::IoOut(port, data)) => {
+                    self.handle_io(port, data, outb_handle_fn.clone())?
                 }
                 Ok(HyperlightExit::MmioRead(addr)) => {
                     match get_memory_access_violation(
@@ -572,11 +563,6 @@ impl HyperlightVm for HyperlightSandbox {
         }
 
         Ok(())
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn HyperlightVm {
-        self as &mut dyn HyperlightVm
     }
 
     #[cfg(crashdump)]
