@@ -36,6 +36,7 @@ pub(crate) struct HyperlightSandboxTarget {
     /// Hypervisor communication channels
     hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>,
     /// Thread ID
+    #[allow(dead_code)]
     thread_id: u64,
 }
 
@@ -61,6 +62,7 @@ impl HyperlightSandboxTarget {
     }
 
     /// Returns the thread ID
+    #[allow(dead_code)]
     pub(crate) fn get_thread_id(&self) -> u64 {
         self.thread_id
     }
