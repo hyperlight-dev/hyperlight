@@ -169,7 +169,7 @@ macro_rules! impl_host_function {
                 let cloned = self_.clone();
                 let func = Box::new(move |args: Vec<ParameterValue>| {
                     let ($($P,)*) = match <[ParameterValue; N]>::try_from(args) {
-                        Ok([$($P,)*]) => ($($P::get_inner($P)?,)*),
+                        Ok([$($P,)*]) => ($($P::from_value($P)?,)*),
                         Err(args) => { log_then_return!(UnexpectedNoOfArguments(args.len(), N)); }
                     };
 
@@ -178,10 +178,10 @@ macro_rules! impl_host_function {
                         .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?(
                             $($P),*
                         )?;
-                    Ok(result.get_hyperlight_value())
+                    Ok(result.into_value())
                 });
 
-                let parameter_types = Some(vec![$($P::get_hyperlight_type()),*]);
+                let parameter_types = Some(vec![$($P::TYPE),*]);
 
                 if let Some(_eas) = extra_allowed_syscalls {
                     if cfg!(all(feature = "seccomp", target_os = "linux")) {
@@ -196,7 +196,7 @@ macro_rules! impl_host_function {
                                     &HostFunctionDefinition::new(
                                         name.to_string(),
                                         parameter_types,
-                                        R::get_hyperlight_type(),
+                                        R::TYPE,
                                     ),
                                     HyperlightFunction::new(func),
                                     _eas,
@@ -216,7 +216,7 @@ macro_rules! impl_host_function {
                             &HostFunctionDefinition::new(
                                 name.to_string(),
                                 parameter_types,
-                                R::get_hyperlight_type(),
+                                R::TYPE,
                             ),
                             HyperlightFunction::new(func),
                         )?;

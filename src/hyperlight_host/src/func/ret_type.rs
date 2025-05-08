@@ -22,188 +22,53 @@ use crate::{log_then_return, Result};
 
 /// This is a marker trait that is used to indicate that a type is a valid Hyperlight return type.
 pub trait SupportedReturnType: Sized {
-    /// Gets the return type of the supported return value
-    fn get_hyperlight_type() -> ReturnType;
+    /// The return type of the supported return value
+    const TYPE: ReturnType;
 
     /// Gets the value of the supported return value
-    fn get_hyperlight_value(&self) -> ReturnValue;
+    fn into_value(self) -> ReturnValue;
 
     /// Gets the inner value of the supported return type
-    fn get_inner(a: ReturnValue) -> Result<Self>;
+    fn from_value(value: ReturnValue) -> Result<Self>;
 }
 
-impl SupportedReturnType for () {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_type() -> ReturnType {
-        ReturnType::Void
-    }
+macro_rules! for_each_return_type {
+    ($macro:ident) => {
+        $macro!((), Void);
+        $macro!(String, String);
+        $macro!(i32, Int);
+        $macro!(u32, UInt);
+        $macro!(i64, Long);
+        $macro!(u64, ULong);
+        $macro!(bool, Bool);
+        $macro!(Vec<u8>, VecBytes);
+    };
+}
 
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_value(&self) -> ReturnValue {
-        ReturnValue::Void
-    }
+macro_rules! impl_supported_return_type {
+    ($type:ty, $enum:ident) => {
+        impl SupportedReturnType for $type {
+            const TYPE: ReturnType = ReturnType::$enum;
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn get_inner(a: ReturnValue) -> Result<()> {
-        match a {
-            ReturnValue::Void => Ok(()),
-            other => {
-                log_then_return!(ReturnValueConversionFailure(other.clone(), "()"));
+            #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+            fn into_value(self) -> ReturnValue {
+                ReturnValue::$enum(self)
+            }
+
+            #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+            fn from_value(value: ReturnValue) -> Result<Self> {
+                match value {
+                    ReturnValue::$enum(i) => Ok(i),
+                    other => {
+                        log_then_return!(ReturnValueConversionFailure(
+                            other.clone(),
+                            stringify!($type)
+                        ));
+                    }
+                }
             }
         }
-    }
+    };
 }
 
-impl SupportedReturnType for String {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_type() -> ReturnType {
-        ReturnType::String
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_value(&self) -> ReturnValue {
-        ReturnValue::String(self.clone())
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn get_inner(a: ReturnValue) -> Result<String> {
-        match a {
-            ReturnValue::String(i) => Ok(i),
-            other => {
-                log_then_return!(ReturnValueConversionFailure(other.clone(), "String"));
-            }
-        }
-    }
-}
-
-impl SupportedReturnType for i32 {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_type() -> ReturnType {
-        ReturnType::Int
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_value(&self) -> ReturnValue {
-        ReturnValue::Int(*self)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn get_inner(a: ReturnValue) -> Result<i32> {
-        match a {
-            ReturnValue::Int(i) => Ok(i),
-            other => {
-                log_then_return!(ReturnValueConversionFailure(other.clone(), "i32"));
-            }
-        }
-    }
-}
-
-impl SupportedReturnType for u32 {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_type() -> ReturnType {
-        ReturnType::UInt
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_value(&self) -> ReturnValue {
-        ReturnValue::UInt(*self)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn get_inner(a: ReturnValue) -> Result<u32> {
-        match a {
-            ReturnValue::UInt(u) => Ok(u),
-            other => {
-                log_then_return!(ReturnValueConversionFailure(other.clone(), "u32"));
-            }
-        }
-    }
-}
-
-impl SupportedReturnType for i64 {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_type() -> ReturnType {
-        ReturnType::Long
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_value(&self) -> ReturnValue {
-        ReturnValue::Long(*self)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn get_inner(a: ReturnValue) -> Result<i64> {
-        match a {
-            ReturnValue::Long(l) => Ok(l),
-            other => {
-                log_then_return!(ReturnValueConversionFailure(other.clone(), "i64"));
-            }
-        }
-    }
-}
-
-impl SupportedReturnType for u64 {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_type() -> ReturnType {
-        ReturnType::ULong
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_value(&self) -> ReturnValue {
-        ReturnValue::ULong(*self)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn get_inner(a: ReturnValue) -> Result<u64> {
-        match a {
-            ReturnValue::ULong(ul) => Ok(ul),
-            other => {
-                log_then_return!(ReturnValueConversionFailure(other.clone(), "u64"));
-            }
-        }
-    }
-}
-
-impl SupportedReturnType for bool {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_type() -> ReturnType {
-        ReturnType::Bool
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_value(&self) -> ReturnValue {
-        ReturnValue::Bool(*self)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn get_inner(a: ReturnValue) -> Result<bool> {
-        match a {
-            ReturnValue::Bool(i) => Ok(i),
-            other => {
-                log_then_return!(ReturnValueConversionFailure(other.clone(), "bool"));
-            }
-        }
-    }
-}
-
-impl SupportedReturnType for Vec<u8> {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_type() -> ReturnType {
-        ReturnType::VecBytes
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_hyperlight_value(&self) -> ReturnValue {
-        ReturnValue::VecBytes(self.clone())
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn get_inner(a: ReturnValue) -> Result<Vec<u8>> {
-        match a {
-            ReturnValue::VecBytes(i) => Ok(i),
-            other => {
-                log_then_return!(ReturnValueConversionFailure(other.clone(), "Vec<u8>"));
-            }
-        }
-    }
-}
+for_each_return_type!(impl_supported_return_type);
