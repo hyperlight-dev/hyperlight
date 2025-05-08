@@ -343,28 +343,36 @@ impl KVMDriver {
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
 
-        let ret = Self {
+        let interrupt_handle = Arc::new(LinuxInterruptHandle {
+            running: AtomicU64::new(0),
+            cancel_requested: AtomicBool::new(false),
+            tid: AtomicU64::new(unsafe { libc::pthread_self() }),
+            retry_delay: config.get_interrupt_retry_delay(),
+            dropped: AtomicBool::new(false),
+            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+        });
+
+        #[allow(unused_mut)]
+        let mut hv = Self {
             _kvm: kvm,
             _vm_fd: vm_fd,
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
             mem_regions,
-            interrupt_handle: Arc::new(LinuxInterruptHandle {
-                running: AtomicU64::new(0),
-                cancel_requested: AtomicBool::new(false),
-                tid: AtomicU64::new(unsafe { libc::pthread_self() }),
-                retry_delay: config.get_interrupt_retry_delay(),
-                dropped: AtomicBool::new(false),
-                sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-            }),
-
+            interrupt_handle: interrupt_handle.clone(),
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
             gdb_conn,
         };
-        Ok(ret)
+
+        // Send the interrupt handle to the GDB thread if debugging is enabled
+        // This is used to allow the GDB thread to stop the vCPU
+        #[cfg(gdb)]
+        hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
+
+        Ok(hv)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]

@@ -36,7 +36,7 @@ use {
     super::handlers::DbgMemAccessHandlerWrapper,
     crate::hypervisor::handlers::DbgMemAccessHandlerCaller,
     crate::{log_then_return, HyperlightError},
-    std::sync::{Arc, Mutex},
+    std::sync::Mutex,
 };
 
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
@@ -327,7 +327,16 @@ impl HypervWindowsDriver {
         // subtract 2 pages for the guard pages, since when we copy memory to and from surrogate process,
         // we don't want to copy the guard pages themselves (that would cause access violation)
         let mem_size = raw_size - 2 * PAGE_SIZE_USIZE;
-        Ok(Self {
+
+        let interrupt_handle = Arc::new(WindowsInterruptHandle {
+            running: AtomicBool::new(false),
+            cancel_requested: AtomicBool::new(false),
+            partition_handle,
+            dropped: AtomicBool::new(false),
+        });
+
+        #[allow(unused_mut)]
+        let mut hv = Self {
             size: mem_size,
             processor: proc,
             _surrogate_process: surrogate_process,
@@ -335,17 +344,19 @@ impl HypervWindowsDriver {
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
             mem_regions,
-            interrupt_handle: Arc::new(WindowsInterruptHandle {
-                running: AtomicBool::new(false),
-                cancel_requested: AtomicBool::new(false),
-                partition_handle,
-                dropped: AtomicBool::new(false),
-            }),
+            interrupt_handle: interrupt_handle.clone(),
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
             gdb_conn,
-        })
+        };
+
+        // Send the interrupt handle to the GDB thread if debugging is enabled
+        // This is used to allow the GDB thread to stop the vCPU
+        #[cfg(gdb)]
+        hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
+
+        Ok(hv)
     }
 
     fn setup_initial_sregs(proc: &mut VMProcessor, pml4_addr: u64) -> Result<()> {
@@ -813,6 +824,7 @@ impl Drop for HypervWindowsDriver {
     }
 }
 
+#[derive(Debug)]
 pub struct WindowsInterruptHandle {
     // `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running, which is the reason we need this flag.
     running: AtomicBool,

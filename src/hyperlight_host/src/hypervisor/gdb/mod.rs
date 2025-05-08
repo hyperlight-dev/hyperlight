@@ -49,6 +49,8 @@ use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::{new_error, HyperlightError};
 
+use super::InterruptHandle;
+
 #[derive(Debug, Error)]
 pub(crate) enum GdbTargetError {
     #[error("Error encountered while binding to address and port")]
@@ -149,6 +151,7 @@ pub(crate) enum DebugResponse {
     DisableDebug,
     ErrorOccurred,
     GetCodeSectionOffset(u64),
+    InterruptHandle(Arc<dyn InterruptHandle>),
     ReadAddr(Vec<u8>),
     ReadRegisters(X86_64Regs),
     RemoveHwBreakpoint(bool),
@@ -382,7 +385,6 @@ impl<T, U> DebugCommChannel<T, U> {
 /// Creates a thread that handles gdb protocol
 pub(crate) fn create_gdb_thread(
     port: u16,
-    thread_id: u64,
 ) -> Result<DebugCommChannel<DebugResponse, DebugMsg>, GdbTargetError> {
     let (gdb_conn, hyp_conn) = DebugCommChannel::unbounded();
     let socket = format!("localhost:{}", port);
@@ -400,12 +402,23 @@ pub(crate) fn create_gdb_thread(
             let conn: Box<dyn ConnectionExt<Error = io::Error>> = Box::new(conn);
             let debugger = GdbStub::new(conn);
 
-            let mut target = HyperlightSandboxTarget::new(hyp_conn, thread_id);
+            let mut target = HyperlightSandboxTarget::new(hyp_conn);
 
             // Waits for vCPU to stop at entrypoint breakpoint
-            let res = target.recv()?;
-            if let DebugResponse::VcpuStopped(_) = res {
+            let msg = target.recv()?;
+            if let DebugResponse::InterruptHandle(handle) = msg {
+                log::info!("Received interrupt handle: {:?}", handle);
+                target.set_interrupt_handle(handle);
+            } else {
+                return Err(GdbTargetError::UnexpectedMessage);
+            }
+
+            // Waits for vCPU to stop at entrypoint breakpoint
+            let msg = target.recv()?;
+            if let DebugResponse::VcpuStopped(_) = msg {
                 event_loop_thread(debugger, &mut target);
+            } else {
+                return Err(GdbTargetError::UnexpectedMessage);
             }
 
             Ok(())

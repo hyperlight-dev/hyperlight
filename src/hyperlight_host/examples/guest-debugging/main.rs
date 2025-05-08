@@ -39,6 +39,7 @@ fn get_sandbox_cfg() -> Option<SandboxConfiguration> {
 }
 
 fn main() -> hyperlight_host::Result<()> {
+    env_logger::init();
     let cfg = get_sandbox_cfg();
 
     // Create an uninitialized sandbox with a guest binary

@@ -179,7 +179,7 @@ pub(crate) fn set_up_hypervisor_partition(
     let gdb_conn = if let Some(DebugInfo { port }) = config.get_guest_debug_info() {
         use crate::hypervisor::gdb::create_gdb_thread;
 
-        let gdb_conn = create_gdb_thread(port, unsafe { libc::pthread_self() });
+        let gdb_conn = create_gdb_thread(port);
 
         // in case the gdb thread creation fails, we still want to continue
         // without gdb
@@ -241,6 +241,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 entrypoint_ptr.absolute()?,
                 rsp_ptr.absolute()?,
                 HandleWrapper::from(mmap_file_handle),
+                #[cfg(gdb)]
+                gdb_conn,
             )?;
             Ok(Box::new(hv))
         }

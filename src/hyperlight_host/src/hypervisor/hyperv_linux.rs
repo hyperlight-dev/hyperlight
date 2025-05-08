@@ -388,27 +388,36 @@ impl HypervLinuxDriver {
 
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr.absolute()?)?;
 
-        Ok(Self {
+        let interrupt_handle = Arc::new(LinuxInterruptHandle {
+            running: AtomicU64::new(0),
+            cancel_requested: AtomicBool::new(false),
+            tid: AtomicU64::new(unsafe { libc::pthread_self() }),
+            retry_delay: config.get_interrupt_retry_delay(),
+            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+            dropped: AtomicBool::new(false),
+        });
+
+        #[allow(unused_mut)]
+        let mut hv = Self {
             _mshv: mshv,
             vm_fd,
             vcpu_fd,
             mem_regions,
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
-            interrupt_handle: Arc::new(LinuxInterruptHandle {
-                running: AtomicU64::new(0),
-                cancel_requested: AtomicBool::new(false),
-                tid: AtomicU64::new(unsafe { libc::pthread_self() }),
-                retry_delay: config.get_interrupt_retry_delay(),
-                sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-                dropped: AtomicBool::new(false),
-            }),
-
+            interrupt_handle: interrupt_handle.clone(),
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
             gdb_conn,
-        })
+        };
+
+        // Send the interrupt handle to the GDB thread if debugging is enabled
+        // This is used to allow the GDB thread to stop the vCPU
+        #[cfg(gdb)]
+        hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
+
+        Ok(hv)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
