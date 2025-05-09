@@ -55,14 +55,23 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                         VcpuStopReason::EntryPointBp => BaseStopReason::HwBreak(()),
                         // This is a consequence of the GDB client sending an interrupt signal
                         // to the target thread
-                        VcpuStopReason::Interrupt => BaseStopReason::SignalWithThread {
-                            tid: (),
+                        VcpuStopReason::Interrupt => {
                             #[cfg(target_os = "linux")]
-                            signal: Signal(SIGRTMIN() as u8),
+                            let rsp = BaseStopReason::SignalWithThread {
+                                tid: (),
+                                signal: Signal(SIGRTMIN() as u8),
+                            };
+
+                            // For Windows we don't send a signal, this should not be happen
                             #[cfg(target_os = "windows")]
-                            // TODO: Handle the signal properly
-                            signal: Signal(53u8),
-                        },
+                            let rsp = BaseStopReason::SignalWithThread {
+                                tid: (),
+                                // This is a placeholder signal, we don't have a real signal
+                                signal: Signal(53u8),
+                            };
+
+                            rsp
+                        }
                         VcpuStopReason::Unknown => {
                             log::warn!("Unknown stop reason received");
 
@@ -111,8 +120,15 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
 
         #[cfg(target_os = "windows")]
         let ret = {
-            // TODO: Implement Windows signal sending
-            libc::ESRCH
+            // pthread_kill is not implemented on Windows
+            // We need to use a different method to send a signal to the target thread
+            // For now, we just log a warning and return an error
+            // NOTE: The way we make a vCPU stop on windows is to make a windows API call
+            // to suspend the thread, but for that we need a handle to the thread which we don't have
+            log::warn!("Windows signal sending not implemented");
+
+            // For now, we just return an error
+            -1
         };
 
         log::info!("pthread_kill returned {}", ret);

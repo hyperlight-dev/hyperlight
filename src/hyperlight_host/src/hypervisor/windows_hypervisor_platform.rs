@@ -498,42 +498,16 @@ impl VMProcessor {
 
     #[cfg(gdb)]
     pub(super) fn set_debug_regs(&self, regs: &WHvDebugRegisters) -> Result<()> {
-        const LEN: usize = 6;
-
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterDr0,
-            WHvX64RegisterDr1,
-            WHvX64RegisterDr2,
-            WHvX64RegisterDr3,
-            WHvX64RegisterDr6,
-            WHvX64RegisterDr7,
+        let registers = vec![
+            (WHvX64RegisterDr0, WHV_REGISTER_VALUE { Reg64: regs.dr0 }),
+            (WHvX64RegisterDr1, WHV_REGISTER_VALUE { Reg64: regs.dr1 }),
+            (WHvX64RegisterDr2, WHV_REGISTER_VALUE { Reg64: regs.dr2 }),
+            (WHvX64RegisterDr3, WHV_REGISTER_VALUE { Reg64: regs.dr3 }),
+            (WHvX64RegisterDr6, WHV_REGISTER_VALUE { Reg64: regs.dr6 }),
+            (WHvX64RegisterDr7, WHV_REGISTER_VALUE { Reg64: regs.dr7 }),
         ];
 
-        let values: [WHV_REGISTER_VALUE; LEN] = [
-            WHV_REGISTER_VALUE { Reg64: regs.dr0 },
-            WHV_REGISTER_VALUE { Reg64: regs.dr1 },
-            WHV_REGISTER_VALUE { Reg64: regs.dr2 },
-            WHV_REGISTER_VALUE { Reg64: regs.dr3 },
-            WHV_REGISTER_VALUE { Reg64: regs.dr6 },
-            WHV_REGISTER_VALUE { Reg64: regs.dr7 },
-        ];
-
-        let ret_val = unsafe {
-            WHvSetVirtualProcessorRegisters(
-                self.get_partition_hdl(),
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                values.as_ptr(),
-            )
-        };
-
-        if ret_val.is_err() {
-            println!("Failed to set debug registers: {:?}", ret_val);
-            return Err(new_error!("Call to WHvSetVirtualProcessorRegisters failed"));
-        }
-
-        Ok(())
+        self.set_registers(&registers)
     }
 
     #[cfg(gdb)]

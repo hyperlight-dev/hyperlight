@@ -901,7 +901,9 @@ fn set_up_hypervisor_partition(
             #[cfg(target_os = "linux")]
             let thread_id = unsafe { pthread_self() };
             #[cfg(target_os = "windows")]
-            // TODO: Implement Windows thread id retrieval
+            // On Windows, we need to get the thread id from the thread handle because
+            // we cannot send a signal to the thread without a handle
+            // This is a placeholder, as we don't have the actual thread handle here
             let thread_id = 0;
 
             let gdb_conn = create_gdb_thread(*port, thread_id);
