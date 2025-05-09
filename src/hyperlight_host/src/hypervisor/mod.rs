@@ -93,7 +93,7 @@ pub(crate) const EFER_NX: u64 = 1 << 11;
 pub enum HyperlightExit {
     #[cfg(gdb)]
     /// The vCPU has exited due to a debug event
-    Debug(VcpuStopReason),
+    Debug { dr6: u64, exception: u32 },
     /// The vCPU has halted
     Halt(),
     /// The vCPU has issued a write to the given port with the given value

@@ -29,11 +29,7 @@ use std::fmt::Debug;
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 #[cfg(gdb)]
-use mshv_bindings::{
-    hv_intercept_parameters, hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
-    hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT, mshv_install_intercept,
-    HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-};
+use mshv_bindings::hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
@@ -43,22 +39,20 @@ use mshv_bindings::{
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features,
 };
-use mshv_bindings2::{hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value};
+use mshv_bindings2::{
+    hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, DebugRegisters,
+};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
-use super::gdb::{
-    DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, VcpuStopReason, DR6_BS_FLAG_MASK,
-    DR6_HW_BP_FLAGS_MASK,
-};
-use super::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
+use super::handlers::DbgMemAccessHandlerCaller;
 use super::HyperlightExit;
 use crate::fpuregs::CommonFpu;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::regs::CommonRegisters;
 use crate::sregs::CommonSpecialRegisters;
 use crate::vm::Vm;
-use crate::{log_then_return, new_error, HyperlightError, Result};
+use crate::{log_then_return, HyperlightError, Result};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -112,47 +106,6 @@ impl MshvVm {
             vm_fd,
             vcpu_fd,
         })
-    }
-
-    /// TODO this has been slightly modified in this PR
-    pub(crate) fn get_stop_reason(&mut self) -> Result<VcpuStopReason> {
-        // MSHV does not provide info on the vCPU exits but the debug
-        // information can be retrieved from the DEBUG REGISTERS
-        let regs = self
-            .vcpu_fd
-            .get_debug_regs()
-            .map_err(|e| new_error!("Cannot retrieve debug registers from vCPU: {}", e))?;
-
-        // DR6 register contains debug state related information
-        let debug_status = regs.dr6;
-
-        // If the BS flag in DR6 register is set, it means a single step
-        // instruction triggered the exit
-        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-        // Architectures Software Developer's Manual
-        if debug_status & DR6_BS_FLAG_MASK != 0 {
-            return Ok(VcpuStopReason::DoneStep);
-        }
-
-        // If any of the B0-B3 flags in DR6 register is set, it means a
-        // hardware breakpoint triggered the exit
-        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-        // Architectures Software Developer's Manual
-        if debug_status & DR6_HW_BP_FLAGS_MASK != 0 {
-            return Ok(VcpuStopReason::HwBp);
-        }
-
-        // TODO fix this
-
-        // mshv does not provide a way to specify which exception triggered the
-        // vCPU exit as the mshv intercepts both #DB and #BP
-        // We check against the SW breakpoints Hashmap to detect whether the
-        // vCPU exited due to a SW breakpoint
-        // if self.sw_breakpoints.contains_key(&gpa) {
-        //     return Ok(VcpuStopReason::SwBp);
-        // }
-
-        Ok(VcpuStopReason::Unknown)
     }
 }
 
@@ -266,12 +219,14 @@ impl Vm for MshvVm {
                 // The only case an intercept exit is expected is when debugging is enabled
                 // and the intercepts are installed
                 #[cfg(gdb)]
-                EXCEPTION_INTERCEPT => match self.get_stop_reason() {
-                    Ok(reason) => HyperlightExit::Debug(reason),
-                    Err(e) => {
-                        log_then_return!("Error getting stop reason: {:?}", e);
+                EXCEPTION_INTERCEPT => {
+                    let exception_message = m.to_exception_info()?;
+                    let DebugRegisters { dr6, .. } = self.vcpu_fd.get_debug_regs()?;
+                    HyperlightExit::Debug {
+                        dr6: dr6,
+                        exception: exception_message.exception_vector as u32,
                     }
-                },
+                }
                 other => {
                     crate::debug!("mshv Other Exit: Exit: {:#?} \n {:#?}", other, &self);
                     log_then_return!("unknown Hyper-V run message type {:?}", other);
@@ -298,11 +253,7 @@ impl Vm for MshvVm {
         todo!()
     }
 
-    fn enable_debug(&mut self) -> Result<()> {
-        todo!()
-    }
-
-    fn disable_debug(&mut self) -> Result<()> {
+    fn set_debug(&mut self, enabled: bool) -> Result<()> {
         todo!()
     }
 

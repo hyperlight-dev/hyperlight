@@ -17,46 +17,62 @@ use crate::sregs::CommonSpecialRegisters;
 use crate::Result;
 
 pub(crate) trait Vm: Send + Sync + Debug {
+    /// Get the standard registers of the vCPU
     fn get_regs(&self) -> Result<CommonRegisters>;
+    /// Set the standard registers of the vCPU
     fn set_regs(&self, regs: &CommonRegisters) -> Result<()>;
 
+    /// Get the special registers of the vCPU
     fn get_sregs(&self) -> Result<CommonSpecialRegisters>;
+    /// Set the special registers of the vCPU
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
 
+    /// Get the FPU registers of the vCPU
     fn get_fpu(&self) -> Result<CommonFpu>;
+    /// Set the FPU registers of the vCPU
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()>;
 
-    // Safety: Should only be called once, since memory slots will otherwise be overwritten on KVM
+    /// Map memory regions into this VM
+    ///
+    /// Safety: Should only be called once, since memory slots will otherwise be overwritten on KVM
     unsafe fn map_memory(&self, region: &[MemoryRegion]) -> Result<()>;
 
+    /// Runs the vCPU until it exits
     fn run_vcpu(&mut self) -> Result<HyperlightExit>;
 
+    /// Translates a guest address
     fn translate_gva(&self, gva: u64) -> Result<u64>;
 
+    /// Get a handle to be able to interrupt a running VM
     fn interrupt_handle(&self) -> InterruptHandle;
 
-    // DEBUGGING
-    fn enable_debug(&mut self) -> Result<()>;
+    // --- DEBUGGING ------------
 
-    fn disable_debug(&mut self) -> Result<()>;
+    /// Enable/disable debugging
+    fn set_debug(&mut self, enable: bool) -> Result<()>;
 
+    /// Enable/disable single stepping
     fn set_single_step(&mut self, enable: bool) -> Result<()>;
 
+    /// Add a hardware breakpoint at the given address
+    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()>;
+
+    /// Remove a hardware breakpoint at the given address
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()>;
+
+    /// Add a software breakpoint at the given address
     fn add_sw_breakpoint(
         &mut self,
         addr: u64,
         dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()>;
 
+    /// Remove a software breakpoint at the given address
     fn remove_sw_breakpoint(
         &mut self,
         addr: u64,
         dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()>;
-
-    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()>;
-
-    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()>;
 }
 
 pub(crate) struct InterruptHandle {

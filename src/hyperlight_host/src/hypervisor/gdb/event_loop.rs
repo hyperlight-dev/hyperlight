@@ -49,6 +49,7 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                     // Resume execution if unknown reason for stop
                     let stop_response = match stop_reason {
                         VcpuStopReason::DoneStep => BaseStopReason::DoneStep,
+                        VcpuStopReason::EntryPointBp => BaseStopReason::HwBreak(()),
                         VcpuStopReason::SwBp => BaseStopReason::SwBreak(()),
                         VcpuStopReason::HwBp => BaseStopReason::HwBreak(()),
                         // This is a consequence of the GDB client sending an interrupt signal

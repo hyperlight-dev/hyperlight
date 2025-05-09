@@ -14,21 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use kvm_bindings::{
-    kvm_debug_exit_arch, kvm_debugregs, kvm_guest_debug, kvm_userspace_memory_region,
-    KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP, KVM_MEM_READONLY,
+    kvm_guest_debug, kvm_userspace_memory_region, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
+    KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP, KVM_MEM_READONLY,
 };
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
-use super::gdb::VcpuStopReason;
 use super::handlers::DbgMemAccessHandlerCaller;
 use super::HyperlightExit;
 use crate::fpuregs::CommonFpu;
-use crate::hypervisor::gdb::{DR6_BS_FLAG_MASK, DR6_HW_BP_FLAGS_MASK};
+use crate::hypervisor::gdb::{SW_BP, SW_BP_SIZE};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::regs::CommonRegisters;
 use crate::sregs::CommonSpecialRegisters;
@@ -63,8 +63,8 @@ pub(super) struct KvmVm {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
 
-    next_debug: usize,
     debug: kvm_guest_debug,
+    sw_breakpoints: HashMap<u64, u8>, // addr -> original instruction
 }
 
 impl KvmVm {
@@ -80,46 +80,8 @@ impl KvmVm {
             vm_fd,
             vcpu_fd,
             debug: kvm_guest_debug::default(),
-            next_debug: 0,
+            sw_breakpoints: HashMap::new(),
         })
-    }
-
-    /// TODO this has been slightly modified in this PR
-    fn get_debug_stop_reason(&mut self, debug_exit: kvm_debug_exit_arch) -> Result<VcpuStopReason> {
-        /// Exception id for SW breakpoint
-        const SW_BP_ID: u32 = 3;
-
-        let CommonRegisters { rip, .. } = self.get_regs()?;
-
-        // If the BS flag in DR6 register is set, it means a single step
-        // instruction triggered the exit
-        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-        // Architectures Software Developer's Manual
-        if debug_exit.dr6 & DR6_BS_FLAG_MASK != 0 {
-            return Ok(VcpuStopReason::DoneStep);
-        }
-        // If any of the B0-B3 flags in DR6 register is set, it means a
-        // hardware breakpoint triggered the exit
-        // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-        // Architectures Software Developer's Manual
-        if DR6_HW_BP_FLAGS_MASK & debug_exit.dr6 != 0 {
-            let gpa = self.translate_gva(rip)?;
-            if gpa == 0x31310 {
-                self.remove_hw_breakpoint(gpa).unwrap();
-            }
-            println!("gpa: {:#x}", gpa);
-            return Ok(VcpuStopReason::HwBp);
-        }
-
-        // If the exception ID matches #BP (3) - it means a software breakpoint
-        // caused the exit
-        if debug_exit.exception == SW_BP_ID {
-            return Ok(VcpuStopReason::SwBp);
-        }
-
-        // Log an error and provide internal debugging info for fixing
-        log::error!("The vCPU exited because of an unknown debug reason");
-        Ok(VcpuStopReason::Unknown)
     }
 }
 
@@ -175,23 +137,18 @@ impl Vm for KvmVm {
             Ok(VcpuExit::MmioWrite(addr, _)) => Ok(HyperlightExit::MmioWrite(addr)),
             #[cfg(gdb)]
             // KVM provides architecture specific information about the vCPU state when exiting
-            Ok(VcpuExit::Debug(debug_exit)) => {
-                log::error!("KVM VCPU DEBUG EXIT");
-                match self.get_debug_stop_reason(debug_exit) {
-                    Ok(reason) => Ok(HyperlightExit::Debug(reason)),
-                    Err(e) => {
-                        log_then_return!("Error getting stop reason: {:?}", e);
-                    }
-                }
-            }
+            Ok(VcpuExit::Debug(debug_exit)) => Ok(HyperlightExit::Debug {
+                dr6: debug_exit.dr6,
+                exception: debug_exit.exception,
+            }),
             Err(e) => match e.errno() {
                 // In case of the gdb feature, the timeout is not enabled, this
                 // exit is because of a signal sent from the gdb thread to the
                 // hypervisor thread to cancel execution
-                #[cfg(gdb)]
-                libc::EINTR => Ok(HyperlightExit::Debug(VcpuStopReason::Interrupt)),
+                // #[cfg(gdb)]
+                // libc::EINTR => Ok(HyperlightExit::Debug(VcpuStopReason::Interrupt)),
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
-                #[cfg(not(gdb))]
+                // #[cfg(not(gdb))]
                 libc::EINTR => Ok(HyperlightExit::Cancelled()),
                 libc::EAGAIN => Ok(HyperlightExit::Retry()),
                 _ => {
@@ -213,13 +170,17 @@ impl Vm for KvmVm {
 
     // --- DEBUGGING RELATED BELOW ---
 
-    fn enable_debug(&mut self) -> Result<()> {
-        self.debug.control |= KVM_GUESTDBG_ENABLE;
+    fn set_debug(&mut self, enable: bool) -> Result<()> {
+        log::info!("Setting debug to {}", enable);
+        if enable {
+            self.debug.control |=
+                KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP | KVM_GUESTDBG_USE_SW_BP;
+        } else {
+            self.debug.control &=
+                !(KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP | KVM_GUESTDBG_USE_SW_BP);
+        }
+        self.vcpu_fd.set_guest_debug(&self.debug)?;
         Ok(())
-    }
-
-    fn disable_debug(&mut self) -> Result<()> {
-        todo!()
     }
 
     fn set_single_step(&mut self, enable: bool) -> Result<()> {
@@ -240,35 +201,27 @@ impl Vm for KvmVm {
         Ok(())
     }
 
-    fn add_sw_breakpoint(
-        &mut self,
-        addr: u64,
-        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
-    ) -> Result<()> {
-        log::info!("Setting sw (hw) breakpoint");
-        self.add_hw_breakpoint(addr)
-    }
-
     fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
-        log::info!("Setting hw breakpoint");
-        if self.next_debug >= 4 {
+        let d7 = self.debug.arch.debugreg[7];
+
+        // count only LOCAL (L0, L1, L2, L3) enable bits
+        let num_hw_breakpoints = [0, 2, 4, 6]
+            .iter()
+            .filter(|&&bit| (d7 & (1 << bit)) != 0)
+            .count();
+
+        if num_hw_breakpoints >= 4 {
             return Err(new_error!("Tried to add more than 4 hardware breakpoints"));
         }
-        self.debug.control |= KVM_GUESTDBG_USE_HW_BP;
-        self.debug.arch.debugreg[self.next_debug] = addr;
-        self.debug.arch.debugreg[7] |= 1 << (self.next_debug * 2);
-        self.next_debug += 1;
+
+        // find the first available LOCAL enable bit
+        let available_debug_register_idx = (0..4).find(|&i| (d7 & (1 << (i * 2))) == 0).unwrap(); // safe because of the check above
+        self.debug.arch.debugreg[available_debug_register_idx] = addr;
+        self.debug.arch.debugreg[7] |= 1 << (available_debug_register_idx * 2);
+
         self.vcpu_fd.set_guest_debug(&self.debug)?;
 
         Ok(())
-    }
-
-    fn remove_sw_breakpoint(
-        &mut self,
-        addr: u64,
-        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
-    ) -> Result<()> {
-        self.remove_hw_breakpoint(addr)
     }
 
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
@@ -276,18 +229,38 @@ impl Vm for KvmVm {
         let index = self.debug.arch.debugreg[..4]
             .iter()
             .position(|&a| a == addr)
-            .ok_or_else(|| new_error!("Hardware breakpoint not found"))?;
+            .ok_or_else(|| new_error!("Tried to remove non-existing hw-breakpoint"))?;
 
         // Clear the address and disable the corresponding bit
         self.debug.arch.debugreg[index] = 0;
         self.debug.arch.debugreg[7] &= !(1 << (index * 2));
 
-        // Decrement next_debug only if this was the last one
-        if index == self.next_debug - 1 {
-            self.next_debug -= 1;
-        }
-
         self.vcpu_fd.set_guest_debug(&self.debug)?;
+        Ok(())
+    }
+
+    fn add_sw_breakpoint(
+        &mut self,
+        addr: u64,
+        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> Result<()> {
+        let mut save_data = [0; SW_BP_SIZE];
+        let mut mem = dbg_mem_access_fn.lock().unwrap();
+        mem.read(addr as usize, &mut save_data[..])?;
+        mem.write(addr as usize, &SW_BP)?;
+        self.sw_breakpoints.insert(addr, save_data[0]);
+        Ok(())
+    }
+    fn remove_sw_breakpoint(
+        &mut self,
+        addr: u64,
+        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+    ) -> Result<()> {
+        let original_instr = self.sw_breakpoints.remove(&addr).unwrap();
+        dbg_mem_access_fn
+            .lock()
+            .unwrap()
+            .write(addr as usize, &[original_instr])?;
         Ok(())
     }
 
