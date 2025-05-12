@@ -1,7 +1,7 @@
 mod fpu;
-mod regs;
-mod sregs;
+mod special_regs;
+mod standard_regs;
 
 pub(crate) use fpu::*;
-pub(crate) use regs::*;
-pub(crate) use sregs::*;
+pub(crate) use special_regs::*;
+pub(crate) use standard_regs::*;

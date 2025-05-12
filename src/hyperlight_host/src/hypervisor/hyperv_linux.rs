@@ -133,7 +133,7 @@ impl Vm for MshvVm {
     }
 
     fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
-        let mshv_regs = regs.clone().into();
+        let mshv_regs = (*regs).into();
         Ok(self.vcpu_fd.set_regs(&mshv_regs)?)
     }
 
@@ -143,7 +143,7 @@ impl Vm for MshvVm {
     }
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        let mshv_sregs = sregs.clone().into();
+        let mshv_sregs = (*sregs).into();
         self.vcpu_fd.set_sregs(&mshv_sregs)?;
         Ok(())
     }
@@ -153,7 +153,7 @@ impl Vm for MshvVm {
     }
 
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
-        self.vcpu_fd.set_fpu(&fpu.clone().into())?;
+        self.vcpu_fd.set_fpu(&(*fpu).into())?;
         Ok(())
     }
 
@@ -235,7 +235,7 @@ impl Vm for MshvVm {
                     let exception_message = m.to_exception_info()?;
                     let DebugRegisters { dr6, .. } = self.vcpu_fd.get_debug_regs()?;
                     HyperlightExit::Debug {
-                        dr6: dr6,
+                        dr6,
                         exception: exception_message.exception_vector as u32,
                     }
                 }

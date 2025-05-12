@@ -98,7 +98,7 @@ impl Vm for KvmVm {
     }
 
     fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
-        let kvm_regs = regs.clone().into();
+        let kvm_regs = (*regs).into();
         Ok(self.vcpu_fd.set_regs(&kvm_regs)?)
     }
 
@@ -107,7 +107,7 @@ impl Vm for KvmVm {
     }
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        Ok(self.vcpu_fd.set_sregs(&sregs.clone().into())?)
+        Ok(self.vcpu_fd.set_sregs(&(*sregs).into())?)
     }
 
     fn get_fpu(&self) -> Result<CommonFpu> {
@@ -115,7 +115,7 @@ impl Vm for KvmVm {
     }
 
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
-        Ok(self.vcpu_fd.set_fpu(&fpu.clone().into())?)
+        Ok(self.vcpu_fd.set_fpu(&(*fpu).into())?)
     }
 
     unsafe fn map_memory(&self, regions: &[MemoryRegion]) -> Result<()> {

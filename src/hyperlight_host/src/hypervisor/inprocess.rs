@@ -14,11 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use crate::hypervisor::DbgMemAccessHandlerCaller;
+use crate::hypervisor::VcpuStopReason;
+use log::LevelFilter;
 use std::fmt::Debug;
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
-
-use log::LevelFilter;
 
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
@@ -127,7 +128,7 @@ impl<'a> HyperlightVm for InprocessDriver<'a> {
         _hv_handler: Option<HypervisorHandler>,
         _outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         _mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+        #[cfg(gdb)] _dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         unimplemented!("run should not be needed since we are in in-process mode")
     }
@@ -140,5 +141,15 @@ impl<'a> HyperlightVm for InprocessDriver<'a> {
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion] {
         unimplemented!("get_memory_regions is not supported since we are in in-process mode")
+    }
+
+    #[cfg(gdb)]
+    /// handles the cases when the vCPU stops due to a Debug event
+    fn handle_debug(
+        &mut self,
+        _dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        _stop_reason: VcpuStopReason,
+    ) -> Result<()> {
+        unimplemented!("handle_debug should not be needed since we are in in-process mode")
     }
 }

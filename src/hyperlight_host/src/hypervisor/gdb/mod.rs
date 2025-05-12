@@ -31,7 +31,7 @@ use gdbstub::target::TargetError;
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
-use crate::regs::CommonRegisters;
+use crate::hypervisor::regs::CommonRegisters;
 
 #[derive(Debug, Error)]
 pub(crate) enum GdbTargetError {

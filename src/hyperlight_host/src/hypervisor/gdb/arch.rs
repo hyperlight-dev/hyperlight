@@ -17,8 +17,9 @@ limitations under the License.
 //! This file contains architecture specific code for the x86_64
 
 use super::VcpuStopReason;
+use crate::hypervisor::regs::CommonRegisters;
+use crate::hypervisor::vm::Vm;
 use crate::Result;
-use crate::{regs::CommonRegisters, vm::Vm};
 
 // Described in Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
 // of Intel 64 and IA-32 Architectures Software Developer's Manual

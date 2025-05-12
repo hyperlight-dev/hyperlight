@@ -67,7 +67,7 @@ mod debug {
             req: DebugMsg,
             dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         ) -> Result<DebugResponse> {
-            if let Some(_) = self.gdb_conn {
+            if self.gdb_conn.is_some() {
                 match req {
                     DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
                         self.vm
@@ -142,7 +142,7 @@ mod debug {
 
                             e
                         })
-                        .map(|regs| DebugResponse::ReadRegisters(regs)),
+                        .map(DebugResponse::ReadRegisters),
                     DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
                         self.vm
                             .remove_hw_breakpoint(addr)
@@ -364,7 +364,7 @@ impl HyperlightSandbox {
             vm,
             entrypoint,
             orig_rsp: rsp_gp,
-            mem_regions: mem_regions,
+            mem_regions,
 
             #[cfg(gdb)]
             gdb_conn,
