@@ -28,6 +28,7 @@ extern crate mshv_ioctls3 as mshv_ioctls;
 use std::collections::HashMap;
 #[cfg(gdb)]
 use std::fmt::Debug;
+use std::sync::LazyLock;
 
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerCaller;
@@ -37,7 +38,7 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::regs::CommonRegisters;
 use crate::sregs::CommonSpecialRegisters;
 use crate::vm::Vm;
-use crate::{log_then_return, HyperlightError, Result};
+use crate::{log_then_return, new_error, HyperlightError, Result};
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 #[cfg(gdb)]
@@ -51,7 +52,9 @@ use mshv_bindings::{
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features,
 };
-use mshv_bindings2::{hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value};
+use mshv_bindings::{
+    hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, DebugRegisters,
+};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
@@ -71,7 +74,6 @@ pub(crate) fn is_hypervisor_present() -> bool {
 /// A MSHV implementation of a single-vcpu VM
 #[derive(Debug)]
 pub(super) struct MshvVm {
-    mshv_fd: Mshv,
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
 
@@ -86,14 +88,19 @@ struct MshvDebug {
     sw_breakpoints: HashMap<u64, u8>, // addr -> original instruction
 }
 
+static MSHV: LazyLock<Result<Mshv>> =
+    LazyLock::new(|| Mshv::new().map_err(|e| new_error!("Failed to open /dev/mshv: {}", e)));
+
 impl MshvVm {
     /// Create a new instance of a MshvVm
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn new() -> Result<Self> {
-        let mshv_fd = Mshv::new()?;
+        let hv = MSHV
+            .as_ref()
+            .map_err(|e| new_error!("Failed to create MSHV instance: {}", e))?;
         let pr = Default::default();
         #[cfg(mshv2)]
-        let vm_fd = mshv_fd.create_vm_with_config(&pr)?;
+        let vm_fd = hv.create_vm_with_config(&pr)?;
         #[cfg(mshv3)]
         let vm_fd = {
             // It's important to avoid create_vm() and explicitly use
@@ -113,7 +120,6 @@ impl MshvVm {
         let vcpu_fd = vm_fd.create_vcpu(0)?;
 
         Ok(Self {
-            mshv_fd: mshv_fd,
             vm_fd,
             vcpu_fd,
             #[cfg(gdb)]
@@ -218,16 +224,11 @@ impl Vm for MshvVm {
                     let mimo_message = m.to_memory_info()?;
                     let gpa = mimo_message.guest_physical_address;
                     let access_info = MemoryRegionFlags::try_from(mimo_message)?;
-                    crate::debug!(
-                        "mshv MMIO invalid GPA access -Details: Address: {} \n {:#?}",
-                        gpa,
-                        &self
-                    );
-                    log_then_return!(HyperlightError::MemoryAccessViolation(
-                        gpa,
-                        access_info,
-                        todo!(),
-                    ));
+                    match access_info {
+                        MemoryRegionFlags::READ => HyperlightExit::MmioRead(gpa),
+                        MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(gpa),
+                        _ => HyperlightExit::Unknown("Unknown MMIO access".to_string()),
+                    }
                 }
                 // The only case an intercept exit is expected is when debugging is enabled
                 // and the intercepts are installed
@@ -262,6 +263,8 @@ impl Vm for MshvVm {
 
     #[cfg(gdb)]
     fn translate_gva(&self, gva: u64) -> Result<u64> {
+        use mshv_bindings::{HV_TRANSLATE_GVA_VALIDATE_READ, HV_TRANSLATE_GVA_VALIDATE_WRITE};
+
         let flags = (HV_TRANSLATE_GVA_VALIDATE_READ | HV_TRANSLATE_GVA_VALIDATE_WRITE) as u64;
         let (addr, _) = self
             .vcpu_fd
@@ -273,6 +276,13 @@ impl Vm for MshvVm {
 
     #[cfg(gdb)]
     fn set_debug(&mut self, enabled: bool) -> Result<()> {
+        use mshv_bindings::{
+            hv_intercept_parameters, hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
+            mshv_install_intercept, HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+        };
+
+        use crate::new_error;
+
         if enabled {
             self.vm_fd
                 .install_intercept(mshv_install_intercept {
@@ -316,6 +326,8 @@ impl Vm for MshvVm {
 
     #[cfg(gdb)]
     fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        use crate::new_error;
+
         let dr7 = self.debug.regs.dr7;
         // count only LOCAL (L0, L1, L2, L3) enable bits
         let num_hw_breakpoints = [0, 2, 4, 6]
@@ -345,6 +357,8 @@ impl Vm for MshvVm {
 
     #[cfg(gdb)]
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        use crate::new_error;
+
         if self.debug.regs.dr0 == addr {
             self.debug.regs.dr0 = 0;
             self.debug.regs.dr7 &= !(1 << 0);

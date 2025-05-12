@@ -1,5 +1,7 @@
 use std::fmt::Debug;
 #[cfg(gdb)]
+use std::sync::Arc;
+#[cfg(gdb)]
 use std::sync::Mutex;
 
 use crate::fpuregs::CommonFpu;

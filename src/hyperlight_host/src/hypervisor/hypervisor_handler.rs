@@ -1040,6 +1040,7 @@ mod tests {
 
     #[test]
     fn terminate_execution_then_call_another_function() -> Result<()> {
+        env_logger::init();
         let mut sandbox = create_multi_use_sandbox();
 
         let res = sandbox.call_guest_function_by_name("Spin", ReturnType::Void, None);

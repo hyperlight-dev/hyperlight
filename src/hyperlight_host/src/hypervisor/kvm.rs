@@ -19,13 +19,19 @@ use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
+#[cfg(gdb)]
+use kvm_bindings::kvm_guest_debug;
+#[cfg(gdb)]
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use super::HyperlightExit;
 use crate::fpuregs::CommonFpu;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::regs::CommonRegisters;
 use crate::sregs::CommonSpecialRegisters;
 use crate::vm::Vm;
-use crate::{log_then_return, Result};
+use crate::{log_then_return, new_error, Result};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 pub(crate) fn is_hypervisor_present() -> bool {
@@ -51,7 +57,6 @@ pub(crate) fn is_hypervisor_present() -> bool {
 /// A KVM implementation of a single-vcpu VM
 #[derive(Debug)]
 pub(super) struct KvmVm {
-    kvm_fd: Kvm,
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
 
@@ -66,16 +71,20 @@ struct KvmDebug {
     sw_breakpoints: HashMap<u64, u8>, // addr -> original instruction
 }
 
+static KVM: LazyLock<Result<Kvm>> =
+    LazyLock::new(|| Kvm::new().map_err(|e| new_error!("Failed to open /dev/kvm: {}", e)));
+
 impl KvmVm {
     /// Create a new instance of a `KvmVm`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn new() -> Result<Self> {
-        let kvm_fd = Kvm::new()?;
-        let vm_fd = kvm_fd.create_vm_with_type(0)?;
+        let hv = KVM
+            .as_ref()
+            .map_err(|e| new_error!("Failed to create KVM instance: {}", e))?;
+        let vm_fd = hv.create_vm_with_type(0)?;
         let vcpu_fd = vm_fd.create_vcpu(0)?;
 
         Ok(Self {
-            kvm_fd,
             vm_fd,
             vcpu_fd,
             #[cfg(gdb)]
@@ -167,6 +176,8 @@ impl Vm for KvmVm {
 
     #[cfg(gdb)]
     fn translate_gva(&self, gva: u64) -> Result<u64> {
+        use crate::HyperlightError;
+
         let gpa = self.vcpu_fd.translate_gva(gva)?;
         if gpa.valid == 0 {
             Err(HyperlightError::TranslateGuestAddress(gva))
@@ -177,25 +188,29 @@ impl Vm for KvmVm {
 
     #[cfg(gdb)]
     fn set_debug(&mut self, enable: bool) -> Result<()> {
+        use kvm_bindings::{KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP};
+
         log::info!("Setting debug to {}", enable);
         if enable {
-            self.debug.control |=
+            self.debug.regs.control |=
                 KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP | KVM_GUESTDBG_USE_SW_BP;
         } else {
-            self.debug.control &=
+            self.debug.regs.control &=
                 !(KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP | KVM_GUESTDBG_USE_SW_BP);
         }
-        self.vcpu_fd.set_guest_debug(&self.debug)?;
+        self.vcpu_fd.set_guest_debug(&self.debug.regs)?;
         Ok(())
     }
 
     #[cfg(gdb)]
     fn set_single_step(&mut self, enable: bool) -> Result<()> {
+        use kvm_bindings::KVM_GUESTDBG_SINGLESTEP;
+
         log::info!("Setting single step to {}", enable);
         if enable {
-            self.debug.control |= KVM_GUESTDBG_SINGLESTEP;
+            self.debug.regs.control |= KVM_GUESTDBG_SINGLESTEP;
         } else {
-            self.debug.control &= !KVM_GUESTDBG_SINGLESTEP;
+            self.debug.regs.control &= !KVM_GUESTDBG_SINGLESTEP;
         }
         // Set TF Flag to enable Traps
         let mut regs = self.get_regs()?;
@@ -210,7 +225,9 @@ impl Vm for KvmVm {
 
     #[cfg(gdb)]
     fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
-        let dr7 = self.debug.arch.debugreg[7];
+        use crate::new_error;
+
+        let dr7 = self.debug.regs.arch.debugreg[7];
 
         // count only LOCAL (L0, L1, L2, L3) enable bits
         let num_hw_breakpoints = [0, 2, 4, 6]
@@ -224,27 +241,29 @@ impl Vm for KvmVm {
 
         // find the first available LOCAL, and then enable it
         let available_debug_register_idx = (0..4).find(|&i| (dr7 & (1 << (i * 2))) == 0).unwrap(); // safe because of the check above
-        self.debug.arch.debugreg[available_debug_register_idx] = addr;
-        self.debug.arch.debugreg[7] |= 1 << (available_debug_register_idx * 2);
+        self.debug.regs.arch.debugreg[available_debug_register_idx] = addr;
+        self.debug.regs.arch.debugreg[7] |= 1 << (available_debug_register_idx * 2);
 
-        self.vcpu_fd.set_guest_debug(&self.debug)?;
+        self.vcpu_fd.set_guest_debug(&self.debug.regs)?;
 
         Ok(())
     }
 
     #[cfg(gdb)]
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        use crate::new_error;
+
         // Find the index of the breakpoint
-        let index = self.debug.arch.debugreg[..4]
+        let index = self.debug.regs.arch.debugreg[..4]
             .iter()
             .position(|&a| a == addr)
             .ok_or_else(|| new_error!("Tried to remove non-existing hw-breakpoint"))?;
 
         // Clear the address and disable the corresponding bit
-        self.debug.arch.debugreg[index] = 0;
-        self.debug.arch.debugreg[7] &= !(1 << (index * 2));
+        self.debug.regs.arch.debugreg[index] = 0;
+        self.debug.regs.arch.debugreg[7] &= !(1 << (index * 2));
 
-        self.vcpu_fd.set_guest_debug(&self.debug)?;
+        self.vcpu_fd.set_guest_debug(&self.debug.regs)?;
         Ok(())
     }
 
@@ -252,7 +271,9 @@ impl Vm for KvmVm {
     fn add_sw_breakpoint(
         &mut self,
         addr: u64,
-        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        dbg_mem_access_fn: std::sync::Arc<
+            std::sync::Mutex<dyn super::handlers::DbgMemAccessHandlerCaller>,
+        >,
     ) -> Result<()> {
         use super::gdb::arch::SW_BP_SIZE;
         use crate::hypervisor::gdb::arch::SW_BP;
@@ -261,7 +282,7 @@ impl Vm for KvmVm {
         let mut mem = dbg_mem_access_fn.lock().unwrap();
         mem.read(addr as usize, &mut save_data[..])?;
         mem.write(addr as usize, &SW_BP)?;
-        self.sw_breakpoints.insert(addr, save_data[0]);
+        self.debug.sw_breakpoints.insert(addr, save_data[0]);
         Ok(())
     }
 
@@ -269,9 +290,11 @@ impl Vm for KvmVm {
     fn remove_sw_breakpoint(
         &mut self,
         addr: u64,
-        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        dbg_mem_access_fn: std::sync::Arc<
+            std::sync::Mutex<dyn super::handlers::DbgMemAccessHandlerCaller>,
+        >,
     ) -> Result<()> {
-        let original_instr = self.sw_breakpoints.remove(&addr).unwrap();
+        let original_instr = self.debug.sw_breakpoints.remove(&addr).unwrap();
         dbg_mem_access_fn
             .lock()
             .unwrap()

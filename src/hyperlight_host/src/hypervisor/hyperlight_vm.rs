@@ -327,9 +327,6 @@ impl HyperlightSandbox {
         let mut vm: Box<dyn Vm> = match hv {
             HypervisorType::Kvm => Box::new(KvmVm::new()?),
             HypervisorType::Mshv => Box::new(MshvVm::new()?),
-            _ => {
-                return Err(new_error!("Unsupported hypervisor type"));
-            }
         };
 
         // Safety: We haven't called this before and the regions are valid
