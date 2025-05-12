@@ -472,11 +472,10 @@ impl HyperlightVm for HyperlightSandbox {
         if data.is_empty() {
             log_then_return!("no data was given in IO interrupt");
         } else {
-            let payload_u64 = u64::from(data[0]);
             outb_handle_fn
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .call(port, payload_u64)?;
+                .call(port, data)?;
         }
 
         Ok(())
@@ -712,7 +711,7 @@ mod tests {
     #[test]
     fn test_init() {
         let outb_handler: Arc<Mutex<OutBHandler>> = {
-            let func: Box<dyn FnMut(u16, u64) -> Result<()> + Send> =
+            let func: Box<dyn FnMut(u16, Vec<u8>) -> Result<()> + Send> =
                 Box::new(|_, _| -> Result<()> { Ok(()) });
             Arc::new(Mutex::new(OutBHandler::from(func)))
         };

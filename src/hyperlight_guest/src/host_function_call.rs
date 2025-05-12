@@ -26,17 +26,12 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::mem::RunMode;
+use hyperlight_common::outb::OutBAction;
 
 use crate::error::{HyperlightGuestError, Result};
 use crate::shared_input_data::try_pop_shared_input_data_into;
 use crate::shared_output_data::push_shared_output_data;
 use crate::{OUTB_PTR, OUTB_PTR_WITH_CONTEXT, P_PEB, RUNNING_MODE};
-
-pub enum OutBAction {
-    Log = 99,
-    CallFunction = 101,
-    Abort = 102,
-}
 
 /// Get a return value from a host function call.
 /// This usually requires a host function to be called first using `call_host_function`.
@@ -75,24 +70,44 @@ pub fn call_host_function(
 
     push_shared_output_data(host_function_call_buffer)?;
 
-    outb(OutBAction::CallFunction as u16, 0);
+    outb(OutBAction::CallFunction as u16, &[0]);
 
     Ok(())
 }
 
-pub fn outb(port: u16, value: u8) {
+pub fn outb(port: u16, data: &[u8]) {
     unsafe {
         match RUNNING_MODE {
             RunMode::Hypervisor => {
-                hloutb(port, value);
+                for chunk in data.chunks(4) {
+                    // Process the data in chunks of 4 bytes. If a chunk has fewer than 4 bytes,
+                    // pad it with 0x7F to ensure it can be converted into a 4-byte array.
+                    // The choice of 0x7F as the padding value is arbitrary and does not carry
+                    // any special meaning; it simply ensures consistent chunk size.
+                    let val = match chunk {
+                        [a, b, c, d] => u32::from_le_bytes([*a, *b, *c, *d]),
+                        [a, b, c] => u32::from_le_bytes([*a, *b, *c, 0x7F]),
+                        [a, b] => u32::from_le_bytes([*a, *b, 0x7F, 0x7F]),
+                        [a] => u32::from_le_bytes([*a, 0x7F, 0x7F, 0x7F]),
+                        [] => break,
+                        _ => unreachable!(),
+                    };
+
+                    hloutd(val, port);
+                }
             }
             RunMode::InProcessLinux | RunMode::InProcessWindows => {
                 if let Some(outb_func) = OUTB_PTR_WITH_CONTEXT {
                     if let Some(peb_ptr) = P_PEB {
-                        outb_func((*peb_ptr).pOutbContext, port, value);
+                        outb_func(
+                            (*peb_ptr).pOutbContext,
+                            port,
+                            data.as_ptr(),
+                            data.len() as u64,
+                        );
                     }
                 } else if let Some(outb_func) = OUTB_PTR {
-                    outb_func(port, value);
+                    outb_func(port, data.as_ptr(), data.len() as u64);
                 } else {
                     panic!("Tried to call outb without hypervisor and without outb function ptrs");
                 }
@@ -105,7 +120,7 @@ pub fn outb(port: u16, value: u8) {
 }
 
 extern "win64" {
-    fn hloutb(port: u16, value: u8);
+    fn hloutd(value: u32, port: u16);
 }
 
 pub fn print_output_as_guest_function(function_call: &FunctionCall) -> Result<Vec<u8>> {
@@ -125,13 +140,15 @@ pub fn print_output_as_guest_function(function_call: &FunctionCall) -> Result<Ve
     }
 }
 
-// port: RCX(cx), value: RDX(dl)
+pub fn debug_print(msg: &str) {
+    outb(OutBAction::DebugPrint as u16, msg.as_bytes());
+}
+
 global_asm!(
-    ".global hloutb
-        hloutb:
-            xor rax, rax
-            mov al, dl
-            mov dx, cx
-            out dx, al
-            ret"
+    ".global hloutd
+     hloutd:
+        mov eax, ecx
+        mov dx, dx
+        out dx, eax
+        ret"
 );

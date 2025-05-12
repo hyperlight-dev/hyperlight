@@ -31,7 +31,7 @@ use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
-use crate::sandbox::host_funcs::HostFuncsWrapper;
+use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
@@ -56,7 +56,7 @@ fn evolve_impl<TransformFunc, ResSandbox: Sandbox>(
 ) -> Result<ResSandbox>
 where
     TransformFunc: Fn(
-        Arc<Mutex<HostFuncsWrapper>>,
+        Arc<Mutex<FunctionRegistry>>,
         MemMgrWrapper<HostSharedMemory>,
         HypervisorHandler,
     ) -> Result<ResSandbox>,
@@ -105,7 +105,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 fn hv_init(
     hshm: &MemMgrWrapper<HostSharedMemory>,
     gshm: SandboxMemoryManager<GuestSharedMemory>,
-    host_funcs: Arc<Mutex<HostFuncsWrapper>>,
+    host_funcs: Arc<Mutex<FunctionRegistry>>,
     max_init_time: Duration,
     max_exec_time: Duration,
     max_wait_for_cancellation: Duration,

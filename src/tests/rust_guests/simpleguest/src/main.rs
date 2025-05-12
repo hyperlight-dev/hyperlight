@@ -530,7 +530,7 @@ fn spin(_: &FunctionCall) -> Result<Vec<u8>> {
 
 fn test_abort(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(code) = function_call.parameters.clone().unwrap()[0].clone() {
-        abort_with_code(code);
+        abort_with_code(&[code as u8]);
     }
     Ok(get_flatbuffer_result(()))
 }
@@ -541,7 +541,7 @@ fn test_abort_with_code_and_message(function_call: &FunctionCall) -> Result<Vec<
         function_call.parameters.clone().unwrap()[1].clone(),
     ) {
         unsafe {
-            abort_with_code_and_message(code, message.as_ptr() as *const c_char);
+            abort_with_code_and_message(&[code as u8], message.as_ptr() as *const c_char);
         }
     }
     Ok(get_flatbuffer_result(()))

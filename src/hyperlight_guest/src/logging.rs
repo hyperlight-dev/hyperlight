@@ -19,8 +19,9 @@ use alloc::vec::Vec;
 
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
+use hyperlight_common::outb::OutBAction;
 
-use crate::host_function_call::{outb, OutBAction};
+use crate::host_function_call::outb;
 use crate::shared_output_data::push_shared_output_data;
 
 fn write_log_data(
@@ -56,5 +57,5 @@ pub fn log_message(
     line: u32,
 ) {
     write_log_data(log_level, message, source, caller, source_file, line);
-    outb(OutBAction::Log as u16, 0);
+    outb(OutBAction::Log as u16, &[0]);
 }

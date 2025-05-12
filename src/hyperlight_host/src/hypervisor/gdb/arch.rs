@@ -36,6 +36,8 @@ pub(crate) const SW_BP_SIZE: usize = 1;
 pub(crate) const SW_BP_OP: u8 = 0xCC;
 /// Software Breakpoint written to memory
 pub(crate) const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
+// /// Maximum number of supported hardware breakpoints
+// pub(crate) const MAX_NO_OF_HW_BP: usize = 4;
 
 /// Check page 19-4 Vol. 3B of Intel 64 and IA-32
 /// Architectures Software Developer's Manual

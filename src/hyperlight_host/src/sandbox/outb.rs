@@ -19,35 +19,17 @@ use std::sync::{Arc, Mutex};
 use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::outb::{Exception, OutBAction};
 use log::{Level, Record};
 use tracing::{instrument, Span};
 use tracing_log::format_trace;
 
-use super::host_funcs::HostFuncsWrapper;
+use super::host_funcs::FunctionRegistry;
 use super::mem_mgr::MemMgrWrapper;
 use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction, OutBHandlerWrapper};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::{new_error, HyperlightError, Result};
-
-pub(super) enum OutBAction {
-    Log,
-    CallFunction,
-    Abort,
-}
-
-impl TryFrom<u16> for OutBAction {
-    type Error = HyperlightError;
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn try_from(val: u16) -> Result<Self> {
-        match val {
-            99 => Ok(OutBAction::Log),
-            101 => Ok(OutBAction::CallFunction),
-            102 => Ok(OutBAction::Abort),
-            _ => Err(new_error!("Invalid OutB value: {}", val)),
-        }
-    }
-}
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level="Trace")]
 pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Result<()> {
@@ -115,9 +97,9 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 fn handle_outb_impl(
     mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
-    host_funcs: Arc<Mutex<HostFuncsWrapper>>,
+    host_funcs: Arc<Mutex<FunctionRegistry>>,
     port: u16,
-    byte: u64,
+    data: Vec<u8>,
 ) -> Result<()> {
     match port.try_into()? {
         OutBAction::Log => outb_log(mem_mgr.as_mut()),
@@ -136,22 +118,30 @@ fn handle_outb_impl(
             Ok(())
         }
         OutBAction::Abort => {
+            let byte = u64::from(data[0]);
             let guest_error = ErrorCode::from(byte);
-            let panic_context = mem_mgr.as_mut().read_guest_panic_context_data()?;
-            // trim off trailing \0 bytes if they exist
-            let index_opt = panic_context.iter().position(|&x| x == 0x00);
-            let trimmed = match index_opt {
-                Some(n) => &panic_context[0..n],
-                None => &panic_context,
-            };
-            let s = String::from_utf8_lossy(trimmed);
+
             match guest_error {
                 ErrorCode::StackOverflow => Err(HyperlightError::StackOverflow()),
-                _ => Err(HyperlightError::GuestAborted(
-                    byte as u8,
-                    s.trim().to_string(),
-                )),
+                _ => {
+                    let message = match data.get(1) {
+                        Some(&exception_code) => match Exception::try_from(exception_code) {
+                            Ok(exception) => format!("Exception: {:?}", exception),
+                            Err(e) => {
+                                format!("Unknown exception code: {:#x} ({})", exception_code, e)
+                            }
+                        },
+                        None => "See stderr for panic context".into(),
+                    };
+
+                    Err(HyperlightError::GuestAborted(byte as u8, message))
+                }
             }
+        }
+        OutBAction::DebugPrint => {
+            let s = String::from_utf8_lossy(&data);
+            eprint!("{}", s);
+            Ok(())
         }
     }
 }
@@ -163,7 +153,7 @@ fn handle_outb_impl(
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn outb_handler_wrapper(
     mut mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
-    host_funcs_wrapper: Arc<Mutex<HostFuncsWrapper>>,
+    host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
 ) -> OutBHandlerWrapper {
     let outb_func: OutBHandlerFunction = Box::new(move |port, payload| {
         handle_outb_impl(

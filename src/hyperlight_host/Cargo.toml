@@ -25,7 +25,6 @@ goblin = { version = "0.9" }
 rand = { version = "0.9" }
 cfg-if = { version = "1.0.0" }
 libc = { version = "0.2.172" }
-paste = "1.0"
 flatbuffers = "25.2.10"
 page_size = "0.6.0"
 termcolor = "1.2.0"
@@ -39,7 +38,7 @@ vmm-sys-util = "0.13.0"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.15"
 thiserror = "2.0.12"
-tempfile = { version = "3.19", optional = true }
+tempfile = { version = "3.20", optional = true }
 anyhow = "1.0"
 metrics = "0.24.2"
 
@@ -60,7 +59,7 @@ windows = { version = "0.61", features = [
 ] }
 windows-sys = { version = "0.59", features = ["Win32"] }
 windows-result = "0.3"
-rust-embed = { version = "8.7.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
+rust-embed = { version = "8.7.1", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
 sha256 = "1.6.0"
 windows-version = "0.1"
 lazy_static = "1.4.0"
@@ -81,7 +80,7 @@ uuid = { version = "1.16.0", features = ["v4"] }
 signal-hook-registry = "1.4.5"
 serde = "1.0"
 proptest = "1.6.0"
-tempfile = "3.19.1"
+tempfile = "3.20.0"
 crossbeam-queue = "0.3.12"
 tracing-serde = "0.2.0"
 serial_test = "3.1.1"
@@ -95,7 +94,7 @@ opentelemetry = "0.29"
 opentelemetry-otlp = { version = "0.29", features = ["default", "grpc-tonic"] }
 opentelemetry-semantic-conventions = "0.29"
 opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"] }
-tokio = { version = "1.44.2", features = ["full"] }
+tokio = { version = "1.45.0", features = ["full"] }
 criterion = "0.5.1"
 tracing-chrome = "0.7.2"
 metrics-util = "0.19.1"

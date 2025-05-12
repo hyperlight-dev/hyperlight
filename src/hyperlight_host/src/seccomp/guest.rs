@@ -69,14 +69,15 @@ fn syscalls_allowlist() -> Result<Vec<(i64, Vec<SeccompRule>)>> {
 /// (e.g., `KVM_SET_USER_MEMORY_REGION`, `KVM_GET_API_VERSION`, `KVM_CREATE_VM`,
 /// or `KVM_CREATE_VCPU`).
 pub(crate) fn get_seccomp_filter_for_host_function_worker_thread(
-    extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
+    extra_allowed_syscalls: Option<&[ExtraAllowedSyscall]>,
 ) -> Result<BpfProgram> {
     let mut allowed_syscalls = syscalls_allowlist()?;
 
     if let Some(extra_allowed_syscalls) = extra_allowed_syscalls {
         allowed_syscalls.extend(
             extra_allowed_syscalls
-                .into_iter()
+                .iter()
+                .copied()
                 .map(|syscall| (syscall, vec![])),
         );
 

@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use hyperlight_common::outb::Exception;
+
 use crate::interrupt_entry::{
     _do_excp0, _do_excp1, _do_excp10, _do_excp11, _do_excp12, _do_excp13, _do_excp14, _do_excp15,
     _do_excp16, _do_excp17, _do_excp18, _do_excp19, _do_excp2, _do_excp20, _do_excp3, _do_excp30,
@@ -70,28 +72,28 @@ impl IdtEntry {
 pub(crate) static mut IDT: [IdtEntry; 256] = unsafe { core::mem::zeroed() };
 
 pub(crate) fn init_idt() {
-    set_idt_entry(0, _do_excp0); // Divide by zero
-    set_idt_entry(1, _do_excp1); // Debug
-    set_idt_entry(2, _do_excp2); // Non-maskable interrupt
-    set_idt_entry(3, _do_excp3); // Breakpoint
-    set_idt_entry(4, _do_excp4); // Overflow
-    set_idt_entry(5, _do_excp5); // Bound Range Exceeded
-    set_idt_entry(6, _do_excp6); // Invalid Opcode
-    set_idt_entry(7, _do_excp7); // Device Not Available
-    set_idt_entry(8, _do_excp8); // Double Fault
-    set_idt_entry(9, _do_excp9); // Coprocessor Segment Overrun
-    set_idt_entry(10, _do_excp10); // Invalid TSS
-    set_idt_entry(11, _do_excp11); // Segment Not Present
-    set_idt_entry(12, _do_excp12); // Stack-Segment Fault
-    set_idt_entry(13, _do_excp13); // General Protection Fault
-    set_idt_entry(14, _do_excp14); // Page Fault
-    set_idt_entry(15, _do_excp15); // Reserved
-    set_idt_entry(16, _do_excp16); // x87 Floating-Point Exception
-    set_idt_entry(17, _do_excp17); // Alignment Check
-    set_idt_entry(18, _do_excp18); // Machine Check
-    set_idt_entry(19, _do_excp19); // SIMD Floating-Point Exception
-    set_idt_entry(20, _do_excp20); // Virtualization Exception
-    set_idt_entry(30, _do_excp30); // Security Exception
+    set_idt_entry(Exception::DivideByZero as usize, _do_excp0); // Divide by zero
+    set_idt_entry(Exception::Debug as usize, _do_excp1); // Debug
+    set_idt_entry(Exception::NonMaskableInterrupt as usize, _do_excp2); // Non-maskable interrupt
+    set_idt_entry(Exception::Breakpoint as usize, _do_excp3); // Breakpoint
+    set_idt_entry(Exception::Overflow as usize, _do_excp4); // Overflow
+    set_idt_entry(Exception::BoundRangeExceeded as usize, _do_excp5); // Bound Range Exceeded
+    set_idt_entry(Exception::InvalidOpcode as usize, _do_excp6); // Invalid Opcode
+    set_idt_entry(Exception::DeviceNotAvailable as usize, _do_excp7); // Device Not Available
+    set_idt_entry(Exception::DoubleFault as usize, _do_excp8); // Double Fault
+    set_idt_entry(Exception::CoprocessorSegmentOverrun as usize, _do_excp9); // Coprocessor Segment Overrun
+    set_idt_entry(Exception::InvalidTSS as usize, _do_excp10); // Invalid TSS
+    set_idt_entry(Exception::SegmentNotPresent as usize, _do_excp11); // Segment Not Present
+    set_idt_entry(Exception::StackSegmentFault as usize, _do_excp12); // Stack-Segment Fault
+    set_idt_entry(Exception::GeneralProtectionFault as usize, _do_excp13); // General Protection Fault
+    set_idt_entry(Exception::PageFault as usize, _do_excp14); // Page Fault
+    set_idt_entry(Exception::Reserved as usize, _do_excp15); // Reserved
+    set_idt_entry(Exception::X87FloatingPointException as usize, _do_excp16); // x87 Floating-Point Exception
+    set_idt_entry(Exception::AlignmentCheck as usize, _do_excp17); // Alignment Check
+    set_idt_entry(Exception::MachineCheck as usize, _do_excp18); // Machine Check
+    set_idt_entry(Exception::SIMDFloatingPointException as usize, _do_excp19); // SIMD Floating-Point Exception
+    set_idt_entry(Exception::VirtualizationException as usize, _do_excp20); // Virtualization Exception
+    set_idt_entry(Exception::SecurityException as usize, _do_excp30); // Security Exception
 }
 
 fn set_idt_entry(index: usize, handler: unsafe extern "sysv64" fn()) {

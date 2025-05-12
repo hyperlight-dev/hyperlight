@@ -229,7 +229,9 @@ impl Vm for MshvVm {
                     }
                 }
                 // The only case an intercept exit is expected is when debugging is enabled
-                // and the intercepts are installed
+                // and the intercepts are installed.
+                // Provide the extra information about the exception to accurately determine
+                // the stop reason
                 #[cfg(gdb)]
                 EXCEPTION_INTERCEPT => {
                     let exception_message = m.to_exception_info()?;

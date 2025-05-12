@@ -21,7 +21,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 };
 use tracing::{instrument, Span};
 
-use super::host_funcs::HostFuncsWrapper;
+use super::host_funcs::FunctionRegistry;
 use super::{MemMgrWrapper, WrapperGetter};
 use crate::func::call_ctx::MultiUseGuestCallContext;
 use crate::func::guest_dispatch::call_function_on_guest;
@@ -41,7 +41,7 @@ use crate::Result;
 ///    in this case the state of the sandbox is not reset until the context is finished and the `MultiUseSandbox` is returned.
 pub struct MultiUseSandbox {
     // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
-    pub(super) _host_funcs: Arc<Mutex<HostFuncsWrapper>>,
+    pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: MemMgrWrapper<HostSharedMemory>,
     hv_handler: HypervisorHandler,
 }
@@ -73,7 +73,7 @@ impl MultiUseSandbox {
     /// (as a `From` implementation would be)
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn from_uninit(
-        host_funcs: Arc<Mutex<HostFuncsWrapper>>,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: MemMgrWrapper<HostSharedMemory>,
         hv_handler: HypervisorHandler,
     ) -> MultiUseSandbox {

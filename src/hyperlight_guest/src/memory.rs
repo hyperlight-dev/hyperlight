@@ -67,7 +67,7 @@ unsafe fn alloc_helper(size: usize, zero: bool) -> *mut c_void {
             false => alloc::alloc::alloc(layout),
         };
         if raw_ptr.is_null() {
-            abort_with_code(ErrorCode::MallocFailed as i32);
+            abort_with_code(&[ErrorCode::MallocFailed as u8]);
         } else {
             let layout_ptr = raw_ptr as *mut Layout;
             layout_ptr.write(layout);
@@ -148,7 +148,7 @@ pub unsafe extern "C" fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void {
 
         if new_block_start.is_null() {
             // Realloc failed
-            abort_with_code(ErrorCode::MallocFailed as i32);
+            abort_with_code(&[ErrorCode::MallocFailed as u8]);
         } else {
             // Update the stored Layout, then return ptr to memory right after the Layout.
             new_block_start.write(new_layout);

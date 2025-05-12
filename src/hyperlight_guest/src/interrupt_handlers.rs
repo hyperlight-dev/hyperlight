@@ -14,6 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use alloc::format;
+use core::ffi::c_char;
+
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::outb::Exception;
+
+use crate::entrypoint::abort_with_code_and_message;
+
 /// Exception handler
 #[no_mangle]
 pub extern "sysv64" fn hl_exception_handler(
@@ -21,10 +29,18 @@ pub extern "sysv64" fn hl_exception_handler(
     exception_number: u64,
     page_fault_address: u64,
 ) {
-    panic!(
-        "EXCEPTION: {:#x}\n\
+    let exception = Exception::try_from(exception_number as u8).expect("Invalid exception number");
+    let msg = format!(
+        "EXCEPTION: {:#?}\n\
             Page Fault Address: {:#x}\n\
             Stack Pointer: {:#x}",
-        exception_number, page_fault_address, stack_pointer
+        exception, page_fault_address, stack_pointer
     );
+
+    unsafe {
+        abort_with_code_and_message(
+            &[ErrorCode::GuestError as u8, exception as u8],
+            msg.as_ptr() as *const c_char,
+        );
+    }
 }

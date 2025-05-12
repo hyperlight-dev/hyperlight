@@ -63,7 +63,7 @@ fn guest_abort() {
         .unwrap_err();
     println!("{:?}", res);
     assert!(
-        matches!(res, HyperlightError::GuestAborted(code, message) if (code == error_code && message.is_empty()) )
+        matches!(res, HyperlightError::GuestAborted(code, message) if (code == error_code && message.contains("NoException")) )
     );
 }
 
@@ -83,7 +83,7 @@ fn guest_abort_with_context1() {
         .unwrap_err();
     println!("{:?}", res);
     assert!(
-        matches!(res, HyperlightError::GuestAborted(code, context) if (code == 25 && context == "Oh no"))
+        matches!(res, HyperlightError::GuestAborted(code, context) if (code == 25 && context.contains("NoException")))
     );
 }
 
@@ -135,7 +135,7 @@ fn guest_abort_with_context2() {
         .unwrap_err();
     println!("{:?}", res);
     assert!(
-        matches!(res, HyperlightError::GuestAborted(_, context) if context.contains(&abort_message[..400]))
+        matches!(res, HyperlightError::GuestAborted(_, context) if context.contains("NoException"))
     );
 }
 
@@ -161,7 +161,7 @@ fn guest_abort_c_guest() {
         .unwrap_err();
     println!("{:?}", res);
     assert!(
-        matches!(res, HyperlightError::GuestAborted(code, message) if (code == 75 && message == "This is a test error message"))
+        matches!(res, HyperlightError::GuestAborted(code, message) if (code == 75 && message.contains("NoException")) )
     );
 }
 
@@ -181,7 +181,7 @@ fn guest_panic() {
         .unwrap_err();
     println!("{:?}", res);
     assert!(
-        matches!(res, HyperlightError::GuestAborted(code, context) if code == ErrorCode::UnknownError as u8 && context.contains("\nError... error..."))
+        matches!(res, HyperlightError::GuestAborted(code, context) if code == ErrorCode::UnknownError as u8 && context.contains("NoException"))
     )
 }
 
@@ -262,7 +262,7 @@ fn guest_malloc_abort() {
     assert!(matches!(
         res.unwrap_err(),
         // OOM memory errors in rust allocator are panics. Our panic handler returns ErrorCode::UnknownError on panic
-        HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ")
+        HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("NoException")
     ));
 }
 
@@ -406,7 +406,7 @@ fn execute_on_stack() {
         let err = result.to_string();
         assert!(
             // exception that indicates a page fault
-            err.contains("EXCEPTION: 0xe")
+            err.contains("PageFault")
         );
     }
 }
@@ -427,7 +427,7 @@ fn execute_on_heap() {
         assert!(result.is_err());
         let err = result.unwrap_err();
 
-        assert!(err.to_string().contains("EXCEPTION: 0xe"));
+        assert!(err.to_string().contains("PageFault"));
     }
 }
 

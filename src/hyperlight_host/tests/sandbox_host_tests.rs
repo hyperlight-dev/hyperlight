@@ -18,7 +18,7 @@ use core::f64;
 use std::sync::{Arc, Mutex};
 
 use common::new_uninit;
-use hyperlight_host::func::{HostFunction1, ParameterValue, ReturnType, ReturnValue};
+use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -545,16 +545,15 @@ fn callback_test_helper() -> Result<()> {
         // create host function
         let vec = Arc::new(Mutex::new(vec![]));
         let vec_cloned = vec.clone();
-        let host_func1 = Arc::new(Mutex::new(move |msg: String| {
+
+        sandbox.register("HostMethod1", move |msg: String| {
             let len = msg.len();
             vec_cloned
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
                 .push(msg);
             Ok(len as i32)
-        }));
-
-        host_func1.register(&mut sandbox, "HostMethod1").unwrap();
+        })?;
 
         // call guest function that calls host function
         let mut init_sandbox: MultiUseSandbox = sandbox.evolve(Noop::default())?;
@@ -611,10 +610,9 @@ fn host_function_error() -> Result<()> {
     // when a host function returns an error, an infinite loop is created.
     for mut sandbox in get_callbackguest_uninit_sandboxes(None).into_iter().take(1) {
         // create host function
-        let host_func1 = Arc::new(Mutex::new(|_msg: String| -> Result<String> {
+        sandbox.register("HostMethod1", |_: String| -> Result<String> {
             Err(new_error!("Host function error!"))
-        }));
-        host_func1.register(&mut sandbox, "HostMethod1").unwrap();
+        })?;
 
         // call guest function that calls host function
         let mut init_sandbox: MultiUseSandbox = sandbox.evolve(Noop::default())?;

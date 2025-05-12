@@ -29,13 +29,19 @@ use crate::mem::shared_mem::GuestSharedMemory;
 ///
 /// NOTE: This is not part of the C Hyperlight API , it is intended only to be
 /// called in proc through a pointer passed to the guest.
-extern "win64" fn call_outb(ptr: *mut Arc<Mutex<dyn OutBHandlerCaller>>, port: u16, data: u64) {
+extern "win64" fn call_outb(
+    ptr: *mut Arc<Mutex<dyn OutBHandlerCaller>>,
+    port: u16,
+    data_ptr: *const u8,
+    data_len: u64,
+) {
     let outb_handlercaller = unsafe { Box::from_raw(ptr) };
+    let slice = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) };
     let res = outb_handlercaller
         .try_lock()
         .map_err(|_| crate::new_error!("Error locking"))
         .unwrap()
-        .call(port, data);
+        .call(port, slice.to_vec());
     // TODO, handle the case correctly when res is an error
     assert!(
         res.is_ok(),
