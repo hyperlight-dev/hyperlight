@@ -98,10 +98,6 @@ pub enum HyperlightError {
     #[error("Guest aborted: {0} {1}")]
     GuestAborted(u8, String),
 
-    ///Cannot run from guest binary unless the binary is a file
-    #[error("Cannot run from guest binary when guest binary is a buffer")]
-    GuestBinaryShouldBeAFile(),
-
     /// Guest call resulted in error in guest
     #[error("Guest error occurred {0:?}: {1}")]
     GuestError(ErrorCode, String),

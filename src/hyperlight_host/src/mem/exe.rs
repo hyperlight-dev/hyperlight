@@ -19,8 +19,6 @@ use std::io::Read;
 use std::vec::Vec;
 
 use super::elf::ElfInfo;
-use super::pe::headers::PEHeaders;
-use super::pe::pe_info::PEInfo;
 use super::ptr_offset::Offset;
 use crate::Result;
 
@@ -29,7 +27,6 @@ use crate::Result;
 // cost of an indirection.
 #[allow(clippy::large_enum_variant)]
 pub enum ExeInfo {
-    PE(PEInfo),
     Elf(ElfInfo),
 }
 
@@ -48,31 +45,25 @@ impl ExeInfo {
         Self::from_buf(&contents)
     }
     pub fn from_buf(buf: &[u8]) -> Result<Self> {
-        PEInfo::new(buf)
-            .map(ExeInfo::PE)
-            .or_else(|_| ElfInfo::new(buf).map(ExeInfo::Elf))
+        ElfInfo::new(buf).map(ExeInfo::Elf)
     }
     pub fn stack_reserve(&self) -> u64 {
         match self {
-            ExeInfo::PE(pe) => pe.stack_reserve(),
             ExeInfo::Elf(_) => DEFAULT_ELF_STACK_RESERVE,
         }
     }
     pub fn heap_reserve(&self) -> u64 {
         match self {
-            ExeInfo::PE(pe) => pe.heap_reserve(),
             ExeInfo::Elf(_) => DEFAULT_ELF_HEAP_RESERVE,
         }
     }
     pub fn entrypoint(&self) -> Offset {
         match self {
-            ExeInfo::PE(pe) => Offset::from(PEHeaders::from(pe).entrypoint_offset),
             ExeInfo::Elf(elf) => Offset::from(elf.entrypoint_va()),
         }
     }
     pub fn loaded_size(&self) -> usize {
         match self {
-            ExeInfo::PE(pe) => pe.payload.len(),
             ExeInfo::Elf(elf) => elf.get_va_size(),
         }
     }
@@ -82,11 +73,6 @@ impl ExeInfo {
     // which requires it to be &mut.
     pub fn load(&mut self, load_addr: usize, target: &mut [u8]) -> Result<()> {
         match self {
-            ExeInfo::PE(pe) => {
-                let patches = pe.get_exe_relocation_patches(load_addr)?;
-                pe.apply_relocation_patches(patches)?;
-                target[0..pe.payload.len()].copy_from_slice(&pe.payload);
-            }
             ExeInfo::Elf(elf) => {
                 elf.load_at(load_addr, target)?;
             }

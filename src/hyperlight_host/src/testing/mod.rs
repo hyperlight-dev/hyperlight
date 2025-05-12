@@ -29,12 +29,6 @@ pub(crate) fn simple_guest_exe_info() -> Result<ExeInfo> {
     ExeInfo::from_buf(bytes.as_slice())
 }
 
-/// Get an `ExeInfo` representing `callbackguest.exe`
-pub(crate) fn callback_guest_exe_info() -> Result<ExeInfo> {
-    let bytes = bytes_for_path(rust_guest_as_pathbuf("callbackguest"))?;
-    ExeInfo::from_buf(bytes.as_slice())
-}
-
 /// Read the file at `path_buf` into a `Vec<u8>` and return it,
 /// or return `Err` if that went wrong
 pub(crate) fn bytes_for_path(path_buf: PathBuf) -> Result<Vec<u8>> {

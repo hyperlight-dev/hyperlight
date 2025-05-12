@@ -464,13 +464,13 @@ fn simple_test_helper() -> Result<()> {
     let expected_calls = {
         if cfg!(all(target_os = "windows", inprocess)) {
             // windows debug build
-            5
+            2
         } else if cfg!(inprocess) {
             // linux debug build
-            4
+            2
         } else {
             // {windows,linux} release build
-            2
+            1
         }
     };
 
@@ -510,34 +510,6 @@ fn simple_test_parallel() {
     for handle in handles {
         handle.join().unwrap();
     }
-}
-
-#[test]
-#[serial]
-#[cfg(all(target_os = "windows", inprocess))]
-fn only_one_sandbox_instance_with_loadlib() {
-    use hyperlight_host::SandboxRunOptions;
-    use hyperlight_testing::simple_guest_exe_as_string;
-
-    let _sandbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_exe_as_string().unwrap()),
-        None,
-        Some(SandboxRunOptions::RunInProcess(true)),
-        None,
-    )
-    .unwrap();
-
-    let err = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_exe_as_string().unwrap()),
-        None,
-        Some(SandboxRunOptions::RunInProcess(true)),
-        None,
-    )
-    .unwrap_err(); //should fail
-
-    assert!(
-        matches!(err, HyperlightError::Error(msg) if msg.starts_with("LoadedLib: Only one guest binary can be loaded at any single time"))
-    );
 }
 
 fn callback_test_helper() -> Result<()> {

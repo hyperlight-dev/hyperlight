@@ -350,21 +350,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "windows", inprocess))]
-    fn test_call_guest_function_by_name_in_proc_load_lib() {
-        use hyperlight_testing::simple_guest_exe_as_string;
-
-        let u_sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_exe_as_string().expect("Guest Exe Missing")),
-            None,
-            Some(crate::SandboxRunOptions::RunInProcess(true)),
-            None,
-        )
-        .unwrap();
-        test_call_guest_function_by_name(u_sbox);
-    }
-
-    #[test]
     #[cfg(inprocess)]
     fn test_call_guest_function_by_name_in_proc_manual() {
         let u_sbox = UninitializedSandbox::new(

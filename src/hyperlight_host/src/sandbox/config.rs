@@ -349,7 +349,7 @@ mod tests {
     use std::time::Duration;
 
     use super::SandboxConfiguration;
-    use crate::testing::{callback_guest_exe_info, simple_guest_exe_info};
+    use crate::testing::simple_guest_exe_info;
 
     #[test]
     fn overrides() {
@@ -375,16 +375,13 @@ mod tests {
             #[cfg(gdb)]
             None,
         );
-        let exe_infos = vec![
-            simple_guest_exe_info().unwrap(),
-            callback_guest_exe_info().unwrap(),
-        ];
-        for exe_info in exe_infos {
-            let stack_size = cfg.get_stack_size(&exe_info);
-            let heap_size = cfg.get_heap_size(&exe_info);
-            assert_eq!(STACK_SIZE_OVERRIDE, stack_size);
-            assert_eq!(HEAP_SIZE_OVERRIDE, heap_size);
-        }
+        let exe_info = simple_guest_exe_info().unwrap();
+
+        let stack_size = cfg.get_stack_size(&exe_info);
+        let heap_size = cfg.get_heap_size(&exe_info);
+        assert_eq!(STACK_SIZE_OVERRIDE, stack_size);
+        assert_eq!(HEAP_SIZE_OVERRIDE, heap_size);
+
         cfg.stack_size_override = 1024;
         cfg.heap_size_override = 2048;
         assert_eq!(1024, cfg.stack_size_override);

@@ -27,8 +27,6 @@ use tracing::{instrument, Span};
 
 use super::exe::ExeInfo;
 use super::layout::SandboxMemoryLayout;
-#[cfg(target_os = "windows")]
-use super::loaded_lib::LoadedLib;
 use super::memory_region::{MemoryRegion, MemoryRegionType};
 use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
@@ -73,11 +71,6 @@ pub(crate) struct SandboxMemoryManager<S> {
     /// A vector of memory snapshots that can be used to save and  restore the state of the memory
     /// This is used by the Rust Sandbox implementation (rather than the mem_snapshot field above which only exists to support current C API)
     snapshots: Arc<Mutex<Vec<SharedMemorySnapshot>>>,
-    /// This field must be present, even though it's not read,
-    /// so that its underlying resources are properly dropped at
-    /// the right time.
-    #[cfg(target_os = "windows")]
-    _lib: Option<LoadedLib>,
 }
 
 impl<S> SandboxMemoryManager<S>
@@ -92,7 +85,6 @@ where
         inprocess: bool,
         load_addr: RawPtr,
         entrypoint_offset: Offset,
-        #[cfg(target_os = "windows")] lib: Option<LoadedLib>,
     ) -> Self {
         Self {
             layout,
@@ -101,8 +93,6 @@ where
             load_addr,
             entrypoint_offset,
             snapshots: Arc::new(Mutex::new(Vec::new())),
-            #[cfg(target_os = "windows")]
-            _lib: lib,
         }
     }
 
@@ -402,48 +392,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             inprocess,
             load_addr,
             entrypoint_offset,
-            #[cfg(target_os = "windows")]
-            None,
         ))
-    }
-
-    /// Similar to load_guest_binary_into_memory, except only works on Windows
-    /// and uses the
-    /// [`LoadLibraryA`](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibrarya)
-    /// function.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn load_guest_binary_using_load_library(
-        cfg: SandboxConfiguration,
-        guest_bin_path: &str,
-        exe_info: &mut ExeInfo,
-    ) -> Result<Self> {
-        #[cfg(target_os = "windows")]
-        {
-            if !matches!(exe_info, ExeInfo::PE(_)) {
-                log_then_return!("LoadLibrary can only be used with PE files");
-            }
-
-            let lib = LoadedLib::load(guest_bin_path)?;
-            let (layout, shared_mem, load_addr, entrypoint_offset) =
-                load_guest_binary_common(cfg, exe_info, |_, _| Ok(lib.base_addr()))?;
-
-            // make the memory executable when running in-process
-            shared_mem.make_memory_executable()?;
-
-            Ok(Self::new(
-                layout,
-                shared_mem,
-                true,
-                load_addr,
-                entrypoint_offset,
-                Some(lib),
-            ))
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = (cfg, guest_bin_path, exe_info);
-            log_then_return!("load_guest_binary_using_load_library is only available on Windows");
-        }
     }
 
     /// Set the stack guard to `cookie` using `layout` to calculate
@@ -470,8 +419,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 snapshots: Arc::new(Mutex::new(Vec::new())),
-                #[cfg(target_os = "windows")]
-                _lib: self._lib,
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
@@ -480,8 +427,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 snapshots: Arc::new(Mutex::new(Vec::new())),
-                #[cfg(target_os = "windows")]
-                _lib: None,
             },
         )
     }
@@ -600,8 +545,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
 #[cfg(test)]
 mod tests {
     use hyperlight_testing::rust_guest_as_pathbuf;
-    #[cfg(all(target_os = "windows", inprocess))]
-    use serial_test::serial;
 
     use crate::mem::exe::ExeInfo;
     use crate::mem::ptr::RawPtr;
@@ -632,47 +575,6 @@ mod tests {
             );
             assert_eq!(heap_size_override, u64::try_from(layout.heap_size).unwrap());
             assert_eq!(layout.get_memory_size().unwrap(), shared_mem.mem_size());
-        }
-    }
-
-    #[cfg(all(target_os = "windows", inprocess))]
-    #[test]
-    #[serial]
-    fn load_guest_binary_using_load_library() {
-        use hyperlight_testing::rust_guest_as_pathbuf;
-
-        use crate::mem::mgr::SandboxMemoryManager;
-
-        let cfg = SandboxConfiguration::default();
-        let guest_pe_path = rust_guest_as_pathbuf("simpleguest.exe");
-        let guest_pe_bytes = bytes_for_path(guest_pe_path.clone()).unwrap();
-        let mut pe_info = ExeInfo::from_buf(guest_pe_bytes.as_slice()).unwrap();
-        let _ = SandboxMemoryManager::load_guest_binary_using_load_library(
-            cfg,
-            guest_pe_path.to_str().unwrap(),
-            &mut pe_info,
-        )
-        .unwrap();
-
-        let guest_elf_path = rust_guest_as_pathbuf("simpleguest");
-        let guest_elf_bytes = bytes_for_path(guest_elf_path.clone()).unwrap();
-        let mut elf_info = ExeInfo::from_buf(guest_elf_bytes.as_slice()).unwrap();
-
-        let res = SandboxMemoryManager::load_guest_binary_using_load_library(
-            cfg,
-            guest_elf_path.to_str().unwrap(),
-            &mut elf_info,
-        );
-
-        match res {
-            Ok(_) => {
-                panic!("loadlib with elf should fail");
-            }
-            Err(err) => {
-                assert!(err
-                    .to_string()
-                    .contains("LoadLibrary can only be used with PE files"));
-            }
         }
     }
 }

@@ -23,17 +23,11 @@ pub(crate) mod elf;
 pub(crate) mod exe;
 /// Functionality to establish a sandbox's memory layout.
 pub mod layout;
-/// Safe wrapper around an HINSTANCE created by the windows
-/// `LoadLibrary` call
-#[cfg(target_os = "windows")]
-pub(super) mod loaded_lib;
 /// memory regions to be mapped inside a vm
 pub mod memory_region;
 /// Functionality that wraps a `SandboxMemoryLayout` and a
 /// `SandboxMemoryConfig` to mutate a sandbox's memory as necessary.
 pub mod mgr;
-/// Functionality to read and mutate a PE file in a structured manner.
-pub(crate) mod pe;
 /// Structures to represent pointers into guest and host memory
 pub mod ptr;
 /// Structures to represent memory address spaces into which pointers

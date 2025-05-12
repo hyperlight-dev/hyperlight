@@ -29,7 +29,6 @@ use super::host_funcs::{default_writer_func, FunctionRegistry};
 use super::mem_mgr::MemMgrWrapper;
 use super::run_options::SandboxRunOptions;
 use super::uninitialized_evolve::evolve_impl_multi_use;
-use crate::error::HyperlightError::GuestBinaryShouldBeAFile;
 use crate::func::host_functions::{HostFunction, IntoHostFunction};
 use crate::mem::exe::ExeInfo;
 use crate::mem::mgr::{SandboxMemoryManager, STACK_COOKIE_LEN};
@@ -154,7 +153,6 @@ impl UninitializedSandbox {
         let run_opts = sandbox_run_options.unwrap_or_default();
 
         let run_inprocess = run_opts.in_process();
-        let use_loadlib = run_opts.use_loadlib();
 
         if run_inprocess && cfg!(not(inprocess)) {
             log_then_return!(
@@ -162,21 +160,13 @@ impl UninitializedSandbox {
             )
         }
 
-        if use_loadlib && cfg!(not(all(inprocess, target_os = "windows"))) {
-            log_then_return!("Inprocess mode with LoadLibrary is only available on Windows")
-        }
-
         let sandbox_cfg = cfg.unwrap_or_default();
 
         #[cfg(gdb)]
         let debug_info = sandbox_cfg.get_guest_debug_info();
         let mut mem_mgr_wrapper = {
-            let mut mgr = UninitializedSandbox::load_guest_binary(
-                sandbox_cfg,
-                &guest_binary,
-                run_inprocess,
-                use_loadlib,
-            )?;
+            let mut mgr =
+                UninitializedSandbox::load_guest_binary(sandbox_cfg, &guest_binary, run_inprocess)?;
             let stack_guard = Self::create_stack_guard();
             mgr.set_stack_guard(&stack_guard)?;
             MemMgrWrapper::new(mgr, stack_guard)
@@ -274,24 +264,13 @@ impl UninitializedSandbox {
         cfg: SandboxConfiguration,
         guest_binary: &GuestBinary,
         inprocess: bool,
-        use_loadlib: bool,
     ) -> Result<SandboxMemoryManager<ExclusiveSharedMemory>> {
         let mut exe_info = match guest_binary {
             GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(bin_path_str)?,
             GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
         };
 
-        if use_loadlib {
-            let path = match guest_binary {
-                GuestBinary::FilePath(bin_path_str) => bin_path_str,
-                GuestBinary::Buffer(_) => {
-                    log_then_return!(GuestBinaryShouldBeAFile());
-                }
-            };
-            SandboxMemoryManager::load_guest_binary_using_load_library(cfg, path, &mut exe_info)
-        } else {
-            SandboxMemoryManager::load_guest_binary_into_memory(cfg, &mut exe_info, inprocess)
-        }
+        SandboxMemoryManager::load_guest_binary_into_memory(cfg, &mut exe_info, inprocess)
     }
 
     /// Set the max log level to be used by the guest.
@@ -361,11 +340,10 @@ mod tests {
     use crossbeam_queue::ArrayQueue;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
     use hyperlight_testing::logger::{Logger as TestLogger, LOGGER as TEST_LOGGER};
+    use hyperlight_testing::simple_guest_as_string;
     use hyperlight_testing::tracing_subscriber::TracingSubscriber as TestSubscriber;
-    use hyperlight_testing::{simple_guest_as_string, simple_guest_exe_as_string};
     use log::Level;
     use serde_json::{Map, Value};
-    use serial_test::serial;
     use tracing::Level as tracing_level;
     use tracing_core::callsite::rebuild_interest_cache;
     use tracing_core::Subscriber;
@@ -391,17 +369,7 @@ mod tests {
         // in process should only be enabled with the inprocess feature and on debug builds
         assert_eq!(sbox.is_ok(), cfg!(inprocess));
 
-        let sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_path.clone()),
-            None,
-            Some(SandboxRunOptions::RunInProcess(true)),
-            None,
-        );
-
-        // debug mode should fail with an elf executable
-        assert!(sbox.is_err());
-
-        let simple_guest_path = simple_guest_exe_as_string().unwrap();
+        let simple_guest_path = simple_guest_as_string().unwrap();
         let sbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_path.clone()),
             None,
@@ -411,16 +379,6 @@ mod tests {
 
         // in process should only be enabled with the inprocess feature and on debug builds
         assert_eq!(sbox.is_ok(), cfg!(all(inprocess)));
-
-        let sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_path.clone()),
-            None,
-            Some(SandboxRunOptions::RunInProcess(true)),
-            None,
-        );
-
-        // debug mode should succeed with a PE executable on windows with inprocess enabled
-        assert_eq!(sbox.is_ok(), cfg!(all(inprocess, target_os = "windows")));
     }
 
     #[test]
@@ -486,19 +444,6 @@ mod tests {
         let _ = bytes.split_off(100);
         let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(bytes), None, None, None);
         assert!(sandbox.is_err());
-
-        // Test with a valid guest binary buffer when trying to load library
-        #[cfg(target_os = "windows")]
-        {
-            let binary_path = simple_guest_as_string().unwrap();
-            let sandbox = UninitializedSandbox::new(
-                GuestBinary::Buffer(fs::read(binary_path).unwrap()),
-                None,
-                Some(SandboxRunOptions::RunInProcess(true)),
-                None,
-            );
-            assert!(sandbox.is_err());
-        }
     }
 
     #[test]
@@ -510,7 +455,6 @@ mod tests {
         UninitializedSandbox::load_guest_binary(
             cfg,
             &GuestBinary::FilePath(simple_guest_path),
-            false,
             false,
         )
         .unwrap();
@@ -623,34 +567,6 @@ mod tests {
 
             let res = host_funcs.unwrap().call_host_function("test4", vec![]);
             assert!(res.is_err());
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_load_guest_binary_load_lib() {
-        let cfg = SandboxConfiguration::default();
-        let simple_guest_path = simple_guest_exe_as_string().unwrap();
-        let mgr_res = UninitializedSandbox::load_guest_binary(
-            cfg,
-            &GuestBinary::FilePath(simple_guest_path),
-            true,
-            true,
-        );
-        #[cfg(target_os = "linux")]
-        {
-            assert!(mgr_res.is_err())
-        }
-        #[cfg(target_os = "windows")]
-        {
-            #[cfg(inprocess)]
-            {
-                assert!(mgr_res.is_ok())
-            }
-            #[cfg(not(inprocess))]
-            {
-                assert!(mgr_res.is_err())
-            }
         }
     }
 

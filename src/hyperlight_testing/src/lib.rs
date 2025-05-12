@@ -72,25 +72,9 @@ pub fn simple_guest_as_string() -> Result<String> {
         .ok_or_else(|| anyhow!("couldn't convert simple guest PathBuf to string"))
 }
 
-/// Get a fully qualified OS-specific path to the simpleguest.exe PE binary
-pub fn simple_guest_exe_as_string() -> Result<String> {
-    let buf = rust_guest_as_pathbuf("simpleguest.exe");
-    buf.to_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("couldn't convert simple guest PathBuf to string"))
-}
-
 /// Get a fully qualified OS-specific path to the callbackguest elf binary
 pub fn callback_guest_as_string() -> Result<String> {
     let buf = rust_guest_as_pathbuf("callbackguest");
-    buf.to_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("couldn't convert callback guest PathBuf to string"))
-}
-
-/// Get a fully qualified OS-specific path to the callbackguest.exe PE binary
-pub fn callback_guest_exe_as_string() -> Result<String> {
-    let buf = rust_guest_as_pathbuf("callbackguest.exe");
     buf.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("couldn't convert callback guest PathBuf to string"))
