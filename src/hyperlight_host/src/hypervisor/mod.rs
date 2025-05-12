@@ -31,6 +31,9 @@ pub mod hyperv_linux;
 /// Hyperv-on-windows functionality
 pub(crate) mod hyperv_windows;
 pub(crate) mod hypervisor_handler;
+mod regs;
+mod sregs;
+mod vm;
 
 /// GDB debugging support
 #[cfg(gdb)]

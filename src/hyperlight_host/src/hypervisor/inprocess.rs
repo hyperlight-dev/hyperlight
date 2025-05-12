@@ -16,12 +16,15 @@ limitations under the License.
 
 use std::fmt::Debug;
 use std::os::raw::c_void;
+use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
 
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::{HyperlightExit, Hypervisor};
+use super::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
+use super::hypervisor_handler::HypervisorHandler;
+use super::HyperlightVm;
 #[cfg(crashdump)]
 use crate::mem::memory_region::MemoryRegion;
 use crate::sandbox::leaked_outb::LeakedOutBWrapper;
@@ -68,7 +71,7 @@ impl Debug for InprocessDriver<'_> {
     }
 }
 
-impl<'a> Hypervisor for InprocessDriver<'a> {
+impl<'a> HyperlightVm for InprocessDriver<'a> {
     fn initialise(
         &mut self,
         _peb_addr: crate::mem::ptr::RawPtr,
@@ -113,19 +116,20 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
         &mut self,
         _port: u16,
         _data: Vec<u8>,
-        _rip: u64,
-        _instruction_length: u64,
         _outb_handle_fn: super::handlers::OutBHandlerWrapper,
-    ) -> crate::Result<()> {
+    ) -> Result<()> {
         unimplemented!("handle_io should not be needed since we are in in-process mode")
     }
 
-    fn run(&mut self) -> Result<HyperlightExit> {
+    /// Run the vCPU
+    fn run(
+        &mut self,
+        _hv_handler: Option<HypervisorHandler>,
+        _outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
+        _mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
+        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    ) -> Result<()> {
         unimplemented!("run should not be needed since we are in in-process mode")
-    }
-
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self
     }
 
     #[cfg(target_os = "windows")]

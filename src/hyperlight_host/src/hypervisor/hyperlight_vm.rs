@@ -13,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::fpuregs::CommonFpu;
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
 use crate::sandbox::hypervisor::HypervisorType;
@@ -25,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use log::LevelFilter;
 use tracing::{instrument, Span};
 
-use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
+use super::fpu::{CommonFpu, FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{arch, DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
 #[cfg(gdb)]
@@ -35,6 +34,8 @@ use super::handlers::{
 };
 use super::hyperv_linux::MshvVm;
 use super::kvm::KvmVm;
+use super::regs::CommonRegisters;
+use super::vm::Vm;
 use super::{
     HyperlightExit, HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
     CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
@@ -43,8 +44,6 @@ use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
-use crate::regs::CommonRegisters;
-use crate::vm::Vm;
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
 

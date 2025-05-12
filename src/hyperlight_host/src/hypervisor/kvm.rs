@@ -25,12 +25,12 @@ use kvm_bindings::kvm_guest_debug;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use super::fpu::CommonFpu;
+use super::regs::CommonRegisters;
+use super::sregs::CommonSpecialRegisters;
+use super::vm::Vm;
 use super::HyperlightExit;
-use crate::fpuregs::CommonFpu;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::regs::CommonRegisters;
-use crate::sregs::CommonSpecialRegisters;
-use crate::vm::Vm;
 use crate::{log_then_return, new_error, Result};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise

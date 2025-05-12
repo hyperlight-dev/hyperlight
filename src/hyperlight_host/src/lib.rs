@@ -84,11 +84,6 @@ pub(crate) mod signal_handlers;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub(crate) mod fpuregs;
-pub(crate) mod regs;
-pub(crate) mod sregs;
-pub(crate) mod vm;
-
 /// The re-export for the `HyperlightError` type
 pub use error::HyperlightError;
 /// The re-export for the `is_hypervisor_present` type

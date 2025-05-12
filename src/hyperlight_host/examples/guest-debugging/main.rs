@@ -42,7 +42,6 @@ fn get_sandbox_cfg() -> Option<SandboxConfiguration> {
 }
 
 fn main() -> hyperlight_host::Result<()> {
-    env_logger::init();
     let cfg = get_sandbox_cfg();
 
     // Create an uninitialized sandbox with a guest binary
@@ -141,7 +140,6 @@ mod tests {
         let features = "gdb";
 
         let mut guest_child = Command::new("cargo")
-            .env("RUST_LOG", "info")
             .arg("run")
             .arg("--example")
             .arg("guest-debugging")
@@ -238,7 +236,6 @@ mod tests {
 
     #[test]
     fn test_gdb_end_to_end() {
-        env_logger::init();
         let out_dir = std::env::var("OUT_DIR").expect("Failed to get out dir");
         let out_file_path = format!("{out_dir}/gdb.output");
         let cmd_file_path = format!("{out_dir}/gdb-commands.txt");

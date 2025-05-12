@@ -30,14 +30,14 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::LazyLock;
 
+use super::fpu::CommonFpu;
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerCaller;
+use super::regs::CommonRegisters;
+use super::sregs::CommonSpecialRegisters;
+use super::vm::Vm;
 use super::HyperlightExit;
-use crate::fpuregs::CommonFpu;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::regs::CommonRegisters;
-use crate::sregs::CommonSpecialRegisters;
-use crate::vm::Vm;
 use crate::{log_then_return, new_error, Result};
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
