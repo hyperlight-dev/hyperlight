@@ -14,13 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+pub(crate) mod arch;
 mod event_loop;
-
 mod x86_64_target;
 
 use std::io::{self, ErrorKind};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -28,37 +27,11 @@ use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
-use hyperlight_common::mem::PAGE_SIZE;
 
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
-use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-use crate::mem::layout::SandboxMemoryLayout;
 use crate::regs::CommonRegisters;
-use crate::{new_error, HyperlightError};
-
-/// Software Breakpoint size in memory
-pub(crate) const SW_BP_SIZE: usize = 1;
-/// Software Breakpoint opcode - INT3
-/// Check page 7-28 Vol. 3A of Intel 64 and IA-32
-/// Architectures Software Developer's Manual
-pub(crate) const SW_BP_OP: u8 = 0xCC;
-/// Software Breakpoint written to memory
-pub(crate) const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
-/// Maximum number of supported hardware breakpoints
-pub(crate) const MAX_NO_OF_HW_BP: usize = 4;
-
-/// Check page 19-4 Vol. 3B of Intel 64 and IA-32
-/// Architectures Software Developer's Manual
-/// Bit position of BS flag in DR6 debug register
-pub(crate) const DR6_BS_FLAG_POS: usize = 14;
-/// Bit mask of BS flag in DR6 debug register
-pub(crate) const DR6_BS_FLAG_MASK: u64 = 1 << DR6_BS_FLAG_POS;
-/// Bit position of HW breakpoints status in DR6 debug register
-pub(crate) const DR6_HW_BP_FLAGS_POS: usize = 0;
-/// Bit mask of HW breakpoints status in DR6 debug register
-pub(crate) const DR6_HW_BP_FLAGS_MASK: u64 = 0x0F << DR6_HW_BP_FLAGS_POS;
 
 #[derive(Debug, Error)]
 pub(crate) enum GdbTargetError {
@@ -95,29 +68,6 @@ impl From<GdbTargetError> for TargetError<GdbTargetError> {
     fn from(value: GdbTargetError) -> TargetError<GdbTargetError> {
         TargetError::Io(std::io::Error::other(value))
     }
-}
-
-/// Struct that contains the x86_64 core registers
-#[derive(Debug, Default)]
-pub(crate) struct X86_64Regs {
-    pub(crate) rax: u64,
-    pub(crate) rbx: u64,
-    pub(crate) rcx: u64,
-    pub(crate) rdx: u64,
-    pub(crate) rsi: u64,
-    pub(crate) rdi: u64,
-    pub(crate) rbp: u64,
-    pub(crate) rsp: u64,
-    pub(crate) r8: u64,
-    pub(crate) r9: u64,
-    pub(crate) r10: u64,
-    pub(crate) r11: u64,
-    pub(crate) r12: u64,
-    pub(crate) r13: u64,
-    pub(crate) r14: u64,
-    pub(crate) r15: u64,
-    pub(crate) rip: u64,
-    pub(crate) rflags: u64,
 }
 
 /// Defines the possible reasons for which a vCPU can be stopped when debugging

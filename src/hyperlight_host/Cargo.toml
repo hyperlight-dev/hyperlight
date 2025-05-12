@@ -117,7 +117,7 @@ cfg_aliases = "0.2.1"
 built = { version = "0.8.0", features = ["chrono", "git2"] }
 
 [features]
-default = ["kvm", "mshv2", "seccomp", "gdb"]
+default = ["kvm", "mshv2", "seccomp"]
 seccomp = ["dep:seccompiler"]
 function_call_metrics = []
 executable_heap = []

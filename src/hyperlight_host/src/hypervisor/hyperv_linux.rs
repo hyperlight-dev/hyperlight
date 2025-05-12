@@ -24,8 +24,20 @@ extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
 extern crate mshv_ioctls3 as mshv_ioctls;
 
+#[cfg(gdb)]
+use std::collections::HashMap;
+#[cfg(gdb)]
 use std::fmt::Debug;
 
+#[cfg(gdb)]
+use super::handlers::DbgMemAccessHandlerCaller;
+use super::HyperlightExit;
+use crate::fpuregs::CommonFpu;
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::regs::CommonRegisters;
+use crate::sregs::CommonSpecialRegisters;
+use crate::vm::Vm;
+use crate::{log_then_return, HyperlightError, Result};
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 #[cfg(gdb)]
@@ -39,20 +51,9 @@ use mshv_bindings::{
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features,
 };
-use mshv_bindings2::{
-    hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, DebugRegisters,
-};
+use mshv_bindings2::{hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
-
-use super::handlers::DbgMemAccessHandlerCaller;
-use super::HyperlightExit;
-use crate::fpuregs::CommonFpu;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::regs::CommonRegisters;
-use crate::sregs::CommonSpecialRegisters;
-use crate::vm::Vm;
-use crate::{log_then_return, HyperlightError, Result};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -73,6 +74,16 @@ pub(super) struct MshvVm {
     mshv_fd: Mshv,
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
+
+    #[cfg(gdb)]
+    debug: MshvDebug,
+}
+
+#[cfg(gdb)]
+#[derive(Debug, Default)]
+struct MshvDebug {
+    regs: DebugRegisters,
+    sw_breakpoints: HashMap<u64, u8>, // addr -> original instruction
 }
 
 impl MshvVm {
@@ -105,6 +116,8 @@ impl MshvVm {
             mshv_fd: mshv_fd,
             vm_fd,
             vcpu_fd,
+            #[cfg(gdb)]
+            debug: MshvDebug::default(),
         })
     }
 }
@@ -245,44 +258,143 @@ impl Vm for MshvVm {
         Ok(result)
     }
 
-    fn interrupt_handle(&self) -> crate::vm::InterruptHandle {
-        todo!()
-    }
+    // -- DEBUGGING RELATED BELOW ---
 
+    #[cfg(gdb)]
     fn translate_gva(&self, gva: u64) -> Result<u64> {
-        todo!()
+        let flags = (HV_TRANSLATE_GVA_VALIDATE_READ | HV_TRANSLATE_GVA_VALIDATE_WRITE) as u64;
+        let (addr, _) = self
+            .vcpu_fd
+            .translate_gva(gva, flags)
+            .map_err(|_| HyperlightError::TranslateGuestAddress(gva))?;
+
+        Ok(addr)
     }
 
+    #[cfg(gdb)]
     fn set_debug(&mut self, enabled: bool) -> Result<()> {
-        todo!()
+        if enabled {
+            self.vm_fd
+                .install_intercept(mshv_install_intercept {
+                    access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                    intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
+                    // Exception handler #DB (1)
+                    intercept_parameter: hv_intercept_parameters {
+                        exception_vector: 0x1,
+                    },
+                })
+                .map_err(|e| new_error!("Cannot install debug exception intercept: {}", e))?;
+
+            // Install intercept for #BP (3) exception
+            self.vm_fd
+                .install_intercept(mshv_install_intercept {
+                    access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                    intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
+                    // Exception handler #BP (3)
+                    intercept_parameter: hv_intercept_parameters {
+                        exception_vector: 0x3,
+                    },
+                })
+                .map_err(|e| new_error!("Cannot install breakpoint exception intercept: {}", e))?;
+        } else {
+            // There doesn't seem to be any way to remove installed intercepts. But that seems fine.
+        }
+        Ok(())
     }
 
+    #[cfg(gdb)]
     fn set_single_step(&mut self, enable: bool) -> Result<()> {
-        todo!()
+        let mut regs = self.get_regs()?;
+        if enable {
+            regs.rflags |= 1 << 8;
+        } else {
+            regs.rflags &= !(1 << 8);
+        }
+        self.set_regs(&regs)?;
+        Ok(())
     }
 
+    #[cfg(gdb)]
+    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        let dr7 = self.debug.regs.dr7;
+        // count only LOCAL (L0, L1, L2, L3) enable bits
+        let num_hw_breakpoints = [0, 2, 4, 6]
+            .iter()
+            .filter(|&&bit| (dr7 & (1 << bit)) != 0)
+            .count();
+
+        if num_hw_breakpoints >= 4 {
+            return Err(new_error!("Tried to add more than 4 hardware breakpoints"));
+        }
+
+        // find the first available LOCAL, and then enable it
+        let available_debug_register_idx = (0..4).find(|&i| (dr7 & (1 << (i * 2))) == 0).unwrap(); // safe because of the check above
+        match available_debug_register_idx {
+            0 => self.debug.regs.dr0 = addr,
+            1 => self.debug.regs.dr1 = addr,
+            2 => self.debug.regs.dr2 = addr,
+            3 => self.debug.regs.dr3 = addr,
+            _ => unreachable!(),
+        }
+        self.debug.regs.dr7 |= 1 << (available_debug_register_idx * 2);
+
+        self.vcpu_fd.set_debug_regs(&self.debug.regs)?;
+
+        Ok(())
+    }
+
+    #[cfg(gdb)]
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        if self.debug.regs.dr0 == addr {
+            self.debug.regs.dr0 = 0;
+            self.debug.regs.dr7 &= !(1 << 0);
+        } else if self.debug.regs.dr1 == addr {
+            self.debug.regs.dr1 = 0;
+            self.debug.regs.dr7 &= !(1 << 2);
+        } else if self.debug.regs.dr2 == addr {
+            self.debug.regs.dr2 = 0;
+            self.debug.regs.dr7 &= !(1 << 4);
+        } else if self.debug.regs.dr3 == addr {
+            self.debug.regs.dr3 = 0;
+            self.debug.regs.dr7 &= !(1 << 6);
+        } else {
+            return Err(new_error!("Tried to remove non-existing hw-breakpoint"));
+        }
+
+        self.vcpu_fd.set_debug_regs(&self.debug.regs)?;
+        Ok(())
+    }
+
+    #[cfg(gdb)]
     fn add_sw_breakpoint(
         &mut self,
         addr: u64,
         dbg_mem_access_fn: std::sync::Arc<std::sync::Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()> {
-        todo!()
+        use crate::hypervisor::gdb::arch::SW_BP;
+
+        use super::gdb::arch::SW_BP_SIZE;
+
+        let mut save_data = [0; SW_BP_SIZE];
+        let mut mem = dbg_mem_access_fn.lock().unwrap();
+        mem.read(addr as usize, &mut save_data[..])?;
+        mem.write(addr as usize, &SW_BP)?;
+        self.debug.sw_breakpoints.insert(addr, save_data[0]);
+        Ok(())
     }
 
+    #[cfg(gdb)]
     fn remove_sw_breakpoint(
         &mut self,
         addr: u64,
         dbg_mem_access_fn: std::sync::Arc<std::sync::Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()> {
-        todo!()
-    }
-
-    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
-        todo!()
-    }
-
-    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
-        todo!()
+        let original_instr = self.debug.sw_breakpoints.remove(&addr).unwrap();
+        dbg_mem_access_fn
+            .lock()
+            .unwrap()
+            .write(addr as usize, &[original_instr])?;
+        Ok(())
     }
 }
 

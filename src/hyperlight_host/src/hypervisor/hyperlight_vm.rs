@@ -1,6 +1,3 @@
-use crate::fpuregs::CommonFpu;
-use crate::sandbox::hypervisor::HypervisorType;
-use crate::sregs::{CommonSegmentRegister, CommonSpecialRegisters};
 /*
 Copyright 2024 The Hyperlight Authors.
 
@@ -16,6 +13,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+use crate::fpuregs::CommonFpu;
+use crate::sandbox::hypervisor::HypervisorType;
 use crate::HyperlightError::ExecutionCanceledByHost;
 use std::convert::TryFrom;
 use std::fmt::Debug;
@@ -26,7 +25,7 @@ use tracing::{instrument, Span};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
+use super::gdb::{arch, DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{
@@ -47,35 +46,6 @@ use crate::vm::Vm;
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
 
-// Described in Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
-// of Intel 64 and IA-32 Architectures Software Developer's Manual
-/// Exception id for #DB
-const DB_EX_ID: u32 = 1;
-/// Exception id for #BP - triggered by the INT3 instruction
-const BP_EX_ID: u32 = 3;
-
-/// Software Breakpoint size in memory
-pub(crate) const SW_BP_SIZE: usize = 1;
-/// Software Breakpoint opcode - INT3
-/// Check page 7-28 Vol. 3A of Intel 64 and IA-32
-/// Architectures Software Developer's Manual
-pub(crate) const SW_BP_OP: u8 = 0xCC;
-/// Software Breakpoint written to memory
-pub(crate) const SW_BP: [u8; SW_BP_SIZE] = [SW_BP_OP];
-/// Maximum number of supported hardware breakpoints
-pub(crate) const MAX_NO_OF_HW_BP: usize = 4;
-
-/// Check page 19-4 Vol. 3B of Intel 64 and IA-32
-/// Architectures Software Developer's Manual
-/// Bit position of BS flag in DR6 debug register
-pub(crate) const DR6_BS_FLAG_POS: usize = 14;
-/// Bit mask of BS flag in DR6 debug register
-pub(crate) const DR6_BS_FLAG_MASK: u64 = 1 << DR6_BS_FLAG_POS;
-/// Bit position of HW breakpoints status in DR6 debug register
-pub(crate) const DR6_HW_BP_FLAGS_POS: usize = 0;
-/// Bit mask of HW breakpoints status in DR6 debug register
-pub(crate) const DR6_HW_BP_FLAGS_MASK: u64 = 0x0F << DR6_HW_BP_FLAGS_POS;
-
 #[cfg(gdb)]
 mod debug {
     use std::sync::{Arc, Mutex};
@@ -94,7 +64,7 @@ mod debug {
             req: DebugMsg,
             dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
         ) -> Result<DebugResponse> {
-            if let Some(debug) = self.gdb_conn.as_mut() {
+            if let Some(_) = self.gdb_conn {
                 match req {
                     DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
                         self.vm
@@ -353,6 +323,7 @@ impl HyperlightSandbox {
         rsp: u64,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
+        #[allow(unused_mut)] // needs to be mutable when gdb is enabled
         let mut vm: Box<dyn Vm> = match hv {
             HypervisorType::Kvm => Box::new(KvmVm::new()?),
             HypervisorType::Mshv => Box::new(MshvVm::new()?),
@@ -398,60 +369,6 @@ impl HyperlightSandbox {
         };
 
         Ok(ret)
-    }
-
-    /// Determine the reason the vCPU stopped
-    /// This is done by checking the DR6 register and the exception id
-    /// NOTE: Additional checks are done for the entrypoint, stored hw_breakpoints
-    /// and sw_breakpoints to ensure the stop reason is valid with internal state
-    pub(crate) fn vcpu_stop_reason(&mut self, dr6: u64, exception: u32) -> Result<VcpuStopReason> {
-        let CommonRegisters { rip, .. } = self.vm.get_regs()?;
-        if DB_EX_ID == exception {
-            // If the BS flag in DR6 register is set, it means a single step
-            // instruction triggered the exit
-            // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-            // Architectures Software Developer's Manual
-            if dr6 & DR6_BS_FLAG_MASK != 0 {
-                log::info!("Done Step stop reason");
-                return Ok(VcpuStopReason::DoneStep);
-            }
-
-            // If any of the B0-B3 flags in DR6 register is set, it means a
-            // hardware breakpoint triggered the exit
-            // Check page 19-4 Vol. 3B of Intel 64 and IA-32
-            // Architectures Software Developer's Manual
-            if DR6_HW_BP_FLAGS_MASK & dr6 != 0 {
-                if rip == self.entrypoint {
-                    log::info!("EntryPoint stop reason");
-                    self.vm.remove_hw_breakpoint(self.entrypoint)?;
-                    return Ok(VcpuStopReason::EntryPointBp);
-                }
-                log::info!("Hardware breakpoint stop reason");
-                return Ok(VcpuStopReason::HwBp);
-            }
-        }
-
-        if BP_EX_ID == exception {
-            log::info!("Software breakpoint stop reason");
-            return Ok(VcpuStopReason::SwBp);
-        }
-
-        // Log an error and provide internal debugging info
-        log::error!(
-            r"The vCPU exited because of an unknown reason:
-        rip: {:?}
-        dr6: {:?}
-        entrypoint: {:?}
-        exception: {:?}
-
-        ",
-            rip,
-            dr6,
-            self.entrypoint,
-            exception,
-        );
-
-        Ok(VcpuStopReason::Unknown)
     }
 }
 
@@ -574,7 +491,8 @@ impl HyperlightVm for HyperlightSandbox {
             match self.vm.run_vcpu() {
                 #[cfg(gdb)]
                 Ok(HyperlightExit::Debug { dr6, exception }) => {
-                    let stop_reason = self.vcpu_stop_reason(dr6, exception)?;
+                    let stop_reason =
+                        arch::vcpu_stop_reason(self.vm.as_mut(), self.entrypoint, dr6, exception)?;
                     if let Err(e) = self.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
                         log_then_return!(e);
                     }

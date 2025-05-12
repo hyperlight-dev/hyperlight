@@ -31,7 +31,7 @@ use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 
 use crate::regs::CommonRegisters;
 
-use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError, X86_64Regs};
+use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError};
 
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
 pub(crate) struct HyperlightSandboxTarget {
