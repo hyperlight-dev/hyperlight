@@ -13,8 +13,20 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+#[cfg(mshv2)]
+extern crate mshv_bindings2 as mshv_bindings;
+#[cfg(mshv2)]
+extern crate mshv_ioctls2 as mshv_ioctls;
+
+#[cfg(mshv3)]
+extern crate mshv_bindings3 as mshv_bindings;
+#[cfg(mshv3)]
+extern crate mshv_ioctls3 as mshv_ioctls;
+
+#[cfg(kvm)]
 use kvm_bindings::kvm_fpu;
-use mshv_bindings2::FloatingPointUnit;
+#[cfg(mshv)]
+use mshv_bindings::FloatingPointUnit;
 
 pub(crate) const FP_CONTROL_WORD_DEFAULT: u16 = 0x37f; // mask all fp-exception, set rounding to nearest, set precision to 64-bit
 pub(crate) const FP_TAG_WORD_DEFAULT: u8 = 0xff; // each 8 of x87 fpu registers is empty
@@ -35,6 +47,7 @@ pub struct CommonFpu {
     pub pad2: u32,
 }
 
+#[cfg(kvm)]
 impl From<CommonFpu> for kvm_fpu {
     fn from(common_fpu: CommonFpu) -> Self {
         kvm_fpu {
@@ -52,6 +65,8 @@ impl From<CommonFpu> for kvm_fpu {
         }
     }
 }
+
+#[cfg(mshv)]
 impl From<CommonFpu> for FloatingPointUnit {
     fn from(common_fpu: CommonFpu) -> FloatingPointUnit {
         FloatingPointUnit {
@@ -70,6 +85,7 @@ impl From<CommonFpu> for FloatingPointUnit {
     }
 }
 
+#[cfg(kvm)]
 impl From<kvm_fpu> for CommonFpu {
     fn from(kvm_fpu: kvm_fpu) -> Self {
         Self {
@@ -88,6 +104,7 @@ impl From<kvm_fpu> for CommonFpu {
     }
 }
 
+#[cfg(mshv)]
 impl From<FloatingPointUnit> for CommonFpu {
     fn from(mshv_fpu: FloatingPointUnit) -> Self {
         Self {

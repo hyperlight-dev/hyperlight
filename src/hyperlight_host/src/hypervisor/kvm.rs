@@ -25,9 +25,7 @@ use kvm_bindings::kvm_guest_debug;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use super::fpu::CommonFpu;
-use super::regs::CommonRegisters;
-use super::sregs::CommonSpecialRegisters;
+use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use super::vm::Vm;
 use super::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};

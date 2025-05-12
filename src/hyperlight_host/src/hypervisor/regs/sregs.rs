@@ -1,5 +1,17 @@
+#[cfg(mshv2)]
+extern crate mshv_bindings2 as mshv_bindings;
+#[cfg(mshv2)]
+extern crate mshv_ioctls2 as mshv_ioctls;
+
+#[cfg(mshv3)]
+extern crate mshv_bindings3 as mshv_bindings;
+#[cfg(mshv3)]
+extern crate mshv_ioctls3 as mshv_ioctls;
+
+#[cfg(kvm)]
 use kvm_bindings::{kvm_dtable, kvm_segment, kvm_sregs};
-use mshv_bindings2::{SegmentRegister, SpecialRegisters, TableRegister};
+#[cfg(mshv)]
+use mshv_bindings::{SegmentRegister, SpecialRegisters, TableRegister};
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub(crate) struct CommonSpecialRegisters {
@@ -23,6 +35,7 @@ pub(crate) struct CommonSpecialRegisters {
     pub interrupt_bitmap: [u64; 4],
 }
 
+#[cfg(mshv)]
 impl From<SpecialRegisters> for CommonSpecialRegisters {
     fn from(value: SpecialRegisters) -> Self {
         CommonSpecialRegisters {
@@ -48,6 +61,7 @@ impl From<SpecialRegisters> for CommonSpecialRegisters {
     }
 }
 
+#[cfg(mshv)]
 impl From<CommonSpecialRegisters> for SpecialRegisters {
     fn from(other: CommonSpecialRegisters) -> Self {
         SpecialRegisters {
@@ -73,6 +87,7 @@ impl From<CommonSpecialRegisters> for SpecialRegisters {
     }
 }
 
+#[cfg(kvm)]
 impl From<kvm_sregs> for CommonSpecialRegisters {
     fn from(kvm_sregs: kvm_sregs) -> Self {
         CommonSpecialRegisters {
@@ -98,6 +113,7 @@ impl From<kvm_sregs> for CommonSpecialRegisters {
     }
 }
 
+#[cfg(kvm)]
 impl From<CommonSpecialRegisters> for kvm_sregs {
     fn from(common_sregs: CommonSpecialRegisters) -> Self {
         kvm_sregs {
@@ -142,6 +158,7 @@ pub(crate) struct CommonSegmentRegister {
     pub padding: u8,
 }
 
+#[cfg(mshv)]
 impl From<SegmentRegister> for CommonSegmentRegister {
     fn from(other: SegmentRegister) -> Self {
         CommonSegmentRegister {
@@ -162,6 +179,7 @@ impl From<SegmentRegister> for CommonSegmentRegister {
     }
 }
 
+#[cfg(mshv)]
 impl From<CommonSegmentRegister> for SegmentRegister {
     fn from(other: CommonSegmentRegister) -> Self {
         SegmentRegister {
@@ -182,6 +200,7 @@ impl From<CommonSegmentRegister> for SegmentRegister {
     }
 }
 
+#[cfg(kvm)]
 impl From<kvm_segment> for CommonSegmentRegister {
     fn from(kvm_segment: kvm_segment) -> Self {
         CommonSegmentRegister {
@@ -202,6 +221,7 @@ impl From<kvm_segment> for CommonSegmentRegister {
     }
 }
 
+#[cfg(kvm)]
 impl From<CommonSegmentRegister> for kvm_segment {
     fn from(common_segment: CommonSegmentRegister) -> Self {
         kvm_segment {
@@ -230,6 +250,7 @@ pub(crate) struct CommonTableRegister {
     pub limit: u16,
 }
 
+#[cfg(mshv)]
 impl From<TableRegister> for CommonTableRegister {
     fn from(other: TableRegister) -> Self {
         CommonTableRegister {
@@ -239,6 +260,7 @@ impl From<TableRegister> for CommonTableRegister {
     }
 }
 
+#[cfg(mshv)]
 impl From<CommonTableRegister> for TableRegister {
     fn from(other: CommonTableRegister) -> Self {
         TableRegister {
@@ -248,6 +270,7 @@ impl From<CommonTableRegister> for TableRegister {
     }
 }
 
+#[cfg(kvm)]
 impl From<kvm_dtable> for CommonTableRegister {
     fn from(kvm_dtable: kvm_dtable) -> Self {
         CommonTableRegister {
@@ -257,6 +280,7 @@ impl From<kvm_dtable> for CommonTableRegister {
     }
 }
 
+#[cfg(kvm)]
 impl From<CommonTableRegister> for kvm_dtable {
     fn from(common_dtable: CommonTableRegister) -> Self {
         kvm_dtable {

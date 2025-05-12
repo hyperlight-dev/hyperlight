@@ -24,7 +24,6 @@ use std::sync::{Arc, Mutex};
 use log::LevelFilter;
 use tracing::{instrument, Span};
 
-use super::fpu::{CommonFpu, FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{arch, DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason};
 #[cfg(gdb)]
@@ -33,8 +32,11 @@ use super::handlers::{
     MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
 };
 use super::hyperv_linux::MshvVm;
+#[cfg(kvm)]
 use super::kvm::KvmVm;
-use super::regs::CommonRegisters;
+use super::regs::{
+    CommonFpu, CommonRegisters, FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT,
+};
 use super::vm::Vm;
 use super::{
     HyperlightExit, HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
@@ -326,7 +328,9 @@ impl HyperlightSandbox {
     ) -> Result<Self> {
         #[allow(unused_mut)] // needs to be mutable when gdb is enabled
         let mut vm: Box<dyn Vm> = match hv {
+            #[cfg(kvm)]
             HypervisorType::Kvm => Box::new(KvmVm::new()?),
+            #[cfg(mshv)]
             HypervisorType::Mshv => Box::new(MshvVm::new()?),
         };
 

@@ -30,11 +30,9 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::LazyLock;
 
-use super::fpu::CommonFpu;
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerCaller;
-use super::regs::CommonRegisters;
-use super::sregs::CommonSpecialRegisters;
+use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use super::vm::Vm;
 use super::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -107,7 +105,7 @@ impl MshvVm {
             // create_vm_with_args() with an empty arguments structure
             // here, because otherwise the partition is set up with a SynIC.
 
-            let vm_fd = mshv.create_vm_with_args(&pr)?;
+            let vm_fd = hv.create_vm_with_args(&pr)?;
             let features: hv_partition_synthetic_processor_features = Default::default();
             vm_fd.hvcall_set_partition_property(
                 hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,

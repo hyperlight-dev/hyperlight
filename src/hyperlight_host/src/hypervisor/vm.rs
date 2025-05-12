@@ -10,9 +10,9 @@ use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::MemoryRegion;
 use crate::Result;
 
-use super::fpu::CommonFpu;
+use super::regs::CommonFpu;
 use super::regs::CommonRegisters;
-use super::sregs::CommonSpecialRegisters;
+use super::regs::CommonSpecialRegisters;
 
 pub(crate) trait Vm: Send + Sync + Debug {
     /// Get the standard registers of the vCPU

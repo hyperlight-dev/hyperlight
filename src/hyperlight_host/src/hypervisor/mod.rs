@@ -18,9 +18,6 @@ use log::LevelFilter;
 
 use crate::Result;
 
-/// Util for handling x87 fpu state
-#[cfg(any(kvm, mshv, target_os = "windows"))]
-pub mod fpu;
 /// Handlers for Hypervisor custom logic
 pub mod handlers;
 pub(crate) mod hyperlight_vm;
@@ -32,7 +29,6 @@ pub mod hyperv_linux;
 pub(crate) mod hyperv_windows;
 pub(crate) mod hypervisor_handler;
 mod regs;
-mod sregs;
 mod vm;
 
 /// GDB debugging support
@@ -220,7 +216,7 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
     ) -> Result<()>;
 }
 
-#[cfg(all(test, any(target_os = "windows", kvm)))]
+#[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
