@@ -15,6 +15,7 @@ use crate::Result;
 
 pub(crate) trait Vm: Send + Sync + Debug {
     /// Get the standard registers of the vCPU
+    #[allow(dead_code)]
     fn get_regs(&self) -> Result<CommonRegisters>;
     /// Set the standard registers of the vCPU
     fn set_regs(&self, regs: &CommonRegisters) -> Result<()>;
@@ -25,6 +26,7 @@ pub(crate) trait Vm: Send + Sync + Debug {
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
 
     /// Get the FPU registers of the vCPU
+    #[allow(dead_code)]
     fn get_fpu(&self) -> Result<CommonFpu>;
     /// Set the FPU registers of the vCPU
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()>;

@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::fpuregs::CommonFpu;
+#[cfg(crashdump)]
+use crate::hypervisor::crashdump;
 use crate::sandbox::hypervisor::HypervisorType;
 use crate::HyperlightError::ExecutionCanceledByHost;
 use std::convert::TryFrom;
@@ -304,7 +306,7 @@ mod debug {
 
 /// A Hypervisor driver for KVM on Linux
 #[derive(Debug)]
-pub(super) struct HyperlightSandbox {
+pub(crate) struct HyperlightSandbox {
     vm: Box<dyn Vm>,
     entrypoint: u64,
     orig_rsp: GuestPtr,
@@ -502,21 +504,18 @@ impl HyperlightVm for HyperlightSandbox {
                     self.handle_io(port, data, outb_handle_fn.clone())?
                 }
                 Ok(HyperlightExit::MmioRead(addr)) => {
+                    #[cfg(crashdump)]
+                    crashdump::crashdump_to_tempfile(self)?;
+
                     match get_memory_access_violation(
                         addr as usize,
                         MemoryRegionFlags::READ,
                         &self.mem_regions,
                     ) {
                         Some(MemoryAccess::StackGuardPageViolation) => {
-                            #[cfg(crashdump)]
-                            crashdump::crashdump_to_tempfile(hv)?;
-
                             return Err(HyperlightError::StackOverflow());
                         }
                         Some(MemoryAccess::AccessViolation(region_flags)) => {
-                            #[cfg(crashdump)]
-                            crashdump::crashdump_to_tempfile(hv)?;
-
                             log_then_return!(HyperlightError::MemoryAccessViolation(
                                 addr,
                                 MemoryRegionFlags::READ,
@@ -524,9 +523,6 @@ impl HyperlightVm for HyperlightSandbox {
                             ));
                         }
                         None => {
-                            #[cfg(crashdump)]
-                            crashdump::crashdump_to_tempfile(hv)?;
-
                             mem_access_fn
                                 .clone()
                                 .try_lock()
@@ -541,7 +537,7 @@ impl HyperlightVm for HyperlightSandbox {
                 }
                 Ok(HyperlightExit::MmioWrite(addr)) => {
                     #[cfg(crashdump)]
-                    crashdump::crashdump_to_tempfile(hv)?;
+                    crashdump::crashdump_to_tempfile(self)?;
 
                     match get_memory_access_violation(
                         addr as usize,
@@ -587,14 +583,14 @@ impl HyperlightVm for HyperlightSandbox {
                 }
                 Ok(HyperlightExit::Unknown(reason)) => {
                     #[cfg(crashdump)]
-                    crashdump::crashdump_to_tempfile(hv)?;
+                    crashdump::crashdump_to_tempfile(self)?;
 
                     log_then_return!("Unexpected VM Exit {:?}", reason);
                 }
                 Ok(HyperlightExit::Retry()) => continue,
                 Err(e) => {
                     #[cfg(crashdump)]
-                    crashdump::crashdump_to_tempfile(hv)?;
+                    crashdump::crashdump_to_tempfile(self)?;
 
                     return Err(e);
                 }

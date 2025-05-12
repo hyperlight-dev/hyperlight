@@ -206,7 +206,7 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
     fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion];
+    fn get_memory_regions(&self) -> &[crate::mem::memory_region::MemoryRegion];
 
     #[cfg(gdb)]
     /// handles the cases when the vCPU stops due to a Debug event

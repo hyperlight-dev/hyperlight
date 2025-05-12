@@ -38,11 +38,13 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::regs::CommonRegisters;
 use crate::sregs::CommonSpecialRegisters;
 use crate::vm::Vm;
-use crate::{log_then_return, new_error, HyperlightError, Result};
+use crate::{log_then_return, new_error, Result};
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 #[cfg(gdb)]
 use mshv_bindings::hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
+#[cfg(gdb)]
+use mshv_bindings::DebugRegisters;
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
@@ -52,9 +54,7 @@ use mshv_bindings::{
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features,
 };
-use mshv_bindings::{
-    hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, DebugRegisters,
-};
+use mshv_bindings::{hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
@@ -263,6 +263,7 @@ impl Vm for MshvVm {
 
     #[cfg(gdb)]
     fn translate_gva(&self, gva: u64) -> Result<u64> {
+        use crate::HyperlightError;
         use mshv_bindings::{HV_TRANSLATE_GVA_VALIDATE_READ, HV_TRANSLATE_GVA_VALIDATE_WRITE};
 
         let flags = (HV_TRANSLATE_GVA_VALIDATE_READ | HV_TRANSLATE_GVA_VALIDATE_WRITE) as u64;
@@ -447,30 +448,22 @@ mod tests {
         Ok(Box::new(shared_mem))
     }
 
-    // #[test]
-    // fn create_driver() {
-    //     if !super::is_hypervisor_present() {
-    //         return;
-    //     }
-    //     const MEM_SIZE: usize = 0x3000;
-    //     let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
-    //     let rsp_ptr = GuestPtr::try_from(0).unwrap();
-    //     let pml4_ptr = GuestPtr::try_from(0).unwrap();
-    //     let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
-    //     let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
-    //     regions.push_page_aligned(
-    //         MEM_SIZE,
-    //         MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
-    //         crate::mem::memory_region::MemoryRegionType::Code,
-    //     );
-    //     super::MshvVm::new(
-    //         regions.build(),
-    //         entrypoint_ptr,
-    //         rsp_ptr,
-    //         pml4_ptr,
-    //         #[cfg(gdb)]
-    //         None,
-    //     )
-    //     .unwrap();
-    // }
+    #[test]
+    fn create_mshv_vm() {
+        if !super::is_hypervisor_present() {
+            return;
+        }
+        const MEM_SIZE: usize = 0x3000;
+        let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
+        let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
+        regions.push_page_aligned(
+            MEM_SIZE,
+            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
+            crate::mem::memory_region::MemoryRegionType::Code,
+        );
+        let mshv_vm = super::MshvVm::new().unwrap();
+        unsafe {
+            mshv_vm.map_memory(&regions.build()).unwrap();
+        }
+    }
 }

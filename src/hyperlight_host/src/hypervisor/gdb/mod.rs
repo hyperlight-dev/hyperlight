@@ -80,6 +80,7 @@ pub enum VcpuStopReason {
     EntryPointBp,
     HwBp,
     SwBp,
+    #[allow(dead_code)] // TODO confirm with doru if this really is needed
     Interrupt,
     Unknown,
 }
