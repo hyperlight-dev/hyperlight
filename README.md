@@ -255,6 +255,7 @@ Hyperlight.
 
 > Note: For general Hyperlight development, you may also need flatc (Flatbuffer compiler): for instructions,
 > see [here](https://github.com/google/flatbuffers).
+> Copyright © contributors to Hyperlight, established as Hyperlight a Series of LF Projects, LLC.
 
 ## Join our Community Meetings
 
