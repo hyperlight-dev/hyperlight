@@ -27,7 +27,6 @@ use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
-
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 

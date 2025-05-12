@@ -30,13 +30,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::LazyLock;
 
-#[cfg(gdb)]
-use super::handlers::DbgMemAccessHandlerCaller;
-use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use super::vm::Vm;
-use super::HyperlightExit;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::{log_then_return, new_error, Result};
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 #[cfg(gdb)]
@@ -45,16 +38,24 @@ use mshv_bindings::hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 use mshv_bindings::DebugRegisters;
 use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
-    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
+    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
+    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value,
 };
 #[cfg(mshv3)]
 use mshv_bindings::{
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features,
 };
-use mshv_bindings::{hv_register_assoc, hv_register_name_HV_X64_REGISTER_RIP, hv_register_value};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{instrument, Span};
+
+#[cfg(gdb)]
+use super::handlers::DbgMemAccessHandlerCaller;
+use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use super::vm::Vm;
+use super::HyperlightExit;
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::{log_then_return, new_error, Result};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -263,8 +264,9 @@ impl Vm for MshvVm {
 
     #[cfg(gdb)]
     fn translate_gva(&self, gva: u64) -> Result<u64> {
-        use crate::HyperlightError;
         use mshv_bindings::{HV_TRANSLATE_GVA_VALIDATE_READ, HV_TRANSLATE_GVA_VALIDATE_WRITE};
+
+        use crate::HyperlightError;
 
         let flags = (HV_TRANSLATE_GVA_VALIDATE_READ | HV_TRANSLATE_GVA_VALIDATE_WRITE) as u64;
         let (addr, _) = self
@@ -386,9 +388,8 @@ impl Vm for MshvVm {
         addr: u64,
         dbg_mem_access_fn: std::sync::Arc<std::sync::Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()> {
-        use crate::hypervisor::gdb::arch::SW_BP;
-
         use super::gdb::arch::SW_BP_SIZE;
+        use crate::hypervisor::gdb::arch::SW_BP;
 
         let mut save_data = [0; SW_BP_SIZE];
         let mut mem = dbg_mem_access_fn.lock().unwrap();

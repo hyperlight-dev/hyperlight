@@ -13,10 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#[cfg(crashdump)]
-use crate::hypervisor::crashdump;
-use crate::sandbox::hypervisor::HypervisorType;
-use crate::HyperlightError::ExecutionCanceledByHost;
 use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
@@ -42,12 +38,15 @@ use super::{
     HyperlightExit, HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
     CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
+#[cfg(crashdump)]
+use crate::hypervisor::crashdump;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
-use crate::HyperlightError;
-use crate::{log_then_return, new_error, Result};
+use crate::sandbox::hypervisor::HypervisorType;
+use crate::HyperlightError::ExecutionCanceledByHost;
+use crate::{log_then_return, new_error, HyperlightError, Result};
 
 #[cfg(gdb)]
 mod debug {

@@ -4,15 +4,12 @@ use std::sync::Arc;
 #[cfg(gdb)]
 use std::sync::Mutex;
 
+use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 #[cfg(gdb)]
 use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::MemoryRegion;
 use crate::Result;
-
-use super::regs::CommonFpu;
-use super::regs::CommonRegisters;
-use super::regs::CommonSpecialRegisters;
 
 pub(crate) trait Vm: Send + Sync + Debug {
     /// Get the standard registers of the vCPU

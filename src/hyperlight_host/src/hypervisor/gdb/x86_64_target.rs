@@ -29,9 +29,8 @@ use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 
-use crate::hypervisor::regs::CommonRegisters;
-
 use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError};
+use crate::hypervisor::regs::CommonRegisters;
 
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
 pub(crate) struct HyperlightSandboxTarget {

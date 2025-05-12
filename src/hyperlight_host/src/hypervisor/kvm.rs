@@ -14,16 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#[cfg(gdb)]
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+#[cfg(gdb)]
+use kvm_bindings::kvm_guest_debug;
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MEM_READONLY};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{instrument, Span};
-
-#[cfg(gdb)]
-use kvm_bindings::kvm_guest_debug;
-#[cfg(gdb)]
-use std::collections::HashMap;
-use std::sync::LazyLock;
 
 use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use super::vm::Vm;

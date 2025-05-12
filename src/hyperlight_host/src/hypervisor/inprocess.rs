@@ -14,18 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use crate::hypervisor::DbgMemAccessHandlerCaller;
-use crate::hypervisor::VcpuStopReason;
-use log::LevelFilter;
 use std::fmt::Debug;
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
+
+use log::LevelFilter;
 
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
 use super::hypervisor_handler::HypervisorHandler;
 use super::HyperlightVm;
+use crate::hypervisor::{DbgMemAccessHandlerCaller, VcpuStopReason};
 #[cfg(crashdump)]
 use crate::mem::memory_region::MemoryRegion;
 use crate::sandbox::leaked_outb::LeakedOutBWrapper;
