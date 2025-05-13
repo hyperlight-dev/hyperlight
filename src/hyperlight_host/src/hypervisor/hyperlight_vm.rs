@@ -27,6 +27,7 @@ use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{
     MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
 };
+#[cfg(mshv)]
 use super::hyperv_linux::MshvVm;
 #[cfg(kvm)]
 use super::kvm::KvmVm;
@@ -34,12 +35,15 @@ use super::regs::{
     CommonFpu, CommonRegisters, FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT,
 };
 use super::vm::Vm;
+use super::wrappers::HandleWrapper;
 use super::{
     HyperlightExit, HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
     CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::hyperv_windows::WhpVm;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -324,6 +328,7 @@ impl HyperlightSandbox {
         entrypoint: u64,
         rsp: u64,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+        handle: HandleWrapper,
     ) -> Result<Self> {
         #[allow(unused_mut)] // needs to be mutable when gdb is enabled
         let mut vm: Box<dyn Vm> = match hv {
@@ -331,6 +336,8 @@ impl HyperlightSandbox {
             HypervisorType::Kvm => Box::new(KvmVm::new()?),
             #[cfg(mshv)]
             HypervisorType::Mshv => Box::new(MshvVm::new()?),
+            #[cfg(target_os = "windows")]
+            HypervisorType::Whp => Box::new(WhpVm::new(handle)?),
         };
 
         // Safety: We haven't called this before and the regions are valid
@@ -344,6 +351,8 @@ impl HyperlightSandbox {
         sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP;
         sregs.efer = EFER_LME | EFER_LMA | EFER_SCE | EFER_NX;
         sregs.cs.l = 1; // required for 64-bit mode
+        sregs.cs.present = 1;
+        sregs.cs.s = 1;
         vm.set_sregs(&sregs)?;
 
         #[cfg(gdb)]
@@ -392,6 +401,8 @@ impl HyperlightVm for HyperlightSandbox {
             None => self.get_max_log_level().into(),
         };
 
+        println!("Entrypoint: {:#x}", self.entrypoint);
+
         let regs = CommonRegisters {
             rip: self.entrypoint,
             rsp: self.orig_rsp.absolute()?,
@@ -401,7 +412,7 @@ impl HyperlightVm for HyperlightSandbox {
             rdx: seed,
             r8: page_size.into(),
             r9: max_guest_log_level,
-
+            rflags: 1 << 1,
             ..Default::default()
         };
         self.vm.set_regs(&regs)?;
@@ -430,7 +441,7 @@ impl HyperlightVm for HyperlightSandbox {
         let regs = CommonRegisters {
             rip: dispatch_func_addr.into(),
             rsp: self.orig_rsp.absolute()?,
-            rflags: 2,
+            rflags: 1 << 1,
             ..Default::default()
         };
         self.vm.set_regs(&regs)?;
@@ -532,7 +543,7 @@ impl HyperlightVm for HyperlightSandbox {
                                 })?
                                 .call()?;
 
-                            log_then_return!("MMIO access address {:#x}", addr);
+                            log_then_return!("MMIO READ access address {:#x}", addr);
                         }
                     }
                 }
@@ -564,7 +575,7 @@ impl HyperlightVm for HyperlightSandbox {
                                 })?
                                 .call()?;
 
-                            log_then_return!("MMIO access address {:#x}", addr);
+                            log_then_return!("MMIO WRITE access address {:#x}", addr);
                         }
                     }
                 }
@@ -647,6 +658,11 @@ impl HyperlightVm for HyperlightSandbox {
         }
 
         Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE {
+        self.vm.get_partition_handle()
     }
 }
 

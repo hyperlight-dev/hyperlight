@@ -12,6 +12,10 @@ extern crate mshv_ioctls3 as mshv_ioctls;
 use kvm_bindings::{kvm_dtable, kvm_segment, kvm_sregs};
 #[cfg(mshv)]
 use mshv_bindings::{SegmentRegister, SpecialRegisters, TableRegister};
+use windows::Win32::System::Hypervisor::{
+    WHV_REGISTER_VALUE, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
+    WHV_X64_TABLE_REGISTER,
+};
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub(crate) struct CommonSpecialRegisters {
@@ -242,6 +246,67 @@ impl From<CommonSegmentRegister> for kvm_segment {
     }
 }
 
+#[cfg(target_os = "windows")]
+impl From<WHV_REGISTER_VALUE> for CommonSegmentRegister {
+    fn from(other: WHV_REGISTER_VALUE) -> Self {
+        unsafe {
+            let segment = other.Segment;
+            let bits = segment.Anonymous.Attributes;
+
+            // Source of bit layout: https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvvirtualprocessordatatypes
+            CommonSegmentRegister {
+                base: segment.Base,
+                limit: segment.Limit,
+                selector: segment.Selector,
+                type_: (bits & 0b1111) as u8,    // bits 0–3: SegmentType
+                s: ((bits >> 4) & 0b1) as u8,    // bit 4: NonSystemSegment
+                dpl: ((bits >> 5) & 0b11) as u8, // bits 5–6: DPL
+                present: ((bits >> 7) & 0b1) as u8, // bit 7: Present
+                // bits 8–11: Reserved
+                avl: ((bits >> 12) & 0b1) as u8, // bit 12: Available
+                l: ((bits >> 13) & 0b1) as u8,   // bit 13: Long mode
+                db: ((bits >> 14) & 0b1) as u8,  // bit 14: Default
+                g: ((bits >> 15) & 0b1) as u8,   // bit 15: Granularity
+                unusable: 0,
+                padding: 0,
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<CommonSegmentRegister> for WHV_REGISTER_VALUE {
+    fn from(other: CommonSegmentRegister) -> Self {
+        // Truncate each field to its valid bit width before composing `Attributes`.
+        let type_ = other.type_ & 0xF; // 4 bits
+        let s = other.s & 0x1; // 1 bit
+        let dpl = other.dpl & 0x3; // 2 bits
+        let present = other.present & 0x1; // 1 bit
+        let avl = other.avl & 0x1; // 1 bit
+        let l = other.l & 0x1; // 1 bit
+        let db = other.db & 0x1; // 1 bit
+        let g = other.g & 0x1; // 1 bit
+
+        WHV_REGISTER_VALUE {
+            Segment: WHV_X64_SEGMENT_REGISTER {
+                Base: other.base,
+                Limit: other.limit,
+                Selector: other.selector,
+                Anonymous: WHV_X64_SEGMENT_REGISTER_0 {
+                    Attributes: (type_ as u16) // bit 0-3
+                        | ((s as u16) << 4) // bit 4
+                        | ((dpl as u16) << 5) // bit 5-6
+                        | ((present as u16) << 7) // bit 7
+                        | ((avl as u16) << 12) // bit 12
+                        | ((l as u16) << 13) // bit 13
+                        | ((db as u16) << 14) // bit 14
+                        | ((g as u16) << 15), // bit 15
+                },
+            },
+        }
+    }
+}
+
 // --- Table Register ---
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -287,6 +352,32 @@ impl From<CommonTableRegister> for kvm_dtable {
             base: common_dtable.base,
             limit: common_dtable.limit,
             padding: Default::default(),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<WHV_REGISTER_VALUE> for CommonTableRegister {
+    fn from(other: WHV_REGISTER_VALUE) -> Self {
+        unsafe {
+            let table = other.Table;
+            CommonTableRegister {
+                base: table.Base,
+                limit: table.Limit,
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<CommonTableRegister> for WHV_REGISTER_VALUE {
+    fn from(other: CommonTableRegister) -> Self {
+        WHV_REGISTER_VALUE {
+            Table: WHV_X64_TABLE_REGISTER {
+                Base: other.base,
+                Limit: other.limit,
+                Pad: Default::default(),
+            },
         }
     }
 }

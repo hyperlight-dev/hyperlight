@@ -122,3 +122,73 @@ impl From<FloatingPointUnit> for CommonFpu {
         }
     }
 }
+
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Hypervisor::*;
+
+#[cfg(target_os = "windows")]
+impl From<&CommonFpu> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
+    fn from(fpu: &CommonFpu) -> Self {
+        let mut regs = Vec::new();
+
+        // FPU/MMX registers (8 x 128-bit)
+        for (i, reg) in fpu.fpr.iter().enumerate() {
+            let mut value = WHV_REGISTER_VALUE::default();
+            value.Reg128 = WHV_UINT128 {
+                Dword: [
+                    u32::from_le_bytes([reg[0], reg[1], reg[2], reg[3]]),
+                    u32::from_le_bytes([reg[4], reg[5], reg[6], reg[7]]),
+                    u32::from_le_bytes([reg[8], reg[9], reg[10], reg[11]]),
+                    u32::from_le_bytes([reg[12], reg[13], reg[14], reg[15]]),
+                ],
+            };
+            // WHvX64RegisterFpMmx{i}
+            regs.push((WHV_REGISTER_NAME(WHvX64RegisterFpMmx0.0 + i as i32), value));
+        }
+
+        // FCW, FSW, FTWX, LastOpcode, LastIP → FpControlStatus
+        let mut fp_control_status = WHV_REGISTER_VALUE::default();
+        fp_control_status.FpControlStatus = WHV_X64_FP_CONTROL_STATUS_REGISTER {
+            Anonymous: WHV_X64_FP_CONTROL_STATUS_REGISTER_0 {
+                FpControl: fpu.fcw,
+                FpStatus: fpu.fsw,
+                FpTag: fpu.ftwx,
+                Reserved: fpu.pad1,
+                LastFpOp: fpu.last_opcode,
+                Anonymous: WHV_X64_FP_CONTROL_STATUS_REGISTER_0_0 {
+                    LastFpRip: fpu.last_ip,
+                },
+            },
+        };
+        regs.push((WHvX64RegisterFpControlStatus, fp_control_status));
+
+        // XMM registers (16 x 128-bit)
+        for (i, reg) in fpu.xmm.iter().enumerate() {
+            let mut value = WHV_REGISTER_VALUE::default();
+            value.Reg128 = WHV_UINT128 {
+                Dword: [
+                    u32::from_le_bytes([reg[0], reg[1], reg[2], reg[3]]),
+                    u32::from_le_bytes([reg[4], reg[5], reg[6], reg[7]]),
+                    u32::from_le_bytes([reg[8], reg[9], reg[10], reg[11]]),
+                    u32::from_le_bytes([reg[12], reg[13], reg[14], reg[15]]),
+                ],
+            };
+            regs.push((WHV_REGISTER_NAME(WHvX64RegisterXmm0.0 + i as i32), value));
+            // WHvX64RegisterXmm{i}
+        }
+
+        // LastDP, MXCSR → XmmControlStatus
+        let mut xmm_control_status = WHV_REGISTER_VALUE::default();
+        xmm_control_status.XmmControlStatus = WHV_X64_XMM_CONTROL_STATUS_REGISTER {
+            Anonymous: WHV_X64_XMM_CONTROL_STATUS_REGISTER_0 {
+                XmmStatusControl: fpu.mxcsr,
+                XmmStatusControlMask: !0, // Not sure what else this should be
+                Anonymous: WHV_X64_XMM_CONTROL_STATUS_REGISTER_0_0 {
+                    LastFpRdp: fpu.last_dp,
+                },
+            },
+        };
+        regs.push((WHvX64RegisterXmmControlStatus, xmm_control_status)); // WHvX64RegisterXmmControlStatus
+        regs
+    }
+}

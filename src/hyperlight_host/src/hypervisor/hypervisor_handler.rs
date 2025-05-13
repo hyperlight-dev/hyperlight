@@ -925,6 +925,10 @@ fn set_up_hypervisor_partition(
                     rsp_ptr.absolute()?,
                     #[cfg(gdb)]
                     gdb_conn,
+                    HandleWrapper::from(
+                        mgr.shared_mem
+                            .with_exclusivity(|e| e.get_mmap_file_handle())?,
+                    ),
                 )?;
                 Ok(Box::new(hv))
             }

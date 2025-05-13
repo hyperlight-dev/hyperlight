@@ -32,10 +32,13 @@ pub(crate) trait Vm: Send + Sync + Debug {
     /// Map memory regions into this VM
     ///
     /// Safety: Should only be called once, since memory slots will otherwise be overwritten on KVM
-    unsafe fn map_memory(&self, region: &[MemoryRegion]) -> Result<()>;
+    unsafe fn map_memory(&mut self, region: &[MemoryRegion]) -> Result<()>;
 
     /// Runs the vCPU until it exits
     fn run_vcpu(&mut self) -> Result<HyperlightExit>;
+
+    #[cfg(target_os = "windows")]
+    fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 
     // --- DEBUGGING ------------
 
