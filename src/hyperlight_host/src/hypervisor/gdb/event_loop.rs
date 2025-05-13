@@ -19,6 +19,7 @@ use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::{
     run_blocking, BaseStopReason, DisconnectReason, GdbStub, SingleThreadStopReason,
 };
+#[cfg(target_os = "linux")]
 use libc::{pthread_kill, SIGRTMIN};
 
 use super::x86_64_target::HyperlightSandboxTarget;
@@ -49,15 +50,28 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                     // Resume execution if unknown reason for stop
                     let stop_response = match stop_reason {
                         VcpuStopReason::DoneStep => BaseStopReason::DoneStep,
-                        VcpuStopReason::EntryPointBp => BaseStopReason::HwBreak(()),
                         VcpuStopReason::SwBp => BaseStopReason::SwBreak(()),
                         VcpuStopReason::HwBp => BaseStopReason::HwBreak(()),
+                        VcpuStopReason::EntryPointBp => BaseStopReason::HwBreak(()),
                         // This is a consequence of the GDB client sending an interrupt signal
                         // to the target thread
-                        VcpuStopReason::Interrupt => BaseStopReason::SignalWithThread {
-                            tid: (),
-                            signal: Signal(SIGRTMIN() as u8),
-                        },
+                        VcpuStopReason::Interrupt => {
+                            #[cfg(target_os = "linux")]
+                            let rsp = BaseStopReason::SignalWithThread {
+                                tid: (),
+                                signal: Signal(SIGRTMIN() as u8),
+                            };
+
+                            // For Windows we don't send a signal, this should not be happen
+                            #[cfg(target_os = "windows")]
+                            let rsp = BaseStopReason::SignalWithThread {
+                                tid: (),
+                                // This is a placeholder signal, we don't have a real signal
+                                signal: Signal(53u8),
+                            };
+
+                            rsp
+                        }
                         VcpuStopReason::Unknown => {
                             log::warn!("Unknown stop reason received");
 
@@ -96,12 +110,26 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
     /// This function is called when the GDB client sends an interrupt signal.
     /// Passing `None` defers sending a stop reason to later (e.g. when the target stops).
     fn on_interrupt(
-        target: &mut Self::Target,
+        #[allow(unused_variables)] target: &mut Self::Target,
     ) -> Result<Option<Self::StopReason>, <Self::Target as gdbstub::target::Target>::Error> {
         log::info!("Received interrupt from GDB client - sending signal to target thread");
 
         // Send a signal to the target thread to interrupt it
+        #[cfg(target_os = "linux")]
         let ret = unsafe { pthread_kill(target.get_thread_id(), SIGRTMIN()) };
+
+        #[cfg(target_os = "windows")]
+        let ret = {
+            // pthread_kill is not implemented on Windows
+            // We need to use a different method to send a signal to the target thread
+            // For now, we just log a warning and return an error
+            // NOTE: The way we make a vCPU stop on windows is to make a windows API call
+            // to suspend the thread, but for that we need a handle to the thread which we don't have
+            log::warn!("Windows signal sending not implemented");
+
+            // For now, we just return an error
+            -1
+        };
 
         log::info!("pthread_kill returned {}", ret);
 
