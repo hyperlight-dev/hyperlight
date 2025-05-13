@@ -19,11 +19,11 @@ use std::os::raw::c_void;
 
 use log::LevelFilter;
 
+#[cfg(crashdump)]
+use super::crashdump;
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::{HyperlightExit, Hypervisor};
-#[cfg(crashdump)]
-use crate::mem::memory_region::MemoryRegion;
 use crate::sandbox::leaked_outb::LeakedOutBWrapper;
 use crate::Result;
 
@@ -134,7 +134,7 @@ impl<'a> Hypervisor for InprocessDriver<'a> {
     }
 
     #[cfg(crashdump)]
-    fn get_memory_regions(&self) -> &[MemoryRegion] {
-        unimplemented!("get_memory_regions is not supported since we are in in-process mode")
+    fn crashdump_context(&self) -> Result<crashdump::CrashDumpContext> {
+        unimplemented!("crashdump_context is not supported since we are in in-process mode");
     }
 }

@@ -23,6 +23,8 @@ use tracing::{instrument, Span};
 
 #[cfg(gdb)]
 use super::mem_access::dbg_mem_access_handler_wrapper;
+#[cfg(crashdump)]
+use super::uninitialized::SandboxMetadata;
 use crate::hypervisor::hypervisor_handler::{
     HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
 };
@@ -74,6 +76,8 @@ where
             u_sbox.max_guest_log_level,
             #[cfg(gdb)]
             u_sbox.debug_info,
+            #[cfg(crashdump)]
+            u_sbox.metadata,
         )?;
 
         {
@@ -111,6 +115,7 @@ fn hv_init(
     max_wait_for_cancellation: Duration,
     max_guest_log_level: Option<LevelFilter>,
     #[cfg(gdb)] debug_info: Option<DebugInfo>,
+    #[cfg(crashdump)] metadata: SandboxMetadata,
 ) -> Result<HypervisorHandler> {
     let outb_hdl = outb_handler_wrapper(hshm.clone(), host_funcs);
     let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
@@ -149,6 +154,8 @@ fn hv_init(
         gshm,
         #[cfg(gdb)]
         debug_info,
+        #[cfg(crashdump)]
+        metadata,
     )?;
 
     hv_handler
