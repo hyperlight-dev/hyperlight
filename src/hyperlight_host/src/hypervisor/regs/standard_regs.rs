@@ -173,3 +173,48 @@ impl From<&CommonRegisters> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn common_regs() -> CommonRegisters {
+        CommonRegisters {
+            rax: 1,
+            rbx: 2,
+            rcx: 3,
+            rdx: 4,
+            rsi: 5,
+            rdi: 6,
+            rsp: 7,
+            rbp: 8,
+            r8: 9,
+            r9: 10,
+            r10: 11,
+            r11: 12,
+            r12: 13,
+            r13: 14,
+            r14: 15,
+            r15: 16,
+            rip: 17,
+            rflags: 18,
+        }
+    }
+    #[cfg(kvm)]
+    #[test]
+    fn round_trip_kvm_regs() {
+        let original = common_regs();
+        let kvm_regs: kvm_regs = original.into();
+        let converted: CommonRegisters = kvm_regs.into();
+        assert_eq!(original, converted);
+    }
+
+    #[cfg(mshv)]
+    #[test]
+    fn round_trip_mshv_regs() {
+        let original = common_regs();
+        let mshv_regs: StandardRegisters = original.into();
+        let converted: CommonRegisters = mshv_regs.into();
+        assert_eq!(original, converted);
+    }
+}

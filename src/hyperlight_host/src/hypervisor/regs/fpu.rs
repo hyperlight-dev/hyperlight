@@ -192,3 +192,55 @@ impl From<&CommonFpu> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
         regs
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_common_fpu() -> CommonFpu {
+        CommonFpu {
+            fpr: [
+                [1u8; 16], [2u8; 16], [3u8; 16], [4u8; 16], [5u8; 16], [6u8; 16], [7u8; 16],
+                [8u8; 16],
+            ],
+            fcw: 0x1234,
+            fsw: 0x5678,
+            ftwx: 0x9a,
+            pad1: 0xbc,
+            last_opcode: 0xdef0,
+            last_ip: 0xdeadbeefcafebabe,
+            last_dp: 0xabad1deaf00dbabe,
+            xmm: [
+                [8u8; 16], [9u8; 16], [10u8; 16], [11u8; 16], [12u8; 16], [13u8; 16], [14u8; 16],
+                [15u8; 16], [16u8; 16], [17u8; 16], [18u8; 16], [19u8; 16], [20u8; 16], [21u8; 16],
+                [22u8; 16], [23u8; 16],
+            ],
+            mxcsr: 0x1f80,
+            pad2: 0,
+        }
+    }
+
+    #[cfg(kvm)]
+    #[test]
+    fn round_trip_kvm_fpu() {
+        use kvm_bindings::kvm_fpu;
+
+        let original = sample_common_fpu();
+        let kvm: kvm_fpu = original.into();
+        let round_tripped = CommonFpu::from(kvm);
+
+        assert_eq!(original, round_tripped);
+    }
+
+    #[cfg(mshv)]
+    #[test]
+    fn round_trip_mshv_fpu() {
+        use mshv_bindings::FloatingPointUnit;
+
+        let original = sample_common_fpu();
+        let mshv: FloatingPointUnit = original.into();
+        let round_tripped = CommonFpu::from(mshv);
+
+        assert_eq!(original, round_tripped);
+    }
+}

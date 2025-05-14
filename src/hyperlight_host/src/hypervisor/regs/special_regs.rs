@@ -382,3 +382,72 @@ impl From<CommonTableRegister> for WHV_REGISTER_VALUE {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_common_special_registers() -> CommonSpecialRegisters {
+        let sample_segment = CommonSegmentRegister {
+            base: 0x1000,
+            limit: 0xFFFF,
+            selector: 0x10,
+            type_: 0xB,
+            present: 1,
+            dpl: 0,
+            db: 1,
+            s: 1,
+            l: 0,
+            g: 1,
+            avl: 0,
+            unusable: 0,
+            padding: 0,
+        };
+
+        let sample_table = CommonTableRegister {
+            base: 0x2000,
+            limit: 0x1000,
+        };
+
+        CommonSpecialRegisters {
+            cs: sample_segment,
+            ds: sample_segment,
+            es: sample_segment,
+            fs: sample_segment,
+            gs: sample_segment,
+            ss: sample_segment,
+            tr: sample_segment,
+            ldt: sample_segment,
+            gdt: sample_table,
+            idt: sample_table,
+            cr0: 0xDEAD_BEEF,
+            cr2: 0xBAD_C0DE,
+            cr3: 0xC0FFEE,
+            cr4: 0xFACE_CAFE,
+            cr8: 0x1234,
+            efer: 0x5678,
+            apic_base: 0x9ABC,
+            interrupt_bitmap: [0xAAAAAAAAAAAAAAAA; 4],
+        }
+    }
+
+    #[cfg(kvm)]
+    #[test]
+    fn round_trip_kvm_sregs() {
+        let original = sample_common_special_registers();
+        let kvm_sregs: kvm_sregs = original.into();
+        let roundtrip = CommonSpecialRegisters::from(kvm_sregs);
+
+        assert_eq!(original, roundtrip);
+    }
+
+    #[cfg(mshv)]
+    #[test]
+    fn round_trip_mshv_sregs() {
+        let original = sample_common_special_registers();
+        let mshv_sregs: SpecialRegisters = original.into();
+        let roundtrip = CommonSpecialRegisters::from(mshv_sregs);
+
+        assert_eq!(original, roundtrip);
+    }
+}
