@@ -204,22 +204,14 @@ mod tests {
 
         let new_mgr = || {
             let mut exe_info = simple_guest_exe_info().unwrap();
-            let mut mgr = SandboxMemoryManager::load_guest_binary_into_memory(
-                sandbox_cfg,
-                &mut exe_info,
-                false,
-            )
-            .unwrap();
+            let mut mgr =
+                SandboxMemoryManager::load_guest_binary_into_memory(sandbox_cfg, &mut exe_info)
+                    .unwrap();
             let mem_size = mgr.get_shared_mem_mut().mem_size();
             let layout = mgr.layout;
             let shared_mem = mgr.get_shared_mem_mut();
             layout
-                .write(
-                    shared_mem,
-                    SandboxMemoryLayout::BASE_ADDRESS,
-                    mem_size,
-                    false,
-                )
+                .write(shared_mem, SandboxMemoryLayout::BASE_ADDRESS, mem_size)
                 .unwrap();
             let (hmgr, _) = mgr.build();
             hmgr
@@ -324,22 +316,14 @@ mod tests {
         tracing::subscriber::with_default(subscriber.clone(), || {
             let new_mgr = || {
                 let mut exe_info = simple_guest_exe_info().unwrap();
-                let mut mgr = SandboxMemoryManager::load_guest_binary_into_memory(
-                    sandbox_cfg,
-                    &mut exe_info,
-                    false,
-                )
-                .unwrap();
+                let mut mgr =
+                    SandboxMemoryManager::load_guest_binary_into_memory(sandbox_cfg, &mut exe_info)
+                        .unwrap();
                 let mem_size = mgr.get_shared_mem_mut().mem_size();
                 let layout = mgr.layout;
                 let shared_mem = mgr.get_shared_mem_mut();
                 layout
-                    .write(
-                        shared_mem,
-                        SandboxMemoryLayout::BASE_ADDRESS,
-                        mem_size,
-                        false,
-                    )
+                    .write(shared_mem, SandboxMemoryLayout::BASE_ADDRESS, mem_size)
                     .unwrap();
                 let (hmgr, _) = mgr.build();
                 hmgr

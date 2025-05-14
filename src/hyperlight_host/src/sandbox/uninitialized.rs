@@ -38,6 +38,21 @@ use crate::sandbox_state::sandbox::EvolvableSandbox;
 use crate::sandbox_state::transition::Noop;
 use crate::{log_build_details, log_then_return, new_error, MultiUseSandbox, Result};
 
+#[cfg(all(target_os = "linux", feature = "seccomp"))]
+const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
+    // Fuzzing fails without `mmap` being an allowed syscall on our seccomp filter.
+    // All fuzzing does is call `PrintOutput` (which calls `HostPrint` ). Thing is, `println!`
+    // is designed to be thread-safe in Rust and the std lib ensures this by using
+    // buffered I/O, which I think relies on `mmap`. This gets surfaced in fuzzing with an
+    // OOM error, which I think is happening because `println!` is not being able to allocate
+    // more memory for its buffers for the fuzzer's huge inputs.
+    libc::SYS_mmap,
+    libc::SYS_brk,
+    libc::SYS_mprotect,
+    #[cfg(mshv)]
+    libc::SYS_close,
+];
+
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
 ///
 /// Prior to initializing a full-fledged `Sandbox`, you must create one of
@@ -50,7 +65,6 @@ pub struct UninitializedSandbox {
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
     /// The memory manager for the sandbox.
     pub(crate) mgr: MemMgrWrapper<ExclusiveSharedMemory>,
-    pub(crate) run_inprocess: bool,
     pub(crate) max_initialization_time: Duration,
     pub(crate) max_execution_time: Duration,
     pub(crate) max_wait_for_cancellation: Duration,
@@ -120,14 +134,13 @@ impl UninitializedSandbox {
     /// The err attribute is used to emit an error should the Result be an error, it uses the std::`fmt::Debug trait` to print the error.
     #[instrument(
         err(Debug),
-        skip(guest_binary, host_print_writer),
+        skip(guest_binary),
         parent = Span::current()
     )]
     pub fn new(
         guest_binary: GuestBinary,
         cfg: Option<SandboxConfiguration>,
         sandbox_run_options: Option<SandboxRunOptions>,
-        host_print_writer: Option<&dyn HostFunction<i32, (String,)>>,
     ) -> Result<Self> {
         log_build_details();
 
@@ -150,36 +163,24 @@ impl UninitializedSandbox {
             buffer @ GuestBinary::Buffer(_) => buffer,
         };
 
-        let run_opts = sandbox_run_options.unwrap_or_default();
-
-        let run_inprocess = run_opts.in_process();
-
-        if run_inprocess && cfg!(not(inprocess)) {
-            log_then_return!(
-                "Inprocess mode is only available in debug builds, and also requires cargo feature 'inprocess'"
-            )
-        }
-
         let sandbox_cfg = cfg.unwrap_or_default();
 
         #[cfg(gdb)]
         let debug_info = sandbox_cfg.get_guest_debug_info();
         let mut mem_mgr_wrapper = {
-            let mut mgr =
-                UninitializedSandbox::load_guest_binary(sandbox_cfg, &guest_binary, run_inprocess)?;
+            let mut mgr = UninitializedSandbox::load_guest_binary(sandbox_cfg, &guest_binary)?;
             let stack_guard = Self::create_stack_guard();
             mgr.set_stack_guard(&stack_guard)?;
             MemMgrWrapper::new(mgr, stack_guard)
         };
 
-        mem_mgr_wrapper.write_memory_layout(run_inprocess)?;
+        mem_mgr_wrapper.write_memory_layout()?;
 
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
 
         let mut sandbox = Self {
             host_funcs,
             mgr: mem_mgr_wrapper,
-            run_inprocess,
             max_initialization_time: Duration::from_millis(
                 sandbox_cfg.get_max_initialization_time() as u64,
             ),
@@ -192,52 +193,8 @@ impl UninitializedSandbox {
             debug_info,
         };
 
-        // TODO: These only here to accommodate some writer functions.
-        // We should modify the `UninitializedSandbox` to follow the builder pattern we use in
-        // hyperlight-wasm to allow the user to specify what syscalls they need specifically.
-
-        #[cfg(all(target_os = "linux", feature = "seccomp"))]
-        let extra_allowed_syscalls_for_writer_func = vec![
-            // Fuzzing fails without `mmap` being an allowed syscall on our seccomp filter.
-            // All fuzzing does is call `PrintOutput` (which calls `HostPrint` ). Thing is, `println!`
-            // is designed to be thread-safe in Rust and the std lib ensures this by using
-            // buffered I/O, which I think relies on `mmap`. This gets surfaced in fuzzing with an
-            // OOM error, which I think is happening because `println!` is not being able to allocate
-            // more memory for its buffers for the fuzzer's huge inputs.
-            libc::SYS_mmap,
-            libc::SYS_brk,
-            libc::SYS_mprotect,
-            #[cfg(mshv)]
-            libc::SYS_close,
-        ];
-
         // If we were passed a writer for host print register it otherwise use the default.
-        match host_print_writer {
-            Some(writer_func) => {
-                #[cfg(any(target_os = "windows", not(feature = "seccomp")))]
-                writer_func.register(&mut sandbox, "HostPrint")?;
-
-                #[cfg(all(target_os = "linux", feature = "seccomp"))]
-                writer_func.register_with_extra_allowed_syscalls(
-                    &mut sandbox,
-                    "HostPrint",
-                    extra_allowed_syscalls_for_writer_func,
-                )?;
-            }
-            None => {
-                let default_writer = Arc::new(Mutex::new(default_writer_func));
-
-                #[cfg(any(target_os = "windows", not(feature = "seccomp")))]
-                default_writer.register(&mut sandbox, "HostPrint")?;
-
-                #[cfg(all(target_os = "linux", feature = "seccomp"))]
-                default_writer.register_with_extra_allowed_syscalls(
-                    &mut sandbox,
-                    "HostPrint",
-                    extra_allowed_syscalls_for_writer_func,
-                )?;
-            }
-        }
+        sandbox.register_print(default_writer_func)?;
 
         crate::debug!("Sandbox created:  {:#?}", sandbox);
 
@@ -263,14 +220,13 @@ impl UninitializedSandbox {
     pub(super) fn load_guest_binary(
         cfg: SandboxConfiguration,
         guest_binary: &GuestBinary,
-        inprocess: bool,
     ) -> Result<SandboxMemoryManager<ExclusiveSharedMemory>> {
         let mut exe_info = match guest_binary {
             GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(bin_path_str)?,
             GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
         };
 
-        SandboxMemoryManager::load_guest_binary_into_memory(cfg, &mut exe_info, inprocess)
+        SandboxMemoryManager::load_guest_binary_into_memory(cfg, &mut exe_info)
     }
 
     /// Set the max log level to be used by the guest.
@@ -288,7 +244,9 @@ impl UninitializedSandbox {
         host_func.into_host_function().register(self, name.as_ref())
     }
 
-    /// Register the host function with the given name in the sandbox, allowing extra syscalls.
+    /// Register the host function with the given name in the sandbox.
+    /// Unlike `register`, this variant takes a list of extra syscalls that will
+    /// allowed during the execution of the function handler.
     #[cfg(all(feature = "seccomp", target_os = "linux"))]
     pub fn register_with_extra_allowed_syscalls<F, R, Args>(
         &mut self,
@@ -303,6 +261,52 @@ impl UninitializedSandbox {
         host_func
             .into_host_function()
             .register_with_extra_allowed_syscalls(self, name.as_ref(), extra_allowed_syscalls)
+    }
+
+    /// Register a host function named "HostPrint" that will be called by the guest
+    /// when it wants to print to the console.
+    /// The "HostPrint" host function is kind of special, as we expect it to have the
+    /// `FnMut(String) -> i32` signature.
+    pub fn register_print(
+        &mut self,
+        print_func: impl IntoHostFunction<i32, (String,)>,
+    ) -> Result<()> {
+        #[cfg(not(all(target_os = "linux", feature = "seccomp")))]
+        self.register("HostPrint", print_func)?;
+
+        #[cfg(all(target_os = "linux", feature = "seccomp"))]
+        self.register_with_extra_allowed_syscalls(
+            "HostPrint",
+            print_func,
+            EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC.iter().copied(),
+        )?;
+
+        Ok(())
+    }
+
+    /// Register a host function named "HostPrint" that will be called by the guest
+    /// when it wants to print to the console.
+    /// The "HostPrint" host function is kind of special, as we expect it to have the
+    /// `FnMut(String) -> i32` signature.
+    /// Unlike `register_print`, this variant takes a list of extra syscalls that will
+    /// allowed during the execution of the function handler.
+    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    pub fn register_print_with_extra_allowed_syscalls(
+        &mut self,
+        print_func: impl IntoHostFunction<i32, (String,)>,
+        extra_allowed_syscalls: impl IntoIterator<Item = crate::sandbox::ExtraAllowedSyscall>,
+    ) -> Result<()> {
+        #[cfg(all(target_os = "linux", feature = "seccomp"))]
+        self.register_with_extra_allowed_syscalls(
+            "HostPrint",
+            print_func,
+            EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC
+                .iter()
+                .copied()
+                .chain(extra_allowed_syscalls),
+        )?;
+
+        Ok(())
     }
 }
 // Check to see if the current version of Windows is supported
@@ -333,7 +337,8 @@ fn check_windows_version() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
+    use std::sync::mpsc::channel;
+    use std::sync::Arc;
     use std::time::Duration;
     use std::{fs, thread};
 
@@ -354,32 +359,7 @@ mod tests {
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
     use crate::testing::log_values::{test_value_as_str, try_to_strings};
-    use crate::{new_error, MultiUseSandbox, Result, SandboxRunOptions, UninitializedSandbox};
-
-    #[test]
-    fn test_in_process() {
-        let simple_guest_path = simple_guest_as_string().unwrap();
-        let sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_path.clone()),
-            None,
-            Some(SandboxRunOptions::RunInProcess(false)),
-            None,
-        );
-
-        // in process should only be enabled with the inprocess feature and on debug builds
-        assert_eq!(sbox.is_ok(), cfg!(inprocess));
-
-        let simple_guest_path = simple_guest_as_string().unwrap();
-        let sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_path.clone()),
-            None,
-            Some(SandboxRunOptions::RunInProcess(false)),
-            None,
-        );
-
-        // in process should only be enabled with the inprocess feature and on debug builds
-        assert_eq!(sbox.is_ok(), cfg!(all(inprocess)));
-    }
+    use crate::{new_error, MultiUseSandbox, Result, UninitializedSandbox};
 
     #[test]
     fn test_new_sandbox() {
@@ -387,7 +367,7 @@ mod tests {
 
         let binary_path = simple_guest_as_string().unwrap();
         let sandbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(binary_path.clone()), None, None, None);
+            UninitializedSandbox::new(GuestBinary::FilePath(binary_path.clone()), None, None);
         assert!(sandbox.is_ok());
 
         // Guest Binary does not exist at path
@@ -396,7 +376,6 @@ mod tests {
         binary_path_does_not_exist.push_str(".nonexistent");
         let uninitialized_sandbox = UninitializedSandbox::new(
             GuestBinary::FilePath(binary_path_does_not_exist),
-            None,
             None,
             None,
         );
@@ -415,12 +394,11 @@ mod tests {
         };
 
         let uninitialized_sandbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(binary_path.clone()), cfg, None, None);
+            UninitializedSandbox::new(GuestBinary::FilePath(binary_path.clone()), cfg, None);
         assert!(uninitialized_sandbox.is_ok());
 
         let uninitialized_sandbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(binary_path), None, None, None)
-                .unwrap();
+            UninitializedSandbox::new(GuestBinary::FilePath(binary_path), None, None).unwrap();
 
         // Get a Sandbox from an uninitialized sandbox without a call back function
 
@@ -433,7 +411,6 @@ mod tests {
             GuestBinary::Buffer(fs::read(binary_path).unwrap()),
             None,
             None,
-            None,
         );
         assert!(sandbox.is_ok());
 
@@ -442,7 +419,7 @@ mod tests {
         let binary_path = simple_guest_as_string().unwrap();
         let mut bytes = fs::read(binary_path).unwrap();
         let _ = bytes.split_off(100);
-        let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(bytes), None, None, None);
+        let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(bytes), None, None);
         assert!(sandbox.is_err());
     }
 
@@ -452,12 +429,8 @@ mod tests {
 
         let simple_guest_path = simple_guest_as_string().unwrap();
 
-        UninitializedSandbox::load_guest_binary(
-            cfg,
-            &GuestBinary::FilePath(simple_guest_path),
-            false,
-        )
-        .unwrap();
+        UninitializedSandbox::load_guest_binary(cfg, &GuestBinary::FilePath(simple_guest_path))
+            .unwrap();
     }
 
     #[test]
@@ -465,7 +438,6 @@ mod tests {
         let uninitialized_sandbox = || {
             UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
                 None,
                 None,
             )
@@ -576,27 +548,23 @@ mod tests {
         // after the Sandbox instance has been dropped
         // this example is fairly contrived but we should still support such an approach.
 
-        let received_msg = Arc::new(Mutex::new(String::new()));
-        let received_msg_clone = received_msg.clone();
+        let (tx, rx) = channel();
 
         let writer = move |msg| {
-            let mut received_msg = received_msg_clone
-                .try_lock()
-                .map_err(|_| new_error!("Error locking"))
-                .unwrap();
-            *received_msg = msg;
+            let _ = tx.send(msg);
             Ok(0)
         };
 
-        let hostfunc = Arc::new(Mutex::new(writer));
-
-        let sandbox = UninitializedSandbox::new(
+        let mut sandbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
             None,
             None,
-            Some(&hostfunc),
         )
         .expect("Failed to create sandbox");
+
+        sandbox
+            .register_print(writer)
+            .expect("Failed to register host print function");
 
         let host_funcs = sandbox
             .host_funcs
@@ -609,14 +577,8 @@ mod tests {
 
         drop(sandbox);
 
-        assert_eq!(
-            received_msg
-                .try_lock()
-                .map_err(|_| new_error!("Error locking"))
-                .unwrap()
-                .as_str(),
-            "test"
-        );
+        let received_msgs: Vec<_> = rx.into_iter().collect();
+        assert_eq!(received_msgs, ["test"]);
 
         // There may be cases where a mutable reference to the captured variable is not required to be used outside the closure
         // e.g. if the function is writing to a file or a socket etc.
@@ -683,14 +645,16 @@ mod tests {
             Ok(0)
         }
 
-        let writer_func = Arc::new(Mutex::new(fn_writer));
-        let sandbox = UninitializedSandbox::new(
+        let mut sandbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
             None,
             None,
-            Some(&writer_func),
         )
         .expect("Failed to create sandbox");
+
+        sandbox
+            .register_print(fn_writer)
+            .expect("Failed to register host print function");
 
         let host_funcs = sandbox
             .host_funcs
@@ -709,15 +673,16 @@ mod tests {
 
         let writer_closure = move |s| test_host_print.write(s);
 
-        let writer_method = Arc::new(Mutex::new(writer_closure));
-
-        let sandbox = UninitializedSandbox::new(
+        let mut sandbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
             None,
             None,
-            Some(&writer_method),
         )
         .expect("Failed to create sandbox");
+
+        sandbox
+            .register_print(writer_closure)
+            .expect("Failed to register host print function");
 
         let host_funcs = sandbox
             .host_funcs
@@ -752,13 +717,8 @@ mod tests {
             let unintializedsandbox = {
                 let err_string = format!("failed to create UninitializedSandbox {i}");
                 let err_str = err_string.as_str();
-                UninitializedSandbox::new(
-                    GuestBinary::FilePath(simple_guest_path),
-                    None,
-                    None,
-                    None,
-                )
-                .expect(err_str)
+                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None, None)
+                    .expect(err_str)
             };
 
             {
@@ -880,8 +840,7 @@ mod tests {
             let mut binary_path = simple_guest_as_string().unwrap();
             binary_path.push_str("does_not_exist");
 
-            let sbox =
-                UninitializedSandbox::new(GuestBinary::FilePath(binary_path), None, None, None);
+            let sbox = UninitializedSandbox::new(GuestBinary::FilePath(binary_path), None, None);
             assert!(sbox.is_err());
 
             // Now we should still be in span 1 but span 2 should be created (we created entered and exited span 2 when we called UninitializedSandbox::new)
@@ -956,12 +915,8 @@ mod tests {
             let mut invalid_binary_path = simple_guest_as_string().unwrap();
             invalid_binary_path.push_str("does_not_exist");
 
-            let sbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(invalid_binary_path),
-                None,
-                None,
-                None,
-            );
+            let sbox =
+                UninitializedSandbox::new(GuestBinary::FilePath(invalid_binary_path), None, None);
             assert!(sbox.is_err());
 
             // When tracing is creating log records it will create a log
@@ -1032,7 +987,6 @@ mod tests {
                 GuestBinary::FilePath(valid_binary_path.into_os_string().into_string().unwrap()),
                 None,
                 None,
-                None,
             );
             assert!(sbox.is_err());
 
@@ -1067,7 +1021,6 @@ mod tests {
                     GuestBinary::FilePath(simple_guest_as_string().unwrap()),
                     None,
                     None,
-                    None,
                 );
                 res.unwrap()
             };
@@ -1082,12 +1035,8 @@ mod tests {
     #[test]
     fn test_invalid_path() {
         let invalid_path = "some/path/that/does/not/exist";
-        let sbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(invalid_path.to_string()),
-            None,
-            None,
-            None,
-        );
+        let sbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(invalid_path.to_string()), None, None);
         println!("{:?}", sbox);
         #[cfg(target_os = "windows")]
         assert!(

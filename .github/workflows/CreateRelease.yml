@@ -166,7 +166,6 @@ jobs:
             benchmarks_Linux_mshv3_amd.tar.gz \
             benchmarks_Linux_mshv3_intel.tar.gz \
             hyperlight-guest-c-api-linux.tar.gz \
-            hyperlight-guest-c-api-windows.tar.gz \
             include.tar.gz
         env:
             GH_TOKEN: ${{ github.token }}
@@ -185,7 +184,6 @@ jobs:
             benchmarks_Linux_mshv3_amd.tar.gz \
             benchmarks_Linux_mshv3_intel.tar.gz \
             hyperlight-guest-c-api-linux.tar.gz \
-            hyperlight-guest-c-api-windows.tar.gz \
             include.tar.gz
         env:
             GH_TOKEN: ${{ github.token }}

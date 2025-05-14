@@ -35,7 +35,6 @@ use super::regs::{
     CommonFpu, CommonRegisters, FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT,
 };
 use super::vm::Vm;
-use super::wrappers::HandleWrapper;
 use super::{
     HyperlightExit, HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
     CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
@@ -45,6 +44,8 @@ use crate::hypervisor::crashdump;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::hyperv_windows::WhpVm;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
@@ -328,7 +329,7 @@ impl HyperlightSandbox {
         entrypoint: u64,
         rsp: u64,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-        handle: HandleWrapper,
+        #[cfg(target_os = "windows")] handle: HandleWrapper,
     ) -> Result<Self> {
         #[allow(unused_mut)] // needs to be mutable when gdb is enabled
         let mut vm: Box<dyn Vm> = match hv {

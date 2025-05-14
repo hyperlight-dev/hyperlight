@@ -27,9 +27,7 @@ use tracing::{instrument, Span};
 use windows::core::PCSTR;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-#[cfg(all(target_os = "windows", inprocess))]
-use windows::Win32::System::Memory::FILE_MAP_EXECUTE;
-#[cfg(all(target_os = "windows", not(inprocess)))]
+#[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::PAGE_READWRITE;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
@@ -428,10 +426,7 @@ impl ExclusiveSharedMemory {
         // Allocate the memory use CreateFileMapping instead of VirtualAlloc
         // This allows us to map the memory into the surrogate process using MapViewOfFile2
 
-        #[cfg(not(inprocess))]
         let flags = PAGE_READWRITE;
-        #[cfg(inprocess)]
-        let flags = PAGE_EXECUTE_READWRITE;
 
         let handle = unsafe {
             CreateFileMappingA(
@@ -450,11 +445,7 @@ impl ExclusiveSharedMemory {
             ));
         }
 
-        #[cfg(not(inprocess))]
         let file_map = FILE_MAP_ALL_ACCESS;
-        #[cfg(inprocess)]
-        let file_map = FILE_MAP_ALL_ACCESS | FILE_MAP_EXECUTE;
-
         let addr = unsafe { MapViewOfFile(handle, file_map, 0, 0, 0) };
 
         if addr.Value.is_null() {

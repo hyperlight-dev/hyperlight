@@ -92,9 +92,6 @@ fn main() -> Result<()> {
         gdb: { all(feature = "gdb", debug_assertions, any(feature = "kvm", feature = "mshv2", feature = "mshv3"), target_os = "linux") },
         kvm: { all(feature = "kvm", target_os = "linux") },
         mshv: { all(any(feature = "mshv2", feature = "mshv3"), target_os = "linux") },
-        // inprocess feature is aliased with debug_assertions to make it only available in debug-builds.
-        // You should never use #[cfg(feature = "inprocess")] in the codebase. Use #[cfg(inprocess)] instead.
-        inprocess: { all(feature = "inprocess", debug_assertions) },
         // crashdump feature is aliased with debug_assertions to make it only available in debug-builds.
         crashdump: { all(feature = "crashdump", debug_assertions) },
         // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.

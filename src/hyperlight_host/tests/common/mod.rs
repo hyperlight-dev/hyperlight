@@ -13,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
 use hyperlight_host::func::HostFunction;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -31,7 +30,6 @@ pub fn new_uninit() -> Result<UninitializedSandbox> {
         GuestBinary::FilePath(get_c_or_rust_simpleguest_path()),
         None,
         None,
-        None,
     )
 }
 
@@ -39,7 +37,6 @@ pub fn new_uninit() -> Result<UninitializedSandbox> {
 pub fn new_uninit_rust() -> Result<UninitializedSandbox> {
     UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        None,
         None,
         None,
     )
@@ -50,24 +47,20 @@ pub fn get_simpleguest_sandboxes(
 ) -> Vec<MultiUseSandbox> {
     let elf_path = get_c_or_rust_simpleguest_path();
 
-    vec![
+    let sandboxes = [
         // in hypervisor elf
-        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None, None, writer)
-            .unwrap()
-            .evolve(Noop::default())
-            .unwrap(),
-        // in-process elf
-        #[cfg(inprocess)]
-        UninitializedSandbox::new(
-            GuestBinary::FilePath(elf_path.clone()),
-            None,
-            Some(hyperlight_host::SandboxRunOptions::RunInProcess(false)),
-            writer,
-        )
-        .unwrap()
-        .evolve(Noop::default())
-        .unwrap(),
-    ]
+        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None, None).unwrap(),
+    ];
+
+    sandboxes
+        .into_iter()
+        .map(|mut sandbox| {
+            if let Some(writer) = writer {
+                sandbox.register_print(writer).unwrap();
+            }
+            sandbox.evolve(Noop::default()).unwrap()
+        })
+        .collect()
 }
 
 pub fn get_callbackguest_uninit_sandboxes(
@@ -75,20 +68,20 @@ pub fn get_callbackguest_uninit_sandboxes(
 ) -> Vec<UninitializedSandbox> {
     let elf_path = get_c_or_rust_callbackguest_path();
 
-    vec![
+    let sandboxes = [
         // in hypervisor elf
-        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None, None, writer)
-            .unwrap(),
-        // in-process elf
-        #[cfg(inprocess)]
-        UninitializedSandbox::new(
-            GuestBinary::FilePath(elf_path.clone()),
-            None,
-            Some(hyperlight_host::SandboxRunOptions::RunInProcess(false)),
-            writer,
-        )
-        .unwrap(),
-    ]
+        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None, None).unwrap(),
+    ];
+
+    sandboxes
+        .into_iter()
+        .map(|mut sandbox| {
+            if let Some(writer) = writer {
+                sandbox.register_print(writer).unwrap();
+            }
+            sandbox
+        })
+        .collect()
 }
 
 // returns the the path of simpleguest binary. Picks rust/c version depending on environment variable GUEST (or rust by default if unset)

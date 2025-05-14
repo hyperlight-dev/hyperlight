@@ -35,9 +35,6 @@ mod vm;
 #[cfg(gdb)]
 mod gdb;
 
-/// Driver for running in process instead of using hypervisor
-#[cfg(inprocess)]
-pub mod inprocess;
 #[cfg(kvm)]
 /// Functionality to manipulate KVM-based virtual machines
 pub mod kvm;
@@ -247,7 +244,7 @@ pub(crate) mod tests {
         }
 
         let sandbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None, None, None)?;
+            UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None, None)?;
         let (hshm, gshm) = sandbox.mgr.build();
         drop(hshm);
 

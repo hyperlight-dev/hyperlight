@@ -155,7 +155,6 @@ mod tests {
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 None,
                 None,
-                None,
             )
             .unwrap();
 
@@ -189,7 +188,6 @@ mod tests {
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 None,
                 None,
-                None,
             )
             .unwrap();
 
@@ -219,7 +217,6 @@ mod tests {
         let uninitialized_sandbox = || {
             UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
                 None,
                 None,
             )
@@ -337,8 +334,6 @@ mod tests {
             None,
             // by default, the below represents in-hypervisor mode
             None,
-            // just use the built-in host print function
-            None,
         )
         .unwrap();
         test_call_guest_function_by_name(u_sbox);
@@ -347,19 +342,6 @@ mod tests {
     #[test]
     fn test_call_guest_function_by_name_hv() {
         call_guest_function_by_name_hv();
-    }
-
-    #[test]
-    #[cfg(inprocess)]
-    fn test_call_guest_function_by_name_in_proc_manual() {
-        let u_sbox = UninitializedSandbox::new(
-            guest_bin(),
-            None,
-            Some(crate::SandboxRunOptions::RunInProcess(false)),
-            None,
-        )
-        .unwrap();
-        test_call_guest_function_by_name(u_sbox);
     }
 
     fn terminate_vcpu_after_1000ms() -> Result<()> {
@@ -371,7 +353,6 @@ mod tests {
         }
         let usbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
             None,
             None,
         )?;
@@ -422,7 +403,6 @@ mod tests {
             GuestBinary::FilePath(callback_guest_as_string().expect("Guest Binary Missing")),
             None,
             None,
-            None,
         )
         .unwrap();
 
@@ -456,11 +436,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(inprocess))]
     fn test_trigger_exception_on_guest() {
         let usbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
             None,
             None,
         )

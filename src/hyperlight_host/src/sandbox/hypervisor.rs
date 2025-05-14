@@ -19,6 +19,7 @@ use std::sync::OnceLock;
 
 #[cfg(mshv)]
 use crate::hypervisor::hyperv_linux;
+#[cfg(target_os = "windows")]
 use crate::hypervisor::hyperv_windows;
 #[cfg(kvm)]
 use crate::hypervisor::kvm;

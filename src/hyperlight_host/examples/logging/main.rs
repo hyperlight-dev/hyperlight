@@ -13,9 +13,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
+#![allow(clippy::disallowed_macros)]
 extern crate hyperlight_host;
-use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
@@ -41,15 +40,10 @@ fn main() -> Result<()> {
 
     for _ in 0..20 {
         let path = hyperlight_guest_path.clone();
-        let writer_func = Arc::new(Mutex::new(fn_writer));
         let res: Result<()> = {
             // Create a new sandbox.
-            let usandbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(path),
-                None,
-                None,
-                Some(&writer_func),
-            )?;
+            let mut usandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None, None)?;
+            usandbox.register_print(fn_writer)?;
 
             // Initialize the sandbox.
 
@@ -89,7 +83,6 @@ fn main() -> Result<()> {
     // Create a new sandbox.
     let usandbox = UninitializedSandbox::new(
         GuestBinary::FilePath(hyperlight_guest_path.clone()),
-        None,
         None,
         None,
     )?;

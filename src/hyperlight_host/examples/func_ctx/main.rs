@@ -27,8 +27,7 @@ fn main() {
     // test guest binary
     let sbox1: MultiUseSandbox = {
         let path = simple_guest_as_string().unwrap();
-        let u_sbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(path), None, None, None).unwrap();
+        let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None, None).unwrap();
         u_sbox.evolve(Noop::default())
     }
     .unwrap();

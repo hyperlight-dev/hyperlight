@@ -158,7 +158,7 @@ impl Vm for MshvVm {
         Ok(())
     }
 
-    unsafe fn map_memory(&self, regions: &[MemoryRegion]) -> Result<()> {
+    unsafe fn map_memory(&mut self, regions: &[MemoryRegion]) -> Result<()> {
         if regions.is_empty() {
             return Err(new_error!("No memory regions to map"));
         }
@@ -466,7 +466,7 @@ mod tests {
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
             crate::mem::memory_region::MemoryRegionType::Code,
         );
-        let mshv_vm = super::MshvVm::new().unwrap();
+        let mut mshv_vm = super::MshvVm::new().unwrap();
         unsafe {
             mshv_vm.map_memory(&regions.build()).unwrap();
         }

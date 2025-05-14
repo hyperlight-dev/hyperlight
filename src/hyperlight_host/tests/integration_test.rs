@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
+#![allow(clippy::disallowed_macros)]
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
@@ -32,7 +32,7 @@ use crate::common::{new_uninit, new_uninit_rust};
 fn print_four_args_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
-    let uninit = UninitializedSandbox::new(guest_path, None, None, None);
+    let uninit = UninitializedSandbox::new(guest_path, None, None);
     let mut sbox1 = uninit.unwrap().evolve(Noop::default()).unwrap();
 
     let res = sbox1.call_guest_function_by_name(
@@ -146,7 +146,7 @@ fn guest_abort_with_context2() {
 fn guest_abort_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
-    let uninit = UninitializedSandbox::new(guest_path, None, None, None);
+    let uninit = UninitializedSandbox::new(guest_path, None, None);
     let mut sbox1 = uninit.unwrap().evolve(Noop::default()).unwrap();
 
     let res = sbox1
@@ -248,7 +248,6 @@ fn guest_malloc_abort() {
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
         Some(cfg),
         None,
-        None,
     )
     .unwrap();
     let mut sbox2 = uninit.evolve(Noop::default()).unwrap();
@@ -271,7 +270,7 @@ fn guest_malloc_abort() {
 fn dynamic_stack_allocate_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
-    let uninit = UninitializedSandbox::new(guest_path, None, None, None);
+    let uninit = UninitializedSandbox::new(guest_path, None, None);
     let mut sbox1: MultiUseSandbox = uninit.unwrap().evolve(Noop::default()).unwrap();
 
     let res2 = sbox1
@@ -388,27 +387,11 @@ fn execute_on_stack() {
         .call_guest_function_by_name("ExecuteOnStack", ReturnType::String, Some(vec![]))
         .unwrap_err();
 
-    #[cfg(inprocess)]
-    if let HyperlightError::Error(message) = result {
-        cfg_if::cfg_if! {
-            if #[cfg(target_os = "linux")] {
-                assert!(message.starts_with("Unexpected VM Exit") || message.starts_with("unknown Hyper-V run message type"));
-            } else if #[cfg(target_os = "windows")] {
-                assert!(message.starts_with("Unexpected VM Exit \"Did not receive a halt from Hypervisor as expected - Received WHV_RUN_VP_EXIT_REASON(4)"));
-            } else {
-                panic!("Unexpected");
-            }
-        }
-    }
-
-    #[cfg(not(inprocess))]
-    {
-        let err = result.to_string();
-        assert!(
-            // exception that indicates a page fault
-            err.contains("PageFault")
-        );
-    }
+    let err = result.to_string();
+    assert!(
+        // exception that indicates a page fault
+        err.contains("PageFault")
+    );
 }
 
 #[test]

@@ -43,9 +43,7 @@ jobs:
       - name: Copy Guest Binaries
         run: |
           cp ./downloaded-guest-binaries-release/callbackguest ./src/tests/rust_guests/bin/release/callbackguest
-          cp ./downloaded-guest-binaries-release/callbackguest.exe ./src/tests/rust_guests/bin/release/callbackguest.exe
           cp ./downloaded-guest-binaries-release/simpleguest ./src/tests/rust_guests/bin/release/simpleguest
-          cp ./downloaded-guest-binaries-release/simpleguest.exe ./src/tests/rust_guests/bin/release/simpleguest.exe
           cp ./downloaded-guest-binaries-release/dummyguest ./src/tests/rust_guests/bin/release/dummyguest
 
       ### Benchmarks ###

@@ -28,7 +28,7 @@ use super::mgr::AMOUNT_OF_MEMORY_PER_PT;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory};
 use crate::error::HyperlightError::{GuestOffsetIsInvalid, MemoryRequestTooBig};
 use crate::sandbox::SandboxConfiguration;
-use crate::{log_then_return, new_error, Result};
+use crate::{new_error, Result};
 
 // +-------------------------------------------+
 // |             Guest (User) Stack            |
@@ -660,17 +660,10 @@ impl SandboxMemoryLayout {
         shared_mem: &mut ExclusiveSharedMemory,
         guest_offset: usize,
         size: usize,
-        run_inprocess: bool,
     ) -> Result<()> {
         macro_rules! get_address {
             ($something:ident) => {
-                if run_inprocess {
-                    let offset = self.$something;
-                    let calculated_addr = shared_mem.calculate_address(offset)?;
-                    u64::try_from(calculated_addr)?
-                } else {
-                    u64::try_from(guest_offset + self.$something)?
-                }
+                u64::try_from(guest_offset + self.$something)?
             };
         }
 
@@ -693,19 +686,7 @@ impl SandboxMemoryLayout {
         // skip outb and outb context, is set when running in_proc
 
         // Set RunMode in PEB
-        shared_mem.write_u64(
-            self.get_run_mode_offset(),
-            match (
-                run_inprocess,
-                cfg!(target_os = "windows"),
-                cfg!(target_os = "linux"),
-            ) {
-                (false, _, _) => RunMode::Hypervisor as u64,
-                (true, true, _) => RunMode::InProcessWindows as u64,
-                (true, _, true) => RunMode::InProcessLinux as u64,
-                (true, _, _) => log_then_return!("Unsupported OS for in-process mode"),
-            },
-        )?;
+        shared_mem.write_u64(self.get_run_mode_offset(), RunMode::Hypervisor as u64)?;
 
         // Set up input buffer pointer
         shared_mem.write_u64(

@@ -239,8 +239,6 @@ impl HypervisorHandler {
         #[cfg(gdb)] debug_info: Option<DebugInfo>,
     ) -> Result<()> {
         let configuration = self.configuration.clone();
-        #[cfg(target_os = "windows")]
-        let in_process = sandbox_memory_manager.is_in_process();
 
         *self
             .execution_variables
@@ -308,11 +306,7 @@ impl HypervisorHandler {
                                 let hv = hv.as_mut().ok_or_else(|| new_error!("Hypervisor not set"))?;
 
                                 #[cfg(target_os = "windows")]
-                                if !in_process {
-                                    execution_variables
-                                        .set_partition_handle(hv.get_partition_handle())?;
-                                }
-
+                                execution_variables.set_partition_handle(hv.get_partition_handle())?;
                                 #[cfg(target_os = "linux")]
                                 {
                                     // We cannot use the Killable trait, so we get the `pthread_t` via a libc
@@ -866,74 +860,47 @@ fn set_up_hypervisor_partition(
             pml4_ptr
         );
     }
-    if mgr.is_in_process() {
-        cfg_if::cfg_if! {
-            if #[cfg(inprocess)] {
-                // in-process feature + debug build
-                use super::inprocess::InprocessArgs;
-                use crate::sandbox::leaked_outb::LeakedOutBWrapper;
-                use super::inprocess::InprocessDriver;
 
-                let leaked_outb_wrapper = LeakedOutBWrapper::new(mgr, outb_handler)?;
-                let hv = InprocessDriver::new(InprocessArgs {
-                    entrypoint_raw: u64::from(mgr.load_addr.clone() + mgr.entrypoint_offset),
-                    peb_ptr_raw: mgr
-                        .get_in_process_peb_address(mgr.shared_mem.base_addr() as u64)?,
-                    leaked_outb_wrapper,
-                })?;
-                Ok(Box::new(hv))
-            } else if #[cfg(inprocess)]{
-                // in-process feature, but not debug build
-                log_then_return!("In-process mode is only available on debug-builds");
-            } else if #[cfg(debug_assertions)] {
-                // debug build without in-process feature
-                log_then_return!("In-process mode requires `inprocess` cargo feature");
-            } else {
-                log_then_return!("In-process mode requires `inprocess` cargo feature and is only available on debug-builds");
+    // Create gdb thread if gdb is enabled and the configuration is provided
+    // This is only done when the hypervisor is not in-process
+    #[cfg(gdb)]
+    let gdb_conn = if let Some(DebugInfo { port }) = debug_info {
+        let gdb_conn = create_gdb_thread(*port, unsafe { pthread_self() });
+
+        // in case the gdb thread creation fails, we still want to continue
+        // without gdb
+        match gdb_conn {
+            Ok(gdb_conn) => Some(gdb_conn),
+            Err(e) => {
+                log::error!("Could not create gdb connection: {:#}", e);
+
+                None
             }
         }
     } else {
-        // Create gdb thread if gdb is enabled and the configuration is provided
-        // This is only done when the hypervisor is not in-process
-        #[cfg(gdb)]
-        let gdb_conn = if let Some(DebugInfo { port }) = debug_info {
-            let gdb_conn = create_gdb_thread(*port, unsafe { pthread_self() });
+        None
+    };
 
-            // in case the gdb thread creation fails, we still want to continue
-            // without gdb
-            match gdb_conn {
-                Ok(gdb_conn) => Some(gdb_conn),
-                Err(e) => {
-                    log::error!("Could not create gdb connection: {:#}", e);
-
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        match get_available_hypervisor() {
-            Some(hv_type) => {
-                let hv = HyperlightSandbox::new(
-                    hv_type,
-                    regions,
-                    pml4_ptr.absolute()?,
-                    entrypoint_ptr.absolute()?,
-                    rsp_ptr.absolute()?,
-                    #[cfg(gdb)]
-                    gdb_conn,
-                    HandleWrapper::from(
-                        mgr.shared_mem
-                            .with_exclusivity(|e| e.get_mmap_file_handle())?,
-                    ),
-                )?;
-                Ok(Box::new(hv))
-            }
-
-            _ => {
-                log_then_return!(NoHypervisorFound());
-            }
+    match get_available_hypervisor() {
+        Some(hv_type) => {
+            let hv = HyperlightSandbox::new(
+                hv_type,
+                regions,
+                pml4_ptr.absolute()?,
+                entrypoint_ptr.absolute()?,
+                rsp_ptr.absolute()?,
+                #[cfg(gdb)]
+                gdb_conn,
+                #[cfg(target_os = "windows")]
+                HandleWrapper::from(
+                    mgr.shared_mem
+                        .with_exclusivity(|e| e.get_mmap_file_handle())?,
+                ),
+            )?;
+            Ok(Box::new(hv))
+        }
+        None => {
+            log_then_return!(NoHypervisorFound());
         }
     }
 }
@@ -982,7 +949,6 @@ mod tests {
             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
             cfg,
             None,
-            None,
         )
         .unwrap();
 
@@ -1002,7 +968,7 @@ mod tests {
             let handle = thread::spawn(move || {
                 c.wait();
 
-                for _ in 0..500 {
+                for _ in 0..50 {
                     create_multi_use_sandbox();
                 }
             });

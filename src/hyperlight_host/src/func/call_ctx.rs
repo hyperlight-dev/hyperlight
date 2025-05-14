@@ -117,7 +117,7 @@ mod tests {
         let path = simple_guest_as_string().map_err(|e| {
             HyperlightError::Error(format!("failed to get simple guest path ({e:?})"))
         })?;
-        UninitializedSandbox::new(GuestBinary::FilePath(path), None, None, None)
+        UninitializedSandbox::new(GuestBinary::FilePath(path), None, None)
     }
 
     /// Test to create a `MultiUseSandbox`, then call several guest functions

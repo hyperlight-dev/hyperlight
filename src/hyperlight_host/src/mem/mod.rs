@@ -14,9 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-/// Reusable structure to hold data and provide a `Drop` implementation
-#[cfg(inprocess)]
-pub(crate) mod custom_drop;
 /// A simple ELF loader
 pub(crate) mod elf;
 /// A generic wrapper for executable files (PE, ELF, etc)

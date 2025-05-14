@@ -61,12 +61,6 @@ pub trait UninitializedSandbox: Sandbox {
 
     /// Retrieves mutable reference to strongly typed `UninitializedSandbox`
     fn get_uninitialized_sandbox_mut(&mut self) -> &mut crate::sandbox::UninitializedSandbox;
-
-    /// Returns `true` if the Sandbox is configured to run in process otherwise `false`
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn is_running_in_process(&self) -> bool {
-        self.get_uninitialized_sandbox().run_inprocess
-    }
 }
 
 /// A `Sandbox` that knows how to "evolve" into a next state.

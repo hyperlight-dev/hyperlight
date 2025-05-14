@@ -44,7 +44,6 @@ fn main() -> hyperlight_host::Result<()> {
         hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_string().unwrap()),
         None, // default configuration
         None, // default run options
-        None, // default host print function
     )?;
 
     // Registering a host function makes it available to be called by the guest
@@ -255,6 +254,7 @@ Hyperlight.
 
 > Note: For general Hyperlight development, you may also need flatc (Flatbuffer compiler): for instructions,
 > see [here](https://github.com/google/flatbuffers).
+> Copyright © contributors to Hyperlight, established as Hyperlight a Series of LF Projects, LLC.
 
 ## Join our Community Meetings
 

@@ -111,7 +111,6 @@ mod tests {
                 GuestBinary::FilePath(simple_guest_as_string().unwrap()),
                 None,
                 None,
-                None,
             )
             .unwrap();
 

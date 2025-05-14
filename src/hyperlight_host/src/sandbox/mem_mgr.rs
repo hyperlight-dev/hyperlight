@@ -79,17 +79,12 @@ impl MemMgrWrapper<ExclusiveSharedMemory> {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn write_memory_layout(&mut self, run_inprocess: bool) -> Result<()> {
+    pub(super) fn write_memory_layout(&mut self) -> Result<()> {
         let mgr = self.unwrap_mgr_mut();
         let layout = mgr.layout;
         let shared_mem = mgr.get_shared_mem_mut();
         let mem_size = shared_mem.mem_size();
-        let guest_offset = if run_inprocess {
-            shared_mem.base_addr()
-        } else {
-            SandboxMemoryLayout::BASE_ADDRESS
-        };
-        layout.write(shared_mem, guest_offset, mem_size, run_inprocess)
+        layout.write(shared_mem, SandboxMemoryLayout::BASE_ADDRESS, mem_size)
     }
 }
 

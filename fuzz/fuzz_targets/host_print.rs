@@ -22,7 +22,6 @@ fuzz_target!(
             GuestBinary::FilePath(simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing")),
             None,
             None,
-            None,
         )
         .unwrap();
 

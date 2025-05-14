@@ -46,8 +46,6 @@ jobs:
           name: guest-binaries-${{ matrix.config }}
           path: |
             src\tests\rust_guests\bin\${{ matrix.config }}\callbackguest
-            src\tests\rust_guests\bin\${{ matrix.config }}\callbackguest.exe
             src\tests\rust_guests\bin\${{ matrix.config }}\dummyguest
             src\tests\rust_guests\bin\${{ matrix.config }}\simpleguest
-            src\tests\rust_guests\bin\${{ matrix.config }}\simpleguest.exe
           if-no-files-found: error

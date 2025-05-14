@@ -16,31 +16,26 @@ limitations under the License.
 
 use std::os::raw::c_void;
 
-use crate::hypervisor::regs::CommonFpu;
-use crate::hypervisor::surrogate_process::SurrogateProcess;
-use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
-use crate::hypervisor::vm::Vm;
-use crate::mem::memory_region::MemoryRegionFlags;
-use crate::new_error;
-
-use super::{
-    HyperlightExit, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
-    CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
-};
-
-#[cfg(gdb)]
-use super::handlers::DbgMemAccessHandlerWrapper;
-use super::wrappers::HandleWrapper;
-use crate::hypervisor::regs::CommonRegisters;
-use crate::hypervisor::regs::CommonSpecialRegisters;
-use crate::mem::memory_region::MemoryRegion;
-use crate::Result;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use windows::core::s;
 use windows::Win32::Foundation::{FreeLibrary, HANDLE};
 use windows::Win32::System::Hypervisor::*;
 use windows::Win32::System::LibraryLoader::*;
 use windows_result::HRESULT;
+
+#[cfg(gdb)]
+use super::handlers::DbgMemAccessHandlerWrapper;
+use super::wrappers::HandleWrapper;
+use super::{
+    HyperlightExit, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
+    CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+};
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::surrogate_process::SurrogateProcess;
+use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
+use crate::hypervisor::vm::Vm;
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::{new_error, Result};
 
 pub(crate) fn is_hypervisor_present() -> bool {
     let mut capability: WHV_CAPABILITY = Default::default();

@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
+#![allow(clippy::disallowed_macros)]
 use core::f64;
 use std::sync::{Arc, Mutex};
 
@@ -393,7 +393,6 @@ fn max_memory_sandbox() {
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
         Some(cfg),
         None,
-        None,
     );
 
     assert!(matches!(
@@ -461,18 +460,7 @@ fn simple_test_helper() -> Result<()> {
         assert!(matches!(res3, Ok(ReturnValue::VecBytes(v)) if v == buffer));
     }
 
-    let expected_calls = {
-        if cfg!(all(target_os = "windows", inprocess)) {
-            // windows debug build
-            2
-        } else if cfg!(inprocess) {
-            // linux debug build
-            2
-        } else {
-            // {windows,linux} release build
-            1
-        }
-    };
+    let expected_calls = 1;
 
     assert_eq!(
         messages

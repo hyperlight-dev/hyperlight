@@ -90,6 +90,39 @@ macro_rules! impl_host_function {
                 }
             }
 
+            impl<R $(, $P)*> HostFunction<R, ($($P,)*)> for &dyn HostFunction<R, ($($P,)*)>
+            where
+                $($P: SupportedParameterType + Clone,)*
+                R: SupportedReturnType,
+            {
+                /// Register the host function with the given name in the sandbox.
+                #[instrument(
+                    err(Debug), skip(self, sandbox), parent = Span::current(), level = "Trace"
+                )]
+                fn register(
+                    &self,
+                    sandbox: &mut UninitializedSandbox,
+                    name: &str,
+                ) -> Result<()> {
+                    (**self).register(sandbox, name)
+                }
+
+                /// Register the host function with the given name in the sandbox, allowing extra syscalls.
+                #[cfg(all(feature = "seccomp", target_os = "linux"))]
+                #[instrument(
+                    err(Debug), skip(self, sandbox, extra_allowed_syscalls),
+                    parent = Span::current(), level = "Trace"
+                )]
+                fn register_with_extra_allowed_syscalls(
+                    &self,
+                    sandbox: &mut UninitializedSandbox,
+                    name: &str,
+                    extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
+                ) -> Result<()> {
+                    (**self).register_with_extra_allowed_syscalls(sandbox, name, extra_allowed_syscalls)
+                }
+            }
+
             impl<R $(, $P)*, F> IntoHostFunction<R, ($($P,)*)> for F
             where
                 F: FnMut($($P),*) -> Result<R> + Send + 'static,
@@ -123,6 +156,18 @@ macro_rules! impl_host_function {
 
                 fn into_host_function(self) -> Self::Output {
                     self.clone()
+                }
+            }
+
+            impl<R $(, $P)*> IntoHostFunction<R, ($($P,)*)> for &dyn HostFunction<R, ($($P,)*)>
+            where
+                R: SupportedReturnType,
+                $($P: SupportedParameterType + Clone,)*
+            {
+                type Output = Self;
+
+                fn into_host_function(self) -> Self::Output {
+                    self
                 }
             }
 

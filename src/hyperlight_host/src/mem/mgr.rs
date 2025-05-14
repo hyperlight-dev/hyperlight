@@ -62,8 +62,6 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) shared_mem: S,
     /// The memory layout of the underlying shared memory
     pub(crate) layout: SandboxMemoryLayout,
-    /// Whether the sandbox is running in-process
-    inprocess: bool,
     /// Pointer to where to load memory from
     pub(crate) load_addr: RawPtr,
     /// Offset for the execution entrypoint from `load_addr`
@@ -82,23 +80,16 @@ where
     fn new(
         layout: SandboxMemoryLayout,
         shared_mem: S,
-        inprocess: bool,
         load_addr: RawPtr,
         entrypoint_offset: Offset,
     ) -> Self {
         Self {
             layout,
             shared_mem,
-            inprocess,
             load_addr,
             entrypoint_offset,
             snapshots: Arc::new(Mutex::new(Vec::new())),
         }
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn is_in_process(&self) -> bool {
-        self.inprocess
     }
 
     /// Get `SharedMemory` in `self` as a mutable reference
@@ -226,19 +217,6 @@ where
         }
     }
 
-    /// Get the process environment block (PEB) address assuming `start_addr`
-    /// is the address of the start of memory, using the given
-    /// `SandboxMemoryLayout` to calculate the address.
-    ///
-    /// For more details on PEBs, please see the following link:
-    ///
-    /// https://en.wikipedia.org/wiki/Process_Environment_Block
-    #[cfg(inprocess)]
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_in_process_peb_address(&self, start_addr: u64) -> Result<u64> {
-        Ok(start_addr + self.layout.get_in_process_peb_offset() as u64)
-    }
-
     /// this function will create a memory snapshot and push it onto the stack of snapshots
     /// It should be used when you want to save the state of the memory, for example, when evolving a sandbox to a new state
     pub(crate) fn push_state(&mut self) -> Result<()> {
@@ -298,43 +276,6 @@ where
     }
 }
 
-/// Common setup functionality for the
-/// `load_guest_binary_{into_memory, using_load_library}` functions
-///
-/// Returns the newly created `SandboxMemoryLayout`, newly created
-/// `SharedMemory`, load address as calculated by `load_addr_fn`,
-/// and calculated entrypoint offset, in order.
-#[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-fn load_guest_binary_common<F>(
-    cfg: SandboxConfiguration,
-    exe_info: &ExeInfo,
-    load_addr_fn: F,
-) -> Result<(SandboxMemoryLayout, ExclusiveSharedMemory, RawPtr, Offset)>
-where
-    F: FnOnce(&ExclusiveSharedMemory, &SandboxMemoryLayout) -> Result<RawPtr>,
-{
-    let layout = SandboxMemoryLayout::new(
-        cfg,
-        exe_info.loaded_size(),
-        usize::try_from(cfg.get_stack_size(exe_info))?,
-        usize::try_from(cfg.get_heap_size(exe_info))?,
-    )?;
-    let mut shared_mem = ExclusiveSharedMemory::new(layout.get_memory_size()?)?;
-
-    let load_addr: RawPtr = load_addr_fn(&shared_mem, &layout)?;
-
-    let entrypoint_offset = exe_info.entrypoint();
-
-    let offset = layout.get_code_pointer_offset();
-
-    {
-        // write the code pointer to shared memory
-        let load_addr_u64: u64 = load_addr.clone().into();
-        shared_mem.write_u64(offset, load_addr_u64)?;
-    }
-    Ok((layout, shared_mem, load_addr, entrypoint_offset))
-}
-
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
     /// Load the binary represented by `pe_info` into memory, ensuring
     /// all necessary relocations are made prior to completing the load
@@ -346,53 +287,38 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     ///
     /// - The newly-created `SharedMemory`
     /// - The `SandboxMemoryLayout` describing that `SharedMemory`
-    /// - The offset to the entrypoint. This value means something different
-    /// depending on whether we're using in-process mode or not:
-    ///     - If we're using in-process mode, this value will be into
-    ///     host memory
-    ///     - If we're not running with in-memory mode, this value will be
-    ///     into guest memory
+    /// - The offset to the entrypoint.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn load_guest_binary_into_memory(
         cfg: SandboxConfiguration,
         exe_info: &mut ExeInfo,
-        inprocess: bool,
     ) -> Result<Self> {
-        let (layout, mut shared_mem, load_addr, entrypoint_offset) = load_guest_binary_common(
+        let layout = SandboxMemoryLayout::new(
             cfg,
-            exe_info,
-            |shared_mem: &ExclusiveSharedMemory, layout: &SandboxMemoryLayout| {
-                let addr_usize = if inprocess {
-                    // if we're running in-process, load_addr is the absolute
-                    // address to the start of shared memory, plus the offset to
-                    // code
-
-                    // We also need to make the memory executable
-
-                    shared_mem.make_memory_executable()?;
-                    shared_mem.base_addr() + layout.get_guest_code_offset()
-                } else {
-                    // otherwise, we're running in a VM, so load_addr
-                    // is the base address in a VM plus the code
-                    // offset
-                    layout.get_guest_code_address()
-                };
-                RawPtr::try_from(addr_usize)
-            },
+            exe_info.loaded_size(),
+            usize::try_from(cfg.get_stack_size(exe_info))?,
+            usize::try_from(cfg.get_heap_size(exe_info))?,
         )?;
+        let mut shared_mem = ExclusiveSharedMemory::new(layout.get_memory_size()?)?;
+
+        let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
+
+        let entrypoint_offset = exe_info.entrypoint();
+
+        let offset = layout.get_code_pointer_offset();
+
+        {
+            // write the code pointer to shared memory
+            let load_addr_u64: u64 = load_addr.clone().into();
+            shared_mem.write_u64(offset, load_addr_u64)?;
+        }
 
         exe_info.load(
             load_addr.clone().try_into()?,
             &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
         )?;
 
-        Ok(Self::new(
-            layout,
-            shared_mem,
-            inprocess,
-            load_addr,
-            entrypoint_offset,
-        ))
+        Ok(Self::new(layout, shared_mem, load_addr, entrypoint_offset))
     }
 
     /// Set the stack guard to `cookie` using `layout` to calculate
@@ -415,7 +341,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             SandboxMemoryManager {
                 shared_mem: hshm,
                 layout: self.layout,
-                inprocess: self.inprocess,
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 snapshots: Arc::new(Mutex::new(Vec::new())),
@@ -423,7 +348,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             SandboxMemoryManager {
                 shared_mem: gshm,
                 layout: self.layout,
-                inprocess: self.inprocess,
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 snapshots: Arc::new(Mutex::new(Vec::new())),
@@ -539,42 +463,5 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.layout.output_data_buffer_offset,
             self.layout.sandbox_memory_config.get_output_data_size(),
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use hyperlight_testing::rust_guest_as_pathbuf;
-
-    use crate::mem::exe::ExeInfo;
-    use crate::mem::ptr::RawPtr;
-    use crate::mem::shared_mem::SharedMemory;
-    use crate::sandbox::SandboxConfiguration;
-    use crate::testing::bytes_for_path;
-
-    #[test]
-    fn load_guest_binary_common() {
-        let guests = vec![
-            rust_guest_as_pathbuf("simpleguest"),
-            rust_guest_as_pathbuf("callbackguest"),
-        ];
-        for guest in guests {
-            let guest_bytes = bytes_for_path(guest).unwrap();
-            let exe_info = ExeInfo::from_buf(guest_bytes.as_slice()).unwrap();
-            let stack_size_override = 0x3000;
-            let heap_size_override = 0x10000;
-            let mut cfg = SandboxConfiguration::default();
-            cfg.set_stack_size(stack_size_override);
-            cfg.set_heap_size(heap_size_override);
-            let (layout, shared_mem, _, _) =
-                super::load_guest_binary_common(cfg, &exe_info, |_, _| Ok(RawPtr::from(100)))
-                    .unwrap();
-            assert_eq!(
-                stack_size_override,
-                u64::try_from(layout.stack_size).unwrap()
-            );
-            assert_eq!(heap_size_override, u64::try_from(layout.heap_size).unwrap());
-            assert_eq!(layout.get_memory_size().unwrap(), shared_mem.mem_size());
-        }
     }
 }

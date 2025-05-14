@@ -12,6 +12,7 @@ extern crate mshv_ioctls3 as mshv_ioctls;
 use kvm_bindings::{kvm_dtable, kvm_segment, kvm_sregs};
 #[cfg(mshv)]
 use mshv_bindings::{SegmentRegister, SpecialRegisters, TableRegister};
+#[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{
     WHV_REGISTER_VALUE, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
     WHV_X64_TABLE_REGISTER,

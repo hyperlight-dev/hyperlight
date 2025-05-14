@@ -118,7 +118,7 @@ impl Vm for KvmVm {
         Ok(self.vcpu_fd.set_fpu(&(*fpu).into())?)
     }
 
-    unsafe fn map_memory(&self, regions: &[MemoryRegion]) -> Result<()> {
+    unsafe fn map_memory(&mut self, regions: &[MemoryRegion]) -> Result<()> {
         if regions.is_empty() {
             return Err(new_error!("No memory regions to map"));
         }
