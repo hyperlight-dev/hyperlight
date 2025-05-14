@@ -171,11 +171,10 @@ impl Vm for MshvVm {
     }
 
     fn run_vcpu(&mut self) -> Result<HyperlightExit> {
-        const HALT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_HALT;
-        const IO_PORT_INTERCEPT_MESSAGE: hv_message_type =
-            hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
-        const UNMAPPED_GPA_MESSAGE: hv_message_type = hv_message_type_HVMSG_UNMAPPED_GPA;
-        const INVALID_GPA_ACCESS_MESSAGE: hv_message_type = hv_message_type_HVMSG_GPA_INTERCEPT;
+        const HALT: hv_message_type = hv_message_type_HVMSG_X64_HALT;
+        const IO_PORT: hv_message_type = hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
+        const UNMAPPED_GPA: hv_message_type = hv_message_type_HVMSG_UNMAPPED_GPA;
+        const INVALID_GPA: hv_message_type = hv_message_type_HVMSG_GPA_INTERCEPT;
         #[cfg(gdb)]
         const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
@@ -189,11 +188,11 @@ impl Vm for MshvVm {
 
         let result = match run_result {
             Ok(m) => match m.header.message_type {
-                HALT_MESSAGE => {
+                HALT => {
                     crate::debug!("mshv - Halt Details : {:#?}", &self);
                     HyperlightExit::Halt()
                 }
-                IO_PORT_INTERCEPT_MESSAGE => {
+                IO_PORT => {
                     let io_message = m.to_ioport_info()?;
                     let port_number = io_message.port_number;
                     let rax = io_message.rax;
@@ -209,7 +208,7 @@ impl Vm for MshvVm {
                     crate::debug!("mshv IO Details : \nPort : {}\n{:#?}", port_number, &self);
                     HyperlightExit::IoOut(port_number, rax.to_le_bytes().to_vec())
                 }
-                UNMAPPED_GPA_MESSAGE => {
+                UNMAPPED_GPA => {
                     let mimo_message = m.to_memory_info()?;
                     let addr = mimo_message.guest_physical_address;
                     crate::debug!(
@@ -223,7 +222,7 @@ impl Vm for MshvVm {
                         _ => HyperlightExit::Unknown("Unknown MMIO access".to_string()),
                     }
                 }
-                INVALID_GPA_ACCESS_MESSAGE => {
+                INVALID_GPA => {
                     let mimo_message = m.to_memory_info()?;
                     let gpa = mimo_message.guest_physical_address;
                     let access_info = MemoryRegionFlags::try_from(mimo_message)?;
