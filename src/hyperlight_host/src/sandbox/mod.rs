@@ -59,8 +59,7 @@ pub use uninitialized::UninitializedSandbox;
 
 use self::mem_mgr::MemMgrWrapper;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
-#[cfg(target_os = "windows")]
-use crate::hypervisor::windows_hypervisor_platform;
+
 use crate::mem::shared_mem::HostSharedMemory;
 
 // In case its not obvious why there are separate is_supported_platform and is_hypervisor_present functions its because

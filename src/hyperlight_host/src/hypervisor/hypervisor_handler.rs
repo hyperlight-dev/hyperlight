@@ -14,8 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(target_os = "windows")]
-use core::ffi::c_void;
 use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1004,7 +1002,7 @@ mod tests {
             let handle = thread::spawn(move || {
                 c.wait();
 
-                for _ in 0..50 {
+                for _ in 0..500 {
                     create_multi_use_sandbox();
                 }
             });

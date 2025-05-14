@@ -19,7 +19,6 @@ use std::ffi::CString;
 use tracing::{instrument, Span};
 use windows::core::PSTR;
 use windows::Win32::Foundation::{HANDLE, HMODULE};
-use windows::Win32::System::Hypervisor::WHV_REGISTER_VALUE;
 
 use crate::{HyperlightError, Result};
 

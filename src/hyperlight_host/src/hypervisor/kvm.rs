@@ -119,6 +119,10 @@ impl Vm for KvmVm {
     }
 
     unsafe fn map_memory(&self, regions: &[MemoryRegion]) -> Result<()> {
+        if regions.is_empty() {
+            return Err(new_error!("No memory regions to map"));
+        }
+
         regions.iter().enumerate().try_for_each(|(i, region)| {
             let kvm_region = kvm_userspace_memory_region {
                 slot: i as u32,

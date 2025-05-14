@@ -25,6 +25,7 @@ use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
 use super::hypervisor_handler::HypervisorHandler;
 use super::HyperlightVm;
+#[cfg(gdb)]
 use crate::hypervisor::{DbgMemAccessHandlerCaller, VcpuStopReason};
 #[cfg(crashdump)]
 use crate::mem::memory_region::MemoryRegion;

@@ -47,9 +47,7 @@ pub(crate) mod surrogate_process;
 #[cfg(target_os = "windows")]
 /// Hyperlight Surrogate Process
 pub(crate) mod surrogate_process_manager;
-/// WindowsHypervisorPlatform utilities
-#[cfg(target_os = "windows")]
-pub(crate) mod windows_hypervisor_platform;
+
 /// Safe wrappers around windows types like `PSTR`
 #[cfg(target_os = "windows")]
 pub(crate) mod wrappers;

@@ -141,3 +141,35 @@ impl From<CommonRegisters> for StandardRegisters {
         }
     }
 }
+
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Hypervisor::*;
+
+#[cfg(target_os = "windows")]
+impl From<&CommonRegisters> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
+    fn from(regs: &CommonRegisters) -> Self {
+        vec![
+            (WHvX64RegisterRax, WHV_REGISTER_VALUE { Reg64: regs.rax }),
+            (WHvX64RegisterRbx, WHV_REGISTER_VALUE { Reg64: regs.rbx }),
+            (WHvX64RegisterRcx, WHV_REGISTER_VALUE { Reg64: regs.rcx }),
+            (WHvX64RegisterRdx, WHV_REGISTER_VALUE { Reg64: regs.rdx }),
+            (WHvX64RegisterRsi, WHV_REGISTER_VALUE { Reg64: regs.rsi }),
+            (WHvX64RegisterRdi, WHV_REGISTER_VALUE { Reg64: regs.rdi }),
+            (WHvX64RegisterRsp, WHV_REGISTER_VALUE { Reg64: regs.rsp }),
+            (WHvX64RegisterRbp, WHV_REGISTER_VALUE { Reg64: regs.rbp }),
+            (WHvX64RegisterR8, WHV_REGISTER_VALUE { Reg64: regs.r8 }),
+            (WHvX64RegisterR9, WHV_REGISTER_VALUE { Reg64: regs.r9 }),
+            (WHvX64RegisterR10, WHV_REGISTER_VALUE { Reg64: regs.r10 }),
+            (WHvX64RegisterR11, WHV_REGISTER_VALUE { Reg64: regs.r11 }),
+            (WHvX64RegisterR12, WHV_REGISTER_VALUE { Reg64: regs.r12 }),
+            (WHvX64RegisterR13, WHV_REGISTER_VALUE { Reg64: regs.r13 }),
+            (WHvX64RegisterR14, WHV_REGISTER_VALUE { Reg64: regs.r14 }),
+            (WHvX64RegisterR15, WHV_REGISTER_VALUE { Reg64: regs.r15 }),
+            (WHvX64RegisterRip, WHV_REGISTER_VALUE { Reg64: regs.rip }),
+            (
+                WHvX64RegisterRflags,
+                WHV_REGISTER_VALUE { Reg64: regs.rflags },
+            ),
+        ]
+    }
+}

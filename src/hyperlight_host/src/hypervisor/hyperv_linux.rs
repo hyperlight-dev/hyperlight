@@ -159,6 +159,10 @@ impl Vm for MshvVm {
     }
 
     unsafe fn map_memory(&self, regions: &[MemoryRegion]) -> Result<()> {
+        if regions.is_empty() {
+            return Err(new_error!("No memory regions to map"));
+        }
+
         regions.iter().try_for_each(|region| {
             let mshv_region = region.clone().into();
             self.vm_fd.map_user_memory(mshv_region)

@@ -401,8 +401,6 @@ impl HyperlightVm for HyperlightSandbox {
             None => self.get_max_log_level().into(),
         };
 
-        println!("Entrypoint: {:#x}", self.entrypoint);
-
         let regs = CommonRegisters {
             rip: self.entrypoint,
             rsp: self.orig_rsp.absolute()?,
