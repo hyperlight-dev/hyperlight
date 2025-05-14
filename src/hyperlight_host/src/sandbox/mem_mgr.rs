@@ -29,27 +29,39 @@ pub type StackCookie = [u8; STACK_COOKIE_LEN];
 /// A container with methods for accessing `SandboxMemoryManager` and other
 /// related objects
 #[derive(Clone)]
-pub(crate) struct MemMgrWrapper<S>(SandboxMemoryManager<S>, StackCookie);
+pub(crate) struct MemMgrWrapper<S> {
+    mgr: SandboxMemoryManager<S>,
+    stack_cookie: StackCookie,
+    abort_buffer: Vec<u8>,
+}
 
 impl<S: SharedMemory> MemMgrWrapper<S> {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn new(mgr: SandboxMemoryManager<S>, stack_cookie: StackCookie) -> Self {
-        Self(mgr, stack_cookie)
+        Self {
+            mgr,
+            stack_cookie,
+            abort_buffer: Vec::new(),
+        }
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn unwrap_mgr(&self) -> &SandboxMemoryManager<S> {
-        &self.0
+        &self.mgr
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn unwrap_mgr_mut(&mut self) -> &mut SandboxMemoryManager<S> {
-        &mut self.0
+        &mut self.mgr
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn get_stack_cookie(&self) -> &StackCookie {
-        &self.1
+        &self.stack_cookie
+    }
+
+    pub fn get_abort_buffer_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.abort_buffer
     }
 }
 
@@ -74,8 +86,8 @@ impl MemMgrWrapper<ExclusiveSharedMemory> {
         MemMgrWrapper<HostSharedMemory>,
         SandboxMemoryManager<GuestSharedMemory>,
     ) {
-        let (hshm, gshm) = self.0.build();
-        (MemMgrWrapper(hshm, self.1), gshm)
+        let (hshm, gshm) = self.mgr.build();
+        (MemMgrWrapper::new(hshm, self.stack_cookie), gshm)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]

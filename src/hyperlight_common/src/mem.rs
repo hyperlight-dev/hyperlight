@@ -22,18 +22,6 @@ pub const PAGE_SIZE_USIZE: usize = 1 << 12;
 
 use core::ffi::{c_char, c_void};
 
-#[repr(C)]
-pub struct HostFunctionDefinitions {
-    pub fbHostFunctionDetailsSize: u64,
-    pub fbHostFunctionDetails: *mut c_void,
-}
-
-#[repr(C)]
-pub struct GuestErrorData {
-    pub guestErrorSize: u64,
-    pub guestErrorBuffer: *mut c_void,
-}
-
 #[repr(u64)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RunMode {

@@ -21,9 +21,10 @@ limitations under the License.
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::unwrap_used))]
 #![cfg_attr(any(test, debug_assertions), allow(clippy::disallowed_macros))]
 
+#[cfg(feature = "build-metadata")]
 use std::sync::Once;
 
-use log::info;
+#[cfg(feature = "build-metadata")]
 /// The `built` crate is used to generate a `built.rs` file that contains
 /// information about the build environment. This information is used to
 /// populate the `built_info` module, which is re-exported here.
@@ -148,9 +149,12 @@ macro_rules! debug {
 }
 
 // LOG_ONCE is used to log information about the crate version once
+#[cfg(feature = "build-metadata")]
 static LOG_ONCE: Once = Once::new();
 
+#[cfg(feature = "build-metadata")]
 pub(crate) fn log_build_details() {
+    use log::info;
     LOG_ONCE.call_once(|| {
         info!("Package name: {}", built_info::PKG_NAME);
         info!("Package version: {}", built_info::PKG_VERSION);

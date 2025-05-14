@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use anyhow::Result;
+#[cfg(feature = "build-metadata")]
 use built::write_built_file;
 
 fn main() -> Result<()> {
@@ -103,6 +104,7 @@ fn main() -> Result<()> {
         mshv3: { all(feature = "mshv3", target_os = "linux") },
     }
 
+    #[cfg(feature = "build-metadata")]
     write_built_file()?;
 
     Ok(())

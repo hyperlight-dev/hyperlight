@@ -17,16 +17,13 @@ limitations under the License.
 #![no_std]
 // Deps
 use alloc::string::ToString;
-use core::hint::unreachable_unchecked;
 
 use buddy_system_allocator::LockedHeap;
 use guest_function_register::GuestFunctionRegister;
-use host_function_call::debug_print;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::{HyperlightPEB, RunMode};
-use hyperlight_common::outb::OutBAction;
 
-use crate::host_function_call::outb;
+use crate::entrypoint::abort_with_code_and_message;
 extern crate alloc;
 
 // Modules
@@ -73,9 +70,11 @@ pub(crate) static _fltused: i32 = 0;
 // to satisfy the clippy when cfg == test
 #[allow(dead_code)]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    debug_print(info.to_string().as_str());
-    outb(OutBAction::Abort as u16, &[ErrorCode::UnknownError as u8]);
-    unsafe { unreachable_unchecked() }
+    let msg = info.to_string();
+    let c_string = alloc::ffi::CString::new(msg)
+        .unwrap_or_else(|_| alloc::ffi::CString::new("panic (invalid utf8)").unwrap());
+
+    unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], c_string.as_ptr()) }
 }
 
 // Globals

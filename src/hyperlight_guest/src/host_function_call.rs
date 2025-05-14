@@ -17,7 +17,7 @@ limitations under the License.
 use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::arch::global_asm;
+use core::arch;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -79,21 +79,16 @@ pub fn outb(port: u16, data: &[u8]) {
     unsafe {
         match RUNNING_MODE {
             RunMode::Hypervisor => {
-                for chunk in data.chunks(4) {
-                    // Process the data in chunks of 4 bytes. If a chunk has fewer than 4 bytes,
-                    // pad it with 0x7F to ensure it can be converted into a 4-byte array.
-                    // The choice of 0x7F as the padding value is arbitrary and does not carry
-                    // any special meaning; it simply ensures consistent chunk size.
-                    let val = match chunk {
-                        [a, b, c, d] => u32::from_le_bytes([*a, *b, *c, *d]),
-                        [a, b, c] => u32::from_le_bytes([*a, *b, *c, 0x7F]),
-                        [a, b] => u32::from_le_bytes([*a, *b, 0x7F, 0x7F]),
-                        [a] => u32::from_le_bytes([*a, 0x7F, 0x7F, 0x7F]),
-                        [] => break,
-                        _ => unreachable!(),
-                    };
-
-                    hloutd(val, port);
+                let mut i = 0;
+                while i < data.len() {
+                    let remaining = data.len() - i;
+                    let chunk_len = remaining.min(3);
+                    let mut chunk = [0u8; 4];
+                    chunk[0] = chunk_len as u8;
+                    chunk[1..1 + chunk_len].copy_from_slice(&data[i..i + chunk_len]);
+                    let val = u32::from_le_bytes(chunk);
+                    out32(port, val);
+                    i += chunk_len;
                 }
             }
             RunMode::InProcessLinux | RunMode::InProcessWindows => {
@@ -119,11 +114,25 @@ pub fn outb(port: u16, data: &[u8]) {
     }
 }
 
-extern "win64" {
-    fn hloutd(value: u32, port: u16);
+pub(crate) unsafe fn out32(port: u16, val: u32) {
+    arch::asm!("out dx, eax", in("dx") port, in("eax") val, options(preserves_flags, nomem, nostack));
 }
 
-pub fn print_output_as_guest_function(function_call: &FunctionCall) -> Result<Vec<u8>> {
+/// Prints a message using `OutBAction::DebugPrint`. It transmits bytes of a message
+/// through several VMExists and, with such, it is slower than
+/// `print_output_with_host_print`.
+///
+/// This function should be used in debug mode only. This function does not
+/// require memory to be setup to be used.
+pub fn debug_print(msg: &str) {
+    outb(OutBAction::DebugPrint as u16, msg.as_bytes());
+}
+
+/// Print a message using the host's print function.
+///
+/// This function requires memory to be setup to be used. In particular, the
+/// existence of the input and output memory regions.
+pub fn print_output_with_host_print(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
         call_host_function(
             "HostPrint",
@@ -135,20 +144,7 @@ pub fn print_output_as_guest_function(function_call: &FunctionCall) -> Result<Ve
     } else {
         Err(HyperlightGuestError::new(
             ErrorCode::GuestError,
-            "Wrong Parameters passed to print_output_as_guest_function".to_string(),
+            "Wrong Parameters passed to print_output_with_host_print".to_string(),
         ))
     }
 }
-
-pub fn debug_print(msg: &str) {
-    outb(OutBAction::DebugPrint as u16, msg.as_bytes());
-}
-
-global_asm!(
-    ".global hloutd
-     hloutd:
-        mov eax, ecx
-        mov dx, dx
-        out dx, eax
-        ret"
-);

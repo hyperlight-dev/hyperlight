@@ -113,10 +113,10 @@ proc-maps = "0.4.0"
 [build-dependencies]
 anyhow = { version = "1.0.98" }
 cfg_aliases = "0.2.1"
-built = { version = "0.8.0", features = ["chrono", "git2"] }
+built = { version = "0.8.0", optional = true, features = ["chrono", "git2"] }
 
 [features]
-default = ["kvm", "mshv2", "seccomp"]
+default = ["kvm", "mshv2", "seccomp", "build-metadata"]
 seccomp = ["dep:seccompiler"]
 function_call_metrics = []
 executable_heap = []
@@ -129,6 +129,7 @@ mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]
 # This enables easy debug in the guest
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]
+build-metadata = ["dep:built"]
 
 [[bench]]
 name = "benchmarks"

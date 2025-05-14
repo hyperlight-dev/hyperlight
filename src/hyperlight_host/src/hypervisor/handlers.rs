@@ -25,7 +25,7 @@ use crate::{new_error, Result};
 /// has initiated an outb operation.
 pub trait OutBHandlerCaller: Sync + Send {
     /// Function that gets called when an outb operation has occurred.
-    fn call(&mut self, port: u16, payload: Vec<u8>) -> Result<()>;
+    fn call(&mut self, port: u16, payload: u32) -> Result<()>;
 }
 
 /// A convenient type representing a common way `OutBHandler` implementations
@@ -36,7 +36,7 @@ pub trait OutBHandlerCaller: Sync + Send {
 /// a &mut self).
 pub type OutBHandlerWrapper = Arc<Mutex<dyn OutBHandlerCaller>>;
 
-pub(crate) type OutBHandlerFunction = Box<dyn FnMut(u16, Vec<u8>) -> Result<()> + Send>;
+pub(crate) type OutBHandlerFunction = Box<dyn FnMut(u16, u32) -> Result<()> + Send>;
 
 /// A `OutBHandler` implementation using a `OutBHandlerFunction`
 ///
@@ -52,7 +52,7 @@ impl From<OutBHandlerFunction> for OutBHandler {
 
 impl OutBHandlerCaller for OutBHandler {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn call(&mut self, port: u16, payload: Vec<u8>) -> Result<()> {
+    fn call(&mut self, port: u16, payload: u32) -> Result<()> {
         let mut func = self
             .0
             .try_lock()

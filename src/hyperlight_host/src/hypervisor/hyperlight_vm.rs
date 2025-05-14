@@ -475,16 +475,18 @@ impl HyperlightVm for HyperlightSandbox {
     ) -> Result<()> {
         // KVM does not need RIP or instruction length, as it automatically sets the RIP
 
-        // The payload param for the outb_handle_fn is the first byte
-        // of the data array cast to an u64. Thus, we need to make sure
-        // the data array has at least one u8, then convert that to an u64
+        let mut padded = [0u8; 4];
+        let copy_len = data.len().min(4);
+        padded[..copy_len].copy_from_slice(&data[..copy_len]);
+        let val = u32::from_le_bytes(padded);
+
         if data.is_empty() {
             log_then_return!("no data was given in IO interrupt");
         } else {
             outb_handle_fn
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .call(port, data)?;
+                .call(port, val)?;
         }
 
         Ok(())
@@ -725,7 +727,7 @@ mod tests {
     #[test]
     fn test_init() {
         let outb_handler: Arc<Mutex<OutBHandler>> = {
-            let func: Box<dyn FnMut(u16, Vec<u8>) -> Result<()> + Send> =
+            let func: Box<dyn FnMut(u16, u32) -> Result<()> + Send> =
                 Box::new(|_, _| -> Result<()> { Ok(()) });
             Arc::new(Mutex::new(OutBHandler::from(func)))
         };

@@ -31,10 +31,9 @@ pub extern "sysv64" fn hl_exception_handler(
 ) {
     let exception = Exception::try_from(exception_number as u8).expect("Invalid exception number");
     let msg = format!(
-        "EXCEPTION: {:#?}\n\
-            Page Fault Address: {:#x}\n\
+        "Page Fault Address: {:#x}\n\
             Stack Pointer: {:#x}",
-        exception, page_fault_address, stack_pointer
+        page_fault_address, stack_pointer
     );
 
     unsafe {

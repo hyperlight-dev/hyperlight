@@ -93,13 +93,64 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
     Ok(())
 }
 
+const ABORT_TERMINATOR: u8 = 0xFF;
+const MAX_ABORT_BUFFER_LEN: usize = 1024;
+
+fn outb_abort(mem_mgr: &mut MemMgrWrapper<HostSharedMemory>, data: u32) -> Result<()> {
+    let buffer = mem_mgr.get_abort_buffer_mut();
+
+    let bytes = data.to_le_bytes(); // [len, b1, b2, b3]
+    let len = bytes[0].min(3);
+
+    for &b in &bytes[1..=len as usize] {
+        if b == ABORT_TERMINATOR {
+            let guest_error_code = *buffer.first().unwrap_or(&0);
+            let guest_error = ErrorCode::from(guest_error_code as u64);
+
+            let result = match guest_error {
+                ErrorCode::StackOverflow => Err(HyperlightError::StackOverflow()),
+                _ => {
+                    let message = if let Some(&maybe_exception_code) = buffer.get(1) {
+                        match Exception::try_from(maybe_exception_code) {
+                            Ok(exception) => {
+                                let extra_msg = String::from_utf8_lossy(&buffer[2..]);
+                                format!("Exception: {:?} | {}", exception, extra_msg)
+                            }
+                            Err(_) => String::from_utf8_lossy(&buffer[1..]).into(),
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                    Err(HyperlightError::GuestAborted(guest_error_code, message))
+                }
+            };
+
+            buffer.clear();
+            return result;
+        }
+
+        if buffer.len() >= MAX_ABORT_BUFFER_LEN {
+            buffer.clear();
+            return Err(HyperlightError::GuestAborted(
+                0,
+                "Guest abort buffer overflowed".into(),
+            ));
+        }
+
+        buffer.push(b);
+    }
+
+    Ok(())
+}
+
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 fn handle_outb_impl(
     mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
     host_funcs: Arc<Mutex<FunctionRegistry>>,
     port: u16,
-    data: Vec<u8>,
+    data: u32,
 ) -> Result<()> {
     match port.try_into()? {
         OutBAction::Log => outb_log(mem_mgr.as_mut()),
@@ -117,30 +168,16 @@ fn handle_outb_impl(
 
             Ok(())
         }
-        OutBAction::Abort => {
-            let byte = u64::from(data[0]);
-            let guest_error = ErrorCode::from(byte);
-
-            match guest_error {
-                ErrorCode::StackOverflow => Err(HyperlightError::StackOverflow()),
-                _ => {
-                    let message = match data.get(1) {
-                        Some(&exception_code) => match Exception::try_from(exception_code) {
-                            Ok(exception) => format!("Exception: {:?}", exception),
-                            Err(e) => {
-                                format!("Unknown exception code: {:#x} ({})", exception_code, e)
-                            }
-                        },
-                        None => "See stderr for panic context".into(),
-                    };
-
-                    Err(HyperlightError::GuestAborted(byte as u8, message))
-                }
-            }
-        }
+        OutBAction::Abort => outb_abort(mem_mgr, data),
         OutBAction::DebugPrint => {
-            let s = String::from_utf8_lossy(&data);
-            eprint!("{}", s);
+            let ch: char = match char::from_u32(data) {
+                Some(c) => c,
+                None => {
+                    return Err(new_error!("Invalid character for logging: {}", data));
+                }
+            };
+
+            eprint!("{}", ch);
             Ok(())
         }
     }

@@ -30,13 +30,15 @@ use super::mem_mgr::MemMgrWrapper;
 use super::run_options::SandboxRunOptions;
 use super::uninitialized_evolve::evolve_impl_multi_use;
 use crate::func::host_functions::{HostFunction, IntoHostFunction};
+#[cfg(feature = "build-metadata")]
+use crate::log_build_details;
 use crate::mem::exe::ExeInfo;
 use crate::mem::mgr::{SandboxMemoryManager, STACK_COOKIE_LEN};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox_state::sandbox::EvolvableSandbox;
 use crate::sandbox_state::transition::Noop;
-use crate::{log_build_details, log_then_return, new_error, MultiUseSandbox, Result};
+use crate::{log_then_return, new_error, MultiUseSandbox, Result};
 
 #[cfg(all(target_os = "linux", feature = "seccomp"))]
 const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
@@ -142,6 +144,7 @@ impl UninitializedSandbox {
         cfg: Option<SandboxConfiguration>,
         sandbox_run_options: Option<SandboxRunOptions>,
     ) -> Result<Self> {
+        #[cfg(feature = "build-metadata")]
         log_build_details();
 
         // hyperlight is only supported on Windows 11 and Windows Server 2022 and later
@@ -336,7 +339,6 @@ fn check_windows_version() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::sync::mpsc::channel;
     use std::sync::Arc;
     use std::time::Duration;
@@ -344,21 +346,12 @@ mod tests {
 
     use crossbeam_queue::ArrayQueue;
     use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
-    use hyperlight_testing::logger::{Logger as TestLogger, LOGGER as TEST_LOGGER};
     use hyperlight_testing::simple_guest_as_string;
-    use hyperlight_testing::tracing_subscriber::TracingSubscriber as TestSubscriber;
-    use log::Level;
-    use serde_json::{Map, Value};
-    use tracing::Level as tracing_level;
-    use tracing_core::callsite::rebuild_interest_cache;
-    use tracing_core::Subscriber;
-    use uuid::Uuid;
 
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
-    use crate::testing::log_values::{test_value_as_str, try_to_strings};
     use crate::{new_error, MultiUseSandbox, Result, UninitializedSandbox};
 
     #[test]
@@ -804,7 +797,19 @@ mod tests {
     // from their workstation to be successful without needed to know about test interdependencies
     // this test will be run explicitly as a part of the CI pipeline
     #[ignore]
+    #[cfg(feature = "build-metadata")]
     fn test_trace_trace() {
+        use hyperlight_testing::logger::Logger as TestLogger;
+        use hyperlight_testing::tracing_subscriber::TracingSubscriber as TestSubscriber;
+        use serde_json::{Map, Value};
+        use tracing::Level as tracing_level;
+        use tracing_core::callsite::rebuild_interest_cache;
+        use tracing_core::Subscriber;
+        use uuid::Uuid;
+
+        use crate::testing::log_values::build_metadata_testing::try_to_strings;
+        use crate::testing::log_values::test_value_as_str;
+
         TestLogger::initialize_log_tracer();
         rebuild_interest_cache();
         let subscriber = TestSubscriber::new(tracing_level::TRACE);
@@ -902,7 +907,14 @@ mod tests {
     #[ignore]
     // Tests that traces are emitted as log records when there is no trace
     // subscriber configured.
+    #[cfg(feature = "build-metadata")]
     fn test_log_trace() {
+        use std::path::PathBuf;
+
+        use hyperlight_testing::logger::{Logger as TestLogger, LOGGER as TEST_LOGGER};
+        use log::Level;
+        use tracing_core::callsite::rebuild_interest_cache;
+
         {
             TestLogger::initialize_test_logger();
             TEST_LOGGER.set_max_level(log::LevelFilter::Trace);

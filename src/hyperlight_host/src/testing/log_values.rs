@@ -61,61 +61,66 @@ fn try_to_string<'a>(values: &'a Map<String, Value>, key: &'a str) -> Result<&'a
     }
 }
 
-/// A single value in the parameter list for the `try_to_strings`
-/// function.
-pub(crate) type MapLookup<'a> = (&'a Map<String, Value>, &'a str);
+#[cfg(feature = "build-metadata")]
+pub(crate) mod build_metadata_testing {
+    use super::*;
 
-/// Given a constant-size slice of `MapLookup`s, attempt to look up the
-/// string value in each `MapLookup`'s map (the first tuple element) for
-/// that `MapLookup`'s key (the second tuple element). If the lookup
-/// succeeded, attempt to convert the resulting value to a string. Return
-/// `Ok` with all the successfully looked-up string values, or `Err`
-/// if any one or more lookups or string conversions failed.
-pub(crate) fn try_to_strings<'a, const NUM: usize>(
-    lookups: [MapLookup<'a>; NUM],
-) -> Result<[&'a str; NUM]> {
-    // Note (from arschles) about this code:
-    //
-    // In theory, there's a way to write this function in the functional
-    // programming (FP) style -- e.g. with a fold, map, flat_map, or
-    // something similar -- and without any mutability.
-    //
-    // In practice, however, since we're taking in a statically-sized slice,
-    // and we are expected to return a statically-sized slice of the same
-    // size, we are more limited in what we can do. There is a way to design
-    // a fold or flat_map to iterate over the lookups parameter and attempt to
-    // transform each MapLookup into the string value at that key.
-    //
-    // I wrote that code, which I'll called the "FP code" hereafter, and
-    // noticed two things:
-    //
-    // - It required several places where I had to explicitly deal with long
-    // and complex (in my opinion) types
-    // - It wasn't much more succinct or shorter than the code herein
-    //
-    // The FP code is functionally "pure" and maybe fun to write (if you like
-    // Rust or you love FP), but not fun to read. In fact, because of all the
-    // explicit type ceremony, I bet it'd make even the most hardcore Haskell
-    // programmer blush.
-    //
-    // So, I've decided to use a little bit of mutability to implement this
-    // function in a way I think most programmers would agree is easier to
-    // reason about and understand quickly.
-    //
-    // Final performance note:
-    //
-    // It's likely, but not certain, that the FP code is probably not
-    // significantly more memory efficient than this, since the compiler knows
-    // the size of both the input and output slices. Plus, this is test code,
-    // so even if this were 2x slower, I'd still argue the ease of
-    // understanding is more valuable than the (relatively small) memory
-    // savings.
-    let mut ret_slc: [&'a str; NUM] = [""; NUM];
-    for (idx, lookup) in lookups.iter().enumerate() {
-        let map = lookup.0;
-        let key = lookup.1;
-        let val = try_to_string(map, key)?;
-        ret_slc[idx] = val
+    /// A single value in the parameter list for the `try_to_strings`
+    /// function.
+    pub(crate) type MapLookup<'a> = (&'a Map<String, Value>, &'a str);
+
+    /// Given a constant-size slice of `MapLookup`s, attempt to look up the
+    /// string value in each `MapLookup`'s map (the first tuple element) for
+    /// that `MapLookup`'s key (the second tuple element). If the lookup
+    /// succeeded, attempt to convert the resulting value to a string. Return
+    /// `Ok` with all the successfully looked-up string values, or `Err`
+    /// if any one or more lookups or string conversions failed.
+    pub(crate) fn try_to_strings<'a, const NUM: usize>(
+        lookups: [MapLookup<'a>; NUM],
+    ) -> Result<[&'a str; NUM]> {
+        // Note (from arschles) about this code:
+        //
+        // In theory, there's a way to write this function in the functional
+        // programming (FP) style -- e.g. with a fold, map, flat_map, or
+        // something similar -- and without any mutability.
+        //
+        // In practice, however, since we're taking in a statically-sized slice,
+        // and we are expected to return a statically-sized slice of the same
+        // size, we are more limited in what we can do. There is a way to design
+        // a fold or flat_map to iterate over the lookups parameter and attempt to
+        // transform each MapLookup into the string value at that key.
+        //
+        // I wrote that code, which I'll called the "FP code" hereafter, and
+        // noticed two things:
+        //
+        // - It required several places where I had to explicitly deal with long
+        // and complex (in my opinion) types
+        // - It wasn't much more succinct or shorter than the code herein
+        //
+        // The FP code is functionally "pure" and maybe fun to write (if you like
+        // Rust or you love FP), but not fun to read. In fact, because of all the
+        // explicit type ceremony, I bet it'd make even the most hardcore Haskell
+        // programmer blush.
+        //
+        // So, I've decided to use a little bit of mutability to implement this
+        // function in a way I think most programmers would agree is easier to
+        // reason about and understand quickly.
+        //
+        // Final performance note:
+        //
+        // It's likely, but not certain, that the FP code is probably not
+        // significantly more memory efficient than this, since the compiler knows
+        // the size of both the input and output slices. Plus, this is test code,
+        // so even if this were 2x slower, I'd still argue the ease of
+        // understanding is more valuable than the (relatively small) memory
+        // savings.
+        let mut ret_slc: [&'a str; NUM] = [""; NUM];
+        for (idx, lookup) in lookups.iter().enumerate() {
+            let map = lookup.0;
+            let key = lookup.1;
+            let val = try_to_string(map, key)?;
+            ret_slc[idx] = val
+        }
+        Ok(ret_slc)
     }
-    Ok(ret_slc)
 }

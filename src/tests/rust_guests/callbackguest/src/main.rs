@@ -35,7 +35,7 @@ use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::register_function;
 use hyperlight_guest::host_function_call::{
-    call_host_function, get_host_return_value, print_output_as_guest_function,
+    call_host_function, get_host_return_value, print_output_with_host_print,
 };
 use hyperlight_guest::logging::log_message;
 
@@ -167,7 +167,7 @@ pub extern "C" fn hyperlight_main() {
         "PrintOutput".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::Int,
-        print_output_as_guest_function as usize,
+        print_output_with_host_print as usize,
     );
     register_function(print_output_def);
 
