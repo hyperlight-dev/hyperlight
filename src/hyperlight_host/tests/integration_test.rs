@@ -16,7 +16,6 @@ limitations under the License.
 #![allow(clippy::disallowed_macros)]
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
-use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -35,18 +34,12 @@ fn print_four_args_c_guest() {
     let uninit = UninitializedSandbox::new(guest_path, None);
     let mut sbox1 = uninit.unwrap().evolve(Noop::default()).unwrap();
 
-    let res = sbox1.call_guest_function_by_name(
+    let res = sbox1.call_guest_function_by_name::<i32>(
         "PrintFourArgs",
-        ReturnType::String,
-        Some(vec![
-            ParameterValue::String("Test4".to_string()),
-            ParameterValue::Int(3_i32),
-            ParameterValue::Long(4_i64),
-            ParameterValue::String("Tested".to_string()),
-        ]),
+        ("Test4".to_string(), 3_i32, 4_i64, "Tested".to_string()),
     );
     println!("{:?}", res);
-    assert!(matches!(res, Ok(ReturnValue::Int(46))));
+    assert!(matches!(res, Ok(46)));
 }
 
 // Checks that guest can abort with a specific code.
@@ -55,11 +48,7 @@ fn guest_abort() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
     let error_code: u8 = 13; // this is arbitrary
     let res = sbox1
-        .call_guest_function_by_name(
-            "GuestAbortWithCode",
-            ReturnType::Void,
-            Some(vec![ParameterValue::Int(error_code as i32)]),
-        )
+        .call_guest_function_by_name::<()>("GuestAbortWithCode", error_code as i32)
         .unwrap_err();
     println!("{:?}", res);
     assert!(
@@ -72,14 +61,7 @@ fn guest_abort_with_context1() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
 
     let res = sbox1
-        .call_guest_function_by_name(
-            "GuestAbortWithMessage",
-            ReturnType::Void,
-            Some(vec![
-                ParameterValue::Int(25),
-                ParameterValue::String("Oh no".to_string()),
-            ]),
-        )
+        .call_guest_function_by_name::<()>("GuestAbortWithMessage", (25_i32, "Oh no".to_string()))
         .unwrap_err();
     println!("{:?}", res);
     assert!(
@@ -124,13 +106,9 @@ fn guest_abort_with_context2() {
                                 Proin sagittis nisl rhoncus mattis rhoncus urna. Magna eget est lorem ipsum.";
 
     let res = sbox1
-        .call_guest_function_by_name(
+        .call_guest_function_by_name::<()>(
             "GuestAbortWithMessage",
-            ReturnType::Void,
-            Some(vec![
-                ParameterValue::Int(60),
-                ParameterValue::String(abort_message.to_string()),
-            ]),
+            (60_i32, abort_message.to_string()),
         )
         .unwrap_err();
     println!("{:?}", res);
@@ -150,13 +128,9 @@ fn guest_abort_c_guest() {
     let mut sbox1 = uninit.unwrap().evolve(Noop::default()).unwrap();
 
     let res = sbox1
-        .call_guest_function_by_name(
+        .call_guest_function_by_name::<()>(
             "GuestAbortWithMessage",
-            ReturnType::Void,
-            Some(vec![
-                ParameterValue::Int(75_i32),
-                ParameterValue::String("This is a test error message".to_string()),
-            ]),
+            (75_i32, "This is a test error message".to_string()),
         )
         .unwrap_err();
     println!("{:?}", res);
@@ -171,13 +145,7 @@ fn guest_panic() {
     let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
 
     let res = sbox1
-        .call_guest_function_by_name(
-            "guest_panic",
-            ReturnType::Void,
-            Some(vec![ParameterValue::String(
-                "Error... error...".to_string(),
-            )]),
-        )
+        .call_guest_function_by_name::<()>("guest_panic", "Error... error...".to_string())
         .unwrap_err();
     println!("{:?}", res);
     assert!(
@@ -190,32 +158,26 @@ fn guest_malloc() {
     // this test is rust-only
     let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
 
-    let size_to_allocate = 2000;
-    let res = sbox1
-        .call_guest_function_by_name(
-            "TestMalloc",
-            ReturnType::Int,
-            Some(vec![ParameterValue::Int(size_to_allocate)]),
-        )
+    let size_to_allocate = 2000_i32;
+    sbox1
+        .call_guest_function_by_name::<i32>("TestMalloc", size_to_allocate)
         .unwrap();
-    assert!(matches!(res, ReturnValue::Int(_)));
 }
 
 #[test]
 fn guest_allocate_vec() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
 
-    let size_to_allocate = 2000;
+    let size_to_allocate = 2000_i32;
 
     let res = sbox1
-        .call_guest_function_by_name(
+        .call_guest_function_by_name::<i32>(
             "CallMalloc", // uses the rust allocator to allocate a vector on heap
-            ReturnType::Int,
-            Some(vec![ParameterValue::Int(size_to_allocate)]),
+            size_to_allocate,
         )
         .unwrap();
 
-    assert!(matches!(res, ReturnValue::Int(returned_size) if returned_size == size_to_allocate));
+    assert_eq!(res, size_to_allocate);
 }
 
 // checks that malloc failures are captured correctly
@@ -223,14 +185,10 @@ fn guest_allocate_vec() {
 fn guest_malloc_abort() {
     let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
 
-    let size = 20000000; // some big number that should fail when allocated
+    let size = 20000000_i32; // some big number that should fail when allocated
 
     let res = sbox1
-        .call_guest_function_by_name(
-            "TestMalloc",
-            ReturnType::Int,
-            Some(vec![ParameterValue::Int(size)]),
-        )
+        .call_guest_function_by_name::<i32>("TestMalloc", size)
         .unwrap_err();
     println!("{:?}", res);
     assert!(
@@ -251,10 +209,9 @@ fn guest_malloc_abort() {
     .unwrap();
     let mut sbox2 = uninit.evolve(Noop::default()).unwrap();
 
-    let res = sbox2.call_guest_function_by_name(
+    let res = sbox2.call_guest_function_by_name::<i32>(
         "CallMalloc", // uses the rust allocator to allocate a vector on heap
-        ReturnType::Int,
-        Some(vec![ParameterValue::Int(size_to_allocate as i32)]),
+        size_to_allocate as i32,
     );
     println!("{:?}", res);
     assert!(matches!(
@@ -272,21 +229,13 @@ fn dynamic_stack_allocate_c_guest() {
     let uninit = UninitializedSandbox::new(guest_path, None);
     let mut sbox1: MultiUseSandbox = uninit.unwrap().evolve(Noop::default()).unwrap();
 
-    let res2 = sbox1
-        .call_guest_function_by_name(
-            "StackAllocate",
-            ReturnType::Int,
-            Some(vec![ParameterValue::Int(100)]),
-        )
+    let res: i32 = sbox1
+        .call_guest_function_by_name("StackAllocate", 100_i32)
         .unwrap();
-    assert!(matches!(res2, ReturnValue::Int(n) if n == 100));
+    assert_eq!(res, 100);
 
     let res = sbox1
-        .call_guest_function_by_name(
-            "StackAllocate",
-            ReturnType::Int,
-            Some(vec![ParameterValue::Int(128 * 1024 * 1024)]),
-        )
+        .call_guest_function_by_name::<i32>("StackAllocate", 0x800_0000_i32)
         .unwrap_err();
     assert!(matches!(res, HyperlightError::StackOverflow()));
 }
@@ -296,10 +245,8 @@ fn dynamic_stack_allocate_c_guest() {
 fn static_stack_allocate() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
 
-    let res = sbox1
-        .call_guest_function_by_name("SmallVar", ReturnType::Int, Some(Vec::new()))
-        .unwrap();
-    assert!(matches!(res, ReturnValue::Int(1024)));
+    let res: i32 = sbox1.call_guest_function_by_name("SmallVar", ()).unwrap();
+    assert_eq!(res, 1024);
 }
 
 // checks that a huge buffer on stack fails with stackoverflow
@@ -307,7 +254,7 @@ fn static_stack_allocate() {
 fn static_stack_allocate_overflow() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
     let res = sbox1
-        .call_guest_function_by_name("LargeVar", ReturnType::Int, Some(Vec::new()))
+        .call_guest_function_by_name::<i32>("LargeVar", ())
         .unwrap_err();
     assert!(matches!(res, HyperlightError::StackOverflow()));
 }
@@ -317,14 +264,10 @@ fn static_stack_allocate_overflow() {
 fn recursive_stack_allocate() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
 
-    let iterations = 1;
+    let iterations = 1_i32;
 
     sbox1
-        .call_guest_function_by_name(
-            "StackOverflow",
-            ReturnType::Int,
-            Some(vec![ParameterValue::Int(iterations)]),
-        )
+        .call_guest_function_by_name::<i32>("StackOverflow", iterations)
         .unwrap();
 }
 
@@ -350,11 +293,7 @@ fn guard_page_check() {
         // we have to create a sandbox each iteration because can't reuse after MMIO error in release mode
 
         let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
-        let result = sbox1.call_guest_function_by_name(
-            "test_write_raw_ptr",
-            ReturnType::String,
-            Some(vec![ParameterValue::Long(offset)]),
-        );
+        let result = sbox1.call_guest_function_by_name::<String>("test_write_raw_ptr", offset);
         if guard_range.contains(&offset) {
             // should have failed
             assert!(matches!(
@@ -373,7 +312,7 @@ fn guard_page_check_2() {
     let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
 
     let result = sbox1
-        .call_guest_function_by_name("InfiniteRecursion", ReturnType::Void, Some(vec![]))
+        .call_guest_function_by_name::<()>("InfiniteRecursion", ())
         .unwrap_err();
     assert!(matches!(result, HyperlightError::StackOverflow()));
 }
@@ -383,7 +322,7 @@ fn execute_on_stack() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
 
     let result = sbox1
-        .call_guest_function_by_name("ExecuteOnStack", ReturnType::String, Some(vec![]))
+        .call_guest_function_by_name::<String>("ExecuteOnStack", ())
         .unwrap_err();
 
     let err = result.to_string();
@@ -397,8 +336,7 @@ fn execute_on_stack() {
 #[ignore] // ran from Justfile because requires feature "executable_heap"
 fn execute_on_heap() {
     let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
-    let result =
-        sbox1.call_guest_function_by_name("ExecuteOnHeap", ReturnType::String, Some(vec![]));
+    let result = sbox1.call_guest_function_by_name::<String>("ExecuteOnHeap", ());
 
     println!("{:#?}", result);
     #[cfg(feature = "executable_heap")]
@@ -417,16 +355,12 @@ fn execute_on_heap() {
 fn memory_resets_after_failed_guestcall() {
     let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
     sbox1
-        .call_guest_function_by_name("AddToStaticAndFail", ReturnType::String, None)
+        .call_guest_function_by_name::<String>("AddToStaticAndFail", ())
         .unwrap_err();
     let res = sbox1
-        .call_guest_function_by_name("GetStatic", ReturnType::Int, None)
+        .call_guest_function_by_name::<i32>("GetStatic", ())
         .unwrap();
-    assert!(
-        matches!(res, ReturnValue::Int(0)),
-        "Expected 0, got {:?}",
-        res
-    );
+    assert_eq!(res, 0, "Expected 0, got {:?}", res);
 }
 
 // checks that a recursive function with stack allocation eventually fails with stackoverflow
@@ -434,14 +368,10 @@ fn memory_resets_after_failed_guestcall() {
 fn recursive_stack_allocate_overflow() {
     let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
 
-    let iterations = 10;
+    let iterations = 10_i32;
 
     let res = sbox1
-        .call_guest_function_by_name(
-            "StackOverflow",
-            ReturnType::Void,
-            Some(vec![ParameterValue::Int(iterations)]),
-        )
+        .call_guest_function_by_name::<()>("StackOverflow", iterations)
         .unwrap_err();
     println!("{:?}", res);
     assert!(matches!(res, HyperlightError::StackOverflow()));
@@ -515,14 +445,7 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
 
         let message = format!("Hello from log_message level {}", level as i32);
         sbox1
-            .call_guest_function_by_name(
-                "LogMessage",
-                ReturnType::Void,
-                Some(vec![
-                    ParameterValue::String(message.to_string()),
-                    ParameterValue::Int(level as i32),
-                ]),
-            )
+            .call_guest_function_by_name::<()>("LogMessage", (message.to_string(), level as i32))
             .unwrap();
     }
 }

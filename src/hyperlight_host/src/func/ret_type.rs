@@ -49,6 +49,8 @@ macro_rules! for_each_return_type {
         $macro!(u32, UInt);
         $macro!(i64, Long);
         $macro!(u64, ULong);
+        $macro!(f32, Float);
+        $macro!(f64, Double);
         $macro!(bool, Bool);
         $macro!(Vec<u8>, VecBytes);
     };
