@@ -239,6 +239,10 @@ mod tests {
 
     #[test]
     fn ensure_multiusesandbox_multi_calls_dont_reset_state() {
+        env_logger::builder()
+            .filter_module("hyperlight", log::LevelFilter::Trace)
+            .filter_level(log::LevelFilter::Info)
+            .init();
         let sandbox = TestSandbox::new();
         let result = sandbox.call_add_to_static_multiple_times(5);
         assert!(result.is_ok());
