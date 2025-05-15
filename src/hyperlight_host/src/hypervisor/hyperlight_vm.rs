@@ -27,10 +27,10 @@ use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{
     MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
 };
-#[cfg(mshv)]
-use super::hyperv_linux::MshvVm;
 #[cfg(kvm)]
 use super::kvm::KvmVm;
+#[cfg(mshv)]
+use super::mshv::MshvVm;
 use super::regs::{
     CommonFpu, CommonRegisters, FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT,
 };
@@ -41,9 +41,9 @@ use super::{
 };
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
-#[cfg(target_os = "windows")]
-use crate::hypervisor::hyperv_windows::WhpVm;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::whp::WhpVm;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};

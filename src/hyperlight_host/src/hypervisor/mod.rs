@@ -21,15 +21,15 @@ use crate::Result;
 /// Handlers for Hypervisor custom logic
 pub mod handlers;
 pub(crate) mod hyperlight_vm;
+pub(crate) mod hypervisor_handler;
 /// HyperV-on-linux functionality
 #[cfg(mshv)]
-pub mod hyperv_linux;
-#[cfg(target_os = "windows")]
-/// Hyperv-on-windows functionality
-pub(crate) mod hyperv_windows;
-pub(crate) mod hypervisor_handler;
+pub mod mshv;
 mod regs;
 mod vm;
+#[cfg(target_os = "windows")]
+/// Hyperv-on-windows functionality
+pub(crate) mod whp;
 
 /// GDB debugging support
 #[cfg(gdb)]

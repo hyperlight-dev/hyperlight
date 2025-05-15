@@ -127,8 +127,7 @@ impl WhpVm {
                 register_names.as_ptr(),
                 register_count as u32,
                 register_values.as_ptr(),
-            )
-            .unwrap();
+            )?;
         }
 
         Ok(())
@@ -147,8 +146,7 @@ impl Vm for WhpVm {
                 WHP_REGS_NAMES.as_ptr(),
                 WHP_REGS_NAMES_LEN as u32,
                 whv_regs_values.as_mut_ptr(),
-            )
-            .unwrap();
+            )?;
         }
 
         WHP_REGS_NAMES
@@ -182,8 +180,7 @@ impl Vm for WhpVm {
                 WHP_SREGS_NAMES.as_ptr(),
                 whp_sregs_values.len() as u32,
                 whp_sregs_values.as_mut_ptr(),
-            )
-            .unwrap();
+            )?;
         }
 
         WHP_SREGS_NAMES
@@ -217,8 +214,7 @@ impl Vm for WhpVm {
                 WHP_FPU_NAMES.as_ptr(),
                 whp_fpu_values.len() as u32,
                 whp_fpu_values.as_mut_ptr(),
-            )
-            .unwrap();
+            )?;
         }
 
         WHP_FPU_NAMES
