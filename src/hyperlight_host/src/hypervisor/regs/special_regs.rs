@@ -8,6 +8,7 @@ extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
 extern crate mshv_ioctls3 as mshv_ioctls;
 
+#[cfg(target_os = "windows")]
 use std::collections::HashSet;
 
 #[cfg(kvm)]
@@ -17,6 +18,7 @@ use mshv_bindings::{SegmentRegister, SpecialRegisters, TableRegister};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::*;
 
+#[cfg(target_os = "windows")]
 use super::FromWhpRegisterError;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -145,7 +147,9 @@ impl From<CommonSpecialRegisters> for kvm_sregs {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) const WHP_SREGS_NAMES_LEN: usize = 17;
+#[cfg(target_os = "windows")]
 pub(crate) const WHP_SREGS_NAMES: [WHV_REGISTER_NAME; WHP_SREGS_NAMES_LEN] = [
     WHvX64RegisterCs,
     WHvX64RegisterDs,
@@ -607,20 +611,5 @@ mod tests {
             err,
             FromWhpRegisterError::InvalidRegister(WHvX64RegisterRip.0)
         );
-    }
-
-    #[test]
-    fn temp() {
-        let value = WHV_REGISTER_VALUE {
-            Segment: WHV_X64_SEGMENT_REGISTER {
-                Anonymous: WHV_X64_SEGMENT_REGISTER_0 {
-                    Attributes: 0b1011 | 1 << 4 | 1 << 7 | 1 << 13, // Type (11: Execute/Read, accessed) | L (64-bit mode) | P (present) | S (code segment)
-                },
-                ..Default::default() // zero out the rest
-            },
-        };
-
-        let segment: CommonSegmentRegister = value.into();
-        print!("{:#?}", segment);
     }
 }

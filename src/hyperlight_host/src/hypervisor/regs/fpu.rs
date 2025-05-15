@@ -202,8 +202,10 @@ impl From<&CommonFpu> for [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 26] {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) const WHP_FPU_NAMES_LEN: usize = 26;
 #[expect(dead_code, reason = "Used in get_fpu, but get_fpu is currently unused")]
+#[cfg(target_os = "windows")]
 pub(crate) const WHP_FPU_NAMES: [WHV_REGISTER_NAME; WHP_FPU_NAMES_LEN] = [
     WHvX64RegisterFpMmx0,
     WHvX64RegisterFpMmx1,

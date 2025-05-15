@@ -174,12 +174,15 @@ impl From<&CommonRegisters> for [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 18] {
     }
 }
 
+#[cfg(target_os = "windows")]
 use std::collections::HashSet;
-use std::convert::TryFrom;
 
+#[cfg(target_os = "windows")]
 use super::FromWhpRegisterError;
 
+#[cfg(target_os = "windows")]
 pub(crate) const WHP_REGS_NAMES_LEN: usize = 18;
+#[cfg(target_os = "windows")]
 pub(crate) const WHP_REGS_NAMES: [WHV_REGISTER_NAME; WHP_REGS_NAMES_LEN] = [
     WHvX64RegisterRax,
     WHvX64RegisterRbx,
