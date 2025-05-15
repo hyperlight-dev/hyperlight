@@ -187,7 +187,7 @@ impl Vm for WhpVm {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
-                WHP_SREGS_NAMES.as_ptr(),
+                WHP_SREGS_NAMES.as_ref().as_ptr(),
                 whp_sregs_values.len() as u32,
                 whp_sregs_values.as_mut_ptr(),
             )?;
