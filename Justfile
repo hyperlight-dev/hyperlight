@@ -77,7 +77,7 @@ test target=default-target features="": (test-unit target features) (test-isolat
 
 # runs unit tests
 test-unit target=default-target features="":
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} --lib
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} --lib -- --nocapture --test-threads=1
 
 # runs tests that requires being run separately, for example due to global state
 test-isolated target=default-target features="":
