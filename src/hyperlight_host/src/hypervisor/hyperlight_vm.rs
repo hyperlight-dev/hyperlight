@@ -46,7 +46,7 @@ use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::whp::WhpVm;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
 use crate::sandbox::hypervisor::HypervisorType;
@@ -688,7 +688,7 @@ fn get_memory_access_violation(
         .find(|region| region.guest_region.contains(&gpa));
 
     if let Some(region) = region {
-        if region.flags.contains(MemoryRegionFlags::STACK_GUARD) {
+        if region.region_type == MemoryRegionType::GuardPage {
             return Some(MemoryAccess::StackGuardPageViolation);
         } else if !region.flags.contains(tried) {
             return Some(MemoryAccess::AccessViolation(region.flags));

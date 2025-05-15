@@ -124,10 +124,11 @@ impl Vm for KvmVm {
         }
 
         regions.iter().enumerate().try_for_each(|(i, region)| {
+            println!("memory region flags: {:#?}", region.flags);
             let kvm_region = kvm_userspace_memory_region {
                 slot: i as u32,
                 guest_phys_addr: region.guest_region.start as u64,
-                memory_size: (region.guest_region.end - region.guest_region.start) as u64,
+                memory_size: region.guest_region.len() as u64,
                 userspace_addr: region.host_region.start as u64,
                 flags: match region.flags {
                     MemoryRegionFlags::READ => KVM_MEM_READONLY,
