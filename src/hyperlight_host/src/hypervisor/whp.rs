@@ -183,11 +183,21 @@ impl Vm for WhpVm {
             unsafe { std::mem::zeroed() };
         println!("whp get_sregs2");
 
+        println!("parition: {:?}", self.partition);
+        println!("whp_sregs_names: {:?}", WHP_SREGS_NAMES);
+        println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
+        println!("first value: {:?}", unsafe {
+            WHP_SREGS_NAMES.as_ptr().read()
+        });
+        println!("last value: {:?}", unsafe {
+            WHP_SREGS_NAMES.as_ptr().add(WHP_SREGS_NAMES_LEN - 1).read()
+        });
+
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
-                WHP_SREGS_NAMES.as_ref().as_ptr(),
+                WHP_SREGS_NAMES.as_ptr(),
                 whp_sregs_values.len() as u32,
                 whp_sregs_values.as_mut_ptr(),
             )?;
