@@ -124,7 +124,6 @@ impl Vm for KvmVm {
         }
 
         regions.iter().enumerate().try_for_each(|(i, region)| {
-            println!("memory region flags: {:#?}", region.flags);
             let kvm_region = kvm_userspace_memory_region {
                 slot: i as u32,
                 guest_phys_addr: region.guest_region.start as u64,

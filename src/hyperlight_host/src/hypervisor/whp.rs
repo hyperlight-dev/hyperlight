@@ -275,7 +275,6 @@ impl Vm for WhpVm {
                     MemoryRegionFlags::READ => Ok(WHvMapGpaRangeFlagRead),
                     MemoryRegionFlags::WRITE => Ok(WHvMapGpaRangeFlagWrite),
                     MemoryRegionFlags::EXECUTE => Ok(WHvMapGpaRangeFlagExecute),
-                    MemoryRegionFlags::STACK_GUARD => Ok(WHvMapGpaRangeFlagNone),
                     _ => Err(new_error!("Invalid Memory Region Flag")),
                 })
                 .collect::<Result<Vec<WHV_MAP_GPA_RANGE_FLAGS>>>()?
