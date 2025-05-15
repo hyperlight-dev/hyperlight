@@ -274,7 +274,7 @@ impl TryFrom<&[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]> for CommonSpecialRegist
     }
 }
 
-// --- Sement Register ---
+// --- Segment Register ---
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub(crate) struct CommonSegmentRegister {
