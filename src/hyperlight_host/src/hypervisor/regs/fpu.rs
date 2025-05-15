@@ -23,17 +23,23 @@ extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
 extern crate mshv_ioctls3 as mshv_ioctls;
 
+#[cfg(target_os = "windows")]
+use std::collections::HashSet;
+
 #[cfg(kvm)]
 use kvm_bindings::kvm_fpu;
 #[cfg(mshv)]
 use mshv_bindings::FloatingPointUnit;
+
+#[cfg(target_os = "windows")]
+use crate::hypervisor::regs::FromWhpRegisterError;
 
 pub(crate) const FP_CONTROL_WORD_DEFAULT: u16 = 0x37f; // mask all fp-exception, set rounding to nearest, set precision to 64-bit
 pub(crate) const FP_TAG_WORD_DEFAULT: u8 = 0xff; // each 8 of x87 fpu registers is empty
 pub(crate) const MXCSR_DEFAULT: u32 = 0x1f80; // mask simd fp-exceptions, clear exception flags, set rounding to nearest, disable flush-to-zero mode, disable denormals-are-zero mode
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct CommonFpu {
+pub(crate) struct CommonFpu {
     pub fpr: [[u8; 16]; 8],
     pub fcw: u16,
     pub fsw: u16,
@@ -127,9 +133,10 @@ impl From<FloatingPointUnit> for CommonFpu {
 use windows::Win32::System::Hypervisor::*;
 
 #[cfg(target_os = "windows")]
-impl From<&CommonFpu> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
+impl From<&CommonFpu> for [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 26] {
     fn from(fpu: &CommonFpu) -> Self {
-        let mut regs = Vec::new();
+        let mut regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 26] = [Default::default(); 26];
+        let mut idx = 0;
 
         // FPU/MMX registers (8 x 128-bit)
         for (i, reg) in fpu.fpr.iter().enumerate() {
@@ -142,11 +149,11 @@ impl From<&CommonFpu> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
                     u32::from_le_bytes([reg[12], reg[13], reg[14], reg[15]]),
                 ],
             };
-            // WHvX64RegisterFpMmx{i}
-            regs.push((WHV_REGISTER_NAME(WHvX64RegisterFpMmx0.0 + i as i32), value));
+            regs[idx] = (WHV_REGISTER_NAME(WHvX64RegisterFpMmx0.0 + i as i32), value);
+            idx += 1;
         }
 
-        // FCW, FSW, FTWX, LastOpcode, LastIP → FpControlStatus
+        // FpControlStatus
         let mut fp_control_status = WHV_REGISTER_VALUE::default();
         fp_control_status.FpControlStatus = WHV_X64_FP_CONTROL_STATUS_REGISTER {
             Anonymous: WHV_X64_FP_CONTROL_STATUS_REGISTER_0 {
@@ -160,7 +167,8 @@ impl From<&CommonFpu> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
                 },
             },
         };
-        regs.push((WHvX64RegisterFpControlStatus, fp_control_status));
+        regs[idx] = (WHvX64RegisterFpControlStatus, fp_control_status);
+        idx += 1;
 
         // XMM registers (16 x 128-bit)
         for (i, reg) in fpu.xmm.iter().enumerate() {
@@ -173,23 +181,173 @@ impl From<&CommonFpu> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
                     u32::from_le_bytes([reg[12], reg[13], reg[14], reg[15]]),
                 ],
             };
-            regs.push((WHV_REGISTER_NAME(WHvX64RegisterXmm0.0 + i as i32), value));
-            // WHvX64RegisterXmm{i}
+            regs[idx] = (WHV_REGISTER_NAME(WHvX64RegisterXmm0.0 + i as i32), value);
+            idx += 1;
         }
 
-        // LastDP, MXCSR → XmmControlStatus
+        // XmmControlStatus
         let mut xmm_control_status = WHV_REGISTER_VALUE::default();
         xmm_control_status.XmmControlStatus = WHV_X64_XMM_CONTROL_STATUS_REGISTER {
             Anonymous: WHV_X64_XMM_CONTROL_STATUS_REGISTER_0 {
                 XmmStatusControl: fpu.mxcsr,
-                XmmStatusControlMask: !0, // Not sure what else this should be
+                XmmStatusControlMask: !0,
                 Anonymous: WHV_X64_XMM_CONTROL_STATUS_REGISTER_0_0 {
                     LastFpRdp: fpu.last_dp,
                 },
             },
         };
-        regs.push((WHvX64RegisterXmmControlStatus, xmm_control_status)); // WHvX64RegisterXmmControlStatus
+        regs[idx] = (WHvX64RegisterXmmControlStatus, xmm_control_status);
+
         regs
+    }
+}
+
+pub(crate) const WHP_FPU_NAMES_LEN: usize = 26;
+#[expect(dead_code, reason = "Used in get_fpu, but get_fpu is currently unused")]
+pub(crate) const WHP_FPU_NAMES: [WHV_REGISTER_NAME; WHP_FPU_NAMES_LEN] = [
+    WHvX64RegisterFpMmx0,
+    WHvX64RegisterFpMmx1,
+    WHvX64RegisterFpMmx2,
+    WHvX64RegisterFpMmx3,
+    WHvX64RegisterFpMmx4,
+    WHvX64RegisterFpMmx5,
+    WHvX64RegisterFpMmx6,
+    WHvX64RegisterFpMmx7,
+    WHvX64RegisterFpControlStatus,
+    WHvX64RegisterXmm0,
+    WHvX64RegisterXmm1,
+    WHvX64RegisterXmm2,
+    WHvX64RegisterXmm3,
+    WHvX64RegisterXmm4,
+    WHvX64RegisterXmm5,
+    WHvX64RegisterXmm6,
+    WHvX64RegisterXmm7,
+    WHvX64RegisterXmm8,
+    WHvX64RegisterXmm9,
+    WHvX64RegisterXmm10,
+    WHvX64RegisterXmm11,
+    WHvX64RegisterXmm12,
+    WHvX64RegisterXmm13,
+    WHvX64RegisterXmm14,
+    WHvX64RegisterXmm15,
+    WHvX64RegisterXmmControlStatus,
+];
+
+#[cfg(target_os = "windows")]
+impl TryFrom<&[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]> for CommonFpu {
+    type Error = FromWhpRegisterError;
+
+    fn try_from(regs: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]) -> Result<Self, Self::Error> {
+        if regs.len() != WHP_FPU_NAMES_LEN {
+            return Err(FromWhpRegisterError::InvalidLength(regs.len()));
+        }
+
+        let mut fpu = CommonFpu::default();
+        let mut seen_registers = HashSet::new();
+
+        for (name, value) in regs {
+            let name_id = name.0;
+
+            // Check for duplicates
+            if !seen_registers.insert(name_id) {
+                return Err(FromWhpRegisterError::DuplicateRegister(name_id));
+            }
+
+            match name_id {
+                id if (WHvX64RegisterFpMmx0.0..WHvX64RegisterFpMmx0.0 + 8).contains(&id) => {
+                    let idx = (id - WHvX64RegisterFpMmx0.0) as usize;
+                    let dwords = unsafe { value.Reg128.Dword };
+                    fpu.fpr[idx] = [
+                        dwords[0].to_le_bytes(),
+                        dwords[1].to_le_bytes(),
+                        dwords[2].to_le_bytes(),
+                        dwords[3].to_le_bytes(),
+                    ]
+                    .concat()
+                    .try_into()
+                    .map_err(|_| FromWhpRegisterError::InvalidEncoding)?;
+                }
+
+                id if id == WHvX64RegisterFpControlStatus.0 => {
+                    let control = unsafe { value.FpControlStatus.Anonymous };
+                    fpu.fcw = control.FpControl;
+                    fpu.fsw = control.FpStatus;
+                    fpu.ftwx = control.FpTag;
+                    fpu.pad1 = control.Reserved;
+                    fpu.last_opcode = control.LastFpOp;
+                    fpu.last_ip = unsafe { control.Anonymous.LastFpRip };
+                }
+
+                id if (WHvX64RegisterXmm0.0..WHvX64RegisterXmm0.0 + 16).contains(&id) => {
+                    let idx = (id - WHvX64RegisterXmm0.0) as usize;
+                    let dwords = unsafe { value.Reg128.Dword };
+                    fpu.xmm[idx] = [
+                        dwords[0].to_le_bytes(),
+                        dwords[1].to_le_bytes(),
+                        dwords[2].to_le_bytes(),
+                        dwords[3].to_le_bytes(),
+                    ]
+                    .concat()
+                    .try_into()
+                    .map_err(|_| FromWhpRegisterError::InvalidEncoding)?;
+                }
+
+                id if id == WHvX64RegisterXmmControlStatus.0 => {
+                    let control = unsafe { value.XmmControlStatus.Anonymous };
+                    fpu.mxcsr = control.XmmStatusControl;
+                    fpu.last_dp = unsafe { control.Anonymous.LastFpRdp };
+                }
+
+                _ => {
+                    return Err(FromWhpRegisterError::InvalidRegister(name_id));
+                }
+            }
+        }
+
+        // Set of all expected register names
+        let expected_registers: HashSet<i32> = [
+            WHvX64RegisterFpMmx0.0,
+            WHvX64RegisterFpMmx1.0,
+            WHvX64RegisterFpMmx2.0,
+            WHvX64RegisterFpMmx3.0,
+            WHvX64RegisterFpMmx4.0,
+            WHvX64RegisterFpMmx5.0,
+            WHvX64RegisterFpMmx6.0,
+            WHvX64RegisterFpMmx7.0,
+            WHvX64RegisterFpControlStatus.0,
+            WHvX64RegisterXmm0.0,
+            WHvX64RegisterXmm1.0,
+            WHvX64RegisterXmm2.0,
+            WHvX64RegisterXmm3.0,
+            WHvX64RegisterXmm4.0,
+            WHvX64RegisterXmm5.0,
+            WHvX64RegisterXmm6.0,
+            WHvX64RegisterXmm7.0,
+            WHvX64RegisterXmm8.0,
+            WHvX64RegisterXmm9.0,
+            WHvX64RegisterXmm10.0,
+            WHvX64RegisterXmm11.0,
+            WHvX64RegisterXmm12.0,
+            WHvX64RegisterXmm13.0,
+            WHvX64RegisterXmm14.0,
+            WHvX64RegisterXmm15.0,
+            WHvX64RegisterXmmControlStatus.0,
+        ]
+        .into_iter()
+        .collect();
+
+        // Technically it should not be possible to have any missing registers at this point
+        // since we are guaranteed to have 18 non-duplicate registers that have passed the match-arm above, but leaving this here for safety anyway
+        let missing: HashSet<i32> = expected_registers
+            .difference(&seen_registers)
+            .cloned()
+            .collect();
+
+        if !missing.is_empty() {
+            return Err(FromWhpRegisterError::MissingRegister(missing));
+        }
+
+        Ok(fpu)
     }
 }
 
@@ -242,5 +400,36 @@ mod tests {
         let round_tripped = CommonFpu::from(mshv);
 
         assert_eq!(original, round_tripped);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn round_trip_windows_fpu() {
+        use windows::Win32::System::Hypervisor::*;
+
+        let original = sample_common_fpu();
+        let windows: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 26] = (&original).into();
+        let round_tripped = CommonFpu::try_from(windows.as_ref()).unwrap();
+        assert_eq!(original, round_tripped);
+
+        // test for duplicate register error handling
+        let original = sample_common_fpu();
+        let mut windows: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 26] = (&original).into();
+        windows[0].0 = WHvX64RegisterFpMmx1;
+        let err = CommonFpu::try_from(windows.as_ref()).unwrap_err();
+        assert_eq!(
+            err,
+            FromWhpRegisterError::DuplicateRegister(WHvX64RegisterFpMmx1.0)
+        );
+
+        // test for passing non-fpu register (e.g. RAX)
+        let original = sample_common_fpu();
+        let mut windows: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 26] = (&original).into();
+        windows[0] = (WHvX64RegisterRax, windows[0].1);
+        let err = CommonFpu::try_from(windows.as_ref()).unwrap_err();
+        assert_eq!(
+            err,
+            FromWhpRegisterError::InvalidRegister(WHvX64RegisterRax.0)
+        );
     }
 }

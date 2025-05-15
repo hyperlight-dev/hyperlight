@@ -8,15 +8,16 @@ extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
 extern crate mshv_ioctls3 as mshv_ioctls;
 
+use std::collections::HashSet;
+
 #[cfg(kvm)]
 use kvm_bindings::{kvm_dtable, kvm_segment, kvm_sregs};
 #[cfg(mshv)]
 use mshv_bindings::{SegmentRegister, SpecialRegisters, TableRegister};
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Hypervisor::{
-    WHV_REGISTER_VALUE, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
-    WHV_X64_TABLE_REGISTER,
-};
+use windows::Win32::System::Hypervisor::*;
+
+use super::FromWhpRegisterError;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub(crate) struct CommonSpecialRegisters {
@@ -141,6 +142,131 @@ impl From<CommonSpecialRegisters> for kvm_sregs {
             apic_base: common_sregs.apic_base,
             interrupt_bitmap: common_sregs.interrupt_bitmap,
         }
+    }
+}
+
+pub(crate) const WHP_SREGS_NAMES_LEN: usize = 17;
+pub(crate) const WHP_SREGS_NAMES: [WHV_REGISTER_NAME; WHP_SREGS_NAMES_LEN] = [
+    WHvX64RegisterCs,
+    WHvX64RegisterDs,
+    WHvX64RegisterEs,
+    WHvX64RegisterFs,
+    WHvX64RegisterGs,
+    WHvX64RegisterSs,
+    WHvX64RegisterTr,
+    WHvX64RegisterLdtr,
+    WHvX64RegisterGdtr,
+    WHvX64RegisterIdtr,
+    WHvX64RegisterCr0,
+    WHvX64RegisterCr2,
+    WHvX64RegisterCr3,
+    WHvX64RegisterCr4,
+    WHvX64RegisterCr8,
+    WHvX64RegisterEfer,
+    WHvX64RegisterApicBase,
+];
+
+#[cfg(target_os = "windows")]
+impl From<&CommonSpecialRegisters>
+    for [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_SREGS_NAMES_LEN]
+{
+    fn from(other: &CommonSpecialRegisters) -> Self {
+        [
+            (WHvX64RegisterCs, other.cs.into()),
+            (WHvX64RegisterDs, other.ds.into()),
+            (WHvX64RegisterEs, other.es.into()),
+            (WHvX64RegisterFs, other.fs.into()),
+            (WHvX64RegisterGs, other.gs.into()),
+            (WHvX64RegisterSs, other.ss.into()),
+            (WHvX64RegisterTr, other.tr.into()),
+            (WHvX64RegisterLdtr, other.ldt.into()),
+            (WHvX64RegisterGdtr, other.gdt.into()),
+            (WHvX64RegisterIdtr, other.idt.into()),
+            (WHvX64RegisterCr0, WHV_REGISTER_VALUE { Reg64: other.cr0 }),
+            (WHvX64RegisterCr2, WHV_REGISTER_VALUE { Reg64: other.cr2 }),
+            (WHvX64RegisterCr3, WHV_REGISTER_VALUE { Reg64: other.cr3 }),
+            (WHvX64RegisterCr4, WHV_REGISTER_VALUE { Reg64: other.cr4 }),
+            (WHvX64RegisterCr8, WHV_REGISTER_VALUE { Reg64: other.cr8 }),
+            (WHvX64RegisterEfer, WHV_REGISTER_VALUE { Reg64: other.efer }),
+            (
+                WHvX64RegisterApicBase,
+                WHV_REGISTER_VALUE {
+                    Reg64: other.apic_base,
+                },
+            ),
+        ]
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl TryFrom<&[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]> for CommonSpecialRegisters {
+    type Error = FromWhpRegisterError;
+
+    #[expect(
+        non_upper_case_globals,
+        reason = "Windows API has lowercase register names"
+    )]
+    fn try_from(regs: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]) -> Result<Self, Self::Error> {
+        if regs.len() != WHP_SREGS_NAMES_LEN {
+            return Err(FromWhpRegisterError::InvalidLength(regs.len()));
+        }
+        let mut registers = CommonSpecialRegisters::default();
+        let mut seen_registers = HashSet::new();
+
+        for &(name, value) in regs {
+            let name_id = name.0;
+
+            // Check for duplicates
+            if !seen_registers.insert(name_id) {
+                return Err(FromWhpRegisterError::DuplicateRegister(name_id));
+            }
+
+            unsafe {
+                match name {
+                    WHvX64RegisterCs => registers.cs = value.into(),
+                    WHvX64RegisterDs => registers.ds = value.into(),
+                    WHvX64RegisterEs => registers.es = value.into(),
+                    WHvX64RegisterFs => registers.fs = value.into(),
+                    WHvX64RegisterGs => registers.gs = value.into(),
+                    WHvX64RegisterSs => registers.ss = value.into(),
+                    WHvX64RegisterTr => registers.tr = value.into(),
+                    WHvX64RegisterLdtr => registers.ldt = value.into(),
+                    WHvX64RegisterGdtr => registers.gdt = value.into(),
+                    WHvX64RegisterIdtr => registers.idt = value.into(),
+                    WHvX64RegisterCr0 => registers.cr0 = value.Reg64,
+                    WHvX64RegisterCr2 => registers.cr2 = value.Reg64,
+                    WHvX64RegisterCr3 => registers.cr3 = value.Reg64,
+                    WHvX64RegisterCr4 => registers.cr4 = value.Reg64,
+                    WHvX64RegisterCr8 => registers.cr8 = value.Reg64,
+                    WHvX64RegisterEfer => registers.efer = value.Reg64,
+                    WHvX64RegisterApicBase => registers.apic_base = value.Reg64,
+                    _ => {
+                        // Given unexpected register
+                        return Err(FromWhpRegisterError::InvalidRegister(name_id));
+                    }
+                }
+            }
+        }
+
+        // TODO: I'm not sure how to get this from WHP at the moment
+        registers.interrupt_bitmap = Default::default();
+
+        // Set of all expected register names
+        let expected_registers: HashSet<i32> =
+            WHP_SREGS_NAMES.map(|name| name.0).into_iter().collect();
+
+        // Technically it should not be possible to have any missing registers at this point
+        // since we are guaranteed to have 18 non-duplicate registers that have passed the match-arm above, but leaving this here for safety anyway
+        let missing: HashSet<_> = expected_registers
+            .difference(&seen_registers)
+            .cloned()
+            .collect();
+
+        if !missing.is_empty() {
+            return Err(FromWhpRegisterError::MissingRegister(missing));
+        }
+
+        Ok(registers)
     }
 }
 
@@ -427,7 +553,7 @@ mod tests {
             cr8: 0x1234,
             efer: 0x5678,
             apic_base: 0x9ABC,
-            interrupt_bitmap: [0xAAAAAAAAAAAAAAAA; 4],
+            interrupt_bitmap: [0; 4],
         }
     }
 
@@ -449,5 +575,52 @@ mod tests {
         let roundtrip = CommonSpecialRegisters::from(mshv_sregs);
 
         assert_eq!(original, roundtrip);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn round_trip_whp_sregs() {
+        let original = sample_common_special_registers();
+        let whp_sregs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_SREGS_NAMES_LEN] =
+            (&original).into();
+        let roundtrip = CommonSpecialRegisters::try_from(whp_sregs.as_ref()).unwrap();
+        assert_eq!(original, roundtrip);
+
+        // Test duplicate register error
+        let original = sample_common_special_registers();
+        let mut whp_sregs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_SREGS_NAMES_LEN] =
+            (&original).into();
+        whp_sregs[0].0 = WHvX64RegisterDs;
+        let err = CommonSpecialRegisters::try_from(whp_sregs.as_ref()).unwrap_err();
+        assert_eq!(
+            err,
+            FromWhpRegisterError::DuplicateRegister(WHvX64RegisterDs.0)
+        );
+
+        // Test passing non-sregs register (e.g. RIP)
+        let original = sample_common_special_registers();
+        let mut whp_sregs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_SREGS_NAMES_LEN] =
+            (&original).into();
+        whp_sregs[0].0 = WHvX64RegisterRip;
+        let err = CommonSpecialRegisters::try_from(whp_sregs.as_ref()).unwrap_err();
+        assert_eq!(
+            err,
+            FromWhpRegisterError::InvalidRegister(WHvX64RegisterRip.0)
+        );
+    }
+
+    #[test]
+    fn temp() {
+        let value = WHV_REGISTER_VALUE {
+            Segment: WHV_X64_SEGMENT_REGISTER {
+                Anonymous: WHV_X64_SEGMENT_REGISTER_0 {
+                    Attributes: 0b1011 | 1 << 4 | 1 << 7 | 1 << 13, // Type (11: Execute/Read, accessed) | L (64-bit mode) | P (present) | S (code segment)
+                },
+                ..Default::default() // zero out the rest
+            },
+        };
+
+        let segment: CommonSegmentRegister = value.into();
+        print!("{:#?}", segment);
     }
 }

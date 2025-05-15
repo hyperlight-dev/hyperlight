@@ -25,11 +25,12 @@ use windows_result::HRESULT;
 
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::wrappers::HandleWrapper;
-use super::{
-    HyperlightExit, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
-    CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+use super::regs::{
+    WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES,
+    WHP_SREGS_NAMES_LEN,
 };
+use super::wrappers::HandleWrapper;
+use super::HyperlightExit;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
@@ -108,7 +109,7 @@ impl WhpVm {
         })
     }
 
-    /// Helper for setting arbitrary registers
+    /// Helper for setting arbitrary registers.
     fn set_registers(&self, registers: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]) -> Result<()> {
         let register_count = registers.len();
         let mut register_names: Vec<WHV_REGISTER_NAME> = vec![];
@@ -136,172 +137,101 @@ impl WhpVm {
 
 impl Vm for WhpVm {
     fn get_regs(&self) -> Result<CommonRegisters> {
-        const LEN: usize = 18;
+        let mut whv_regs_values: [WHV_REGISTER_VALUE; WHP_REGS_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
 
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterRax,
-            WHvX64RegisterRbx,
-            WHvX64RegisterRcx,
-            WHvX64RegisterRdx,
-            WHvX64RegisterRsi,
-            WHvX64RegisterRdi,
-            WHvX64RegisterRsp,
-            WHvX64RegisterRbp,
-            WHvX64RegisterR8,
-            WHvX64RegisterR9,
-            WHvX64RegisterR10,
-            WHvX64RegisterR11,
-            WHvX64RegisterR12,
-            WHvX64RegisterR13,
-            WHvX64RegisterR14,
-            WHvX64RegisterR15,
-            WHvX64RegisterRip,
-            WHvX64RegisterRflags,
-        ];
-
-        let mut out: [WHV_REGISTER_VALUE; LEN] = unsafe { std::mem::zeroed() };
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
-                names.as_ptr(),
-                LEN as u32,
-                out.as_mut_ptr(),
+                WHP_REGS_NAMES.as_ptr(),
+                WHP_REGS_NAMES_LEN as u32,
+                whv_regs_values.as_mut_ptr(),
             )
             .unwrap();
-            Ok(CommonRegisters {
-                rax: out[0].Reg64,
-                rbx: out[1].Reg64,
-                rcx: out[2].Reg64,
-                rdx: out[3].Reg64,
-                rsi: out[4].Reg64,
-                rdi: out[5].Reg64,
-                rsp: out[6].Reg64,
-                rbp: out[7].Reg64,
-                r8: out[8].Reg64,
-                r9: out[9].Reg64,
-                r10: out[10].Reg64,
-                r11: out[11].Reg64,
-                r12: out[12].Reg64,
-                r13: out[13].Reg64,
-                r14: out[14].Reg64,
-                r15: out[15].Reg64,
-                rip: out[16].Reg64,
-                rflags: out[17].Reg64,
-            })
         }
+
+        WHP_REGS_NAMES
+            .into_iter()
+            .zip(whv_regs_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonRegisters: {:?}",
+                    e
+                )
+            })
     }
 
     fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
-        let whp_regs: Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> = regs.into();
+        let whp_regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_REGS_NAMES_LEN] = regs.into();
         self.set_registers(&whp_regs)?;
         Ok(())
     }
 
     fn get_sregs(&self) -> Result<CommonSpecialRegisters> {
-        const LEN: usize = 17;
+        let mut whp_sregs_values: [WHV_REGISTER_VALUE; WHP_SREGS_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
 
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterCs,
-            WHvX64RegisterDs,
-            WHvX64RegisterEs,
-            WHvX64RegisterFs,
-            WHvX64RegisterGs,
-            WHvX64RegisterSs,
-            WHvX64RegisterTr,
-            WHvX64RegisterLdtr,
-            WHvX64RegisterGdtr,
-            WHvX64RegisterIdtr,
-            WHvX64RegisterCr0,
-            WHvX64RegisterCr2,
-            WHvX64RegisterCr3,
-            WHvX64RegisterCr4,
-            WHvX64RegisterCr8,
-            WHvX64RegisterEfer,
-            WHvX64RegisterApicBase,
-        ];
-
-        let mut out: [WHV_REGISTER_VALUE; LEN] = unsafe { std::mem::zeroed() };
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
-                names.as_ptr(),
-                out.len() as u32,
-                out.as_mut_ptr(),
+                WHP_SREGS_NAMES.as_ptr(),
+                whp_sregs_values.len() as u32,
+                whp_sregs_values.as_mut_ptr(),
             )
             .unwrap();
         }
 
-        let result = unsafe {
-            CommonSpecialRegisters {
-                cs: out[0].into(),
-                ds: out[1].into(),
-                es: out[2].into(),
-                fs: out[3].into(),
-                gs: out[4].into(),
-                ss: out[5].into(),
-                tr: out[6].into(),
-                ldt: out[7].into(),
-                gdt: out[8].into(),
-                idt: out[9].into(),
-                cr0: out[10].Reg64,
-                cr2: out[11].Reg64,
-                cr3: out[12].Reg64,
-                cr4: out[13].Reg64,
-                cr8: out[14].Reg64,
-                efer: out[15].Reg64,
-                apic_base: out[16].Reg64,
-                interrupt_bitmap: Default::default(), // TODO: I'm not sure how to get this at the moment
-            }
-        };
-
-        Ok(result)
+        WHP_SREGS_NAMES
+            .into_iter()
+            .zip(whp_sregs_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonSpecialRegisters: {:?}",
+                    e
+                )
+            })
     }
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        // self.processor.set_sregs(sregs).unwrap();
-        self.set_registers(&[
-            (WHvX64RegisterCr3, WHV_REGISTER_VALUE { Reg64: sregs.cr3 }),
-            (
-                WHvX64RegisterCr4,
-                WHV_REGISTER_VALUE {
-                    Reg64: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
-                },
-            ),
-            (
-                WHvX64RegisterCr0,
-                WHV_REGISTER_VALUE {
-                    Reg64: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
-                },
-            ),
-            (
-                WHvX64RegisterEfer,
-                WHV_REGISTER_VALUE {
-                    Reg64: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
-                },
-            ),
-            (
-                WHvX64RegisterCs,
-                WHV_REGISTER_VALUE {
-                    Segment: WHV_X64_SEGMENT_REGISTER {
-                        Anonymous: WHV_X64_SEGMENT_REGISTER_0 {
-                            Attributes: 0b1011 | 1 << 4 | 1 << 7 | 1 << 13, // Type (11: Execute/Read, accessed) | L (64-bit mode) | P (present) | S (code segment)
-                        },
-                        ..Default::default() // zero out the rest
-                    },
-                },
-            ),
-        ])?;
+        let whp_regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_SREGS_NAMES_LEN] = sregs.into();
+        self.set_registers(&whp_regs)?;
         Ok(())
     }
 
     fn get_fpu(&self) -> Result<CommonFpu> {
-        todo!()
+        let mut whp_fpu_values: [WHV_REGISTER_VALUE; WHP_FPU_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_FPU_NAMES.as_ptr(),
+                whp_fpu_values.len() as u32,
+                whp_fpu_values.as_mut_ptr(),
+            )
+            .unwrap();
+        }
+
+        WHP_FPU_NAMES
+            .into_iter()
+            .zip(whp_fpu_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| new_error!("Failed to convert WHP registers to CommonFpu: {:?}", e))
     }
 
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
-        let whp_fpu: Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> = fpu.into();
+        let whp_fpu: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_FPU_NAMES_LEN] = fpu.into();
         self.set_registers(&whp_fpu)?;
         Ok(())
     }

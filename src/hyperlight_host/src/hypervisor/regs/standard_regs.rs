@@ -146,9 +146,9 @@ impl From<CommonRegisters> for StandardRegisters {
 use windows::Win32::System::Hypervisor::*;
 
 #[cfg(target_os = "windows")]
-impl From<&CommonRegisters> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
+impl From<&CommonRegisters> for [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 18] {
     fn from(regs: &CommonRegisters) -> Self {
-        vec![
+        [
             (WHvX64RegisterRax, WHV_REGISTER_VALUE { Reg64: regs.rax }),
             (WHvX64RegisterRbx, WHV_REGISTER_VALUE { Reg64: regs.rbx }),
             (WHvX64RegisterRcx, WHV_REGISTER_VALUE { Reg64: regs.rcx }),
@@ -171,6 +171,103 @@ impl From<&CommonRegisters> for Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> {
                 WHV_REGISTER_VALUE { Reg64: regs.rflags },
             ),
         ]
+    }
+}
+
+use std::collections::HashSet;
+use std::convert::TryFrom;
+
+use super::FromWhpRegisterError;
+
+pub(crate) const WHP_REGS_NAMES_LEN: usize = 18;
+pub(crate) const WHP_REGS_NAMES: [WHV_REGISTER_NAME; WHP_REGS_NAMES_LEN] = [
+    WHvX64RegisterRax,
+    WHvX64RegisterRbx,
+    WHvX64RegisterRcx,
+    WHvX64RegisterRdx,
+    WHvX64RegisterRsi,
+    WHvX64RegisterRdi,
+    WHvX64RegisterRsp,
+    WHvX64RegisterRbp,
+    WHvX64RegisterR8,
+    WHvX64RegisterR9,
+    WHvX64RegisterR10,
+    WHvX64RegisterR11,
+    WHvX64RegisterR12,
+    WHvX64RegisterR13,
+    WHvX64RegisterR14,
+    WHvX64RegisterR15,
+    WHvX64RegisterRip,
+    WHvX64RegisterRflags,
+];
+
+#[cfg(target_os = "windows")]
+impl TryFrom<&[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]> for CommonRegisters {
+    type Error = FromWhpRegisterError;
+
+    #[expect(
+        non_upper_case_globals,
+        reason = "Windows API has lowercase register names"
+    )]
+    fn try_from(regs: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]) -> Result<Self, Self::Error> {
+        if regs.len() != WHP_REGS_NAMES_LEN {
+            return Err(FromWhpRegisterError::InvalidLength(regs.len()));
+        }
+        let mut registers = CommonRegisters::default();
+        let mut seen_registers = HashSet::new();
+
+        for &(name, value) in regs {
+            let name_id = name.0;
+
+            // Check for duplicates
+            if !seen_registers.insert(name_id) {
+                return Err(FromWhpRegisterError::DuplicateRegister(name_id));
+            }
+
+            unsafe {
+                match name {
+                    WHvX64RegisterRax => registers.rax = value.Reg64,
+                    WHvX64RegisterRbx => registers.rbx = value.Reg64,
+                    WHvX64RegisterRcx => registers.rcx = value.Reg64,
+                    WHvX64RegisterRdx => registers.rdx = value.Reg64,
+                    WHvX64RegisterRsi => registers.rsi = value.Reg64,
+                    WHvX64RegisterRdi => registers.rdi = value.Reg64,
+                    WHvX64RegisterRsp => registers.rsp = value.Reg64,
+                    WHvX64RegisterRbp => registers.rbp = value.Reg64,
+                    WHvX64RegisterR8 => registers.r8 = value.Reg64,
+                    WHvX64RegisterR9 => registers.r9 = value.Reg64,
+                    WHvX64RegisterR10 => registers.r10 = value.Reg64,
+                    WHvX64RegisterR11 => registers.r11 = value.Reg64,
+                    WHvX64RegisterR12 => registers.r12 = value.Reg64,
+                    WHvX64RegisterR13 => registers.r13 = value.Reg64,
+                    WHvX64RegisterR14 => registers.r14 = value.Reg64,
+                    WHvX64RegisterR15 => registers.r15 = value.Reg64,
+                    WHvX64RegisterRip => registers.rip = value.Reg64,
+                    WHvX64RegisterRflags => registers.rflags = value.Reg64,
+                    _ => {
+                        // Given unexpected register
+                        return Err(FromWhpRegisterError::InvalidRegister(name_id));
+                    }
+                }
+            }
+        }
+
+        // Set of all expected register names
+        let expected_registers: HashSet<i32> =
+            WHP_REGS_NAMES.map(|name| name.0).into_iter().collect();
+
+        // Technically it should not be possible to have any missing registers at this point
+        // since we are guaranteed to have 18 non-duplicate registers that have passed the match-arm above, but leaving this here for safety anyway
+        let missing: HashSet<_> = expected_registers
+            .difference(&seen_registers)
+            .cloned()
+            .collect();
+
+        if !missing.is_empty() {
+            return Err(FromWhpRegisterError::MissingRegister(missing));
+        }
+
+        Ok(registers)
     }
 }
 
@@ -216,5 +313,34 @@ mod tests {
         let mshv_regs: StandardRegisters = original.into();
         let converted: CommonRegisters = mshv_regs.into();
         assert_eq!(original, converted);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn round_trip_whp_regs() {
+        let original = common_regs();
+        let whp_regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 18] = (&original).into();
+        let converted: CommonRegisters = whp_regs.as_ref().try_into().unwrap();
+        assert_eq!(original, converted);
+
+        // test for duplicate register error handling
+        let original = common_regs();
+        let mut whp_regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 18] = (&original).into();
+        whp_regs[0].0 = WHvX64RegisterRbx;
+        let err = CommonRegisters::try_from(whp_regs.as_ref()).unwrap_err();
+        assert_eq!(
+            err,
+            FromWhpRegisterError::DuplicateRegister(WHvX64RegisterRbx.0)
+        );
+
+        // test for passing non-standard register (e.g. CR8)
+        let original = common_regs();
+        let mut whp_regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); 18] = (&original).into();
+        whp_regs[0].0 = WHvX64RegisterCr8;
+        let err = CommonRegisters::try_from(whp_regs.as_ref()).unwrap_err();
+        assert_eq!(
+            err,
+            FromWhpRegisterError::InvalidRegister(WHvX64RegisterCr8.0)
+        );
     }
 }

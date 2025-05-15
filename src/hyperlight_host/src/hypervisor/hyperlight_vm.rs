@@ -351,9 +351,10 @@ impl HyperlightSandbox {
         sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT;
         sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP;
         sregs.efer = EFER_LME | EFER_LMA | EFER_SCE | EFER_NX;
-        sregs.cs.l = 1; // required for 64-bit mode
-        sregs.cs.present = 1;
-        sregs.cs.s = 1;
+        sregs.cs.type_ = 11; // 0b1011: Execute/Read, Accessed
+        sregs.cs.s = 1; // Code/data segment
+        sregs.cs.present = 1; // Segment is present
+        sregs.cs.l = 1; // 64-bit segment
         vm.set_sregs(&sregs)?;
 
         #[cfg(gdb)]
