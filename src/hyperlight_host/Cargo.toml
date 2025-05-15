@@ -28,7 +28,7 @@ libc = { version = "0.2.172" }
 flatbuffers = "25.2.10"
 page_size = "0.6.0"
 termcolor = "1.2.0"
-bitflags = "2.9.0"
+bitflags = "2.9.1"
 log = "0.4.27"
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
