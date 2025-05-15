@@ -25,13 +25,11 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
-use hyperlight_common::mem::RunMode;
 use hyperlight_common::outb::OutBAction;
 
 use crate::error::{HyperlightGuestError, Result};
 use crate::shared_input_data::try_pop_shared_input_data_into;
 use crate::shared_output_data::push_shared_output_data;
-use crate::{OUTB_PTR, OUTB_PTR_WITH_CONTEXT, P_PEB, RUNNING_MODE};
 
 /// Get a return value from a host function call.
 /// This usually requires a host function to be called first using `call_host_function`.
@@ -77,39 +75,16 @@ pub fn call_host_function(
 
 pub fn outb(port: u16, data: &[u8]) {
     unsafe {
-        match RUNNING_MODE {
-            RunMode::Hypervisor => {
-                let mut i = 0;
-                while i < data.len() {
-                    let remaining = data.len() - i;
-                    let chunk_len = remaining.min(3);
-                    let mut chunk = [0u8; 4];
-                    chunk[0] = chunk_len as u8;
-                    chunk[1..1 + chunk_len].copy_from_slice(&data[i..i + chunk_len]);
-                    let val = u32::from_le_bytes(chunk);
-                    out32(port, val);
-                    i += chunk_len;
-                }
-            }
-            RunMode::InProcessLinux | RunMode::InProcessWindows => {
-                if let Some(outb_func) = OUTB_PTR_WITH_CONTEXT {
-                    if let Some(peb_ptr) = P_PEB {
-                        outb_func(
-                            (*peb_ptr).pOutbContext,
-                            port,
-                            data.as_ptr(),
-                            data.len() as u64,
-                        );
-                    }
-                } else if let Some(outb_func) = OUTB_PTR {
-                    outb_func(port, data.as_ptr(), data.len() as u64);
-                } else {
-                    panic!("Tried to call outb without hypervisor and without outb function ptrs");
-                }
-            }
-            _ => {
-                panic!("Tried to call outb in invalid runmode");
-            }
+        let mut i = 0;
+        while i < data.len() {
+            let remaining = data.len() - i;
+            let chunk_len = remaining.min(3);
+            let mut chunk = [0u8; 4];
+            chunk[0] = chunk_len as u8;
+            chunk[1..1 + chunk_len].copy_from_slice(&data[i..i + chunk_len]);
+            let val = u32::from_le_bytes(chunk);
+            out32(port, val);
+            i += chunk_len;
         }
     }
 }

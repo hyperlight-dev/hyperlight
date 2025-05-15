@@ -52,11 +52,6 @@ pub(crate) extern "win64" fn set_stack_allocate_error() {
     outb(OutBAction::Abort as u16, &[ErrorCode::StackOverflow as u8]);
 }
 
-#[no_mangle]
-pub(crate) extern "win64" fn set_invalid_runmode_error() {
-    panic!("Invalid run mode in __chkstk");
-}
-
 /// Exposes a C API to allow the guest to set an error
 ///
 /// # Safety

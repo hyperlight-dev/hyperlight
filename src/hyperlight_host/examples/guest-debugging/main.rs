@@ -47,8 +47,7 @@ fn main() -> hyperlight_host::Result<()> {
         hyperlight_host::GuestBinary::FilePath(
             hyperlight_testing::simple_guest_as_string().unwrap(),
         ),
-        cfg,  // sandbox configuration
-        None, // default run options
+        cfg, // sandbox configuration
     )?;
 
     // Register a host functions

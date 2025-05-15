@@ -96,8 +96,6 @@ pub use sandbox::uninitialized::GuestBinary;
 /// A sandbox that can call be used to make multiple calls to guest functions,
 /// and otherwise reused multiple times
 pub use sandbox::MultiUseSandbox;
-/// The re-export for the `SandboxRunOptions` type
-pub use sandbox::SandboxRunOptions;
 /// The re-export for the `UninitializedSandbox` type
 pub use sandbox::UninitializedSandbox;
 

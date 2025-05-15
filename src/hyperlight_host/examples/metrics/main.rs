@@ -54,7 +54,7 @@ fn do_hyperlight_stuff() {
         let path = hyperlight_guest_path.clone();
         let handle = spawn(move || -> Result<()> {
             // Create a new sandbox.
-            let mut usandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None, None)?;
+            let mut usandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)?;
             usandbox.register_print(fn_writer)?;
 
             // Initialize the sandbox.
@@ -93,12 +93,9 @@ fn do_hyperlight_stuff() {
     }
 
     // Create a new sandbox.
-    let usandbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(hyperlight_guest_path.clone()),
-        None,
-        None,
-    )
-    .expect("Failed to create UninitializedSandbox");
+    let usandbox =
+        UninitializedSandbox::new(GuestBinary::FilePath(hyperlight_guest_path.clone()), None)
+            .expect("Failed to create UninitializedSandbox");
 
     // Initialize the sandbox.
 

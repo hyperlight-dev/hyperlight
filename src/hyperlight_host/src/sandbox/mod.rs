@@ -30,8 +30,6 @@ pub(crate) mod mem_access;
 /// `SandboxMemoryManager`
 pub(crate) mod mem_mgr;
 pub(crate) mod outb;
-/// Options for configuring a sandbox
-mod run_options;
 /// Functionality for creating uninitialized sandboxes, manipulating them,
 /// and converting them to initialized sandboxes.
 pub mod uninitialized;
@@ -43,8 +41,6 @@ pub(crate) mod uninitialized_evolve;
 pub use config::SandboxConfiguration;
 /// Re-export for the `MultiUseSandbox` type
 pub use initialized_multi_use::MultiUseSandbox;
-/// Re-export for `SandboxRunOptions` type
-pub use run_options::SandboxRunOptions;
 use tracing::{instrument, Span};
 /// Re-export for `GuestBinary` type
 pub use uninitialized::GuestBinary;
@@ -133,7 +129,7 @@ mod tests {
         for i in 0..10 {
             let simple_guest_path = simple_guest_as_string().expect("Guest Binary Missing");
             let unintializedsandbox =
-                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None, None)
+                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None)
                     .unwrap_or_else(|_| panic!("Failed to create UninitializedSandbox {}", i));
 
             unintializedsandbox_queue

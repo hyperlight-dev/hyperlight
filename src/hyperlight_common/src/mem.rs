@@ -22,16 +22,6 @@ pub const PAGE_SIZE_USIZE: usize = 1 << 12;
 
 use core::ffi::{c_char, c_void};
 
-#[repr(u64)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum RunMode {
-    None = 0,
-    Hypervisor = 1,
-    InProcessWindows = 2,
-    InProcessLinux = 3,
-    Invalid = 4,
-}
-
 #[repr(C)]
 pub struct InputData {
     pub inputDataSize: u64,
@@ -67,9 +57,6 @@ pub struct HyperlightPEB {
     pub security_cookie_seed: u64,
     pub guest_function_dispatch_ptr: u64,
     pub pCode: *mut c_char,
-    pub pOutb: *mut c_void,
-    pub pOutbContext: *mut c_void,
-    pub runMode: RunMode,
     pub inputdata: InputData,
     pub outputdata: OutputData,
     pub guestheapData: GuestHeapData,

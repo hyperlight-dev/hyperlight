@@ -16,7 +16,7 @@ limitations under the License.
 use std::fmt::Debug;
 use std::mem::{offset_of, size_of};
 
-use hyperlight_common::mem::{GuestStackData, HyperlightPEB, RunMode, PAGE_SIZE_USIZE};
+use hyperlight_common::mem::{GuestStackData, HyperlightPEB, PAGE_SIZE_USIZE};
 use rand::{rng, RngCore};
 use tracing::{instrument, Span};
 
@@ -82,8 +82,7 @@ pub(crate) struct SandboxMemoryLayout {
     peb_offset: usize,
     peb_security_cookie_seed_offset: usize,
     peb_guest_dispatch_function_ptr_offset: usize, // set by guest in guest entrypoint
-    peb_code_and_outb_pointer_offset: usize,
-    peb_runmode_offset: usize,
+    peb_code_pointer_offset: usize,
     peb_input_data_offset: usize,
     peb_output_data_offset: usize,
     peb_heap_data_offset: usize,
@@ -128,7 +127,7 @@ impl Debug for SandboxMemoryLayout {
             )
             .field(
                 "Code and OutB Pointer Offset",
-                &format_args!("{:#x}", self.peb_code_and_outb_pointer_offset),
+                &format_args!("{:#x}", self.peb_code_pointer_offset),
             )
             .field(
                 "Input Data Offset",
@@ -226,8 +225,7 @@ impl SandboxMemoryLayout {
             peb_offset + offset_of!(HyperlightPEB, security_cookie_seed);
         let peb_guest_dispatch_function_ptr_offset =
             peb_offset + offset_of!(HyperlightPEB, guest_function_dispatch_ptr);
-        let peb_code_and_outb_pointer_offset = peb_offset + offset_of!(HyperlightPEB, pCode);
-        let peb_runmode_offset = peb_offset + offset_of!(HyperlightPEB, runMode);
+        let peb_code_pointer_offset = peb_offset + offset_of!(HyperlightPEB, pCode);
         let peb_input_data_offset = peb_offset + offset_of!(HyperlightPEB, inputdata);
         let peb_output_data_offset = peb_offset + offset_of!(HyperlightPEB, outputdata);
         let peb_heap_data_offset = peb_offset + offset_of!(HyperlightPEB, guestheapData);
@@ -261,8 +259,7 @@ impl SandboxMemoryLayout {
             heap_size,
             peb_security_cookie_seed_offset,
             peb_guest_dispatch_function_ptr_offset,
-            peb_code_and_outb_pointer_offset,
-            peb_runmode_offset,
+            peb_code_pointer_offset,
             peb_input_data_offset,
             peb_output_data_offset,
             peb_heap_data_offset,
@@ -278,11 +275,6 @@ impl SandboxMemoryLayout {
             total_page_table_size,
             guest_code_offset,
         })
-    }
-
-    /// Gets the offset in guest memory to the RunMode field in the PEB struct.
-    pub fn get_run_mode_offset(&self) -> usize {
-        self.peb_runmode_offset
     }
 
     /// Get the offset in guest memory to the output data size
@@ -309,7 +301,7 @@ impl SandboxMemoryLayout {
     pub(super) fn get_outb_pointer_offset(&self) -> usize {
         // The outb pointer is immediately after the code pointer
         // in the `CodeAndOutBPointers` struct which is a u64
-        self.peb_code_and_outb_pointer_offset + size_of::<u64>()
+        self.peb_code_pointer_offset + size_of::<u64>()
     }
 
     /// Get the offset in guest memory to the OutB context.
@@ -357,7 +349,7 @@ impl SandboxMemoryLayout {
     pub(super) fn get_code_pointer_offset(&self) -> usize {
         // The code pointer is the first field
         // in the `CodeAndOutBPointers` struct which is a u64
-        self.peb_code_and_outb_pointer_offset
+        self.peb_code_pointer_offset
     }
 
     /// Get the offset in guest memory to where the guest dispatch function
@@ -681,9 +673,6 @@ impl SandboxMemoryLayout {
 
         // Skip code, is set when loading binary
         // skip outb and outb context, is set when running in_proc
-
-        // Set RunMode in PEB
-        shared_mem.write_u64(self.get_run_mode_offset(), RunMode::Hypervisor as u64)?;
 
         // Set up input buffer pointer
         shared_mem.write_u64(

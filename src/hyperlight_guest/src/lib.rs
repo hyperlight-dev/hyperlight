@@ -21,7 +21,7 @@ use alloc::string::ToString;
 use buddy_system_allocator::LockedHeap;
 use guest_function_register::GuestFunctionRegister;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::mem::{HyperlightPEB, RunMode};
+use hyperlight_common::mem::HyperlightPEB;
 
 use crate::entrypoint::abort_with_code_and_message;
 extern crate alloc;
@@ -59,6 +59,7 @@ pub mod logging;
 pub(crate) extern "C" fn __CxxFrameHandler3() {}
 ///cbindgen:ignore
 #[no_mangle]
+#[clippy::allow(clippy::non_upper_case_globals)]
 pub(crate) static _fltused: i32 = 0;
 
 // It looks like rust-analyzer doesn't correctly manage no_std crates,
@@ -83,17 +84,13 @@ pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 
 ///cbindgen:ignore
 #[no_mangle]
+#[clippy::allow(clippy::non_upper_case_globals)]
 pub(crate) static mut __security_cookie: u64 = 0;
 
 pub(crate) static mut P_PEB: Option<*mut HyperlightPEB> = None;
 pub static mut MIN_STACK_ADDRESS: u64 = 0;
 
 pub static mut OS_PAGE_SIZE: u32 = 0;
-pub(crate) static mut OUTB_PTR: Option<extern "win64" fn(u16, *const u8, u64)> = None;
-pub(crate) static mut OUTB_PTR_WITH_CONTEXT: Option<
-    extern "win64" fn(*mut core::ffi::c_void, u16, *const u8, u64),
-> = None;
-pub static mut RUNNING_MODE: RunMode = RunMode::None;
 
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();

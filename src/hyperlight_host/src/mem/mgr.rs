@@ -386,13 +386,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         // This pointer is written by the guest library but is accessible to
         // the guest engine so we should bounds check it before we return it.
-        //
-        // When executing with in-hypervisor mode, there is no danger from
-        // the guest manipulating this memory location because the only
-        // addresses that are valid are in its own address space.
-        //
-        // When executing in-process, manipulating this pointer could cause the
-        // host to execute arbitrary functions.
+
         let guest_ptr = GuestPtr::try_from(RawPtr::from(guest_dispatch_function_ptr))?;
         guest_ptr.absolute()
     }

@@ -176,35 +176,10 @@ mod tests {
             callback_guest_as_string().unwrap(),
         ];
         for guest_bin_path in guest_bin_paths {
-            let u_sbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(guest_bin_path.clone()),
-                None,
-                None,
-            )
-            .unwrap();
+            let u_sbox =
+                UninitializedSandbox::new(GuestBinary::FilePath(guest_bin_path.clone()), None)
+                    .unwrap();
             evolve_impl_multi_use(u_sbox).unwrap();
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "windows")]
-    fn test_evolve_in_proc() {
-        use crate::SandboxRunOptions;
-
-        let guest_bin_paths = vec![
-            simple_guest_as_string().unwrap(),
-            callback_guest_as_string().unwrap(),
-        ];
-        for guest_bin_path in guest_bin_paths {
-            let u_sbox: UninitializedSandbox = UninitializedSandbox::new(
-                GuestBinary::FilePath(guest_bin_path.clone()),
-                None,
-                Some(SandboxRunOptions::RunInHypervisor),
-            )
-            .unwrap();
-            let err = format!("error evolving sandbox with guest binary {guest_bin_path}");
-            let err_str = err.as_str();
-            evolve_impl_multi_use(u_sbox).expect(err_str);
         }
     }
 }

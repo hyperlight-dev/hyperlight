@@ -35,7 +35,6 @@ fuzz_target!(
         let u_sbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing")),
             None,
-            None,
         )
         .unwrap();
 

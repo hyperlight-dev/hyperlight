@@ -243,8 +243,7 @@ pub(crate) mod tests {
             ));
         }
 
-        let sandbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None, None)?;
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None)?;
         let (hshm, gshm) = sandbox.mgr.build();
         drop(hshm);
 

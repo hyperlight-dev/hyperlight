@@ -29,7 +29,6 @@ pub fn new_uninit() -> Result<UninitializedSandbox> {
     UninitializedSandbox::new(
         GuestBinary::FilePath(get_c_or_rust_simpleguest_path()),
         None,
-        None,
     )
 }
 
@@ -37,7 +36,6 @@ pub fn new_uninit() -> Result<UninitializedSandbox> {
 pub fn new_uninit_rust() -> Result<UninitializedSandbox> {
     UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        None,
         None,
     )
 }
@@ -49,7 +47,7 @@ pub fn get_simpleguest_sandboxes(
 
     let sandboxes = [
         // in hypervisor elf
-        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None, None).unwrap(),
+        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None).unwrap(),
     ];
 
     sandboxes
@@ -70,7 +68,7 @@ pub fn get_callbackguest_uninit_sandboxes(
 
     let sandboxes = [
         // in hypervisor elf
-        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None, None).unwrap(),
+        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None).unwrap(),
     ];
 
     sandboxes

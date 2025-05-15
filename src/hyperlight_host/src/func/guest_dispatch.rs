@@ -154,7 +154,6 @@ mod tests {
             let mut usbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 None,
-                None,
             )
             .unwrap();
 
@@ -187,7 +186,6 @@ mod tests {
             let mut usbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
                 None,
-                None,
             )
             .unwrap();
 
@@ -217,7 +215,6 @@ mod tests {
         let uninitialized_sandbox = || {
             UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-                None,
                 None,
             )
             .unwrap()
@@ -333,7 +330,6 @@ mod tests {
             // variability below
             None,
             // by default, the below represents in-hypervisor mode
-            None,
         )
         .unwrap();
         test_call_guest_function_by_name(u_sbox);
@@ -353,7 +349,6 @@ mod tests {
         }
         let usbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
             None,
         )?;
         let sandbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
@@ -402,7 +397,6 @@ mod tests {
         let mut usbox = UninitializedSandbox::new(
             GuestBinary::FilePath(callback_guest_as_string().expect("Guest Binary Missing")),
             None,
-            None,
         )
         .unwrap();
 
@@ -439,7 +433,6 @@ mod tests {
     fn test_trigger_exception_on_guest() {
         let usbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-            None,
             None,
         )
         .unwrap();

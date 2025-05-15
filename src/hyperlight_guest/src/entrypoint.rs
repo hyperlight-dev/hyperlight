@@ -15,9 +15,9 @@ limitations under the License.
 */
 
 use core::arch::asm;
-use core::ffi::{c_char, c_void, CStr};
+use core::ffi::{c_char, CStr};
 
-use hyperlight_common::mem::{HyperlightPEB, RunMode};
+use hyperlight_common::mem::HyperlightPEB;
 use hyperlight_common::outb::OutBAction;
 use log::LevelFilter;
 use spin::Once;
@@ -27,18 +27,11 @@ use crate::guest_function_call::dispatch_function;
 use crate::guest_logger::init_logger;
 use crate::host_function_call::outb;
 use crate::idtr::load_idt;
-use crate::{
-    __security_cookie, HEAP_ALLOCATOR, MIN_STACK_ADDRESS, OS_PAGE_SIZE, OUTB_PTR,
-    OUTB_PTR_WITH_CONTEXT, P_PEB, RUNNING_MODE,
-};
+use crate::{__security_cookie, HEAP_ALLOCATOR, MIN_STACK_ADDRESS, OS_PAGE_SIZE, P_PEB};
 
 #[inline(never)]
 pub fn halt() {
-    unsafe {
-        if RUNNING_MODE == RunMode::Hypervisor {
-            asm!("hlt", options(nostack))
-        }
-    }
+    unsafe { asm!("hlt", options(nostack)) }
 }
 
 #[no_mangle]
@@ -105,45 +98,14 @@ pub extern "win64" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_
                 .expect("Invalid log level");
             init_logger(max_log_level);
 
-            match (*peb_ptr).runMode {
-                RunMode::Hypervisor => {
-                    RUNNING_MODE = RunMode::Hypervisor;
-                    // This static is to make it easier to implement the __chkstk function in assembly.
-                    // It also means that should we change the layout of the struct in the future, we
-                    // don't have to change the assembly code.
-                    MIN_STACK_ADDRESS = (*peb_ptr).gueststackData.minUserStackAddress;
+            // This static is to make it easier to implement the __chkstk function in assembly.
+            // It also means that should we change the layout of the struct in the future, we
+            // don't have to change the assembly code.
+            MIN_STACK_ADDRESS = (*peb_ptr).gueststackData.minUserStackAddress;
 
-                    // Setup GDT and IDT
-                    load_gdt();
-                    load_idt();
-                }
-                RunMode::InProcessLinux | RunMode::InProcessWindows => {
-                    RUNNING_MODE = (*peb_ptr).runMode;
-
-                    OUTB_PTR = {
-                        let outb_ptr: extern "win64" fn(u16, *const u8, u64) =
-                            core::mem::transmute((*peb_ptr).pOutb);
-                        Some(outb_ptr)
-                    };
-
-                    if (*peb_ptr).pOutbContext.is_null() {
-                        panic!("OutbContext is null");
-                    }
-
-                    OUTB_PTR_WITH_CONTEXT = {
-                        let outb_ptr_with_context: extern "win64" fn(
-                            *mut c_void,
-                            u16,
-                            *const u8,
-                            u64,
-                        ) = core::mem::transmute((*peb_ptr).pOutb);
-                        Some(outb_ptr_with_context)
-                    };
-                }
-                _ => {
-                    panic!("Invalid runmode in PEB");
-                }
-            }
+            // Setup GDT and IDT
+            load_gdt();
+            load_idt();
 
             let heap_start = (*peb_ptr).guestheapData.guestHeapBuffer as usize;
             let heap_size = (*peb_ptr).guestheapData.guestHeapSize as usize;

@@ -28,7 +28,7 @@ libc = { version = "0.2.172" }
 flatbuffers = "25.2.10"
 page_size = "0.6.0"
 termcolor = "1.2.0"
-bitflags = "2.9.0"
+bitflags = "2.9.1"
 log = "0.4.27"
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
@@ -59,7 +59,7 @@ windows = { version = "0.61", features = [
 ] }
 windows-sys = { version = "0.59", features = ["Win32"] }
 windows-result = "0.3"
-rust-embed = { version = "8.7.1", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
+rust-embed = { version = "8.7.2", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
 sha256 = "1.6.0"
 windows-version = "0.1"
 lazy_static = "1.4.0"

@@ -392,7 +392,6 @@ fn max_memory_sandbox() {
     let a = UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
         Some(cfg),
-        None,
     );
 
     assert!(matches!(
@@ -565,10 +564,7 @@ fn callback_test_parallel() {
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn host_function_error() -> Result<()> {
-    // TODO: Remove the `.take(1)`, which makes this test only run in hypervisor.
-    // This test does not work when running in process. This is because when running in-process,
-    // when a host function returns an error, an infinite loop is created.
-    for mut sandbox in get_callbackguest_uninit_sandboxes(None).into_iter().take(1) {
+    for mut sandbox in get_callbackguest_uninit_sandboxes(None).into_iter() {
         // create host function
         sandbox.register("HostMethod1", |_: String| -> Result<String> {
             Err(new_error!("Host function error!"))
