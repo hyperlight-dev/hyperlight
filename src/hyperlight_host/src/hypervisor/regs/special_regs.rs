@@ -44,8 +44,8 @@ pub(crate) struct CommonSpecialRegisters {
 }
 
 #[cfg(mshv)]
-impl From<SpecialRegisters> for CommonSpecialRegisters {
-    fn from(value: SpecialRegisters) -> Self {
+impl From<&SpecialRegisters> for CommonSpecialRegisters {
+    fn from(value: &SpecialRegisters) -> Self {
         CommonSpecialRegisters {
             cs: value.cs.into(),
             ds: value.ds.into(),
@@ -70,8 +70,8 @@ impl From<SpecialRegisters> for CommonSpecialRegisters {
 }
 
 #[cfg(mshv)]
-impl From<CommonSpecialRegisters> for SpecialRegisters {
-    fn from(other: CommonSpecialRegisters) -> Self {
+impl From<&CommonSpecialRegisters> for SpecialRegisters {
+    fn from(other: &CommonSpecialRegisters) -> Self {
         SpecialRegisters {
             cs: other.cs.into(),
             ds: other.ds.into(),
@@ -96,8 +96,8 @@ impl From<CommonSpecialRegisters> for SpecialRegisters {
 }
 
 #[cfg(kvm)]
-impl From<kvm_sregs> for CommonSpecialRegisters {
-    fn from(kvm_sregs: kvm_sregs) -> Self {
+impl From<&kvm_sregs> for CommonSpecialRegisters {
+    fn from(kvm_sregs: &kvm_sregs) -> Self {
         CommonSpecialRegisters {
             cs: kvm_sregs.cs.into(),
             ds: kvm_sregs.ds.into(),
@@ -122,8 +122,8 @@ impl From<kvm_sregs> for CommonSpecialRegisters {
 }
 
 #[cfg(kvm)]
-impl From<CommonSpecialRegisters> for kvm_sregs {
-    fn from(common_sregs: CommonSpecialRegisters) -> Self {
+impl From<&CommonSpecialRegisters> for kvm_sregs {
+    fn from(common_sregs: &CommonSpecialRegisters) -> Self {
         kvm_sregs {
             cs: common_sregs.cs.into(),
             ds: common_sregs.ds.into(),
@@ -565,8 +565,8 @@ mod tests {
     #[test]
     fn round_trip_kvm_sregs() {
         let original = sample_common_special_registers();
-        let kvm_sregs: kvm_sregs = original.into();
-        let roundtrip = CommonSpecialRegisters::from(kvm_sregs);
+        let kvm_sregs: kvm_sregs = (&original).into();
+        let roundtrip = CommonSpecialRegisters::from(&kvm_sregs);
 
         assert_eq!(original, roundtrip);
     }
@@ -575,8 +575,8 @@ mod tests {
     #[test]
     fn round_trip_mshv_sregs() {
         let original = sample_common_special_registers();
-        let mshv_sregs: SpecialRegisters = original.into();
-        let roundtrip = CommonSpecialRegisters::from(mshv_sregs);
+        let mshv_sregs: SpecialRegisters = (&original).into();
+        let roundtrip = CommonSpecialRegisters::from(&mshv_sregs);
 
         assert_eq!(original, roundtrip);
     }

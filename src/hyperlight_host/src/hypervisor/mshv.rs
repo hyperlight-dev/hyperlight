@@ -129,32 +129,28 @@ impl MshvVm {
 
 impl Vm for MshvVm {
     fn get_regs(&self) -> Result<CommonRegisters> {
-        let mshv_regs = self.vcpu_fd.get_regs()?;
-        Ok(mshv_regs.into())
+        Ok((&self.vcpu_fd.get_regs()?).into())
     }
 
     fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
-        let mshv_regs = (*regs).into();
-        Ok(self.vcpu_fd.set_regs(&mshv_regs)?)
+        Ok(self.vcpu_fd.set_regs(&regs.into())?)
     }
 
     fn get_sregs(&self) -> Result<CommonSpecialRegisters> {
-        let mshv_sregs = self.vcpu_fd.get_sregs()?;
-        Ok(mshv_sregs.into())
+        Ok((&self.vcpu_fd.get_sregs()?).into())
     }
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        let mshv_sregs = (*sregs).into();
-        self.vcpu_fd.set_sregs(&mshv_sregs)?;
+        self.vcpu_fd.set_sregs(&sregs.into())?;
         Ok(())
     }
 
     fn get_fpu(&self) -> Result<CommonFpu> {
-        Ok(self.vcpu_fd.get_fpu()?.into())
+        Ok((&self.vcpu_fd.get_fpu()?).into())
     }
 
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
-        self.vcpu_fd.set_fpu(&(*fpu).into())?;
+        self.vcpu_fd.set_fpu(&fpu.into())?;
         Ok(())
     }
 

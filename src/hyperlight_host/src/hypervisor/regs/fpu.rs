@@ -54,8 +54,8 @@ pub(crate) struct CommonFpu {
 }
 
 #[cfg(kvm)]
-impl From<CommonFpu> for kvm_fpu {
-    fn from(common_fpu: CommonFpu) -> Self {
+impl From<&CommonFpu> for kvm_fpu {
+    fn from(common_fpu: &CommonFpu) -> Self {
         kvm_fpu {
             fpr: common_fpu.fpr,
             fcw: common_fpu.fcw,
@@ -73,8 +73,8 @@ impl From<CommonFpu> for kvm_fpu {
 }
 
 #[cfg(mshv)]
-impl From<CommonFpu> for FloatingPointUnit {
-    fn from(common_fpu: CommonFpu) -> FloatingPointUnit {
+impl From<&CommonFpu> for FloatingPointUnit {
+    fn from(common_fpu: &CommonFpu) -> FloatingPointUnit {
         FloatingPointUnit {
             fpr: common_fpu.fpr,
             fcw: common_fpu.fcw,
@@ -92,8 +92,8 @@ impl From<CommonFpu> for FloatingPointUnit {
 }
 
 #[cfg(kvm)]
-impl From<kvm_fpu> for CommonFpu {
-    fn from(kvm_fpu: kvm_fpu) -> Self {
+impl From<&kvm_fpu> for CommonFpu {
+    fn from(kvm_fpu: &kvm_fpu) -> Self {
         Self {
             fpr: kvm_fpu.fpr,
             fcw: kvm_fpu.fcw,
@@ -111,8 +111,8 @@ impl From<kvm_fpu> for CommonFpu {
 }
 
 #[cfg(mshv)]
-impl From<FloatingPointUnit> for CommonFpu {
-    fn from(mshv_fpu: FloatingPointUnit) -> Self {
+impl From<&FloatingPointUnit> for CommonFpu {
+    fn from(mshv_fpu: &FloatingPointUnit) -> Self {
         Self {
             fpr: mshv_fpu.fpr,
             fcw: mshv_fpu.fcw,
@@ -386,8 +386,8 @@ mod tests {
         use kvm_bindings::kvm_fpu;
 
         let original = sample_common_fpu();
-        let kvm: kvm_fpu = original.into();
-        let round_tripped = CommonFpu::from(kvm);
+        let kvm: kvm_fpu = (&original).into();
+        let round_tripped = CommonFpu::from(&kvm);
 
         assert_eq!(original, round_tripped);
     }
@@ -398,8 +398,8 @@ mod tests {
         use mshv_bindings::FloatingPointUnit;
 
         let original = sample_common_fpu();
-        let mshv: FloatingPointUnit = original.into();
-        let round_tripped = CommonFpu::from(mshv);
+        let mshv: FloatingPointUnit = (&original).into();
+        let round_tripped = CommonFpu::from(&mshv);
 
         assert_eq!(original, round_tripped);
     }

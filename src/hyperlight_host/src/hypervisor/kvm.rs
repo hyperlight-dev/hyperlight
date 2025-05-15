@@ -93,29 +93,27 @@ impl KvmVm {
 
 impl Vm for KvmVm {
     fn get_regs(&self) -> Result<CommonRegisters> {
-        let kvm_regs = self.vcpu_fd.get_regs()?;
-        Ok(kvm_regs.into())
+        Ok((&self.vcpu_fd.get_regs()?).into())
     }
 
     fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
-        let kvm_regs = (*regs).into();
-        Ok(self.vcpu_fd.set_regs(&kvm_regs)?)
+        Ok(self.vcpu_fd.set_regs(&regs.into())?)
     }
 
     fn get_sregs(&self) -> Result<CommonSpecialRegisters> {
-        Ok(self.vcpu_fd.get_sregs()?.into())
+        Ok((&self.vcpu_fd.get_sregs()?).into())
     }
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        Ok(self.vcpu_fd.set_sregs(&(*sregs).into())?)
+        Ok(self.vcpu_fd.set_sregs(&sregs.into())?)
     }
 
     fn get_fpu(&self) -> Result<CommonFpu> {
-        Ok(self.vcpu_fd.get_fpu()?.into())
+        Ok((&self.vcpu_fd.get_fpu()?).into())
     }
 
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
-        Ok(self.vcpu_fd.set_fpu(&(*fpu).into())?)
+        Ok(self.vcpu_fd.set_fpu(&fpu.into())?)
     }
 
     unsafe fn map_memory(&mut self, regions: &[MemoryRegion]) -> Result<()> {

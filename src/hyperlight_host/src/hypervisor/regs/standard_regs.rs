@@ -37,8 +37,8 @@ pub(crate) struct CommonRegisters {
 
 // --- KVM ---
 #[cfg(kvm)]
-impl From<kvm_regs> for CommonRegisters {
-    fn from(kvm_regs: kvm_regs) -> Self {
+impl From<&kvm_regs> for CommonRegisters {
+    fn from(kvm_regs: &kvm_regs) -> Self {
         CommonRegisters {
             rax: kvm_regs.rax,
             rbx: kvm_regs.rbx,
@@ -63,8 +63,8 @@ impl From<kvm_regs> for CommonRegisters {
 }
 
 #[cfg(kvm)]
-impl From<CommonRegisters> for kvm_regs {
-    fn from(regs: CommonRegisters) -> Self {
+impl From<&CommonRegisters> for kvm_regs {
+    fn from(regs: &CommonRegisters) -> Self {
         kvm_regs {
             rax: regs.rax,
             rbx: regs.rbx,
@@ -91,8 +91,8 @@ impl From<CommonRegisters> for kvm_regs {
 // --- MSHV ---
 
 #[cfg(mshv)]
-impl From<StandardRegisters> for CommonRegisters {
-    fn from(mshv_regs: StandardRegisters) -> Self {
+impl From<&StandardRegisters> for CommonRegisters {
+    fn from(mshv_regs: &StandardRegisters) -> Self {
         CommonRegisters {
             rax: mshv_regs.rax,
             rbx: mshv_regs.rbx,
@@ -117,8 +117,8 @@ impl From<StandardRegisters> for CommonRegisters {
 }
 
 #[cfg(mshv)]
-impl From<CommonRegisters> for StandardRegisters {
-    fn from(regs: CommonRegisters) -> Self {
+impl From<&CommonRegisters> for StandardRegisters {
+    fn from(regs: &CommonRegisters) -> Self {
         StandardRegisters {
             rax: regs.rax,
             rbx: regs.rbx,
@@ -304,8 +304,8 @@ mod tests {
     #[test]
     fn round_trip_kvm_regs() {
         let original = common_regs();
-        let kvm_regs: kvm_regs = original.into();
-        let converted: CommonRegisters = kvm_regs.into();
+        let kvm_regs: kvm_regs = (&original).into();
+        let converted: CommonRegisters = (&kvm_regs).into();
         assert_eq!(original, converted);
     }
 
@@ -313,8 +313,8 @@ mod tests {
     #[test]
     fn round_trip_mshv_regs() {
         let original = common_regs();
-        let mshv_regs: StandardRegisters = original.into();
-        let converted: CommonRegisters = mshv_regs.into();
+        let mshv_regs: StandardRegisters = (&original).into();
+        let converted: CommonRegisters = (&mshv_regs).into();
         assert_eq!(original, converted);
     }
 
