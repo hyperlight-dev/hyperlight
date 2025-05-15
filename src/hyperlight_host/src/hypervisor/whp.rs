@@ -181,6 +181,7 @@ impl Vm for WhpVm {
         println!("whp get_sregs");
         let mut whp_sregs_values: [WHV_REGISTER_VALUE; WHP_SREGS_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
+        println!("whp get_sregs2");
 
         unsafe {
             WHvGetVirtualProcessorRegisters(
@@ -191,8 +192,9 @@ impl Vm for WhpVm {
                 whp_sregs_values.as_mut_ptr(),
             )?;
         }
+        println!("whp get_sregs3");
 
-        WHP_SREGS_NAMES
+        let res = WHP_SREGS_NAMES
             .into_iter()
             .zip(whp_sregs_values)
             .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
@@ -203,7 +205,10 @@ impl Vm for WhpVm {
                     "Failed to convert WHP registers to CommonSpecialRegisters: {:?}",
                     e
                 )
-            })
+            });
+
+        println!("whp get_sregs");
+        res
     }
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
