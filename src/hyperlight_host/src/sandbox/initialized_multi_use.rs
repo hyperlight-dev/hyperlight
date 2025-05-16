@@ -112,7 +112,6 @@ impl MultiUseSandbox {
     /// let u_sbox = UninitializedSandbox::new(
     ///     GuestBinary::FilePath("some_guest_binary".to_string()),
     ///     None,
-    ///     None,
     /// ).unwrap();
     /// let sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
     /// // Next, create a new call context from the single-use sandbox.

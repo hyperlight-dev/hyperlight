@@ -10,7 +10,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::GuestFunctionRegister;
-use hyperlight_guest::host_function_call::call_host_function;
+use hyperlight_guest::host_function_call::call_host_function_internal;
 
 use crate::types::{FfiFunctionCall, FfiVec};
 static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister = GuestFunctionRegister::new();
@@ -89,5 +89,9 @@ pub extern "C" fn hl_call_host_function(function_call: &FfiFunctionCall) {
     let parameters = unsafe { function_call.copy_parameters() };
     let func_name = unsafe { function_call.copy_function_name() };
     let return_type = unsafe { function_call.copy_return_type() };
-    let _ = call_host_function(&func_name, Some(parameters), return_type);
+
+    // Use the non-generic internal implementation
+    // The C API will then call specific getter functions to fetch the properly typed return value
+    let _ = call_host_function_internal(&func_name, Some(parameters), return_type)
+        .expect("Failed to call host function");
 }
