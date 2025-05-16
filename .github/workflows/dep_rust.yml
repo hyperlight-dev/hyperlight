@@ -34,7 +34,7 @@ jobs:
   build:
     if: ${{ inputs.docs_only == 'false' }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         hypervisor: [hyperv, mshv, mshv3, kvm] # hyperv is windows, mshv and kvm are linux
         cpu: [amd, intel]
