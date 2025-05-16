@@ -175,9 +175,9 @@ impl Vm for WhpVm {
             unsafe { std::mem::zeroed() };
         println!("whp get_sregs2");
 
-        println!("partition: {:?}", self.partition);
+        // println!("partition: {:?}", self.partition);
         // println!("whp_sregs_names: {:?}", WHP_SREGS_NAMES);
-        // println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
+        println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
         // println!("first value: {:?}", unsafe {
         //     WHP_SREGS_NAMES.as_ptr().read()
         // });
