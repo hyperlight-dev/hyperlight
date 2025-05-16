@@ -45,6 +45,8 @@ macro_rules! for_each_param_type {
         $macro!(u32, UInt);
         $macro!(i64, Long);
         $macro!(u64, ULong);
+        $macro!(f32, Float);
+        $macro!(f64, Double);
         $macro!(bool, Bool);
         $macro!(Vec<u8>, VecBytes);
     };
@@ -92,6 +94,27 @@ pub trait ParameterTuple: Sized + Clone + Send + Sync + 'static {
 
     /// Get the actual inner value of this `SupportedParameterType`
     fn from_value(value: Vec<ParameterValue>) -> Result<Self>;
+}
+
+impl<T: SupportedParameterType> ParameterTuple for T {
+    const SIZE: usize = 1;
+
+    const TYPE: &[ParameterType] = &[T::TYPE];
+
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    fn into_value(self) -> Vec<ParameterValue> {
+        vec![self.into_value()]
+    }
+
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    fn from_value(value: Vec<ParameterValue>) -> Result<Self> {
+        match <[ParameterValue; 1]>::try_from(value) {
+            Ok([val]) => Ok(T::from_value(val)?),
+            Err(value) => {
+                log_then_return!(UnexpectedNoOfArguments(value.len(), 1));
+            }
+        }
+    }
 }
 
 macro_rules! impl_param_tuple {

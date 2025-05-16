@@ -17,7 +17,6 @@ limitations under the License.
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -41,15 +40,7 @@ fn guest_call_benchmark(c: &mut Criterion) {
     group.bench_function("guest_call", |b| {
         let mut call_ctx = create_multiuse_sandbox().new_call_context();
 
-        b.iter(|| {
-            call_ctx
-                .call(
-                    "Echo",
-                    ReturnType::Int,
-                    Some(vec![ParameterValue::String("hello\n".to_string())]),
-                )
-                .unwrap()
-        });
+        b.iter(|| call_ctx.call::<i32>("Echo", "hello\n".to_string()).unwrap());
     });
 
     // Benchmarks a single guest function call.
@@ -59,11 +50,7 @@ fn guest_call_benchmark(c: &mut Criterion) {
 
         b.iter(|| {
             sandbox
-                .call_guest_function_by_name(
-                    "Echo",
-                    ReturnType::Int,
-                    Some(vec![ParameterValue::String("hello\n".to_string())]),
-                )
+                .call_guest_function_by_name::<i32>("Echo", "hello\n".to_string())
                 .unwrap()
         });
     });
@@ -88,13 +75,9 @@ fn guest_call_benchmark(c: &mut Criterion) {
 
         b.iter(|| {
             sandbox
-                .call_guest_function_by_name(
+                .call_guest_function_by_name::<()>(
                     "LargeParameters",
-                    ReturnType::Void,
-                    Some(vec![
-                        ParameterValue::VecBytes(large_vec.clone()),
-                        ParameterValue::String(large_string.clone()),
-                    ]),
+                    (large_vec.clone(), large_string.clone()),
                 )
                 .unwrap()
         });
@@ -114,15 +97,7 @@ fn guest_call_benchmark(c: &mut Criterion) {
             uninitialized_sandbox.evolve(Noop::default()).unwrap();
         let mut call_ctx = multiuse_sandbox.new_call_context();
 
-        b.iter(|| {
-            call_ctx
-                .call(
-                    "Add",
-                    ReturnType::Int,
-                    Some(vec![ParameterValue::Int(1), ParameterValue::Int(41)]),
-                )
-                .unwrap()
-        });
+        b.iter(|| call_ctx.call::<i32>("Add", (1_i32, 41_i32)).unwrap());
     });
 
     group.finish();

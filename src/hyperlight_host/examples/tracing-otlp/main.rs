@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![allow(clippy::disallowed_macros)]
-use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 //use opentelemetry_sdk::resource::ResourceBuilder;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use rand::Rng;
@@ -108,7 +107,7 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
     let mut join_handles: Vec<JoinHandle<HyperlightResult<()>>> = vec![];
 
     // Construct a new span named "hyperlight otel tracing example" with INFO  level.
-    let span = span!(Level::INFO, "hyperlight otel tracing example",);
+    let span = span!(Level::INFO, "hyperlight otel tracing example");
     let _entered = span.enter();
 
     let should_exit = Arc::new(Mutex::new(false));
@@ -141,12 +140,9 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
 
                 // Call a guest function 5 times to generate some log entries.
                 for _ in 0..5 {
-                    let result = multiuse_sandbox.call_guest_function_by_name(
-                        "Echo",
-                        ReturnType::String,
-                        Some(vec![ParameterValue::String("a".to_string())]),
-                    );
-                    assert!(result.is_ok());
+                    multiuse_sandbox
+                        .call_guest_function_by_name::<String>("Echo", "a".to_string())
+                        .unwrap();
                 }
 
                 // Define a message to send to the guest.
@@ -155,12 +151,9 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
 
                 // Call a guest function that calls the HostPrint host function 5 times to generate some log entries.
                 for _ in 0..5 {
-                    let result = multiuse_sandbox.call_guest_function_by_name(
-                        "PrintOutput",
-                        ReturnType::Int,
-                        Some(vec![ParameterValue::String(msg.clone())]),
-                    );
-                    assert!(result.is_ok());
+                    multiuse_sandbox
+                        .call_guest_function_by_name::<i32>("PrintOutput", msg.clone())
+                        .unwrap();
                 }
 
                 // Call a function that gets cancelled by the host function 5 times to generate some log entries.
@@ -177,11 +170,8 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                     let _entered = span.enter();
                     let mut ctx = multiuse_sandbox.new_call_context();
 
-                    let result = ctx.call("Spin", ReturnType::Void, None);
-                    assert!(result.is_err());
-                    let result = ctx.finish();
-                    assert!(result.is_ok());
-                    multiuse_sandbox = result.unwrap();
+                    ctx.call::<()>("Spin", ()).unwrap_err();
+                    multiuse_sandbox = ctx.finish().unwrap();
                 }
                 let sleep_for = {
                     let mut rng = rand::rng();

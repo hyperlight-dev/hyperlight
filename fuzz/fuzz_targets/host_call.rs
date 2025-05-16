@@ -45,7 +45,7 @@ fuzz_target!(
         let (host_func_name, host_func_return, mut host_func_params) = data;
         let mut sandbox = SANDBOX.get().unwrap().lock().unwrap();
         host_func_params.insert(0, ParameterValue::String(host_func_name));
-        match sandbox.call_guest_function_by_name("FuzzHostFunc", host_func_return, Some(host_func_params)) {
+        match sandbox.call_type_erased_guest_function_by_name("FuzzHostFunc", host_func_return, host_func_params) {
             Err(HyperlightError::GuestAborted(_, message)) if !message.contains("Host Function Not Found") => {
                 // We don't allow GuestAborted errors, except for the "Host Function Not Found" case
                 panic!("Guest Aborted: {}", message);

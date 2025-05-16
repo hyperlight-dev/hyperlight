@@ -16,7 +16,6 @@ limitations under the License.
 #![allow(clippy::disallowed_macros)]
 use std::thread;
 
-use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
@@ -42,13 +41,12 @@ fn main() -> hyperlight_host::Result<()> {
 
     // Call guest function
     let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
-    let result = multi_use_sandbox.call_guest_function_by_name(
-        "PrintOutput", // function must be defined in the guest binary
-        ReturnType::Int,
-        Some(vec![ParameterValue::String(message.clone())]),
-    );
-
-    assert!(result.is_ok());
+    multi_use_sandbox
+        .call_guest_function_by_name::<i32>(
+            "PrintOutput", // function must be defined in the guest binary
+            message,
+        )
+        .unwrap();
 
     Ok(())
 }

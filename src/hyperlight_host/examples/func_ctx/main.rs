@@ -14,12 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::func::call_ctx::MultiUseGuestCallContext;
 use hyperlight_host::sandbox::{MultiUseSandbox, UninitializedSandbox};
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{new_error, GuestBinary, Result};
+use hyperlight_host::{GuestBinary, Result};
 use hyperlight_testing::simple_guest_as_string;
 
 fn main() {
@@ -47,29 +46,10 @@ fn main() {
 /// call `ctx.finish()` and return the resulting `MultiUseSandbox`. Return an `Err`
 /// if anything failed.
 fn do_calls(mut ctx: MultiUseGuestCallContext) -> Result<MultiUseSandbox> {
-    {
-        let res1: String = {
-            let rv = ctx.call(
-                "Echo",
-                ReturnType::Int,
-                Some(vec![ParameterValue::String("hello".to_string())]),
-            )?;
-            rv.try_into()
-        }
-        .map_err(|e| new_error!("failed to get Echo result: {}", e))?;
-        println!("got Echo res: {res1}");
-    }
-    {
-        let res2: i32 = {
-            let rv = ctx.call(
-                "CallMalloc",
-                ReturnType::Int,
-                Some(vec![ParameterValue::Int(200)]),
-            )?;
-            rv.try_into()
-        }
-        .map_err(|e| new_error!("failed to get CallMalloc result: {}", e))?;
-        println!("got CallMalloc res: {res2}");
-    }
+    let res: String = ctx.call("Echo", "hello".to_string())?;
+    println!("got Echo res: {res}");
+
+    let res: i32 = ctx.call("CallMalloc", 200_i32)?;
+    println!("got CallMalloc res: {res}");
     ctx.finish()
 }
