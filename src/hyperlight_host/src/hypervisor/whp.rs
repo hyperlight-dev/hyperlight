@@ -177,7 +177,7 @@ impl Vm for WhpVm {
 
         // println!("partition: {:?}", self.partition);
         // println!("whp_sregs_names: {:?}", WHP_SREGS_NAMES);
-        println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
+        // println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
         // println!("first value: {:?}", unsafe {
         //     WHP_SREGS_NAMES.as_ptr().read()
         // });
