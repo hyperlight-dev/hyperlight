@@ -4,6 +4,8 @@
 ///
 /// Usage:
 /// ```rust
+/// use hyperlight_host::func::for_each_tuple;
+///
 /// macro_rules! my_macro {
 ///     ([$count:expr] ($($name:ident: $type:ident),*)) => {
 ///         // $count is the arity of the tuple
