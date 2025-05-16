@@ -14,232 +14,153 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#![allow(non_snake_case)]
 use std::sync::{Arc, Mutex};
 
-use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
-use tracing::{instrument, Span};
+use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
 
-use super::{HyperlightFunction, SupportedParameterType, SupportedReturnType};
+use super::utils::for_each_tuple;
+use super::{ParameterTuple, ResultType, SupportedReturnType};
 use crate::sandbox::{ExtraAllowedSyscall, UninitializedSandbox};
-use crate::HyperlightError::UnexpectedNoOfArguments;
 use crate::{log_then_return, new_error, Result};
 
-/// Trait for registering a host function
-pub trait HostFunction<R, Args> {
-    /// Register the host function with the given name in the sandbox.
-    fn register(&self, sandbox: &mut UninitializedSandbox, name: &str) -> Result<()>;
+/// A representation of a host function.
+/// This is a thin wrapper around a `Fn(Args) -> Result<Output>`.
+#[derive(Clone)]
+pub struct HostFunction<Output, Args>
+where
+    Args: ParameterTuple,
+    Output: SupportedReturnType,
+{
+    // This is a thin wrapper around a `Fn(Args) -> Result<Output>`.
+    // But unlike `Fn` which is a trait, this is a concrete type.
+    // This allows us to:
+    //  1. Impose constraints on the function arguments and return type.
+    //  2. Impose a single function signature.
+    //
+    // This second point is important because the `Fn` trait is generic
+    // over the function arguments (with an associated return type).
+    // This means that a given type could implement `Fn` for multiple
+    // function signatures.
+    // This means we can't do something like:
+    // ```rust,ignore
+    // impl<Args, Output, F> SomeTrait for F
+    // where
+    //     F: Fn(Args) -> Result<Output>,
+    // { ... }
+    // ```
+    // because the concrete type F might implement `Fn` for multiple times,
+    // and that would means implementing `SomeTrait` multiple times for the
+    // same type.
 
-    /// Register the host function with the given name in the sandbox, allowing extra syscalls.
-    #[cfg(all(feature = "seccomp", target_os = "linux"))]
-    fn register_with_extra_allowed_syscalls(
-        &self,
-        sandbox: &mut UninitializedSandbox,
-        name: &str,
-        extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
-    ) -> Result<()>;
+    // Use Arc in here instead of Box because it's useful in tests and
+    // presumably in other places to be able to clone a HostFunction and
+    // use it across different sandboxes.
+    func: Arc<dyn Fn(Args) -> Result<Output> + Send + Sync + 'static>,
 }
 
-/// Tait for types that can be converted into types implementing `HostFunction`.
-pub trait IntoHostFunction<R, Args> {
-    /// Concrete type of the returned host function
-    type Output: HostFunction<R, Args>;
+pub(crate) struct TypeErasedHostFunction {
+    func: Box<dyn Fn(Vec<ParameterValue>) -> Result<ReturnValue> + Send + Sync + 'static>,
+}
 
-    /// Convert the type into a host function
-    fn into_host_function(self) -> Self::Output;
+impl<Args, Output> HostFunction<Output, Args>
+where
+    Args: ParameterTuple,
+    Output: SupportedReturnType,
+{
+    /// Call the host function with the given arguments.
+    pub fn call(&self, args: Args) -> Result<Output> {
+        (self.func)(args)
+    }
+}
+
+impl TypeErasedHostFunction {
+    pub(crate) fn call(&self, args: Vec<ParameterValue>) -> Result<ReturnValue> {
+        (self.func)(args)
+    }
+}
+
+impl<Args, Output> From<HostFunction<Output, Args>> for TypeErasedHostFunction
+where
+    Args: ParameterTuple,
+    Output: SupportedReturnType,
+{
+    fn from(func: HostFunction<Output, Args>) -> TypeErasedHostFunction {
+        TypeErasedHostFunction {
+            func: Box::new(move |args: Vec<ParameterValue>| {
+                let args = Args::from_value(args)?;
+                Ok(func.call(args)?.into_value())
+            }),
+        }
+    }
 }
 
 macro_rules! impl_host_function {
-    (@count) => { 0 };
-    (@count $P:ident $(, $R:ident)*) => {
-        impl_host_function!(@count $($R),*) + 1
-    };
-    (@impl $($P:ident),*) => {
-        const _: () = {
-            impl<R $(, $P)*, F> HostFunction<R, ($($P,)*)> for Arc<Mutex<F>>
-            where
-                F: FnMut($($P),*) -> Result<R> + Send + 'static,
-                $($P: SupportedParameterType + Clone,)*
-                R: SupportedReturnType,
-            {
-                /// Register the host function with the given name in the sandbox.
-                #[instrument(
-                    err(Debug), skip(self, sandbox), parent = Span::current(), level = "Trace"
-                )]
-                fn register(
-                    &self,
-                    sandbox: &mut UninitializedSandbox,
-                    name: &str,
-                ) -> Result<()> {
-                    register_host_function(self.clone(), sandbox, name, None)
-                }
+    ([$N:expr] ($($p:ident: $P:ident),*)) => {
+        /*
+        // Normally for a `Fn + Send + Sync` we don't need to use a Mutex
+        // like we do in the case of a `FnMut`.
+        // However, we can't implement `IntoHostFunction` for `Fn` and `FnMut`
+        // because `FnMut` is a supertrait of `Fn`.
+        */
 
-                /// Register the host function with the given name in the sandbox, allowing extra syscalls.
-                #[cfg(all(feature = "seccomp", target_os = "linux"))]
-                #[instrument(
-                    err(Debug), skip(self, sandbox, extra_allowed_syscalls),
-                    parent = Span::current(), level = "Trace"
-                )]
-                fn register_with_extra_allowed_syscalls(
-                    &self,
-                    sandbox: &mut UninitializedSandbox,
-                    name: &str,
-                    extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
-                ) -> Result<()> {
-                    register_host_function(self.clone(), sandbox, name, Some(extra_allowed_syscalls))
+        impl<F, R, $($P),*> From<F> for HostFunction<R::ReturnType, ($($P,)*)>
+        where
+            F: FnMut($($P),*) -> R + Send + 'static,
+            ($($P,)*): ParameterTuple,
+            R: ResultType,
+        {
+            fn from(mut func: F) -> HostFunction<R::ReturnType, ($($P,)*)> {
+                let func = move |($($p,)*): ($($P,)*)| -> Result<R::ReturnType> {
+                    func($($p),*).into_result()
+                };
+                let func = Mutex::new(func);
+                HostFunction {
+                    func: Arc::new(move |args: ($($P,)*)| {
+                        func.try_lock()
+                            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                            (args)
+                    })
                 }
             }
-
-            impl<R $(, $P)*> HostFunction<R, ($($P,)*)> for &dyn HostFunction<R, ($($P,)*)>
-            where
-                $($P: SupportedParameterType + Clone,)*
-                R: SupportedReturnType,
-            {
-                /// Register the host function with the given name in the sandbox.
-                #[instrument(
-                    err(Debug), skip(self, sandbox), parent = Span::current(), level = "Trace"
-                )]
-                fn register(
-                    &self,
-                    sandbox: &mut UninitializedSandbox,
-                    name: &str,
-                ) -> Result<()> {
-                    (**self).register(sandbox, name)
-                }
-
-                /// Register the host function with the given name in the sandbox, allowing extra syscalls.
-                #[cfg(all(feature = "seccomp", target_os = "linux"))]
-                #[instrument(
-                    err(Debug), skip(self, sandbox, extra_allowed_syscalls),
-                    parent = Span::current(), level = "Trace"
-                )]
-                fn register_with_extra_allowed_syscalls(
-                    &self,
-                    sandbox: &mut UninitializedSandbox,
-                    name: &str,
-                    extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
-                ) -> Result<()> {
-                    (**self).register_with_extra_allowed_syscalls(sandbox, name, extra_allowed_syscalls)
-                }
-            }
-
-            impl<R $(, $P)*, F> IntoHostFunction<R, ($($P,)*)> for F
-            where
-                F: FnMut($($P),*) -> Result<R> + Send + 'static,
-                Arc<Mutex<F>>: HostFunction<R, ($($P,)*)>,
-            {
-                type Output = Arc<Mutex<F>>;
-
-                fn into_host_function(self) -> Self::Output {
-                    Arc::new(Mutex::new(self))
-                }
-            }
-
-            impl<R $(, $P)*, F> IntoHostFunction<R, ($($P,)*)> for Arc<Mutex<F>>
-            where
-                F: FnMut($($P),*) -> Result<R> + Send + 'static,
-                Arc<Mutex<F>>: HostFunction<R, ($($P,)*)>,
-            {
-                type Output = Arc<Mutex<F>>;
-
-                fn into_host_function(self) -> Self::Output {
-                    self
-                }
-            }
-
-            impl<R $(, $P)*, F> IntoHostFunction<R, ($($P,)*)> for &Arc<Mutex<F>>
-            where
-                F: FnMut($($P),*) -> Result<R> + Send + 'static,
-                Arc<Mutex<F>>: HostFunction<R, ($($P,)*)>,
-            {
-                type Output = Arc<Mutex<F>>;
-
-                fn into_host_function(self) -> Self::Output {
-                    self.clone()
-                }
-            }
-
-            impl<R $(, $P)*> IntoHostFunction<R, ($($P,)*)> for &dyn HostFunction<R, ($($P,)*)>
-            where
-                R: SupportedReturnType,
-                $($P: SupportedParameterType + Clone,)*
-            {
-                type Output = Self;
-
-                fn into_host_function(self) -> Self::Output {
-                    self
-                }
-            }
-
-            fn register_host_function<T, $($P,)* R>(
-                self_: Arc<Mutex<T>>,
-                sandbox: &mut UninitializedSandbox,
-                name: &str,
-                extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
-            ) -> Result<()>
-            where
-                T: FnMut($($P),*) -> Result<R> + Send + 'static,
-                $($P: SupportedParameterType + Clone,)*
-                R: SupportedReturnType,
-            {
-                const N: usize = impl_host_function!(@count $($P),*);
-                let cloned = self_.clone();
-                let func = Box::new(move |args: Vec<ParameterValue>| {
-                    let ($($P,)*) = match <[ParameterValue; N]>::try_from(args) {
-                        Ok([$($P,)*]) => ($($P::from_value($P)?,)*),
-                        Err(args) => { log_then_return!(UnexpectedNoOfArguments(args.len(), N)); }
-                    };
-
-                    let result = cloned
-                        .try_lock()
-                        .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?(
-                            $($P),*
-                        )?;
-                    Ok(result.into_value())
-                });
-
-                if let Some(_eas) = extra_allowed_syscalls {
-                    if cfg!(all(feature = "seccomp", target_os = "linux")) {
-                        // Register with extra allowed syscalls
-                        #[cfg(all(feature = "seccomp", target_os = "linux"))]
-                        {
-                            sandbox
-                                .host_funcs
-                                .try_lock()
-                                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                                .register_host_function_with_syscalls(
-                                    name.to_string(),
-                                    HyperlightFunction::new(func),
-                                    _eas,
-                                )?;
-                        }
-                    } else {
-                        // Log and return an error
-                        log_then_return!("Extra allowed syscalls are only supported on Linux with seccomp enabled");
-                    }
-                } else {
-                    // Register without extra allowed syscalls
-                    sandbox
-                        .host_funcs
-                        .try_lock()
-                        .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                        .register_host_function(
-                            name.to_string(),
-                            HyperlightFunction::new(func),
-                        )?;
-                }
-
-                Ok(())
-            }
-        };
-    };
-    () => {
-        impl_host_function!(@impl);
-    };
-    ($P:ident $(, $R:ident)*) => {
-        impl_host_function!($($R),*);
-        impl_host_function!(@impl $P $(, $R)*);
+        }
     };
 }
 
-impl_host_function!(P1, P2, P3, P4, P5, P6, P7, P8, P9, P10);
+for_each_tuple!(impl_host_function);
+
+pub(crate) fn register_host_function<Args: ParameterTuple, Output: SupportedReturnType>(
+    func: impl Into<HostFunction<Output, Args>>,
+    sandbox: &mut UninitializedSandbox,
+    name: &str,
+    extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
+) -> Result<()> {
+    let func = func.into().into();
+
+    if let Some(_eas) = extra_allowed_syscalls {
+        if cfg!(all(feature = "seccomp", target_os = "linux")) {
+            // Register with extra allowed syscalls
+            #[cfg(all(feature = "seccomp", target_os = "linux"))]
+            {
+                sandbox
+                    .host_funcs
+                    .try_lock()
+                    .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                    .register_host_function_with_syscalls(name.to_string(), func, _eas)?;
+            }
+        } else {
+            // Log and return an error
+            log_then_return!(
+                "Extra allowed syscalls are only supported on Linux with seccomp enabled"
+            );
+        }
+    } else {
+        // Register without extra allowed syscalls
+        sandbox
+            .host_funcs
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+            .register_host_function(name.to_string(), func)?;
+    }
+
+    Ok(())
+}

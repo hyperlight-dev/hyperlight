@@ -59,7 +59,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && rustup default ${RUST_TOOLCHAIN} \
     && rustup target add x86_64-unknown-linux-gnu \
     && rustup target add x86_64-unknown-none      \
-    && rustup target add x86_64-pc-windows-msvc   \
     && rustup toolchain add nightly-x86_64-unknown-linux-gnu \
     && cargo install just
 

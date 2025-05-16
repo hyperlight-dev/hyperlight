@@ -107,21 +107,13 @@ where
         mem_size: u64,
         regions: &mut [MemoryRegion],
     ) -> Result<u64> {
-        // For MSVC, move rsp down by 0x28.  This gives the called 'main'
-        // function the appearance that rsp was 16 byte aligned before
-        // the 'call' that calls main (note we don't really have a return value
-        // on the stack but some assembly instructions are expecting rsp have
-        // started 0x8 bytes off of 16 byte alignment when 'main' is invoked.
-        // We do 0x28 instead of 0x8 because MSVC can expect that there are
-        // 0x20 bytes of space to write to by the called function.
-        // I am not sure if this happens with the 'main' method, but we do this
-        // just in case.
-        //
-        // NOTE: We do this also for GCC freestanding binaries because we
-        // specify __attribute__((ms_abi)) on the start method
         let rsp: u64 = self.layout.get_top_of_user_stack_offset() as u64
             + SandboxMemoryLayout::BASE_ADDRESS as u64
             + self.layout.stack_size as u64
+            // TODO: subtracting 0x28 was a requirement for MSVC. It should no longer be
+            // necessary now, but, for some reason, without this, the `multiple_parameters`
+            // test from `sandbox_host_tests` fails. We should investigate this further.
+            // See issue #498 for more details.
             - 0x28;
 
         self.shared_mem.with_exclusivity(|shared_mem| {

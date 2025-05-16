@@ -28,7 +28,8 @@ use super::config::DebugInfo;
 use super::host_funcs::{default_writer_func, FunctionRegistry};
 use super::mem_mgr::MemMgrWrapper;
 use super::uninitialized_evolve::evolve_impl_multi_use;
-use crate::func::host_functions::{HostFunction, IntoHostFunction};
+use crate::func::host_functions::{register_host_function, HostFunction};
+use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(feature = "build-metadata")]
 use crate::log_build_details;
 use crate::mem::exe::ExeInfo;
@@ -235,30 +236,29 @@ impl UninitializedSandbox {
     }
 
     /// Register a host function with the given name in the sandbox.
-    pub fn register<F, R, Args>(&mut self, name: impl AsRef<str>, host_func: F) -> Result<()>
-    where
-        F: IntoHostFunction<R, Args>,
-    {
-        host_func.into_host_function().register(self, name.as_ref())
+    pub fn register<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: impl AsRef<str>,
+        host_func: impl Into<HostFunction<Output, Args>>,
+    ) -> Result<()> {
+        register_host_function(host_func, self, name.as_ref(), None)
     }
 
     /// Register the host function with the given name in the sandbox.
     /// Unlike `register`, this variant takes a list of extra syscalls that will
     /// allowed during the execution of the function handler.
     #[cfg(all(feature = "seccomp", target_os = "linux"))]
-    pub fn register_with_extra_allowed_syscalls<F, R, Args>(
+    pub fn register_with_extra_allowed_syscalls<
+        Args: ParameterTuple,
+        Output: SupportedReturnType,
+    >(
         &mut self,
         name: impl AsRef<str>,
-        host_func: F,
+        host_func: impl Into<HostFunction<Output, Args>>,
         extra_allowed_syscalls: impl IntoIterator<Item = crate::sandbox::ExtraAllowedSyscall>,
-    ) -> Result<()>
-    where
-        F: IntoHostFunction<R, Args>,
-    {
+    ) -> Result<()> {
         let extra_allowed_syscalls: Vec<_> = extra_allowed_syscalls.into_iter().collect();
-        host_func
-            .into_host_function()
-            .register_with_extra_allowed_syscalls(self, name.as_ref(), extra_allowed_syscalls)
+        register_host_function(host_func, self, name.as_ref(), Some(extra_allowed_syscalls))
     }
 
     /// Register a host function named "HostPrint" that will be called by the guest
@@ -267,7 +267,7 @@ impl UninitializedSandbox {
     /// `FnMut(String) -> i32` signature.
     pub fn register_print(
         &mut self,
-        print_func: impl IntoHostFunction<i32, (String,)>,
+        print_func: impl Into<HostFunction<i32, (String,)>>,
     ) -> Result<()> {
         #[cfg(not(all(target_os = "linux", feature = "seccomp")))]
         self.register("HostPrint", print_func)?;
@@ -291,7 +291,7 @@ impl UninitializedSandbox {
     #[cfg(all(feature = "seccomp", target_os = "linux"))]
     pub fn register_print_with_extra_allowed_syscalls(
         &mut self,
-        print_func: impl IntoHostFunction<i32, (String,)>,
+        print_func: impl Into<HostFunction<i32, (String,)>>,
         extra_allowed_syscalls: impl IntoIterator<Item = crate::sandbox::ExtraAllowedSyscall>,
     ) -> Result<()> {
         #[cfg(all(target_os = "linux", feature = "seccomp"))]

@@ -121,7 +121,6 @@ fn cargo_main() {
         copy_includes(&include_dir, "third_party/printf/");
     }
     if cfg!(feature = "libc") {
-        copy_includes(&include_dir, "include");
         copy_includes(&include_dir, "third_party/musl/include");
         copy_includes(&include_dir, "third_party/musl/arch/generic");
         copy_includes(&include_dir, "third_party/musl/arch/x86_64");

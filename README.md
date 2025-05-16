@@ -177,13 +177,10 @@ After having an environment with a hypervisor setup, running the example has the
    Azure Linux, run `sudo dnf install build-essential`.
 2. [Rust](https://www.rust-lang.org/tools/install). Install toolchain v1.81 or later.
 
-   Also, install the `x86_64-pc-windows-msvc` and `x86_64-unknown-none` targets, these are needed to build the test
-   guest binaries. (Note: install both targets on either Linux or Windows: Hyperlight can load ELF or PE files on either
-   OS, and the tests/examples are built for both):
-
+   Also, install the `x86_64-unknown-none` target, it is needed to build the test
+   guest binaries.
     ```sh
     rustup target add x86_64-unknown-none
-    rustup target add x86_64-pc-windows-msvc
     ```
 
 3. [just](https://github.com/casey/just). `cargo install just` On Windows you also need [pwsh](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.4).

@@ -160,16 +160,14 @@ fn set_static() {
 fn multiple_parameters() {
     let messages = Arc::new(Mutex::new(Vec::new()));
     let messages_clone = messages.clone();
-    let writer = move |msg| {
+    let writer = move |msg: String| {
         let mut lock = messages_clone
             .try_lock()
             .map_err(|_| new_error!("Error locking"))
             .unwrap();
         lock.push(msg);
-        Ok(0)
+        0
     };
-
-    let writer_func = Arc::new(Mutex::new(writer));
 
     let test_cases = vec![
         (
@@ -320,7 +318,7 @@ fn multiple_parameters() {
         )
     ];
 
-    for mut sandbox in get_simpleguest_sandboxes(Some(&writer_func)).into_iter() {
+    for mut sandbox in get_simpleguest_sandboxes(Some(writer.into())).into_iter() {
         for (fn_name, args, _expected) in test_cases.clone().into_iter() {
             let res = sandbox.call_guest_function_by_name(fn_name, ReturnType::Int, Some(args));
             println!("{:?}", res);
@@ -425,14 +423,13 @@ fn simple_test_helper() -> Result<()> {
             .map_err(|_| new_error!("Error locking"))
             .unwrap();
         lock.push(msg);
-        Ok(len as i32)
+        len as i32
     };
 
     let message = "hello";
     let message2 = "world";
 
-    let writer_func = Arc::new(Mutex::new(writer));
-    for mut sandbox in get_simpleguest_sandboxes(Some(&writer_func)).into_iter() {
+    for mut sandbox in get_simpleguest_sandboxes(Some(writer.into())).into_iter() {
         let res = sandbox.call_guest_function_by_name(
             "PrintOutput",
             ReturnType::Int,

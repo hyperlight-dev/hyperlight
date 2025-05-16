@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use crate::{new_error, Result};
 /// Context structures used to allow the user to call one or more guest
 /// functions on the same Hyperlight sandbox instance, all from within the
 /// same state and mutual exclusion context.
@@ -34,48 +33,21 @@ pub(crate) mod guest_err;
 /// - Registering host functions to be callable by the guest
 /// - Dynamically dispatching a call from the guest to the appropriate
 ///   host function
-pub mod host_functions;
+pub(crate) mod host_functions;
 /// Definitions and functionality for supported parameter types
 pub(crate) mod param_type;
 /// Definitions and functionality for supported return types
-pub mod ret_type;
+pub(crate) mod ret_type;
 
-use std::sync::{Arc, Mutex};
-
+/// Re-export for `HostFunction` trait
+pub use host_functions::HostFunction;
 /// Re-export for `ParameterValue` enum
 pub use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
 /// Re-export for `ReturnType` enum
 pub use hyperlight_common::flatbuffer_wrappers::function_types::ReturnType;
 /// Re-export for `ReturnType` enum
 pub use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
-pub use param_type::SupportedParameterType;
-pub use ret_type::SupportedReturnType;
-use tracing::{instrument, Span};
+pub use param_type::{ParameterTuple, SupportedParameterType};
+pub use ret_type::{ResultType, SupportedReturnType};
 
-type HLFunc = Arc<Mutex<Box<dyn FnMut(Vec<ParameterValue>) -> Result<ReturnValue> + Send>>>;
-
-/// Generic HyperlightFunction
-#[derive(Clone)]
-pub struct HyperlightFunction(HLFunc);
-
-impl HyperlightFunction {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn new<F>(f: F) -> Self
-    where
-        F: FnMut(Vec<ParameterValue>) -> Result<ReturnValue> + Send + 'static,
-    {
-        Self(Arc::new(Mutex::new(Box::new(f))))
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn call(&self, args: Vec<ParameterValue>) -> Result<ReturnValue> {
-        let mut f = self
-            .0
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        f(args)
-    }
-}
-
-/// Re-export for `HostFunction` trait
-pub use host_functions::HostFunction;
+mod utils;

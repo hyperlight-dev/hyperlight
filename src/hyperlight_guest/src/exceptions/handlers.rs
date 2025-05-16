@@ -24,7 +24,7 @@ use crate::entrypoint::abort_with_code_and_message;
 
 /// Exception handler
 #[no_mangle]
-pub extern "sysv64" fn hl_exception_handler(
+pub extern "C" fn hl_exception_handler(
     stack_pointer: u64,
     exception_number: u64,
     page_fault_address: u64,

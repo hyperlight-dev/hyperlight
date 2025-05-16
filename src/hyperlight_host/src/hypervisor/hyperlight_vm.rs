@@ -408,10 +408,10 @@ impl HyperlightVm for HyperlightSandbox {
             rsp: self.orig_rsp.absolute()?,
 
             // function args
-            rcx: peb_addr.into(),
-            rdx: seed,
-            r8: page_size.into(),
-            r9: max_guest_log_level,
+            rdi: peb_addr.into(),
+            rsi: seed,
+            rdx: page_size.into(),
+            rcx: max_guest_log_level,
             rflags: 1 << 1,
             ..Default::default()
         };

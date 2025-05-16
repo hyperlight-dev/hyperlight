@@ -41,7 +41,7 @@ pub fn new_uninit_rust() -> Result<UninitializedSandbox> {
 }
 
 pub fn get_simpleguest_sandboxes(
-    writer: Option<&dyn HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
+    writer: Option<HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
 ) -> Vec<MultiUseSandbox> {
     let elf_path = get_c_or_rust_simpleguest_path();
 
@@ -53,7 +53,7 @@ pub fn get_simpleguest_sandboxes(
     sandboxes
         .into_iter()
         .map(|mut sandbox| {
-            if let Some(writer) = writer {
+            if let Some(writer) = writer.clone() {
                 sandbox.register_print(writer).unwrap();
             }
             sandbox.evolve(Noop::default()).unwrap()
@@ -62,7 +62,7 @@ pub fn get_simpleguest_sandboxes(
 }
 
 pub fn get_callbackguest_uninit_sandboxes(
-    writer: Option<&dyn HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
+    writer: Option<HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
 ) -> Vec<UninitializedSandbox> {
     let elf_path = get_c_or_rust_callbackguest_path();
 
@@ -74,7 +74,7 @@ pub fn get_callbackguest_uninit_sandboxes(
     sandboxes
         .into_iter()
         .map(|mut sandbox| {
-            if let Some(writer) = writer {
+            if let Some(writer) = writer.clone() {
                 sandbox.register_print(writer).unwrap();
             }
             sandbox

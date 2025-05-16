@@ -22,19 +22,18 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use tracing::{instrument, Span};
 
 use super::ExtraAllowedSyscall;
-use crate::func::HyperlightFunction;
+use crate::func::host_functions::TypeErasedHostFunction;
 use crate::HyperlightError::HostFunctionNotFound;
 use crate::{new_error, Result};
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 /// A Wrapper around details of functions exposed by the Host
 pub struct FunctionRegistry {
     functions_map: HashMap<String, FunctionEntry>,
 }
 
-#[derive(Clone)]
 pub struct FunctionEntry {
-    pub function: HyperlightFunction,
+    pub function: TypeErasedHostFunction,
     pub extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
 }
 
@@ -44,7 +43,7 @@ impl FunctionRegistry {
     pub(crate) fn register_host_function(
         &mut self,
         name: String,
-        func: HyperlightFunction,
+        func: TypeErasedHostFunction,
     ) -> Result<()> {
         self.register_host_function_helper(name, func, None)
     }
@@ -56,7 +55,7 @@ impl FunctionRegistry {
     pub(crate) fn register_host_function_with_syscalls(
         &mut self,
         name: String,
-        func: HyperlightFunction,
+        func: TypeErasedHostFunction,
         extra_allowed_syscalls: Vec<ExtraAllowedSyscall>,
     ) -> Result<()> {
         self.register_host_function_helper(name, func, Some(extra_allowed_syscalls))
@@ -92,7 +91,7 @@ impl FunctionRegistry {
     fn register_host_function_helper(
         &mut self,
         name: String,
-        function: HyperlightFunction,
+        function: TypeErasedHostFunction,
         extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
     ) -> Result<()> {
         #[cfg(not(all(feature = "seccomp", target_os = "linux")))]
@@ -101,6 +100,7 @@ impl FunctionRegistry {
                 "Extra syscalls are only supported on Linux with seccomp"
             ));
         }
+
         self.functions_map.insert(
             name,
             FunctionEntry {

@@ -41,26 +41,17 @@ pub mod host_function_call;
 pub(crate) mod guest_logger;
 pub mod memory;
 pub mod print;
-pub(crate) mod security_check;
-pub mod setjmp;
 
-pub mod chkstk;
 pub mod error;
-pub mod gdt;
-pub mod idt;
-pub mod idtr;
-pub mod interrupt_entry;
-pub mod interrupt_handlers;
+#[cfg(target_arch = "x86_64")]
+pub mod exceptions {
+    pub mod gdt;
+    pub mod handlers;
+    pub mod idt;
+    pub mod idtr;
+    pub mod interrupt_entry;
+}
 pub mod logging;
-
-// Unresolved symbols
-///cbindgen:ignore
-#[no_mangle]
-pub(crate) extern "C" fn __CxxFrameHandler3() {}
-///cbindgen:ignore
-#[no_mangle]
-#[clippy::allow(clippy::non_upper_case_globals)]
-pub(crate) static _fltused: i32 = 0;
 
 // It looks like rust-analyzer doesn't correctly manage no_std crates,
 // and so it displays an error about a duplicate panic_handler.
@@ -81,11 +72,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 // Globals
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
-
-///cbindgen:ignore
-#[no_mangle]
-#[clippy::allow(clippy::non_upper_case_globals)]
-pub(crate) static mut __security_cookie: u64 = 0;
 
 pub(crate) static mut P_PEB: Option<*mut HyperlightPEB> = None;
 pub static mut MIN_STACK_ADDRESS: u64 = 0;

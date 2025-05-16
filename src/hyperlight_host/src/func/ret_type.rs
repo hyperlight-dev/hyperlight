@@ -21,7 +21,7 @@ use crate::HyperlightError::ReturnValueConversionFailure;
 use crate::{log_then_return, Result};
 
 /// This is a marker trait that is used to indicate that a type is a valid Hyperlight return type.
-pub trait SupportedReturnType: Sized {
+pub trait SupportedReturnType: Sized + Clone + Send + Sync + 'static {
     /// The return type of the supported return value
     const TYPE: ReturnType;
 
@@ -30,6 +30,15 @@ pub trait SupportedReturnType: Sized {
 
     /// Gets the inner value of the supported return type
     fn from_value(value: ReturnValue) -> Result<Self>;
+}
+
+/// A trait to handle either a SupportedReturnType or a Result<impl SupportedReturnType>
+pub trait ResultType {
+    /// The return type of the supported return value
+    type ReturnType: SupportedReturnType;
+
+    /// Convert the return type into a Result<impl SupportedReturnType>
+    fn into_result(self) -> Result<Self::ReturnType>;
 }
 
 macro_rules! for_each_return_type {
@@ -66,6 +75,24 @@ macro_rules! impl_supported_return_type {
                         ));
                     }
                 }
+            }
+        }
+
+        impl ResultType for $type {
+            type ReturnType = $type;
+
+            #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+            fn into_result(self) -> Result<Self::ReturnType> {
+                Ok(self)
+            }
+        }
+
+        impl ResultType for Result<$type> {
+            type ReturnType = $type;
+
+            #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+            fn into_result(self) -> Result<Self::ReturnType> {
+                self
             }
         }
     };
