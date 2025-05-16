@@ -39,7 +39,6 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{new_error, Result};
 
 pub(crate) fn is_hypervisor_present() -> bool {
-    println!("whp in_is_hypervisor_present");
     let mut capability: WHV_CAPABILITY = Default::default();
     let written_size: Option<*mut u32> = None;
 
@@ -89,8 +88,6 @@ unsafe impl Sync for WhpVm {}
 
 impl WhpVm {
     pub(crate) fn new(mmap_file_handle: HandleWrapper) -> Result<Self> {
-        println!("whp in_is_hypervisor_present");
-
         const NUM_CPU: u32 = 1;
         let partition = unsafe {
             let partition = WHvCreatePartition()?;
@@ -114,8 +111,6 @@ impl WhpVm {
 
     /// Helper for setting arbitrary registers.
     fn set_registers(&self, registers: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]) -> Result<()> {
-        println!("whp set_registers");
-
         let register_count = registers.len();
         let mut register_names: Vec<WHV_REGISTER_NAME> = vec![];
         let mut register_values: Vec<WHV_REGISTER_VALUE> = vec![];
@@ -141,8 +136,6 @@ impl WhpVm {
 
 impl Vm for WhpVm {
     fn get_regs(&self) -> Result<CommonRegisters> {
-        println!("whp get_regs");
-
         let mut whv_regs_values: [WHV_REGISTER_VALUE; WHP_REGS_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
 
@@ -171,7 +164,6 @@ impl Vm for WhpVm {
     }
 
     fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
-        println!("whp set_regs");
         let whp_regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_REGS_NAMES_LEN] = regs.into();
         self.set_registers(&whp_regs)?;
         Ok(())
@@ -183,9 +175,9 @@ impl Vm for WhpVm {
             unsafe { std::mem::zeroed() };
         println!("whp get_sregs2");
 
-        println!("parition: {:?}", self.partition);
-        println!("whp_sregs_names: {:?}", WHP_SREGS_NAMES);
-        println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
+        println!("partition: {:?}", self.partition);
+        // println!("whp_sregs_names: {:?}", WHP_SREGS_NAMES);
+        // println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
         // println!("first value: {:?}", unsafe {
         //     WHP_SREGS_NAMES.as_ptr().read()
         // });
@@ -222,14 +214,12 @@ impl Vm for WhpVm {
     }
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        println!("whp set_sregs");
         let whp_regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_SREGS_NAMES_LEN] = sregs.into();
         self.set_registers(&whp_regs)?;
         Ok(())
     }
 
     fn get_fpu(&self) -> Result<CommonFpu> {
-        println!("whp get_fpu");
         let mut whp_fpu_values: [WHV_REGISTER_VALUE; WHP_FPU_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
 
@@ -253,14 +243,12 @@ impl Vm for WhpVm {
     }
 
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
-        println!("whp set_fpu");
         let whp_fpu: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_FPU_NAMES_LEN] = fpu.into();
         self.set_registers(&whp_fpu)?;
         Ok(())
     }
 
     unsafe fn map_memory(&mut self, regions: &[MemoryRegion]) -> Result<()> {
-        println!("whp map_memory");
         if regions.is_empty() {
             return Err(new_error!("No memory regions to map"));
         }
@@ -330,8 +318,6 @@ impl Vm for WhpVm {
 
     #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
     fn run_vcpu(&mut self) -> Result<HyperlightExit> {
-        println!("whp run_vpu");
-
         let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
 
         unsafe {
@@ -389,7 +375,6 @@ impl Vm for WhpVm {
     }
 
     fn get_partition_handle(&self) -> WHV_PARTITION_HANDLE {
-        println!("whp get_partition_handle");
         self.partition
     }
 }
@@ -403,7 +388,6 @@ impl Drop for WhpVm {
 }
 
 unsafe fn try_load_whv_map_gpa_range2() -> Result<WHvMapGpaRange2Func> {
-    println!("whp try_load_whv_map_gpa_range2");
     let library = unsafe {
         LoadLibraryExA(
             s!("winhvplatform.dll"),
