@@ -476,10 +476,10 @@ impl Hypervisor for HypervLinuxDriver {
             rflags: 2, //bit 1 of rlags is required to be set
 
             // function args
-            rcx: peb_addr.into(),
-            rdx: seed,
-            r8: page_size.into(),
-            r9: max_guest_log_level,
+            rdi: peb_addr.into(),
+            rsi: seed,
+            rdx: page_size.into(),
+            rcx: max_guest_log_level,
 
             ..Default::default()
         };

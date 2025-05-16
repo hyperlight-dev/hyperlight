@@ -19,10 +19,8 @@ use alloc::vec::Vec;
 use core::ffi::{c_char, CStr};
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
-use hyperlight_common::outb::OutBAction;
 
 use crate::entrypoint::halt;
-use crate::host_function_call::outb;
 use crate::shared_output_data::push_shared_output_data;
 
 pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
@@ -40,16 +38,6 @@ pub(crate) fn write_error(error_code: ErrorCode, message: Option<&str>) {
 
 pub(crate) fn set_error(error_code: ErrorCode, message: &str) {
     write_error(error_code, Some(message));
-}
-
-pub(crate) fn set_error_and_halt(error_code: ErrorCode, message: &str) {
-    set_error(error_code, message);
-    halt();
-}
-
-#[no_mangle]
-pub(crate) extern "win64" fn set_stack_allocate_error() {
-    outb(OutBAction::Abort as u16, &[ErrorCode::StackOverflow as u8]);
 }
 
 /// Exposes a C API to allow the guest to set an error

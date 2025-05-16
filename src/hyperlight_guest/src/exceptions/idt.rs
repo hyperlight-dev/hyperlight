@@ -16,7 +16,7 @@ limitations under the License.
 
 use hyperlight_common::outb::Exception;
 
-use crate::interrupt_entry::{
+use crate::exceptions::interrupt_entry::{
     _do_excp0, _do_excp1, _do_excp10, _do_excp11, _do_excp12, _do_excp13, _do_excp14, _do_excp15,
     _do_excp16, _do_excp17, _do_excp18, _do_excp19, _do_excp2, _do_excp20, _do_excp3, _do_excp30,
     _do_excp4, _do_excp5, _do_excp6, _do_excp7, _do_excp8, _do_excp9,
@@ -96,7 +96,7 @@ pub(crate) fn init_idt() {
     set_idt_entry(Exception::SecurityException as usize, _do_excp30); // Security Exception
 }
 
-fn set_idt_entry(index: usize, handler: unsafe extern "sysv64" fn()) {
+fn set_idt_entry(index: usize, handler: unsafe extern "C" fn()) {
     let handler_addr = handler as *const () as u64;
     unsafe {
         IDT[index] = IdtEntry::new(handler_addr);

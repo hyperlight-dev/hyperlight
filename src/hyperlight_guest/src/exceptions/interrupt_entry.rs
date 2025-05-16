@@ -19,9 +19,9 @@ limitations under the License.
 
 use core::arch::global_asm;
 
-use crate::interrupt_handlers::hl_exception_handler;
+use crate::exceptions::handlers::hl_exception_handler;
 
-extern "sysv64" {
+extern "C" {
     // Exception handlers
     pub(crate) fn _do_excp0();
     pub(crate) fn _do_excp1();
@@ -119,7 +119,6 @@ macro_rules! generate_exceptions {
             // Common exception handler
             ".global _do_excp_common\n",
             "_do_excp_common:\n",
-            // In SysV ABI, the first argument is passed in rdi
             // rdi is the stack pointer.
             "    mov rdi, rsp\n",
             "    call {hl_exception_handler}\n",
@@ -173,12 +172,10 @@ macro_rules! generate_excp {
             stringify!($num),
             ":\n",
             context_save!(),
-            // In SysV ABI, the second argument is passed in rsi
             // rsi is the exception number.
             "    mov rsi, ",
             stringify!($num),
             "\n",
-            // In SysV ABI, the third argument is passed in rdx
             // rdx is only used for pagefault exception and
             // contains the address that caused the pagefault.
             "    mov rdx, 0\n",
@@ -198,12 +195,10 @@ macro_rules! generate_excp {
             // stack aligned.
             "   push 0\n",
             context_save!(),
-            // In SysV ABI, the second argument is passed in rsi
             // rsi is the exception number.
             "    mov rsi, ",
             stringify!($num),
             "\n",
-            // In SysV ABI, the third argument is passed in rdx
             // rdx is only used for pagefault exception and
             // contains the address that caused the pagefault.
             "    mov rdx, 0\n",

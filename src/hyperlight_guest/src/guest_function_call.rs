@@ -97,7 +97,7 @@ fn internal_dispatch_function() -> Result<()> {
 // This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()
 // which if it were included in the internal_dispatch_function cause the epilogue to not be called because the halt() would not return
 // when running in the hypervisor.
-pub(crate) extern "win64" fn dispatch_function() {
+pub(crate) extern "C" fn dispatch_function() {
     let _ = internal_dispatch_function();
     halt();
 }
