@@ -181,17 +181,17 @@ impl Vm for WhpVm {
         println!("whp get_sregs");
         let mut whp_sregs_values: [WHV_REGISTER_VALUE; WHP_SREGS_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
-        println!("whp get_sregs2");
+        // println!("whp get_sregs2");
 
-        println!("parition: {:?}", self.partition);
-        println!("whp_sregs_names: {:?}", WHP_SREGS_NAMES);
-        println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
-        println!("first value: {:?}", unsafe {
-            WHP_SREGS_NAMES.as_ptr().read()
-        });
-        println!("last value: {:?}", unsafe {
-            WHP_SREGS_NAMES.as_ptr().add(WHP_SREGS_NAMES_LEN - 1).read()
-        });
+        // println!("parition: {:?}", self.partition);
+        // println!("whp_sregs_names: {:?}", WHP_SREGS_NAMES);
+        // println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
+        // println!("first value: {:?}", unsafe {
+        //     WHP_SREGS_NAMES.as_ptr().read()
+        // });
+        // println!("last value: {:?}", unsafe {
+        //     WHP_SREGS_NAMES.as_ptr().add(WHP_SREGS_NAMES_LEN - 1).read()
+        // });
 
         unsafe {
             WHvGetVirtualProcessorRegisters(
