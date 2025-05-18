@@ -23,7 +23,7 @@ pub mod handlers;
 pub(crate) mod hyperlight_vm;
 pub(crate) mod hypervisor_handler;
 
-/// Registers including genertal purpose registers, special registesr, fpu registers
+/// Registers including general purpose registers, special registesr, fpu registers
 mod regs;
 /// Vm trait
 mod vm;

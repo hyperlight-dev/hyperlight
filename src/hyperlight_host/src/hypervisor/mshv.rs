@@ -299,7 +299,7 @@ impl Vm for MshvVm {
                     intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
                     // Exception handler #DB (1)
                     intercept_parameter: hv_intercept_parameters {
-                        exception_vector: 0x1,
+                        exception_vector: DB_EX_ID,
                     },
                 })
                 .map_err(|e| new_error!("Cannot install debug exception intercept: {}", e))?;
@@ -311,7 +311,7 @@ impl Vm for MshvVm {
                     intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
                     // Exception handler #BP (3)
                     intercept_parameter: hv_intercept_parameters {
-                        exception_vector: 0x3,
+                        exception_vector: BP_EX_ID,
                     },
                 })
                 .map_err(|e| new_error!("Cannot install breakpoint exception intercept: {}", e))?;
