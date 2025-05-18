@@ -290,6 +290,7 @@ impl Vm for MshvVm {
             mshv_install_intercept, HV_INTERCEPT_ACCESS_MASK_EXECUTE,
         };
 
+        use crate::hypervisor::gdb::arch::{BP_EX_ID, DB_EX_ID};
         use crate::new_error;
 
         if enabled {
@@ -299,7 +300,7 @@ impl Vm for MshvVm {
                     intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
                     // Exception handler #DB (1)
                     intercept_parameter: hv_intercept_parameters {
-                        exception_vector: DB_EX_ID,
+                        exception_vector: DB_EX_ID as u16,
                     },
                 })
                 .map_err(|e| new_error!("Cannot install debug exception intercept: {}", e))?;
@@ -311,7 +312,7 @@ impl Vm for MshvVm {
                     intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
                     // Exception handler #BP (3)
                     intercept_parameter: hv_intercept_parameters {
-                        exception_vector: BP_EX_ID,
+                        exception_vector: BP_EX_ID as u16,
                     },
                 })
                 .map_err(|e| new_error!("Cannot install breakpoint exception intercept: {}", e))?;

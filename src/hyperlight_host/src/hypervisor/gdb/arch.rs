@@ -24,9 +24,9 @@ use crate::Result;
 // Described in Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
 // of Intel 64 and IA-32 Architectures Software Developer's Manual
 /// Exception id for #DB
-const DB_EX_ID: u32 = 1;
+pub(crate) const DB_EX_ID: u32 = 1;
 /// Exception id for #BP - triggered by the INT3 instruction
-const BP_EX_ID: u32 = 3;
+pub(crate) const BP_EX_ID: u32 = 3;
 
 /// Software Breakpoint size in memory
 pub(crate) const SW_BP_SIZE: usize = 1;
