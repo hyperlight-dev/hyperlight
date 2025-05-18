@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-pub(crate) mod arch;
+mod arch;
 mod event_loop;
 mod x86_64_target;
 

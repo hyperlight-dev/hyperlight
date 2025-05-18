@@ -29,8 +29,8 @@ use super::regs::{
     WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES,
     WHP_SREGS_NAMES_LEN,
 };
+use super::vm::HyperlightExit;
 use super::wrappers::HandleWrapper;
-use super::HyperlightExit;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;

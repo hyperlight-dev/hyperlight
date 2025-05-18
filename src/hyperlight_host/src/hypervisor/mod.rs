@@ -22,28 +22,35 @@ use crate::Result;
 pub mod handlers;
 pub(crate) mod hyperlight_vm;
 pub(crate) mod hypervisor_handler;
-/// HyperV-on-linux functionality
+
+/// Registers including genertal purpose registers, special registesr, fpu registers
+mod regs;
+/// Vm trait
+mod vm;
+
+/// Implements vm::Vm trait on Windows using Windows Hypervisor Platform (WHP)
+#[cfg(target_os = "windows")]
+pub(crate) mod whp;
+
+/// Implements vm::Vm trait on Linux using Microsoft Hypervisor (MSHV)
 #[cfg(mshv)]
 pub mod mshv;
-mod regs;
-mod vm;
-#[cfg(target_os = "windows")]
-/// Hyperv-on-windows functionality
-pub(crate) mod whp;
+
+/// Implements vm::Vm trait on Linux using Kernel-based Virtual Machine (KVM)
+#[cfg(kvm)]
+pub mod kvm;
 
 /// GDB debugging support
 #[cfg(gdb)]
 mod gdb;
 
-#[cfg(kvm)]
-/// Functionality to manipulate KVM-based virtual machines
-pub mod kvm;
-#[cfg(target_os = "windows")]
 /// Hyperlight Surrogate Process
-pub(crate) mod surrogate_process;
 #[cfg(target_os = "windows")]
+mod surrogate_process;
+
 /// Hyperlight Surrogate Process
-pub(crate) mod surrogate_process_manager;
+#[cfg(target_os = "windows")]
+mod surrogate_process_manager;
 
 /// Safe wrappers around windows types like `PSTR`
 #[cfg(target_os = "windows")]
@@ -82,33 +89,8 @@ pub(crate) const EFER_LMA: u64 = 1 << 10;
 pub(crate) const EFER_SCE: u64 = 1;
 pub(crate) const EFER_NX: u64 = 1 << 11;
 
-/// These are the generic exit reasons that we can handle from a Hypervisor the Hypervisors run method is responsible for mapping from
-/// the hypervisor specific exit reasons to these generic ones
-pub enum HyperlightExit {
-    #[cfg(gdb)]
-    /// The vCPU has exited due to a debug event
-    Debug { dr6: u64, exception: u32 },
-    /// The vCPU has halted
-    Halt(),
-    /// The vCPU has issued a write to the given port with the given value
-    IoOut(u16, Vec<u8>),
-    /// The vCPU tried to read from the given (unmapped) addr
-    MmioRead(u64),
-    /// The vCPU tried to write to the given (unmapped) addr
-    MmioWrite(u64),
-    /// The vCPU execution has been cancelled
-    Cancelled(),
-    /// The vCPU has exited for a reason that is not handled by Hyperlight
-    Unknown(String),
-    /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
-    Retry(),
-}
-
-/// A common set of hypervisor functionality
-///
-/// Note: a lot of these structures take in an `Option<HypervisorHandler>`.
-/// This is because, if we are coming from the C API, we don't have a HypervisorHandler and have
-/// to account for the fact the Hypervisor was set up beforehand.
+/// Functionality required by a Hyperlight VM. A Hyperlight VM is a VM capable of executing
+/// guest function calls.
 pub(crate) trait HyperlightVm: Debug + Sync + Send {
     /// Initialise the internally stored vCPU with the given PEB address and
     /// random number seed, then run it until a HLT instruction.

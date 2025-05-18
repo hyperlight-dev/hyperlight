@@ -7,7 +7,6 @@ use std::sync::Mutex;
 use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 #[cfg(gdb)]
 use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::MemoryRegion;
 use crate::Result;
 
@@ -77,4 +76,32 @@ pub(crate) trait Vm: Send + Sync + Debug {
         addr: u64,
         dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()>;
+}
+
+/// Possible exit reasons of a VM's vCPU
+pub(super) enum HyperlightExit {
+    #[cfg(gdb)]
+    /// The vCPU has exited due to a debug event
+    Debug { dr6: u64, exception: u32 },
+    /// The vCPU has halted
+    Halt(),
+    /// The vCPU has issued a write to the given port with the given value
+    IoOut(u16, Vec<u8>),
+    /// The vCPU tried to read from the given (unmapped) addr
+    MmioRead(u64),
+    /// The vCPU tried to write to the given (unmapped) addr
+    MmioWrite(u64),
+    /// The vCPU execution has been cancelled
+    Cancelled(),
+    /// The vCPU has exited for a reason that is not handled by Hyperlight
+    Unknown(String),
+    /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
+    #[cfg_attr(
+        target_os = "windows",
+        expect(
+            dead_code,
+            reason = "Retry() is never constructed on Windows, but it is still matched on (which dead_code lint ignores)"
+        )
+    )]
+    Retry(),
 }
