@@ -34,7 +34,7 @@ use super::mshv::MshvVm;
 use super::regs::{
     CommonFpu, CommonRegisters, FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT,
 };
-use super::vm::{DebugExit, HyperlightExit, Vm};
+use super::vm::{HyperlightExit, Vm};
 use super::{
     HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
     CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
@@ -42,6 +42,8 @@ use super::{
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
+#[cfg(gdb)]
+use crate::hypervisor::vm::DebugExit;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::whp::WhpVm;
 #[cfg(target_os = "windows")]

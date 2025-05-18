@@ -79,6 +79,7 @@ pub(crate) trait Vm: Send + Sync + Debug {
 }
 
 #[derive(Debug)]
+#[cfg(gdb)]
 pub(super) enum DebugExit {
     /// The vCPU has exited due to a debug event (usually breakpoint)
     Debug { dr6: u64, exception: u32 },
