@@ -150,7 +150,7 @@ impl From<&CommonSpecialRegisters> for kvm_sregs {
 #[cfg(target_os = "windows")]
 pub(crate) const WHP_SREGS_NAMES_LEN: usize = 17;
 #[cfg(target_os = "windows")]
-pub(crate) const WHP_SREGS_NAMES: [WHV_REGISTER_NAME; WHP_SREGS_NAMES_LEN] = [
+pub(crate) static WHP_SREGS_NAMES: [WHV_REGISTER_NAME; WHP_SREGS_NAMES_LEN] = [
     WHvX64RegisterCs,
     WHvX64RegisterDs,
     WHvX64RegisterEs,
