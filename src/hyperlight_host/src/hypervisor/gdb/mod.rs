@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-mod arch;
+pub(crate) mod arch;
 mod event_loop;
 mod x86_64_target;
 
@@ -79,7 +79,6 @@ pub enum VcpuStopReason {
     EntryPointBp,
     HwBp,
     SwBp,
-    #[allow(dead_code)] // TODO confirm with doru if this really is needed
     Interrupt,
     Unknown,
 }

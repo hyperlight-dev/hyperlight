@@ -34,7 +34,7 @@ use super::mshv::MshvVm;
 use super::regs::{
     CommonFpu, CommonRegisters, FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT,
 };
-use super::vm::{HyperlightExit, Vm};
+use super::vm::{DebugExit, HyperlightExit, Vm};
 use super::{
     HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
     CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
@@ -502,11 +502,29 @@ impl HyperlightVm for HyperlightSandbox {
         loop {
             match self.vm.run_vcpu() {
                 #[cfg(gdb)]
-                Ok(HyperlightExit::Debug { dr6, exception }) => {
-                    let stop_reason =
-                        arch::vcpu_stop_reason(self.vm.as_mut(), self.entrypoint, dr6, exception)?;
-                    if let Err(e) = self.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
-                        log_then_return!(e);
+                Ok(HyperlightExit::Debug(debug_exit)) => {
+                    match debug_exit {
+                        DebugExit::Debug { dr6, exception } => {
+                            // Handle debug event (breakpoints)
+                            let stop_reason = arch::vcpu_stop_reason(
+                                self.vm.as_mut(),
+                                self.entrypoint,
+                                dr6,
+                                exception,
+                            )?;
+                            if let Err(e) =
+                                self.handle_debug(dbg_mem_access_fn.clone(), stop_reason)
+                            {
+                                log_then_return!(e);
+                            }
+                        }
+                        DebugExit::Interrupt => {
+                            if let Err(e) = self
+                                .handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Interrupt)
+                            {
+                                log_then_return!(e);
+                            }
+                        }
                     }
                 }
 
@@ -580,7 +598,6 @@ impl HyperlightVm for HyperlightSandbox {
                         }
                     }
                 }
-
                 Ok(HyperlightExit::Cancelled()) => {
                     // Shutdown is returned when the host has cancelled execution
                     // After termination, the main thread will re-initialize the VM

@@ -26,8 +26,7 @@ use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
 use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use super::vm::Vm;
-use super::HyperlightExit;
+use super::vm::{DebugExit, HyperlightExit, Vm};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{log_then_return, new_error, Result};
 
@@ -145,18 +144,18 @@ impl Vm for KvmVm {
             Ok(VcpuExit::MmioWrite(addr, _)) => Ok(HyperlightExit::MmioWrite(addr)),
             #[cfg(gdb)]
             // KVM provides architecture specific information about the vCPU state when exiting
-            Ok(VcpuExit::Debug(debug_exit)) => Ok(HyperlightExit::Debug {
+            Ok(VcpuExit::Debug(debug_exit)) => Ok(HyperlightExit::Debug(DebugExit::Debug {
                 dr6: debug_exit.dr6,
                 exception: debug_exit.exception,
-            }),
+            })),
             Err(e) => match e.errno() {
                 // In case of the gdb feature, the timeout is not enabled, this
                 // exit is because of a signal sent from the gdb thread to the
-                // hypervisor thread to cancel execution
-                // #[cfg(gdb)]
-                // libc::EINTR => Ok(HyperlightExit::Debug(VcpuStopReason::Interrupt)),
-                // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
-                // #[cfg(not(gdb))]
+                // hypervisor thread to cancel execution (e.g. Ctrl+C from GDB)
+                #[cfg(gdb)]
+                libc::EINTR => Ok(HyperlightExit::Debug(DebugExit::Interrupt)),
+                // we send a signal to the thread to cancel execution. This results in EINTR being returned
+                #[cfg(not(gdb))]
                 libc::EINTR => Ok(HyperlightExit::Cancelled()),
                 libc::EAGAIN => Ok(HyperlightExit::Retry()),
                 _ => {

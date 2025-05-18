@@ -52,8 +52,8 @@ use tracing::{instrument, Span};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerCaller;
 use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use super::vm::Vm;
-use super::HyperlightExit;
+use super::vm::{HyperlightExit, Vm};
+use crate::hypervisor::vm::DebugExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{log_then_return, new_error, Result};
 
@@ -236,10 +236,10 @@ impl Vm for MshvVm {
                 EXCEPTION_INTERCEPT => {
                     let exception_message = m.to_exception_info()?;
                     let DebugRegisters { dr6, .. } = self.vcpu_fd.get_debug_regs()?;
-                    HyperlightExit::Debug {
+                    HyperlightExit::Debug(DebugExit::Debug {
                         dr6,
                         exception: exception_message.exception_vector as u32,
-                    }
+                    })
                 }
                 other => {
                     crate::debug!("mshv Other Exit: Exit: {:#?} \n {:#?}", other, &self);
@@ -247,7 +247,13 @@ impl Vm for MshvVm {
                 }
             },
             Err(e) => match e.errno() {
-                // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
+                // In case of the gdb feature, the timeout is not enabled, this
+                // exit is because of a signal sent from the gdb thread to the
+                // hypervisor thread to cancel execution (e.g. Ctrl+C from GDB)
+                #[cfg(gdb)]
+                libc::EINTR => HyperlightExit::Debug(DebugExit::Interrupt),
+                // we send a signal to the thread to cancel execution. This results in EINTR being returned
+                #[cfg(not(gdb))]
                 libc::EINTR => HyperlightExit::Cancelled(),
                 libc::EAGAIN => HyperlightExit::Retry(),
                 _ => {

@@ -78,11 +78,19 @@ pub(crate) trait Vm: Send + Sync + Debug {
     ) -> Result<()>;
 }
 
+#[derive(Debug)]
+pub(super) enum DebugExit {
+    /// The vCPU has exited due to a debug event (usually breakpoint)
+    Debug { dr6: u64, exception: u32 },
+    /// The user has requested to stop the VM during execution (e.g. via Ctrl+C inside GDB)
+    Interrupt,
+}
+
 /// Possible exit reasons of a VM's vCPU
 pub(super) enum HyperlightExit {
     #[cfg(gdb)]
     /// The vCPU has exited due to a debug event
-    Debug { dr6: u64, exception: u32 },
+    Debug(DebugExit),
     /// The vCPU has halted
     Halt(),
     /// The vCPU has issued a write to the given port with the given value
@@ -92,6 +100,7 @@ pub(super) enum HyperlightExit {
     /// The vCPU tried to write to the given (unmapped) addr
     MmioWrite(u64),
     /// The vCPU execution has been cancelled
+    #[allow(dead_code)]
     Cancelled(),
     /// The vCPU has exited for a reason that is not handled by Hyperlight
     Unknown(String),
