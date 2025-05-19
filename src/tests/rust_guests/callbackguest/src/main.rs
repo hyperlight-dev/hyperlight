@@ -34,9 +34,7 @@ use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
 use hyperlight_guest::guest_function_register::register_function;
-use hyperlight_guest::host_function_call::{
-    call_host_function, get_host_return_value, print_output_with_host_print,
-};
+use hyperlight_guest::host_function_call::{call_host_function, print_output_with_host_print};
 use hyperlight_guest::logging::log_message;
 
 fn send_message_to_host_method(
@@ -45,15 +43,13 @@ fn send_message_to_host_method(
     message: &str,
 ) -> Result<Vec<u8>> {
     let message = format!("{}{}", guest_message, message);
-    call_host_function(
+    let res = call_host_function::<i32>(
         method_name,
         Some(Vec::from(&[ParameterValue::String(message.to_string())])),
         ReturnType::Int,
     )?;
 
-    let result = get_host_return_value::<i32>()?;
-
-    Ok(get_flatbuffer_result(result))
+    Ok(get_flatbuffer_result(res))
 }
 
 fn guest_function(function_call: &FunctionCall) -> Result<Vec<u8>> {
@@ -101,7 +97,7 @@ fn guest_function3(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 fn guest_function4(_: &FunctionCall) -> Result<Vec<u8>> {
-    call_host_function(
+    call_host_function::<()>(
         "HostMethod4",
         Some(Vec::from(&[ParameterValue::String(
             "Hello from GuestFunction4".to_string(),
@@ -157,7 +153,7 @@ fn call_error_method(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 fn call_host_spin(_: &FunctionCall) -> Result<Vec<u8>> {
-    call_host_function("Spin", None, ReturnType::Void)?;
+    call_host_function::<()>("Spin", None, ReturnType::Void)?;
     Ok(get_flatbuffer_result(()))
 }
 

@@ -55,10 +55,11 @@ pub unsafe extern "C" fn _putchar(c: c_char) {
                 .expect("Failed to convert buffer to string")
         };
 
-        call_host_function(
+        // HostPrint returns an i32, but we don't care about the return value
+        let _ = call_host_function::<i32>(
             "HostPrint",
             Some(Vec::from(&[ParameterValue::String(str)])),
-            ReturnType::Void,
+            ReturnType::Int,
         )
         .expect("Failed to call HostPrint");
 

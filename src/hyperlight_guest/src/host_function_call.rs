@@ -32,7 +32,9 @@ use crate::shared_input_data::try_pop_shared_input_data_into;
 use crate::shared_output_data::push_shared_output_data;
 
 /// Get a return value from a host function call.
-/// This usually requires a host function to be called first using `call_host_function`.
+/// This usually requires a host function to be called first using `call_host_function_internal`.
+/// When calling `call_host_function<T>`, this function is called internally to get the return
+/// value.
 pub fn get_host_return_value<T: TryFrom<ReturnValue>>() -> Result<T> {
     let return_value = try_pop_shared_input_data_into::<ReturnValue>()
         .expect("Unable to deserialize a return value from host");
@@ -47,10 +49,12 @@ pub fn get_host_return_value<T: TryFrom<ReturnValue>>() -> Result<T> {
     })
 }
 
-// TODO: Make this generic, return a Result<T, ErrorCode> this should allow callers to call this function and get the result type they expect
-// without having to do the conversion themselves
-
-pub fn call_host_function(
+/// Internal function to call a host function without generic type parameters.
+/// This is used by both the Rust and C APIs to reduce code duplication.
+///
+/// This function doesn't return the host function result directly, instead it just
+/// performs the call. The result must be obtained by calling `get_host_return_value`.
+pub fn call_host_function_internal(
     function_name: &str,
     parameters: Option<Vec<ParameterValue>>,
     return_type: ReturnType,
@@ -71,6 +75,20 @@ pub fn call_host_function(
     outb(OutBAction::CallFunction as u16, &[0]);
 
     Ok(())
+}
+
+/// Call a host function with the given parameters and return type.
+/// This function serializes the function call and its parameters,
+/// sends it to the host, and then retrieves the return value.
+///
+/// The return value is deserialized into the specified type `T`.
+pub fn call_host_function<T: TryFrom<ReturnValue>>(
+    function_name: &str,
+    parameters: Option<Vec<ParameterValue>>,
+    return_type: ReturnType,
+) -> Result<T> {
+    call_host_function_internal(function_name, parameters, return_type)?;
+    get_host_return_value::<T>()
 }
 
 pub fn outb(port: u16, data: &[u8]) {
@@ -109,13 +127,13 @@ pub fn debug_print(msg: &str) {
 /// existence of the input and output memory regions.
 pub fn print_output_with_host_print(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
-        call_host_function(
+        let res = call_host_function::<i32>(
             "HostPrint",
             Some(Vec::from(&[ParameterValue::String(message.to_string())])),
             ReturnType::Int,
         )?;
-        let res_i = get_host_return_value::<i32>()?;
-        Ok(get_flatbuffer_result(res_i))
+
+        Ok(get_flatbuffer_result(res))
     } else {
         Err(HyperlightGuestError::new(
             ErrorCode::GuestError,
