@@ -41,7 +41,6 @@ fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(include_dir: 
 
 fn cargo_main() {
     println!("cargo:rerun-if-changed=third_party");
-    println!("cargo:rerun-if-changed=include");
 
     let mut cfg = cc::Build::new();
 
