@@ -103,12 +103,12 @@ impl GuestView {
         let filename = ctx
             .filename
             .as_ref()
-            .map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
+            .map_or(|| "<unknown>".to_string(), |s| s.to_string());
 
         let cmd = ctx
             .binary
             .as_ref()
-            .map_or_else(|| "<unknown>".to_string(), |s| s.to_string());
+            .map_or(|| "<unknown>".to_string(), |s| s.to_string());
 
         // The xsave state is checked as it can be empty
         let mut components = vec![];
