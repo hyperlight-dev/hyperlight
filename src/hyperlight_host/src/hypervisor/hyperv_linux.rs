@@ -25,6 +25,7 @@ extern crate mshv_bindings3 as mshv_bindings;
 extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
+use std::sync::OnceLock;
 
 use log::{error, LevelFilter};
 #[cfg(mshv2)]
@@ -271,17 +272,26 @@ mod debug {
     }
 }
 
+/// Static global MSHV handle to avoid reopening /dev/mshv for every sandbox
+static MSHV_HANDLE: OnceLock<Option<Mshv>> = OnceLock::new();
+
+/// Get the global MSHV handle, initializing it if needed
+#[instrument(skip_all, parent = Span::current(), level = "Trace")]
+pub(crate) fn get_mshv_handle() -> &'static Option<Mshv> {
+    MSHV_HANDLE.get_or_init(|| match Mshv::new() {
+        Ok(mshv) => Some(mshv),
+        Err(e) => {
+            log::info!("MSHV is not available on this system: {}", e);
+            None
+        }
+    })
+}
+
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
 pub(crate) fn is_hypervisor_present() -> bool {
-    match Mshv::new() {
-        Ok(_) => true,
-        Err(_) => {
-            log::info!("MSHV is not available on this system");
-            false
-        }
-    }
+    get_mshv_handle().is_some()
 }
 
 /// A Hypervisor driver for HyperV-on-Linux. This hypervisor is often
@@ -317,7 +327,11 @@ impl HypervLinuxDriver {
         pml4_ptr: GuestPtr,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
-        let mshv = Mshv::new()?;
+        let mshv = match get_mshv_handle() {
+            Some(mshv) => mshv.clone(),
+            None => return Err(new_error!("MSHV is not available on this system")),
+        };
+
         let pr = Default::default();
         #[cfg(mshv2)]
         let vm_fd = mshv.create_vm_with_config(&pr)?;
