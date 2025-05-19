@@ -204,15 +204,17 @@ involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or 
 
 ## Dumping the guest state to an ELF core dump when an unhandled crash occurs
 
-When a guest crashes, the vCPU state is dumped to an `ELF` core dump file. This can be used to inspect the state of the guest at the time of the crash.
+When a guest crashes because of an unknown VmExit or unhandled exception, the vCPU state is dumped to an `ELF` core dump file.
+This can be used to inspect the state of the guest at the time of the crash.
 
-To dump the state of the vCPU (general purpose registers, registers) to an `ELF` core dump file set the feature `crashdump` and run a debug build. This will result in a dump file being created in the temporary directory.
+To make Hyperlight dump the state of the vCPU (general purpose registers, registers) to an `ELF` core dump file, set the feature `crashdump` and run a debug build.
+This will result in a dump file being created in the temporary directory.
 The name and location of the dump file will be printed to the console and logged as an error message.
 
 ### Inspecting the core dump
 
 After the core dump has been created, to inspect the state of the guest, load the core dump file using `gdb` or `lldb`.
-A `gdb` version later than `15.0` and `lldb` version later than `17` have been used to test this feature.
+**NOTE: This feature has been tested with version `15.0` of `gdb` and version `17` of `lldb`, earlier versions may not work, it is recommended to use these versions or later.**
 
 To do this in vscode, the following configuration can be used to add debug configurations:
 
@@ -268,7 +270,7 @@ To do this in vscode, the following configuration can be used to add debug confi
     ]
 }
 ```
-NOTE: The `CodeLldb` debug session does not stop after launching. To see the code, stack frames and registers you need to
+**NOTE: The `CodeLldb` debug session does not stop after launching. To see the code, stack frames and registers you need to
 press the `pause` button. This is a known issue with the `CodeLldb` extension [#1245](https://github.com/vadimcn/codelldb/issues/1245).
-The `cppdbg` extension works as expected and stops at the entry point of the program.
+The `cppdbg` extension works as expected and stops at the entry point of the program.**
 
