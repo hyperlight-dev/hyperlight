@@ -25,6 +25,7 @@ extern crate mshv_bindings3 as mshv_bindings;
 extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
+use std::sync::{Arc, Mutex};
 
 use log::{error, LevelFilter};
 #[cfg(mshv2)]
@@ -54,7 +55,7 @@ use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+use super::handlers::{MemAccessHandlerWrapper, OutBHandler, OutBHandlerCaller};
 use super::{
     Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
     CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
@@ -459,7 +460,7 @@ impl Hypervisor for HypervLinuxDriver {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        outb_hdl: OutBHandlerWrapper,
+        outb_hdl: Arc<Mutex<OutBHandler>>,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         max_guest_log_level: Option<LevelFilter>,
@@ -501,7 +502,7 @@ impl Hypervisor for HypervLinuxDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -544,7 +545,7 @@ impl Hypervisor for HypervLinuxDriver {
         data: Vec<u8>,
         rip: u64,
         instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
     ) -> Result<()> {
         let mut padded = [0u8; 4];
         let copy_len = data.len().min(4);

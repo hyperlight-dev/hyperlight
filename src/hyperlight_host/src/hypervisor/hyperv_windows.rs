@@ -18,6 +18,7 @@ use core::ffi::c_void;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
+use std::sync::{Arc, Mutex};
 
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use log::LevelFilter;
@@ -31,7 +32,7 @@ use windows::Win32::System::Hypervisor::{
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+use super::handlers::{MemAccessHandlerWrapper, OutBHandler, OutBHandlerCaller};
 use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
@@ -305,7 +306,7 @@ impl Hypervisor for HypervWindowsDriver {
         peb_address: RawPtr,
         seed: u64,
         page_size: u32,
-        outb_hdl: OutBHandlerWrapper,
+        outb_hdl: Arc<Mutex<OutBHandler>>,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         max_guest_log_level: Option<LevelFilter>,
@@ -347,7 +348,7 @@ impl Hypervisor for HypervWindowsDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        outb_hdl: OutBHandlerWrapper,
+        outb_hdl: Arc<Mutex<OutBHandler>>,
         mem_access_hdl: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_hdl: DbgMemAccessHandlerWrapper,
@@ -388,7 +389,7 @@ impl Hypervisor for HypervWindowsDriver {
         data: Vec<u8>,
         rip: u64,
         instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
     ) -> Result<()> {
         let mut padded = [0u8; 4];
         let copy_len = data.len().min(4);
