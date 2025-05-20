@@ -276,3 +276,7 @@ See the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code
 [kvm]: https://help.ubuntu.com/community/KVM/Installation
 
 [whp]: https://devblogs.microsoft.com/visualstudio/hyper-v-android-emulator-support/#1-enable-hyper-v-and-the-windows-hypervisor-platform
+
+## Development
+
+All commits to this repository are signed with GPG verified signatures and include DCO sign-offs. See the [CONTRIBUTING.md](./CONTRIBUTING.md#developer-certificate-of-origin-signing-your-work) file for more information on DCO requirements.
