@@ -93,8 +93,7 @@ fn main() -> Result<()> {
         gdb: { all(feature = "gdb", debug_assertions, any(feature = "kvm", feature = "mshv2", feature = "mshv3"), target_os = "linux") },
         kvm: { all(feature = "kvm", target_os = "linux") },
         mshv: { all(any(feature = "mshv2", feature = "mshv3"), target_os = "linux") },
-        // crashdump feature is aliased with debug_assertions to make it only available in debug-builds.
-        crashdump: { all(feature = "crashdump", debug_assertions) },
+        crashdump: { all(feature = "crashdump") },
         // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.
         print_debug: { all(feature = "print_debug", debug_assertions) },
         // the following features are mutually exclusive but rather than enforcing that here we are enabling mshv3 to override mshv2 when both are enabled

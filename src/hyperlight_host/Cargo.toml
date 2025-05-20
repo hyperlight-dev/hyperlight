@@ -38,11 +38,11 @@ vmm-sys-util = "0.14.0"
 crossbeam = "0.8.0"
 crossbeam-channel = "0.5.15"
 thiserror = "2.0.12"
-tempfile = { version = "3.20", optional = true }
+chrono = { version = "0.4", optional = true }
 anyhow = "1.0"
 metrics = "0.24.2"
 serde_json = "1.0"
-elfcore = { git = "https://github.com/dblnz/elfcore.git", rev = "1a57f04272dd54bc06df638f4027debe6d0f694f" }
+elfcore = { git = "https://github.com/hyperlight-dev/elfcore.git", rev = "cef4c80e26bf4b2a5599e50d2d1730965f942c13" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
@@ -125,7 +125,8 @@ function_call_metrics = []
 executable_heap = []
 # This feature enables printing of debug information to stdout in debug builds
 print_debug = []
-crashdump = ["dep:tempfile"] # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged. This feature can only be used in debug builds.
+# Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged.
+crashdump = ["dep:chrono"]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv2 = ["dep:mshv-bindings2", "dep:mshv-ioctls2"]
 mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]

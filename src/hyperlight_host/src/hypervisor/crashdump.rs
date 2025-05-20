@@ -16,11 +16,11 @@ limitations under the License.
 
 use std::cmp::min;
 
+use chrono;
 use elfcore::{
     ArchComponentState, ArchState, CoreDumpBuilder, CoreError, Elf64_Auxv, ProcessInfoSource,
     ReadProcessMemory, ThreadView, VaProtection, VaRegion,
 };
-use tempfile::NamedTempFile;
 
 use super::Hypervisor;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -103,12 +103,12 @@ impl GuestView {
         let filename = ctx
             .filename
             .as_ref()
-            .map_or(|| "<unknown>".to_string(), |s| s.to_string());
+            .map_or("<unknown>".to_string(), |s| s.to_string());
 
         let cmd = ctx
             .binary
             .as_ref()
-            .map_or(|| "<unknown>".to_string(), |s| s.to_string());
+            .map_or("<unknown>".to_string(), |s| s.to_string());
 
         // The xsave state is checked as it can be empty
         let mut components = vec![];
@@ -262,10 +262,6 @@ impl ReadProcessMemory for GuestMemReader {
 pub(crate) fn crashdump_to_tempfile(hv: &dyn Hypervisor) -> Result<()> {
     log::info!("Creating core dump file...");
 
-    // Create a temporary file with a recognizable prefix
-    let temp_file = NamedTempFile::with_prefix("hl_core_")
-        .map_err(|e| new_error!("Failed to create temporary file: {:?}", e))?;
-
     // Get crash context from hypervisor
     let ctx = hv
         .crashdump_context()
@@ -278,16 +274,39 @@ pub(crate) fn crashdump_to_tempfile(hv: &dyn Hypervisor) -> Result<()> {
     // Create and write core dump
     let core_builder = CoreDumpBuilder::from_source(guest_view, memory_reader);
 
+    // Generate timestamp string for the filename using chrono
+    let timestamp = chrono::Local::now()
+        .format("%Y%m%d_T%H%M%S%.3f")
+        .to_string();
+
+    // Determine the output directory based on environment variable
+    let output_dir = if let Ok(dump_dir) = std::env::var("HYPERLIGHT_CORE_DUMP_DIR") {
+        // Create the directory if it doesn't exist
+        let path = std::path::Path::new(&dump_dir);
+        if !path.exists() {
+            std::fs::create_dir_all(path)
+                .map_err(|e| new_error!("Failed to create core dump directory: {:?}", e))?;
+        }
+        std::path::PathBuf::from(dump_dir)
+    } else {
+        // Fall back to the system temp directory
+        std::env::temp_dir()
+    };
+
+    // Create the filename with timestamp
+    let filename = format!("hl_core_{}.elf", timestamp);
+    let file_path = output_dir.join(filename);
+
+    // Create the file
+    let file = std::fs::File::create(&file_path)
+        .map_err(|e| new_error!("Failed to create core dump file: {:?}", e))?;
+
+    // Write the core dump directly to the file
     core_builder
-        .write(&temp_file)
+        .write(&file)
         .map_err(|e| new_error!("Failed to write core dump: {:?}", e))?;
 
-    let persist_path = temp_file.path().with_extension("elf");
-    temp_file
-        .persist(&persist_path)
-        .map_err(|e| new_error!("Failed to persist core dump file: {:?}", e))?;
-
-    let path_string = persist_path.to_string_lossy().to_string();
+    let path_string = file_path.to_string_lossy().to_string();
 
     println!("Core dump created successfully: {}", path_string);
     log::error!("Core dump file: {}", path_string);
