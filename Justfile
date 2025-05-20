@@ -131,6 +131,9 @@ fmt-check:
     cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml -- --check
 
+check-license-headers:
+    ./dev/check-license-headers.sh
+
 fmt-apply:
     cargo +nightly fmt --all
     cargo +nightly fmt --manifest-path src/tests/rust_guests/callbackguest/Cargo.toml
