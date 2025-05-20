@@ -768,6 +768,28 @@ mod tests {
     use crate::mem::memory_region::MemoryRegionVecBuilder;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 
+    #[test]
+    fn test_mshv_handle_caching() {
+        if !super::is_hypervisor_present() {
+            return;
+        }
+
+        // First call should initialize the handle
+        let handle1 = super::get_mshv_handle();
+        assert!(handle1.is_some(), "MSHV handle should be initialized");
+
+        // Second call should return the same handle (pointer equality)
+        let handle2 = super::get_mshv_handle();
+        assert!(handle2.is_some(), "MSHV handle should still be available");
+
+        // Verify that we got the same handle both times (same memory address)
+        assert_eq!(
+            handle1.unwrap() as *const Mshv as usize,
+            handle2.unwrap() as *const Mshv as usize,
+            "MSHV handles should be the same instance"
+        );
+    }
+
     #[rustfmt::skip]
     const CODE: [u8; 12] = [
         0xba, 0xf8, 0x03, /* mov $0x3f8, %dx */

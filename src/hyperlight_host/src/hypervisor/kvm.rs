@@ -660,6 +660,7 @@ impl Hypervisor for KVMDriver {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use super::*;
     #[cfg(gdb)]
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
@@ -682,6 +683,28 @@ mod tests {
         fn get_code_offset(&mut self) -> Result<usize> {
             Ok(0)
         }
+    }
+
+    #[test]
+    fn test_kvm_handle_caching() {
+        if !super::is_hypervisor_present() {
+            return;
+        }
+
+        // First call should initialize the handle
+        let handle1 = super::get_kvm_handle();
+        assert!(handle1.is_some(), "KVM handle should be initialized");
+
+        // Second call should return the same handle (pointer equality)
+        let handle2 = super::get_kvm_handle();
+        assert!(handle2.is_some(), "KVM handle should still be available");
+
+        // Verify that we got the same handle both times (same memory address)
+        assert_eq!(
+            handle1.unwrap() as *const Kvm as usize,
+            handle2.unwrap() as *const Kvm as usize,
+            "KVM handles should be the same instance"
+        );
     }
 
     #[test]
