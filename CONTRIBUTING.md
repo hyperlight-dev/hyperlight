@@ -39,9 +39,16 @@ All contributions come through pull requests. To submit a proposed change, we re
 
 A good way to communicate before investing too much time is to create a "Work-in-progress" PR and share it with your reviewers. The standard way of doing this is to add a "[WIP]" prefix in your PR's title and open the pull request as a draft.
 
-### Developer Certificate of Origin: Signing your work
+### Developer Certificate of Origin and GPG Signing
 
 #### Every commit needs to be signed
+
+This project requires two types of signatures on all commits:
+
+1. **Developer Certificate of Origin (DCO) Sign-off**: A text attestation that you have the right to submit the code
+2. **GPG Signature**: A cryptographic signature verifying your identity
+
+**For DCO Sign-offs:**
 
 The Developer Certificate of Origin (DCO) is a lightweight way for contributors to certify that they wrote or otherwise have the right to submit the code they are contributing to the project. Here is the full text of the [DCO](https://developercertificate.org/), reformatted for readability:
 ```
@@ -70,19 +77,51 @@ Git even has a `-s` command line option to append this automatically to your com
 git commit -s -m 'This is my commit message'
 ```
 
-Each Pull Request is checked  whether or not commits in a Pull Request do contain a valid Signed-off-by line.
+**For GPG Signatures:**
+
+GPG signatures verify the identity of the committer. To set up GPG signing:
+
+1. Generate a GPG key and configure Git to use it:
+   ```sh
+   git config --global user.signingkey YOUR_KEY_ID
+   git config --global commit.gpgsign true
+   ```
+
+2. Sign commits with the `-S` flag (or rely on the automatic signing from the above configuration):
+   ```sh
+   git commit -S -m 'This is my signed commit message'
+   ```
+
+3. For both DCO sign-off and GPG signature in one command:
+   ```sh
+   git commit -S -s -m 'This is my signed and signed-off commit message'
+   ```
+
+For detailed instructions on setting up both signature types, see [docs/commit-signing.md](./docs/commit-signing.md).
+
+Each Pull Request is checked to ensure all commits contain valid DCO sign-offs and GPG signatures.
 
 #### I didn't sign my commit, now what?!
 
 No worries - You can easily replay your changes, sign them and force push them!
 
+**For adding both DCO sign-off and GPG signature:**
 ```sh
 git checkout <branch-name>
-git commit --amend --no-edit --signoff
+git commit --amend --no-edit -S -s
 git push --force-with-lease <remote-name> <branch-name>
 ```
 
-*Credit: This doc was cribbed from Dapr.*
+**For fixing multiple commits:**
+```sh
+git rebase -i HEAD~n  # Replace n with the number of commits to fix
+# Change 'pick' to 'edit' for each commit
+# For each commit:
+git commit --amend --no-edit -S -s
+git rebase --continue
+```
+
+For more detailed instructions on fixing commits, see [docs/commit-signing.md](./docs/commit-signing.md).
 
 ### Rust Analyzer
 
