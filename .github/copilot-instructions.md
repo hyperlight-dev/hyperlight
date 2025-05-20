@@ -40,7 +40,7 @@ If this does not work, you should try and fix the errors and then run the comman
     - `just test` - runs all tests in debug mode
     - `just test release` - runs all tests in release mode
 
-Note that if any guest code has changed, you will need to run `just guests` to build the guest library, before running the tests, if the test fail make sure to run `just guests` again to build the guest library, before running the tests again.
+**IMPORTANT** You will need to run `just guests` to build the guest library  before running the tests.
 
 Before pushing your code, make sure to run the following commands to ensure that everything is working correctly make sure all tests pass by running 
 ```bash
@@ -50,17 +50,25 @@ just test-like-ci release
 
 ## Key Instructions
 
+**IMPORTANT**: Please make sure to follow these instructions when making changes to the codebase. If you cannot follow these instructions, please discuss it with the team first.
+
 Follow best practices and idioms for writing Rust code.
 Maintain the structure and organization of the codebase. Do not introduce new crates or dependencies without discussing them first.
 Make sure to write tests for any new code you add. Follow the existing testing patterns in the codebase.
 Make sure to fully document any new code you add. Use rustdoc comments and follow guidelines for good documentation.
 Make sure that any changes which alter anything documented in the README or the documentation in the docs directory are reflected in the documentation.
+Make sure that you label the PRs that you create with the correct labels. You can find details about which labels to use in the documents `docs\github-labels,md`
+Make sure that you do not include any large binary files in your PR. If you need to include a large binary file, please discuss it with the team first.
+Make sure that you keep commits small and focused. Each commit should represent a single change or addition to the codebase. This will make it easier for reviewers to understand your changes and for you to revert them if necessary.
+Make sure that you arrange your commits in a logical order. You can use `git rebase -i` to do this. 
+If you update your PR branch with new commits, make sure to rebase your branch on top of the main branch. This will help keep the commit history clean and make it easier to review your changes
+Make sure that you do not have any merge commits in your PR.
 
 ## Repository Structure
 - `dev/` - contains development scripts and tools
 - `src/` - contains the source code for the project
-.editorconfig - contains the editor config for the project you should use this to configure your editor to use the same settings as the rest of the projec
-- Justfile - contains the just commands for building, testing and running the project
+- `.editorconfig` - contains the editor config for the project you should use this to configure your editor to use the same settings as the rest of the project
+- `Justfile` - contains the just commands for building, testing and running the project
 - `fuzz` - contains the fuzzing tests for the project
 - `src/hyperlight_common/` - contains the common code shared between the host and guest
 - `src/hyperlight_guest/` - contains the hyperlight-guest library code 
