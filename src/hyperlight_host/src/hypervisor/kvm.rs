@@ -44,31 +44,37 @@ use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
 
 /// Static global KVM handle to avoid reopening /dev/kvm for every sandbox
-static KVM_HANDLE: OnceLock<Option<Kvm>> = OnceLock::new();
+static KVM_HANDLE: OnceLock<Kvm> = OnceLock::new();
 
 /// Get the global KVM handle, initializing it if needed
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-pub(crate) fn get_kvm_handle() -> &'static Option<Kvm> {
-    KVM_HANDLE.get_or_init(|| match Kvm::new() {
-        Ok(kvm) => {
-            let api_version = kvm.get_api_version();
-            match api_version {
-                version if version == 12 && kvm.check_extension(UserMemory) => Some(kvm),
-                12 => {
-                    log::info!("KVM does not have KVM_CAP_USER_MEMORY capability");
-                    None
-                }
-                version => {
-                    log::info!("KVM GET_API_VERSION returned {}, expected 12", version);
-                    None
+pub(crate) fn get_kvm_handle() -> Option<&'static Kvm> {
+    match KVM_HANDLE.get() {
+        Some(kvm) => Some(kvm),
+        None => match Kvm::new() {
+            Ok(kvm) => {
+                let api_version = kvm.get_api_version();
+                match api_version {
+                    version if version == 12 && kvm.check_extension(UserMemory) => {
+                        let _ = KVM_HANDLE.set(kvm);
+                        KVM_HANDLE.get()
+                    }
+                    12 => {
+                        log::info!("KVM does not have KVM_CAP_USER_MEMORY capability");
+                        None
+                    }
+                    version => {
+                        log::info!("KVM GET_API_VERSION returned {}, expected 12", version);
+                        None
+                    }
                 }
             }
-        }
-        Err(e) => {
-            log::info!("KVM is not available on this system: {}", e);
-            None
-        }
-    })
+            Err(e) => {
+                log::info!("KVM is not available on this system: {}", e);
+                None
+            }
+        },
+    }
 }
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
@@ -288,7 +294,7 @@ mod debug {
 
 /// A Hypervisor driver for KVM on Linux
 pub(super) struct KVMDriver {
-    _kvm: Kvm,
+    _kvm: &'static Kvm,
     _vm_fd: VmFd,
     vcpu_fd: VcpuFd,
     entrypoint: u64,
@@ -314,7 +320,7 @@ impl KVMDriver {
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
         let kvm = match get_kvm_handle() {
-            Some(kvm) => kvm.clone(),
+            Some(kvm) => kvm,
             None => return Err(new_error!("KVM is not available on this system")),
         };
 
