@@ -67,6 +67,14 @@ jobs:
     - name: Spell Check Repo
       uses: crate-ci/typos@v1.32.0
 
+  license-headers:
+    name: check license headers
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Check License Headers
+      run: ./dev/check-license-headers.sh
+
   # Gate PR merges on this specific "join-job" which requires all other
   # jobs to run first. We need this job since we cannot gate on particular jobs
   # in the workflow, since they can sometimes be skipped (e.g. if the PR only touches docs).
@@ -77,6 +85,7 @@ jobs:
       - rust
       - fuzzing
       - spelling
+      - license-headers
     if: always()
     runs-on: ubuntu-latest
     steps:
