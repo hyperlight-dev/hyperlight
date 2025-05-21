@@ -67,9 +67,7 @@ use gdb::VcpuStopReason;
 
 #[cfg(gdb)]
 use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
-use self::handlers::{
-    MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
-};
+use self::handlers::{MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandler};
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::ptr::RawPtr;
 
@@ -124,7 +122,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         guest_max_log_level: Option<LevelFilter>,
@@ -141,7 +139,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
         mem_access_fn: MemAccessHandlerWrapper,
         hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -154,7 +152,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         data: Vec<u8>,
         rip: u64,
         instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
     ) -> Result<()>;
 
     /// Run the vCPU
@@ -254,7 +252,7 @@ impl VirtualCPU {
     pub fn run(
         hv: &mut dyn Hypervisor,
         hv_handler: Option<HypervisorHandler>,
-        outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()> {
@@ -341,7 +339,7 @@ pub(crate) mod tests {
 
     #[cfg(gdb)]
     use super::handlers::DbgMemAccessHandlerWrapper;
-    use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+    use super::handlers::{MemAccessHandlerWrapper, OutBHandler};
     use crate::hypervisor::hypervisor_handler::{
         HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
     };
@@ -351,7 +349,7 @@ pub(crate) mod tests {
     use crate::{new_error, Result};
 
     pub(crate) fn test_initialise(
-        outb_hdl: OutBHandlerWrapper,
+        outb_hdl: Arc<Mutex<OutBHandler>>,
         mem_access_hdl: MemAccessHandlerWrapper,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
