@@ -67,7 +67,6 @@ pub(crate) fn vcpu_stop_reason(
         // Check page 19-4 Vol. 3B of Intel 64 and IA-32
         // Architectures Software Developer's Manual
         if dr6 & DR6_BS_FLAG_MASK != 0 {
-            log::info!("Done Step stop reason");
             return Ok(VcpuStopReason::DoneStep);
         }
 
@@ -77,17 +76,14 @@ pub(crate) fn vcpu_stop_reason(
         // Architectures Software Developer's Manual
         if DR6_HW_BP_FLAGS_MASK & dr6 != 0 {
             if rip == entrypoint {
-                log::info!("EntryPoint stop reason");
                 vm.remove_hw_breakpoint(entrypoint)?;
                 return Ok(VcpuStopReason::EntryPointBp);
             }
-            log::info!("Hardware breakpoint stop reason");
             return Ok(VcpuStopReason::HwBp);
         }
     }
 
     if BP_EX_ID == exception {
-        log::info!("Software breakpoint stop reason");
         return Ok(VcpuStopReason::SwBp);
     }
 

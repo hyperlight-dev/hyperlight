@@ -170,20 +170,8 @@ impl Vm for WhpVm {
     }
 
     fn get_sregs(&self) -> Result<CommonSpecialRegisters> {
-        println!("whp get_sregs");
         let mut whp_sregs_values: [WHV_REGISTER_VALUE; WHP_SREGS_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
-        println!("whp get_sregs2");
-
-        // println!("partition: {:?}", self.partition);
-        // println!("whp_sregs_names: {:?}", WHP_SREGS_NAMES);
-        // println!("ptr : {:?}", WHP_SREGS_NAMES.as_ptr());
-        // println!("first value: {:?}", unsafe {
-        //     WHP_SREGS_NAMES.as_ptr().read()
-        // });
-        // println!("last value: {:?}", unsafe {
-        //     WHP_SREGS_NAMES.as_ptr().add(WHP_SREGS_NAMES_LEN - 1).read()
-        // });
 
         unsafe {
             WHvGetVirtualProcessorRegisters(
@@ -194,9 +182,8 @@ impl Vm for WhpVm {
                 whp_sregs_values.as_mut_ptr(),
             )?;
         }
-        println!("whp get_sregs3");
 
-        let res = WHP_SREGS_NAMES
+        WHP_SREGS_NAMES
             .into_iter()
             .zip(whp_sregs_values)
             .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
@@ -207,10 +194,7 @@ impl Vm for WhpVm {
                     "Failed to convert WHP registers to CommonSpecialRegisters: {:?}",
                     e
                 )
-            });
-
-        println!("whp get_sregs");
-        res
+            })
     }
 
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
@@ -348,8 +332,6 @@ impl Vm for WhpVm {
             WHvRunVpExitReasonMemoryAccess => {
                 let gpa = unsafe { exit_context.Anonymous.MemoryAccess.Gpa };
                 let rip = exit_context.VpContext.Rip;
-                println!("MemoryAccess: gpa: {:#x}", gpa);
-                println!("MemoryAccess: rip: {:#x}", rip);
                 let access_info = unsafe {
                     WHV_MEMORY_ACCESS_TYPE(
                         // 2 first bits are the access type, see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/memoryaccess#syntax
