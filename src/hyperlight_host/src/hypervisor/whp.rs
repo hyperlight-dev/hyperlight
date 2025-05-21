@@ -331,7 +331,6 @@ impl Vm for WhpVm {
             WHvRunVpExitReasonX64Halt => HyperlightExit::Halt(),
             WHvRunVpExitReasonMemoryAccess => {
                 let gpa = unsafe { exit_context.Anonymous.MemoryAccess.Gpa };
-                let rip = exit_context.VpContext.Rip;
                 let access_info = unsafe {
                     WHV_MEMORY_ACCESS_TYPE(
                         // 2 first bits are the access type, see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/memoryaccess#syntax
