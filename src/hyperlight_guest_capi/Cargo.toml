@@ -17,4 +17,4 @@ hyperlight-common = { workspace = true, default-features = false }
 log = { version = "0.4", default-features = false }
 
 [build-dependencies]
-cbindgen = "0.28.0"
+cbindgen = "0.29.0"
