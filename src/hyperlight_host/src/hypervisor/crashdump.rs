@@ -2,21 +2,21 @@ use std::io::Write;
 
 use tempfile::NamedTempFile;
 
-use super::Hypervisor;
+use super::hyperlight_vm::HyperlightSandbox;
+use crate::hypervisor::HyperlightVm;
 use crate::{new_error, Result};
 
 /// Dump registers + memory regions + raw memory to a tempfile
-#[cfg(crashdump)]
-pub(crate) fn crashdump_to_tempfile(hv: &dyn Hypervisor) -> Result<()> {
+pub(crate) fn crashdump_to_tempfile(vm: &HyperlightSandbox) -> Result<()> {
     let mut temp_file = NamedTempFile::with_prefix("mem")?;
-    let hv_details = format!("{:#x?}", hv);
+    let hv_details = format!("{:#x?}", vm);
 
     // write hypervisor details such as registers, info about mapped memory regions, etc.
     temp_file.write_all(hv_details.as_bytes())?;
     temp_file.write_all(b"================ MEMORY DUMP =================\n")?;
 
     // write the raw memory dump for each memory region
-    for region in hv.get_memory_regions() {
+    for region in vm.get_memory_regions() {
         if region.host_region.start == 0 || region.host_region.is_empty() {
             continue;
         }

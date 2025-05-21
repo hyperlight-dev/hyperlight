@@ -17,10 +17,12 @@ limitations under the License.
 use std::fmt::Debug;
 use std::sync::OnceLock;
 
-#[cfg(mshv)]
-use crate::hypervisor::hyperv_linux;
 #[cfg(kvm)]
 use crate::hypervisor::kvm;
+#[cfg(mshv)]
+use crate::hypervisor::mshv;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::whp;
 
 static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 
@@ -31,7 +33,7 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
                 // If both features are enabled, we need to determine hypervisor at runtime.
                 // Currently /dev/kvm and /dev/mshv cannot exist on the same machine, so the first one
                 // that works is guaranteed to be correct.
-                if hyperv_linux::is_hypervisor_present() {
+                if mshv::is_hypervisor_present() {
                     Some(HypervisorType::Mshv)
                 } else if kvm::is_hypervisor_present() {
                     Some(HypervisorType::Kvm)
@@ -45,15 +47,13 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
                     None
                 }
             } else if #[cfg(mshv)] {
-                if hyperv_linux::is_hypervisor_present() {
+                if mshv::is_hypervisor_present() {
                     Some(HypervisorType::Mshv)
                 } else {
                     None
                 }
             } else if #[cfg(target_os = "windows")] {
-                use crate::sandbox::windows_hypervisor_platform;
-
-                if windows_hypervisor_platform::is_hypervisor_present() {
+                if whp::is_hypervisor_present() {
                     Some(HypervisorType::Whp)
                 } else {
                     None
