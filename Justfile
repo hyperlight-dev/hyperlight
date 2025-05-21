@@ -81,6 +81,9 @@ test-like-ci config=default-target hypervisor="kvm":
     @# without any driver (should fail to compile)
     just test-compilation-fail {{config}}
 
+    @# test the crashdump feature
+    just test-rust-crashdump {{config}}
+
 # runs all tests
 test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-seccomp target features)
 
@@ -122,6 +125,10 @@ test-compilation-fail target=default-target:
 test-rust-gdb-debugging target=default-target features="":
     cargo test --profile={{ if target == "debug" { "dev" } else { target } }} --example guest-debugging {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }}
     cargo test --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- test_gdb
+
+# rust test for crashdump
+test-rust-crashdump target=default-target features="":
+    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }} -- test_crashdump
 
 
 ################

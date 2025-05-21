@@ -23,6 +23,8 @@ use super::SandboxConfiguration;
 use super::hypervisor::{HypervisorType, get_available_hypervisor};
 #[cfg(gdb)]
 use super::mem_access::dbg_mem_access_handler_wrapper;
+#[cfg(any(crashdump, gdb))]
+use super::uninitialized::SandboxRuntimeConfig;
 use crate::HyperlightError::NoHypervisorFound;
 use crate::hypervisor::Hypervisor;
 use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
@@ -36,8 +38,6 @@ use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
-#[cfg(crashdump)]
-use crate::sandbox::uninitialized::SandboxMetadata;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 use crate::sandbox_state::sandbox::Sandbox;
 #[cfg(target_os = "linux")]
@@ -74,8 +74,8 @@ where
     let mut vm = set_up_hypervisor_partition(
         &mut gshm,
         &u_sbox.config,
-        #[cfg(crashdump)]
-        &u_sbox.metadata,
+        #[cfg(any(crashdump, gdb))]
+        &u_sbox.rt_cfg,
     )?;
     let outb_hdl = outb_handler_wrapper(hshm.clone(), u_sbox.host_funcs.clone());
 
@@ -148,7 +148,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 pub(crate) fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
-    #[cfg(crashdump)] metadata: &SandboxMetadata,
+    #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
 ) -> Result<Box<dyn Hypervisor>> {
     let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
     let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
@@ -184,7 +184,7 @@ pub(crate) fn set_up_hypervisor_partition(
 
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
-    let gdb_conn = if let Some(DebugInfo { port }) = config.get_guest_debug_info() {
+    let gdb_conn = if let Some(DebugInfo { port }) = rt_cfg.debug_info {
         use crate::hypervisor::gdb::create_gdb_thread;
 
         let gdb_conn = create_gdb_thread(port, unsafe { libc::pthread_self() });
@@ -215,7 +215,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 #[cfg(gdb)]
                 gdb_conn,
                 #[cfg(crashdump)]
-                metadata.clone(),
+                rt_cfg.clone(),
             )?;
             Ok(Box::new(hv))
         }
@@ -231,7 +231,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 #[cfg(gdb)]
                 gdb_conn,
                 #[cfg(crashdump)]
-                metadata.clone(),
+                rt_cfg.clone(),
             )?;
             Ok(Box::new(hv))
         }
@@ -254,7 +254,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 rsp_ptr.absolute()?,
                 HandleWrapper::from(mmap_file_handle),
                 #[cfg(crashdump)]
-                metadata.clone(),
+                rt_cfg.clone(),
             )?;
             Ok(Box::new(hv))
         }

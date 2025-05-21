@@ -31,7 +31,7 @@ use windows::Win32::System::Hypervisor::{
     WHvX64RegisterCs, WHvX64RegisterEfer,
 };
 #[cfg(crashdump)]
-use {super::crashdump, crate::sandbox::uninitialized::SandboxMetadata, std::path::Path};
+use {super::crashdump, std::path::Path};
 
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
@@ -49,6 +49,8 @@ use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+#[cfg(crashdump)]
+use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, debug, new_error};
 
 /// A Hypervisor driver for HyperV-on-Windows.
@@ -62,7 +64,7 @@ pub(crate) struct HypervWindowsDriver {
     mem_regions: Vec<MemoryRegion>,
     interrupt_handle: Arc<WindowsInterruptHandle>,
     #[cfg(crashdump)]
-    metadata: SandboxMetadata,
+    rt_cfg: SandboxRuntimeConfig,
 }
 /* This does not automatically impl Send/Sync because the host
  * address of the shared memory region is a raw pointer, which are
@@ -83,7 +85,7 @@ impl HypervWindowsDriver {
         entrypoint: u64,
         rsp: u64,
         mmap_file_handle: HandleWrapper,
-        #[cfg(crashdump)] metadata: SandboxMetadata,
+        #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
     ) -> Result<Self> {
         // create and setup hypervisor partition
         let mut partition = VMPartition::new(1)?;
@@ -119,7 +121,7 @@ impl HypervWindowsDriver {
                 dropped: AtomicBool::new(false),
             }),
             #[cfg(crashdump)]
-            metadata,
+            rt_cfg,
         })
     }
 
@@ -522,57 +524,61 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<crashdump::CrashDumpContext> {
-        let mut regs = [0; 27];
+    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>> {
+        if self.rt_cfg.guest_core_dump {
+            let mut regs = [0; 27];
 
-        let vcpu_regs = self.processor.get_regs()?;
-        let sregs = self.processor.get_sregs()?;
-        let xsave = self.processor.get_xsave()?;
+            let vcpu_regs = self.processor.get_regs()?;
+            let sregs = self.processor.get_sregs()?;
+            let xsave = self.processor.get_xsave()?;
 
-        // Set the registers in the order expected by the crashdump context
-        regs[0] = vcpu_regs.r15; // r15
-        regs[1] = vcpu_regs.r14; // r14
-        regs[2] = vcpu_regs.r13; // r13
-        regs[3] = vcpu_regs.r12; // r12
-        regs[4] = vcpu_regs.rbp; // rbp
-        regs[5] = vcpu_regs.rbx; // rbx
-        regs[6] = vcpu_regs.r11; // r11
-        regs[7] = vcpu_regs.r10; // r10
-        regs[8] = vcpu_regs.r9; // r9
-        regs[9] = vcpu_regs.r8; // r8
-        regs[10] = vcpu_regs.rax; // rax
-        regs[11] = vcpu_regs.rcx; // rcx
-        regs[12] = vcpu_regs.rdx; // rdx
-        regs[13] = vcpu_regs.rsi; // rsi
-        regs[14] = vcpu_regs.rdi; // rdi
-        regs[15] = 0; // orig rax
-        regs[16] = vcpu_regs.rip; // rip
-        regs[17] = unsafe { sregs.cs.Segment.Selector } as u64; // cs
-        regs[18] = vcpu_regs.rflags; // eflags
-        regs[19] = vcpu_regs.rsp; // rsp
-        regs[20] = unsafe { sregs.ss.Segment.Selector } as u64; // ss
-        regs[21] = unsafe { sregs.fs.Segment.Base }; // fs_base
-        regs[22] = unsafe { sregs.gs.Segment.Base }; // gs_base
-        regs[23] = unsafe { sregs.ds.Segment.Selector } as u64; // ds
-        regs[24] = unsafe { sregs.es.Segment.Selector } as u64; // es
-        regs[25] = unsafe { sregs.fs.Segment.Selector } as u64; // fs
-        regs[26] = unsafe { sregs.gs.Segment.Selector } as u64; // gs
+            // Set the registers in the order expected by the crashdump context
+            regs[0] = vcpu_regs.r15; // r15
+            regs[1] = vcpu_regs.r14; // r14
+            regs[2] = vcpu_regs.r13; // r13
+            regs[3] = vcpu_regs.r12; // r12
+            regs[4] = vcpu_regs.rbp; // rbp
+            regs[5] = vcpu_regs.rbx; // rbx
+            regs[6] = vcpu_regs.r11; // r11
+            regs[7] = vcpu_regs.r10; // r10
+            regs[8] = vcpu_regs.r9; // r9
+            regs[9] = vcpu_regs.r8; // r8
+            regs[10] = vcpu_regs.rax; // rax
+            regs[11] = vcpu_regs.rcx; // rcx
+            regs[12] = vcpu_regs.rdx; // rdx
+            regs[13] = vcpu_regs.rsi; // rsi
+            regs[14] = vcpu_regs.rdi; // rdi
+            regs[15] = 0; // orig rax
+            regs[16] = vcpu_regs.rip; // rip
+            regs[17] = unsafe { sregs.cs.Segment.Selector } as u64; // cs
+            regs[18] = vcpu_regs.rflags; // eflags
+            regs[19] = vcpu_regs.rsp; // rsp
+            regs[20] = unsafe { sregs.ss.Segment.Selector } as u64; // ss
+            regs[21] = unsafe { sregs.fs.Segment.Base }; // fs_base
+            regs[22] = unsafe { sregs.gs.Segment.Base }; // gs_base
+            regs[23] = unsafe { sregs.ds.Segment.Selector } as u64; // ds
+            regs[24] = unsafe { sregs.es.Segment.Selector } as u64; // es
+            regs[25] = unsafe { sregs.fs.Segment.Selector } as u64; // fs
+            regs[26] = unsafe { sregs.gs.Segment.Selector } as u64; // gs
 
-        // Get the filename from the metadata
-        let filename = self.metadata.binary_path.clone().and_then(|path| {
-            Path::new(&path)
-                .file_name()
-                .and_then(|name| name.to_os_string().into_string().ok())
-        });
+            // Get the filename from the config
+            let filename = self.rt_cfg.binary_path.clone().and_then(|path| {
+                Path::new(&path)
+                    .file_name()
+                    .and_then(|name| name.to_os_string().into_string().ok())
+            });
 
-        Ok(crashdump::CrashDumpContext::new(
-            &self.mem_regions,
-            regs,
-            xsave,
-            self.entrypoint,
-            self.metadata.binary_path.clone(),
-            filename,
-        ))
+            Ok(Some(crashdump::CrashDumpContext::new(
+                &self.mem_regions,
+                regs,
+                xsave,
+                self.entrypoint,
+                self.rt_cfg.binary_path.clone(),
+                filename,
+            )))
+        } else {
+            Ok(None)
+        }
     }
 }
 

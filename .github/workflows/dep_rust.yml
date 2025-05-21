@@ -136,6 +136,12 @@ jobs:
           RUST_LOG: debug
         run: just test-rust-gdb-debugging ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
 
+      - name: Run Rust Crashdump tests
+        env:
+          CARGO_TERM_COLOR: always
+          RUST_LOG: debug
+        run: just test-rust-crashdump ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+
       ### Benchmarks ###
       - name: Install github-cli (Linux mariner)
         if: runner.os == 'Linux' && matrix.hypervisor == 'mshv'
