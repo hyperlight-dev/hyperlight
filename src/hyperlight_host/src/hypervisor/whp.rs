@@ -26,8 +26,8 @@ use windows_result::HRESULT;
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::regs::{
-    WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES,
-    WHP_SREGS_NAMES_LEN,
+    AlignedRegisterValues, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN,
+    WHP_SREGS_NAMES, WHP_SREGS_NAMES_LEN,
 };
 use super::vm::HyperlightExit;
 use super::wrappers::HandleWrapper;
@@ -86,6 +86,18 @@ pub(crate) struct WhpVm {
 unsafe impl Send for WhpVm {}
 unsafe impl Sync for WhpVm {}
 
+/// WHV_REGISTER_VALUE must be 16-byte aligned, but the rust struct is incorrectly generated
+/// as 8-byte aligned. This is a workaround to ensure that the struct is 16-byte aligned.
+#[repr(C, align(16))]
+struct Align16<T>(T);
+#[allow(clippy::disallowed_macros)] // compile time
+const _: () = {
+    assert!(
+        std::mem::size_of::<Align16<WHV_REGISTER_VALUE>>()
+            == std::mem::size_of::<WHV_REGISTER_VALUE>()
+    );
+};
+
 impl WhpVm {
     pub(crate) fn new(mmap_file_handle: HandleWrapper) -> Result<Self> {
         const NUM_CPU: u32 = 1;
@@ -112,12 +124,14 @@ impl WhpVm {
     /// Helper for setting arbitrary registers.
     fn set_registers(&self, registers: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]) -> Result<()> {
         let register_count = registers.len();
-        let mut register_names: Vec<WHV_REGISTER_NAME> = vec![];
-        let mut register_values: Vec<WHV_REGISTER_VALUE> = vec![];
+
+        // Prepare register names (no special alignment needed)
+        let mut register_names = Vec::with_capacity(register_count);
+        let mut register_values = Vec::with_capacity(register_count);
 
         for (key, value) in registers.iter() {
             register_names.push(*key);
-            register_values.push(*value);
+            register_values.push(Align16(*value));
         }
 
         unsafe {
@@ -126,7 +140,7 @@ impl WhpVm {
                 0,
                 register_names.as_ptr(),
                 register_count as u32,
-                register_values.as_ptr(),
+                register_values.as_ptr() as *const WHV_REGISTER_VALUE,
             )?;
         }
 
@@ -136,22 +150,22 @@ impl WhpVm {
 
 impl Vm for WhpVm {
     fn get_regs(&self) -> Result<CommonRegisters> {
-        let mut whv_regs_values: [WHV_REGISTER_VALUE; WHP_REGS_NAMES_LEN] =
-            unsafe { std::mem::zeroed() };
+        let mut whv_regs_values =
+            AlignedRegisterValues::<WHP_REGS_NAMES_LEN>(unsafe { std::mem::zeroed() });
 
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
                 WHP_REGS_NAMES.as_ptr(),
-                WHP_REGS_NAMES_LEN as u32,
-                whv_regs_values.as_mut_ptr(),
+                whv_regs_values.0.len() as u32,
+                whv_regs_values.0.as_mut_ptr(),
             )?;
         }
 
         WHP_REGS_NAMES
             .into_iter()
-            .zip(whv_regs_values)
+            .zip(whv_regs_values.0)
             .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
             .as_slice()
             .try_into()
@@ -170,22 +184,22 @@ impl Vm for WhpVm {
     }
 
     fn get_sregs(&self) -> Result<CommonSpecialRegisters> {
-        let mut whp_sregs_values: [WHV_REGISTER_VALUE; WHP_SREGS_NAMES_LEN] =
-            unsafe { std::mem::zeroed() };
+        let mut whp_sregs_values =
+            AlignedRegisterValues::<WHP_SREGS_NAMES_LEN>(unsafe { std::mem::zeroed() });
 
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
                 WHP_SREGS_NAMES.as_ptr(),
-                whp_sregs_values.len() as u32,
-                whp_sregs_values.as_mut_ptr(),
+                whp_sregs_values.0.len() as u32,
+                whp_sregs_values.0.as_mut_ptr(),
             )?;
         }
 
         WHP_SREGS_NAMES
             .into_iter()
-            .zip(whp_sregs_values)
+            .zip(whp_sregs_values.0)
             .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
             .as_slice()
             .try_into()
@@ -204,22 +218,22 @@ impl Vm for WhpVm {
     }
 
     fn get_fpu(&self) -> Result<CommonFpu> {
-        let mut whp_fpu_values: [WHV_REGISTER_VALUE; WHP_FPU_NAMES_LEN] =
-            unsafe { std::mem::zeroed() };
+        let mut whp_fpu_values =
+            AlignedRegisterValues::<WHP_FPU_NAMES_LEN>(unsafe { std::mem::zeroed() });
 
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition,
                 0,
                 WHP_FPU_NAMES.as_ptr(),
-                whp_fpu_values.len() as u32,
-                whp_fpu_values.as_mut_ptr(),
+                whp_fpu_values.0.len() as u32,
+                whp_fpu_values.0.as_mut_ptr(),
             )?;
         }
 
         WHP_FPU_NAMES
             .into_iter()
-            .zip(whp_fpu_values)
+            .zip(whp_fpu_values.0)
             .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
             .as_slice()
             .try_into()
