@@ -16,7 +16,8 @@ limitations under the License.
 
 #[cfg(gdb)]
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
@@ -26,7 +27,7 @@ use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{instrument, Span};
 
 use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use super::vm::{HyperlightExit, Vm};
+use super::vm::{HyperlightExit, InterruptHandle, Vm};
 #[cfg(gdb)]
 use crate::hypervisor::vm::DebugExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -58,9 +59,34 @@ pub(crate) fn is_hypervisor_present() -> bool {
 pub(super) struct KvmVm {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
-
+    interrupt_handle: Arc<KvmInterruptHandle>,
     #[cfg(gdb)]
     debug: KvmDebug,
+}
+
+#[derive(Debug)]
+pub(super) struct KvmInterruptHandle {
+    /// True when the vcpu is currently running and blocking the thread
+    running: AtomicBool,
+    /// The thread id on which the vcpu was most recently run on or is currently running on
+    tid: AtomicU64,
+    /// Whether the corresponding vm is dropped
+    dropped: AtomicBool,
+}
+
+impl InterruptHandle for KvmInterruptHandle {
+    fn kill(&self) {
+        // The reason why we might need multiple signals is because if we deliver the signal right before
+        // the vm sets `running` to true, and before the vm calls `VcpuFd::run()`, then the signal is lost because
+        // the thread is still in userspace.
+        while self.running.load(Ordering::Relaxed) {
+            unsafe { libc::pthread_kill(self.tid.load(Ordering::Relaxed) as _, libc::SIGRTMIN()) };
+            std::thread::sleep(std::time::Duration::from_micros(50));
+        }
+    }
+    fn dropped(&self) -> bool {
+        self.dropped.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(gdb)]
@@ -88,6 +114,11 @@ impl KvmVm {
             vcpu_fd,
             #[cfg(gdb)]
             debug: KvmDebug::default(),
+            interrupt_handle: Arc::new(KvmInterruptHandle {
+                running: AtomicBool::new(false),
+                tid: AtomicU64::new(unsafe { libc::pthread_self() }),
+                dropped: AtomicBool::new(false),
+            }),
         })
     }
 }
@@ -139,7 +170,29 @@ impl Vm for KvmVm {
     }
 
     fn run_vcpu(&mut self) -> Result<HyperlightExit> {
-        match self.vcpu_fd.run() {
+        self.interrupt_handle
+            .tid
+            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Relaxed);
+        self.interrupt_handle.running.store(true, Ordering::Relaxed);
+
+        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
+        // - after we've set the running to true,
+        // - before we've called `VcpuFd::run()`
+        // Then the individual signal is lost, because the signal is only processed after we've left userspace.
+        // Luckily, we keep sending the signal again and again until we see that the atomic `running` is set to false.
+
+        let vcpu_result = self.vcpu_fd.run();
+
+        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
+        // - after we've called `VcpuFd::run()`
+        // - before we've set the running to false
+        // Then this is fine because the call to `VcpuFd::run()` is already finished,
+        // the signal handler itself is a no-op, and the signals will stop being sent
+        // once we've set the `running` to false.
+        self.interrupt_handle
+            .running
+            .store(false, Ordering::Relaxed);
+        match vcpu_result {
             Ok(VcpuExit::Hlt) => Ok(HyperlightExit::Halt()),
             Ok(VcpuExit::IoOut(port, data)) => Ok(HyperlightExit::IoOut(port, data.to_vec())),
             Ok(VcpuExit::MmioRead(addr, _)) => Ok(HyperlightExit::MmioRead(addr)),
@@ -171,6 +224,10 @@ impl Vm for KvmVm {
                 Ok(HyperlightExit::Unknown(err_msg))
             }
         }
+    }
+
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+        self.interrupt_handle.clone()
     }
 
     // --- DEBUGGING RELATED BELOW ---
@@ -296,5 +353,11 @@ impl Vm for KvmVm {
             .unwrap()
             .write(addr as usize, &[original_instr])?;
         Ok(())
+    }
+}
+
+impl Drop for KvmVm {
+    fn drop(&mut self) {
+        self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
     }
 }

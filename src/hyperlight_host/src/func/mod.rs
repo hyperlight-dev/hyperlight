@@ -18,8 +18,6 @@ limitations under the License.
 /// functions on the same Hyperlight sandbox instance, all from within the
 /// same state and mutual exclusion context.
 pub mod call_ctx;
-/// Functionality to dispatch a call from the host to the guest
-pub(crate) mod guest_dispatch;
 /// Functionality to check for errors after a guest call
 pub(crate) mod guest_err;
 /// Definitions and functionality to enable guest-to-host function calling,

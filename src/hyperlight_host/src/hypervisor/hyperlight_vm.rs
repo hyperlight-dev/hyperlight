@@ -36,12 +36,11 @@ use super::regs::{
 };
 use super::vm::{HyperlightExit, Vm};
 use super::{
-    HyperlightVm, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
-    CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+    HyperlightVm, InterruptHandle, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
+    CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 #[cfg(gdb)]
 use crate::hypervisor::vm::DebugExit;
 #[cfg(target_os = "windows")]
@@ -323,7 +322,7 @@ pub(crate) struct HyperlightSandbox {
 
 impl HyperlightSandbox {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn new(
+    pub(crate) fn new(
         hv: &HypervisorType,
         mem_regions: Vec<MemoryRegion>,
         pml4_addr: u64,
@@ -395,7 +394,6 @@ impl HyperlightVm for HyperlightSandbox {
         page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
@@ -419,7 +417,6 @@ impl HyperlightVm for HyperlightSandbox {
         self.vm.set_regs(&regs)?;
 
         self.run(
-            hv_handler,
             outb_hdl,
             mem_access_hdl,
             #[cfg(gdb)]
@@ -435,7 +432,6 @@ impl HyperlightVm for HyperlightSandbox {
         dispatch_func_addr: RawPtr,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -458,7 +454,6 @@ impl HyperlightVm for HyperlightSandbox {
 
         // run
         self.run(
-            hv_handler,
             outb_handle_fn,
             mem_access_fn,
             #[cfg(gdb)]
@@ -496,7 +491,6 @@ impl HyperlightVm for HyperlightSandbox {
 
     fn run(
         &mut self,
-        hv_handler: Option<HypervisorHandler>,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -603,13 +597,6 @@ impl HyperlightVm for HyperlightSandbox {
                 Ok(HyperlightExit::Cancelled()) => {
                     // Shutdown is returned when the host has cancelled execution
                     // After termination, the main thread will re-initialize the VM
-                    if let Some(hvh) = hv_handler {
-                        // If hvh is None, then we are running from the C API, which doesn't use
-                        // the HypervisorHandler
-                        hvh.set_running(false);
-                        #[cfg(target_os = "linux")]
-                        hvh.set_run_cancelled(true);
-                    }
                     metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
                     log_then_return!(ExecutionCanceledByHost());
                 }
@@ -630,6 +617,10 @@ impl HyperlightVm for HyperlightSandbox {
         }
 
         Ok(())
+    }
+
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+        self.vm.interrupt_handle()
     }
 
     #[cfg(crashdump)]
@@ -716,53 +707,4 @@ fn get_memory_access_violation(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-
-    #[cfg(gdb)]
-    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
-    use crate::hypervisor::tests::test_initialise;
-    use crate::Result;
-
-    #[cfg(gdb)]
-    struct DbgMemAccessHandler {}
-
-    #[cfg(gdb)]
-    impl DbgMemAccessHandlerCaller for DbgMemAccessHandler {
-        fn read(&mut self, _offset: usize, _data: &mut [u8]) -> Result<()> {
-            Ok(())
-        }
-
-        fn write(&mut self, _offset: usize, _data: &[u8]) -> Result<()> {
-            Ok(())
-        }
-
-        fn get_code_offset(&mut self) -> Result<usize> {
-            Ok(0)
-        }
-    }
-
-    #[test]
-    fn test_init() {
-        let outb_handler: Arc<Mutex<OutBHandler>> = {
-            let func: Box<dyn FnMut(u16, u32) -> Result<()> + Send> =
-                Box::new(|_, _| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(OutBHandler::from(func)))
-        };
-        let mem_access_handler = {
-            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(MemAccessHandler::from(func)))
-        };
-        #[cfg(gdb)]
-        let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
-
-        test_initialise(
-            outb_handler,
-            mem_access_handler,
-            #[cfg(gdb)]
-            dbg_mem_access_handler,
-        )
-        .unwrap();
-    }
-}
+mod tests {}

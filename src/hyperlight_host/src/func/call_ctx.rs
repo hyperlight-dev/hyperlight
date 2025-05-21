@@ -19,7 +19,6 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 };
 use tracing::{instrument, Span};
 
-use super::guest_dispatch::call_function_on_guest;
 use crate::{MultiUseSandbox, Result};
 /// A context for calling guest functions.
 ///
@@ -72,7 +71,8 @@ impl MultiUseGuestCallContext {
         // !Send (and !Sync), we also don't need to worry about
         // synchronization
 
-        call_function_on_guest(&mut self.sbox, func_name, func_ret_type, args)
+        self.sbox
+            .call_guest_function_by_name_no_reset(func_name, func_ret_type, args)
     }
 
     /// Close out the context and get back the internally-stored

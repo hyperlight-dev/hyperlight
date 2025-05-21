@@ -1,6 +1,6 @@
 use std::fmt::Debug;
-#[cfg(gdb)]
 use std::sync::Arc;
+
 #[cfg(gdb)]
 use std::sync::Mutex;
 
@@ -27,6 +27,9 @@ pub(crate) trait Vm: Send + Sync + Debug {
     fn get_fpu(&self) -> Result<CommonFpu>;
     /// Set the FPU registers of the vCPU
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()>;
+
+    /// Get a handle which is able to interrupt a blocking running vCPU
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
 
     /// Map memory regions into this VM
     ///
@@ -114,4 +117,11 @@ pub(super) enum HyperlightExit {
         )
     )]
     Retry(),
+}
+
+pub trait InterruptHandle: Send + Sync {
+    /// Interrupt the corresponding sandbox's vcpu if it's running
+    fn kill(&self);
+    /// Returns true iff the corresponding sandbox has been dropped
+    fn dropped(&self) -> bool;
 }

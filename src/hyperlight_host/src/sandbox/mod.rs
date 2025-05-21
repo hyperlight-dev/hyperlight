@@ -48,7 +48,6 @@ pub use uninitialized::GuestBinary;
 pub use uninitialized::UninitializedSandbox;
 
 use self::mem_mgr::MemMgrWrapper;
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::shared_mem::HostSharedMemory;
 
 // In case its not obvious why there are separate is_supported_platform and is_hypervisor_present functions its because
@@ -84,9 +83,6 @@ pub(crate) trait WrapperGetter {
     #[allow(dead_code)]
     fn get_mgr_wrapper(&self) -> &MemMgrWrapper<HostSharedMemory>;
     fn get_mgr_wrapper_mut(&mut self) -> &mut MemMgrWrapper<HostSharedMemory>;
-    fn get_hv_handler(&self) -> &HypervisorHandler;
-    #[allow(dead_code)]
-    fn get_hv_handler_mut(&mut self) -> &mut HypervisorHandler;
 }
 
 #[cfg(test)]

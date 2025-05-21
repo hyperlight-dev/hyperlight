@@ -18,7 +18,6 @@ use std::fmt::Debug;
 use std::option::Option;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use log::LevelFilter;
 use tracing::{instrument, Span};
@@ -67,9 +66,6 @@ pub struct UninitializedSandbox {
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
     /// The memory manager for the sandbox.
     pub(crate) mgr: MemMgrWrapper<ExclusiveSharedMemory>,
-    pub(crate) max_initialization_time: Duration,
-    pub(crate) max_execution_time: Duration,
-    pub(crate) max_wait_for_cancellation: Duration,
     pub(crate) max_guest_log_level: Option<LevelFilter>,
     #[cfg(gdb)]
     pub(crate) debug_info: Option<DebugInfo>,
@@ -180,13 +176,6 @@ impl UninitializedSandbox {
         let mut sandbox = Self {
             host_funcs,
             mgr: mem_mgr_wrapper,
-            max_initialization_time: Duration::from_millis(
-                sandbox_cfg.get_max_initialization_time() as u64,
-            ),
-            max_execution_time: Duration::from_millis(sandbox_cfg.get_max_execution_time() as u64),
-            max_wait_for_cancellation: Duration::from_millis(
-                sandbox_cfg.get_max_wait_for_cancellation() as u64,
-            ),
             max_guest_log_level: None,
             #[cfg(gdb)]
             debug_info,

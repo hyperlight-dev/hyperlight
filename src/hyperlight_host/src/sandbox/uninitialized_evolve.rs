@@ -14,21 +14,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use core::time::Duration;
+use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
+use crate::signal_handlers::setup_signal_handlers;
+use crate::HyperlightError::NoHypervisorFound;
 use std::sync::{Arc, Mutex};
 
-use log::LevelFilter;
 use rand::Rng;
 use tracing::{instrument, Span};
 
+use super::hypervisor::get_available_hypervisor;
 #[cfg(gdb)]
 use super::mem_access::dbg_mem_access_handler_wrapper;
-use crate::hypervisor::hypervisor_handler::{
-    HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
-};
+use crate::hypervisor::hyperlight_vm::HyperlightSandbox;
+use crate::hypervisor::HyperlightVm;
+use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
-use crate::mem::shared_mem::GuestSharedMemory;
+use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::mem::ptr_offset::Offset;
+use crate::mem::shared_mem::{GuestSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -36,7 +39,7 @@ use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 use crate::sandbox_state::sandbox::Sandbox;
-use crate::{new_error, MultiUseSandbox, Result, UninitializedSandbox};
+use crate::{log_then_return, new_error, MultiUseSandbox, Result, UninitializedSandbox};
 
 /// The implementation for evolving `UninitializedSandbox`es to
 /// `Sandbox`es.
@@ -58,65 +61,15 @@ where
     TransformFunc: Fn(
         Arc<Mutex<FunctionRegistry>>,
         MemMgrWrapper<HostSharedMemory>,
-        HypervisorHandler,
+        Box<dyn HyperlightVm>,
+        Arc<Mutex<dyn OutBHandlerCaller>>,
+        Arc<Mutex<dyn MemAccessHandlerCaller>>,
+        RawPtr,
     ) -> Result<ResSandbox>,
 {
-    let (hshm, gshm) = u_sbox.mgr.build();
-
-    let hv_handler = {
-        let mut hv_handler = hv_init(
-            &hshm,
-            gshm,
-            u_sbox.host_funcs.clone(),
-            u_sbox.max_initialization_time,
-            u_sbox.max_execution_time,
-            u_sbox.max_wait_for_cancellation,
-            u_sbox.max_guest_log_level,
-            #[cfg(gdb)]
-            u_sbox.debug_info,
-        )?;
-
-        {
-            let dispatch_function_addr = hshm.as_ref().get_pointer_to_dispatch_function()?;
-            if dispatch_function_addr == 0 {
-                return Err(new_error!("Dispatch function address is null"));
-            }
-            hv_handler.set_dispatch_function_addr(RawPtr::from(dispatch_function_addr))?;
-        }
-
-        hv_handler
-    };
-
-    transform(u_sbox.host_funcs, hshm, hv_handler)
-}
-
-#[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    evolve_impl(u_sbox, |hf, mut hshm, hv_handler| {
-        {
-            hshm.as_mut().push_state()?;
-        }
-        Ok(MultiUseSandbox::from_uninit(hf, hshm, hv_handler))
-    })
-}
-
-#[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-#[allow(clippy::too_many_arguments)]
-fn hv_init(
-    hshm: &MemMgrWrapper<HostSharedMemory>,
-    gshm: SandboxMemoryManager<GuestSharedMemory>,
-    host_funcs: Arc<Mutex<FunctionRegistry>>,
-    max_init_time: Duration,
-    max_exec_time: Duration,
-    max_wait_for_cancellation: Duration,
-    max_guest_log_level: Option<LevelFilter>,
-    #[cfg(gdb)] debug_info: Option<DebugInfo>,
-) -> Result<HypervisorHandler> {
-    let outb_hdl = outb_handler_wrapper(hshm.clone(), host_funcs);
-    let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
-    #[cfg(gdb)]
-    let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(hshm.clone());
-
+    let (hshm, mut gshm) = u_sbox.mgr.build();
+    let mut vm = set_up_hypervisor_partition(&mut gshm)?;
+    let outb_hdl = outb_handler_wrapper(hshm.clone(), u_sbox.host_funcs.clone());
     let seed = {
         let mut rng = rand::rng();
         rng.random::<u64>()
@@ -125,40 +78,138 @@ fn hv_init(
         let peb_u64 = u64::try_from(gshm.layout.peb_address)?;
         RawPtr::from(peb_u64)
     };
+
     let page_size = u32::try_from(page_size::get())?;
-    let hv_handler_config = HvHandlerConfig {
-        outb_handler: outb_hdl,
-        mem_access_handler: mem_access_hdl,
-        #[cfg(gdb)]
-        dbg_mem_access_handler: dbg_mem_access_hdl,
+    let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
+
+    #[cfg(gdb)]
+    let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(hshm.clone());
+
+    setup_signal_handlers()?;
+
+    vm.initialise(
+        peb_addr,
         seed,
         page_size,
-        peb_addr,
-        dispatch_function_addr: Arc::new(Mutex::new(None)),
-        max_init_time,
-        max_exec_time,
-        max_wait_for_cancellation,
-        max_guest_log_level,
-    };
-    // Note: `dispatch_function_addr` is set by the Hyperlight guest library, and so it isn't in
-    // shared memory at this point in time. We will set it after the execution of `hv_init`.
-
-    let mut hv_handler = HypervisorHandler::new(hv_handler_config);
-
-    hv_handler.start_hypervisor_handler(
-        gshm,
+        outb_hdl.clone(),
+        mem_access_hdl.clone(),
+        u_sbox.max_guest_log_level,
         #[cfg(gdb)]
-        debug_info,
+        u_sbox.debug_info,
     )?;
 
-    hv_handler
-        .execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
-        .map_err(|exec_e| match hv_handler.kill_hypervisor_handler_thread() {
-            Ok(_) => exec_e,
-            Err(kill_e) => new_error!("{}", format!("{}, {}", exec_e, kill_e)),
-        })?;
+    let dispatch_function_addr = hshm.as_ref().get_pointer_to_dispatch_function()?;
+    if dispatch_function_addr == 0 {
+        return Err(new_error!("Dispatch function address is null"));
+    }
 
-    Ok(hv_handler)
+    transform(
+        u_sbox.host_funcs,
+        hshm,
+        vm,
+        outb_hdl,
+        mem_access_hdl,
+        RawPtr::from(dispatch_function_addr),
+    )
+}
+
+#[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
+    evolve_impl(
+        u_sbox,
+        |hf, mut hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
+            {
+                hshm.as_mut().push_state()?;
+            }
+            Ok(MultiUseSandbox::from_uninit(
+                hf,
+                hshm,
+                vm,
+                out_hdl,
+                mem_hdl,
+                dispatch_ptr,
+            ))
+        },
+    )
+}
+
+fn set_up_hypervisor_partition(
+    mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
+    #[cfg(gdb)] debug_info: &Option<DebugInfo>,
+) -> Result<Box<dyn HyperlightVm>> {
+    let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
+    let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
+    let rsp_ptr = {
+        let rsp_u64 = mgr.set_up_shared_memory(mem_size, &mut regions)?;
+        let rsp_raw = RawPtr::from(rsp_u64);
+        GuestPtr::try_from(rsp_raw)
+    }?;
+    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
+    let pml4_ptr = {
+        let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
+        base_ptr + Offset::from(pml4_offset_u64)
+    };
+    let entrypoint_ptr = {
+        let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;
+        GuestPtr::try_from(entrypoint_total_offset)
+    }?;
+
+    if base_ptr != pml4_ptr {
+        log_then_return!(
+            "Error: base_ptr ({:#?}) does not equal pml4_ptr ({:#?})",
+            base_ptr,
+            pml4_ptr
+        );
+    }
+    if entrypoint_ptr <= pml4_ptr {
+        log_then_return!(
+            "Error: entrypoint_ptr ({:#?}) is not greater than pml4_ptr ({:#?})",
+            entrypoint_ptr,
+            pml4_ptr
+        );
+    }
+
+    // Create gdb thread if gdb is enabled and the configuration is provided
+    #[cfg(gdb)]
+    let gdb_conn = if let Some(DebugInfo { port }) = debug_info {
+        let gdb_conn = create_gdb_thread(*port, unsafe { libc::pthread_self() });
+
+        // in case the gdb thread creation fails, we still want to continue
+        // without gdb
+        match gdb_conn {
+            Ok(gdb_conn) => Some(gdb_conn),
+            Err(e) => {
+                log::error!("Could not create gdb connection: {:#}", e);
+
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    match get_available_hypervisor() {
+        Some(hv_type) => {
+            let hv = HyperlightSandbox::new(
+                hv_type,
+                regions,
+                pml4_ptr.absolute()?,
+                entrypoint_ptr.absolute()?,
+                rsp_ptr.absolute()?,
+                #[cfg(gdb)]
+                gdb_conn,
+                #[cfg(target_os = "windows")]
+                HandleWrapper::from(
+                    mgr.shared_mem
+                        .with_exclusivity(|e| e.get_mmap_file_handle())?,
+                ),
+            )?;
+            Ok(Box::new(hv))
+        }
+        None => {
+            log_then_return!(NoHypervisorFound());
+        }
+    }
 }
 
 #[cfg(test)]

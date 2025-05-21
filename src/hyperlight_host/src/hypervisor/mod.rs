@@ -21,12 +21,12 @@ use crate::Result;
 /// Handlers for Hypervisor custom logic
 pub mod handlers;
 pub(crate) mod hyperlight_vm;
-pub(crate) mod hypervisor_handler;
 
 /// Registers including general purpose registers, special registesr, fpu registers
 mod regs;
 /// Vm trait
 mod vm;
+pub use vm::InterruptHandle;
 
 /// Implements vm::Vm trait on Windows using Windows Hypervisor Platform (WHP)
 #[cfg(target_os = "windows")]
@@ -71,7 +71,6 @@ use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use self::handlers::{
     MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
 };
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::ptr::RawPtr;
 
 pub(crate) const CR4_PAE: u64 = 1 << 5;
@@ -102,7 +101,6 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
         page_size: u32,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
@@ -119,7 +117,6 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
         dispatch_func_addr: RawPtr,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
 
@@ -134,11 +131,13 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
     /// Run the vCPU
     fn run(
         &mut self,
-        hv_handler: Option<HypervisorHandler>,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
+
+    /// Get InterruptHandle to underlying VM
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
 
     /// Get the logging level to pass to the guest entrypoint
     fn get_max_log_level(&self) -> u32 {
@@ -194,83 +193,4 @@ pub(crate) trait HyperlightVm: Debug + Sync + Send {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    use hyperlight_testing::dummy_guest_as_string;
-
-    #[cfg(gdb)]
-    use super::handlers::DbgMemAccessHandlerWrapper;
-    use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
-    use crate::hypervisor::hypervisor_handler::{
-        HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
-    };
-    use crate::mem::ptr::RawPtr;
-    use crate::sandbox::uninitialized::GuestBinary;
-    use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
-    use crate::{new_error, Result};
-
-    pub(crate) fn test_initialise(
-        outb_hdl: OutBHandlerWrapper,
-        mem_access_hdl: MemAccessHandlerWrapper,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
-        if !Path::new(&filename).exists() {
-            return Err(new_error!(
-                "test_initialise: file {} does not exist",
-                filename
-            ));
-        }
-
-        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None)?;
-        let (hshm, gshm) = sandbox.mgr.build();
-        drop(hshm);
-
-        let hv_handler_config = HvHandlerConfig {
-            outb_handler: outb_hdl,
-            mem_access_handler: mem_access_hdl,
-            #[cfg(gdb)]
-            dbg_mem_access_handler: dbg_mem_access_fn,
-            seed: 1234567890,
-            page_size: 4096,
-            peb_addr: RawPtr::from(0x230000),
-            dispatch_function_addr: Arc::new(Mutex::new(None)),
-            max_init_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
-            ),
-            max_exec_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
-            ),
-            max_wait_for_cancellation: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
-            ),
-            max_guest_log_level: None,
-        };
-
-        let mut hv_handler = HypervisorHandler::new(hv_handler_config);
-
-        // call initialise on the hypervisor implementation with specific values
-        // for PEB (process environment block) address, seed and page size.
-        //
-        // these values are not actually used, they're just checked inside
-        // the dummy guest, and if they don't match these values, the dummy
-        // guest issues a write to an invalid memory address, which in turn
-        // fails this test.
-        //
-        // in this test, we're not actually testing whether a guest can issue
-        // memory operations, call functions, etc... - we're just testing
-        // whether we can configure the shared memory region, load a binary
-        // into it, and run the CPU to completion (e.g., a HLT interrupt)
-
-        hv_handler.start_hypervisor_handler(
-            gshm,
-            #[cfg(gdb)]
-            None,
-        )?;
-
-        hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
-    }
-}
+mod tests {}

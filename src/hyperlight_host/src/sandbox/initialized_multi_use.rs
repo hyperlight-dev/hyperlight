@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::sync::{Arc, Mutex};
 
+use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
@@ -24,12 +25,15 @@ use tracing::{instrument, Span};
 use super::host_funcs::FunctionRegistry;
 use super::{MemMgrWrapper, WrapperGetter};
 use crate::func::call_ctx::MultiUseGuestCallContext;
-use crate::func::guest_dispatch::call_function_on_guest;
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
+use crate::func::guest_err::check_for_guest_error;
+use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
+use crate::hypervisor::{HyperlightVm, InterruptHandle};
+use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
+use crate::metrics::maybe_time_and_emit_guest_call;
 use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
 use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
-use crate::Result;
+use crate::{HyperlightError, Result};
 
 /// A sandbox that supports being used Multiple times.
 /// The implication of being used multiple times is two-fold:
@@ -43,26 +47,10 @@ pub struct MultiUseSandbox {
     // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
     pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: MemMgrWrapper<HostSharedMemory>,
-    hv_handler: HypervisorHandler,
-}
-
-// We need to implement drop to join the
-// threads, because, otherwise, we will
-// be leaking a thread with every
-// sandbox that is dropped. This was initially
-// caught by our benchmarks that created a ton of
-// sandboxes and caused the system to run out of
-// resources. Now, this is covered by the test:
-// `create_1000_sandboxes`.
-impl Drop for MultiUseSandbox {
-    fn drop(&mut self) {
-        match self.hv_handler.kill_hypervisor_handler_thread() {
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("[POTENTIAL THREAD LEAK] Potentially failed to kill hypervisor handler thread when dropping MultiUseSandbox: {:?}", e);
-            }
-        }
-    }
+    vm: Box<dyn HyperlightVm>,
+    out_hdl: Arc<Mutex<dyn OutBHandlerCaller>>,
+    mem_hdl: Arc<Mutex<dyn MemAccessHandlerCaller>>,
+    dispatch_ptr: RawPtr,
 }
 
 impl MultiUseSandbox {
@@ -75,12 +63,18 @@ impl MultiUseSandbox {
     pub(super) fn from_uninit(
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: MemMgrWrapper<HostSharedMemory>,
-        hv_handler: HypervisorHandler,
+        vm: Box<dyn HyperlightVm>,
+        out_hdl: Arc<Mutex<dyn OutBHandlerCaller>>,
+        mem_hdl: Arc<Mutex<dyn MemAccessHandlerCaller>>,
+        dispatch_ptr: RawPtr,
     ) -> MultiUseSandbox {
         Self {
             _host_funcs: host_funcs,
             mem_mgr: mgr,
-            hv_handler,
+            vm,
+            out_hdl,
+            mem_hdl,
+            dispatch_ptr,
         }
     }
 
@@ -161,9 +155,11 @@ impl MultiUseSandbox {
         func_ret_type: ReturnType,
         args: Option<Vec<ParameterValue>>,
     ) -> Result<ReturnValue> {
-        let res = call_function_on_guest(self, func_name, func_ret_type, args);
-        self.restore_state()?;
-        res
+        maybe_time_and_emit_guest_call(func_name, move || {
+            let res = self.call_guest_function_by_name_no_reset(func_name, func_ret_type, args);
+            self.restore_state()?;
+            res
+        })
     }
 
     /// Restore the Sandbox's state
@@ -171,6 +167,45 @@ impl MultiUseSandbox {
     pub(crate) fn restore_state(&mut self) -> Result<()> {
         let mem_mgr = self.mem_mgr.unwrap_mgr_mut();
         mem_mgr.restore_state_from_last_snapshot()
+    }
+
+    pub(crate) fn call_guest_function_by_name_no_reset(
+        &mut self,
+        function_name: &str,
+        return_type: ReturnType,
+        args: Option<Vec<ParameterValue>>,
+    ) -> Result<ReturnValue> {
+        let fc = FunctionCall::new(
+            function_name.to_string(),
+            args,
+            FunctionCallType::Guest,
+            return_type,
+        );
+
+        let buffer: Vec<u8> = fc
+            .try_into()
+            .map_err(|_| HyperlightError::Error("Failed to serialize FunctionCall".to_string()))?;
+
+        self.get_mgr_wrapper_mut()
+            .as_mut()
+            .write_guest_function_call(&buffer)?;
+
+        self.vm.dispatch_call_from_host(
+            self.dispatch_ptr.clone(),
+            self.out_hdl.clone(),
+            self.mem_hdl.clone(),
+        )?;
+
+        self.check_stack_guard()?;
+        check_for_guest_error(self.get_mgr_wrapper_mut())?;
+
+        self.get_mgr_wrapper_mut()
+            .as_mut()
+            .get_guest_function_call_result()
+    }
+
+    pub fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+        self.vm.interrupt_handle()
     }
 }
 
@@ -180,12 +215,6 @@ impl WrapperGetter for MultiUseSandbox {
     }
     fn get_mgr_wrapper_mut(&mut self) -> &mut MemMgrWrapper<HostSharedMemory> {
         &mut self.mem_mgr
-    }
-    fn get_hv_handler(&self) -> &HypervisorHandler {
-        &self.hv_handler
-    }
-    fn get_hv_handler_mut(&mut self) -> &mut HypervisorHandler {
-        &mut self.hv_handler
     }
 }
 

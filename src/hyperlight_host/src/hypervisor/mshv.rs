@@ -28,6 +28,7 @@ extern crate mshv_ioctls3 as mshv_ioctls;
 use std::collections::HashMap;
 #[cfg(gdb)]
 use std::fmt::Debug;
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 #[cfg(mshv2)]
@@ -53,6 +54,7 @@ use tracing::{instrument, Span};
 use super::handlers::DbgMemAccessHandlerCaller;
 use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use super::vm::{HyperlightExit, Vm};
+use super::InterruptHandle;
 #[cfg(gdb)]
 use crate::hypervisor::vm::DebugExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -264,6 +266,10 @@ impl Vm for MshvVm {
             },
         };
         Ok(result)
+    }
+
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+        todo!()
     }
 
     // -- DEBUGGING RELATED BELOW ---
