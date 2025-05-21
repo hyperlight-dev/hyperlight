@@ -39,7 +39,7 @@ use windows::Win32::System::Hypervisor::{WHvCancelRunVirtualProcessor, WHV_PARTI
 use super::gdb::create_gdb_thread;
 #[cfg(gdb)]
 use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
-use crate::hypervisor::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+use crate::hypervisor::handlers::{MemAccessHandlerWrapper, OutBHandler};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::Hypervisor;
@@ -184,7 +184,7 @@ pub(crate) struct HvHandlerConfig {
     pub(crate) dispatch_function_addr: Arc<Mutex<Option<RawPtr>>>,
     pub(crate) max_init_time: Duration,
     pub(crate) max_exec_time: Duration,
-    pub(crate) outb_handler: OutBHandlerWrapper,
+    pub(crate) outb_handler: Arc<Mutex<OutBHandler>>,
     pub(crate) mem_access_handler: MemAccessHandlerWrapper,
     pub(crate) max_wait_for_cancellation: Duration,
     pub(crate) max_guest_log_level: Option<LevelFilter>,
