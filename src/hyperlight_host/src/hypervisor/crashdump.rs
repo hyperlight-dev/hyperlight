@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use std::cmp::min;
+use std::io::Write;
 
 use chrono;
 use elfcore::{
@@ -248,18 +249,20 @@ impl ReadProcessMemory for GuestMemReader {
     }
 }
 
-/// Create core dump file from the hypervisor information
+/// Create core dump file from the hypervisor information if the sandbox is configured
+/// to allow core dumps.
 ///
 /// This function generates an ELF core dump file capturing the hypervisor's state,
-/// which can be used for debugging when crashes occur. The file is created in the
-/// system's temporary directory with extension '.elf' and the path is printed to stdout and logs.
+/// which can be used for debugging when crashes occur.
+/// The location of the core dump file is determined by the `HYPERLIGHT_CORE_DUMP_DIR`
+/// environment variable. If not set, it defaults to the system's temporary directory.
 ///
 /// # Arguments
 /// * `hv`: Reference to the hypervisor implementation
 ///
 /// # Returns
 /// * `Result<()>`: Success or error
-pub(crate) fn crashdump_to_tempfile(hv: &dyn Hypervisor) -> Result<()> {
+pub(crate) fn generate_crashdump(hv: &dyn Hypervisor) -> Result<()> {
     log::info!("Creating core dump file...");
 
     // Get crash context from hypervisor
@@ -267,27 +270,59 @@ pub(crate) fn crashdump_to_tempfile(hv: &dyn Hypervisor) -> Result<()> {
         .crashdump_context()
         .map_err(|e| new_error!("Failed to get crashdump context: {:?}", e))?;
 
-    // Set up data sources for the core dump
-    let guest_view = GuestView::new(&ctx);
-    let memory_reader = GuestMemReader::new(&ctx);
+    // Get env variable for core dump directory
+    let core_dump_dir = std::env::var("HYPERLIGHT_CORE_DUMP_DIR").ok();
 
-    // Create and write core dump
-    let core_builder = CoreDumpBuilder::from_source(guest_view, memory_reader);
+    // Compute file path on the filesystem
+    let file_path = core_dump_file_path(core_dump_dir);
 
+    let create_dump_file = || {
+        // Create the file
+        Ok(Box::new(
+            std::fs::File::create(&file_path)
+                .map_err(|e| new_error!("Failed to create core dump file: {:?}", e))?,
+        ) as Box<dyn Write>)
+    };
+
+    checked_core_dump(ctx, create_dump_file).map(|_| {
+        println!("Core dump created successfully: {}", file_path);
+        log::error!("Core dump file: {}", file_path);
+    })
+}
+
+/// Computes the file path for the core dump file.
+///
+/// The file path is generated based on the current timestamp and an
+/// output directory.
+/// If the directory does not exist, it falls back to the system's temp directory.
+/// If the variable is not set, it defaults to the system's temporary directory.
+/// The filename is formatted as `hl_core_<timestamp>.elf`.
+///
+/// Arguments:
+/// * `dump_dir`: The environment variable value to check for the output directory.
+///
+/// Returns:
+/// * `String`: The file path for the core dump file.
+fn core_dump_file_path(dump_dir: Option<String>) -> String {
     // Generate timestamp string for the filename using chrono
     let timestamp = chrono::Local::now()
         .format("%Y%m%d_T%H%M%S%.3f")
         .to_string();
 
     // Determine the output directory based on environment variable
-    let output_dir = if let Ok(dump_dir) = std::env::var("HYPERLIGHT_CORE_DUMP_DIR") {
-        // Create the directory if it doesn't exist
-        let path = std::path::Path::new(&dump_dir);
-        if !path.exists() {
-            std::fs::create_dir_all(path)
-                .map_err(|e| new_error!("Failed to create core dump directory: {:?}", e))?;
+    let output_dir = if let Some(dump_dir) = dump_dir {
+        // Check if the directory exists
+        // If it doesn't exist, fall back to the system temp directory
+        // This is to ensure that the core dump can be created even if the directory is not set
+        if std::path::Path::new(&dump_dir).exists() {
+            std::path::PathBuf::from(dump_dir)
+        } else {
+            log::warn!(
+                "Directory \"{}\" does not exist, falling back to temp directory",
+                dump_dir
+            );
+            std::env::temp_dir()
         }
-        std::path::PathBuf::from(dump_dir)
     } else {
         // Fall back to the system temp directory
         std::env::temp_dir()
@@ -297,19 +332,155 @@ pub(crate) fn crashdump_to_tempfile(hv: &dyn Hypervisor) -> Result<()> {
     let filename = format!("hl_core_{}.elf", timestamp);
     let file_path = output_dir.join(filename);
 
-    // Create the file
-    let file = std::fs::File::create(&file_path)
-        .map_err(|e| new_error!("Failed to create core dump file: {:?}", e))?;
+    file_path.to_string_lossy().to_string()
+}
 
-    // Write the core dump directly to the file
-    core_builder
-        .write(&file)
-        .map_err(|e| new_error!("Failed to write core dump: {:?}", e))?;
+/// Create core dump from Hypervisor context if the sandbox is configured to allow core dumps.
+///
+/// Arguments:
+/// * `ctx`: Optional crash dump context from the hypervisor. This contains the information
+///   needed to create the core dump. If `None`, no core dump will be created.
+/// * `get_writer`: Closure that returns a writer to the output destination.
+///
+/// Returns:
+/// * `Result<usize>`: The number of bytes written to the core dump file.
+fn checked_core_dump(
+    ctx: Option<CrashDumpContext>,
+    get_writer: impl FnOnce() -> Result<Box<dyn Write>>,
+) -> Result<usize> {
+    let mut nbytes = 0;
+    // If the HV returned a context it means we can create a core dump
+    // This is the case when the sandbox has been configured at runtime to allow core dumps
+    if let Some(ctx) = ctx {
+        // Set up data sources for the core dump
+        let guest_view = GuestView::new(&ctx);
+        let memory_reader = GuestMemReader::new(&ctx);
 
-    let path_string = file_path.to_string_lossy().to_string();
+        // Create and write core dump
+        let core_builder = CoreDumpBuilder::from_source(guest_view, memory_reader);
 
-    println!("Core dump created successfully: {}", path_string);
-    log::error!("Core dump file: {}", path_string);
+        let writer = get_writer()?;
+        // Write the core dump directly to the file
+        nbytes = core_builder
+            .write(writer)
+            .map_err(|e| new_error!("Failed to write core dump: {:?}", e))?;
+    }
 
-    Ok(())
+    Ok(nbytes)
+}
+
+/// Test module for the crash dump functionality
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Test the core_dump_file_path function when the environment variable is set to an existing
+    /// directory
+    #[test]
+    fn test_crashdump_file_path_valid() {
+        // Get CWD
+        let valid_dir = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        // Call the function
+        let path = core_dump_file_path(Some(valid_dir.clone()));
+
+        // Check if the path is correct
+        assert!(path.contains(&valid_dir));
+    }
+
+    /// Test the core_dump_file_path function when the environment variable is set to an invalid
+    /// directory
+    #[test]
+    fn test_crashdump_file_path_invalid() {
+        // Call the function
+        let path = core_dump_file_path(Some("/tmp/not_existing_dir".to_string()));
+
+        // Get the temp directory
+        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+
+        // Check if the path is correct
+        assert!(path.contains(&temp_dir));
+    }
+
+    /// Test the core_dump_file_path function when the environment is not set
+    /// Check against the default temp directory by using the env::temp_dir() function
+    #[test]
+    fn test_crashdump_file_path_default() {
+        // Call the function
+        let path = core_dump_file_path(None);
+
+        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+
+        // Check if the path is correct
+        assert!(path.starts_with(&temp_dir));
+    }
+
+    /// Test core is not created when the context is None
+    #[test]
+    fn test_crashdump_not_created_when_context_is_none() {
+        // Call the function with None context
+        let result = checked_core_dump(None, || Ok(Box::new(std::io::empty())));
+
+        // Check if the result is ok and the number of bytes is 0
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    /// Test the core dump creation with no regions fails
+    #[test]
+    fn test_crashdump_write_fails_when_no_regions() {
+        // Create a dummy context
+        let ctx = CrashDumpContext::new(
+            &[],
+            [0; 27],
+            vec![],
+            0,
+            Some("dummy_binary".to_string()),
+            Some("dummy_filename".to_string()),
+        );
+
+        let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);
+
+        // Call the function
+        let result = checked_core_dump(Some(ctx), get_writer);
+
+        // Check if the result is an error
+        // This should fail because there are no regions
+        assert!(result.is_err());
+    }
+
+    /// Check core dump with a dummy region to local vec
+    /// This test checks if the core dump is created successfully
+    #[test]
+    fn test_crashdump_dummy_core_dump() {
+        let dummy_vec = vec![0; 0x1000];
+        let regions = vec![MemoryRegion {
+            guest_region: 0x1000..0x2000,
+            host_region: dummy_vec.as_ptr() as usize..dummy_vec.as_ptr() as usize + dummy_vec.len(),
+            flags: MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
+            region_type: crate::mem::memory_region::MemoryRegionType::Code,
+        }];
+        // Create a dummy context
+        let ctx = CrashDumpContext::new(
+            &regions,
+            [0; 27],
+            vec![],
+            0x1000,
+            Some("dummy_binary".to_string()),
+            Some("dummy_filename".to_string()),
+        );
+
+        let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);
+
+        // Call the function
+        let result = checked_core_dump(Some(ctx), get_writer);
+
+        // Check if the result is ok and the number of bytes is 0
+        assert!(result.is_ok());
+        // Check the number of bytes written is more than 0x1000 (the size of the region)
+        assert_eq!(result.unwrap(), 0x2000);
+    }
 }
