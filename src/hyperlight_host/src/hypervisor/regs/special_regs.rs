@@ -10,6 +10,8 @@ extern crate mshv_ioctls3 as mshv_ioctls;
 
 #[cfg(target_os = "windows")]
 use std::collections::HashSet;
+#[cfg(target_os = "windows")]
+use std::mem::offset_of;
 
 #[cfg(kvm)]
 use kvm_bindings::{kvm_dtable, kvm_segment, kvm_sregs};
@@ -20,6 +22,8 @@ use windows::Win32::System::Hypervisor::*;
 
 #[cfg(target_os = "windows")]
 use super::FromWhpRegisterError;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::regs::{WHP_FPU_NAMES_LEN, WHP_REGS_NAMES_LEN};
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub(crate) struct CommonSpecialRegisters {
@@ -146,6 +150,24 @@ impl From<&CommonSpecialRegisters> for kvm_sregs {
         }
     }
 }
+
+#[repr(C, align(16))]
+#[cfg(target_os = "windows")]
+pub(crate) struct AlignedRegisterValues<const N: usize>(pub(crate) [WHV_REGISTER_VALUE; N]);
+
+#[cfg(target_os = "windows")]
+#[allow(clippy::disallowed_macros)] // this is at compile time
+const _: () = {
+    // WHP_SREGS_NAMES_LEN
+    assert!(std::mem::align_of::<AlignedRegisterValues<WHP_SREGS_NAMES_LEN>>() % 16 == 0);
+    assert!(offset_of!(AlignedRegisterValues<WHP_SREGS_NAMES_LEN>, 0) % 16 == 0);
+    // WHP_REGS_NAMES_LEN
+    assert!(std::mem::align_of::<AlignedRegisterValues<WHP_REGS_NAMES_LEN>>() % 16 == 0,);
+    assert!(offset_of!(AlignedRegisterValues<WHP_REGS_NAMES_LEN>, 0) % 16 == 0);
+    // WHP_FPU_NAMES_LEN
+    assert!(std::mem::align_of::<AlignedRegisterValues<WHP_FPU_NAMES_LEN>>() % 16 == 0,);
+    assert!(offset_of!(AlignedRegisterValues<WHP_FPU_NAMES_LEN>, 0) % 16 == 0);
+};
 
 #[cfg(target_os = "windows")]
 pub(crate) const WHP_SREGS_NAMES_LEN: usize = 17;
