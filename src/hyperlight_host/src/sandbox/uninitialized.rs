@@ -23,8 +23,6 @@ use std::time::Duration;
 use log::LevelFilter;
 use tracing::{instrument, Span};
 
-#[cfg(gdb)]
-use super::config::DebugInfo;
 use super::host_funcs::{default_writer_func, FunctionRegistry};
 use super::mem_mgr::MemMgrWrapper;
 use super::uninitialized_evolve::evolve_impl_multi_use;
@@ -55,10 +53,15 @@ const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
     libc::SYS_close,
 ];
 
-#[cfg(crashdump)]
+#[cfg(any(crashdump, gdb))]
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SandboxMetadata {
+pub(crate) struct SandboxRuntimeConfig {
+    #[cfg(crashdump)]
     pub(crate) binary_path: Option<String>,
+    #[cfg(gdb)]
+    pub(crate) debug_info: Option<super::config::DebugInfo>,
+    #[cfg(crashdump)]
+    pub(crate) guest_core_dump: bool,
 }
 
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
@@ -77,10 +80,8 @@ pub struct UninitializedSandbox {
     pub(crate) max_execution_time: Duration,
     pub(crate) max_wait_for_cancellation: Duration,
     pub(crate) max_guest_log_level: Option<LevelFilter>,
-    #[cfg(gdb)]
-    pub(crate) debug_info: Option<DebugInfo>,
-    #[cfg(crashdump)]
-    pub(crate) metadata: SandboxMetadata,
+    #[cfg(any(crashdump, gdb))]
+    pub(crate) rt_cfg: SandboxRuntimeConfig,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -170,19 +171,33 @@ impl UninitializedSandbox {
             buffer @ GuestBinary::Buffer(_) => buffer,
         };
 
-        #[cfg(crashdump)]
-        let metadata = if let GuestBinary::FilePath(ref path) = guest_binary {
-            SandboxMetadata {
-                binary_path: Some(path.clone()),
-            }
-        } else {
-            SandboxMetadata::default()
-        };
-
         let sandbox_cfg = cfg.unwrap_or_default();
 
-        #[cfg(gdb)]
-        let debug_info = sandbox_cfg.get_guest_debug_info();
+        #[cfg(any(crashdump, gdb))]
+        let rt_cfg = {
+            #[cfg(crashdump)]
+            let guest_core_dump = sandbox_cfg.get_guest_core_dump();
+
+            #[cfg(gdb)]
+            let debug_info = sandbox_cfg.get_guest_debug_info();
+
+            #[cfg(crashdump)]
+            let binary_path = if let GuestBinary::FilePath(ref path) = guest_binary {
+                Some(path.clone())
+            } else {
+                None
+            };
+
+            SandboxRuntimeConfig {
+                #[cfg(crashdump)]
+                binary_path,
+                #[cfg(gdb)]
+                debug_info,
+                #[cfg(crashdump)]
+                guest_core_dump,
+            }
+        };
+
         let mut mem_mgr_wrapper = {
             let mut mgr = UninitializedSandbox::load_guest_binary(sandbox_cfg, &guest_binary)?;
             let stack_guard = Self::create_stack_guard();
@@ -205,10 +220,8 @@ impl UninitializedSandbox {
                 sandbox_cfg.get_max_wait_for_cancellation() as u64,
             ),
             max_guest_log_level: None,
-            #[cfg(gdb)]
-            debug_info,
-            #[cfg(crashdump)]
-            metadata,
+            #[cfg(any(crashdump, gdb))]
+            rt_cfg,
         };
 
         // If we were passed a writer for host print register it otherwise use the default.

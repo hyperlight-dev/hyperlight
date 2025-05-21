@@ -23,16 +23,14 @@ use tracing::{instrument, Span};
 
 #[cfg(gdb)]
 use super::mem_access::dbg_mem_access_handler_wrapper;
-#[cfg(crashdump)]
-use super::uninitialized::SandboxMetadata;
+#[cfg(any(crashdump, gdb))]
+use super::uninitialized::SandboxRuntimeConfig;
 use crate::hypervisor::hypervisor_handler::{
     HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
 };
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
-#[cfg(gdb)]
-use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
@@ -74,10 +72,8 @@ where
             u_sbox.max_execution_time,
             u_sbox.max_wait_for_cancellation,
             u_sbox.max_guest_log_level,
-            #[cfg(gdb)]
-            u_sbox.debug_info,
-            #[cfg(crashdump)]
-            u_sbox.metadata,
+            #[cfg(any(crashdump, gdb))]
+            u_sbox.rt_cfg,
         )?;
 
         {
@@ -114,8 +110,7 @@ fn hv_init(
     max_exec_time: Duration,
     max_wait_for_cancellation: Duration,
     max_guest_log_level: Option<LevelFilter>,
-    #[cfg(gdb)] debug_info: Option<DebugInfo>,
-    #[cfg(crashdump)] metadata: SandboxMetadata,
+    #[cfg(any(crashdump, gdb))] rt_cfg: SandboxRuntimeConfig,
 ) -> Result<HypervisorHandler> {
     let outb_hdl = outb_handler_wrapper(hshm.clone(), host_funcs);
     let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
@@ -152,10 +147,8 @@ fn hv_init(
 
     hv_handler.start_hypervisor_handler(
         gshm,
-        #[cfg(gdb)]
-        debug_info,
-        #[cfg(crashdump)]
-        metadata,
+        #[cfg(any(crashdump, gdb))]
+        rt_cfg,
     )?;
 
     hv_handler

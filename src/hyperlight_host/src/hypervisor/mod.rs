@@ -232,7 +232,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<crashdump::CrashDumpContext>;
+    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>>;
 
     #[cfg(gdb)]
     /// handles the cases when the vCPU stops due to a Debug event
@@ -275,7 +275,7 @@ impl VirtualCPU {
                 }
                 Ok(HyperlightExit::Mmio(addr)) => {
                     #[cfg(crashdump)]
-                    crashdump::crashdump_to_tempfile(hv)?;
+                    crashdump::generate_crashdump(hv)?;
 
                     mem_access_fn
                         .clone()
@@ -287,7 +287,7 @@ impl VirtualCPU {
                 }
                 Ok(HyperlightExit::AccessViolation(addr, tried, region_permission)) => {
                     #[cfg(crashdump)]
-                    crashdump::crashdump_to_tempfile(hv)?;
+                    crashdump::generate_crashdump(hv)?;
 
                     if region_permission.intersects(MemoryRegionFlags::STACK_GUARD) {
                         return Err(HyperlightError::StackOverflow());
@@ -313,14 +313,14 @@ impl VirtualCPU {
                 }
                 Ok(HyperlightExit::Unknown(reason)) => {
                     #[cfg(crashdump)]
-                    crashdump::crashdump_to_tempfile(hv)?;
+                    crashdump::generate_crashdump(hv)?;
 
                     log_then_return!("Unexpected VM Exit {:?}", reason);
                 }
                 Ok(HyperlightExit::Retry()) => continue,
                 Err(e) => {
                     #[cfg(crashdump)]
-                    crashdump::crashdump_to_tempfile(hv)?;
+                    crashdump::generate_crashdump(hv)?;
 
                     return Err(e);
                 }
@@ -347,8 +347,8 @@ pub(crate) mod tests {
     };
     use crate::mem::ptr::RawPtr;
     use crate::sandbox::uninitialized::GuestBinary;
-    #[cfg(crashdump)]
-    use crate::sandbox::uninitialized::SandboxMetadata;
+    #[cfg(any(crashdump, gdb))]
+    use crate::sandbox::uninitialized::SandboxRuntimeConfig;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{new_error, Result};
 
@@ -407,10 +407,15 @@ pub(crate) mod tests {
 
         hv_handler.start_hypervisor_handler(
             gshm,
-            #[cfg(gdb)]
-            None,
-            #[cfg(crashdump)]
-            SandboxMetadata { binary_path: None },
+            #[cfg(any(crashdump, gdb))]
+            SandboxRuntimeConfig {
+                #[cfg(crashdump)]
+                binary_path: None,
+                #[cfg(gdb)]
+                debug_info: None,
+                #[cfg(crashdump)]
+                guest_core_dump: true,
+            },
         )?;
 
         hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
