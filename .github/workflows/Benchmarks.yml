@@ -21,7 +21,7 @@ jobs:
         cpu: [amd, intel]
         config: [release] # don't want to benchmark debug-builds
 
-    runs-on: ${{ fromJson(format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', matrix.hypervisor == 'hyperv' && 'Windows' || 'Linux', matrix.hypervisor == 'hyperv' && 'win2022' || matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, matrix.cpu)) }} 
+    runs-on: ${{ fromJson(format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', matrix.hypervisor == 'hyperv' && 'Windows' || 'Linux', matrix.hypervisor == 'hyperv' && 'win2025' || matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, matrix.cpu)) }} 
     
     steps:
       ### Setup ###
