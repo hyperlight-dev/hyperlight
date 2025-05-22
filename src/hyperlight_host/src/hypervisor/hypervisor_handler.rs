@@ -51,6 +51,8 @@ use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
+#[cfg(any(crashdump, gdb))]
+use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::HyperlightError::{
@@ -237,7 +239,7 @@ impl HypervisorHandler {
     pub(crate) fn start_hypervisor_handler(
         &mut self,
         sandbox_memory_manager: SandboxMemoryManager<GuestSharedMemory>,
-        #[cfg(gdb)] debug_info: Option<DebugInfo>,
+        #[cfg(any(crashdump, gdb))] rt_cfg: SandboxRuntimeConfig,
     ) -> Result<()> {
         let configuration = self.configuration.clone();
 
@@ -299,8 +301,8 @@ impl HypervisorHandler {
                                 {
                                     hv = Some(set_up_hypervisor_partition(
                                         execution_variables.shm.try_lock().map_err(|e| new_error!("Failed to lock shm: {}", e))?.deref_mut().as_mut().ok_or_else(|| new_error!("shm not set"))?,
-                                        #[cfg(gdb)]
-                                        &debug_info,
+                                        #[cfg(any(crashdump, gdb))]
+                                        &rt_cfg,
                                     )?);
                                 }
                                 let hv = hv.as_mut().ok_or_else(|| new_error!("Hypervisor not set"))?;
@@ -821,7 +823,7 @@ pub enum HandlerMsg {
 
 fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
-    #[cfg(gdb)] debug_info: &Option<DebugInfo>,
+    #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
 ) -> Result<Box<dyn Hypervisor>> {
     let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
     let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
@@ -857,8 +859,8 @@ fn set_up_hypervisor_partition(
 
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
-    let gdb_conn = if let Some(DebugInfo { port }) = debug_info {
-        let gdb_conn = create_gdb_thread(*port, unsafe { pthread_self() });
+    let gdb_conn = if let Some(DebugInfo { port }) = rt_cfg.debug_info {
+        let gdb_conn = create_gdb_thread(port, unsafe { pthread_self() });
 
         // in case the gdb thread creation fails, we still want to continue
         // without gdb
@@ -884,6 +886,8 @@ fn set_up_hypervisor_partition(
                 pml4_ptr,
                 #[cfg(gdb)]
                 gdb_conn,
+                #[cfg(crashdump)]
+                rt_cfg.clone(),
             )?;
             Ok(Box::new(hv))
         }
@@ -897,6 +901,8 @@ fn set_up_hypervisor_partition(
                 rsp_ptr.absolute()?,
                 #[cfg(gdb)]
                 gdb_conn,
+                #[cfg(crashdump)]
+                rt_cfg.clone(),
             )?;
             Ok(Box::new(hv))
         }
@@ -914,6 +920,8 @@ fn set_up_hypervisor_partition(
                 entrypoint_ptr.absolute()?,
                 rsp_ptr.absolute()?,
                 HandleWrapper::from(mmap_file_handle),
+                #[cfg(crashdump)]
+                rt_cfg.clone(),
             )?;
             Ok(Box::new(hv))
         }
