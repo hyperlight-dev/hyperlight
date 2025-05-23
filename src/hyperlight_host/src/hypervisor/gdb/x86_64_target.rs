@@ -29,7 +29,8 @@ use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 
-use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError, X86_64Regs};
+use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError};
+use crate::hypervisor::regs::CommonRegisters;
 
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
 pub(crate) struct HyperlightSandboxTarget {
@@ -222,7 +223,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
     ) -> TargetResult<(), Self> {
         log::debug!("Write regs");
 
-        let regs = X86_64Regs {
+        let regs = CommonRegisters {
             rax: regs.regs[0],
             rbx: regs.regs[1],
             rcx: regs.regs[2],
@@ -420,7 +421,7 @@ mod tests {
 
         // Check response to read registers - send the response first to not be blocked
         // by the recv call in the target
-        let msg = DebugResponse::ReadRegisters(X86_64Regs::default());
+        let msg = DebugResponse::ReadRegisters(CommonRegisters::default());
         let res = gdb_conn.send(msg);
         assert!(res.is_ok());
 

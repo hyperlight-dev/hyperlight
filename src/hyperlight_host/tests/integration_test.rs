@@ -14,6 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![allow(clippy::disallowed_macros)]
+use std::thread;
+use std::time::Duration;
+
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
@@ -27,6 +30,28 @@ use log::LevelFilter;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{new_uninit, new_uninit_rust};
+
+#[test]
+fn kill_running_vm() {
+    // this test is rust-guest only
+    let mut sbox1: MultiUseSandbox = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+
+    let interrupt_handle = sbox1.interrupt_handle();
+    assert!(!interrupt_handle.dropped());
+
+    // kill vm after 1 second
+    thread::spawn(|| {
+        thread::sleep(Duration::from_secs(1));
+        interrupt_handle.kill();
+        thread::sleep(Duration::from_secs(1));
+        assert!(interrupt_handle.dropped());
+    });
+    let res = sbox1
+        .call_guest_function_by_name("Spin", ReturnType::Int, None)
+        .unwrap_err();
+    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    println!("{:?}", res);
+}
 
 #[test]
 fn print_four_args_c_guest() {

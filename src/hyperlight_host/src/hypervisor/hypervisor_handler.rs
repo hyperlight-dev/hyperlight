@@ -14,8 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(target_os = "windows")]
-use core::ffi::c_void;
 use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,12 +35,13 @@ use windows::Win32::System::Hypervisor::{WHvCancelRunVirtualProcessor, WHV_PARTI
 
 #[cfg(gdb)]
 use super::gdb::create_gdb_thread;
+use super::hyperlight_vm::HyperlightSandbox;
 #[cfg(gdb)]
 use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
 use crate::hypervisor::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::hypervisor::Hypervisor;
+use crate::hypervisor::HyperlightVm;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -50,7 +49,7 @@ use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
-use crate::sandbox::hypervisor::{get_available_hypervisor, HypervisorType};
+use crate::sandbox::hypervisor::get_available_hypervisor;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::HyperlightError::{
@@ -292,7 +291,7 @@ impl HypervisorHandler {
             thread::Builder::new()
                 .name("Hypervisor Handler".to_string())
                 .spawn(move || -> Result<()> {
-                    let mut hv: Option<Box<dyn Hypervisor>> = None;
+                    let mut hv: Option<Box<dyn HyperlightVm>> = None;
                     for action in to_handler_rx {
                         match action {
                             HypervisorHandlerAction::Initialise => {
@@ -817,111 +816,6 @@ impl std::fmt::Debug for HypervisorHandlerAction {
 pub enum HandlerMsg {
     FinishedHypervisorHandlerAction,
     Error(HyperlightError),
-}
-
-fn set_up_hypervisor_partition(
-    mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
-    #[cfg(gdb)] debug_info: &Option<DebugInfo>,
-) -> Result<Box<dyn Hypervisor>> {
-    let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
-    let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-    let rsp_ptr = {
-        let rsp_u64 = mgr.set_up_shared_memory(mem_size, &mut regions)?;
-        let rsp_raw = RawPtr::from(rsp_u64);
-        GuestPtr::try_from(rsp_raw)
-    }?;
-    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let pml4_ptr = {
-        let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
-        base_ptr + Offset::from(pml4_offset_u64)
-    };
-    let entrypoint_ptr = {
-        let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;
-        GuestPtr::try_from(entrypoint_total_offset)
-    }?;
-
-    if base_ptr != pml4_ptr {
-        log_then_return!(
-            "Error: base_ptr ({:#?}) does not equal pml4_ptr ({:#?})",
-            base_ptr,
-            pml4_ptr
-        );
-    }
-    if entrypoint_ptr <= pml4_ptr {
-        log_then_return!(
-            "Error: entrypoint_ptr ({:#?}) is not greater than pml4_ptr ({:#?})",
-            entrypoint_ptr,
-            pml4_ptr
-        );
-    }
-
-    // Create gdb thread if gdb is enabled and the configuration is provided
-    #[cfg(gdb)]
-    let gdb_conn = if let Some(DebugInfo { port }) = debug_info {
-        let gdb_conn = create_gdb_thread(*port, unsafe { pthread_self() });
-
-        // in case the gdb thread creation fails, we still want to continue
-        // without gdb
-        match gdb_conn {
-            Ok(gdb_conn) => Some(gdb_conn),
-            Err(e) => {
-                log::error!("Could not create gdb connection: {:#}", e);
-
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    match *get_available_hypervisor() {
-        #[cfg(mshv)]
-        Some(HypervisorType::Mshv) => {
-            let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
-                regions,
-                entrypoint_ptr,
-                rsp_ptr,
-                pml4_ptr,
-                #[cfg(gdb)]
-                gdb_conn,
-            )?;
-            Ok(Box::new(hv))
-        }
-
-        #[cfg(kvm)]
-        Some(HypervisorType::Kvm) => {
-            let hv = crate::hypervisor::kvm::KVMDriver::new(
-                regions,
-                pml4_ptr.absolute()?,
-                entrypoint_ptr.absolute()?,
-                rsp_ptr.absolute()?,
-                #[cfg(gdb)]
-                gdb_conn,
-            )?;
-            Ok(Box::new(hv))
-        }
-
-        #[cfg(target_os = "windows")]
-        Some(HypervisorType::Whp) => {
-            let mmap_file_handle = mgr
-                .shared_mem
-                .with_exclusivity(|e| e.get_mmap_file_handle())?;
-            let hv = crate::hypervisor::hyperv_windows::HypervWindowsDriver::new(
-                regions,
-                mgr.shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
-                mgr.shared_mem.raw_ptr() as *mut c_void, // and instead convert it to base_addr where needed in the driver itself
-                pml4_ptr.absolute()?,
-                entrypoint_ptr.absolute()?,
-                rsp_ptr.absolute()?,
-                HandleWrapper::from(mmap_file_handle),
-            )?;
-            Ok(Box::new(hv))
-        }
-
-        _ => {
-            log_then_return!(NoHypervisorFound());
-        }
-    }
 }
 
 #[cfg(test)]
