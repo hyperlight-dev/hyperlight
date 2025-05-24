@@ -36,15 +36,20 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        hypervisor: [hyperv, mshv, mshv3, kvm] # hyperv is windows, mshv and kvm are linux
+        hypervisor: [hyperv, mshv, mshv3, kvm, wsl] # hyperv is windows, mshv and kvm are linux, wsl is kvm running in WSL(2) on Windows
         cpu: [amd, intel]
         config: [debug, release]
 
+    # TODO: clean this up after testing by tagging wsl runners with 'hld-wsl-kvm' instead of just 'wsl'
     runs-on: ${{ fromJson(
-        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
-          matrix.hypervisor == 'hyperv' && 'Windows' || 'Linux', 
-          matrix.hypervisor == 'hyperv' && 'win2022' || matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, 
-          matrix.cpu)) }} 
+      format('["self-hosted", "{0}", "X64", "{1}"]',
+      matrix.hypervisor == 'hyperv' && 'Windows' || 'Linux',
+      matrix.hypervisor == 'hyperv' && '1ES.Pool=hld-win2022-{0}' ||
+      matrix.hypervisor == 'mshv3' && '1ES.Pool=hld-azlinux3-mshv-{0}' ||
+      matrix.hypervisor == 'wsl' && 'wsl' ||
+      format('1ES.Pool=hld-{0}-{1}', matrix.hypervisor, matrix.cpu),
+      matrix.cpu)) }}
+
     steps:
       - uses: actions/checkout@v4
 
