@@ -929,7 +929,6 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
     use hyperlight_testing::simple_guest_as_string;
 
     #[cfg(target_os = "windows")]
@@ -1013,11 +1012,7 @@ mod tests {
         let mut sandbox = create_multi_use_sandbox();
 
         let msg = "Hello, World!\n".to_string();
-        let res = sandbox.call_guest_function_by_name(
-            "PrintOutput",
-            ReturnType::Int,
-            Some(vec![ParameterValue::String(msg.clone())]),
-        );
+        let res = sandbox.call_guest_function_by_name::<i32>("PrintOutput", msg);
 
         assert!(res.is_ok());
 
@@ -1028,7 +1023,7 @@ mod tests {
     fn terminate_execution_then_call_another_function() -> Result<()> {
         let mut sandbox = create_multi_use_sandbox();
 
-        let res = sandbox.call_guest_function_by_name("Spin", ReturnType::Void, None);
+        let res = sandbox.call_guest_function_by_name::<()>("Spin", ());
 
         assert!(res.is_err());
 
@@ -1037,11 +1032,7 @@ mod tests {
             _ => panic!("Expected ExecutionTerminated error"),
         }
 
-        let res = sandbox.call_guest_function_by_name(
-            "Echo",
-            ReturnType::String,
-            Some(vec![ParameterValue::String("a".to_string())]),
-        );
+        let res = sandbox.call_guest_function_by_name::<String>("Echo", "a".to_string());
 
         assert!(res.is_ok());
 
@@ -1053,11 +1044,7 @@ mod tests {
     {
         let call_print_output = |sandbox: &mut MultiUseSandbox| {
             let msg = "Hello, World!\n".to_string();
-            let res = sandbox.call_guest_function_by_name(
-                "PrintOutput",
-                ReturnType::Int,
-                Some(vec![ParameterValue::String(msg.clone())]),
-            );
+            let res = sandbox.call_guest_function_by_name::<i32>("PrintOutput", msg);
 
             assert!(res.is_ok());
         };

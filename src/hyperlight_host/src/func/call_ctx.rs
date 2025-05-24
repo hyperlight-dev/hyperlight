@@ -14,12 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use hyperlight_common::flatbuffer_wrappers::function_types::{
-    ParameterValue, ReturnType, ReturnValue,
-};
 use tracing::{instrument, Span};
 
 use super::guest_dispatch::call_function_on_guest;
+use super::{ParameterTuple, SupportedReturnType};
 use crate::{MultiUseSandbox, Result};
 /// A context for calling guest functions.
 ///
@@ -61,18 +59,19 @@ impl MultiUseGuestCallContext {
     /// If you want  to reset state, call `finish()` on this `MultiUseGuestCallContext`
     /// and get a new one from the resulting `MultiUseSandbox`
     #[instrument(err(Debug),skip(self, args),parent = Span::current())]
-    pub fn call(
+    pub fn call<Output: SupportedReturnType>(
         &mut self,
         func_name: &str,
-        func_ret_type: ReturnType,
-        args: Option<Vec<ParameterValue>>,
-    ) -> Result<ReturnValue> {
+        args: impl ParameterTuple,
+    ) -> Result<Output> {
         // we are guaranteed to be holding a lock now, since `self` can't
         // exist without doing so. Since GuestCallContext is effectively
         // !Send (and !Sync), we also don't need to worry about
         // synchronization
 
-        call_function_on_guest(&mut self.sbox, func_name, func_ret_type, args)
+        let ret =
+            call_function_on_guest(&mut self.sbox, func_name, Output::TYPE, args.into_value());
+        Output::from_value(ret?)
     }
 
     /// Close out the context and get back the internally-stored
@@ -104,11 +103,9 @@ mod tests {
     use std::sync::mpsc::sync_channel;
     use std::thread::{self, JoinHandle};
 
-    use hyperlight_common::flatbuffer_wrappers::function_types::{
-        ParameterValue, ReturnType, ReturnValue,
-    };
     use hyperlight_testing::simple_guest_as_string;
 
+    use super::MultiUseGuestCallContext;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
@@ -148,10 +145,7 @@ mod tests {
             while let Ok(calls) = recv.recv() {
                 let mut ctx = sbox.new_call_context();
                 for call in calls {
-                    let res = ctx
-                        .call(call.func_name.as_str(), call.ret_type, call.params)
-                        .unwrap();
-                    assert_eq!(call.expected_ret, res);
+                    call.call(&mut ctx);
                 }
                 sbox = ctx.finish().unwrap();
             }
@@ -162,21 +156,16 @@ mod tests {
             .map(|i| {
                 let sender = snd.clone();
                 thread::spawn(move || {
-                    let calls: Vec<TestFuncCall> = vec![
-                        TestFuncCall {
-                            func_name: "Echo".to_string(),
-                            ret_type: ReturnType::String,
-                            params: Some(vec![ParameterValue::String(
-                                format!("Hello {}", i).to_string(),
-                            )]),
-                            expected_ret: ReturnValue::String(format!("Hello {}", i).to_string()),
-                        },
-                        TestFuncCall {
-                            func_name: "CallMalloc".to_string(),
-                            ret_type: ReturnType::Int,
-                            params: Some(vec![ParameterValue::Int(i + 2)]),
-                            expected_ret: ReturnValue::Int(i + 2),
-                        },
+                    let calls = vec![
+                        TestFuncCall::new(move |ctx| {
+                            let msg = format!("Hello {}", i);
+                            let ret: String = ctx.call("Echo", msg.clone()).unwrap();
+                            assert_eq!(ret, msg)
+                        }),
+                        TestFuncCall::new(move |ctx| {
+                            let ret: i32 = ctx.call("CallMalloc", i + 2).unwrap();
+                            assert_eq!(ret, i + 2)
+                        }),
                     ];
                     sender.send(calls).unwrap();
                 })
@@ -206,15 +195,11 @@ mod tests {
             let mut ctx = self.sandbox.new_call_context();
             let mut sum: i32 = 0;
             for n in 0..i {
-                let result = ctx.call(
-                    "AddToStatic",
-                    ReturnType::Int,
-                    Some(vec![ParameterValue::Int(n)]),
-                );
+                let result = ctx.call::<i32>("AddToStatic", n);
                 sum += n;
                 println!("{:?}", result);
                 let result = result.unwrap();
-                assert_eq!(result, ReturnValue::Int(sum));
+                assert_eq!(result, sum);
             }
             let result = ctx.finish();
             assert!(result.is_ok());
@@ -224,14 +209,12 @@ mod tests {
 
         pub fn call_add_to_static(mut self, i: i32) -> Result<()> {
             for n in 0..i {
-                let result = self.sandbox.call_guest_function_by_name(
-                    "AddToStatic",
-                    ReturnType::Int,
-                    Some(vec![ParameterValue::Int(n)]),
-                );
+                let result = self
+                    .sandbox
+                    .call_guest_function_by_name::<i32>("AddToStatic", n);
                 println!("{:?}", result);
                 let result = result.unwrap();
-                assert_eq!(result, ReturnValue::Int(n));
+                assert_eq!(result, n);
             }
             Ok(())
         }
@@ -251,10 +234,15 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    struct TestFuncCall {
-        func_name: String,
-        ret_type: ReturnType,
-        params: Option<Vec<ParameterValue>>,
-        expected_ret: ReturnValue,
+    struct TestFuncCall(Box<dyn FnOnce(&mut MultiUseGuestCallContext) + Send>);
+
+    impl TestFuncCall {
+        fn new(f: impl FnOnce(&mut MultiUseGuestCallContext) + Send + 'static) -> Self {
+            TestFuncCall(Box::new(f))
+        }
+
+        fn call(self, ctx: &mut MultiUseGuestCallContext) {
+            (self.0)(ctx);
+        }
     }
 }
