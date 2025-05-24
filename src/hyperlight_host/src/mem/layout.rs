@@ -604,11 +604,8 @@ impl SandboxMemoryLayout {
         }
 
         // guard page
-        let stack_offset = builder.push_page_aligned(
-            PAGE_SIZE_USIZE,
-            MemoryRegionFlags::READ | MemoryRegionFlags::STACK_GUARD,
-            GuardPage,
-        );
+        let stack_offset =
+            builder.push_page_aligned(PAGE_SIZE_USIZE, MemoryRegionFlags::READ, GuardPage);
 
         let expected_stack_offset =
             TryInto::<usize>::try_into(self.guest_user_stack_buffer_offset)?;
