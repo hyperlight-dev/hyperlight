@@ -33,6 +33,14 @@ pub struct DebugInfo {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct SandboxConfiguration {
+    /// Guest core dump output directory
+    /// This field is by default set to true which means the value core dumps will be placed in:
+    /// - HYPERLIGHT_CORE_DUMP_DIR environment variable if it is set
+    /// - default value of the temporary directory
+    ///
+    /// The core dump files generation can be disabled by setting this field to false.
+    #[cfg(crashdump)]
+    guest_core_dump: bool,
     /// Guest gdb debug port
     #[cfg(gdb)]
     guest_debug_info: Option<DebugInfo>,
@@ -123,6 +131,7 @@ impl SandboxConfiguration {
         max_initialization_time: Option<Duration>,
         max_wait_for_cancellation: Option<Duration>,
         #[cfg(gdb)] guest_debug_info: Option<DebugInfo>,
+        #[cfg(crashdump)] guest_core_dump: bool,
     ) -> Self {
         Self {
             input_data_size: max(input_data_size, Self::MIN_INPUT_SIZE),
@@ -178,6 +187,8 @@ impl SandboxConfiguration {
             },
             #[cfg(gdb)]
             guest_debug_info,
+            #[cfg(crashdump)]
+            guest_core_dump,
         }
     }
 
@@ -263,6 +274,15 @@ impl SandboxConfiguration {
         }
     }
 
+    /// Toggles the guest core dump generation for a sandbox
+    /// Setting this to false disables the core dump generation
+    /// This is only used when the `crashdump` feature is enabled
+    #[cfg(crashdump)]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_guest_core_dump(&mut self, enable: bool) {
+        self.guest_core_dump = enable;
+    }
+
     /// Sets the configuration for the guest debug
     #[cfg(gdb)]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
@@ -292,6 +312,12 @@ impl SandboxConfiguration {
 
     pub(crate) fn get_max_initialization_time(&self) -> u16 {
         self.max_initialization_time
+    }
+
+    #[cfg(crashdump)]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_guest_core_dump(&self) -> bool {
+        self.guest_core_dump
     }
 
     #[cfg(gdb)]
@@ -340,6 +366,8 @@ impl Default for SandboxConfiguration {
             None,
             #[cfg(gdb)]
             None,
+            #[cfg(crashdump)]
+            true,
         )
     }
 }
@@ -374,6 +402,8 @@ mod tests {
             )),
             #[cfg(gdb)]
             None,
+            #[cfg(crashdump)]
+            true,
         );
         let exe_info = simple_guest_exe_info().unwrap();
 
@@ -417,6 +447,8 @@ mod tests {
             )),
             #[cfg(gdb)]
             None,
+            #[cfg(crashdump)]
+            true,
         );
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
