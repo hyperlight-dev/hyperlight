@@ -33,7 +33,6 @@ pub mod hyperv_linux;
 #[cfg(target_os = "windows")]
 /// Hyperv-on-windows functionality
 pub(crate) mod hyperv_windows;
-pub(crate) mod hypervisor_handler;
 
 /// GDB debugging support
 #[cfg(gdb)]
@@ -70,7 +69,6 @@ use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use self::handlers::{
     MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
 };
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::ptr::RawPtr;
 
 pub(crate) const CR4_PAE: u64 = 1 << 5;
@@ -111,10 +109,6 @@ pub enum HyperlightExit {
 }
 
 /// A common set of hypervisor functionality
-///
-/// Note: a lot of these structures take in an `Option<HypervisorHandler>`.
-/// This is because, if we are coming from the C API, we don't have a HypervisorHandler and have
-/// to account for the fact the Hypervisor was set up beforehand.
 pub(crate) trait Hypervisor: Debug + Sync + Send {
     /// Initialise the internally stored vCPU with the given PEB address and
     /// random number seed, then run it until a HLT instruction.
@@ -126,7 +120,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         page_size: u32,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
@@ -143,7 +136,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         dispatch_func_addr: RawPtr,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
 
@@ -253,7 +245,6 @@ impl VirtualCPU {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub fn run(
         hv: &mut dyn Hypervisor,
-        hv_handler: Option<HypervisorHandler>,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
@@ -301,13 +292,6 @@ impl VirtualCPU {
                 Ok(HyperlightExit::Cancelled()) => {
                     // Shutdown is returned when the host has cancelled execution
                     // After termination, the main thread will re-initialize the VM
-                    if let Some(hvh) = hv_handler {
-                        // If hvh is None, then we are running from the C API, which doesn't use
-                        // the HypervisorHandler
-                        hvh.set_running(false);
-                        #[cfg(target_os = "linux")]
-                        hvh.set_run_cancelled(true);
-                    }
                     metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
                     log_then_return!(ExecutionCanceledByHost());
                 }
