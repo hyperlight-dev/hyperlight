@@ -102,10 +102,22 @@ fn do_hyperlight_stuff() {
     let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
 
     let mut multiuse_sandbox = usandbox.evolve(no_op).expect("Failed to evolve sandbox");
+    let interrupt_handle = multiuse_sandbox.interrupt_handle();
+
+    const NUM_CALLS: i32 = 5;
+
+    let thread = std::thread::spawn(move || {
+        for _ in 0..NUM_CALLS {
+            // Sleep for a short time to allow the guest function to run.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Cancel the host function call.
+            interrupt_handle.kill();
+        }
+    });
 
     // Call a function that gets cancelled by the host function 5 times to generate some metrics.
 
-    for _ in 0..5 {
+    for _ in 0..NUM_CALLS {
         let mut ctx = multiuse_sandbox.new_call_context();
 
         let result = ctx.call("Spin", ReturnType::Void, None);
@@ -119,6 +131,7 @@ fn do_hyperlight_stuff() {
         let result = join_handle.join();
         assert!(result.is_ok());
     }
+    thread.join().unwrap();
 }
 
 fn fn_writer(_msg: String) -> Result<i32> {

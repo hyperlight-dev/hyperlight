@@ -88,9 +88,7 @@ test-isolated target=default-target features="":
     cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- mem::shared_mem::tests::test_drop --exact --ignored
     cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
     @# metrics tests
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact --ignored
-    
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact 
 # runs integration tests. Guest can either be "rust" or "c"
 test-integration guest target=default-target features="":
     @# run execute_on_heap test with feature "executable_heap" on and off
