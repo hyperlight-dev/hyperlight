@@ -14,6 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![allow(clippy::disallowed_macros)]
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::Duration;
+
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
@@ -27,6 +31,45 @@ use log::LevelFilter;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{new_uninit, new_uninit_rust};
+
+#[test]
+fn kill_running_vm() {
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+    let interrupt_handle = sbox1.interrupt_handle();
+    assert!(!interrupt_handle.dropped()); // not yet dropped
+    assert!(!interrupt_handle.kill()); // nothing to kill since vcpu is not running
+
+    // kill vm after 1 second
+    let thread = thread::spawn(move || {
+        thread::sleep(Duration::from_secs(1));
+        assert!(interrupt_handle.kill());
+        barrier2.wait(); // wait here until main thread has returned from the interrupted guest call
+        barrier2.wait(); // wait here until main thread has dropped the sandbox
+        assert!(interrupt_handle.dropped());
+    });
+
+    let res = sbox1
+        .call_guest_function_by_name("Spin", ReturnType::Int, None)
+        .unwrap_err();
+    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+
+    barrier.wait();
+    // Make sure we can still call guest functions after the VM was interrupted
+    sbox1
+        .call_guest_function_by_name(
+            "Echo",
+            ReturnType::Int,
+            Some(vec![ParameterValue::String("hello\n".to_string())]),
+        )
+        .unwrap();
+
+    // drop vm to make sure other thread can detect it
+    drop(sbox1);
+    barrier.wait();
+    thread.join().expect("Thread should finish");
+}
 
 #[test]
 fn print_four_args_c_guest() {

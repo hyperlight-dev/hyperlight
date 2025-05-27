@@ -25,6 +25,8 @@ extern crate mshv_bindings3 as mshv_bindings;
 extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use log::{error, LevelFilter};
 #[cfg(mshv2)]
@@ -56,10 +58,10 @@ use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebu
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
-    Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
-    CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+    Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE,
+    CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX,
+    EFER_SCE,
 };
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -286,13 +288,14 @@ pub(crate) fn is_hypervisor_present() -> bool {
 
 /// A Hypervisor driver for HyperV-on-Linux. This hypervisor is often
 /// called the Microsoft Hypervisor (MSHV)
-pub(super) struct HypervLinuxDriver {
+pub(crate) struct HypervLinuxDriver {
     _mshv: Mshv,
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
     entrypoint: u64,
     mem_regions: Vec<MemoryRegion>,
     orig_rsp: GuestPtr,
+    interrupt_handle: Arc<LinuxInterruptHandle>,
 
     #[cfg(gdb)]
     debug: Option<MshvDebug>,
@@ -310,7 +313,7 @@ impl HypervLinuxDriver {
     /// `apply_registers` method to do that, or more likely call
     /// `initialise` to do it for you.
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn new(
+    pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
         entrypoint_ptr: GuestPtr,
         rsp_ptr: GuestPtr,
@@ -390,6 +393,11 @@ impl HypervLinuxDriver {
             mem_regions,
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
+            interrupt_handle: Arc::new(LinuxInterruptHandle {
+                running: AtomicBool::new(false),
+                tid: AtomicU64::new(unsafe { libc::pthread_self() }),
+                dropped: AtomicBool::new(false),
+            }),
 
             #[cfg(gdb)]
             debug,
@@ -461,7 +469,6 @@ impl Hypervisor for HypervLinuxDriver {
         page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
@@ -487,7 +494,6 @@ impl Hypervisor for HypervLinuxDriver {
 
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            hv_handler,
             outb_hdl,
             mem_access_hdl,
             #[cfg(gdb)]
@@ -503,7 +509,6 @@ impl Hypervisor for HypervLinuxDriver {
         dispatch_func_addr: RawPtr,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -527,7 +532,6 @@ impl Hypervisor for HypervLinuxDriver {
         // run
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            hv_handler,
             outb_handle_fn,
             mem_access_fn,
             #[cfg(gdb)]
@@ -577,13 +581,38 @@ impl Hypervisor for HypervLinuxDriver {
         #[cfg(gdb)]
         const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
+        self.interrupt_handle
+            .tid
+            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Relaxed);
+        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
+        // - before we've set the running to true,
+        // Then the signal does not have any effect, because the signal handler is a no-op.
+        self.interrupt_handle.running.store(true, Ordering::Relaxed);
+        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
+        // - after we've set the running to true,
+        // - before we've called `VcpuFd::run()`
+        // Then the individual signal is lost, because the signal is only processed after we've left userspace.
+        // However, for this reason, we keep sending the signal again and again until we see that the atomic `running` is set to false.
         #[cfg(mshv2)]
         let run_result = {
             let hv_message: hv_message = Default::default();
-            &self.vcpu_fd.run(hv_message)
+            self.vcpu_fd.run(hv_message)
         };
         #[cfg(mshv3)]
-        let run_result = &self.vcpu_fd.run();
+        let run_result = self.vcpu_fd.run();
+        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
+        // - after we've called `VcpuFd::run()`
+        // - before we've set the running to false
+        // Then this is fine because the call to `VcpuFd::run()` is already finished,
+        // the signal handler itself is a no-op, and the signals will stop being sent
+        // once we've set the `running` to false.
+        self.interrupt_handle
+            .running
+            .store(false, Ordering::Relaxed);
+        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
+        // - after we've set the running to false,
+        // Then the signal does not have any effect, because the signal handler is a no-op.
+        // This is fine since we are already done with the `VcpuFd::run()` call.
 
         let result = match run_result {
             Ok(m) => match m.header.message_type {
@@ -678,6 +707,10 @@ impl Hypervisor for HypervLinuxDriver {
         self as &mut dyn Hypervisor
     }
 
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+        self.interrupt_handle.clone()
+    }
+
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion] {
         &self.mem_regions
@@ -732,6 +765,7 @@ impl Hypervisor for HypervLinuxDriver {
 impl Drop for HypervLinuxDriver {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     fn drop(&mut self) {
+        self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
         for region in &self.mem_regions {
             let mshv_region: mshv_user_mem_region = region.to_owned().into();
             match self.vm_fd.unmap_user_memory(mshv_region) {

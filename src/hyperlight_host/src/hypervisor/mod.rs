@@ -36,7 +36,7 @@ pub(crate) mod hyperv_windows;
 
 /// GDB debugging support
 #[cfg(gdb)]
-mod gdb;
+pub(crate) mod gdb;
 
 #[cfg(kvm)]
 /// Functionality to manipulate KVM-based virtual machines
@@ -59,6 +59,8 @@ pub(crate) mod crashdump;
 
 use std::fmt::Debug;
 use std::str::FromStr;
+#[cfg(any(kvm, mshv))]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(gdb)]
@@ -179,6 +181,9 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         None
     }
 
+    /// Get InterruptHandle to underlying VM
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
+
     /// Get the logging level to pass to the guest entrypoint
     fn get_max_log_level(&self) -> u32 {
         // Check to see if the RUST_LOG environment variable is set
@@ -218,10 +223,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
 
     /// get a mutable trait object from self
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor;
-
-    /// Get the partition handle for WHP
-    #[cfg(target_os = "windows")]
-    fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion];
@@ -315,84 +316,50 @@ impl VirtualCPU {
     }
 }
 
-#[cfg(all(test, any(target_os = "windows", kvm)))]
-pub(crate) mod tests {
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+/// A trait for handling interrupts to a sandbox's vcpu
+pub trait InterruptHandle: Send + Sync {
+    /// Interrupt the corresponding sandbox's vcpu if it's running.
+    ///
+    /// - If this is called while the vcpu is running, then it will interrupt the vcpu and return `true`.
+    /// - If this is called while the vcpu is not running, then it will do nothing and return `false`.
+    ///
+    /// # Note
+    /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
+    fn kill(&self) -> bool;
 
-    use hyperlight_testing::dummy_guest_as_string;
+    /// Returns true iff the corresponding sandbox has been dropped
+    fn dropped(&self) -> bool;
+}
 
-    #[cfg(gdb)]
-    use super::handlers::DbgMemAccessHandlerWrapper;
-    use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
-    use crate::hypervisor::hypervisor_handler::{
-        HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
-    };
-    use crate::mem::ptr::RawPtr;
-    use crate::sandbox::uninitialized::GuestBinary;
-    use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
-    use crate::{new_error, Result};
+#[cfg(any(kvm, mshv))]
+#[derive(Debug)]
+pub(super) struct LinuxInterruptHandle {
+    /// True when the vcpu is currently running and blocking the thread
+    running: AtomicBool,
+    /// The thread id on which the vcpu was most recently run on or is currently running on
+    tid: AtomicU64,
+    /// Whether the corresponding vm is dropped
+    dropped: AtomicBool,
+}
 
-    pub(crate) fn test_initialise(
-        outb_hdl: OutBHandlerWrapper,
-        mem_access_hdl: MemAccessHandlerWrapper,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
-        if !Path::new(&filename).exists() {
-            return Err(new_error!(
-                "test_initialise: file {} does not exist",
-                filename
-            ));
+#[cfg(any(kvm, mshv))]
+impl InterruptHandle for LinuxInterruptHandle {
+    fn kill(&self) -> bool {
+        let sigrtmin = libc::SIGRTMIN();
+        let mut sent_signal = false;
+
+        while self.running.load(Ordering::Relaxed) {
+            log::info!("Sending signal to kill vcpu thread...");
+            sent_signal = true;
+            unsafe {
+                libc::pthread_kill(self.tid.load(Ordering::Relaxed) as _, sigrtmin);
+            }
+            std::thread::sleep(std::time::Duration::from_micros(50));
         }
 
-        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None)?;
-        let (hshm, gshm) = sandbox.mgr.build();
-        drop(hshm);
-
-        let hv_handler_config = HvHandlerConfig {
-            outb_handler: outb_hdl,
-            mem_access_handler: mem_access_hdl,
-            #[cfg(gdb)]
-            dbg_mem_access_handler: dbg_mem_access_fn,
-            seed: 1234567890,
-            page_size: 4096,
-            peb_addr: RawPtr::from(0x230000),
-            dispatch_function_addr: Arc::new(Mutex::new(None)),
-            max_init_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
-            ),
-            max_exec_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
-            ),
-            max_wait_for_cancellation: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
-            ),
-            max_guest_log_level: None,
-        };
-
-        let mut hv_handler = HypervisorHandler::new(hv_handler_config);
-
-        // call initialise on the hypervisor implementation with specific values
-        // for PEB (process environment block) address, seed and page size.
-        //
-        // these values are not actually used, they're just checked inside
-        // the dummy guest, and if they don't match these values, the dummy
-        // guest issues a write to an invalid memory address, which in turn
-        // fails this test.
-        //
-        // in this test, we're not actually testing whether a guest can issue
-        // memory operations, call functions, etc... - we're just testing
-        // whether we can configure the shared memory region, load a binary
-        // into it, and run the CPU to completion (e.g., a HLT interrupt)
-
-        hv_handler.start_hypervisor_handler(
-            gshm,
-            #[cfg(gdb)]
-            None,
-        )?;
-
-        hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
+        sent_signal
+    }
+    fn dropped(&self) -> bool {
+        self.dropped.load(Ordering::Relaxed)
     }
 }

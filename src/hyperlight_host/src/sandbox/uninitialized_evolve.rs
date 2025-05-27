@@ -14,11 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
-use crate::hypervisor::Hypervisor;
-#[cfg(target_os = "linux")]
-use crate::signal_handlers::setup_signal_handlers;
-use crate::HyperlightError::NoHypervisorFound;
 use std::sync::{Arc, Mutex};
 
 use rand::Rng;
@@ -27,6 +22,8 @@ use tracing::{instrument, Span};
 use super::hypervisor::{get_available_hypervisor, HypervisorType};
 #[cfg(gdb)]
 use super::mem_access::dbg_mem_access_handler_wrapper;
+use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
+use crate::hypervisor::Hypervisor;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -39,6 +36,9 @@ use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 use crate::sandbox_state::sandbox::Sandbox;
+#[cfg(target_os = "linux")]
+use crate::signal_handlers::setup_signal_handlers;
+use crate::HyperlightError::NoHypervisorFound;
 use crate::{log_then_return, new_error, MultiUseSandbox, Result, UninitializedSandbox};
 
 /// The implementation for evolving `UninitializedSandbox`es to
@@ -227,8 +227,9 @@ fn set_up_hypervisor_partition(
 
         #[cfg(target_os = "windows")]
         Some(HypervisorType::Whp) => {
-            use crate::hypervisor::wrappers::HandleWrapper;
             use std::ffi::c_void;
+
+            use crate::hypervisor::wrappers::HandleWrapper;
 
             let mmap_file_handle = mgr
                 .shared_mem
