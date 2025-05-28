@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-common"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "buddy_system_allocator",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-host"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bitflags 2.9.1",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight_guest_capi"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cbindgen",
  "hyperlight-common",
