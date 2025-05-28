@@ -65,7 +65,7 @@ fn init_tracing_subscriber(
     addr: &str,
 ) -> Result<SdkTracerProvider, Box<dyn Error + Send + Sync + 'static>> {
     let exporter = SpanExporter::builder()
-        .with_tonic()
+        .with_http()
         .with_endpoint(addr)
         .build()?;
 
