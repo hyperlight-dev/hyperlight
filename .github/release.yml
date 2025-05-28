@@ -5,7 +5,9 @@ changelog:
     - title: Full Changelog (excl. dependencies)
       labels:
         - "*"
+      exclude:
+        labels:
+          - kind/dependencies
     - title: Full Changelog (dependencies)
       labels:
         - kind/dependencies
-
