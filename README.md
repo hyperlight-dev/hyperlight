@@ -61,7 +61,7 @@ fn main() -> hyperlight_host::Result<()> {
     // the host can call it
     let result: i32 = multi_use_sandbox.call_guest_function_by_name(
         "PrintOutput",
-        (message),
+        message,
     );
 
     assert!(result.is_ok());

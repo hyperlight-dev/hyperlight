@@ -166,8 +166,8 @@ impl MultiUseSandbox {
         Output::from_value(ret?)
     }
 
-    /// This function is kept here for fuzz testing
-    #[doc(hidden)]
+    /// This function is kept here for fuzz testing the parameter and return types
+    #[cfg(feature = "fuzzing")]
     #[instrument(err(Debug), skip(self, args), parent = Span::current())]
     pub fn call_type_erased_guest_function_by_name(
         &mut self,
