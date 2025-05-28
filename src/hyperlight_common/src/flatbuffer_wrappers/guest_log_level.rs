@@ -16,14 +16,13 @@ limitations under the License.
 
 use anyhow::{bail, Error, Result};
 use log::Level;
-use strum::EnumIter;
 #[cfg(feature = "tracing")]
 use tracing::{instrument, Span};
 
 use crate::flatbuffers::hyperlight::generated::LogLevel as FbLogLevel;
 
 #[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug, EnumIter)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum LogLevel {
     Trace = 0,
     Debug = 1,
