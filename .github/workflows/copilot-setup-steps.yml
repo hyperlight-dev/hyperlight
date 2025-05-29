@@ -26,7 +26,7 @@ jobs:
         with:
           components: rustfmt
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.3.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.4.0
         with:
           rust-toolchain: "1.81.0" 
         env:
