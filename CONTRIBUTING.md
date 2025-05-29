@@ -80,26 +80,20 @@ git commit -s -m 'This is my commit message'
 
 **For GPG Signatures:**
 
-GPG signatures verify the identity of the committer. To set up GPG signing:
+GPG signatures verify the identity of the committer. For detailed setup instructions, see GitHub's documentation on [signing commits](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits).
 
-1. Generate a GPG key and configure Git to use it:
+Quick setup:
 
-   ```sh
-   git config --global user.signingkey YOUR_KEY_ID
-   git config --global commit.gpgsign true
-   ```
+```sh
+git config --global user.signingkey YOUR_KEY_ID
+git config --global commit.gpgsign true
+```
 
-2. Sign commits with the `-S` flag (or rely on the automatic signing from the above configuration):
+**For both DCO sign-off and GPG signature in one command:**
 
-   ```sh
-   git commit -S -m 'This is my signed commit message'
-   ```
-
-3. For both DCO sign-off and GPG signature in one command:
-
-   ```sh
-   git commit -S -s -m 'This is my signed and signed-off commit message'
-   ```
+```sh
+git commit -S -s -m 'This is my signed and signed-off commit message'
+```
 
 For detailed instructions on setting up both signature types, see [docs/commit-signing.md](./docs/commit-signing.md).
 
@@ -115,16 +109,6 @@ No worries - You can easily replay your changes, sign them and force push them!
 git checkout <branch-name>
 git commit --amend --no-edit -S -s
 git push --force-with-lease <remote-name> <branch-name>
-```
-
-**For fixing multiple commits:**
-
-```sh
-git rebase -i HEAD~n  # Replace n with the number of commits to fix
-# Change 'pick' to 'edit' for each commit
-# For each commit:
-git commit --amend --no-edit -S -s
-git rebase --continue
 ```
 
 For more detailed instructions on fixing commits, see [docs/commit-signing.md](./docs/commit-signing.md).

@@ -10,7 +10,7 @@ LICENSE_PATTERN="Copyright .* The Hyperlight Authors..*Licensed under the Apache
 
 # Define the full license header for files that need it
 LICENSE_HEADER='/*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025 The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
