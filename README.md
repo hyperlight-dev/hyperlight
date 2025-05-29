@@ -277,11 +277,4 @@ See the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code
 
 [whp]: https://devblogs.microsoft.com/visualstudio/hyper-v-android-emulator-support/#1-enable-hyper-v-and-the-windows-hypervisor-platform
 
-## Development
 
-All commits to this repository require:
-
-1. **GPG Verified Signatures**: Each commit must be cryptographically signed using GPG to verify the committer's identity.
-2. **DCO Sign-offs**: Each commit must include a Developer Certificate of Origin sign-off line.
-
-For details on configuring both requirements, see [docs/commit-signing.md](./docs/commit-signing.md) and the [CONTRIBUTING.md](./CONTRIBUTING.md#developer-certificate-of-origin-signing-your-work) file.

@@ -95,7 +95,7 @@ git config --global commit.gpgsign true
 git commit -S -s -m 'This is my signed and signed-off commit message'
 ```
 
-For detailed instructions on setting up both signature types, see [docs/commit-signing.md](./docs/commit-signing.md).
+For detailed instructions on setting up GPG signing, see [GitHub's documentation on signing commits](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits).
 
 Each Pull Request is checked to ensure all commits contain valid DCO sign-offs and GPG signatures.
 
@@ -111,7 +111,9 @@ git commit --amend --no-edit -S -s
 git push --force-with-lease <remote-name> <branch-name>
 ```
 
-For more detailed instructions on fixing commits, see [docs/commit-signing.md](./docs/commit-signing.md).
+For more detailed instructions on setting up GPG signing, see [GitHub's documentation on signing commits](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits).
+
+*Credit: This doc was cribbed from Dapr.*
 
 ### Rust Analyzer
 
