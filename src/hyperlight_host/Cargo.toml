@@ -21,7 +21,7 @@ bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-
 workspace = true
 
 [dependencies]
-goblin = { version = "0.9" }
+goblin = { version = "0.10" }
 rand = { version = "0.9" }
 cfg-if = { version = "1.0.0" }
 libc = { version = "0.2.172" }
