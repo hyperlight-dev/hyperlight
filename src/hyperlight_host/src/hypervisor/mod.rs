@@ -363,3 +363,76 @@ impl InterruptHandle for LinuxInterruptHandle {
         self.dropped.load(Ordering::Relaxed)
     }
 }
+
+#[cfg(all(test, any(target_os = "windows", kvm)))]
+pub(crate) mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use hyperlight_testing::dummy_guest_as_string;
+
+    use super::handlers::{MemAccessHandler, OutBHandler};
+    #[cfg(gdb)]
+    use crate::hypervisor::DbgMemAccessHandlerCaller;
+    use crate::mem::ptr::RawPtr;
+    use crate::sandbox::uninitialized::GuestBinary;
+    use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
+    use crate::sandbox::UninitializedSandbox;
+    use crate::{is_hypervisor_present, new_error, Result};
+
+    #[cfg(gdb)]
+    struct DbgMemAccessHandler {}
+
+    #[cfg(gdb)]
+    impl DbgMemAccessHandlerCaller for DbgMemAccessHandler {
+        fn read(&mut self, _offset: usize, _data: &mut [u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn write(&mut self, _offset: usize, _data: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_code_offset(&mut self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn test_initialise() -> Result<()> {
+        if !is_hypervisor_present() {
+            return Ok(());
+        }
+
+        let outb_handler: Arc<Mutex<OutBHandler>> = {
+            let func: Box<dyn FnMut(u16, u32) -> Result<()> + Send> =
+                Box::new(|_, _| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(OutBHandler::from(func)))
+        };
+        let mem_access_handler = {
+            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(MemAccessHandler::from(func)))
+        };
+        #[cfg(gdb)]
+        let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
+
+        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
+
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None)?;
+        let (_hshm, mut gshm) = sandbox.mgr.build();
+        let mut vm = set_up_hypervisor_partition(
+            &mut gshm,
+            #[cfg(gdb)]
+            &sandbox.debug_info,
+        )?;
+        vm.initialise(
+            RawPtr::from(0x230000),
+            1234567890,
+            4096,
+            outb_handler,
+            mem_access_handler,
+            None,
+            #[cfg(gdb)]
+            dbg_mem_access_handler,
+        )
+    }
+}
