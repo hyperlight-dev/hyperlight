@@ -4,7 +4,7 @@ This project welcomes contributions. Most contributions require you to signoff o
 the Developer Certificate of Origin (DCO). When you submit a pull request, a DCO-bot will automatically determine
 whether you need to provide signoff for your commit. Please follow the instructions provided by DCO-bot, as pull
 requests cannot be merged until the author(s) have provided signoff to fulfill the DCO requirement.
-You may find more information on the DCO requirements [below](#developer-certificate-of-origin-signing-your-work).
+You may find more information on the DCO requirements [below](#developer-certificate-of-origin-and-gpg-signing).
 
 ## Issues
 
@@ -31,7 +31,7 @@ All contributions come through pull requests. To submit a proposed change, we re
     - Code changes require tests
     - Make sure to run the linters to check and format the code
 4. Update relevant documentation for the change
-5. Commit with [DCO sign-off](#developer-certificate-of-origin-signing-your-work) and open a PR
+5. Commit with [DCO sign-off](#developer-certificate-of-origin-and-gpg-signing) and open a PR
 6. Wait for the CI process to finish and make sure all checks are green
 7. A maintainer of the project will be assigned, and you can expect a review within a few days
 
@@ -39,12 +39,20 @@ All contributions come through pull requests. To submit a proposed change, we re
 
 A good way to communicate before investing too much time is to create a "Work-in-progress" PR and share it with your reviewers. The standard way of doing this is to add a "[WIP]" prefix in your PR's title and open the pull request as a draft.
 
-### Developer Certificate of Origin: Signing your work
+### Developer Certificate of Origin and GPG Signing
 
 #### Every commit needs to be signed
 
+This project requires two types of signatures on all commits:
+
+1. **Developer Certificate of Origin (DCO) Sign-off**: A text attestation that you have the right to submit the code
+2. **GPG Signature**: A cryptographic signature verifying your identity
+
+**For DCO Sign-offs:**
+
 The Developer Certificate of Origin (DCO) is a lightweight way for contributors to certify that they wrote or otherwise have the right to submit the code they are contributing to the project. Here is the full text of the [DCO](https://developercertificate.org/), reformatted for readability:
-```
+
+```text
 By making a contribution to this project, I certify that:
 
     (a) The contribution was created in whole or in part by me and I have the right to submit it under the open source license indicated in the file; or
@@ -70,17 +78,40 @@ Git even has a `-s` command line option to append this automatically to your com
 git commit -s -m 'This is my commit message'
 ```
 
-Each Pull Request is checked  whether or not commits in a Pull Request do contain a valid Signed-off-by line.
+**For GPG Signatures:**
 
-#### I didn't sign my commit, now what?!
+GPG signatures verify the identity of the committer. For detailed setup instructions, see GitHub's documentation on [signing commits](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits).
+
+Quick setup:
+
+```sh
+git config --global user.signingkey YOUR_KEY_ID
+git config --global commit.gpgsign true
+```
+
+**For both DCO sign-off and GPG signature in one command:**
+
+```sh
+git commit -S -s -m 'This is my signed and signed-off commit message'
+```
+
+For detailed instructions on setting up GPG signing, see [GitHub's documentation on signing commits](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits).
+
+Each Pull Request is checked to ensure all commits contain valid DCO sign-offs and GPG signatures.
+
+#### I didn't sign my commit, now what?
 
 No worries - You can easily replay your changes, sign them and force push them!
 
+**For adding both DCO sign-off and GPG signature:**
+
 ```sh
 git checkout <branch-name>
-git commit --amend --no-edit --signoff
+git commit --amend --no-edit -S -s
 git push --force-with-lease <remote-name> <branch-name>
 ```
+
+For more detailed instructions on setting up GPG signing, see [GitHub's documentation on signing commits](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits).
 
 *Credit: This doc was cribbed from Dapr.*
 
