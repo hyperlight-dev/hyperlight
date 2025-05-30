@@ -73,7 +73,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Check License Headers
-      run: just check-license-headers
+      run: ./dev/check-license-headers.sh
 
   # Gate PR merges on this specific "join-job" which requires all other
   # jobs to run first. We need this job since we cannot gate on particular jobs
