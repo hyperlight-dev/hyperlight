@@ -28,14 +28,6 @@ pub trait OutBHandlerCaller: Sync + Send {
     fn call(&mut self, port: u16, payload: u32) -> Result<()>;
 }
 
-/// A convenient type representing a common way `OutBHandler` implementations
-/// are passed as parameters to functions
-///
-/// Note: This needs to be wrapped in a Mutex to be able to grab a mutable
-/// reference to the underlying data (i.e., handle_outb in `Sandbox` takes
-/// a &mut self).
-pub type OutBHandlerWrapper = Arc<Mutex<dyn OutBHandlerCaller>>;
-
 pub(crate) type OutBHandlerFunction = Box<dyn FnMut(u16, u32) -> Result<()> + Send>;
 
 /// A `OutBHandler` implementation using a `OutBHandlerFunction`
