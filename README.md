@@ -276,5 +276,3 @@ See the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code
 [kvm]: https://help.ubuntu.com/community/KVM/Installation
 
 [whp]: https://devblogs.microsoft.com/visualstudio/hyper-v-android-emulator-support/#1-enable-hyper-v-and-the-windows-hypervisor-platform
-
-
