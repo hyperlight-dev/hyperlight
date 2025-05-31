@@ -109,6 +109,7 @@ impl HypervWindowsDriver {
             mem_regions,
             interrupt_handle: Arc::new(WindowsInterruptHandle {
                 running: AtomicBool::new(false),
+                cancel_requested: AtomicBool::new(false),
                 partition_handle,
                 dropped: AtomicBool::new(false),
             }),
@@ -409,7 +410,25 @@ impl Hypervisor for HypervWindowsDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn run(&mut self) -> Result<super::HyperlightExit> {
         self.interrupt_handle.running.store(true, Ordering::Relaxed);
-        let exit_context: WHV_RUN_VP_EXIT_CONTEXT = self.processor.run()?;
+
+        // Don't run the vcpu is `cancel_requested` is true
+        let exit_context = if self
+            .interrupt_handle
+            .cancel_requested
+            .load(Ordering::Relaxed)
+        {
+            WHV_RUN_VP_EXIT_CONTEXT {
+                ExitReason: WHV_RUN_VP_EXIT_REASON(8193i32), // WHvRunVpExitReasonCanceled
+                VpContext: Default::default(),
+                Anonymous: Default::default(),
+                Reserved: Default::default(),
+            }
+        } else {
+            self.processor.run()?
+        };
+        self.interrupt_handle
+            .cancel_requested
+            .store(false, Ordering::Relaxed);
         self.interrupt_handle
             .running
             .store(false, Ordering::Relaxed);
@@ -510,12 +529,14 @@ impl Drop for HypervWindowsDriver {
 pub struct WindowsInterruptHandle {
     // `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running, which is the reason we need this flag.
     running: AtomicBool,
+    cancel_requested: AtomicBool,
     partition_handle: WHV_PARTITION_HANDLE,
     dropped: AtomicBool,
 }
 
 impl InterruptHandle for WindowsInterruptHandle {
     fn kill(&self) -> bool {
+        self.cancel_requested.store(true, Ordering::Relaxed);
         self.running.load(Ordering::Relaxed)
             && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }

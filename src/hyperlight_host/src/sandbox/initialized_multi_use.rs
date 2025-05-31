@@ -301,16 +301,15 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::function_types::{
         ParameterValue, ReturnType, ReturnValue,
     };
-    use hyperlight_testing::{callback_guest_as_string, simple_guest_as_string};
+    use hyperlight_testing::simple_guest_as_string;
 
     use crate::func::call_ctx::MultiUseGuestCallContext;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox};
     use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
-    use crate::{
-        is_hypervisor_present, GuestBinary, HyperlightError, MultiUseSandbox, Result,
-        UninitializedSandbox,
-    };
+    #[cfg(target_os = "linux")]
+    use crate::Result;
+    use crate::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 
     // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
     // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
@@ -396,10 +395,6 @@ mod tests {
     #[ignore]
     #[cfg(target_os = "linux")]
     fn test_violate_seccomp_filters() -> Result<()> {
-        if !is_hypervisor_present() {
-            panic!("Panic on create_multi_use_sandbox because no hypervisor is present");
-        }
-
         fn make_get_pid_syscall() -> Result<u64> {
             let pid = unsafe { libc::syscall(libc::SYS_getpid) };
             Ok(pid as u64)
@@ -464,54 +459,6 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    // This test is to capture the case where the guest execution is running a host function when cancelled and that host function
-    // is never going to return.
-    // The host function that is called will end after 5 seconds, but by this time the cancellation will have given up
-    // (using default timeout settings)  , so this tests looks for the error "Failed to cancel guest execution".
-    #[test]
-    #[ignore = "We cannot cancel host functions. TODO reenable this test when it's enabled"]
-    fn test_terminate_vcpu_calling_host_spinning_cpu() {
-        // This test relies upon a Hypervisor being present so for now
-        // we will skip it if there isn't one.
-        if !is_hypervisor_present() {
-            println!("Skipping test_call_guest_function_by_name because no hypervisor is present");
-            return;
-        }
-        let mut usbox = UninitializedSandbox::new(
-            GuestBinary::FilePath(callback_guest_as_string().expect("Guest Binary Missing")),
-            None,
-        )
-        .unwrap();
-
-        // Make this host call run for 5 seconds
-
-        fn spin() -> Result<()> {
-            thread::sleep(std::time::Duration::from_secs(5));
-            Ok(())
-        }
-
-        #[cfg(any(target_os = "windows", not(feature = "seccomp")))]
-        usbox.register("Spin", spin).unwrap();
-
-        #[cfg(all(target_os = "linux", feature = "seccomp"))]
-        usbox
-            .register_with_extra_allowed_syscalls("Spin", spin, vec![libc::SYS_clock_nanosleep])
-            .unwrap();
-
-        let sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
-        let mut ctx = sandbox.new_call_context();
-        let result = ctx.call("CallHostSpin", ReturnType::Void, None);
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            HyperlightError::GuestExecutionHungOnHostFunctionCall() => {}
-            e => panic!(
-                "Expected HyperlightError::GuestExecutionHungOnHostFunctionCall but got {:?}",
-                e
-            ),
-        }
     }
 
     #[test]

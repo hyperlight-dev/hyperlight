@@ -350,6 +350,7 @@ impl KVMDriver {
             mem_regions,
             interrupt_handle: Arc::new(LinuxInterruptHandle {
                 running: AtomicBool::new(false),
+                cancel_requested: AtomicBool::new(false),
                 tid: AtomicU64::new(unsafe { libc::pthread_self() }),
                 dropped: AtomicBool::new(false),
             }),
@@ -519,29 +520,47 @@ impl Hypervisor for KVMDriver {
         self.interrupt_handle
             .tid
             .store(unsafe { libc::pthread_self() as u64 }, Ordering::Relaxed);
-        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
-        // - before we've set the running to true,
-        // Then the signal does not have any effect, because the signal handler is a no-op.
+        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+        // Then this is fine since `cancel_requested` is set to true, so we will skip the `VcpuFd::run()` call
         self.interrupt_handle.running.store(true, Ordering::Relaxed);
-        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
-        // - after we've set the running to true,
-        // - before we've called `VcpuFd::run()`
-        // Then the individual signal is lost, because the signal is only processed after we've left userspace.
-        // However, for this reason, we keep sending the signal again and again until we see that the atomic `running` is set to false.
-        let exit_reason = self.vcpu_fd.run();
-        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
-        // - after we've called `VcpuFd::run()`
-        // - before we've set the running to false
-        // Then this is fine because the call to `VcpuFd::run()` is already finished,
-        // the signal handler itself is a no-op, and the signals will stop being sent
-        // once we've set the `running` to false.
+        // Don't run the vcpu is `cancel_requested` is true
+        //
+        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+        // Then this is fine since `cancel_requested` is set to true, so we will skip the `VcpuFd::run()` call
+        let exit_reason = if self
+            .interrupt_handle
+            .cancel_requested
+            .load(Ordering::Relaxed)
+        {
+            Err(kvm_ioctls::Error::new(libc::EINTR))
+        } else {
+            // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+            // Then the vcpu will run, but we will keep sending signals to this thread
+            // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
+            // return either normally with an exit reason, or from being "kicked" by out signal handler, with an EINTR error,
+            // both of which are fine.
+            self.vcpu_fd.run()
+        };
+        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+        // Then signals will be sent to this thread until `running` is set to false.
+        // This is fine since the signal handler is a no-op.
+        #[allow(unused_variables)]
+        // The variable is only used when `cfg(not(gdb))`, but the flag needs to be reset always anyway
+        let cancel_requested = self
+            .interrupt_handle
+            .cancel_requested
+            .swap(false, Ordering::Relaxed);
+        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+        // Then `cancel_requested` will be set to true again, which will cancel the **next vcpu run**.
+        // Additionally signals will be sent to this thread until `running` is set to false.
+        // This is fine since the signal handler is a no-op.
         self.interrupt_handle
             .running
             .store(false, Ordering::Relaxed);
-        // Note: if a `InterruptHandle::kill()` signal is delivered to this thread **here**
-        // - after we've set the running to false,
-        // Then the signal does not have any effect, because the signal handler is a no-op.
-        // This is fine since we are already done with the `VcpuFd::run()` call.
+        // At this point, `running` is false so no more signals will be sent to this thread,
+        // but we may still receive async signals that were sent before this point.
+        // To prevent those signals from interrupting subsequent calls to `run()` (on other vms!),
+        // we make sure to check `cancel_requested` before cancelling (see `libc::EINTR` match-arm below).
         let result = match exit_reason {
             Ok(VcpuExit::Hlt) => {
                 crate::debug!("KVM - Halt Details : {:#?}", &self);
@@ -593,7 +612,15 @@ impl Hypervisor for KVMDriver {
                 libc::EINTR => HyperlightExit::Debug(VcpuStopReason::Interrupt),
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
                 #[cfg(not(gdb))]
-                libc::EINTR => HyperlightExit::Cancelled(),
+                libc::EINTR => {
+                    // If cancellation was not requested for this specific vm, the vcpu was interrupted because of stale signal
+                    // that was meant to be delivered to a previous/other vcpu on this same thread, so let's ignore it
+                    if !cancel_requested {
+                        HyperlightExit::Retry()
+                    } else {
+                        HyperlightExit::Cancelled()
+                    }
+                }
                 libc::EAGAIN => HyperlightExit::Retry(),
                 _ => {
                     crate::debug!("KVM Error -Details: Address: {} \n {:#?}", e, &self);

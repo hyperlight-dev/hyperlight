@@ -17,6 +17,8 @@ limitations under the License.
 #[cfg(feature = "seccomp")]
 pub mod sigsys_signal_handler;
 
+pub(crate) const INTERRUPT_VCPU_SIGRTMIN_OFFSET: i32 = 0;
+
 pub(crate) fn setup_signal_handlers() -> crate::Result<()> {
     // This is unsafe because signal handlers only allow a very restrictive set of
     // functions (i.e., async-signal-safe functions) to be executed inside them.
@@ -45,7 +47,10 @@ pub(crate) fn setup_signal_handlers() -> crate::Result<()> {
             original_hook(panic_info);
         }));
     }
-    vmm_sys_util::signal::register_signal_handler(libc::SIGRTMIN(), vm_kill_signal)?;
+    vmm_sys_util::signal::register_signal_handler(
+        libc::SIGRTMIN() + INTERRUPT_VCPU_SIGRTMIN_OFFSET,
+        vm_kill_signal,
+    )?;
 
     // Note: For libraries registering signal handlers, it's important to keep in mind that
     // the user of the library could have their own signal handlers that we don't want to
