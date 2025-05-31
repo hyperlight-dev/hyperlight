@@ -122,22 +122,6 @@ pub enum HyperlightError {
     #[error("HostFunction {0} was not found")]
     HostFunctionNotFound(String),
 
-    /// An attempt to communicate with or from the Hypervisor Handler thread failed
-    /// (i.e., usually a failure call to `.send()` or `.recv()` on a message passing
-    /// channel)
-    #[error("Communication failure with the Hypervisor Handler thread")]
-    HypervisorHandlerCommunicationFailure(),
-
-    /// An attempt to cancel a Hypervisor Handler execution failed.
-    /// See `terminate_hypervisor_handler_execution_and_reinitialise`
-    /// for more details.
-    #[error("Hypervisor Handler execution cancel attempt on a finished execution")]
-    HypervisorHandlerExecutionCancelAttemptOnFinishedExecution(),
-
-    /// A Receive for a Hypervisor Handler Message Timedout
-    #[error("Hypervisor Handler Message Receive Timedout")]
-    HypervisorHandlerMessageReceiveTimedout(),
-
     /// Reading Writing or Seeking data failed.
     #[error("Reading Writing or Seeking data failed {0:?}")]
     IOError(#[from] std::io::Error),

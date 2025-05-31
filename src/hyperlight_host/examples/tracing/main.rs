@@ -117,8 +117,18 @@ fn run_example() -> Result<()> {
     let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
 
     let mut multiuse_sandbox = usandbox.evolve(no_op)?;
+    let interrupt_handle = multiuse_sandbox.interrupt_handle();
 
     // Call a function that gets cancelled by the host function 5 times to generate some log entries.
+    const NUM_CALLS: i32 = 5;
+    let thread = std::thread::spawn(move || {
+        for _ in 0..NUM_CALLS {
+            // Sleep for a short time to allow the guest function to run.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Cancel the host function call.
+            interrupt_handle.kill();
+        }
+    });
 
     for i in 0..5 {
         let id = Uuid::new_v4();
@@ -143,6 +153,7 @@ fn run_example() -> Result<()> {
         let result = join_handle.join();
         assert!(result.is_ok());
     }
+    thread.join().unwrap();
 
     Ok(())
 }
