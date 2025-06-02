@@ -45,7 +45,7 @@ pub(crate) fn set_error(error_code: ErrorCode, message: &str) {
 /// # Safety
 /// TODO
 /// cbindgen:ignore
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_camel_case_types)]
 pub unsafe extern "C" fn setError(code: u64, message: *const c_char) {
     let error_code = ErrorCode::from(code);

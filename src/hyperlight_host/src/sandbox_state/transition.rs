@@ -100,7 +100,6 @@ impl<Cur: Sandbox, Next: Sandbox> TransitionMetadata<Cur, Next> for Noop<Cur, Ne
 /// };
 /// let mutating_cb = MultiUseContextCallback::from(my_cb_fn);
 /// ```
-
 pub struct MultiUseContextCallback<'func, Cur: Sandbox, F>
 where
     F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()> + 'func,
@@ -110,14 +109,14 @@ where
     cb: F,
 }
 
-impl<'a, Cur: Sandbox, Next: Sandbox, F> TransitionMetadata<Cur, Next>
-    for MultiUseContextCallback<'a, Cur, F>
+impl<Cur: Sandbox, Next: Sandbox, F> TransitionMetadata<Cur, Next>
+    for MultiUseContextCallback<'_, Cur, F>
 where
     F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()>,
 {
 }
 
-impl<'a, Cur: Sandbox, F> MultiUseContextCallback<'a, Cur, F>
+impl<Cur: Sandbox, F> MultiUseContextCallback<'_, Cur, F>
 where
     F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()>,
 {

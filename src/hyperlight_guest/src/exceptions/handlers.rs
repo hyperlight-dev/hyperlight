@@ -23,7 +23,7 @@ use hyperlight_common::outb::Exception;
 use crate::entrypoint::abort_with_code_and_message;
 
 /// Exception handler
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn hl_exception_handler(
     stack_pointer: u64,
     exception_number: u64,

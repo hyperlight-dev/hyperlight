@@ -124,8 +124,10 @@ impl<'a> flatbuffers::Follow<'a> for ErrorCode {
     type Inner = Self;
     #[inline]
     unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-        let b = flatbuffers::read_scalar_at::<u64>(buf, loc);
-        Self(b)
+        unsafe {
+            let b = flatbuffers::read_scalar_at::<u64>(buf, loc);
+            Self(b)
+        }
     }
 }
 
@@ -133,7 +135,9 @@ impl flatbuffers::Push for ErrorCode {
     type Output = ErrorCode;
     #[inline]
     unsafe fn push(&self, dst: &mut [u8], _written_len: usize) {
-        flatbuffers::emplace_scalar::<u64>(dst, self.0);
+        unsafe {
+            flatbuffers::emplace_scalar::<u64>(dst, self.0);
+        }
     }
 }
 

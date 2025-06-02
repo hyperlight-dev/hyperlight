@@ -73,25 +73,27 @@ struct GdtPointer {
 
 /// Load the GDT
 pub unsafe fn load_gdt() {
-    let gdt_ptr = GdtPointer {
-        size: (core::mem::size_of::<[GdtEntry; 3]>() - 1) as u16,
-        base: addr_of!(GDT) as *const _ as u64,
-    };
+    unsafe {
+        let gdt_ptr = GdtPointer {
+            size: (core::mem::size_of::<[GdtEntry; 3]>() - 1) as u16,
+            base: addr_of!(GDT) as *const _ as u64,
+        };
 
-    asm!(
-    "lgdt [{0}]",
-    "mov ax, 0x10",        // Load data segment registers
-    "mov ds, ax",
-    "mov es, ax",
-    "mov fs, ax",
-    "mov gs, ax",
-    "mov ss, ax",
-    "push 0x08",            // Push CS (kernel code segment)
-    "lea rax, [2f + rip]",  // Load the next instruction's address
-    "push rax",             // Push address onto stack
-    "retfq",                // Far return to update CS
-    "2:",                   // Label for continued execution
-    in(reg) &gdt_ptr,
-    options(nostack, preserves_flags)
-    );
+        asm!(
+        "lgdt [{0}]",
+        "mov ax, 0x10",        // Load data segment registers
+        "mov ds, ax",
+        "mov es, ax",
+        "mov fs, ax",
+        "mov gs, ax",
+        "mov ss, ax",
+        "push 0x08",            // Push CS (kernel code segment)
+        "lea rax, [2f + rip]",  // Load the next instruction's address
+        "push rax",             // Push address onto stack
+        "retfq",                // Far return to update CS
+        "2:",                   // Label for continued execution
+        in(reg) &gdt_ptr,
+        options(nostack, preserves_flags)
+        );
+    }
 }

@@ -16,7 +16,7 @@ env:
   USER: vscode
   GROUP: vscode
   LLVM_VERSION: 17
-  RUST_TOOLCHAIN_DEFAULT: 1.81.0
+  RUST_TOOLCHAIN_DEFAULT: 1.85
   RUST_TOOLCHAIN_FILE: rust-toolchain.toml
 
 # There is a single job in this workflow. It's configured to run on the latest available version of Ubuntu.

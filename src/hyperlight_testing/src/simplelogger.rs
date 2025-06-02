@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
+#![allow(static_mut_refs)]
 // this is a non threadsafe logger for testing purposes, to test the log messages emitted by the guest.
 // it will only log messages from the hyperlight_guest target. It will not log messages from other targets.
 // this target is only used when handling an outb log request from the guest, so this logger will only capture those messages.

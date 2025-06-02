@@ -59,10 +59,9 @@ fn main() -> hyperlight_host::Result<()> {
     let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
     // in order to call a function it first must be defined in the guest and exposed so that 
     // the host can call it
-    let result = multi_use_sandbox.call_guest_function_by_name(
+    let result: i32 = multi_use_sandbox.call_guest_function_by_name(
         "PrintOutput",
-        ReturnType::Int,
-        Some(vec![ParameterValue::String(message.clone())]),
+        message,
     );
 
     assert!(result.is_ok());
@@ -175,7 +174,7 @@ After having an environment with a hypervisor setup, running the example has the
 
 1. On Linux or WSL, you'll most likely need build essential. For Ubuntu, run `sudo apt install build-essential`. For
    Azure Linux, run `sudo dnf install build-essential`.
-2. [Rust](https://www.rust-lang.org/tools/install). Install toolchain v1.81 or later.
+2. [Rust](https://www.rust-lang.org/tools/install). Install toolchain v1.85 or later.
 
    Also, install the `x86_64-unknown-none` target, it is needed to build the test
    guest binaries.

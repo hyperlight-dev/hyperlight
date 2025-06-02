@@ -57,6 +57,8 @@ fn syscalls_allowlist() -> Result<Vec<(i64, Vec<SeccompRule>)>> {
         // `sched_yield` is needed for many synchronization primitives that may be invoked
         // on the host function worker thread
         (libc::SYS_sched_yield, vec![]),
+        // `mprotect` is needed by malloc during memory allocation
+        (libc::SYS_mprotect, vec![]),
     ])
 }
 

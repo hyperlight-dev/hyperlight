@@ -2,7 +2,6 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use hyperlight_host::func::{ParameterValue, ReturnType, ReturnValue};
 use hyperlight_host::sandbox::uninitialized::GuestBinary;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -28,22 +27,14 @@ fuzz_target!(
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();
     },
 
-    |data: ParameterValue| -> Corpus {
-        // only interested in String types
-        if !matches!(data, ParameterValue::String(_)) {
-            return Corpus::Reject;
-        }
-
+    |data: String| -> Corpus {
         let mut sandbox = SANDBOX.get().unwrap().lock().unwrap();
-        let res = sandbox.call_guest_function_by_name(
+        let len: i32 = sandbox.call_guest_function_by_name::<i32>(
             "PrintOutput",
-            ReturnType::Int,
-            Some(vec![data.clone()]),
-        );
-        match res {
-            Ok(ReturnValue::Int(len)) => assert!(len >= 0),
-            _ => panic!("Unexpected return value: {:?}", res),
-        }
+            data,
+        )
+        .expect("Unexpected return value");
+        assert!(len >= 0);
 
         Corpus::Keep
 });

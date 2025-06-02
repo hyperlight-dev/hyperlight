@@ -104,9 +104,9 @@ fn cargo_main() {
         }
 
         if cfg!(windows) {
-            env::set_var("AR_x86_64_unknown_none", "llvm-ar");
+            unsafe { env::set_var("AR_x86_64_unknown_none", "llvm-ar") };
         } else {
-            env::set_var("AR_x86_64_pc_windows_msvc", "llvm-lib");
+            unsafe { env::set_var("AR_x86_64_pc_windows_msvc", "llvm-lib") };
         }
 
         cfg.compile("hyperlight_guest");

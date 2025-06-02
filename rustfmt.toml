@@ -4,3 +4,4 @@ group_imports = "StdExternalCrate" # create three groups for std, external and l
 # Merge imports from the same module
 # See: https://rust-lang.github.io/rustfmt/?version=v1.4.38&search=#imports_granularity
 imports_granularity = "Module"
+style_edition = "2021"

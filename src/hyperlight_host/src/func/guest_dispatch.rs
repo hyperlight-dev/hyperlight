@@ -33,19 +33,19 @@ use crate::{HyperlightError, Result};
     parent = Span::current(),
     level = "Trace"
 )]
-pub(crate) fn call_function_on_guest<WrapperGetterT: WrapperGetter>(
-    wrapper_getter: &mut WrapperGetterT,
+pub(crate) fn call_function_on_guest(
+    wrapper_getter: &mut impl WrapperGetter,
     function_name: &str,
-    return_type: ReturnType,
-    args: Option<Vec<ParameterValue>>,
+    ret_type: ReturnType,
+    args: Vec<ParameterValue>,
 ) -> Result<ReturnValue> {
     let mut timedout = false;
 
     let fc = FunctionCall::new(
         function_name.to_string(),
-        args,
+        Some(args),
         FunctionCallType::Guest,
-        return_type,
+        ret_type,
     );
 
     let buffer: Vec<u8> = fc
@@ -83,7 +83,7 @@ pub(crate) fn call_function_on_guest<WrapperGetterT: WrapperGetter>(
     mem_mgr.check_stack_guard()?; // <- wrapper around mem_mgr `check_for_stack_guard`
     check_for_guest_error(mem_mgr)?;
 
-    mem_mgr
+    let ret = mem_mgr
         .as_mut()
         .get_guest_function_call_result()
         .map_err(|e| {
@@ -100,7 +100,9 @@ pub(crate) fn call_function_on_guest<WrapperGetterT: WrapperGetter>(
             } else {
                 e
             }
-        })
+        })?;
+
+    Ok(ret)
 }
 
 #[cfg(test)]
@@ -110,7 +112,6 @@ mod tests {
 
     use hyperlight_testing::{callback_guest_as_string, simple_guest_as_string};
 
-    use super::*;
     use crate::func::call_ctx::MultiUseGuestCallContext;
     use crate::sandbox::is_hypervisor_present;
     use crate::sandbox::uninitialized::GuestBinary;
@@ -161,8 +162,7 @@ mod tests {
 
             let mut sbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
 
-            let res =
-                sbox.call_guest_function_by_name("ViolateSeccompFilters", ReturnType::ULong, None);
+            let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
             #[cfg(feature = "seccomp")]
             match res {
@@ -198,8 +198,7 @@ mod tests {
 
             let mut sbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
 
-            let res =
-                sbox.call_guest_function_by_name("ViolateSeccompFilters", ReturnType::ULong, None);
+            let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
             match res {
                 Ok(_) => {}
@@ -311,15 +310,9 @@ mod tests {
         let msg = "Hello, World!!\n".to_string();
         let len = msg.len() as i32;
         let mut ctx = mu_sbox.new_call_context();
-        let result = ctx
-            .call(
-                "PrintOutput",
-                ReturnType::Int,
-                Some(vec![ParameterValue::String(msg.clone())]),
-            )
-            .unwrap();
+        let result: i32 = ctx.call("PrintOutput", msg).unwrap();
 
-        assert_eq!(result, ReturnValue::Int(len));
+        assert_eq!(result, len);
     }
 
     fn call_guest_function_by_name_hv() {
@@ -353,7 +346,7 @@ mod tests {
         )?;
         let sandbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
         let mut ctx = sandbox.new_call_context();
-        let result = ctx.call("Spin", ReturnType::Void, None);
+        let result: Result<()> = ctx.call("Spin", ());
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -417,7 +410,7 @@ mod tests {
 
         let sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
         let mut ctx = sandbox.new_call_context();
-        let result = ctx.call("CallHostSpin", ReturnType::Void, None);
+        let result: Result<()> = ctx.call("CallHostSpin", ());
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -439,11 +432,7 @@ mod tests {
 
         let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
 
-        let res = multi_use_sandbox.call_guest_function_by_name(
-            "TriggerException",
-            ReturnType::Void,
-            None,
-        );
+        let res: Result<()> = multi_use_sandbox.call_guest_function_by_name("TriggerException", ());
 
         assert!(res.is_err());
 

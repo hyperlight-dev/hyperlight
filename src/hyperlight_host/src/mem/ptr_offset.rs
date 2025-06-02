@@ -201,10 +201,9 @@ impl Sub<Offset> for u64 {
 impl PartialEq<usize> for Offset {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn eq(&self, other: &usize) -> bool {
-        if let Ok(offset_usize) = usize::try_from(self) {
-            offset_usize == *other
-        } else {
-            false
+        match usize::try_from(self) {
+            Ok(offset_usize) => offset_usize == *other,
+            _ => false,
         }
     }
 }

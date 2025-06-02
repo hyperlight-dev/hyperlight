@@ -85,7 +85,6 @@ pub(crate) fn maybe_time_and_emit_host_call<T, F: FnOnce() -> T>(
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
     use hyperlight_testing::simple_guest_as_string;
     use metrics::Key;
     use metrics_util::CompositeKey;
@@ -116,15 +115,11 @@ mod tests {
             let mut multi = uninit.evolve(Noop::default()).unwrap();
 
             multi
-                .call_guest_function_by_name(
-                    "PrintOutput",
-                    ReturnType::Int,
-                    Some(vec![ParameterValue::String("Hello".to_string())]),
-                )
+                .call_guest_function_by_name::<i32>("PrintOutput", "Hello".to_string())
                 .unwrap();
 
             multi
-                .call_guest_function_by_name("Spin", ReturnType::Int, None)
+                .call_guest_function_by_name::<i32>("Spin", ())
                 .unwrap_err();
 
             snapshotter.snapshot()
@@ -152,7 +147,7 @@ mod tests {
                 assert!(
                     matches!(
                         histogram_value,
-                        metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1
+                        metrics_util::debugging::DebugValue::Histogram(histogram) if histogram.len() == 1
                     ),
                     "Histogram metric does not match expected value"
                 );
@@ -169,7 +164,7 @@ mod tests {
                 assert!(
                     matches!(
                         histogram_value,
-                        metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1
+                        metrics_util::debugging::DebugValue::Histogram(histogram) if histogram.len() == 1
                     ),
                     "Histogram metric does not match expected value"
                 );
@@ -196,7 +191,7 @@ mod tests {
                 assert!(
                     matches!(
                         histogram_value,
-                        metrics_util::debugging::DebugValue::Histogram(ref histogram) if histogram.len() == 1
+                        metrics_util::debugging::DebugValue::Histogram(histogram) if histogram.len() == 1
                     ),
                     "Histogram metric does not match expected value"
                 );

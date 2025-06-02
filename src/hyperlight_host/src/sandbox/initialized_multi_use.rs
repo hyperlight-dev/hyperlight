@@ -25,6 +25,7 @@ use super::host_funcs::FunctionRegistry;
 use super::{MemMgrWrapper, WrapperGetter};
 use crate::func::call_ctx::MultiUseGuestCallContext;
 use crate::func::guest_dispatch::call_function_on_guest;
+use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
@@ -155,15 +156,28 @@ impl MultiUseSandbox {
 
     /// Call a guest function by name, with the given return type and arguments.
     #[instrument(err(Debug), skip(self, args), parent = Span::current())]
-    pub fn call_guest_function_by_name(
+    pub fn call_guest_function_by_name<Output: SupportedReturnType>(
         &mut self,
         func_name: &str,
-        func_ret_type: ReturnType,
-        args: Option<Vec<ParameterValue>>,
-    ) -> Result<ReturnValue> {
-        let res = call_function_on_guest(self, func_name, func_ret_type, args);
+        args: impl ParameterTuple,
+    ) -> Result<Output> {
+        let ret = call_function_on_guest(self, func_name, Output::TYPE, args.into_value());
         self.restore_state()?;
-        res
+        Output::from_value(ret?)
+    }
+
+    /// This function is kept here for fuzz testing the parameter and return types
+    #[cfg(feature = "fuzzing")]
+    #[instrument(err(Debug), skip(self, args), parent = Span::current())]
+    pub fn call_type_erased_guest_function_by_name(
+        &mut self,
+        func_name: &str,
+        ret_type: ReturnType,
+        args: Vec<ParameterValue>,
+    ) -> Result<ReturnValue> {
+        let ret = call_function_on_guest(self, func_name, ret_type, args);
+        self.restore_state()?;
+        ret
     }
 
     /// Restore the Sandbox's state
@@ -255,9 +269,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use hyperlight_common::flatbuffer_wrappers::function_types::{
-        ParameterValue, ReturnType, ReturnValue,
-    };
     use hyperlight_testing::simple_guest_as_string;
 
     use crate::func::call_ctx::MultiUseGuestCallContext;
@@ -284,12 +295,7 @@ mod tests {
         let mut ctx = sbox1.new_call_context();
 
         for _ in 0..1000 {
-            ctx.call(
-                "Echo",
-                ReturnType::String,
-                Some(vec![ParameterValue::String("hello".to_string())]),
-            )
-            .unwrap();
+            ctx.call::<String>("Echo", "hello".to_string()).unwrap();
         }
 
         let sbox2: MultiUseSandbox = {
@@ -302,12 +308,9 @@ mod tests {
         let mut ctx = sbox2.new_call_context();
 
         for i in 0..1000 {
-            ctx.call(
+            ctx.call::<i32>(
                 "PrintUsingPrintf",
-                ReturnType::Int,
-                Some(vec![ParameterValue::String(
-                    format!("Hello World {}\n", i).to_string(),
-                )]),
+                format!("Hello World {}\n", i).to_string(),
             )
             .unwrap();
         }
@@ -325,23 +328,15 @@ mod tests {
         .unwrap();
 
         let func = Box::new(|call_ctx: &mut MultiUseGuestCallContext| {
-            call_ctx.call(
-                "AddToStatic",
-                ReturnType::Int,
-                Some(vec![ParameterValue::Int(5)]),
-            )?;
+            call_ctx.call::<i32>("AddToStatic", 5i32)?;
             Ok(())
         });
         let transition_func = MultiUseContextCallback::from(func);
         let mut sbox2 = sbox1.evolve(transition_func).unwrap();
-        let res = sbox2
-            .call_guest_function_by_name("GetStatic", ReturnType::Int, None)
-            .unwrap();
-        assert_eq!(res, ReturnValue::Int(5));
+        let res: i32 = sbox2.call_guest_function_by_name("GetStatic", ()).unwrap();
+        assert_eq!(res, 5);
         let mut sbox3: MultiUseSandbox = sbox2.devolve(Noop::default()).unwrap();
-        let res = sbox3
-            .call_guest_function_by_name("GetStatic", ReturnType::Int, None)
-            .unwrap();
-        assert_eq!(res, ReturnValue::Int(0));
+        let res: i32 = sbox3.call_guest_function_by_name("GetStatic", ()).unwrap();
+        assert_eq!(res, 0);
     }
 }

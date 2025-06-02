@@ -108,7 +108,9 @@ pub fn outb(port: u16, data: &[u8]) {
 }
 
 pub(crate) unsafe fn out32(port: u16, val: u32) {
-    arch::asm!("out dx, eax", in("dx") port, in("eax") val, options(preserves_flags, nomem, nostack));
+    unsafe {
+        arch::asm!("out dx, eax", in("dx") port, in("eax") val, options(preserves_flags, nomem, nostack));
+    }
 }
 
 /// Prints a message using `OutBAction::DebugPrint`. It transmits bytes of a message

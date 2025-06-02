@@ -34,7 +34,7 @@ pub fn halt() {
     unsafe { asm!("hlt", options(nostack)) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn abort() -> ! {
     abort_with_code(&[0, 0xFF])
 }
@@ -50,30 +50,32 @@ pub fn abort_with_code(code: &[u8]) -> ! {
 /// # Safety
 /// This function is unsafe because it dereferences a raw pointer.
 pub unsafe fn abort_with_code_and_message(code: &[u8], message_ptr: *const c_char) -> ! {
-    // Step 1: Send abort code (typically 1 byte, but `code` allows flexibility)
-    outb(OutBAction::Abort as u16, code);
+    unsafe {
+        // Step 1: Send abort code (typically 1 byte, but `code` allows flexibility)
+        outb(OutBAction::Abort as u16, code);
 
-    // Step 2: Convert the C string to bytes
-    let message_bytes = CStr::from_ptr(message_ptr).to_bytes(); // excludes null terminator
+        // Step 2: Convert the C string to bytes
+        let message_bytes = CStr::from_ptr(message_ptr).to_bytes(); // excludes null terminator
 
-    // Step 3: Send the message itself in chunks
-    outb(OutBAction::Abort as u16, message_bytes);
+        // Step 3: Send the message itself in chunks
+        outb(OutBAction::Abort as u16, message_bytes);
 
-    // Step 4: Send abort terminator to signal completion (e.g., 0xFF)
-    outb(OutBAction::Abort as u16, &[0xFF]);
+        // Step 4: Send abort terminator to signal completion (e.g., 0xFF)
+        outb(OutBAction::Abort as u16, &[0xFF]);
 
-    // This function never returns
-    unreachable!()
+        // This function never returns
+        unreachable!()
+    }
 }
 
-extern "C" {
+unsafe extern "C" {
     fn hyperlight_main();
     fn srand(seed: u32);
 }
 
 static INIT: Once = Once::new();
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
     if peb_address == 0 {
         panic!("PEB address is null");

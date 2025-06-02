@@ -56,9 +56,11 @@ static mut BIGARRAY: [i32; 1024 * 1024] = [0; 1024 * 1024];
 
 fn set_static(_: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
+        #[allow(static_mut_refs)]
         for val in BIGARRAY.iter_mut() {
             *val = 1;
         }
+        #[allow(static_mut_refs)]
         Ok(get_flatbuffer_result(BIGARRAY.len() as i32))
     }
 }

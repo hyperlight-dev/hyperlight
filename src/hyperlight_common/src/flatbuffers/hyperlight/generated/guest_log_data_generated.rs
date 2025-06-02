@@ -21,8 +21,10 @@ impl<'a> flatbuffers::Follow<'a> for GuestLogData<'a> {
     type Inner = GuestLogData<'a>;
     #[inline]
     unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-        Self {
-            _tab: flatbuffers::Table::new(buf, loc),
+        unsafe {
+            Self {
+                _tab: flatbuffers::Table::new(buf, loc),
+            }
         }
     }
 }
@@ -288,14 +290,14 @@ pub fn size_prefixed_root_as_guest_log_data_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `GuestLogData`.
 pub unsafe fn root_as_guest_log_data_unchecked(buf: &[u8]) -> GuestLogData {
-    flatbuffers::root_unchecked::<GuestLogData>(buf)
+    unsafe { flatbuffers::root_unchecked::<GuestLogData>(buf) }
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed GuestLogData and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `GuestLogData`.
 pub unsafe fn size_prefixed_root_as_guest_log_data_unchecked(buf: &[u8]) -> GuestLogData {
-    flatbuffers::size_prefixed_root_unchecked::<GuestLogData>(buf)
+    unsafe { flatbuffers::size_prefixed_root_unchecked::<GuestLogData>(buf) }
 }
 #[inline]
 pub fn finish_guest_log_data_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

@@ -21,8 +21,10 @@ impl<'a> flatbuffers::Follow<'a> for hlvoid<'a> {
     type Inner = hlvoid<'a>;
     #[inline]
     unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-        Self {
-            _tab: flatbuffers::Table::new(buf, loc),
+        unsafe {
+            Self {
+                _tab: flatbuffers::Table::new(buf, loc),
+            }
         }
     }
 }

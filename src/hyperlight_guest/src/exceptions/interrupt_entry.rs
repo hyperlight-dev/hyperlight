@@ -21,7 +21,7 @@ use core::arch::global_asm;
 
 use crate::exceptions::handlers::hl_exception_handler;
 
-extern "C" {
+unsafe extern "C" {
     // Exception handlers
     pub(crate) fn _do_excp0();
     pub(crate) fn _do_excp1();

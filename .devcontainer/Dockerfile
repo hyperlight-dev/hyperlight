@@ -52,7 +52,7 @@ RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhisto
 
 USER $USER
 
-ARG RUST_TOOLCHAIN=1.81.0
+ARG RUST_TOOLCHAIN=1.85
 
 # Install rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \

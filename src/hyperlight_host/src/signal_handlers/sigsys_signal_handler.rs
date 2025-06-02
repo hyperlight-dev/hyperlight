@@ -102,6 +102,7 @@ pub(super) extern "C" fn handle_sigsys(
 }
 
 extern "C-unwind" fn after_syscall_violation() {
+    #[allow(clippy::panic)]
     std::panic::panic_any(crate::HyperlightError::DisallowedSyscall);
 }
 
