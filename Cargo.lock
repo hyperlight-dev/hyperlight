@@ -1239,7 +1239,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-tracy",
  "uuid",
- "vmm-sys-util 0.13.0",
+ "vmm-sys-util",
  "windows 0.61.1",
  "windows-result 0.3.2",
  "windows-sys 0.59.0",
@@ -1558,7 +1558,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4b153a59bb3ca930ff8148655b2ef68c34259a623ae08cf2fb9b570b2e45363"
 dependencies = [
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util",
 ]
 
 [[package]]
@@ -1570,7 +1570,7 @@ dependencies = [
  "bitflags 2.9.1",
  "kvm-bindings",
  "libc",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util",
 ]
 
 [[package]]
@@ -1824,7 +1824,7 @@ checksum = "f416b4432174e5a3f956a7887f4c1a4acea9511d81def67fcb8473293630ab9e"
 dependencies = [
  "libc",
  "num_enum",
- "vmm-sys-util 0.13.0",
+ "vmm-sys-util",
  "zerocopy 0.7.35",
 ]
 
@@ -1836,7 +1836,7 @@ checksum = "1e0cb5031f3243a7459b7c13d960d25420980874eebda816db24ce6077e21d43"
 dependencies = [
  "libc",
  "num_enum",
- "vmm-sys-util 0.13.0",
+ "vmm-sys-util",
  "zerocopy 0.8.24",
 ]
 
@@ -1849,7 +1849,7 @@ dependencies = [
  "libc",
  "mshv-bindings 0.2.1",
  "thiserror 1.0.69",
- "vmm-sys-util 0.13.0",
+ "vmm-sys-util",
 ]
 
 [[package]]
@@ -1861,7 +1861,7 @@ dependencies = [
  "libc",
  "mshv-bindings 0.3.2",
  "thiserror 2.0.12",
- "vmm-sys-util 0.13.0",
+ "vmm-sys-util",
 ]
 
 [[package]]
@@ -3525,16 +3525,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vmm-sys-util"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "945fecc32d9b44069437b7aacd2257556a91a2054ae10e9e7538fe498e442db9"
-dependencies = [
- "bitflags 1.3.2",
- "libc",
-]
 
 [[package]]
 name = "vmm-sys-util"
