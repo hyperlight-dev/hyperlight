@@ -14,6 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![allow(clippy::disallowed_macros)]
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::Duration;
+
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_host::sandbox::SandboxConfiguration;
@@ -21,11 +26,262 @@ use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{SimpleLogger, LOGGER};
-use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
+use hyperlight_testing::{
+    c_simple_guest_as_string, callback_guest_as_string, simple_guest_as_string,
+};
 use log::LevelFilter;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{new_uninit, new_uninit_rust};
+
+// A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
+// we don't re-enter the guest again once the host call is done
+#[test]
+fn interrupt_host_call() {
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+
+    let mut usbox = UninitializedSandbox::new(
+        GuestBinary::FilePath(callback_guest_as_string().expect("Guest Binary Missing")),
+        None,
+    )
+    .unwrap();
+
+    let spin = move || {
+        barrier2.wait();
+        thread::sleep(std::time::Duration::from_secs(1));
+        Ok(())
+    };
+
+    #[cfg(any(target_os = "windows", not(feature = "seccomp")))]
+    usbox.register("Spin", spin).unwrap();
+
+    #[cfg(all(target_os = "linux", feature = "seccomp"))]
+    usbox
+        .register_with_extra_allowed_syscalls("Spin", spin, vec![libc::SYS_clock_nanosleep])
+        .unwrap();
+
+    let mut sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
+    let interrupt_handle = sandbox.interrupt_handle();
+    assert!(!interrupt_handle.dropped()); // not yet dropped
+
+    let thread = thread::spawn({
+        move || {
+            barrier.wait(); // wait for the host function to be entered
+            interrupt_handle.kill(); // send kill once host call is in progress
+        }
+    });
+
+    let result = sandbox
+        .call_guest_function_by_name::<i32>("CallHostSpin", ())
+        .unwrap_err();
+    assert!(matches!(result, HyperlightError::ExecutionCanceledByHost()));
+
+    thread.join().unwrap();
+}
+
+/// Makes sure a running guest call can be interrupted by the host
+#[test]
+fn interrupt_in_progress_guest_call() {
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+    let interrupt_handle = sbox1.interrupt_handle();
+    assert!(!interrupt_handle.dropped()); // not yet dropped
+
+    // kill vm after 1 second
+    let thread = thread::spawn(move || {
+        thread::sleep(Duration::from_secs(1));
+        assert!(interrupt_handle.kill());
+        barrier2.wait(); // wait here until main thread has returned from the interrupted guest call
+        barrier2.wait(); // wait here until main thread has dropped the sandbox
+        assert!(interrupt_handle.dropped());
+    });
+
+    let res = sbox1
+        .call_guest_function_by_name::<i32>("Spin", ())
+        .unwrap_err();
+    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+
+    barrier.wait();
+    // Make sure we can still call guest functions after the VM was interrupted
+    sbox1
+        .call_guest_function_by_name::<String>("Echo", "hello".to_string())
+        .unwrap();
+
+    // drop vm to make sure other thread can detect it
+    drop(sbox1);
+    barrier.wait();
+    thread.join().expect("Thread should finish");
+}
+
+/// Makes sure interrupting a vm before the guest call has started also prevents the guest call from being executed
+#[test]
+fn interrupt_guest_call_in_advance() {
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+    let interrupt_handle = sbox1.interrupt_handle();
+    assert!(!interrupt_handle.dropped()); // not yet dropped
+
+    // kill vm before the guest call has started
+    let thread = thread::spawn(move || {
+        assert!(!interrupt_handle.kill()); // should return false since vcpu is not running yet
+        barrier2.wait();
+        barrier2.wait(); // wait here until main thread has dropped the sandbox
+        assert!(interrupt_handle.dropped());
+    });
+
+    barrier.wait(); // wait until `kill()` is called before starting the guest call
+    let res = sbox1
+        .call_guest_function_by_name::<i32>("Spin", ())
+        .unwrap_err();
+    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+
+    // Make sure we can still call guest functions after the VM was interrupted
+    sbox1
+        .call_guest_function_by_name::<String>("Echo", "hello".to_string())
+        .unwrap();
+
+    // drop vm to make sure other thread can detect it
+    drop(sbox1);
+    barrier.wait();
+    thread.join().expect("Thread should finish");
+}
+
+/// Verifies that only the intended sandbox (`sbox2`) is interruptible,
+/// even when multiple sandboxes share the same thread.
+/// This test runs several interleaved iterations where `sbox2` is interrupted,
+/// and ensures that:
+/// - `sbox1` and `sbox3` are never affected by the interrupt.
+/// - `sbox2` either completes normally or fails with `ExecutionCanceledByHost`.
+///
+/// This test is not foolproof and may not catch
+/// all possible interleavings, but can hopefully increases confidence somewhat.
+#[test]
+fn interrupt_same_thread() {
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+
+    let interrupt_handle = sbox2.interrupt_handle();
+    assert!(!interrupt_handle.dropped()); // not yet dropped
+
+    const NUM_ITERS: usize = 500;
+
+    // kill vm after 1 second
+    let thread = thread::spawn(move || {
+        for _ in 0..NUM_ITERS {
+            barrier2.wait();
+            interrupt_handle.kill();
+        }
+    });
+
+    for _ in 0..NUM_ITERS {
+        barrier.wait();
+        sbox1
+            .call_guest_function_by_name::<String>("Echo", "hello".to_string())
+            .expect("Only sandbox 2 is allowed to be interrupted");
+        match sbox2.call_guest_function_by_name::<String>("Echo", "hello".to_string()) {
+            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {
+                // Only allow successful calls or interrupted.
+                // The call can be successful in case the call is finished before kill() is called.
+            }
+            _ => panic!("Unexpected return"),
+        };
+        sbox3
+            .call_guest_function_by_name::<String>("Echo", "hello".to_string())
+            .expect("Only sandbox 2 is allowed to be interrupted");
+    }
+    thread.join().expect("Thread should finish");
+}
+
+/// Same test as above but with no per-iteration barrier, to get more possible interleavings.
+#[test]
+fn interrupt_same_thread_no_barrier() {
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+    let workload_done = Arc::new(AtomicBool::new(false));
+    let workload_done2 = workload_done.clone();
+
+    let interrupt_handle = sbox2.interrupt_handle();
+    assert!(!interrupt_handle.dropped()); // not yet dropped
+
+    const NUM_ITERS: usize = 500;
+
+    // kill vm after 1 second
+    let thread = thread::spawn(move || {
+        barrier2.wait();
+        while !workload_done2.load(Ordering::Relaxed) {
+            interrupt_handle.kill();
+        }
+    });
+
+    barrier.wait();
+    for _ in 0..NUM_ITERS {
+        sbox1
+            .call_guest_function_by_name::<String>("Echo", "hello".to_string())
+            .expect("Only sandbox 2 is allowed to be interrupted");
+        match sbox2.call_guest_function_by_name::<String>("Echo", "hello".to_string()) {
+            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {
+                // Only allow successful calls or interrupted.
+                // The call can be successful in case the call is finished before kill() is called.
+            }
+            _ => panic!("Unexpected return"),
+        };
+        sbox3
+            .call_guest_function_by_name::<String>("Echo", "hello".to_string())
+            .expect("Only sandbox 2 is allowed to be interrupted");
+    }
+    workload_done.store(true, Ordering::Relaxed);
+    thread.join().expect("Thread should finish");
+}
+
+// Verify that a sandbox moved to a different thread after initialization can still be killed,
+// and that anther sandbox on the original thread does not get incorrectly killed
+#[test]
+fn interrupt_moved_sandbox() {
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+
+    let interrupt_handle = sbox1.interrupt_handle();
+    let interrupt_handle2 = sbox2.interrupt_handle();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+
+    let thread = thread::spawn(move || {
+        barrier2.wait();
+        let res = sbox1
+            .call_guest_function_by_name::<i32>("Spin", ())
+            .unwrap_err();
+        assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    });
+
+    let thread2 = thread::spawn(move || {
+        barrier.wait();
+        thread::sleep(Duration::from_secs(1));
+        assert!(interrupt_handle.kill());
+
+        // make sure this returns true, which means the sandbox wasn't killed incorrectly before
+        assert!(interrupt_handle2.kill());
+    });
+
+    let res = sbox2
+        .call_guest_function_by_name::<i32>("Spin", ())
+        .unwrap_err();
+    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+
+    thread.join().expect("Thread should finish");
+    thread2.join().expect("Thread should finish");
+}
 
 #[test]
 fn print_four_args_c_guest() {

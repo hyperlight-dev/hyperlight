@@ -17,6 +17,8 @@ limitations under the License.
 #[cfg(feature = "seccomp")]
 pub mod sigsys_signal_handler;
 
+pub(crate) const INTERRUPT_VCPU_SIGRTMIN_OFFSET: i32 = 0;
+
 pub(crate) fn setup_signal_handlers() -> crate::Result<()> {
     // This is unsafe because signal handlers only allow a very restrictive set of
     // functions (i.e., async-signal-safe functions) to be executed inside them.
@@ -45,7 +47,10 @@ pub(crate) fn setup_signal_handlers() -> crate::Result<()> {
             original_hook(panic_info);
         }));
     }
-    vmm_sys_util::signal::register_signal_handler(libc::SIGRTMIN(), handle_hltimeout)?;
+    vmm_sys_util::signal::register_signal_handler(
+        libc::SIGRTMIN() + INTERRUPT_VCPU_SIGRTMIN_OFFSET,
+        vm_kill_signal,
+    )?;
 
     // Note: For libraries registering signal handlers, it's important to keep in mind that
     // the user of the library could have their own signal handlers that we don't want to
@@ -60,6 +65,6 @@ pub(crate) fn setup_signal_handlers() -> crate::Result<()> {
     Ok(())
 }
 
-extern "C" fn handle_hltimeout(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
-    // Do nothing. SIGRTMIN is just used to issue a VM exit to the underlying VMM.
+extern "C" fn vm_kill_signal(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+    // Do nothing. SIGRTMIN is just used to issue a VM exit to the underlying VM.
 }

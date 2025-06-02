@@ -18,14 +18,17 @@ use core::ffi::c_void;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use log::LevelFilter;
 use tracing::{instrument, Span};
 use windows::Win32::System::Hypervisor::{
-    WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4, WHvX64RegisterCs, WHvX64RegisterEfer,
-    WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT,
-    WHV_RUN_VP_EXIT_REASON, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
+    WHvCancelRunVirtualProcessor, WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4,
+    WHvX64RegisterCs, WHvX64RegisterEfer, WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE,
+    WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT, WHV_RUN_VP_EXIT_REASON, WHV_X64_SEGMENT_REGISTER,
+    WHV_X64_SEGMENT_REGISTER_0,
 };
 
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
@@ -37,8 +40,9 @@ use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
 use super::wrappers::{HandleWrapper, WHvFPURegisters};
 use super::{
-    HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
-    CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+    HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE,
+    CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX,
+    EFER_SCE,
 };
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
@@ -55,6 +59,7 @@ pub(crate) struct HypervWindowsDriver {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
+    interrupt_handle: Arc<WindowsInterruptHandle>,
 }
 /* This does not automatically impl Send/Sync because the host
  * address of the shared memory region is a raw pointer, which are
@@ -89,6 +94,7 @@ impl HypervWindowsDriver {
 
         let mut proc = VMProcessor::new(partition)?;
         Self::setup_initial_sregs(&mut proc, pml4_address)?;
+        let partition_handle = proc.get_partition_hdl();
 
         // subtract 2 pages for the guard pages, since when we copy memory to and from surrogate process,
         // we don't want to copy the guard pages themselves (that would cause access violation)
@@ -101,6 +107,12 @@ impl HypervWindowsDriver {
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
             mem_regions,
+            interrupt_handle: Arc::new(WindowsInterruptHandle {
+                running: AtomicBool::new(false),
+                cancel_requested: AtomicBool::new(false),
+                partition_handle,
+                dropped: AtomicBool::new(false),
+            }),
         })
     }
 
@@ -149,11 +161,6 @@ impl HypervWindowsDriver {
         ));
         error.push_str(&format!("Registers: \n{:#?}", self.processor.get_regs()?));
         Ok(error)
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn get_partition_hdl(&self) -> WHV_PARTITION_HANDLE {
-        self.processor.get_partition_hdl()
     }
 }
 
@@ -402,7 +409,29 @@ impl Hypervisor for HypervWindowsDriver {
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn run(&mut self) -> Result<super::HyperlightExit> {
-        let exit_context: WHV_RUN_VP_EXIT_CONTEXT = self.processor.run()?;
+        self.interrupt_handle.running.store(true, Ordering::Relaxed);
+
+        // Don't run the vcpu if `cancel_requested` is true
+        let exit_context = if self
+            .interrupt_handle
+            .cancel_requested
+            .load(Ordering::Relaxed)
+        {
+            WHV_RUN_VP_EXIT_CONTEXT {
+                ExitReason: WHV_RUN_VP_EXIT_REASON(8193i32), // WHvRunVpExitReasonCanceled
+                VpContext: Default::default(),
+                Anonymous: Default::default(),
+                Reserved: Default::default(),
+            }
+        } else {
+            self.processor.run()?
+        };
+        self.interrupt_handle
+            .cancel_requested
+            .store(false, Ordering::Relaxed);
+        self.interrupt_handle
+            .running
+            .store(false, Ordering::Relaxed);
 
         let result = match exit_context.ExitReason {
             // WHvRunVpExitReasonX64IoPortAccess
@@ -476,8 +505,8 @@ impl Hypervisor for HypervWindowsDriver {
         Ok(result)
     }
 
-    fn get_partition_handle(&self) -> WHV_PARTITION_HANDLE {
-        self.processor.get_partition_hdl()
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+        self.interrupt_handle.clone()
     }
 
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -491,28 +520,28 @@ impl Hypervisor for HypervWindowsDriver {
     }
 }
 
-#[cfg(test)]
-pub mod tests {
-    use std::sync::{Arc, Mutex};
+impl Drop for HypervWindowsDriver {
+    fn drop(&mut self) {
+        self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
+    }
+}
 
-    use serial_test::serial;
+pub struct WindowsInterruptHandle {
+    // `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running, which is the reason we need this flag.
+    running: AtomicBool,
+    cancel_requested: AtomicBool,
+    partition_handle: WHV_PARTITION_HANDLE,
+    dropped: AtomicBool,
+}
 
-    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
-    use crate::hypervisor::tests::test_initialise;
-    use crate::Result;
+impl InterruptHandle for WindowsInterruptHandle {
+    fn kill(&self) -> bool {
+        self.cancel_requested.store(true, Ordering::Relaxed);
+        self.running.load(Ordering::Relaxed)
+            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+    }
 
-    #[test]
-    #[serial]
-    fn test_init() {
-        let outb_handler = {
-            let func: Box<dyn FnMut(u16, u32) -> Result<()> + Send> =
-                Box::new(|_, _| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(OutBHandler::from(func)))
-        };
-        let mem_access_handler = {
-            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(MemAccessHandler::from(func)))
-        };
-        test_initialise(outb_handler, mem_access_handler).unwrap();
+    fn dropped(&self) -> bool {
+        self.dropped.load(Ordering::Relaxed)
     }
 }

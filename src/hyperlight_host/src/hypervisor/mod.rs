@@ -20,6 +20,8 @@ use tracing::{instrument, Span};
 use crate::error::HyperlightError::ExecutionCanceledByHost;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
+#[cfg(any(kvm, mshv))]
+use crate::signal_handlers::INTERRUPT_VCPU_SIGRTMIN_OFFSET;
 use crate::{log_then_return, new_error, HyperlightError, Result};
 
 /// Util for handling x87 fpu state
@@ -36,7 +38,7 @@ pub(crate) mod hyperv_windows;
 
 /// GDB debugging support
 #[cfg(gdb)]
-mod gdb;
+pub(crate) mod gdb;
 
 #[cfg(kvm)]
 /// Functionality to manipulate KVM-based virtual machines
@@ -59,6 +61,8 @@ pub(crate) mod crashdump;
 
 use std::fmt::Debug;
 use std::str::FromStr;
+#[cfg(any(kvm, mshv))]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(gdb)]
@@ -109,10 +113,6 @@ pub enum HyperlightExit {
 }
 
 /// A common set of hypervisor functionality
-///
-/// Note: a lot of these structures take in an `Option<HypervisorHandler>`.
-/// This is because, if we are coming from the C API, we don't have a HypervisorHandler and have
-/// to account for the fact the Hypervisor was set up beforehand.
 pub(crate) trait Hypervisor: Debug + Sync + Send {
     /// Initialise the internally stored vCPU with the given PEB address and
     /// random number seed, then run it until a HLT instruction.
@@ -183,6 +183,9 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         None
     }
 
+    /// Get InterruptHandle to underlying VM
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
+
     /// Get the logging level to pass to the guest entrypoint
     fn get_max_log_level(&self) -> u32 {
         // Check to see if the RUST_LOG environment variable is set
@@ -222,10 +225,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
 
     /// get a mutable trait object from self
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor;
-
-    /// Get the partition handle for WHP
-    #[cfg(target_os = "windows")]
-    fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
 
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion];
@@ -296,13 +295,6 @@ impl VirtualCPU {
                 Ok(HyperlightExit::Cancelled()) => {
                     // Shutdown is returned when the host has cancelled execution
                     // After termination, the main thread will re-initialize the VM
-                    if let Some(hvh) = hv_handler {
-                        // If hvh is None, then we are running from the C API, which doesn't use
-                        // the HypervisorHandler
-                        hvh.set_running(false);
-                        #[cfg(target_os = "linux")]
-                        hvh.set_run_cancelled(true);
-                    }
                     metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
                     log_then_return!(ExecutionCanceledByHost());
                 }
@@ -323,6 +315,67 @@ impl VirtualCPU {
         }
 
         Ok(())
+    }
+}
+
+/// A trait for handling interrupts to a sandbox's vcpu
+pub trait InterruptHandle: Send + Sync {
+    /// Interrupt the corresponding sandbox from running.
+    ///
+    /// - If this is called while the vcpu is running, then it will interrupt the vcpu and return `true`.
+    /// - If this is called while the vcpu is not running, (for example during a host call), the
+    ///     vcpu will not immediately be interrupted, but will prevent the vcpu from running **the next time**
+    ///     it's scheduled, and returns `false`.
+    ///
+    /// # Note
+    /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
+    fn kill(&self) -> bool;
+
+    /// Returns true iff the corresponding sandbox has been dropped
+    fn dropped(&self) -> bool;
+}
+
+#[cfg(any(kvm, mshv))]
+#[derive(Debug)]
+pub(super) struct LinuxInterruptHandle {
+    /// Invariant: vcpu is running => `running` is true. (Neither converse nor inverse is true)
+    running: AtomicBool,
+    /// Invariant: vcpu is running => `tid` is the thread on which it is running.
+    /// Note: multiple vms may have the same `tid`, but at most one vm will have `running` set to true.
+    tid: AtomicU64,
+    /// True when an "interruptor" has requested the VM to be cancelled. Set immediately when
+    /// `kill()` is called, and cleared when the vcpu is no longer running.
+    /// This is used to
+    /// 1. make sure stale signals do not interrupt the
+    ///     the wrong vcpu (a vcpu may only be interrupted iff `cancel_requested` is true),
+    /// 2. ensure that if a vm is killed while a host call is running,
+    ///     the vm will not re-enter the guest after the host call returns.
+    cancel_requested: AtomicBool,
+    /// Whether the corresponding vm is dropped
+    dropped: AtomicBool,
+}
+
+#[cfg(any(kvm, mshv))]
+impl InterruptHandle for LinuxInterruptHandle {
+    fn kill(&self) -> bool {
+        self.cancel_requested.store(true, Ordering::Relaxed);
+
+        let signal_number = libc::SIGRTMIN() + INTERRUPT_VCPU_SIGRTMIN_OFFSET;
+        let mut sent_signal = false;
+
+        while self.running.load(Ordering::Relaxed) {
+            log::info!("Sending signal to kill vcpu thread...");
+            sent_signal = true;
+            unsafe {
+                libc::pthread_kill(self.tid.load(Ordering::Relaxed) as _, signal_number);
+            }
+            std::thread::sleep(std::time::Duration::from_micros(50));
+        }
+
+        sent_signal
+    }
+    fn dropped(&self) -> bool {
+        self.dropped.load(Ordering::Relaxed)
     }
 }
 
