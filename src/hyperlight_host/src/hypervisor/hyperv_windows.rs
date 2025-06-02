@@ -41,7 +41,6 @@ use super::{
     CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -307,7 +306,6 @@ impl Hypervisor for HypervWindowsDriver {
         page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_hdl: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
@@ -333,7 +331,6 @@ impl Hypervisor for HypervWindowsDriver {
 
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            hv_handler,
             outb_hdl,
             mem_access_hdl,
             #[cfg(gdb)]
@@ -349,7 +346,6 @@ impl Hypervisor for HypervWindowsDriver {
         dispatch_func_addr: RawPtr,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_hdl: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -371,7 +367,6 @@ impl Hypervisor for HypervWindowsDriver {
 
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            hv_handler,
             outb_hdl,
             mem_access_hdl,
             #[cfg(gdb)]

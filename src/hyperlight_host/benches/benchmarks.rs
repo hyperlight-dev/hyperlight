@@ -14,8 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::time::Duration;
-
 use criterion::{criterion_group, criterion_main, Criterion};
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
@@ -68,7 +66,6 @@ fn guest_call_benchmark(c: &mut Criterion) {
         let mut config = SandboxConfiguration::default();
         config.set_input_data_size(2 * SIZE + (1024 * 1024)); // 2 * SIZE + 1 MB, to allow 1MB for the rest of the serialized function call
         config.set_heap_size(SIZE as u64 * 15);
-        config.set_max_execution_time(Duration::from_secs(10));
 
         let sandbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().unwrap()),

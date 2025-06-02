@@ -18,7 +18,6 @@ use std::fmt::Debug;
 use std::option::Option;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use log::LevelFilter;
 use tracing::{instrument, Span};
@@ -67,9 +66,6 @@ pub struct UninitializedSandbox {
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
     /// The memory manager for the sandbox.
     pub(crate) mgr: MemMgrWrapper<ExclusiveSharedMemory>,
-    pub(crate) max_initialization_time: Duration,
-    pub(crate) max_execution_time: Duration,
-    pub(crate) max_wait_for_cancellation: Duration,
     pub(crate) max_guest_log_level: Option<LevelFilter>,
     #[cfg(gdb)]
     pub(crate) debug_info: Option<DebugInfo>,
@@ -180,13 +176,6 @@ impl UninitializedSandbox {
         let mut sandbox = Self {
             host_funcs,
             mgr: mem_mgr_wrapper,
-            max_initialization_time: Duration::from_millis(
-                sandbox_cfg.get_max_initialization_time() as u64,
-            ),
-            max_execution_time: Duration::from_millis(sandbox_cfg.get_max_execution_time() as u64),
-            max_wait_for_cancellation: Duration::from_millis(
-                sandbox_cfg.get_max_wait_for_cancellation() as u64,
-            ),
             max_guest_log_level: None,
             #[cfg(gdb)]
             debug_info,
@@ -336,7 +325,6 @@ fn check_windows_version() -> Result<()> {
 mod tests {
     use std::sync::mpsc::channel;
     use std::sync::Arc;
-    use std::time::Duration;
     use std::{fs, thread};
 
     use crossbeam_queue::ArrayQueue;
@@ -372,8 +360,6 @@ mod tests {
             cfg.set_output_data_size(0x1000);
             cfg.set_stack_size(0x1000);
             cfg.set_heap_size(0x1000);
-            cfg.set_max_execution_time(Duration::from_millis(1001));
-            cfg.set_max_execution_cancel_wait_time(Duration::from_millis(9));
             Some(cfg)
         };
 

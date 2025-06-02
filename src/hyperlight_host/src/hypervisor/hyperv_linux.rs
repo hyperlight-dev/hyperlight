@@ -59,7 +59,6 @@ use super::{
     Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR,
     CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -461,7 +460,6 @@ impl Hypervisor for HypervLinuxDriver {
         page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
@@ -487,7 +485,6 @@ impl Hypervisor for HypervLinuxDriver {
 
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            hv_handler,
             outb_hdl,
             mem_access_hdl,
             #[cfg(gdb)]
@@ -503,7 +500,6 @@ impl Hypervisor for HypervLinuxDriver {
         dispatch_func_addr: RawPtr,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -527,7 +523,6 @@ impl Hypervisor for HypervLinuxDriver {
         // run
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            hv_handler,
             outb_handle_fn,
             mem_access_fn,
             #[cfg(gdb)]

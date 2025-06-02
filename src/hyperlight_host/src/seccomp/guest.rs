@@ -63,8 +63,7 @@ fn syscalls_allowlist() -> Result<Vec<(i64, Vec<SeccompRule>)>> {
 }
 
 /// Creates a `BpfProgram` for a `SeccompFilter` over specific syscalls/`SeccompRule`s
-/// intended to be applied in the Hypervisor Handler thread - i.e., over untrusted guest code
-/// execution.
+/// intended to be applied on host function threads.
 ///
 /// Note: This does not provide coverage over the Hyperlight host, which is why we don't need
 /// `SeccompRules` for operations we definitely perform but are outside the handler thread

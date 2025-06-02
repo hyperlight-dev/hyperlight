@@ -16,7 +16,6 @@ limitations under the License.
 
 use tracing::{instrument, Span};
 
-use super::guest_dispatch::call_function_on_guest;
 use super::{ParameterTuple, SupportedReturnType};
 use crate::{MultiUseSandbox, Result};
 /// A context for calling guest functions.
@@ -69,8 +68,11 @@ impl MultiUseGuestCallContext {
         // !Send (and !Sync), we also don't need to worry about
         // synchronization
 
-        let ret =
-            call_function_on_guest(&mut self.sbox, func_name, Output::TYPE, args.into_value());
+        let ret = self.sbox.call_guest_function_by_name_no_reset(
+            func_name,
+            Output::TYPE,
+            args.into_value(),
+        );
         Output::from_value(ret?)
     }
 

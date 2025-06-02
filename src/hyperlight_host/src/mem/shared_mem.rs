@@ -136,7 +136,7 @@ pub struct ExclusiveSharedMemory {
 }
 unsafe impl Send for ExclusiveSharedMemory {}
 
-/// A GuestSharedMemory is used by the hypervisor handler to represent
+/// A GuestSharedMemory is used to represent
 /// the reference to all-of-memory that is taken by the virtual cpu.
 /// Because of the memory model limitations that affect
 /// HostSharedMemory, it is likely fairly important (to ensure that
