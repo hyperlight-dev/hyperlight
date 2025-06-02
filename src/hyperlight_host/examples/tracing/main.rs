@@ -16,6 +16,7 @@ limitations under the License.
 #![allow(clippy::disallowed_macros)]
 use tracing::{span, Level};
 extern crate hyperlight_host;
+use std::sync::{Arc, Barrier};
 use std::thread::{spawn, JoinHandle};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
@@ -110,10 +111,24 @@ fn run_example() -> Result<()> {
     let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
 
     let mut multiuse_sandbox = usandbox.evolve(no_op)?;
+    let interrupt_handle = multiuse_sandbox.interrupt_handle();
 
     // Call a function that gets cancelled by the host function 5 times to generate some log entries.
+    const NUM_CALLS: i32 = 5;
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
 
-    for i in 0..5 {
+    let thread = std::thread::spawn(move || {
+        for _ in 0..NUM_CALLS {
+            barrier2.wait();
+            // Sleep for a short time to allow the guest function to run.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Cancel the host function call.
+            interrupt_handle.kill();
+        }
+    });
+
+    for i in 0..NUM_CALLS {
         let id = Uuid::new_v4();
         // Construct a new span named "hyperlight tracing call cancellation example thread" with INFO  level.
         let span = span!(
@@ -124,7 +139,7 @@ fn run_example() -> Result<()> {
         );
         let _entered = span.enter();
         let mut ctx = multiuse_sandbox.new_call_context();
-
+        barrier.wait();
         ctx.call::<()>("Spin", ()).unwrap_err();
         multiuse_sandbox = ctx.finish().unwrap();
     }
@@ -133,6 +148,7 @@ fn run_example() -> Result<()> {
         let result = join_handle.join();
         assert!(result.is_ok());
     }
+    thread.join().unwrap();
 
     Ok(())
 }

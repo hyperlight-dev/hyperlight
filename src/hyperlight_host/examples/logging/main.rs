@@ -16,6 +16,8 @@ limitations under the License.
 #![allow(clippy::disallowed_macros)]
 extern crate hyperlight_host;
 
+use std::sync::{Arc, Barrier};
+
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -82,15 +84,29 @@ fn main() -> Result<()> {
     let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
 
     let mut multiuse_sandbox = usandbox.evolve(no_op)?;
+    let interrupt_handle = multiuse_sandbox.interrupt_handle();
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+    const NUM_CALLS: i32 = 5;
+    let thread = std::thread::spawn(move || {
+        for _ in 0..NUM_CALLS {
+            barrier2.wait();
+            // Sleep for a short time to allow the guest function to run.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Cancel the host function call.
+            interrupt_handle.kill();
+        }
+    });
 
     // Call a function that gets cancelled by the host function 5 times to generate some log entries.
 
-    for _ in 0..5 {
+    for _ in 0..NUM_CALLS {
         let mut ctx = multiuse_sandbox.new_call_context();
-
+        barrier.wait();
         ctx.call::<()>("Spin", ()).unwrap_err();
         multiuse_sandbox = ctx.finish().unwrap();
     }
+    thread.join().unwrap();
 
     Ok(())
 }
