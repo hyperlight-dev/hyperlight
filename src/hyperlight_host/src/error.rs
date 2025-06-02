@@ -150,11 +150,6 @@ pub enum HyperlightError {
     #[error("The flatbuffer is invalid")]
     InvalidFlatBuffer(#[from] InvalidFlatbuffer),
 
-    /// Error occurred in KVM Operation
-    #[error("KVM Error {0:?}")]
-    #[cfg(kvm)]
-    KVMError(#[from] kvm_ioctls::Error),
-
     /// Conversion of str to Json failed
     #[error("Conversion of str data to json failed")]
     JsonConversionFailure(#[from] serde_json::Error),
