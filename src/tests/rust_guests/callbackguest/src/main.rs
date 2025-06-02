@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,10 +32,10 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
-use hyperlight_guest::guest_function_register::register_function;
-use hyperlight_guest::host_function_call::{call_host_function, print_output_with_host_print};
-use hyperlight_guest::logging::log_message;
+use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
+use hyperlight_guest_bin::guest_function::register::register_function;
+use hyperlight_guest_bin::guest_logger::log_message;
+use hyperlight_guest_bin::host_comm::{call_host_function, print_output_with_host_print};
 
 fn send_message_to_host_method(
     method_name: &str,

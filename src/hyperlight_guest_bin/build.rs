@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -109,7 +109,7 @@ fn cargo_main() {
             unsafe { env::set_var("AR_x86_64_pc_windows_msvc", "llvm-lib") };
         }
 
-        cfg.compile("hyperlight_guest");
+        cfg.compile("hyperlight_guest_bin");
     }
 
     let out_dir = env::var("OUT_DIR").expect("cargo OUT_DIR not set");

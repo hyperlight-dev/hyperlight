@@ -45,7 +45,7 @@ jobs:
             VERSION="${{ github.ref }}"
             VERSION="${VERSION#refs/heads/release/v}"
           fi
-          ./dev/verify-version.sh "$VERSION" hyperlight-common hyperlight-guest hyperlight-host
+          ./dev/verify-version.sh "$VERSION" hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host
 
       - name: Publish hyperlight-common
         continue-on-error: ${{ inputs.dry_run }}
@@ -56,6 +56,12 @@ jobs:
       - name: Publish hyperlight-guest
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_guest/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+
+      - name: Publish hyperlight-guest-bin
+        continue-on-error: ${{ inputs.dry_run }}
+        run: cargo publish --manifest-path ./src/hyperlight_guest_bin/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
 

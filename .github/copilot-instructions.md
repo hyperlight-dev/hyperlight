@@ -76,6 +76,7 @@ This repository requires commits to be signed you should ensure that any commits
 - `fuzz` - contains the fuzzing tests for the project
 - `src/hyperlight_common/` - contains the common code shared between the host and guest
 - `src/hyperlight_guest/` - contains the hyperlight-guest library code
+- `src/hyperlight_guest_bin/` - contains the hyperlight-guest-bin library code
 - `src/hyperlight_host/` - contains the hyperlight-host library code
 - `src/hyperlight_guest_capi/` - contains the hyperlight-guest C library code
 - `src/hyperlight_testing/` - contains the shared code for tests

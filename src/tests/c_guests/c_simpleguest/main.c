@@ -1,10 +1,10 @@
 // Included from hyperlight_guest_capi/include
 #include "hyperlight_guest.h"
-// Included from hyperlight_guest/third_party/libc
+// Included from hyperlight_guest_bin/third_party/libc
 #include "stdint.h"
 #include "string.h"
 #include "stdlib.h"
-// Included from hyperlight_guest/third_party/printf
+// Included from hyperlight_guest_bin/third_party/printf
 #include "printf.h"
 
 #define GUEST_STACK_SIZE (65536) // default stack size

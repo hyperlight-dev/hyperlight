@@ -93,7 +93,7 @@ jobs:
         run: just build ${{ matrix.config }}
 
       - name: Verify MSRV
-        run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-common
+        run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
 
       - name: Run Rust tests
         env:
