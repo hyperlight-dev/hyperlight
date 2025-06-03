@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.5.1] - 2025-06-02
+### Fixed
+- Fixed an issue with the `hyperlight_host` not building on v0.5.0
+
 ## [v0.5.0] - 2025-05-28
 
 ### Changed
