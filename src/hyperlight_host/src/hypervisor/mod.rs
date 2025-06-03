@@ -64,6 +64,8 @@ use std::str::FromStr;
 #[cfg(any(kvm, mshv))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(any(kvm, mshv))]
+use std::time::Duration;
 
 #[cfg(gdb)]
 use gdb::VcpuStopReason;
@@ -353,6 +355,8 @@ pub(super) struct LinuxInterruptHandle {
     cancel_requested: AtomicBool,
     /// Whether the corresponding vm is dropped
     dropped: AtomicBool,
+    /// Retry delay between signals sent to the vcpu thread
+    retry_delay: Duration,
 }
 
 #[cfg(any(kvm, mshv))]
@@ -369,7 +373,7 @@ impl InterruptHandle for LinuxInterruptHandle {
             unsafe {
                 libc::pthread_kill(self.tid.load(Ordering::Relaxed) as _, signal_number);
             }
-            std::thread::sleep(std::time::Duration::from_micros(50));
+            std::thread::sleep(self.retry_delay);
         }
 
         sent_signal
@@ -391,7 +395,7 @@ pub(crate) mod tests {
     use crate::mem::ptr::RawPtr;
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
-    use crate::sandbox::UninitializedSandbox;
+    use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{is_hypervisor_present, new_error, Result};
 
     #[cfg(gdb)]
@@ -432,13 +436,11 @@ pub(crate) mod tests {
 
         let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
 
-        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None)?;
+        let config: SandboxConfiguration = Default::default();
+        let sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
         let (_hshm, mut gshm) = sandbox.mgr.build();
-        let mut vm = set_up_hypervisor_partition(
-            &mut gshm,
-            #[cfg(gdb)]
-            &sandbox.debug_info,
-        )?;
+        let mut vm = set_up_hypervisor_partition(&mut gshm, &config)?;
         vm.initialise(
             RawPtr::from(0x230000),
             1234567890,

@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use std::cmp::max;
+use std::time::Duration;
 
 use tracing::{instrument, Span};
 
@@ -55,6 +56,13 @@ pub struct SandboxConfiguration {
     /// field should be represented as an `Option`, that type is not
     /// FFI-safe, so it cannot be.
     heap_size_override: u64,
+    /// Delay between interrupt retries. This duration specifies how long to wait
+    /// between attempts to send signals to the thread running the sandbox's VCPU.
+    /// Multiple retries may be necessary because signals only interrupt the VCPU
+    /// thread when the vcpu thread is in kernel space. There's a narrow window during which a
+    /// signal can be delivered to the thread, but the thread may not yet
+    /// have entered kernel space.
+    interrupt_retry_delay: Duration,
 }
 
 impl SandboxConfiguration {
@@ -66,6 +74,8 @@ impl SandboxConfiguration {
     pub const DEFAULT_OUTPUT_SIZE: usize = 0x4000;
     /// The minimum size of output data
     pub const MIN_OUTPUT_SIZE: usize = 0x2000;
+    /// The default interrupt retry delay
+    pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration = Duration::from_micros(500);
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -75,6 +85,7 @@ impl SandboxConfiguration {
         output_data_size: usize,
         stack_size_override: Option<u64>,
         heap_size_override: Option<u64>,
+        interrupt_retry_delay: Duration,
         #[cfg(gdb)] guest_debug_info: Option<DebugInfo>,
     ) -> Self {
         Self {
@@ -82,6 +93,7 @@ impl SandboxConfiguration {
             output_data_size: max(output_data_size, Self::MIN_OUTPUT_SIZE),
             stack_size_override: stack_size_override.unwrap_or(0),
             heap_size_override: heap_size_override.unwrap_or(0),
+            interrupt_retry_delay,
 
             #[cfg(gdb)]
             guest_debug_info,
@@ -112,6 +124,16 @@ impl SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_heap_size(&mut self, heap_size: u64) {
         self.heap_size_override = heap_size;
+    }
+
+    /// Sets the interrupt retry delay
+    pub fn set_interrupt_retry_delay(&mut self, delay: Duration) {
+        self.interrupt_retry_delay = delay;
+    }
+
+    /// Get the delay between retries for interrupts
+    pub fn get_interrupt_retry_delay(&self) -> Duration {
+        self.interrupt_retry_delay
     }
 
     /// Sets the configuration for the guest debug
@@ -172,6 +194,7 @@ impl Default for SandboxConfiguration {
             Self::DEFAULT_OUTPUT_SIZE,
             None,
             None,
+            Self::DEFAULT_INTERRUPT_RETRY_DELAY,
             #[cfg(gdb)]
             None,
         )
@@ -194,6 +217,7 @@ mod tests {
             OUTPUT_DATA_SIZE_OVERRIDE,
             Some(STACK_SIZE_OVERRIDE),
             Some(HEAP_SIZE_OVERRIDE),
+            SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
             #[cfg(gdb)]
             None,
         );
@@ -219,6 +243,7 @@ mod tests {
             SandboxConfiguration::MIN_OUTPUT_SIZE - 1,
             None,
             None,
+            SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
             #[cfg(gdb)]
             None,
         );

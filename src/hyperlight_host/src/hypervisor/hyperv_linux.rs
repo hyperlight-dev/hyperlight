@@ -65,6 +65,7 @@ use super::{
 use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::sandbox::SandboxConfiguration;
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -318,6 +319,7 @@ impl HypervLinuxDriver {
         entrypoint_ptr: GuestPtr,
         rsp_ptr: GuestPtr,
         pml4_ptr: GuestPtr,
+        config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
         let mshv = Mshv::new()?;
@@ -397,6 +399,7 @@ impl HypervLinuxDriver {
                 running: AtomicBool::new(false),
                 cancel_requested: AtomicBool::new(false),
                 tid: AtomicU64::new(unsafe { libc::pthread_self() }),
+                retry_delay: config.get_interrupt_retry_delay(),
                 dropped: AtomicBool::new(false),
             }),
 
@@ -853,11 +856,14 @@ mod tests {
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
             crate::mem::memory_region::MemoryRegionType::Code,
         );
+        let config: SandboxConfiguration = Default::default();
+
         super::HypervLinuxDriver::new(
             regions.build(),
             entrypoint_ptr,
             rsp_ptr,
             pml4_ptr,
+            &config,
             #[cfg(gdb)]
             None,
         )

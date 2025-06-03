@@ -22,8 +22,6 @@ use std::sync::{Arc, Mutex};
 use log::LevelFilter;
 use tracing::{instrument, Span};
 
-#[cfg(gdb)]
-use super::config::DebugInfo;
 use super::host_funcs::{default_writer_func, FunctionRegistry};
 use super::mem_mgr::MemMgrWrapper;
 use super::uninitialized_evolve::evolve_impl_multi_use;
@@ -67,8 +65,7 @@ pub struct UninitializedSandbox {
     /// The memory manager for the sandbox.
     pub(crate) mgr: MemMgrWrapper<ExclusiveSharedMemory>,
     pub(crate) max_guest_log_level: Option<LevelFilter>,
-    #[cfg(gdb)]
-    pub(crate) debug_info: Option<DebugInfo>,
+    pub(crate) config: SandboxConfiguration,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -160,8 +157,6 @@ impl UninitializedSandbox {
 
         let sandbox_cfg = cfg.unwrap_or_default();
 
-        #[cfg(gdb)]
-        let debug_info = sandbox_cfg.get_guest_debug_info();
         let mut mem_mgr_wrapper = {
             let mut mgr = UninitializedSandbox::load_guest_binary(sandbox_cfg, &guest_binary)?;
             let stack_guard = Self::create_stack_guard();
@@ -177,8 +172,7 @@ impl UninitializedSandbox {
             host_funcs,
             mgr: mem_mgr_wrapper,
             max_guest_log_level: None,
-            #[cfg(gdb)]
-            debug_info,
+            config: sandbox_cfg,
         };
 
         // If we were passed a writer for host print register it otherwise use the default.

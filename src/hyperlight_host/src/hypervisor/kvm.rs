@@ -40,6 +40,7 @@ use super::{
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::sandbox::SandboxConfiguration;
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -301,6 +302,7 @@ impl KVMDriver {
         pml4_addr: u64,
         entrypoint: u64,
         rsp: u64,
+        config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
         let kvm = Kvm::new()?;
@@ -352,6 +354,7 @@ impl KVMDriver {
                 running: AtomicBool::new(false),
                 cancel_requested: AtomicBool::new(false),
                 tid: AtomicU64::new(unsafe { libc::pthread_self() }),
+                retry_delay: config.get_interrupt_retry_delay(),
                 dropped: AtomicBool::new(false),
             }),
 
