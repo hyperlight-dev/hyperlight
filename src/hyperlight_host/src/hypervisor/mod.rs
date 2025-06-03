@@ -338,8 +338,23 @@ pub trait InterruptHandle: Send + Sync {
 #[cfg(any(kvm, mshv))]
 #[derive(Debug)]
 pub(super) struct LinuxInterruptHandle {
-    /// Invariant: vcpu is running => `running` is true. (Neither converse nor inverse is true)
-    running: AtomicBool,
+    /// Invariant: vcpu is running => most significant bit (63) of `running` is set. (Neither converse nor inverse is true)
+    ///
+    /// Additionally, bit 0-62 tracks how many times the VCPU has been run. Incremented each time `run()` is called.
+    ///
+    /// This prevents an ABA problem where:
+    /// 1. The VCPU is running (generation N),
+    /// 2. It gets cancelled,
+    /// 3. Then quickly restarted (generation N+1),
+    ///     before the original thread has observed that it was cancelled.
+    ///
+    /// Without this generation counter, the interrupt logic might assume the VCPU is still
+    /// in the *original* run (generation N), see that it's `running`, and re-send the signal.
+    /// But the new VCPU run (generation N+1) would treat this as a stale signal and ignore it,
+    /// potentially causing an infinite loop where no effective interrupt is delivered.
+    ///
+    /// Invariant: If the VCPU is running, `run_generation[bit 0-62]` matches the current run's generation.
+    running: AtomicU64,
     /// Invariant: vcpu is running => `tid` is the thread on which it is running.
     /// Note: multiple vms may have the same `tid`, but at most one vm will have `running` set to true.
     tid: AtomicU64,
@@ -360,14 +375,60 @@ pub(super) struct LinuxInterruptHandle {
 }
 
 #[cfg(any(kvm, mshv))]
+impl LinuxInterruptHandle {
+    const RUNNING_BIT: u64 = 1 << 63;
+    const MAX_GENERATION: u64 = Self::RUNNING_BIT - 1;
+
+    // set running to true and increment the generation. Generation will wrap around at `MAX_GENERATION`.
+    fn set_running_and_increment_generation(&self) -> std::result::Result<u64, u64> {
+        self.running
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |raw| {
+                let generation = raw & !Self::RUNNING_BIT;
+                if generation == Self::MAX_GENERATION {
+                    // restart generation from 0
+                    return Some(Self::RUNNING_BIT);
+                }
+                Some((generation + 1) | Self::RUNNING_BIT)
+            })
+    }
+
+    // clear the running bit and return the generation
+    fn clear_running_bit(&self) -> u64 {
+        self.running
+            .fetch_and(!Self::RUNNING_BIT, Ordering::Relaxed)
+    }
+
+    fn get_running_and_generation(&self) -> (bool, u64) {
+        let raw = self.running.load(Ordering::Relaxed);
+        let running = raw & Self::RUNNING_BIT != 0;
+        let generation = raw & !Self::RUNNING_BIT;
+        (running, generation)
+    }
+}
+
+#[cfg(any(kvm, mshv))]
 impl InterruptHandle for LinuxInterruptHandle {
     fn kill(&self) -> bool {
         self.cancel_requested.store(true, Ordering::Relaxed);
 
         let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
         let mut sent_signal = false;
+        let mut target_generation: Option<u64> = None;
 
-        while self.running.load(Ordering::Relaxed) {
+        loop {
+            let (running, generation) = self.get_running_and_generation();
+
+            if !running {
+                break;
+            }
+
+            match target_generation {
+                None => target_generation = Some(generation),
+                // prevent ABA problem
+                Some(expected) if expected != generation => break,
+                _ => {}
+            }
+
             log::info!("Sending signal to kill vcpu thread...");
             sent_signal = true;
             unsafe {

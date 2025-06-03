@@ -283,10 +283,14 @@ fn interrupt_moved_sandbox() {
     thread2.join().expect("Thread should finish");
 }
 
+/// This tests exercises the behavior of killing vcpu with a long retry delay.
+/// This will exercise the ABA-problem, where the vcpu could be successfully interrupted,
+/// but restarted, before the interruptor-thread has a chance to see that the vcpu was killed.
+///
+/// The ABA-problem is solved by introducing run-generation on the vcpu.
 #[test]
 #[cfg(target_os = "linux")]
 fn interrupt_custom_signal_no_and_retry_delay() {
-    env_logger::builder().filter_level(LevelFilter::Info).init();
     let mut config = SandboxConfiguration::default();
     config.set_interrupt_vcpu_sigrtmin_offset(0).unwrap();
     config.set_interrupt_retry_delay(Duration::from_secs(1));
@@ -301,14 +305,11 @@ fn interrupt_custom_signal_no_and_retry_delay() {
 
     let interrupt_handle = sbox1.interrupt_handle();
     assert!(!interrupt_handle.dropped()); // not yet dropped
-    let barrier = Arc::new(Barrier::new(2));
-    let barrier2 = barrier.clone();
 
     const NUM_ITERS: usize = 3;
 
     let thread = thread::spawn(move || {
         for _ in 0..NUM_ITERS {
-            barrier2.wait();
             // wait for the guest call to start
             thread::sleep(Duration::from_millis(1000));
             interrupt_handle.kill();
@@ -316,11 +317,12 @@ fn interrupt_custom_signal_no_and_retry_delay() {
     });
 
     for _ in 0..NUM_ITERS {
-        barrier.wait();
         let res = sbox1
             .call_guest_function_by_name::<i32>("Spin", ())
             .unwrap_err();
         assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+        // immediately reenter another guest function call after having being cancelled,
+        // so that the vcpu is running again before the interruptor-thread has a chance to see that the vcpu is not running
     }
     thread.join().expect("Thread should finish");
 }

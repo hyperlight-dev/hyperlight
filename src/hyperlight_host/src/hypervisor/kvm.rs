@@ -351,7 +351,7 @@ impl KVMDriver {
             orig_rsp: rsp_gp,
             mem_regions,
             interrupt_handle: Arc::new(LinuxInterruptHandle {
-                running: AtomicBool::new(false),
+                running: AtomicU64::new(0),
                 cancel_requested: AtomicBool::new(false),
                 tid: AtomicU64::new(unsafe { libc::pthread_self() }),
                 retry_delay: config.get_interrupt_retry_delay(),
@@ -526,7 +526,14 @@ impl Hypervisor for KVMDriver {
             .store(unsafe { libc::pthread_self() as u64 }, Ordering::Relaxed);
         // Note: if a `InterruptHandle::kill()` called while this thread is **here**
         // Then this is fine since `cancel_requested` is set to true, so we will skip the `VcpuFd::run()` call
-        self.interrupt_handle.running.store(true, Ordering::Relaxed);
+        self.interrupt_handle
+            .set_running_and_increment_generation()
+            .map_err(|e| {
+                new_error!(
+                    "Error setting running state and incrementing generation: {}",
+                    e
+                )
+            })?;
         // Don't run the vcpu if `cancel_requested` is true
         //
         // Note: if a `InterruptHandle::kill()` called while this thread is **here**
@@ -558,9 +565,7 @@ impl Hypervisor for KVMDriver {
         // Then `cancel_requested` will be set to true again, which will cancel the **next vcpu run**.
         // Additionally signals will be sent to this thread until `running` is set to false.
         // This is fine since the signal handler is a no-op.
-        self.interrupt_handle
-            .running
-            .store(false, Ordering::Relaxed);
+        self.interrupt_handle.clear_running_bit();
         // At this point, `running` is false so no more signals will be sent to this thread,
         // but we may still receive async signals that were sent before this point.
         // To prevent those signals from interrupting subsequent calls to `run()` (on other vms!),
