@@ -59,7 +59,13 @@ When this job is done, a new [GitHub release](https://github.com/hyperlight-dev/
 - `hyperlight-host`
 
 ## Patching a release
+> Note: for this example we'll assume `v0.4.0` is already released, and you want to release a `v0.4.1` patch for it.
 
-If you need to update a previously released version of Hyperlight then you should open a Pull Request against the release branch you want to patch, for example if you wish to patch the release `v0.4.0` then you should open a PR against the `release/v0.4.0` branch.
+1. Make sure the patch/patches you want include are already merged to `main` branch.
+2. Make sure `CHANGELOG.md` is updated with the changes you want to include in the patch release (see instructions above) and is merged to `main` branch.
+3. Make sure the `Cargo.toml` versions are updated to the new patch version (e.g. `v0.4.1`), and is merged to `main` branch.
+4. Manually create a new branch **from the `release/v0.4.0` branch** and name it `release/v0.4.1`. Important: do not create the branch from `main` branch.
+5. Cherry-pick the commits from `main` that you want to include in the patch (and resolve any conflicts). You must include the commit that updated the `CHANGELOG.md` and the commit that updated the `Cargo.toml` versions.
+6. Create a tag for the patch release, e.g. `v0.4.1`, similar to the steps above. Push the tag. A job will start to try to make a new release branch for you, but it will fail because the `release/v0.4.1` branch already exists. This is expected, so don't worry about it.
+7. Follow the steps above to create a new GitHub release, but this time select the `release/v0.4.1` branch in the "Use workflow from" dropdown. This will create a new GitHub release for you, and publish the updated packages to crates.io.
 
-Once the PR is merged, then you should follow the instructions above. In this instance the version number of the tag should be a patch version, for example if you are patching the `release/v0.4.0` branch and this is the first patch release to that branch then the tag should be `v0.4.1`. If you are patching a patch release then the tag should be `v0.4.2` and the target branch should be `release/v0.4.1` and so on.
