@@ -112,9 +112,9 @@ impl
 
 /// A `GuestBinary` is either a buffer containing the binary or a path to the binary
 #[derive(Debug)]
-pub enum GuestBinary {
+pub enum GuestBinary<'a> {
     /// A buffer containing the guest binary
-    Buffer(Vec<u8>),
+    Buffer(&'a [u8]),
     /// A path to the guest binary
     FilePath(String),
 }
@@ -372,7 +372,7 @@ mod tests {
 
         let binary_path = simple_guest_as_string().unwrap();
         let sandbox =
-            UninitializedSandbox::new(GuestBinary::Buffer(fs::read(binary_path).unwrap()), None);
+            UninitializedSandbox::new(GuestBinary::Buffer(&fs::read(binary_path).unwrap()), None);
         assert!(sandbox.is_ok());
 
         // Test with a invalid guest binary buffer
@@ -380,7 +380,7 @@ mod tests {
         let binary_path = simple_guest_as_string().unwrap();
         let mut bytes = fs::read(binary_path).unwrap();
         let _ = bytes.split_off(100);
-        let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(bytes), None);
+        let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(&bytes), None);
         assert!(sandbox.is_err());
     }
 
