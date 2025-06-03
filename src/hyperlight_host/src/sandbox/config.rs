@@ -17,6 +17,8 @@ limitations under the License.
 use std::cmp::max;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use libc::c_int;
 use tracing::{instrument, Span};
 
 use crate::mem::exe::ExeInfo;
@@ -63,6 +65,14 @@ pub struct SandboxConfiguration {
     /// signal can be delivered to the thread, but the thread may not yet
     /// have entered kernel space.
     interrupt_retry_delay: Duration,
+    /// Offset from `SIGRTMIN` used to determine the signal number for interrupting
+    /// the VCPU thread. The actual signal sent is `SIGRTMIN + interrupt_vcpu_sigrtmin_offset`.
+    ///
+    /// This signal must fall within the valid real-time signal range supported by the host.
+    ///
+    /// Note: Since real-time signals can vary across platforms, ensure that the offset
+    /// results in a signal number that is not already in use by other components of the system.
+    interrupt_vcpu_sigrtmin_offset: u8,
 }
 
 impl SandboxConfiguration {
@@ -76,6 +86,8 @@ impl SandboxConfiguration {
     pub const MIN_OUTPUT_SIZE: usize = 0x2000;
     /// The default interrupt retry delay
     pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration = Duration::from_micros(500);
+    /// The default signal offset from `SIGRTMIN` used to determine the signal number for interrupting
+    pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -86,6 +98,7 @@ impl SandboxConfiguration {
         stack_size_override: Option<u64>,
         heap_size_override: Option<u64>,
         interrupt_retry_delay: Duration,
+        interrupt_vcpu_sigrtmin_offset: u8,
         #[cfg(gdb)] guest_debug_info: Option<DebugInfo>,
     ) -> Self {
         Self {
@@ -94,7 +107,7 @@ impl SandboxConfiguration {
             stack_size_override: stack_size_override.unwrap_or(0),
             heap_size_override: heap_size_override.unwrap_or(0),
             interrupt_retry_delay,
-
+            interrupt_vcpu_sigrtmin_offset,
             #[cfg(gdb)]
             guest_debug_info,
         }
@@ -134,6 +147,31 @@ impl SandboxConfiguration {
     /// Get the delay between retries for interrupts
     pub fn get_interrupt_retry_delay(&self) -> Duration {
         self.interrupt_retry_delay
+    }
+
+    /// Get the signal offset from `SIGRTMIN` used to determine the signal number for interrupting the VCPU thread
+    #[cfg(target_os = "linux")]
+    pub fn get_interrupt_vcpu_sigrtmin_offset(&self) -> u8 {
+        self.interrupt_vcpu_sigrtmin_offset
+    }
+
+    /// Sets the offset from `SIGRTMIN` to determine the real-time signal used for
+    /// interrupting the VCPU thread.
+    ///
+    /// The final signal number is computed as `SIGRTMIN + offset`, and it must fall within
+    /// the valid range of real-time signals supported by the host system.
+    ///
+    /// Returns Ok(()) if the offset is valid, or an error if it exceeds the maximum real-time signal number.
+    #[cfg(target_os = "linux")]
+    pub fn set_interrupt_vcpu_sigrtmin_offset(&mut self, offset: u8) -> crate::Result<()> {
+        if libc::SIGRTMIN() + offset as c_int > libc::SIGRTMAX() {
+            return Err(crate::new_error!(
+                "Invalid SIGRTMIN offset: {}. It exceeds the maximum real-time signal number.",
+                offset
+            ));
+        }
+        self.interrupt_vcpu_sigrtmin_offset = offset;
+        Ok(())
     }
 
     /// Sets the configuration for the guest debug
@@ -195,6 +233,7 @@ impl Default for SandboxConfiguration {
             None,
             None,
             Self::DEFAULT_INTERRUPT_RETRY_DELAY,
+            Self::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
             #[cfg(gdb)]
             None,
         )
@@ -218,6 +257,7 @@ mod tests {
             Some(STACK_SIZE_OVERRIDE),
             Some(HEAP_SIZE_OVERRIDE),
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
+            SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
             #[cfg(gdb)]
             None,
         );
@@ -244,6 +284,7 @@ mod tests {
             None,
             None,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
+            SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
             #[cfg(gdb)]
             None,
         );

@@ -20,8 +20,6 @@ use tracing::{instrument, Span};
 use crate::error::HyperlightError::ExecutionCanceledByHost;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
-#[cfg(any(kvm, mshv))]
-use crate::signal_handlers::INTERRUPT_VCPU_SIGRTMIN_OFFSET;
 use crate::{log_then_return, new_error, HyperlightError, Result};
 
 /// Util for handling x87 fpu state
@@ -357,6 +355,8 @@ pub(super) struct LinuxInterruptHandle {
     dropped: AtomicBool,
     /// Retry delay between signals sent to the vcpu thread
     retry_delay: Duration,
+    /// The offset of the SIGRTMIN signal used to interrupt the vcpu thread
+    sig_rt_min_offset: u8,
 }
 
 #[cfg(any(kvm, mshv))]
@@ -364,7 +364,7 @@ impl InterruptHandle for LinuxInterruptHandle {
     fn kill(&self) -> bool {
         self.cancel_requested.store(true, Ordering::Relaxed);
 
-        let signal_number = libc::SIGRTMIN() + INTERRUPT_VCPU_SIGRTMIN_OFFSET;
+        let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
         let mut sent_signal = false;
 
         while self.running.load(Ordering::Relaxed) {

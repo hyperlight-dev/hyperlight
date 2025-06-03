@@ -14,12 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use libc::c_int;
+
+use crate::sandbox::SandboxConfiguration;
+
 #[cfg(feature = "seccomp")]
 pub mod sigsys_signal_handler;
 
-pub(crate) const INTERRUPT_VCPU_SIGRTMIN_OFFSET: i32 = 0;
-
-pub(crate) fn setup_signal_handlers() -> crate::Result<()> {
+pub(crate) fn setup_signal_handlers(config: &SandboxConfiguration) -> crate::Result<()> {
     // This is unsafe because signal handlers only allow a very restrictive set of
     // functions (i.e., async-signal-safe functions) to be executed inside them.
     // Anything that performs memory allocations, locks, and others are non-async-signal-safe.
@@ -48,7 +50,7 @@ pub(crate) fn setup_signal_handlers() -> crate::Result<()> {
         }));
     }
     vmm_sys_util::signal::register_signal_handler(
-        libc::SIGRTMIN() + INTERRUPT_VCPU_SIGRTMIN_OFFSET,
+        libc::SIGRTMIN() + config.get_interrupt_vcpu_sigrtmin_offset() as c_int,
         vm_kill_signal,
     )?;
 

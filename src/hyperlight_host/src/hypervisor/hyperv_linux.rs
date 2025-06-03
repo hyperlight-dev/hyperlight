@@ -400,6 +400,7 @@ impl HypervLinuxDriver {
                 cancel_requested: AtomicBool::new(false),
                 tid: AtomicU64::new(unsafe { libc::pthread_self() }),
                 retry_delay: config.get_interrupt_retry_delay(),
+                sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
                 dropped: AtomicBool::new(false),
             }),
 

@@ -284,6 +284,48 @@ fn interrupt_moved_sandbox() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn interrupt_custom_signal_no_and_retry_delay() {
+    env_logger::builder().filter_level(LevelFilter::Info).init();
+    let mut config = SandboxConfiguration::default();
+    config.set_interrupt_vcpu_sigrtmin_offset(0).unwrap();
+    config.set_interrupt_retry_delay(Duration::from_secs(1));
+
+    let mut sbox1: MultiUseSandbox = UninitializedSandbox::new(
+        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+        Some(config),
+    )
+    .unwrap()
+    .evolve(Noop::default())
+    .unwrap();
+
+    let interrupt_handle = sbox1.interrupt_handle();
+    assert!(!interrupt_handle.dropped()); // not yet dropped
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+
+    const NUM_ITERS: usize = 3;
+
+    let thread = thread::spawn(move || {
+        for _ in 0..NUM_ITERS {
+            barrier2.wait();
+            // wait for the guest call to start
+            thread::sleep(Duration::from_millis(1000));
+            interrupt_handle.kill();
+        }
+    });
+
+    for _ in 0..NUM_ITERS {
+        barrier.wait();
+        let res = sbox1
+            .call_guest_function_by_name::<i32>("Spin", ())
+            .unwrap_err();
+        assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    }
+    thread.join().expect("Thread should finish");
+}
+
+#[test]
 fn print_four_args_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);

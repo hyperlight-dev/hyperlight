@@ -88,7 +88,7 @@ where
     let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(hshm.clone());
 
     #[cfg(target_os = "linux")]
-    setup_signal_handlers()?;
+    setup_signal_handlers(&u_sbox.config)?;
 
     vm.initialise(
         peb_addr,
