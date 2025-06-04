@@ -560,7 +560,7 @@ impl Hypervisor for KVMDriver {
         let cancel_requested = self
             .interrupt_handle
             .cancel_requested
-            .swap(false, Ordering::Relaxed);
+            .load(Ordering::Relaxed);
         // Note: if a `InterruptHandle::kill()` called while this thread is **here**
         // Then `cancel_requested` will be set to true again, which will cancel the **next vcpu run**.
         // Additionally signals will be sent to this thread until `running` is set to false.
@@ -625,6 +625,9 @@ impl Hypervisor for KVMDriver {
                     // If cancellation was not requested for this specific vm, the vcpu was interrupted because of stale signal
                     // that was meant to be delivered to a previous/other vcpu on this same thread, so let's ignore it
                     if cancel_requested {
+                        self.interrupt_handle
+                            .cancel_requested
+                            .store(false, Ordering::Relaxed);
                         HyperlightExit::Cancelled()
                     } else {
                         HyperlightExit::Retry()
