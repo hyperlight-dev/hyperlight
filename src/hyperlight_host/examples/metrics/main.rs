@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@ limitations under the License.
 */
 #![allow(clippy::disallowed_macros)]
 extern crate hyperlight_host;
+use std::sync::{Arc, Barrier};
 use std::thread::{spawn, JoinHandle};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
@@ -95,12 +96,27 @@ fn do_hyperlight_stuff() {
     let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
 
     let mut multiuse_sandbox = usandbox.evolve(no_op).expect("Failed to evolve sandbox");
+    let interrupt_handle = multiuse_sandbox.interrupt_handle();
+
+    const NUM_CALLS: i32 = 5;
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+
+    let thread = std::thread::spawn(move || {
+        for _ in 0..NUM_CALLS {
+            barrier2.wait();
+            // Sleep for a short time to allow the guest function to run after the `wait`.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Cancel the host function call.
+            interrupt_handle.kill();
+        }
+    });
 
     // Call a function that gets cancelled by the host function 5 times to generate some metrics.
 
-    for _ in 0..5 {
+    for _ in 0..NUM_CALLS {
         let mut ctx = multiuse_sandbox.new_call_context();
-
+        barrier.wait();
         ctx.call::<()>("Spin", ()).unwrap_err();
         multiuse_sandbox = ctx.finish().unwrap();
     }
@@ -109,6 +125,7 @@ fn do_hyperlight_stuff() {
         let result = join_handle.join();
         assert!(result.is_ok());
     }
+    thread.join().unwrap();
 }
 
 fn fn_writer(_msg: String) -> Result<i32> {

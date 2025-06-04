@@ -1,3 +1,19 @@
+/*
+Copyright 2025 The Hyperlight Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 use alloc::boxed::Box;
 use alloc::slice;
 use alloc::vec::Vec;
@@ -8,9 +24,9 @@ use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
-use hyperlight_guest::guest_function_register::GuestFunctionRegister;
-use hyperlight_guest::host_function_call::call_host_function_internal;
+use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
+use hyperlight_guest_bin::guest_function::register::GuestFunctionRegister;
+use hyperlight_guest_bin::host_comm::call_host_function_without_returning_result;
 
 use crate::types::{FfiFunctionCall, FfiVec};
 static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister = GuestFunctionRegister::new();
@@ -95,6 +111,6 @@ pub extern "C" fn hl_call_host_function(function_call: &FfiFunctionCall) {
 
     // Use the non-generic internal implementation
     // The C API will then call specific getter functions to fetch the properly typed return value
-    let _ = call_host_function_internal(&func_name, Some(parameters), return_type)
+    let _ = call_host_function_without_returning_result(&func_name, Some(parameters), return_type)
         .expect("Failed to call host function");
 }

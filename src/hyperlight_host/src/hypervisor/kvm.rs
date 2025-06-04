@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,8 +16,10 @@ limitations under the License.
 
 use std::convert::TryFrom;
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 #[cfg(gdb)]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region, KVM_MEM_READONLY};
 use kvm_ioctls::Cap::UserMemory;
@@ -32,12 +34,13 @@ use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::{
-    HyperlightExit, Hypervisor, VirtualCPU, CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP,
-    CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+    HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU, CR0_AM, CR0_ET,
+    CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE, EFER_LMA,
+    EFER_LME, EFER_NX, EFER_SCE,
 };
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::sandbox::SandboxConfiguration;
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::{log_then_return, new_error, Result};
@@ -274,13 +277,14 @@ mod debug {
 }
 
 /// A Hypervisor driver for KVM on Linux
-pub(super) struct KVMDriver {
+pub(crate) struct KVMDriver {
     _kvm: Kvm,
     _vm_fd: VmFd,
     vcpu_fd: VcpuFd,
     entrypoint: u64,
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
+    interrupt_handle: Arc<LinuxInterruptHandle>,
 
     #[cfg(gdb)]
     debug: Option<KvmDebug>,
@@ -293,11 +297,12 @@ impl KVMDriver {
     /// set. Standard registers will not be set, and `initialise` must
     /// be called to do so.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn new(
+    pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
         pml4_addr: u64,
         entrypoint: u64,
         rsp: u64,
+        config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     ) -> Result<Self> {
         let kvm = Kvm::new()?;
@@ -345,13 +350,20 @@ impl KVMDriver {
             entrypoint,
             orig_rsp: rsp_gp,
             mem_regions,
+            interrupt_handle: Arc::new(LinuxInterruptHandle {
+                running: AtomicU64::new(0),
+                cancel_requested: AtomicBool::new(false),
+                tid: AtomicU64::new(unsafe { libc::pthread_self() }),
+                retry_delay: config.get_interrupt_retry_delay(),
+                dropped: AtomicBool::new(false),
+                sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+            }),
 
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
             gdb_conn,
         };
-
         Ok(ret)
     }
 
@@ -406,7 +418,6 @@ impl Hypervisor for KVMDriver {
         page_size: u32,
         outb_hdl: OutBHandlerWrapper,
         mem_access_hdl: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
@@ -431,7 +442,6 @@ impl Hypervisor for KVMDriver {
 
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            hv_handler,
             outb_hdl,
             mem_access_hdl,
             #[cfg(gdb)]
@@ -447,7 +457,6 @@ impl Hypervisor for KVMDriver {
         dispatch_func_addr: RawPtr,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -470,7 +479,6 @@ impl Hypervisor for KVMDriver {
         // run
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            hv_handler,
             outb_handle_fn,
             mem_access_fn,
             #[cfg(gdb)]
@@ -513,7 +521,55 @@ impl Hypervisor for KVMDriver {
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn run(&mut self) -> Result<HyperlightExit> {
-        let exit_reason = self.vcpu_fd.run();
+        self.interrupt_handle
+            .tid
+            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Relaxed);
+        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+        // Then this is fine since `cancel_requested` is set to true, so we will skip the `VcpuFd::run()` call
+        self.interrupt_handle
+            .set_running_and_increment_generation()
+            .map_err(|e| {
+                new_error!(
+                    "Error setting running state and incrementing generation: {}",
+                    e
+                )
+            })?;
+        // Don't run the vcpu if `cancel_requested` is true
+        //
+        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+        // Then this is fine since `cancel_requested` is set to true, so we will skip the `VcpuFd::run()` call
+        let exit_reason = if self
+            .interrupt_handle
+            .cancel_requested
+            .load(Ordering::Relaxed)
+        {
+            Err(kvm_ioctls::Error::new(libc::EINTR))
+        } else {
+            // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+            // Then the vcpu will run, but we will keep sending signals to this thread
+            // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
+            // return either normally with an exit reason, or from being "kicked" by out signal handler, with an EINTR error,
+            // both of which are fine.
+            self.vcpu_fd.run()
+        };
+        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+        // Then signals will be sent to this thread until `running` is set to false.
+        // This is fine since the signal handler is a no-op.
+        #[allow(unused_variables)]
+        // The variable is only used when `cfg(not(gdb))`, but the flag needs to be reset always anyway
+        let cancel_requested = self
+            .interrupt_handle
+            .cancel_requested
+            .swap(false, Ordering::Relaxed);
+        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
+        // Then `cancel_requested` will be set to true again, which will cancel the **next vcpu run**.
+        // Additionally signals will be sent to this thread until `running` is set to false.
+        // This is fine since the signal handler is a no-op.
+        self.interrupt_handle.clear_running_bit();
+        // At this point, `running` is false so no more signals will be sent to this thread,
+        // but we may still receive async signals that were sent before this point.
+        // To prevent those signals from interrupting subsequent calls to `run()` (on other vms!),
+        // we make sure to check `cancel_requested` before cancelling (see `libc::EINTR` match-arm below).
         let result = match exit_reason {
             Ok(VcpuExit::Hlt) => {
                 crate::debug!("KVM - Halt Details : {:#?}", &self);
@@ -565,7 +621,15 @@ impl Hypervisor for KVMDriver {
                 libc::EINTR => HyperlightExit::Debug(VcpuStopReason::Interrupt),
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
                 #[cfg(not(gdb))]
-                libc::EINTR => HyperlightExit::Cancelled(),
+                libc::EINTR => {
+                    // If cancellation was not requested for this specific vm, the vcpu was interrupted because of stale signal
+                    // that was meant to be delivered to a previous/other vcpu on this same thread, so let's ignore it
+                    if cancel_requested {
+                        HyperlightExit::Cancelled()
+                    } else {
+                        HyperlightExit::Retry()
+                    }
+                }
                 libc::EAGAIN => HyperlightExit::Retry(),
                 _ => {
                     crate::debug!("KVM Error -Details: Address: {} \n {:#?}", e, &self);
@@ -584,6 +648,10 @@ impl Hypervisor for KVMDriver {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
         self as &mut dyn Hypervisor
+    }
+
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+        self.interrupt_handle.clone()
     }
 
     #[cfg(crashdump)]
@@ -634,58 +702,8 @@ impl Hypervisor for KVMDriver {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-
-    #[cfg(gdb)]
-    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
-    use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
-    use crate::hypervisor::tests::test_initialise;
-    use crate::Result;
-
-    #[cfg(gdb)]
-    struct DbgMemAccessHandler {}
-
-    #[cfg(gdb)]
-    impl DbgMemAccessHandlerCaller for DbgMemAccessHandler {
-        fn read(&mut self, _offset: usize, _data: &mut [u8]) -> Result<()> {
-            Ok(())
-        }
-
-        fn write(&mut self, _offset: usize, _data: &[u8]) -> Result<()> {
-            Ok(())
-        }
-
-        fn get_code_offset(&mut self) -> Result<usize> {
-            Ok(0)
-        }
-    }
-
-    #[test]
-    fn test_init() {
-        if !super::is_hypervisor_present() {
-            return;
-        }
-
-        let outb_handler: Arc<Mutex<OutBHandler>> = {
-            let func: Box<dyn FnMut(u16, u32) -> Result<()> + Send> =
-                Box::new(|_, _| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(OutBHandler::from(func)))
-        };
-        let mem_access_handler = {
-            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(MemAccessHandler::from(func)))
-        };
-        #[cfg(gdb)]
-        let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
-
-        test_initialise(
-            outb_handler,
-            mem_access_handler,
-            #[cfg(gdb)]
-            dbg_mem_access_handler,
-        )
-        .unwrap();
+impl Drop for KVMDriver {
+    fn drop(&mut self) {
+        self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
     }
 }

@@ -142,15 +142,14 @@ To replicate the above behavior using VSCode follow the below steps:
 ## How it works
 
 The gdb feature is designed to work like a Request - Response protocol between
-a thread that accepts commands from a gdb client and the hypervisor handler over
-a communication channel.
+a thread that accepts commands from a gdb client and main thread of the sandbox.
 
 All the functionality is implemented on the hypervisor side so it has access to
 the shared memory and the vCPU.
 
 The gdb thread uses the `gdbstub` crate to handle the communication with the gdb client.
 When the gdb client requests one of the supported features mentioned above, a request
-is sent over the communication channel to the hypervisor handler for the sandbox
+is sent over the communication channel to the main thread for the sandbox
 to resolve.
 
 Below is a sequence diagram that shows the interaction between the entities
@@ -161,7 +160,7 @@ involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or 
                                │                                       Hyperlight Sandbox                                      │
      USER                      │                                                                                               │
 ┌────────────┐                 │  ┌──────────────┐                      ┌───────────────────────────┐              ┌────────┐  │
-│ gdb client │                 │  │  gdb thread  │                      │ hypervisor handler thread │              │  vCPU  │  │
+│ gdb client │                 │  │  gdb thread  │                      │  main sandbox thread      │              │  vCPU  │  │
 └────────────┘                 │  └──────────────┘                      └───────────────────────────┘              └────────┘  │
       |                        │          |               create_gdb_thread           |                                 |      │
       |                        │          |◄─────────────────────────────────────────┌─┐         vcpu stopped          ┌─┐     │

@@ -87,11 +87,9 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result_from_int;
 
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
-use hyperlight_guest::guest_function_register::register_function;
-use hyperlight_guest::host_function_call::{
-    call_host_function, get_host_value_return_as_int,
-};
+use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
+use hyperlight_guest_bin::guest_function::register::register_function;
+use hyperlight_guest_bin::host_comm::{call_host_function, call_host_function_without_returning_result};
 
 fn print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
@@ -145,9 +143,9 @@ the [./src/tests/rust_guests](./src/tests/rust_guests) directory for Rust guests
     - [src/hyperlight_host](./src/hyperlight_host) - This is the Rust Hyperlight host library.
 
 - Hyperlight Guest Libraries (i.e., the ones to make it easier to create guests that run inside the VMs)
-    - [src/hyperlight_guest](./src/hyperlight_guest) - This is the Rust Hyperlight guest library.
-    - [src/hyperlight_guest_capi](./src/hyperlight_guest_capi) - This is the C compatible wrapper for the Hyperlight
-      guest library.
+    - [src/hyperlight_guest](./src/hyperlight_guest) - The core Rust library for Hyperlight guests. It provides only the essential building blocks for interacting with the host environment, including the VM exit mechanism (`outb`), abstractions for calling host functions and receiving return values, and the input/output stacks used for guest-host communication.
+    - [src/hyperlight_guest_bin](./src/hyperlight_guest_bin/) - An extension to the core Rust library for Hyperlight guests. It contains more opinionated components (e.g., panic handler, heap initialization, musl-specific imports, logging, and exception handling).
+    - [src/hyperlight_guest_capi](./src/hyperlight_guest_capi) - A C-compatible wrapper around `hyperlight_guest_bin`, exposing its core functionality for use in C programs and other languages via FFI.
 
 - Hyperlight Common (functionality used by both the host and the guest)
     - [src/hyperlight_common](./src/hyperlight_common)

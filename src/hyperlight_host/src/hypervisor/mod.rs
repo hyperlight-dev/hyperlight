@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,11 +33,10 @@ pub mod hyperv_linux;
 #[cfg(target_os = "windows")]
 /// Hyperv-on-windows functionality
 pub(crate) mod hyperv_windows;
-pub(crate) mod hypervisor_handler;
 
 /// GDB debugging support
 #[cfg(gdb)]
-mod gdb;
+pub(crate) mod gdb;
 
 #[cfg(kvm)]
 /// Functionality to manipulate KVM-based virtual machines
@@ -60,7 +59,11 @@ pub(crate) mod crashdump;
 
 use std::fmt::Debug;
 use std::str::FromStr;
+#[cfg(any(kvm, mshv))]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(any(kvm, mshv))]
+use std::time::Duration;
 
 #[cfg(gdb)]
 use gdb::VcpuStopReason;
@@ -70,7 +73,6 @@ use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use self::handlers::{
     MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
 };
-use crate::hypervisor::hypervisor_handler::HypervisorHandler;
 use crate::mem::ptr::RawPtr;
 
 pub(crate) const CR4_PAE: u64 = 1 << 5;
@@ -111,10 +113,6 @@ pub enum HyperlightExit {
 }
 
 /// A common set of hypervisor functionality
-///
-/// Note: a lot of these structures take in an `Option<HypervisorHandler>`.
-/// This is because, if we are coming from the C API, we don't have a HypervisorHandler and have
-/// to account for the fact the Hypervisor was set up beforehand.
 pub(crate) trait Hypervisor: Debug + Sync + Send {
     /// Initialise the internally stored vCPU with the given PEB address and
     /// random number seed, then run it until a HLT instruction.
@@ -126,7 +124,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         page_size: u32,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
@@ -143,7 +140,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         dispatch_func_addr: RawPtr,
         outb_handle_fn: OutBHandlerWrapper,
         mem_access_fn: MemAccessHandlerWrapper,
-        hv_handler: Option<HypervisorHandler>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
 
@@ -187,6 +183,9 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         None
     }
 
+    /// Get InterruptHandle to underlying VM
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
+
     /// Get the logging level to pass to the guest entrypoint
     fn get_max_log_level(&self) -> u32 {
         // Check to see if the RUST_LOG environment variable is set
@@ -227,10 +226,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     /// get a mutable trait object from self
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor;
 
-    /// Get the partition handle for WHP
-    #[cfg(target_os = "windows")]
-    fn get_partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
-
     #[cfg(crashdump)]
     fn get_memory_regions(&self) -> &[MemoryRegion];
 
@@ -253,7 +248,6 @@ impl VirtualCPU {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub fn run(
         hv: &mut dyn Hypervisor,
-        hv_handler: Option<HypervisorHandler>,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
@@ -301,13 +295,6 @@ impl VirtualCPU {
                 Ok(HyperlightExit::Cancelled()) => {
                     // Shutdown is returned when the host has cancelled execution
                     // After termination, the main thread will re-initialize the VM
-                    if let Some(hvh) = hv_handler {
-                        // If hvh is None, then we are running from the C API, which doesn't use
-                        // the HypervisorHandler
-                        hvh.set_running(false);
-                        #[cfg(target_os = "linux")]
-                        hvh.set_run_cancelled(true);
-                    }
                     metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
                     log_then_return!(ExecutionCanceledByHost());
                 }
@@ -331,84 +318,199 @@ impl VirtualCPU {
     }
 }
 
+/// A trait for handling interrupts to a sandbox's vcpu
+pub trait InterruptHandle: Send + Sync {
+    /// Interrupt the corresponding sandbox from running.
+    ///
+    /// - If this is called while the vcpu is running, then it will interrupt the vcpu and return `true`.
+    /// - If this is called while the vcpu is not running, (for example during a host call), the
+    ///     vcpu will not immediately be interrupted, but will prevent the vcpu from running **the next time**
+    ///     it's scheduled, and returns `false`.
+    ///
+    /// # Note
+    /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
+    fn kill(&self) -> bool;
+
+    /// Returns true iff the corresponding sandbox has been dropped
+    fn dropped(&self) -> bool;
+}
+
+#[cfg(any(kvm, mshv))]
+#[derive(Debug)]
+pub(super) struct LinuxInterruptHandle {
+    /// Invariant: vcpu is running => most significant bit (63) of `running` is set. (Neither converse nor inverse is true)
+    ///
+    /// Additionally, bit 0-62 tracks how many times the VCPU has been run. Incremented each time `run()` is called.
+    ///
+    /// This prevents an ABA problem where:
+    /// 1. The VCPU is running (generation N),
+    /// 2. It gets cancelled,
+    /// 3. Then quickly restarted (generation N+1),
+    ///     before the original thread has observed that it was cancelled.
+    ///
+    /// Without this generation counter, the interrupt logic might assume the VCPU is still
+    /// in the *original* run (generation N), see that it's `running`, and re-send the signal.
+    /// But the new VCPU run (generation N+1) would treat this as a stale signal and ignore it,
+    /// potentially causing an infinite loop where no effective interrupt is delivered.
+    ///
+    /// Invariant: If the VCPU is running, `run_generation[bit 0-62]` matches the current run's generation.
+    running: AtomicU64,
+    /// Invariant: vcpu is running => `tid` is the thread on which it is running.
+    /// Note: multiple vms may have the same `tid`, but at most one vm will have `running` set to true.
+    tid: AtomicU64,
+    /// True when an "interruptor" has requested the VM to be cancelled. Set immediately when
+    /// `kill()` is called, and cleared when the vcpu is no longer running.
+    /// This is used to
+    /// 1. make sure stale signals do not interrupt the
+    ///     the wrong vcpu (a vcpu may only be interrupted iff `cancel_requested` is true),
+    /// 2. ensure that if a vm is killed while a host call is running,
+    ///     the vm will not re-enter the guest after the host call returns.
+    cancel_requested: AtomicBool,
+    /// Whether the corresponding vm is dropped
+    dropped: AtomicBool,
+    /// Retry delay between signals sent to the vcpu thread
+    retry_delay: Duration,
+    /// The offset of the SIGRTMIN signal used to interrupt the vcpu thread
+    sig_rt_min_offset: u8,
+}
+
+#[cfg(any(kvm, mshv))]
+impl LinuxInterruptHandle {
+    const RUNNING_BIT: u64 = 1 << 63;
+    const MAX_GENERATION: u64 = Self::RUNNING_BIT - 1;
+
+    // set running to true and increment the generation. Generation will wrap around at `MAX_GENERATION`.
+    fn set_running_and_increment_generation(&self) -> std::result::Result<u64, u64> {
+        self.running
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |raw| {
+                let generation = raw & !Self::RUNNING_BIT;
+                if generation == Self::MAX_GENERATION {
+                    // restart generation from 0
+                    return Some(Self::RUNNING_BIT);
+                }
+                Some((generation + 1) | Self::RUNNING_BIT)
+            })
+    }
+
+    // clear the running bit and return the generation
+    fn clear_running_bit(&self) -> u64 {
+        self.running
+            .fetch_and(!Self::RUNNING_BIT, Ordering::Relaxed)
+    }
+
+    fn get_running_and_generation(&self) -> (bool, u64) {
+        let raw = self.running.load(Ordering::Relaxed);
+        let running = raw & Self::RUNNING_BIT != 0;
+        let generation = raw & !Self::RUNNING_BIT;
+        (running, generation)
+    }
+}
+
+#[cfg(any(kvm, mshv))]
+impl InterruptHandle for LinuxInterruptHandle {
+    fn kill(&self) -> bool {
+        self.cancel_requested.store(true, Ordering::Relaxed);
+
+        let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
+        let mut sent_signal = false;
+        let mut target_generation: Option<u64> = None;
+
+        loop {
+            let (running, generation) = self.get_running_and_generation();
+
+            if !running {
+                break;
+            }
+
+            match target_generation {
+                None => target_generation = Some(generation),
+                // prevent ABA problem
+                Some(expected) if expected != generation => break,
+                _ => {}
+            }
+
+            log::info!("Sending signal to kill vcpu thread...");
+            sent_signal = true;
+            unsafe {
+                libc::pthread_kill(self.tid.load(Ordering::Relaxed) as _, signal_number);
+            }
+            std::thread::sleep(self.retry_delay);
+        }
+
+        sent_signal
+    }
+    fn dropped(&self) -> bool {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
 #[cfg(all(test, any(target_os = "windows", kvm)))]
 pub(crate) mod tests {
-    use std::path::Path;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
 
     use hyperlight_testing::dummy_guest_as_string;
 
+    use super::handlers::{MemAccessHandler, OutBHandler};
     #[cfg(gdb)]
-    use super::handlers::DbgMemAccessHandlerWrapper;
-    use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
-    use crate::hypervisor::hypervisor_handler::{
-        HvHandlerConfig, HypervisorHandler, HypervisorHandlerAction,
-    };
+    use crate::hypervisor::DbgMemAccessHandlerCaller;
     use crate::mem::ptr::RawPtr;
     use crate::sandbox::uninitialized::GuestBinary;
+    use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
-    use crate::{new_error, Result};
+    use crate::{is_hypervisor_present, new_error, Result};
 
-    pub(crate) fn test_initialise(
-        outb_hdl: OutBHandlerWrapper,
-        mem_access_hdl: MemAccessHandlerWrapper,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> Result<()> {
-        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
-        if !Path::new(&filename).exists() {
-            return Err(new_error!(
-                "test_initialise: file {} does not exist",
-                filename
-            ));
+    #[cfg(gdb)]
+    struct DbgMemAccessHandler {}
+
+    #[cfg(gdb)]
+    impl DbgMemAccessHandlerCaller for DbgMemAccessHandler {
+        fn read(&mut self, _offset: usize, _data: &mut [u8]) -> Result<()> {
+            Ok(())
         }
 
-        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), None)?;
-        let (hshm, gshm) = sandbox.mgr.build();
-        drop(hshm);
+        fn write(&mut self, _offset: usize, _data: &[u8]) -> Result<()> {
+            Ok(())
+        }
 
-        let hv_handler_config = HvHandlerConfig {
-            outb_handler: outb_hdl,
-            mem_access_handler: mem_access_hdl,
-            #[cfg(gdb)]
-            dbg_mem_access_handler: dbg_mem_access_fn,
-            seed: 1234567890,
-            page_size: 4096,
-            peb_addr: RawPtr::from(0x230000),
-            dispatch_function_addr: Arc::new(Mutex::new(None)),
-            max_init_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_INITIALIZATION_TIME as u64,
-            ),
-            max_exec_time: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_EXECUTION_TIME as u64,
-            ),
-            max_wait_for_cancellation: Duration::from_millis(
-                SandboxConfiguration::DEFAULT_MAX_WAIT_FOR_CANCELLATION as u64,
-            ),
-            max_guest_log_level: None,
+        fn get_code_offset(&mut self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn test_initialise() -> Result<()> {
+        if !is_hypervisor_present() {
+            return Ok(());
+        }
+
+        let outb_handler: Arc<Mutex<OutBHandler>> = {
+            let func: Box<dyn FnMut(u16, u32) -> Result<()> + Send> =
+                Box::new(|_, _| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(OutBHandler::from(func)))
         };
+        let mem_access_handler = {
+            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(MemAccessHandler::from(func)))
+        };
+        #[cfg(gdb)]
+        let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
 
-        let mut hv_handler = HypervisorHandler::new(hv_handler_config);
+        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
 
-        // call initialise on the hypervisor implementation with specific values
-        // for PEB (process environment block) address, seed and page size.
-        //
-        // these values are not actually used, they're just checked inside
-        // the dummy guest, and if they don't match these values, the dummy
-        // guest issues a write to an invalid memory address, which in turn
-        // fails this test.
-        //
-        // in this test, we're not actually testing whether a guest can issue
-        // memory operations, call functions, etc... - we're just testing
-        // whether we can configure the shared memory region, load a binary
-        // into it, and run the CPU to completion (e.g., a HLT interrupt)
-
-        hv_handler.start_hypervisor_handler(
-            gshm,
-            #[cfg(gdb)]
+        let config: SandboxConfiguration = Default::default();
+        let sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
+        let (_hshm, mut gshm) = sandbox.mgr.build();
+        let mut vm = set_up_hypervisor_partition(&mut gshm, &config)?;
+        vm.initialise(
+            RawPtr::from(0x230000),
+            1234567890,
+            4096,
+            outb_handler,
+            mem_access_handler,
             None,
-        )?;
-
-        hv_handler.execute_hypervisor_handler_action(HypervisorHandlerAction::Initialise)
+            #[cfg(gdb)]
+            dbg_mem_access_handler,
+        )
     }
 }

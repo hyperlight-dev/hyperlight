@@ -63,8 +63,6 @@ Make sure that you keep commits small and focused. Each commit should represent 
 Make sure that you arrange your commits in a logical order. You can use `git rebase -i` to do this.
 If you update your PR branch with new commits, make sure to rebase your branch on top of the main branch. This will help keep the commit history clean and make it easier to review your changes.
 Make sure that you do not have any merge commits in your PR.
-If when running tests you receive an Error like this "Error("No Hypervisor was found for Sandbox, Hypervisor Handler Message Receive Timedout")" then the real error is the string inside the brackets before the comma, so in this example
-the error is "No Hypervisor was found for Sandbox".
 If you see the error "No Hypervisor was found for Sandbox" then you if you are running on Linux you should check to see if there is a device called "kvm" or "mshv" in `/dev` and if it is present you should also check to see if you have rw access to it. You should ensure that you output the results of these checks for diagnostic purposes. 
 This repository requires commits to be signed you should ensure that any commits that you create are done with `commit.gpgsign=true`. Also commits should also be signed with the `--signoff` option to comply with the DCO requirement.
 
@@ -76,6 +74,7 @@ This repository requires commits to be signed you should ensure that any commits
 - `fuzz` - contains the fuzzing tests for the project
 - `src/hyperlight_common/` - contains the common code shared between the host and guest
 - `src/hyperlight_guest/` - contains the hyperlight-guest library code
+- `src/hyperlight_guest_bin/` - contains the hyperlight-guest-bin library code
 - `src/hyperlight_host/` - contains the hyperlight-host library code
 - `src/hyperlight_guest_capi/` - contains the hyperlight-guest C library code
 - `src/hyperlight_testing/` - contains the shared code for tests

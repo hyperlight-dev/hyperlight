@@ -34,7 +34,7 @@ unsigned long strtoul (const char *__restrict, char **__restrict, int);
 long long strtoll (const char *__restrict, char **__restrict, int);
 unsigned long long strtoull (const char *__restrict, char **__restrict, int);
 
-// These 5 functions are implemented in rust in hyperlight_guest
+// These 5 functions are implemented in rust in hyperlight_guest_bin
 _Noreturn void abort (void);
 void *malloc (size_t);
 void *calloc (size_t, size_t);

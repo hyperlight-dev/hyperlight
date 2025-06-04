@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ limitations under the License.
 
 use core::arch::global_asm;
 
-use crate::exceptions::handlers::hl_exception_handler;
+use crate::exceptions::handler::hl_exception_handler;
 
 unsafe extern "C" {
     // Exception handlers

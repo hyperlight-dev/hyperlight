@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,13 +18,10 @@ use std::fmt::Debug;
 use std::option::Option;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use log::LevelFilter;
 use tracing::{instrument, Span};
 
-#[cfg(gdb)]
-use super::config::DebugInfo;
 use super::host_funcs::{default_writer_func, FunctionRegistry};
 use super::mem_mgr::MemMgrWrapper;
 use super::uninitialized_evolve::evolve_impl_multi_use;
@@ -67,12 +64,8 @@ pub struct UninitializedSandbox {
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
     /// The memory manager for the sandbox.
     pub(crate) mgr: MemMgrWrapper<ExclusiveSharedMemory>,
-    pub(crate) max_initialization_time: Duration,
-    pub(crate) max_execution_time: Duration,
-    pub(crate) max_wait_for_cancellation: Duration,
     pub(crate) max_guest_log_level: Option<LevelFilter>,
-    #[cfg(gdb)]
-    pub(crate) debug_info: Option<DebugInfo>,
+    pub(crate) config: SandboxConfiguration,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -119,9 +112,9 @@ impl
 
 /// A `GuestBinary` is either a buffer containing the binary or a path to the binary
 #[derive(Debug)]
-pub enum GuestBinary {
+pub enum GuestBinary<'a> {
     /// A buffer containing the guest binary
-    Buffer(Vec<u8>),
+    Buffer(&'a [u8]),
     /// A path to the guest binary
     FilePath(String),
 }
@@ -164,8 +157,6 @@ impl UninitializedSandbox {
 
         let sandbox_cfg = cfg.unwrap_or_default();
 
-        #[cfg(gdb)]
-        let debug_info = sandbox_cfg.get_guest_debug_info();
         let mut mem_mgr_wrapper = {
             let mut mgr = UninitializedSandbox::load_guest_binary(sandbox_cfg, &guest_binary)?;
             let stack_guard = Self::create_stack_guard();
@@ -180,16 +171,8 @@ impl UninitializedSandbox {
         let mut sandbox = Self {
             host_funcs,
             mgr: mem_mgr_wrapper,
-            max_initialization_time: Duration::from_millis(
-                sandbox_cfg.get_max_initialization_time() as u64,
-            ),
-            max_execution_time: Duration::from_millis(sandbox_cfg.get_max_execution_time() as u64),
-            max_wait_for_cancellation: Duration::from_millis(
-                sandbox_cfg.get_max_wait_for_cancellation() as u64,
-            ),
             max_guest_log_level: None,
-            #[cfg(gdb)]
-            debug_info,
+            config: sandbox_cfg,
         };
 
         // If we were passed a writer for host print register it otherwise use the default.
@@ -336,7 +319,6 @@ fn check_windows_version() -> Result<()> {
 mod tests {
     use std::sync::mpsc::channel;
     use std::sync::Arc;
-    use std::time::Duration;
     use std::{fs, thread};
 
     use crossbeam_queue::ArrayQueue;
@@ -372,8 +354,6 @@ mod tests {
             cfg.set_output_data_size(0x1000);
             cfg.set_stack_size(0x1000);
             cfg.set_heap_size(0x1000);
-            cfg.set_max_execution_time(Duration::from_millis(1001));
-            cfg.set_max_execution_cancel_wait_time(Duration::from_millis(9));
             Some(cfg)
         };
 
@@ -392,7 +372,7 @@ mod tests {
 
         let binary_path = simple_guest_as_string().unwrap();
         let sandbox =
-            UninitializedSandbox::new(GuestBinary::Buffer(fs::read(binary_path).unwrap()), None);
+            UninitializedSandbox::new(GuestBinary::Buffer(&fs::read(binary_path).unwrap()), None);
         assert!(sandbox.is_ok());
 
         // Test with a invalid guest binary buffer
@@ -400,7 +380,7 @@ mod tests {
         let binary_path = simple_guest_as_string().unwrap();
         let mut bytes = fs::read(binary_path).unwrap();
         let _ = bytes.split_off(100);
-        let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(bytes), None);
+        let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(&bytes), None);
         assert!(sandbox.is_err());
     }
 

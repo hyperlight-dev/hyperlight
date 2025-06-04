@@ -6,7 +6,7 @@ for CRATE in "$@"; do
     if ! rustup toolchain list | grep -q "$VERSION"; then
         rustup --quiet toolchain install "$VERSION" --no-self-update --profile minimal
     fi
-    if [[ "$CRATE" == "hyperlight-guest" ]]; then
+    if [[ "$CRATE" == "hyperlight-guest"  || "$CRATE" == "hyperlight-guest-bin" ]]; then
         TARGET="x86_64-unknown-none"
         rustup target add "$TARGET" --toolchain "$VERSION" >/dev/null
         if cargo +"$VERSION" check --quiet -p "$CRATE" --target "$TARGET"; then

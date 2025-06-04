@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,9 +16,10 @@ limitations under the License.
 
 use alloc::format;
 
+use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use log::{LevelFilter, Metadata, Record};
 
-use crate::logging::log_message;
+use crate::GUEST_HANDLE;
 
 // this is private on purpose so that `log` can only be called though the `log!` macros.
 struct GuestLogger {}
@@ -39,8 +40,9 @@ impl log::Log for GuestLogger {
     }
 
     fn log(&self, record: &Record) {
+        let handle = unsafe { GUEST_HANDLE };
         if self.enabled(record.metadata()) {
-            log_message(
+            handle.log_message(
                 record.level().into(),
                 format!("{}", record.args()).as_str(),
                 record.module_path().unwrap_or("Unknown"),
@@ -52,4 +54,16 @@ impl log::Log for GuestLogger {
     }
 
     fn flush(&self) {}
+}
+
+pub fn log_message(
+    level: LogLevel,
+    message: &str,
+    module_path: &str,
+    target: &str,
+    file: &str,
+    line: u32,
+) {
+    let handle = unsafe { GUEST_HANDLE };
+    handle.log_message(level, message, module_path, target, file, line);
 }

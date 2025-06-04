@@ -12,7 +12,8 @@ crate-type = ["staticlib"]
 workspace = true
 
 [dependencies]
-hyperlight-guest = { workspace = true, default-features = true }
+hyperlight-guest = { workspace = true, default-features = false }
+hyperlight-guest-bin = { workspace = true, default-features = true }
 hyperlight-common = { workspace = true, default-features = false }
 log = { version = "0.4", default-features = false }
 

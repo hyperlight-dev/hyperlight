@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,10 +20,7 @@ use core::mem::{align_of, size_of};
 use core::ptr;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-
-use crate::entrypoint::abort_with_code;
-
-extern crate alloc;
+use hyperlight_guest::exit::abort_with_code;
 
 /*
     C-wrappers for Rust's registered global allocator.

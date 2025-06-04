@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -41,13 +41,15 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::mem::PAGE_SIZE;
-use hyperlight_guest::entrypoint::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-use hyperlight_guest::guest_function_definition::GuestFunctionDefinition;
-use hyperlight_guest::guest_function_register::register_function;
-use hyperlight_guest::host_function_call::{call_host_function, call_host_function_internal};
-use hyperlight_guest::memory::malloc;
-use hyperlight_guest::{logging, MIN_STACK_ADDRESS};
+use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
+use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
+use hyperlight_guest_bin::guest_function::register::register_function;
+use hyperlight_guest_bin::host_comm::{
+    call_host_function, call_host_function_without_returning_result,
+};
+use hyperlight_guest_bin::memory::malloc;
+use hyperlight_guest_bin::{guest_logger, MIN_STACK_ADDRESS};
 use log::{error, LevelFilter};
 
 extern crate hyperlight_guest;
@@ -1144,7 +1146,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
 
     let message = "Hi this is a log message that will overwrite the shared buffer if the stack is not working correctly";
 
-    logging::log_message(
+    guest_logger::log_message(
         LogLevel::Information,
         message,
         "source",
@@ -1194,9 +1196,13 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
 
     // Because we do not know at compile time the actual return type of the host function to be called
     // we cannot use the `call_host_function<T>` generic function.
-    // We need to use the `call_host_function_internal` function that does not retrieve the return
+    // We need to use the `call_host_function_without_returning_result` function that does not retrieve the return
     // value
-    call_host_function_internal(&host_func_name, Some(params), func.expected_return_type)
-        .expect("failed to call host function");
+    call_host_function_without_returning_result(
+        &host_func_name,
+        Some(params),
+        func.expected_return_type,
+    )
+    .expect("failed to call host function");
     Ok(get_flatbuffer_result(()))
 }

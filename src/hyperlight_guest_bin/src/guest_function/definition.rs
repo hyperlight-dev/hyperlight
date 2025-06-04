@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,8 +20,7 @@ use alloc::vec::Vec;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-
-use crate::error::{HyperlightGuestError, Result};
+use hyperlight_guest::error::{HyperlightGuestError, Result};
 
 /// The definition of a function exposed from the guest to the host
 #[derive(Debug, Clone, PartialEq, Eq)]

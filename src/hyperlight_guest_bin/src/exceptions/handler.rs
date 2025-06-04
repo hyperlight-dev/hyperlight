@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,8 +19,7 @@ use core::ffi::c_char;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::outb::Exception;
-
-use crate::entrypoint::abort_with_code_and_message;
+use hyperlight_guest::exit::abort_with_code_and_message;
 
 /// Exception handler
 #[unsafe(no_mangle)]

@@ -18,7 +18,7 @@ binary can be used with Hyperlight:
 ## Rust guest binary
 
 In the case of a binary that is written in Rust, one needs to make use of the
-Hyperlight crate, `hyperlight_guest` that contains the types and APIs that enable
+Hyperlight crate, `hyperlight_guest` and `hyperlight_guest_bin` that contains the types and APIs that enable
 the guest to:
 - register functions that can be called by the host application
 - call host functions that have been registered by the host.

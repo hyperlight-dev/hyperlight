@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ limitations under the License.
 #![allow(clippy::disallowed_macros)]
 //use opentelemetry_sdk::resource::ResourceBuilder;
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use rand::Rng;
 use tracing::{span, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -24,8 +23,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 extern crate hyperlight_host;
 use std::error::Error;
 use std::io::stdin;
-use std::sync::{Arc, Mutex};
-use std::thread::{self, spawn, JoinHandle};
+use std::sync::{Arc, Barrier, Mutex};
+use std::thread::{spawn, JoinHandle};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
@@ -157,8 +156,23 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                 }
 
                 // Call a function that gets cancelled by the host function 5 times to generate some log entries.
+                const NUM_CALLS: i32 = 5;
+                let barrier = Arc::new(Barrier::new(2));
+                let barrier2 = barrier.clone();
 
-                for i in 0..5 {
+                let interrupt_handle = multiuse_sandbox.interrupt_handle();
+
+                let thread = std::thread::spawn(move || {
+                    for _ in 0..NUM_CALLS {
+                        barrier2.wait();
+                        // Sleep for a short time to allow the guest function to run.
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        // Cancel the host function call.
+                        interrupt_handle.kill();
+                    }
+                });
+
+                for i in 0..NUM_CALLS {
                     let id = Uuid::new_v4();
                     // Construct a new span named "hyperlight tracing call cancellation example thread" with INFO  level.
                     let span = span!(
@@ -169,15 +183,11 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                     );
                     let _entered = span.enter();
                     let mut ctx = multiuse_sandbox.new_call_context();
-
+                    barrier.wait();
                     ctx.call::<()>("Spin", ()).unwrap_err();
                     multiuse_sandbox = ctx.finish().unwrap();
                 }
-                let sleep_for = {
-                    let mut rng = rand::rng();
-                    rng.random_range(500..3000)
-                };
-                thread::sleep(std::time::Duration::from_millis(sleep_for));
+                thread.join().expect("Thread panicked");
             }
             Ok(())
         });

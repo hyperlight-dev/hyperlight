@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Hyperlight Authors.
+Copyright 2025  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -136,7 +136,7 @@ pub struct ExclusiveSharedMemory {
 }
 unsafe impl Send for ExclusiveSharedMemory {}
 
-/// A GuestSharedMemory is used by the hypervisor handler to represent
+/// A GuestSharedMemory is used to represent
 /// the reference to all-of-memory that is taken by the virtual cpu.
 /// Because of the memory model limitations that affect
 /// HostSharedMemory, it is likely fairly important (to ensure that
