@@ -132,7 +132,10 @@ impl UninitializedSandbox {
         skip(guest_binary),
         parent = Span::current()
     )]
-    pub fn new(guest_binary: GuestBinary, cfg: Option<SandboxConfiguration>) -> Result<Self> {
+    pub fn new<'a>(
+        guest_binary: impl std::borrow::Borrow<GuestBinary<'a>>,
+        cfg: Option<SandboxConfiguration>,
+    ) -> Result<Self> {
         #[cfg(feature = "build-metadata")]
         log_build_details();
 
@@ -141,12 +144,12 @@ impl UninitializedSandbox {
         check_windows_version()?;
 
         // If the guest binary is a file make sure it exists
-        let guest_binary = match guest_binary {
+        let guest_binary: &GuestBinary = match guest_binary.borrow() {
             GuestBinary::FilePath(binary_path) => {
                 let path = Path::new(&binary_path)
                     .canonicalize()
                     .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?;
-                GuestBinary::FilePath(
+                &GuestBinary::FilePath(
                     path.into_os_string()
                         .into_string()
                         .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?,
@@ -158,7 +161,7 @@ impl UninitializedSandbox {
         let sandbox_cfg = cfg.unwrap_or_default();
 
         let mut mem_mgr_wrapper = {
-            let mut mgr = UninitializedSandbox::load_guest_binary(sandbox_cfg, &guest_binary)?;
+            let mut mgr = UninitializedSandbox::load_guest_binary(sandbox_cfg, guest_binary)?;
             let stack_guard = Self::create_stack_guard();
             mgr.set_stack_guard(&stack_guard)?;
             MemMgrWrapper::new(mgr, stack_guard)
