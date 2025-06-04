@@ -328,6 +328,43 @@ fn interrupt_custom_signal_no_and_retry_delay() {
 }
 
 #[test]
+fn interrupt_spamming_host_call() {
+    let mut uninit = UninitializedSandbox::new(
+        GuestBinary::FilePath(callback_guest_as_string().unwrap()),
+        None,
+    )
+    .unwrap();
+
+    uninit
+        .register("HostFunc1", || {
+            // do nothing
+        })
+        .unwrap();
+    let mut sbox1: MultiUseSandbox = uninit.evolve(Noop::default()).unwrap();
+
+    let interrupt_handle = sbox1.interrupt_handle();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+
+    let thread = thread::spawn(move || {
+        barrier2.wait();
+        thread::sleep(Duration::from_secs(1));
+        interrupt_handle.kill();
+    });
+
+    barrier.wait();
+    // This guest call calls "HostFunc1" in a loop
+    let res = sbox1
+        .call_guest_function_by_name::<i32>("HostCallLoop", "HostFunc1".to_string())
+        .unwrap_err();
+
+    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+
+    thread.join().expect("Thread should finish");
+}
+
+#[test]
 fn print_four_args_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);

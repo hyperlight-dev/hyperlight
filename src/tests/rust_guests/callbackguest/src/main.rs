@@ -157,6 +157,19 @@ fn call_host_spin(_: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
+fn host_call_loop(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
+        loop {
+            call_host_function::<()>(message, None, ReturnType::Void).unwrap();
+        }
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to host_call_loop".to_string(),
+        ))
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn hyperlight_main() {
     let print_output_def = GuestFunctionDefinition::new(
@@ -234,6 +247,14 @@ pub extern "C" fn hyperlight_main() {
         call_host_spin as usize,
     );
     register_function(call_host_spin_def);
+
+    let host_call_loop_def = GuestFunctionDefinition::new(
+        "HostCallLoop".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Void,
+        host_call_loop as usize,
+    );
+    register_function(host_call_loop_def);
 }
 
 #[no_mangle]
