@@ -1,2 +1,5 @@
 [toolchain]
 channel = "1.85"
+# Target used for guest binaries. This is an additive list of targets in addition to host platform.
+# Will install the target if not already installed when building guest binaries.
+targets = ["x86_64-unknown-none"]

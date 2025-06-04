@@ -173,13 +173,6 @@ After having an environment with a hypervisor setup, running the example has the
 1. On Linux or WSL, you'll most likely need build essential. For Ubuntu, run `sudo apt install build-essential`. For
    Azure Linux, run `sudo dnf install build-essential`.
 2. [Rust](https://www.rust-lang.org/tools/install). Install toolchain v1.85 or later.
-
-   Also, install the `x86_64-unknown-none` target, it is needed to build the test
-   guest binaries.
-    ```sh
-    rustup target add x86_64-unknown-none
-    ```
-
 3. [just](https://github.com/casey/just). `cargo install just` On Windows you also need [pwsh](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.4).
 4. [clang and LLVM](https://clang.llvm.org/get_started.html).
     - On Ubuntu, run:
