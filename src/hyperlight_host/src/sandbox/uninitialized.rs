@@ -52,6 +52,17 @@ const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
     libc::SYS_close,
 ];
 
+#[cfg(any(crashdump, gdb))]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SandboxRuntimeConfig {
+    #[cfg(crashdump)]
+    pub(crate) binary_path: Option<String>,
+    #[cfg(gdb)]
+    pub(crate) debug_info: Option<super::config::DebugInfo>,
+    #[cfg(crashdump)]
+    pub(crate) guest_core_dump: bool,
+}
+
 /// A preliminary `Sandbox`, not yet ready to execute guest code.
 ///
 /// Prior to initializing a full-fledged `Sandbox`, you must create one of
@@ -66,6 +77,8 @@ pub struct UninitializedSandbox {
     pub(crate) mgr: MemMgrWrapper<ExclusiveSharedMemory>,
     pub(crate) max_guest_log_level: Option<LevelFilter>,
     pub(crate) config: SandboxConfiguration,
+    #[cfg(any(crashdump, gdb))]
+    pub(crate) rt_cfg: SandboxRuntimeConfig,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -145,17 +158,42 @@ impl UninitializedSandbox {
             GuestBinary::FilePath(binary_path) => {
                 let path = Path::new(&binary_path)
                     .canonicalize()
-                    .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?;
-                GuestBinary::FilePath(
-                    path.into_os_string()
-                        .into_string()
-                        .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?,
-                )
+                    .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?;
+
+                GuestBinary::FilePath(path)
             }
             buffer @ GuestBinary::Buffer(_) => buffer,
         };
 
         let sandbox_cfg = cfg.unwrap_or_default();
+
+        #[cfg(any(crashdump, gdb))]
+        let rt_cfg = {
+            #[cfg(crashdump)]
+            let guest_core_dump = sandbox_cfg.get_guest_core_dump();
+
+            #[cfg(gdb)]
+            let debug_info = sandbox_cfg.get_guest_debug_info();
+
+            #[cfg(crashdump)]
+            let binary_path = if let GuestBinary::FilePath(ref path) = guest_binary {
+                Some(path.clone())
+            } else {
+                None
+            };
+
+            SandboxRuntimeConfig {
+                #[cfg(crashdump)]
+                binary_path,
+                #[cfg(gdb)]
+                debug_info,
+                #[cfg(crashdump)]
+                guest_core_dump,
+            }
+        };
 
         let mut mem_mgr_wrapper = {
             let mut mgr = UninitializedSandbox::load_guest_binary(sandbox_cfg, &guest_binary)?;
@@ -173,6 +211,8 @@ impl UninitializedSandbox {
             mgr: mem_mgr_wrapper,
             max_guest_log_level: None,
             config: sandbox_cfg,
+            #[cfg(any(crashdump, gdb))]
+            rt_cfg,
         };
 
         // If we were passed a writer for host print register it otherwise use the default.

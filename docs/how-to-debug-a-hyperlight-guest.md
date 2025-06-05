@@ -201,3 +201,222 @@ involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or 
      └─┘                       │          |                                           |                                 |      │
       |                        └───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Dumping the guest state to an ELF core dump when an unhandled crash occurs
+
+When a guest crashes because of an unknown VmExit or unhandled exception, the vCPU state is dumped to an `ELF` core dump file.
+This can be used to inspect the state of the guest at the time of the crash.
+
+To make Hyperlight dump the state of the vCPU (general purpose registers, registers) to an `ELF` core dump file, set the feature `crashdump` and run a debug build.
+This will result in a dump file being created in the temporary directory.
+The name and location of the dump file will be printed to the console and logged as an error message.
+
+### Inspecting the core dump
+
+After the core dump has been created, to inspect the state of the guest, load the core dump file using `gdb` or `lldb`.
+**NOTE: This feature has been tested with version `15.0` of `gdb` and version `17` of `lldb`, earlier versions may not work, it is recommended to use these versions or later.**
+
+To do this in vscode, the following configuration can be used to add debug configurations:
+
+```vscode
+{
+    "version": "0.2.0",
+    "inputs": [
+        {
+            "id": "core_dump",
+            "type": "promptString",
+            "description": "Path to the core dump file",
+        },
+        {
+            "id": "program",
+            "type": "promptString",
+            "description": "Path to the program to debug",
+        }
+    ],
+    "configurations": [
+        {
+            "name": "[GDB] Load core dump file",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${input:program}",
+            "coreDumpPath": "${input:core_dump}",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "externalConsole": false,
+            "miDebuggerPath": "/usr/bin/gdb",
+            "setupCommands": [
+            {
+                "description": "Enable pretty-printing for gdb",
+                "text": "-enable-pretty-printing",
+                "ignoreFailures": true
+            },
+            {
+                "description": "Set Disassembly Flavor to Intel",
+                "text": "-gdb-set disassembly-flavor intel",
+                "ignoreFailures": true
+            }
+            ]
+        },
+        {
+        "name": "[LLDB] Load core dump file",
+        "type": "lldb",
+        "request": "launch",
+        "stopOnEntry": true,
+        "processCreateCommands": [],
+        "targetCreateCommands": [
+            "target create -c ${input:core_dump} ${input:program}",
+        ],
+        },
+    ]
+}
+```
+**NOTE: The `CodeLldb` debug session does not stop after launching. To see the code, stack frames and registers you need to
+press the `pause` button. This is a known issue with the `CodeLldb` extension [#1245](https://github.com/vadimcn/codelldb/issues/1245).
+The `cppdbg` extension works as expected and stops at the entry point of the program.**
+
+## Compiling guests with debug information for release builds
+
+This section explains how to compile a guest with debugging information but still have optimized code, and how to separate the debug information from the binary.
+
+### Creating a release build with debug information
+
+To create a release build with debug information, you can add a custom profile to your `Cargo.toml` file:
+
+```toml
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+```
+
+This creates a new profile called `release-with-debug` that inherits all settings from the release profile but adds debug information.
+
+### Splitting debug information from the binary
+
+To reduce the binary size while still having debug information available, you can split the debug information into a separate file.
+This is useful for production environments where you want smaller binaries but still want to be able to debug crashes.
+
+Here's a step-by-step guide:
+
+1. Build your guest with the release-with-debug profile:
+   ```bash
+   cargo build --profile release-with-debug
+   ```
+
+2. Locate your binary in the target directory:
+   ```bash
+   TARGET_DIR="target"
+   PROFILE="release-with-debug"
+   ARCH="x86_64-unknown-none" # Your target architecture
+   BUILD_DIR="${TARGET_DIR}/${ARCH}/${PROFILE}"
+   BINARY=$(find "${BUILD_DIR}" -type f -executable -name "guest-binary" | head -1)
+   ```
+
+3. Extract debug information into a full debug file:
+   ```bash
+   DEBUG_FILE_FULL="${BINARY}.debug.full"
+   objcopy --only-keep-debug "${BINARY}" "${DEBUG_FILE_FULL}"
+   ```
+
+4. Create a symbols-only debug file (smaller, but still useful for stack traces):
+   ```bash
+   DEBUG_FILE="${BINARY}.debug"
+   objcopy --keep-file-symbols "${DEBUG_FILE_FULL}" "${DEBUG_FILE}"
+   ```
+
+5. Strip debug information from the original binary but keep function names:
+   ```bash
+   objcopy --strip-debug "${BINARY}"
+   ```
+
+6. Add a debug link to the stripped binary:
+   ```bash
+   objcopy --add-gnu-debuglink="${DEBUG_FILE}" "${BINARY}"
+   ```
+
+After these steps, you'll have:
+- An optimized binary with function names for basic stack traces
+- A symbols-only debug file for stack traces
+- A full debug file for complete source-level debugging
+
+### Analyzing core dumps with the debug files
+
+When you have a core dump from a crashed guest, you can analyze it with different levels of detail using either GDB or LLDB.
+
+#### Using GDB
+
+1. For basic analysis with function names (stack traces):
+   ```bash
+   gdb ${BINARY} -c /path/to/core.dump
+   ```
+
+2. For full source-level debugging:
+   ```bash
+   gdb -s ${DEBUG_FILE_FULL} ${BINARY} -c /path/to/core.dump
+   ```
+
+#### Using LLDB
+
+LLDB provides similar capabilities with slightly different commands:
+
+1. For basic analysis with function names (stack traces):
+   ```bash
+   lldb ${BINARY} -c /path/to/core.dump
+   ```
+
+2. For full source-level debugging:
+   ```bash
+   lldb -o "target create -c /path/to/core.dump ${BINARY}" -o "add-dsym ${DEBUG_FILE_FULL}"
+   ```
+
+3. If your debug symbols are in a separate file:
+   ```bash
+   lldb ${BINARY} -c /path/to/core.dump
+   (lldb) add-dsym ${DEBUG_FILE_FULL}
+   ```
+
+### VSCode Debug Configurations
+
+You can configure VSCode (in `.vscode/launch.json`) to use these files by modifying the debug configurations:
+
+#### For GDB
+
+```json
+{
+    "name": "[GDB] Load core dump with full debug symbols",
+    "type": "cppdbg",
+    "request": "launch",
+    "program": "${input:program}",
+    "coreDumpPath": "${input:core_dump}",
+    "cwd": "${workspaceFolder}",
+    "MIMode": "gdb",
+    "externalConsole": false,
+    "miDebuggerPath": "/usr/bin/gdb",
+    "setupCommands": [
+        {
+            "description": "Enable pretty-printing for gdb",
+            "text": "-enable-pretty-printing",
+            "ignoreFailures": true
+        }
+    ]
+}
+```
+
+#### For LLDB
+
+```json
+{
+    "name": "[LLDB] Load core dump with full debug symbols",
+    "type": "lldb",
+    "request": "launch",
+    "program": "${input:program}",
+    "cwd": "${workspaceFolder}",
+    "processCreateCommands": [],
+    "targetCreateCommands": [
+        "target create -c ${input:core_dump} ${input:program}"
+    ],
+    "postRunCommands": [
+        // if debug symbols are in a different file
+        "add-dsym ${input:debug_file_path}"
+    ]
+}
+```
