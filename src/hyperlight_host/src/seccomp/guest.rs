@@ -93,20 +93,28 @@ pub(crate) fn get_seccomp_filter_for_host_function_worker_thread(
 
     let arch: TargetArch = std::env::consts::ARCH.try_into()?;
 
-    // First: Filter that forces `openat` to return EACCES
-    let errno_on_openat = SeccompFilter::new(
-        [(libc::SYS_openat, vec![])].into_iter().collect(),
-        SeccompAction::Allow,
-        SeccompAction::Errno(libc::EACCES.try_into()?),
-        arch,
-    )?
-    .try_into()?;
-
-    // Second: Allowlist filter that traps on unknown syscalls
+    // Allowlist filter that traps on unknown syscalls
     let allowlist = SeccompFilter::new(
         allowed_syscalls.into_iter().collect(),
         SeccompAction::Trap,
         SeccompAction::Allow,
+        arch,
+    )?
+    .try_into()?;
+
+    // If `openat` is an exclicitly allowed syscall, we shouldn't return the filter that forces it to return EACCES.
+    if let Some(extra_syscalls) = extra_allowed_syscalls {
+        if extra_syscalls.contains(&libc::SYS_openat) {
+            return Ok(vec![allowlist]);
+        }
+    }
+    // Otherwise, we return both filters.
+
+    // Filter that forces `openat` to return EACCES
+    let errno_on_openat = SeccompFilter::new(
+        [(libc::SYS_openat, vec![])].into_iter().collect(),
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EACCES.try_into()?),
         arch,
     )?
     .try_into()?;
