@@ -458,6 +458,69 @@ mod tests {
         Ok(())
     }
 
+    // We have a secomp specifically for `openat`, but we don't want to crash on `openat`, but rather make sure `openat` returns `EACCES`
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn violate_seccomp_filters_openat() -> Result<()> {
+        // Hostcall to call `openat`
+        fn make_openat_syscall() -> Result<i64> {
+            use std::ffi::CString;
+
+            let path = CString::new("/proc/sys/vm/overcommit_memory").unwrap();
+
+            let fd_or_err = unsafe {
+                libc::syscall(
+                    libc::SYS_openat,
+                    libc::AT_FDCWD,
+                    path.as_ptr(),
+                    libc::O_RDONLY,
+                )
+            };
+
+            if fd_or_err == -1 {
+                Ok(std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap()
+                    .into())
+            } else {
+                Ok(fd_or_err)
+            }
+        }
+
+        // First make sure a regular call to `openat` on /proc/sys/vm/overcommit_memory succeeds
+        let ret = make_openat_syscall()?;
+        assert!(
+            ret >= 0,
+            "Expected openat syscall to succeed, got: {:?}",
+            ret
+        );
+
+        let mut ubox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+        )
+        .unwrap();
+        ubox.register("Openat_Hostfunc", make_openat_syscall)?;
+
+        let mut sbox = ubox.evolve(Noop::default()).unwrap();
+        let host_func_result = sbox
+            .call_guest_function_by_name::<i64>(
+                "CallGivenParamlessHostFuncThatReturnsI64",
+                "Openat_Hostfunc".to_string(),
+            )
+            .expect("Expected to call host function that returns i64");
+
+        if cfg!(feature = "seccomp") {
+            // If seccomp is enabled, we expect the syscall to return EACCES, as setup by our seccomp filter
+            assert_eq!(host_func_result, libc::EACCES as i64);
+        } else {
+            // If seccomp is not enabled, we expect the syscall to succeed
+            assert!(host_func_result >= 0);
+        }
+
+        Ok(())
+    }
+
     #[test]
     fn test_trigger_exception_on_guest() {
         let usbox = UninitializedSandbox::new(

@@ -694,6 +694,21 @@ fn violate_seccomp_filters(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+fn call_given_paramless_hostfunc_that_returns_i64(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(hostfuncname) =
+        function_call.parameters.clone().unwrap()[0].clone()
+    {
+        let res = call_host_function::<i64>(&hostfuncname, None, ReturnType::Long)?;
+
+        Ok(get_flatbuffer_result(res))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to test_rust_malloc".to_string(),
+        ))
+    }
+}
+
 fn add(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::Int(a), ParameterValue::Int(b)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -1131,6 +1146,14 @@ pub extern "C" fn hyperlight_main() {
         large_parameters as usize,
     );
     register_function(large_parameters_def);
+
+    let call_given_hostfunc_def = GuestFunctionDefinition::new(
+        "CallGivenParamlessHostFuncThatReturnsI64".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Long,
+        call_given_paramless_hostfunc_that_returns_i64 as usize,
+    );
+    register_function(call_given_hostfunc_def);
 }
 
 #[no_mangle]

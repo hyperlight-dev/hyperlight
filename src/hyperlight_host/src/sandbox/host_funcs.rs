@@ -162,7 +162,9 @@ fn maybe_with_seccomp<T: Send>(
             .name(format!("Host Function Worker Thread for: {name:?}"))
             .spawn(move |_| {
                 let seccomp_filter = get_seccomp_filter_for_host_function_worker_thread(syscalls)?;
-                seccompiler::apply_filter(&seccomp_filter)?;
+                seccomp_filter
+                    .iter()
+                    .try_for_each(|filter| seccompiler::apply_filter(filter))?;
 
                 // We have a `catch_unwind` here because, if a disallowed syscall is issued,
                 // we handle it by panicking. This is to avoid returning execution to the
