@@ -4,6 +4,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.6.0] - 2025-06-06
+
+### Fixed
+- Prevent openat from trapping on seccomp thread, by making it return EACCES instead by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/573
+
+### Changed
+- Remove hypervisor_handler thread by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/533
+- Make GuestBinary::Buffer variant take slice instead of owned vec by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/559
+
+### Added
+- Add component bindgen macros by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/376
+- Adding ws2025 to the dep_rest matrix by @marosset in https://github.com/hyperlight-dev/hyperlight/pull/551
+
 ## [v0.5.1] - 2025-06-02
 ### Fixed
 - Fixed an issue with the `hyperlight_host` not building on v0.5.0

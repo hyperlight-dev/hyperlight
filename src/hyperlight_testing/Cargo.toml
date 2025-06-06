@@ -1,5 +1,6 @@
 [package]
 name = "hyperlight-testing"
+version.workspace = true
 edition = "2021"
 
 [dependencies]

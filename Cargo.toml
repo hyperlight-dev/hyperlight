@@ -25,7 +25,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -34,13 +34,13 @@ repository = "https://github.com/hyperlight-dev/hyperlight"
 readme = "README.md"
 
 [workspace.dependencies]
-hyperlight-common = { path = "src/hyperlight_common", version = "0.5.1", default-features = false }
-hyperlight-host = { path = "src/hyperlight_host", version = "0.5.1", default-features = false }
-hyperlight-guest = { path = "src/hyperlight_guest", version = "0.5.1", default-features = false }
-hyperlight-guest-bin = { path = "src/hyperlight_guest_bin", version = "0.5.1", default-features = false }
-hyperlight-testing = { path = "src/hyperlight_testing", default-features = false }
-hyperlight-component-util = { path = "src/hyperlight_component_util" }
-hyperlight-component-macro = { path = "src/hyperlight_component_macro" }
+hyperlight-common = { path = "src/hyperlight_common", version = "0.6.0", default-features = false }
+hyperlight-host = { path = "src/hyperlight_host", version = "0.6.0", default-features = false }
+hyperlight-guest = { path = "src/hyperlight_guest", version = "0.6.0", default-features = false }
+hyperlight-guest-bin = { path = "src/hyperlight_guest_bin", version = "0.6.0", default-features = false }
+hyperlight-testing = { path = "src/hyperlight_testing", version = "0.6.0", default-features = false }
+hyperlight-component-util = { path = "src/hyperlight_component_util", version = "0.6.0", default-features = false }
+hyperlight-component-macro = { path = "src/hyperlight_component_macro", version = "0.6.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
