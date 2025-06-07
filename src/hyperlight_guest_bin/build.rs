@@ -62,8 +62,6 @@ fn cargo_main() {
             .include("third_party/musl/arch/x86_64");
     }
 
-    let is_pe = env::var("CARGO_CFG_WINDOWS").is_ok();
-
     if cfg!(any(feature = "printf", feature = "libc")) {
         cfg.define("HYPERLIGHT", None); // used in certain musl files for conditional compilation
 
@@ -78,37 +76,28 @@ fn cargo_main() {
             .flag("-Wno-unused-parameter")
             .flag("-Wno-string-plus-int");
 
-        if is_pe {
-            cfg.flag("-Wno-unused-label");
-            cfg.flag("-Wno-unused-variable");
-            cfg.compiler("clang-cl");
-        } else {
-            cfg.flag("-fPIC");
-            // This is a terrible hack, because
-            // - we need stack clash protection, because we have put the
-            //   stack right smack in the middle of everything in the guest
-            // - clang refuses to do stack clash protection unless it is
-            //   required by a target ABI (Windows, MacOS) or the target is
-            //   is Linux or FreeBSD (see Clang.cpp RenderSCPOptions
-            //   https://github.com/llvm/llvm-project/blob/1bb52e9/clang/lib/Driver/ToolChains/Clang.cpp#L3724).
-            //   Hopefully a flag to force stack clash protection on generic
-            //   targets will eventually show up.
-            cfg.flag("--target=x86_64-unknown-linux-none");
+        cfg.flag("-fPIC");
+        // This is a terrible hack, because
+        // - we need stack clash protection, because we have put the
+        //   stack right smack in the middle of everything in the guest
+        // - clang refuses to do stack clash protection unless it is
+        //   required by a target ABI (Windows, MacOS) or the target is
+        //   is Linux or FreeBSD (see Clang.cpp RenderSCPOptions
+        //   https://github.com/llvm/llvm-project/blob/1bb52e9/clang/lib/Driver/ToolChains/Clang.cpp#L3724).
+        //   Hopefully a flag to force stack clash protection on generic
+        //   targets will eventually show up.
+        cfg.flag("--target=x86_64-unknown-linux-none");
 
-            // We don't support stack protectors at the moment, but Arch Linux clang
-            // auto-enables them for -linux platforms, so explicitly disable them.
-            cfg.flag("-fno-stack-protector");
-            cfg.flag("-fstack-clash-protection");
-            cfg.flag("-mstack-probe-size=4096");
-            cfg.compiler("clang");
-        }
+        // We don't support stack protectors at the moment, but Arch Linux clang
+        // auto-enables them for -linux platforms, so explicitly disable them.
+        cfg.flag("-fno-stack-protector");
+        cfg.flag("-fstack-clash-protection");
+        cfg.flag("-mstack-probe-size=4096");
+        cfg.compiler("clang");
 
         if cfg!(windows) {
             unsafe { env::set_var("AR_x86_64_unknown_none", "llvm-ar") };
-        } else {
-            unsafe { env::set_var("AR_x86_64_pc_windows_msvc", "llvm-lib") };
         }
-
         cfg.compile("hyperlight_guest_bin");
     }
 
@@ -183,29 +172,20 @@ fn cargo_main() {
         fs::create_dir_all(&binroot)
             .unwrap_or_else(|e| panic!("Could not create binary root {:?}: {}", &binroot, e));
         fs::write(binroot.join(".out_dir"), out_dir).expect("Could not write out_dir");
-        fs::copy(&binpath, binroot.join("ml64.exe")).expect("Could not copy to ml64.exe");
         fs::copy(&binpath, binroot.join("clang")).expect("Could not copy to clang");
         fs::copy(&binpath, binroot.join("clang.exe")).expect("Could not copy to clang.exe");
-        fs::copy(&binpath, binroot.join("clang-cl")).expect("Could not copy to clang-cl");
-        fs::copy(&binpath, binroot.join("clang-cl.exe")).expect("Could not copy to clang-cl.exe");
     }
 }
 
 #[derive(PartialEq)]
 enum Tool {
     CargoBuildScript,
-    Ml64,
     Clang,
-    ClangCl,
 }
 impl From<&std::ffi::OsStr> for Tool {
     fn from(x: &std::ffi::OsStr) -> Tool {
-        if x == "ml64.exe" {
-            Tool::Ml64
-        } else if x == "clang" || x == "clang.exe" {
+        if x == "clang" {
             Tool::Clang
-        } else if x == "clang-cl" || x == "clang-cl.exe" {
-            Tool::ClangCl
         } else {
             Tool::CargoBuildScript
         }
@@ -252,44 +232,24 @@ fn main() -> std::process::ExitCode {
     let mut args = env::args();
     args.next(); // ignore the exe name
     let include_dir = <String as AsRef<Path>>::as_ref(&out_dir).join("include");
-    match tool {
-        Tool::Ml64 => std::process::Command::new("llvm-ml")
-            .arg("-m64")
-            .args(args)
-            .status()
-            .ok()
-            .and_then(|x| (x.code()))
-            .map(|x| (x as u8).into())
-            .unwrap_or(std::process::ExitCode::FAILURE),
-        Tool::Clang => std::process::Command::new(find_next(root_dir, "clang"))
-            // terrible hack, see above
-            .arg("--target=x86_64-unknown-linux-none")
-            .args([
-                // We don't support stack protectors at the moment, but Arch Linux clang
-                // auto-enables them for -linux platforms, so explicitly disable them.
-                "-fno-stack-protector",
-                "-fstack-clash-protection",
-                "-mstack-probe-size=4096",
-            ])
-            .arg("-nostdinc")
-            .arg("-isystem")
-            .arg(include_dir)
-            .args(args)
-            .status()
-            .ok()
-            .and_then(|x| (x.code()))
-            .map(|x| (x as u8).into())
-            .unwrap_or(std::process::ExitCode::FAILURE),
-        Tool::ClangCl => std::process::Command::new(find_next(root_dir, "clang-cl"))
-            .arg("-nostdinc")
-            .arg("/external:I")
-            .arg(include_dir)
-            .args(args)
-            .status()
-            .ok()
-            .and_then(|x| (x.code()))
-            .map(|x| (x as u8).into())
-            .unwrap_or(std::process::ExitCode::FAILURE),
-        _ => std::process::ExitCode::FAILURE,
-    }
+
+    std::process::Command::new(find_next(root_dir, "clang"))
+        // terrible hack, see above
+        .arg("--target=x86_64-unknown-linux-none")
+        .args([
+            // We don't support stack protectors at the moment, but Arch Linux clang
+            // auto-enables them for -linux platforms, so explicitly disable them.
+            "-fno-stack-protector",
+            "-fstack-clash-protection",
+            "-mstack-probe-size=4096",
+        ])
+        .arg("-nostdinc")
+        .arg("-isystem")
+        .arg(include_dir)
+        .args(args)
+        .status()
+        .ok()
+        .and_then(|x| (x.code()))
+        .map(|x| (x as u8).into())
+        .unwrap_or(std::process::ExitCode::FAILURE)
 }
