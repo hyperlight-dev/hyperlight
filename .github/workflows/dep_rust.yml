@@ -33,6 +33,7 @@ defaults:
 jobs:
   build:
     if: ${{ inputs.docs_only == 'false' }}
+    timeout-minutes: 60
     strategy:
       fail-fast: true
       matrix:
