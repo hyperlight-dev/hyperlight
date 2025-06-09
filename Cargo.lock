@@ -665,8 +665,9 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "elfcore"
-version = "1.1.5"
-source = "git+https://github.com/hyperlight-dev/elfcore.git?rev=cef4c80e26bf4b2a5599e50d2d1730965f942c13#cef4c80e26bf4b2a5599e50d2d1730965f942c13"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "824386967a6a98e7f99d5c15d40cd1534b0ebfc4193a7109689dcf5322e8d744"
 dependencies = [
  "libc",
  "nix",
