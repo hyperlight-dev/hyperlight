@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-testing"
-version = "0.6.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "log",
@@ -3626,9 +3626,9 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
-version = "0.224.1"
+version = "0.233.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04f17a5917c2ddd3819e84c661fae0d6ba29d7b9c1f0e96c708c65a9c4188e11"
+checksum = "b51cb03afce7964bbfce46602d6cb358726f36430b6ba084ac6020d8ce5bc102"
 dependencies = [
  "bitflags 2.9.1",
  "hashbrown",
