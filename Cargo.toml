@@ -38,7 +38,7 @@ hyperlight-common = { path = "src/hyperlight_common", version = "0.6.0", default
 hyperlight-host = { path = "src/hyperlight_host", version = "0.6.0", default-features = false }
 hyperlight-guest = { path = "src/hyperlight_guest", version = "0.6.0", default-features = false }
 hyperlight-guest-bin = { path = "src/hyperlight_guest_bin", version = "0.6.0", default-features = false }
-hyperlight-testing = { path = "src/hyperlight_testing", version = "0.6.0", default-features = false }
+hyperlight-testing = { path = "src/hyperlight_testing", default-features = false }
 hyperlight-component-util = { path = "src/hyperlight_component_util", version = "0.6.0", default-features = false }
 hyperlight-component-macro = { path = "src/hyperlight_component_macro", version = "0.6.0", default-features = false }
 
