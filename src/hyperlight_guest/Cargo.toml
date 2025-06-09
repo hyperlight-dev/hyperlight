@@ -8,7 +8,7 @@ homepage.workspace = true
 repository.workspace = true
 readme.workspace = true
 description = """
-Library to build guest applications for hyperlight.
+Provides only the essential building blocks for interacting with the host environment, including the VM exit mechanism, abstractions for calling host functions and receiving return values, and the input/output stacks used for guest-host communication.
 """
 
 [dependencies]
