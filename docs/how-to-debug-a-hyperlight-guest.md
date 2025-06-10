@@ -211,6 +211,13 @@ To make Hyperlight dump the state of the vCPU (general purpose registers, regist
 This will result in a dump file being created in the temporary directory.
 The name and location of the dump file will be printed to the console and logged as an error message.
 
+**NOTE**: By enabling the `crashdump` feature, you instruct Hyperlight to create core dump files for all sandboxes when an unhandled crash occurs.
+To selectively disable this feature for a specific sandbox, you can set the `guest_core_dump` field to `false` in the `SandboxConfiguration`.
+```rust
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_guest_core_dump(false); // Disable core dump for this sandbox
+```
+
 ### Inspecting the core dump
 
 After the core dump has been created, to inspect the state of the guest, load the core dump file using `gdb` or `lldb`.
