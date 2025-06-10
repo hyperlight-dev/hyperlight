@@ -1,7 +1,7 @@
 <div align="center">
     <h1>Hyperlight</h1>
     <img src="https://raw.githubusercontent.com/hyperlight-dev/hyperlight/refs/heads/main/docs/assets/hyperlight-logo.png" width="150px" alt="hyperlight logo"/>
-    <p><strong>Hyperlight is a lightweight Virtual Machine Manager (VMM) designed to be embedded within applications. It enables safe execution of untrusted code within <i>micro virtual machines</i> with very low latency and minimal overhead.</strong> <br> We are a <a href="https://cncf.io/">Cloud Native Computing Foundation</a> sandbox project. </p>    
+    <p><strong>Hyperlight is a lightweight Virtual Machine Manager (VMM) designed to be embedded within applications. It enables safe execution of untrusted code within <i>micro virtual machines</i> with very low latency and minimal overhead.</strong> <br> We are a <a href="https://cncf.io/">Cloud Native Computing Foundation</a> sandbox project. </p>
 </div>
 
 > Note: Hyperlight is a nascent project with an evolving API and no guaranteed support. Assistance is provided on a
@@ -57,7 +57,7 @@ fn main() -> hyperlight_host::Result<()> {
 
     // Call a function in the guest
     let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
-    // in order to call a function it first must be defined in the guest and exposed so that 
+    // in order to call a function it first must be defined in the guest and exposed so that
     // the host can call it
     let result: i32 = multi_use_sandbox.call_guest_function_by_name(
         "PrintOutput",
@@ -266,3 +266,7 @@ See the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code
 [kvm]: https://help.ubuntu.com/community/KVM/Installation
 
 [whp]: https://devblogs.microsoft.com/visualstudio/hyper-v-android-emulator-support/#1-enable-hyper-v-and-the-windows-hypervisor-platform
+
+
+## FOSSA Status
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fhyperlight-dev%2Fhyperlight.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fhyperlight-dev%2Fhyperlight?ref=badge_large)
