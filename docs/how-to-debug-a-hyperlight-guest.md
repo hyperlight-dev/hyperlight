@@ -207,10 +207,14 @@ involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or 
 When a guest crashes because of an unknown VmExit or unhandled exception, the vCPU state is dumped to an `ELF` core dump file.
 This can be used to inspect the state of the guest at the time of the crash.
 
-To make Hyperlight dump the state of the vCPU (general purpose registers, registers) to an `ELF` core dump file, set the feature `crashdump` and run a debug build.
-This will result in a dump file being created in the temporary directory.
+To make Hyperlight dump the state of the vCPU (general purpose registers, registers) to an `ELF` core dump file, enable the `crashdump`
+feature and run.
+The feature enables the creation of core dump files for both debug and release builds of Hyperlight hosts.
+By default, Hyperlight places the core dumps in the temporary directory (platform specific).
+To change this, use the `HYPERLIGHT_CORE_DUMP_DIR` environment variable to specify a directory.
 The name and location of the dump file will be printed to the console and logged as an error message.
 
+**NOTE**: If the directory provided by `HYPERLIGHT_CORE_DUMP_DIR` does not exist, Hyperlight places the file in the temporary directory.
 **NOTE**: By enabling the `crashdump` feature, you instruct Hyperlight to create core dump files for all sandboxes when an unhandled crash occurs.
 To selectively disable this feature for a specific sandbox, you can set the `guest_core_dump` field to `false` in the `SandboxConfiguration`.
 ```rust
