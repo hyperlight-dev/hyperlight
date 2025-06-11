@@ -19,7 +19,8 @@ use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::{
     BaseStopReason, DisconnectReason, GdbStub, SingleThreadStopReason, run_blocking,
 };
-use libc::{SIGRTMIN, pthread_kill};
+#[cfg(target_os = "linux")]
+use libc::SIGRTMIN;
 
 use super::x86_64_target::HyperlightSandboxTarget;
 use super::{DebugResponse, GdbTargetError, VcpuStopReason};
@@ -49,15 +50,19 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                     // Resume execution if unknown reason for stop
                     let stop_response = match stop_reason {
                         VcpuStopReason::DoneStep => BaseStopReason::DoneStep,
-                        VcpuStopReason::EntryPointBp => BaseStopReason::HwBreak(()),
                         VcpuStopReason::SwBp => BaseStopReason::SwBreak(()),
                         VcpuStopReason::HwBp => BaseStopReason::HwBreak(()),
+                        VcpuStopReason::EntryPointBp => BaseStopReason::HwBreak(()),
                         // This is a consequence of the GDB client sending an interrupt signal
                         // to the target thread
-                        VcpuStopReason::Interrupt => BaseStopReason::SignalWithThread {
-                            tid: (),
-                            signal: Signal(SIGRTMIN() as u8),
-                        },
+                        VcpuStopReason::Interrupt => {
+                            #[cfg(target_os = "linux")]
+                            let signal = Signal(SIGRTMIN() as u8);
+                            #[cfg(target_os = "windows")]
+                            let signal = Signal(53u8); // SIGINT on Windows
+
+                            BaseStopReason::SignalWithThread { tid: (), signal }
+                        }
                         VcpuStopReason::Unknown => {
                             log::warn!("Unknown stop reason received");
 
@@ -96,16 +101,14 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
     /// This function is called when the GDB client sends an interrupt signal.
     /// Passing `None` defers sending a stop reason to later (e.g. when the target stops).
     fn on_interrupt(
-        target: &mut Self::Target,
+        #[allow(unused_variables)] target: &mut Self::Target,
     ) -> Result<Option<Self::StopReason>, <Self::Target as gdbstub::target::Target>::Error> {
         log::info!("Received interrupt from GDB client - sending signal to target thread");
 
         // Send a signal to the target thread to interrupt it
-        let ret = unsafe { pthread_kill(target.get_thread_id(), SIGRTMIN()) };
+        let res = target.interrupt_vcpu();
 
-        log::info!("pthread_kill returned {}", ret);
-
-        if ret < 0 && ret != libc::ESRCH {
+        if !res {
             log::error!("Failed to send signal to target thread");
             return Err(GdbTargetError::SendSignalError);
         }
