@@ -223,6 +223,7 @@ guide [here](https://help.ubuntu.com/community/KVM/Installation).
 ### Or you can use a codespace
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/hyperlight-dev/hyperlight)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fhyperlight-dev%2Fhyperlight.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fhyperlight-dev%2Fhyperlight?ref=badge_shield)
 
 ## Contributing to Hyperlight
 
@@ -266,3 +267,7 @@ See the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code
 [kvm]: https://help.ubuntu.com/community/KVM/Installation
 
 [whp]: https://devblogs.microsoft.com/visualstudio/hyper-v-android-emulator-support/#1-enable-hyper-v-and-the-windows-hypervisor-platform
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fhyperlight-dev%2Fhyperlight.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fhyperlight-dev%2Fhyperlight?ref=badge_large)
