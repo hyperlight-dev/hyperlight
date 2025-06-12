@@ -4,6 +4,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.6.1] - 2025-06-12
+
+### Fixed
+
+- Make OS_PAGE_SIZE public again by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/609
+- Bring back HostFunctionDefinitions Region by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/600
+- Allow hyperlight-host to build with x86_64-unknown-linux-musl target by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/601
+
 ## [v0.6.0] - 2025-06-06
 
 ### Fixed
