@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.4.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.5.0
         with:
           rust-toolchain: "1.85"
         env:
