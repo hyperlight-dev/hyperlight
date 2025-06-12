@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.4.0
+      - uses: hyperlight-dev/ci-setup-workflow@remove-chgrp-kvm
         with:
           rust-toolchain: "1.85"
 

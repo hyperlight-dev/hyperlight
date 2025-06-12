@@ -55,7 +55,7 @@ jobs:
         with:
           components: rustfmt
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.4.0
+      - uses: hyperlight-dev/ci-setup-workflow@remove-chgrp-kvm
         with:
           rust-toolchain: "1.85" 
         env:
@@ -73,6 +73,27 @@ jobs:
       - name: Ensure up-to-date Cargo.lock
         run: |
           cargo fetch --locked
+      
+      - name: check groups
+        run: |
+          whoami
+          groups
+          ls -la /dev/kvm
+          # add myself to kvm group
+          sudo usermod -aG kvm $USER
+          # check if I am in kvm group
+          groups $USER
+          # enter the kvm group
+          su - $USER
+          groups
+        if: matrix.hypervisor == 'kvm'
+
+      - name: test groups 
+        run: |
+          whoami
+          groups
+          ls -la /dev/kvm
+        if: matrix.hypervisor == 'kvm'
 
       - name: Get gh action service name
         if: ${{ (runner.os == 'Windows' )}}
