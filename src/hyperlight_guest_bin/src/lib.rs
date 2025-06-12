@@ -63,7 +63,7 @@ pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
 
 pub static mut MIN_STACK_ADDRESS: u64 = 0;
 
-static mut OS_PAGE_SIZE: u32 = 0;
+pub static mut OS_PAGE_SIZE: u32 = 0;
 
 // === Panic Handler ===
 // It looks like rust-analyzer doesn't correctly manage no_std crates,
