@@ -471,7 +471,6 @@ fn emit_value_toplevel(s: &mut State, v: Option<u32>, id: Ident, vt: &Value) -> 
                     #[derive(::wasmtime::component::ComponentType)]
                     #[derive(::wasmtime::component::Lift)]
                     #[derive(::wasmtime::component::Lower)]
-                    #[derive(::core::clone::Clone)]
                     #[derive(::core::marker::Copy)]
                     #[component(enum)]
                     #[repr(u8)] // todo: should this always be u8?
