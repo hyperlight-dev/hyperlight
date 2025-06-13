@@ -65,7 +65,7 @@ use hyperlight_component_util::*;
 /// Hyperlight.
 #[proc_macro]
 pub fn host_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    env_logger::init();
+    let _ = env_logger::try_init();
     let path: Option<syn::LitStr> = syn::parse_macro_input!(input as Option<syn::LitStr>);
     let path = path
         .map(|x| x.value().into())
@@ -88,7 +88,7 @@ pub fn host_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// into the Hyperlight host).
 #[proc_macro]
 pub fn guest_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    env_logger::init();
+    let _ = env_logger::try_init();
     let path: Option<syn::LitStr> = syn::parse_macro_input!(input as Option<syn::LitStr>);
     let path = path
         .map(|x| x.value().into())
