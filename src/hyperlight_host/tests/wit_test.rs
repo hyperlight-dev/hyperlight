@@ -26,7 +26,44 @@ mod bindings {
     hyperlight_component_macro::host_bindgen!("../tests/rust_guests/witguest/interface.wasm");
 }
 
+use bindings::test::wit::roundtrip::{Testrecord, Testvariant};
 use bindings::*;
+
+impl PartialEq for Testrecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.contents == other.contents && self.length == other.length
+    }
+}
+
+impl PartialEq for Testvariant {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Testvariant::VariantA, Testvariant::VariantA) => true,
+            (Testvariant::VariantB(s1), Testvariant::VariantB(s2)) => s1 == s2,
+            (Testvariant::VariantC(c1), Testvariant::VariantC(c2)) => c1 == c2,
+            _ => false,
+        }
+    }
+}
+
+impl Clone for Testrecord {
+    fn clone(&self) -> Self {
+        Self {
+            contents: self.contents.clone(),
+            length: self.length,
+        }
+    }
+}
+
+impl Clone for Testvariant {
+    fn clone(&self) -> Self {
+        match self {
+            Self::VariantA => Self::VariantA,
+            Self::VariantB(s) => Self::VariantB(s.clone()),
+            Self::VariantC(c) => Self::VariantC(*c),
+        }
+    }
+}
 
 struct Host {}
 
