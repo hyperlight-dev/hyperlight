@@ -283,6 +283,11 @@ impl VirtualCPU {
                     #[cfg(crashdump)]
                     crashdump::generate_crashdump(hv)?;
 
+                    // If GDB is enabled, we handle the debug memory access
+                    // Disregard return value as we want to return the error
+                    #[cfg(gdb)]
+                    let _ = hv.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Crash);
+
                     if region_permission.intersects(MemoryRegionFlags::STACK_GUARD) {
                         return Err(HyperlightError::StackOverflow());
                     }
@@ -301,6 +306,10 @@ impl VirtualCPU {
                 Ok(HyperlightExit::Unknown(reason)) => {
                     #[cfg(crashdump)]
                     crashdump::generate_crashdump(hv)?;
+                    // If GDB is enabled, we handle the debug memory access
+                    // Disregard return value as we want to return the error
+                    #[cfg(gdb)]
+                    let _ = hv.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Crash);
 
                     log_then_return!("Unexpected VM Exit {:?}", reason);
                 }
@@ -308,6 +317,10 @@ impl VirtualCPU {
                 Err(e) => {
                     #[cfg(crashdump)]
                     crashdump::generate_crashdump(hv)?;
+                    // If GDB is enabled, we handle the debug memory access
+                    // Disregard return value as we want to return the error
+                    #[cfg(gdb)]
+                    let _ = hv.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Crash);
 
                     return Err(e);
                 }

@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-common"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-macro"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "env_logger",
  "hyperlight-component-util",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-util"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "itertools",
  "log",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "hyperlight-common",
@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-bin"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "buddy_system_allocator",
  "cc",
@@ -337,9 +337,9 @@ dependencies = [
 
 [[package]]
 name = "prettyplease"
-version = "0.2.33"
+version = "0.2.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dee91521343f4c5c6a63edd65e54f31f5c92fe8978c40a4282f8372194c6a7d"
+checksum = "6837b9e10d61f45f987d50808f83d1ee3d206c66acf650c3e4ae2e1f6ddedf55"
 dependencies = [
  "proc-macro2",
  "syn",
@@ -477,9 +477,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.102"
+version = "2.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6397daf94fa90f058bd0fd88429dd9e5738999cca8d701813c80723add80462"
+checksum = "e4307e30089d6fd6aff212f2da3a1f9e32f3223b1f010fb09b7c95f90f3ca1e8"
 dependencies = [
  "proc-macro2",
  "quote",

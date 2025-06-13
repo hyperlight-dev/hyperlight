@@ -77,6 +77,12 @@ impl HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::Continue)? {
             DebugResponse::Continue => Ok(()),
+            DebugResponse::NotAllowed => {
+                log::error!("Action not allowed at this time, crash might have occurred");
+                // This is a consequence of the target crashing or being in an invalid state
+                // we cannot continue execution, but we can still read registers and memory
+                Ok(())
+            }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(GdbTargetError::UnexpectedMessage)
@@ -164,6 +170,12 @@ impl SingleThreadBase for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::WriteAddr(gva, v))? {
             DebugResponse::WriteAddr => Ok(()),
+            DebugResponse::NotAllowed => {
+                log::error!("Action not allowed at this time, crash might have occurred");
+                // This is a consequence of the target crashing or being in an invalid state
+                // we cannot continue execution, but we can still read registers and memory
+                Ok(())
+            }
             DebugResponse::ErrorOccurred => {
                 log::error!("Error occurred");
                 Err(TargetError::NonFatal)
@@ -245,6 +257,12 @@ impl SingleThreadBase for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::WriteRegisters(regs))? {
             DebugResponse::WriteRegisters => Ok(()),
+            DebugResponse::NotAllowed => {
+                log::error!("Action not allowed at this time, crash might have occurred");
+                // This is a consequence of the target crashing or being in an invalid state
+                // we cannot continue execution, but we can still read registers and memory
+                Ok(())
+            }
             DebugResponse::ErrorOccurred => {
                 log::error!("Error occurred");
                 Err(TargetError::NonFatal)
@@ -301,6 +319,12 @@ impl HwBreakpoint for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::AddHwBreakpoint(addr))? {
             DebugResponse::AddHwBreakpoint(rsp) => Ok(rsp),
+            DebugResponse::NotAllowed => {
+                log::error!("Action not allowed at this time, crash might have occurred");
+                // This is a consequence of the target crashing or being in an invalid state
+                // we cannot continue execution, but we can still read registers and memory
+                Err(TargetError::NonFatal)
+            }
             DebugResponse::ErrorOccurred => {
                 log::error!("Error occurred");
                 Err(TargetError::NonFatal)
@@ -321,6 +345,12 @@ impl HwBreakpoint for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::RemoveHwBreakpoint(addr))? {
             DebugResponse::RemoveHwBreakpoint(rsp) => Ok(rsp),
+            DebugResponse::NotAllowed => {
+                log::error!("Action not allowed at this time, crash might have occurred");
+                // This is a consequence of the target crashing or being in an invalid state
+                // we cannot continue execution, but we can still read registers and memory
+                Err(TargetError::NonFatal)
+            }
             DebugResponse::ErrorOccurred => {
                 log::error!("Error occurred");
                 Err(TargetError::NonFatal)
@@ -343,6 +373,12 @@ impl SwBreakpoint for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::AddSwBreakpoint(addr))? {
             DebugResponse::AddSwBreakpoint(rsp) => Ok(rsp),
+            DebugResponse::NotAllowed => {
+                log::error!("Action not allowed at this time, crash might have occurred");
+                // This is a consequence of the target crashing or being in an invalid state
+                // we cannot continue execution, but we can still read registers and memory
+                Err(TargetError::NonFatal)
+            }
             DebugResponse::ErrorOccurred => {
                 log::error!("Error occurred");
                 Err(TargetError::NonFatal)
@@ -363,6 +399,12 @@ impl SwBreakpoint for HyperlightSandboxTarget {
 
         match self.send_command(DebugMsg::RemoveSwBreakpoint(addr))? {
             DebugResponse::RemoveSwBreakpoint(rsp) => Ok(rsp),
+            DebugResponse::NotAllowed => {
+                log::error!("Action not allowed at this time, crash might have occurred");
+                // This is a consequence of the target crashing or being in an invalid state
+                // we cannot continue execution, but we can still read registers and memory
+                Err(TargetError::NonFatal)
+            }
             DebugResponse::ErrorOccurred => {
                 log::error!("Error occurred");
                 Err(TargetError::NonFatal)
@@ -397,6 +439,12 @@ impl SingleThreadSingleStep for HyperlightSandboxTarget {
             DebugResponse::ErrorOccurred => {
                 log::error!("Error occurred");
                 Err(GdbTargetError::UnexpectedError)
+            }
+            DebugResponse::NotAllowed => {
+                log::error!("Action not allowed at this time, crash might have occurred");
+                // This is a consequence of the target crashing or being in an invalid state
+                // we cannot continue execution, but we can still read registers and memory
+                Ok(())
             }
             msg => {
                 log::error!("Unexpected message received: {:?}", msg);

@@ -58,6 +58,10 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                             tid: (),
                             signal: Signal(SIGRTMIN() as u8),
                         },
+                        VcpuStopReason::Crash => BaseStopReason::SignalWithThread {
+                            tid: (),
+                            signal: Signal(11),
+                        },
                         VcpuStopReason::Unknown => {
                             log::warn!("Unknown stop reason received");
 
