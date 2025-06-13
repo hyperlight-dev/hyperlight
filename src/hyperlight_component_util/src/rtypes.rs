@@ -386,7 +386,7 @@ fn emit_value_toplevel(s: &mut State, v: Option<u32>, id: Ident, vt: &Value) -> 
             };
             quote! {
                 #derives
-                #[derive(Debug, Clone, PartialEq)]
+                #[derive(Debug)]
                 pub struct #id #vs { #toks }
             }
         }
@@ -444,7 +444,7 @@ fn emit_value_toplevel(s: &mut State, v: Option<u32>, id: Ident, vt: &Value) -> 
             };
             quote! {
                 #derives
-                #[derive(Debug, Clone, PartialEq)]
+                #[derive(Debug)]
                 pub enum #id #vs { #toks }
             }
         }
@@ -471,7 +471,6 @@ fn emit_value_toplevel(s: &mut State, v: Option<u32>, id: Ident, vt: &Value) -> 
                     #[derive(::wasmtime::component::ComponentType)]
                     #[derive(::wasmtime::component::Lift)]
                     #[derive(::wasmtime::component::Lower)]
-                    #[derive(::core::marker::Copy)]
                     #[component(enum)]
                     #[repr(u8)] // todo: should this always be u8?
                 }
@@ -480,7 +479,7 @@ fn emit_value_toplevel(s: &mut State, v: Option<u32>, id: Ident, vt: &Value) -> 
             };
             quote! {
                 #derives
-                #[derive(Debug, Clone, PartialEq)]
+                #[derive(Debug, Copy, Clone, PartialEq)]
                 pub enum #id #vs { #toks }
             }
         }
