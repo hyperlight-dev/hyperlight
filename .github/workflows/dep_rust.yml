@@ -136,14 +136,6 @@ jobs:
         run: just test-rust-gdb-debugging ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
 
       ### Benchmarks ###
-      - name: Install github-cli (Linux mariner)
-        if: runner.os == 'Linux' && matrix.hypervisor == 'mshv'
-        run: sudo dnf install gh -y
-
-      - name: Install github-cli (Linux ubuntu)
-        if: runner.os == 'Linux' && matrix.hypervisor == 'kvm'
-        run: sudo apt install gh -y
-
       - name: Download benchmarks from "latest"
         run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} ${{ matrix.cpu}} dev-latest # compare to prerelease
         env:
