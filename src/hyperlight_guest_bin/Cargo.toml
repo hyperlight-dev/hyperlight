@@ -8,6 +8,10 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 readme.workspace = true
+description = """
+This crate provides the opinionated bits of the guest library, such as the panic handler, the entry point, the guest logger, the exception handling logic, 
+and third-party code used by our C-API needed to build a native hyperlight-guest binary.
+"""
 
 [features]
 default = ["libc", "printf"]
