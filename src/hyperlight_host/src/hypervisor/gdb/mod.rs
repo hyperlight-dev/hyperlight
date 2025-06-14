@@ -108,6 +108,7 @@ pub(crate) struct X86_64Regs {
 /// Defines the possible reasons for which a vCPU can be stopped when debugging
 #[derive(Debug)]
 pub enum VcpuStopReason {
+    Crash,
     DoneStep,
     /// Hardware breakpoint inserted by the hypervisor so the guest can be stopped
     /// at the entry point. This is used to avoid the guest from executing
@@ -145,6 +146,7 @@ pub(crate) enum DebugResponse {
     DisableDebug,
     ErrorOccurred,
     GetCodeSectionOffset(u64),
+    NotAllowed,
     ReadAddr(Vec<u8>),
     ReadRegisters(X86_64Regs),
     RemoveHwBreakpoint(bool),
