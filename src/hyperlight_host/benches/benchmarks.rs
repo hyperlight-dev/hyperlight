@@ -59,6 +59,31 @@ fn guest_call_benchmark(c: &mut Criterion) {
         });
     });
 
+    // Benchmarks a guest function call calling into the host.
+    // The benchmark does **not** include the time to reset the sandbox memory after the call.
+    group.bench_function("guest_call_with_call_to_host_function", |b| {
+        let mut uninitialized_sandbox = create_uninit_sandbox();
+
+        // Define a host function that adds two integers and register it.
+        uninitialized_sandbox
+            .register("HostAdd", |a: i32, b: i32| Ok(a + b))
+            .unwrap();
+
+        let multiuse_sandbox: MultiUseSandbox =
+            uninitialized_sandbox.evolve(Noop::default()).unwrap();
+        let mut call_ctx = multiuse_sandbox.new_call_context();
+
+        b.iter(|| call_ctx.call::<i32>("Add", (1_i32, 41_i32)).unwrap());
+    });
+
+    group.finish();
+}
+
+fn guest_call_benchmark_large_param(c: &mut Criterion) {
+    let mut group = c.benchmark_group("guest_functions_with_large_parameters");
+    #[cfg(target_os = "windows")]
+    group.sample_size(10); // This benchark is very slow on Windows, so we reduce the sample size to avoid long test runs.
+
     // This benchmark includes time to first clone a vector and string, so it is not a "pure' benchmark of the guest call, but it's still useful
     group.bench_function("guest_call_with_large_parameters", |b| {
         const SIZE: usize = 50 * 1024 * 1024; // 50 MB
@@ -84,23 +109,6 @@ fn guest_call_benchmark(c: &mut Criterion) {
                 )
                 .unwrap()
         });
-    });
-
-    // Benchmarks a guest function call calling into the host.
-    // The benchmark does **not** include the time to reset the sandbox memory after the call.
-    group.bench_function("guest_call_with_call_to_host_function", |b| {
-        let mut uninitialized_sandbox = create_uninit_sandbox();
-
-        // Define a host function that adds two integers and register it.
-        uninitialized_sandbox
-            .register("HostAdd", |a: i32, b: i32| Ok(a + b))
-            .unwrap();
-
-        let multiuse_sandbox: MultiUseSandbox =
-            uninitialized_sandbox.evolve(Noop::default()).unwrap();
-        let mut call_ctx = multiuse_sandbox.new_call_context();
-
-        b.iter(|| call_ctx.call::<i32>("Add", (1_i32, 41_i32)).unwrap());
     });
 
     group.finish();
@@ -148,6 +156,6 @@ fn sandbox_benchmark(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default();
-    targets = guest_call_benchmark, sandbox_benchmark
+    targets = guest_call_benchmark, sandbox_benchmark, guest_call_benchmark_large_param
 }
 criterion_main!(benches);
