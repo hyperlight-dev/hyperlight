@@ -55,7 +55,9 @@ use {super::crashdump, std::path::Path};
 
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
-use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug};
+use super::gdb::{
+    DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug, VcpuStopReason,
+};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
@@ -749,6 +751,25 @@ impl Hypervisor for HypervLinuxDriver {
                             .store(false, Ordering::Relaxed);
                         HyperlightExit::Cancelled()
                     } else {
+                        // In case of the gdb feature, if no cancellation was requested,
+                        // and the debugging is enabled it means the vCPU was stopped because
+                        // of an interrupt coming from the debugger thread
+                        #[cfg(gdb)]
+                        if self.debug.is_some() {
+                            // If the vCPU was stopped because of an interrupt, we need to
+                            // return a special exit reason so that the gdb thread can handle it
+                            // and resume execution
+                            // NOTE: There is a chance that the vCPU was stopped because of a stale
+                            // signal that was meant to be delivered to a previous/other vCPU on this
+                            // same thread, however, we cannot distinguish between the two cases, so
+                            // we assume that the vCPU was stopped because of an interrupt.
+                            // This is fine, because the debugger will be notified about an interrupt
+                            HyperlightExit::Debug(VcpuStopReason::Interrupt)
+                        } else {
+                            HyperlightExit::Retry()
+                        }
+
+                        #[cfg(not(gdb))]
                         HyperlightExit::Retry()
                     }
                 }
@@ -835,39 +856,130 @@ impl Hypervisor for HypervLinuxDriver {
         dbg_mem_access_fn: std::sync::Arc<
             std::sync::Mutex<dyn super::handlers::DbgMemAccessHandlerCaller>,
         >,
-        stop_reason: super::gdb::VcpuStopReason,
+        stop_reason: VcpuStopReason,
     ) -> Result<()> {
-        self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
-            .map_err(|e| new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e))?;
+        if self.debug.is_none() {
+            return Err(new_error!("Debugging is not enabled"));
+        }
 
-        loop {
-            log::debug!("Debug wait for event to resume vCPU");
+        match stop_reason {
+            // If the vCPU stopped because of a crash, we need to handle it differently
+            // We do not want to allow resuming execution or placing breakpoints
+            // because the guest has crashed.
+            // We only allow reading registers and memory
+            VcpuStopReason::Crash => {
+                self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
+                    .map_err(|e| {
+                        new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
+                    })?;
 
-            // Wait for a message from gdb
-            let req = self.recv_dbg_msg()?;
+                loop {
+                    log::debug!("Debug wait for event to resume vCPU");
+                    // Wait for a message from gdb
+                    let req = self.recv_dbg_msg()?;
 
-            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+                    // Flag to store if we should deny continue or step requests
+                    let mut deny_continue = false;
+                    // Flag to store if we should detach from the gdb session
+                    let mut detach = false;
 
-            let response = match result {
-                Ok(response) => response,
-                // Treat non fatal errors separately so the guest doesn't fail
-                Err(HyperlightError::TranslateGuestAddress(_)) => DebugResponse::ErrorOccurred,
-                Err(e) => {
-                    return Err(e);
+                    let response = match req {
+                        // Allow the detach request to disable debugging by continuing resuming
+                        // hypervisor crash error reporting
+                        DebugMsg::DisableDebug => {
+                            detach = true;
+                            DebugResponse::DisableDebug
+                        }
+                        // Do not allow continue or step requests
+                        DebugMsg::Continue | DebugMsg::Step => {
+                            deny_continue = true;
+                            DebugResponse::NotAllowed
+                        }
+                        // Do not allow adding/removing breakpoints and writing to memory or registers
+                        DebugMsg::AddHwBreakpoint(_)
+                        | DebugMsg::AddSwBreakpoint(_)
+                        | DebugMsg::RemoveHwBreakpoint(_)
+                        | DebugMsg::RemoveSwBreakpoint(_)
+                        | DebugMsg::WriteAddr(_, _)
+                        | DebugMsg::WriteRegisters(_) => DebugResponse::NotAllowed,
+
+                        // For all other requests, we will process them normally
+                        _ => {
+                            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+                            match result {
+                                Ok(response) => response,
+                                Err(HyperlightError::TranslateGuestAddress(_)) => {
+                                    // Treat non fatal errors separately so the guest doesn't fail
+                                    DebugResponse::ErrorOccurred
+                                }
+                                Err(e) => {
+                                    log::error!("Error processing debug request: {:?}", e);
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    };
+
+                    // Send the response to the request back to gdb
+                    self.send_dbg_msg(response)
+                        .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+
+                    // If we are denying continue or step requests, the debugger assumes the
+                    // execution started so we need to report a stop reason as a crash and let
+                    // it request to read registers/memory to figure out what happened
+                    if deny_continue {
+                        self.send_dbg_msg(DebugResponse::VcpuStopped(VcpuStopReason::Crash))
+                            .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+                    }
+
+                    // If we are detaching, we will break the loop and the Hypervisor will continue
+                    // to handle the Crash reason
+                    if detach {
+                        break;
+                    }
                 }
-            };
+            }
+            // If the vCPU stopped because of any other reason except a crash, we can handle it
+            // normally
+            _ => {
+                // Send the stop reason to the gdb thread
+                self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
+                    .map_err(|e| {
+                        new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
+                    })?;
 
-            // If the command was either step or continue, we need to run the vcpu
-            let cont = matches!(
-                response,
-                DebugResponse::Step | DebugResponse::Continue | DebugResponse::DisableDebug
-            );
+                loop {
+                    log::debug!("Debug wait for event to resume vCPU");
+                    // Wait for a message from gdb
+                    let req = self.recv_dbg_msg()?;
 
-            self.send_dbg_msg(response)
-                .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+                    let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
 
-            if cont {
-                break;
+                    let response = match result {
+                        Ok(response) => response,
+                        // Treat non fatal errors separately so the guest doesn't fail
+                        Err(HyperlightError::TranslateGuestAddress(_)) => {
+                            DebugResponse::ErrorOccurred
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    };
+
+                    let cont = matches!(
+                        response,
+                        DebugResponse::Continue | DebugResponse::Step | DebugResponse::DisableDebug
+                    );
+
+                    self.send_dbg_msg(response)
+                        .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+
+                    // Check if we should continue execution
+                    // We continue if the response is one of the following: Step, Continue, or DisableDebug
+                    if cont {
+                        break;
+                    }
+                }
             }
         }
 

@@ -14,6 +14,7 @@ The Hyperlight `gdb` feature enables **KVM** and **MSHV** guest debugging to:
    - read and write addresses
    - step/continue
    - get code offset from target
+   - stop when a crash occurs and only allow read access to the guest memory and registers
 
 ## Expected behavior
 
@@ -32,6 +33,10 @@ session of a guest binary running inside a Hyperlight sandbox on Linux.
 - if two sandbox instances are created with the same debug port, the second
   instance logs an error and the gdb thread will not be created, but the sandbox
   will continue to run without gdb debugging
+- when a crash happens, the debugger session remains active, and the guest
+  vCPU is stopped, allowing the gdb client to inspect the state of the guest.
+  The debug target will refuse any resume, step actions and write operations to
+  the guest memory and registers until the gdb client disconnects or the sandbox is stopped.
 
 ## Example
 
