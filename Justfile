@@ -75,8 +75,8 @@ test-like-ci config=default-target hypervisor="kvm":
     @# with default features
     just test {{config}} {{ if hypervisor == "mshv3" {"mshv3"} else {""} }}
 
-    @# with only one driver enabled + seccomp
-    just test {{config}} seccomp,build-metadata,{{ if hypervisor == "mshv" {"mshv2"} else if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
+    @# with only one driver enabled + seccomp + build-metadata + init-paging
+    just test {{config}} seccomp,build-metadata,init-paging,{{ if hypervisor == "mshv" {"mshv2"} else if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
 
     @# make sure certain cargo features compile
     cargo check -p hyperlight-host --features crashdump
@@ -94,18 +94,18 @@ test target=default-target features="": (test-unit target features) (test-isolat
 
 # runs unit tests
 test-unit target=default-target features="":
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} --lib
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} --lib
 
 # runs tests that requires being run separately, for example due to global state
 test-isolated target=default-target features="":
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_trace_trace --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::create_1000_sandboxes --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- mem::shared_mem::tests::test_drop --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_trace_trace --exact --ignored
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::create_1000_sandboxes --exact --ignored
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- mem::shared_mem::tests::test_drop --exact --ignored
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
     @# metrics tests
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact 
+    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics,init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact 
 # runs integration tests. Guest can either be "rust" or "c"
 test-integration guest target=default-target features="":
     @# run execute_on_heap test with feature "executable_heap" on and off
@@ -113,13 +113,13 @@ test-integration guest target=default-target features="":
     {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} cargo test --profile={{ if target == "debug" { "dev" } else { target } }} --test integration_test execute_on_heap {{ if features =="" {""} else {"--features " + features} }} -- --ignored
     
     @# run the rest of the integration tests
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} cargo test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} --test '*'
+    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} cargo test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} --test '*'
 
 # runs seccomp tests
 test-seccomp target=default-target features="":
     @# run seccomp test with feature "seccomp" on and off
     cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --lib {{ if features =="" {''} else { "--features " + features } }} -- --ignored
-    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --no-default-features {{ if features =~"mshv3" {"--features mshv3"} else {"--features mshv2,kvm" } }} --lib -- --ignored
+    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --no-default-features {{ if features =~"mshv3" {"--features init-paging,mshv3"} else {"--features mshv2,init-paging,kvm" } }} --lib -- --ignored
 
 # runs tests that ensure compilation fails when it should
 test-compilation-fail target=default-target:

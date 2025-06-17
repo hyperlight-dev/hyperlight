@@ -41,10 +41,12 @@ use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
 use super::wrappers::{HandleWrapper, WHvFPURegisters};
+#[cfg(feature = "init-paging")]
 use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
-    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE, HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU,
+    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
+use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -125,9 +127,10 @@ impl HypervWindowsDriver {
         })
     }
 
-    fn setup_initial_sregs(proc: &mut VMProcessor, pml4_addr: u64) -> Result<()> {
+    fn setup_initial_sregs(proc: &mut VMProcessor, _pml4_addr: u64) -> Result<()> {
+        #[cfg(feature = "init-paging")]
         proc.set_registers(&[
-            (WHvX64RegisterCr3, WHV_REGISTER_VALUE { Reg64: pml4_addr }),
+            (WHvX64RegisterCr3, WHV_REGISTER_VALUE { Reg64: _pml4_addr }),
             (
                 WHvX64RegisterCr4,
                 WHV_REGISTER_VALUE {
@@ -158,6 +161,19 @@ impl HypervWindowsDriver {
                 },
             ),
         ])?;
+
+        #[cfg(not(feature = "init-paging"))]
+        proc.set_registers(&[(
+            WHvX64RegisterCs,
+            WHV_REGISTER_VALUE {
+                Segment: WHV_X64_SEGMENT_REGISTER {
+                    Base: 0,
+                    Selector: 0,
+                    ..Default::default()
+                },
+            },
+        )])?;
+
         Ok(())
     }
 

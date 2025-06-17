@@ -35,11 +35,12 @@ use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+#[cfg(feature = "init-paging")]
 use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
-    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE, HyperlightExit, Hypervisor, InterruptHandle,
-    LinuxInterruptHandle, VirtualCPU,
+    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
+use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -390,14 +391,21 @@ impl KVMDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn setup_initial_sregs(vcpu_fd: &mut VcpuFd, pml4_addr: u64) -> Result<()> {
+    fn setup_initial_sregs(vcpu_fd: &mut VcpuFd, _pml4_addr: u64) -> Result<()> {
         // setup paging and IA-32e (64-bit) mode
         let mut sregs = vcpu_fd.get_sregs()?;
-        sregs.cr3 = pml4_addr;
-        sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT;
-        sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP;
-        sregs.efer = EFER_LME | EFER_LMA | EFER_SCE | EFER_NX;
-        sregs.cs.l = 1; // required for 64-bit mode
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "init-paging")] {
+                sregs.cr3 = _pml4_addr;
+                sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT;
+                sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP;
+                sregs.efer = EFER_LME | EFER_LMA | EFER_SCE | EFER_NX;
+                sregs.cs.l = 1; // required for 64-bit mode
+            } else {
+                sregs.cs.base = 0;
+                sregs.cs.selector = 0;
+            }
+        }
         vcpu_fd.set_sregs(&sregs)?;
         Ok(())
     }

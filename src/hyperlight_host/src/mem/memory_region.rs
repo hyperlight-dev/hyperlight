@@ -43,6 +43,7 @@ use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
 
+#[cfg(feature = "init-paging")]
 use super::mgr::{PAGE_NX, PAGE_PRESENT, PAGE_RW, PAGE_USER};
 
 pub(crate) const DEFAULT_GUEST_BLOB_MEM_FLAGS: MemoryRegionFlags = MemoryRegionFlags::READ;
@@ -65,6 +66,7 @@ bitflags! {
 }
 
 impl MemoryRegionFlags {
+    #[cfg(feature = "init-paging")]
     pub(crate) fn translate_flags(&self) -> u64 {
         let mut page_flags = 0;
 

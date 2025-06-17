@@ -75,20 +75,24 @@ use self::handlers::{
 };
 use crate::mem::ptr::RawPtr;
 
-pub(crate) const CR4_PAE: u64 = 1 << 5;
-pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
-pub(crate) const CR4_OSXMMEXCPT: u64 = 1 << 10;
-pub(crate) const CR0_PE: u64 = 1;
-pub(crate) const CR0_MP: u64 = 1 << 1;
-pub(crate) const CR0_ET: u64 = 1 << 4;
-pub(crate) const CR0_NE: u64 = 1 << 5;
-pub(crate) const CR0_WP: u64 = 1 << 16;
-pub(crate) const CR0_AM: u64 = 1 << 18;
-pub(crate) const CR0_PG: u64 = 1 << 31;
-pub(crate) const EFER_LME: u64 = 1 << 8;
-pub(crate) const EFER_LMA: u64 = 1 << 10;
-pub(crate) const EFER_SCE: u64 = 1;
-pub(crate) const EFER_NX: u64 = 1 << 11;
+cfg_if::cfg_if! {
+    if #[cfg(feature = "init-paging")] {
+        pub(crate) const CR4_PAE: u64 = 1 << 5;
+        pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
+        pub(crate) const CR4_OSXMMEXCPT: u64 = 1 << 10;
+        pub(crate) const CR0_PE: u64 = 1;
+        pub(crate) const CR0_MP: u64 = 1 << 1;
+        pub(crate) const CR0_ET: u64 = 1 << 4;
+        pub(crate) const CR0_NE: u64 = 1 << 5;
+        pub(crate) const CR0_WP: u64 = 1 << 16;
+        pub(crate) const CR0_AM: u64 = 1 << 18;
+        pub(crate) const CR0_PG: u64 = 1 << 31;
+        pub(crate) const EFER_LME: u64 = 1 << 8;
+        pub(crate) const EFER_LMA: u64 = 1 << 10;
+        pub(crate) const EFER_SCE: u64 = 1;
+        pub(crate) const EFER_NX: u64 = 1 << 11;
+    }
+}
 
 /// These are the generic exit reasons that we can handle from a Hypervisor the Hypervisors run method is responsible for mapping from
 /// the hypervisor specific exit reasons to these generic ones

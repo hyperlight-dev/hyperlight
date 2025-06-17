@@ -32,7 +32,9 @@ use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
-use crate::mem::shared_mem::{GuestSharedMemory, SharedMemory};
+use crate::mem::shared_mem::GuestSharedMemory;
+#[cfg(feature = "init-paging")]
+use crate::mem::shared_mem::SharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -150,13 +152,17 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
 ) -> Result<Box<dyn Hypervisor>> {
-    let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
-    let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
+    #[cfg(feature = "init-paging")]
     let rsp_ptr = {
+        let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
+        let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
         let rsp_u64 = mgr.set_up_shared_memory(mem_size, &mut regions)?;
         let rsp_raw = RawPtr::from(rsp_u64);
         GuestPtr::try_from(rsp_raw)
     }?;
+    #[cfg(not(feature = "init-paging"))]
+    let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
+    let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
     let base_ptr = GuestPtr::try_from(Offset::from(0))?;
     let pml4_ptr = {
         let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;

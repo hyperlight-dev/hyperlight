@@ -19,6 +19,9 @@ use goblin::elf::reloc::{R_AARCH64_NONE, R_AARCH64_RELATIVE};
 #[cfg(target_arch = "x86_64")]
 use goblin::elf::reloc::{R_X86_64_NONE, R_X86_64_RELATIVE};
 use goblin::elf::{Elf, ProgramHeaders, Reloc};
+#[cfg(not(feature = "init-paging"))]
+use goblin::elf32::program_header::PT_LOAD;
+#[cfg(feature = "init-paging")]
 use goblin::elf64::program_header::PT_LOAD;
 
 use crate::{Result, log_then_return, new_error};

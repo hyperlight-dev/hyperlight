@@ -61,14 +61,14 @@ use super::gdb::{
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+#[cfg(feature = "init-paging")]
 use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
-    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE, Hypervisor, InterruptHandle, LinuxInterruptHandle,
-    VirtualCPU,
+    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
+use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
-use crate::hypervisor::HyperlightExit;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::sandbox::SandboxConfiguration;
@@ -436,11 +436,12 @@ impl HypervLinuxDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn setup_initial_sregs(vcpu: &mut VcpuFd, pml4_addr: u64) -> Result<()> {
+    fn setup_initial_sregs(vcpu: &mut VcpuFd, _pml4_addr: u64) -> Result<()> {
+        #[cfg(feature = "init-paging")]
         let sregs = SpecialRegisters {
             cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
             cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
-            cr3: pml4_addr,
+            cr3: _pml4_addr,
             efer: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
             cs: SegmentRegister {
                 type_: 11,
@@ -453,6 +454,16 @@ impl HypervLinuxDriver {
                 limit: 65535,
                 type_: 11,
                 present: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        #[cfg(not(feature = "init-paging"))]
+        let sregs = SpecialRegisters {
+            cs: SegmentRegister {
+                base: 0,
+                selector: 0,
                 ..Default::default()
             },
             ..Default::default()
