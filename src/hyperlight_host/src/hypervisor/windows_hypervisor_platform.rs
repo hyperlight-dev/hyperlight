@@ -16,6 +16,7 @@ limitations under the License.
 
 use core::ffi::c_void;
 
+use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{Span, instrument};
 use windows::Win32::Foundation::{FreeLibrary, HANDLE};
 use windows::Win32::System::Hypervisor::*;
@@ -23,7 +24,7 @@ use windows::Win32::System::LibraryLoader::*;
 use windows::core::s;
 use windows_result::HRESULT;
 
-use super::wrappers::HandleWrapper;
+use super::surrogate_process::SurrogateProcess;
 #[cfg(crashdump)]
 use crate::HyperlightError;
 use crate::hypervisor::wrappers::{WHvFPURegisters, WHvGeneralRegisters, WHvSpecialRegisters};
@@ -89,9 +90,21 @@ impl VMPartition {
     pub(super) fn map_gpa_range(
         &mut self,
         regions: &[MemoryRegion],
-        process_handle: HandleWrapper,
+        surrogate_process: &SurrogateProcess,
     ) -> Result<()> {
-        let process_handle: HANDLE = process_handle.into();
+        let process_handle: HANDLE = surrogate_process.process_handle.into();
+        // this is the address in the surrogate process where shared memory starts.
+        // We add page-size because we don't care about the first guard page
+        let surrogate_address = surrogate_process.allocated_address as usize + PAGE_SIZE_USIZE;
+        if regions.is_empty() {
+            return Err(new_error!("No memory regions to map"));
+        }
+        // this is the address in the main process where the shared memory starts
+        let host_address = regions[0].host_region.start;
+
+        // offset between the surrogate process and the host process address of start of shared memory
+        let offset = isize::try_from(surrogate_address)? - isize::try_from(host_address)?;
+
         // The function pointer to WHvMapGpaRange2 is resolved dynamically to allow us to detect
         // when we are running on older versions of windows that do not support this API and
         // return a more informative error message, rather than failing with an error about a missing entrypoint
@@ -121,9 +134,9 @@ impl VMPartition {
             let res = whvmapgparange2_func(
                 self.0,
                 process_handle,
-                region.host_region.start as *const c_void,
+                (isize::try_from(region.host_region.start)? + offset) as *const c_void,
                 region.guest_region.start as u64,
-                (region.guest_region.end - region.guest_region.start) as u64,
+                region.guest_region.len() as u64,
                 flags,
             );
             if res.is_err() {

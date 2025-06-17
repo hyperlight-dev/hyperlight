@@ -14,14 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use core::ffi::c_void;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use log::LevelFilter;
 use tracing::{Span, instrument};
 use windows::Win32::System::Hypervisor::{
@@ -55,10 +53,8 @@ use crate::{Result, debug, new_error};
 
 /// A Hypervisor driver for HyperV-on-Windows.
 pub(crate) struct HypervWindowsDriver {
-    size: usize, // this is the size of the memory region, excluding the 2 surrounding guard pages
     processor: VMProcessor,
     _surrogate_process: SurrogateProcess, // we need to keep a reference to the SurrogateProcess for the duration of the driver since otherwise it will dropped and the memory mapping will be unmapped and the surrogate process will be returned to the pool
-    source_address: *mut c_void,          // this points into the first guard page
     entrypoint: u64,
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
@@ -80,7 +76,6 @@ impl HypervWindowsDriver {
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
         raw_size: usize,
-        raw_source_address: *mut c_void,
         pml4_address: u64,
         entrypoint: u64,
         rsp: u64,
@@ -94,23 +89,18 @@ impl HypervWindowsDriver {
         // with guard pages setup
         let surrogate_process = {
             let mgr = get_surrogate_process_manager()?;
-            mgr.get_surrogate_process(raw_size, raw_source_address, mmap_file_handle)
+            mgr.get_surrogate_process(raw_size, mmap_file_handle)
         }?;
 
-        partition.map_gpa_range(&mem_regions, surrogate_process.process_handle)?;
+        partition.map_gpa_range(&mem_regions, &surrogate_process)?;
 
         let mut proc = VMProcessor::new(partition)?;
         Self::setup_initial_sregs(&mut proc, pml4_address)?;
         let partition_handle = proc.get_partition_hdl();
 
-        // subtract 2 pages for the guard pages, since when we copy memory to and from surrogate process,
-        // we don't want to copy the guard pages themselves (that would cause access violation)
-        let mem_size = raw_size - 2 * PAGE_SIZE_USIZE;
         Ok(Self {
-            size: mem_size,
             processor: proc,
             _surrogate_process: surrogate_process,
-            source_address: raw_source_address,
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
             mem_regions,
@@ -177,9 +167,7 @@ impl Debug for HypervWindowsDriver {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut fs = f.debug_struct("HyperV Driver");
 
-        fs.field("Size", &self.size)
-            .field("Source Address", &self.source_address)
-            .field("Entrypoint", &self.entrypoint)
+        fs.field("Entrypoint", &self.entrypoint)
             .field("Original RSP", &self.orig_rsp);
 
         for region in &self.mem_regions {

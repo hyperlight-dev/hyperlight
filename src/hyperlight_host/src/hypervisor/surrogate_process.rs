@@ -30,6 +30,7 @@ use super::wrappers::HandleWrapper;
 #[derive(Debug)]
 pub(super) struct SurrogateProcess {
     /// The address of memory allocated in the surrogate process to be mapped to the VM.
+    /// This includes the first guard page
     pub(crate) allocated_address: *mut c_void,
     /// The handle to the surrogate process.
     pub(crate) process_handle: HandleWrapper,

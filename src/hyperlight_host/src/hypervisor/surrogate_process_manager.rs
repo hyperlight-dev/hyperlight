@@ -144,7 +144,6 @@ impl SurrogateProcessManager {
     pub(super) fn get_surrogate_process(
         &self,
         raw_size: usize,
-        raw_source_address: *const c_void,
         mmap_file_handle: HandleWrapper,
     ) -> Result<SurrogateProcess> {
         let surrogate_process_handle: HANDLE = self.process_receiver.recv()?.into();
@@ -160,7 +159,7 @@ impl SurrogateProcessManager {
                 mapping_file_handle,
                 surrogate_process_handle,
                 0,
-                Some(raw_source_address),
+                None,
                 raw_size,
                 0,
                 PAGE_READWRITE.0,
@@ -171,19 +170,7 @@ impl SurrogateProcessManager {
         if allocated_address.Value.is_null() {
             // Safety: `MapViewOfFileNuma2` will set the last error code if it fails.
             let error = unsafe { windows::Win32::Foundation::GetLastError() };
-            log_then_return!(
-                "MapViewOfFileNuma2 failed with error code: {:?} for mem address {:?} ",
-                error,
-                raw_source_address
-            );
-        }
-
-        if allocated_address.Value as *const c_void != raw_source_address {
-            log_then_return!(
-                "Address Mismatch Allocated: {:?} Requested: {:?}",
-                allocated_address.Value,
-                raw_source_address
-            );
+            log_then_return!("MapViewOfFileNuma2 failed with error code: {:?}", error);
         }
 
         // set up guard pages
@@ -193,7 +180,7 @@ impl SurrogateProcessManager {
         let mut unused_out_old_prot_flags = PAGE_PROTECTION_FLAGS(0);
 
         // the first page of the raw_size is the guard page
-        let first_guard_page_start = raw_source_address;
+        let first_guard_page_start = allocated_address.Value;
         if let Err(e) = unsafe {
             VirtualProtectEx(
                 surrogate_process_handle,
@@ -207,7 +194,8 @@ impl SurrogateProcessManager {
         }
 
         // the last page of the raw_size is the guard page
-        let last_guard_page_start = unsafe { raw_source_address.add(raw_size - PAGE_SIZE_USIZE) };
+        let last_guard_page_start =
+            unsafe { first_guard_page_start.add(raw_size - PAGE_SIZE_USIZE) };
         if let Err(e) = unsafe {
             VirtualProtectEx(
                 surrogate_process_handle,
@@ -485,11 +473,8 @@ mod tests {
 
                     let timer = Instant::now();
                     let surrogate_process = {
-                        let res = surrogate_process_manager.get_surrogate_process(
-                            size,
-                            addr.Value,
-                            HandleWrapper::from(handle),
-                        )?;
+                        let res = surrogate_process_manager
+                            .get_surrogate_process(size, HandleWrapper::from(handle))?;
                         let elapsed = timer.elapsed();
                         // Print out the time it took to get the process if its greater than 150ms (this is just to allow us to see that threads are blocking on the process queue)
                         if (elapsed.as_millis() as u64) > 150 {
@@ -579,7 +564,6 @@ mod tests {
         let process = mgr
             .get_surrogate_process(
                 mem.raw_mem_size(),
-                mem.raw_ptr() as *mut c_void,
                 HandleWrapper::from(mem.get_mmap_file_handle()),
             )
             .unwrap();
