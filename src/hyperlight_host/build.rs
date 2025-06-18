@@ -85,6 +85,24 @@ fn main() -> Result<()> {
         );
     }
 
+    // Set a cfg flag based on optimization level for benchmarks
+    // Benchmarks should only run with optimized builds (opt-level 1+)
+    println!("cargo:rustc-check-cfg=cfg(unoptimized_build)");
+    println!("cargo:rustc-check-cfg=cfg(optimized_build)");
+    
+    if let Ok(opt_level) = std::env::var("OPT_LEVEL") {
+        if opt_level == "0" {
+            // Unoptimized build - benchmarks should not run
+            println!("cargo:rustc-cfg=unoptimized_build");
+        } else {
+            // Optimized build - benchmarks can run
+            println!("cargo:rustc-cfg=optimized_build");
+        }
+    } else {
+        // Fallback: if we can't determine opt level, assume unoptimized to be safe
+        println!("cargo:rustc-cfg=unoptimized_build");
+    }
+
     // Makes #[cfg(kvm)] == #[cfg(all(feature = "kvm", target_os = "linux"))]
     // and #[cfg(mshv)] == #[cfg(all(any(feature = "mshv2", feature = "mshv3"), target_os = "linux"))].
     // Essentially the kvm and mshv features are ignored on windows as long as you use #[cfg(kvm)] and not #[cfg(feature = "kvm")].
