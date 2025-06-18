@@ -30,10 +30,18 @@ use windows::Win32::System::Hypervisor::{
 };
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
+#[cfg(gdb)]
+use {
+    super::gdb::{
+        DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, HypervDebug, VcpuStopReason,
+    },
+    super::handlers::DbgMemAccessHandlerWrapper,
+    crate::hypervisor::handlers::DbgMemAccessHandlerCaller,
+    crate::{HyperlightError, log_then_return},
+    std::sync::Mutex,
+};
 
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
-#[cfg(gdb)]
-use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
@@ -53,6 +61,211 @@ use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, debug, new_error};
 
+#[cfg(gdb)]
+mod debug {
+    use std::sync::{Arc, Mutex};
+
+    use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
+
+    use super::{HypervWindowsDriver, *};
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
+    use crate::{Result, new_error};
+
+    impl HypervWindowsDriver {
+        /// Resets the debug information to disable debugging
+        fn disable_debug(&mut self) -> Result<()> {
+            let mut debug = HypervDebug::default();
+
+            debug.set_single_step(&self.processor, false)?;
+
+            self.debug = Some(debug);
+
+            Ok(())
+        }
+
+        /// Get the reason the vCPU has stopped
+        pub(crate) fn get_stop_reason(
+            &mut self,
+            exception: WHV_VP_EXCEPTION_CONTEXT,
+        ) -> Result<VcpuStopReason> {
+            let debug = self
+                .debug
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            debug.get_stop_reason(&self.processor, exception, self.entrypoint)
+        }
+
+        pub(crate) fn process_dbg_request(
+            &mut self,
+            req: DebugMsg,
+            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        ) -> Result<DebugResponse> {
+            if let Some(debug) = self.debug.as_mut() {
+                match req {
+                    DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
+                        debug
+                            .add_hw_breakpoint(&self.processor, addr)
+                            .map_err(|e| {
+                                log::error!("Failed to add hw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
+                    )),
+                    DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
+                        debug
+                            .add_sw_breakpoint(&self.processor, addr, dbg_mem_access_fn)
+                            .map_err(|e| {
+                                log::error!("Failed to add sw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
+                    )),
+                    DebugMsg::Continue => {
+                        debug.set_single_step(&self.processor, false).map_err(|e| {
+                            log::error!("Failed to continue execution: {:?}", e);
+
+                            e
+                        })?;
+
+                        Ok(DebugResponse::Continue)
+                    }
+                    DebugMsg::DisableDebug => {
+                        self.disable_debug().map_err(|e| {
+                            log::error!("Failed to disable debugging: {:?}", e);
+
+                            e
+                        })?;
+
+                        Ok(DebugResponse::DisableDebug)
+                    }
+                    DebugMsg::GetCodeSectionOffset => {
+                        let offset = dbg_mem_access_fn
+                            .try_lock()
+                            .map_err(|e| {
+                                new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
+                            })?
+                            .get_code_offset()
+                            .map_err(|e| {
+                                log::error!("Failed to get code offset: {:?}", e);
+
+                                e
+                            })?;
+
+                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
+                    }
+                    DebugMsg::ReadAddr(addr, len) => {
+                        let mut data = vec![0u8; len];
+
+                        debug
+                            .read_addrs(&self.processor, addr, &mut data, dbg_mem_access_fn)
+                            .map_err(|e| {
+                                log::error!("Failed to read from address: {:?}", e);
+
+                                e
+                            })?;
+
+                        Ok(DebugResponse::ReadAddr(data))
+                    }
+                    DebugMsg::ReadRegisters => {
+                        let mut regs = X86_64Regs::default();
+
+                        debug
+                            .read_regs(&self.processor, &mut regs)
+                            .map_err(|e| {
+                                log::error!("Failed to read registers: {:?}", e);
+
+                                e
+                            })
+                            .map(|_| DebugResponse::ReadRegisters(regs))
+                    }
+                    DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
+                        debug
+                            .remove_hw_breakpoint(&self.processor, addr)
+                            .map_err(|e| {
+                                log::error!("Failed to remove hw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
+                    )),
+                    DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
+                        debug
+                            .remove_sw_breakpoint(&self.processor, addr, dbg_mem_access_fn)
+                            .map_err(|e| {
+                                log::error!("Failed to remove sw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
+                    )),
+                    DebugMsg::Step => {
+                        debug.set_single_step(&self.processor, true).map_err(|e| {
+                            log::error!("Failed to enable step instruction: {:?}", e);
+
+                            e
+                        })?;
+
+                        Ok(DebugResponse::Step)
+                    }
+                    DebugMsg::WriteAddr(addr, data) => {
+                        debug
+                            .write_addrs(&self.processor, addr, &data, dbg_mem_access_fn)
+                            .map_err(|e| {
+                                log::error!("Failed to write to address: {:?}", e);
+
+                                e
+                            })?;
+
+                        Ok(DebugResponse::WriteAddr)
+                    }
+                    DebugMsg::WriteRegisters(regs) => debug
+                        .write_regs(&self.processor, &regs)
+                        .map_err(|e| {
+                            log::error!("Failed to write registers: {:?}", e);
+
+                            e
+                        })
+                        .map(|_| DebugResponse::WriteRegisters),
+                }
+            } else {
+                Err(new_error!("Debugging is not enabled"))
+            }
+        }
+
+        pub(crate) fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
+            let gdb_conn = self
+                .gdb_conn
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            gdb_conn.recv().map_err(|e| {
+                new_error!(
+                    "Got an error while waiting to receive a
+                    message: {:?}",
+                    e
+                )
+            })
+        }
+
+        pub(crate) fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
+            log::debug!("Sending {:?}", cmd);
+
+            let gdb_conn = self
+                .gdb_conn
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            gdb_conn
+                .send(cmd)
+                .map_err(|e| new_error!("Got an error while sending a response message {:?}", e))
+        }
+    }
+}
+
 /// A Hypervisor driver for HyperV-on-Windows.
 pub(crate) struct HypervWindowsDriver {
     processor: VMProcessor,
@@ -61,6 +274,10 @@ pub(crate) struct HypervWindowsDriver {
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
     interrupt_handle: Arc<WindowsInterruptHandle>,
+    #[cfg(gdb)]
+    debug: Option<HypervDebug>,
+    #[cfg(gdb)]
+    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
 }
@@ -82,6 +299,7 @@ impl HypervWindowsDriver {
         entrypoint: u64,
         rsp: u64,
         mmap_file_handle: HandleWrapper,
+        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
     ) -> Result<Self> {
         // create and setup hypervisor partition
@@ -100,21 +318,47 @@ impl HypervWindowsDriver {
         Self::setup_initial_sregs(&mut proc, pml4_address)?;
         let partition_handle = proc.get_partition_hdl();
 
-        Ok(Self {
+        #[cfg(gdb)]
+        let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
+            let mut debug = HypervDebug::new();
+            debug.add_hw_breakpoint(&proc, entrypoint)?;
+
+            (Some(debug), Some(gdb_conn))
+        } else {
+            (None, None)
+        };
+
+        let interrupt_handle = Arc::new(WindowsInterruptHandle {
+            running: AtomicBool::new(false),
+            cancel_requested: AtomicBool::new(false),
+            #[cfg(gdb)]
+            debug_interrupt: AtomicBool::new(false),
+            partition_handle,
+            dropped: AtomicBool::new(false),
+        });
+
+        #[allow(unused_mut)]
+        let mut hv = Self {
             processor: proc,
             _surrogate_process: surrogate_process,
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
             mem_regions,
-            interrupt_handle: Arc::new(WindowsInterruptHandle {
-                running: AtomicBool::new(false),
-                cancel_requested: AtomicBool::new(false),
-                partition_handle,
-                dropped: AtomicBool::new(false),
-            }),
+            interrupt_handle: interrupt_handle.clone(),
+            #[cfg(gdb)]
+            debug,
+            #[cfg(gdb)]
+            gdb_conn,
             #[cfg(crashdump)]
             rt_cfg,
-        })
+        };
+
+        // Send the interrupt handle to the GDB thread if debugging is enabled
+        // This is used to allow the GDB thread to stop the vCPU
+        #[cfg(gdb)]
+        hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
+
+        Ok(hv)
     }
 
     fn setup_initial_sregs(proc: &mut VMProcessor, _pml4_addr: u64) -> Result<()> {
@@ -424,11 +668,20 @@ impl Hypervisor for HypervWindowsDriver {
     fn run(&mut self) -> Result<super::HyperlightExit> {
         self.interrupt_handle.running.store(true, Ordering::Relaxed);
 
+        #[cfg(not(gdb))]
+        let debug_interrupt = false;
+        #[cfg(gdb)]
+        let debug_interrupt = self
+            .interrupt_handle
+            .debug_interrupt
+            .load(Ordering::Relaxed);
+
         // Don't run the vcpu if `cancel_requested` is true
         let exit_context = if self
             .interrupt_handle
             .cancel_requested
             .load(Ordering::Relaxed)
+            || debug_interrupt
         {
             WHV_RUN_VP_EXIT_CONTEXT {
                 ExitReason: WHV_RUN_VP_EXIT_REASON(8193i32), // WHvRunVpExitReasonCanceled
@@ -445,6 +698,12 @@ impl Hypervisor for HypervWindowsDriver {
         self.interrupt_handle
             .running
             .store(false, Ordering::Relaxed);
+
+        #[cfg(gdb)]
+        let debug_interrupt = self
+            .interrupt_handle
+            .debug_interrupt
+            .load(Ordering::Relaxed);
 
         let result = match exit_context.ExitReason {
             // WHvRunVpExitReasonX64IoPortAccess
@@ -501,7 +760,34 @@ impl Hypervisor for HypervWindowsDriver {
             //  This will happen when guest code runs for too long
             WHV_RUN_VP_EXIT_REASON(8193i32) => {
                 debug!("HyperV Cancelled Details :\n {:#?}", &self);
+                #[cfg(gdb)]
+                if debug_interrupt {
+                    self.interrupt_handle
+                        .debug_interrupt
+                        .store(false, Ordering::Relaxed);
+
+                    // If the vCPU was stopped because of an interrupt, we need to
+                    // return a special exit reason so that the gdb thread can handle it
+                    // and resume execution
+                    HyperlightExit::Debug(VcpuStopReason::Interrupt)
+                } else {
+                    HyperlightExit::Cancelled()
+                }
+
+                #[cfg(not(gdb))]
                 HyperlightExit::Cancelled()
+            }
+            #[cfg(gdb)]
+            WHV_RUN_VP_EXIT_REASON(4098i32) => {
+                // Get information about the exception that triggered the exit
+                let exception = unsafe { exit_context.Anonymous.VpException };
+
+                match self.get_stop_reason(exception) {
+                    Ok(reason) => HyperlightExit::Debug(reason),
+                    Err(e) => {
+                        log_then_return!("Error getting stop reason: {}", e);
+                    }
+                }
             }
             WHV_RUN_VP_EXIT_REASON(_) => {
                 debug!(
@@ -584,6 +870,139 @@ impl Hypervisor for HypervWindowsDriver {
             Ok(None)
         }
     }
+
+    #[cfg(gdb)]
+    fn handle_debug(
+        &mut self,
+        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        stop_reason: super::gdb::VcpuStopReason,
+    ) -> Result<()> {
+        if self.debug.is_none() {
+            return Err(new_error!("Debugging is not enabled"));
+        }
+        match stop_reason {
+            // If the vCPU stopped because of a crash, we need to handle it differently
+            // We do not want to allow resuming execution or placing breakpoints
+            // because the guest has crashed.
+            // We only allow reading registers and memory
+            VcpuStopReason::Crash => {
+                self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
+                    .map_err(|e| {
+                        new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
+                    })?;
+
+                loop {
+                    log::debug!("Debug wait for event to resume vCPU");
+                    // Wait for a message from gdb
+                    let req = self.recv_dbg_msg()?;
+
+                    // Flag to store if we should deny continue or step requests
+                    let mut deny_continue = false;
+                    // Flag to store if we should detach from the gdb session
+                    let mut detach = false;
+
+                    let response = match req {
+                        // Allow the detach request to disable debugging by continuing resuming
+                        // hypervisor crash error reporting
+                        DebugMsg::DisableDebug => {
+                            detach = true;
+                            DebugResponse::DisableDebug
+                        }
+                        // Do not allow continue or step requests
+                        DebugMsg::Continue | DebugMsg::Step => {
+                            deny_continue = true;
+                            DebugResponse::NotAllowed
+                        }
+                        // Do not allow adding/removing breakpoints and writing to memory or registers
+                        DebugMsg::AddHwBreakpoint(_)
+                        | DebugMsg::AddSwBreakpoint(_)
+                        | DebugMsg::RemoveHwBreakpoint(_)
+                        | DebugMsg::RemoveSwBreakpoint(_)
+                        | DebugMsg::WriteAddr(_, _)
+                        | DebugMsg::WriteRegisters(_) => DebugResponse::NotAllowed,
+
+                        // For all other requests, we will process them normally
+                        _ => {
+                            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+                            match result {
+                                Ok(response) => response,
+                                Err(HyperlightError::TranslateGuestAddress(_)) => {
+                                    // Treat non fatal errors separately so the guest doesn't fail
+                                    DebugResponse::ErrorOccurred
+                                }
+                                Err(e) => {
+                                    log::error!("Error processing debug request: {:?}", e);
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    };
+
+                    // Send the response to the request back to gdb
+                    self.send_dbg_msg(response)
+                        .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+
+                    // If we are denying continue or step requests, the debugger assumes the
+                    // execution started so we need to report a stop reason as a crash and let
+                    // it request to read registers/memory to figure out what happened
+                    if deny_continue {
+                        self.send_dbg_msg(DebugResponse::VcpuStopped(VcpuStopReason::Crash))
+                            .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+                    }
+
+                    // If we are detaching, we will break the loop and the Hypervisor will continue
+                    // to handle the Crash reason
+                    if detach {
+                        break;
+                    }
+                }
+            }
+
+            // If the vCPU stopped because of any other reason except a crash, we can handle it
+            // normally
+            _ => {
+                self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
+                    .map_err(|e| {
+                        new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
+                    })?;
+
+                loop {
+                    log::debug!("Debug wait for event to resume vCPU");
+
+                    // Wait for a message from gdb
+                    let req = self.recv_dbg_msg()?;
+
+                    let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+
+                    let response = match result {
+                        Ok(response) => response,
+                        // Treat non fatal errors separately so the guest doesn't fail
+                        Err(HyperlightError::TranslateGuestAddress(_)) => {
+                            DebugResponse::ErrorOccurred
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    };
+
+                    // If the command was either step or continue, we need to run the vcpu
+                    let cont = matches!(
+                        response,
+                        DebugResponse::Step | DebugResponse::Continue | DebugResponse::DisableDebug
+                    );
+
+                    self.send_dbg_msg(response)
+                        .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
+
+                    if cont {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Drop for HypervWindowsDriver {
@@ -592,10 +1011,14 @@ impl Drop for HypervWindowsDriver {
     }
 }
 
+#[derive(Debug)]
 pub struct WindowsInterruptHandle {
     // `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running, which is the reason we need this flag.
     running: AtomicBool,
     cancel_requested: AtomicBool,
+    // This is used to signal the GDB thread to stop the vCPU
+    #[cfg(gdb)]
+    debug_interrupt: AtomicBool,
     partition_handle: WHV_PARTITION_HANDLE,
     dropped: AtomicBool,
 }
@@ -603,6 +1026,12 @@ pub struct WindowsInterruptHandle {
 impl InterruptHandle for WindowsInterruptHandle {
     fn kill(&self) -> bool {
         self.cancel_requested.store(true, Ordering::Relaxed);
+        self.running.load(Ordering::Relaxed)
+            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+    }
+    #[cfg(gdb)]
+    fn kill_from_debugger(&self) -> bool {
+        self.debug_interrupt.store(true, Ordering::Relaxed);
         self.running.load(Ordering::Relaxed)
             && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }

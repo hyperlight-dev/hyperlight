@@ -27,6 +27,8 @@ use windows_result::HRESULT;
 use super::surrogate_process::SurrogateProcess;
 #[cfg(crashdump)]
 use crate::HyperlightError;
+#[cfg(gdb)]
+use crate::hypervisor::wrappers::WHvDebugRegisters;
 use crate::hypervisor::wrappers::{WHvFPURegisters, WHvGeneralRegisters, WHvSpecialRegisters};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
@@ -61,10 +63,16 @@ pub(crate) fn is_hypervisor_present() -> bool {
 pub(super) struct VMPartition(WHV_PARTITION_HANDLE);
 
 impl VMPartition {
+    /// This is the position of the extended vm exit in partition property
+    #[cfg(gdb)]
+    const EXTENDED_VM_EXIT_POS: u32 = 2;
+
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn new(proc_count: u32) -> Result<Self> {
         let hdl = unsafe { WHvCreatePartition() }?;
         Self::set_processor_count(&hdl, proc_count)?;
+        #[cfg(gdb)]
+        Self::set_extended_vm_exits(&hdl)?;
         unsafe { WHvSetupPartition(hdl) }?;
         Ok(Self(hdl))
     }
@@ -80,6 +88,56 @@ impl VMPartition {
                 WHvPartitionPropertyCodeProcessorCount,
                 &processor_count as *const u32 as *const c_void,
                 std::mem::size_of_val(&processor_count) as u32,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Sets up the debugging exception interception for the partition
+    /// This is needed for a HyperV partition to be able to intercept debug traps and breakpoints
+    /// Steps:
+    /// - set the extended VM exits property to enable extended VM exits
+    /// - set the exception exit bitmap to include debug trap and breakpoint trap
+    #[cfg(gdb)]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_extended_vm_exits(partition_handle: &WHV_PARTITION_HANDLE) -> Result<()> {
+        let mut property: WHV_PARTITION_PROPERTY = Default::default();
+
+        // Set the extended VM exits property
+        property.ExtendedVmExits.AsUINT64 = 1 << Self::EXTENDED_VM_EXIT_POS;
+        Self::set_property(
+            partition_handle,
+            WHvPartitionPropertyCodeExtendedVmExits,
+            &property,
+        )?;
+
+        // Set the exception exit bitmap to include debug trap and breakpoint trap
+        property = Default::default();
+        property.ExceptionExitBitmap = (1 << WHvX64ExceptionTypeDebugTrapOrFault.0)
+            | (1 << WHvX64ExceptionTypeBreakpointTrap.0);
+        Self::set_property(
+            partition_handle,
+            WHvPartitionPropertyCodeExceptionExitBitmap,
+            &property,
+        )?;
+
+        Ok(())
+    }
+
+    /// Helper function to set partition properties
+    #[cfg(gdb)]
+    fn set_property(
+        partition_handle: &WHV_PARTITION_HANDLE,
+        property_code: WHV_PARTITION_PROPERTY_CODE,
+        property: &WHV_PARTITION_PROPERTY,
+    ) -> Result<()> {
+        unsafe {
+            WHvSetPartitionProperty(
+                *partition_handle,
+                property_code,
+                property as *const _ as *const c_void,
+                std::mem::size_of::<WHV_PARTITION_PROPERTY>() as u32,
             )?;
         }
 
@@ -206,12 +264,37 @@ impl Drop for VMPartition {
 }
 
 #[derive(Debug)]
-pub(super) struct VMProcessor(VMPartition);
+pub(crate) struct VMProcessor(VMPartition);
 impl VMProcessor {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn new(part: VMPartition) -> Result<Self> {
         unsafe { WHvCreateVirtualProcessor(part.0, 0, 0) }?;
         Ok(Self(part))
+    }
+
+    /// This function is used to translate a guest virtual address to a guest physical address
+    #[cfg(gdb)]
+    pub(super) fn translate_gva(&self, gva: u64) -> Result<u64> {
+        let partition_handle = self.get_partition_hdl();
+        let mut gpa = 0;
+        let mut result = WHV_TRANSLATE_GVA_RESULT::default();
+
+        // Only validate read access because the write access is handled through the
+        // host memory mapping
+        let translateflags = WHvTranslateGvaFlagValidateRead;
+
+        unsafe {
+            WHvTranslateGva(
+                partition_handle,
+                0,
+                gva,
+                translateflags,
+                &mut result,
+                &mut gpa,
+            )?;
+        }
+
+        Ok(gpa)
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
@@ -222,7 +305,7 @@ impl VMProcessor {
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn set_registers(
-        &mut self,
+        &self,
         registers: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)],
     ) -> Result<()> {
         let partition_handle = self.get_partition_hdl();
@@ -308,10 +391,7 @@ impl VMProcessor {
 
     // Sets the registers for the VMProcessor to the given general purpose registers.
     // If you want to set other registers, use `set_registers` instead.
-    pub(super) fn set_general_purpose_registers(
-        &mut self,
-        regs: &WHvGeneralRegisters,
-    ) -> Result<()> {
+    pub(super) fn set_general_purpose_registers(&self, regs: &WHvGeneralRegisters) -> Result<()> {
         const LEN: usize = 18;
 
         let names: [WHV_REGISTER_NAME; LEN] = [
@@ -477,7 +557,54 @@ impl VMProcessor {
         Ok(xsave_buffer)
     }
 
-    pub(super) fn set_fpu(&mut self, regs: &WHvFPURegisters) -> Result<()> {
+    #[cfg(gdb)]
+    pub(super) fn set_debug_regs(&self, regs: &WHvDebugRegisters) -> Result<()> {
+        let registers = vec![
+            (WHvX64RegisterDr0, WHV_REGISTER_VALUE { Reg64: regs.dr0 }),
+            (WHvX64RegisterDr1, WHV_REGISTER_VALUE { Reg64: regs.dr1 }),
+            (WHvX64RegisterDr2, WHV_REGISTER_VALUE { Reg64: regs.dr2 }),
+            (WHvX64RegisterDr3, WHV_REGISTER_VALUE { Reg64: regs.dr3 }),
+            (WHvX64RegisterDr6, WHV_REGISTER_VALUE { Reg64: regs.dr6 }),
+            (WHvX64RegisterDr7, WHV_REGISTER_VALUE { Reg64: regs.dr7 }),
+        ];
+
+        self.set_registers(&registers)
+    }
+
+    #[cfg(gdb)]
+    pub(super) fn get_debug_regs(&self) -> Result<WHvDebugRegisters> {
+        const LEN: usize = 6;
+
+        let names: [WHV_REGISTER_NAME; LEN] = [
+            WHvX64RegisterDr0,
+            WHvX64RegisterDr1,
+            WHvX64RegisterDr2,
+            WHvX64RegisterDr3,
+            WHvX64RegisterDr6,
+            WHvX64RegisterDr7,
+        ];
+
+        let mut out: [WHV_REGISTER_VALUE; LEN] = unsafe { std::mem::zeroed() };
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.get_partition_hdl(),
+                0,
+                names.as_ptr(),
+                LEN as u32,
+                out.as_mut_ptr(),
+            )?;
+            Ok(WHvDebugRegisters {
+                dr0: out[0].Reg64,
+                dr1: out[1].Reg64,
+                dr2: out[2].Reg64,
+                dr3: out[3].Reg64,
+                dr6: out[4].Reg64,
+                dr7: out[5].Reg64,
+            })
+        }
+    }
+
+    pub(super) fn set_fpu(&self, regs: &WHvFPURegisters) -> Result<()> {
         const LEN: usize = 26;
 
         let names: [WHV_REGISTER_NAME; LEN] = [

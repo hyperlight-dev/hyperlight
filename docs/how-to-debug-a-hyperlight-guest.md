@@ -1,12 +1,12 @@
-# How to debug a Hyperlight guest using gdb on Linux
+# How to debug a Hyperlight guest using gdb or lldb
 
-Hyperlight supports gdb debugging of a **KVM** or **MSHV** guest running inside a Hyperlight sandbox on Linux.
+Hyperlight supports gdb debugging of a guest running inside a Hyperlight sandbox on Linux or Windows.
 When Hyperlight is compiled with the `gdb` feature enabled, a Hyperlight sandbox can be configured
 to start listening for a gdb connection.
 
 ## Supported features
 
-The Hyperlight `gdb` feature enables **KVM** and **MSHV** guest debugging to:
+The Hyperlight `gdb` feature enables guest debugging to:
    - stop at an entry point breakpoint which is automatically set by Hyperlight
    - add and remove HW breakpoints (maximum 4 set breakpoints at a time)
    - add and remove SW breakpoints
@@ -19,7 +19,7 @@ The Hyperlight `gdb` feature enables **KVM** and **MSHV** guest debugging to:
 ## Expected behavior
 
 Below is a list describing some cases of expected behavior from a gdb debug 
-session of a guest binary running inside a Hyperlight sandbox on Linux.
+session of a guest binary running inside a Hyperlight sandbox.
 
 - when the `gdb` feature is enabled and a SandboxConfiguration is provided a
   debug port, the created sandbox will wait for a gdb client to connect on the

@@ -22,8 +22,16 @@ use gdbstub::stub::{
 
 use super::x86_64_target::HyperlightSandboxTarget;
 use super::{DebugResponse, GdbTargetError, VcpuStopReason};
+
+// Signals are defined differently on Windows and Linux, so we use conditional compilation
+#[cfg(target_os = "linux")]
 mod signals {
     pub use libc::{SIGINT, SIGSEGV};
+}
+#[cfg(windows)]
+mod signals {
+    pub const SIGINT: i8 = 2;
+    pub const SIGSEGV: i8 = 11;
 }
 
 struct GdbBlockingEventLoop;
