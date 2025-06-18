@@ -193,7 +193,7 @@ pub(crate) fn set_up_hypervisor_partition(
     let gdb_conn = if let Some(DebugInfo { port }) = rt_cfg.debug_info {
         use crate::hypervisor::gdb::create_gdb_thread;
 
-        let gdb_conn = create_gdb_thread(port, unsafe { libc::pthread_self() });
+        let gdb_conn = create_gdb_thread(port);
 
         // in case the gdb thread creation fails, we still want to continue
         // without gdb

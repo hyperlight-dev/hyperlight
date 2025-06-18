@@ -336,7 +336,7 @@ impl VirtualCPU {
 }
 
 /// A trait for handling interrupts to a sandbox's vcpu
-pub trait InterruptHandle: Send + Sync {
+pub trait InterruptHandle: Debug + Send + Sync {
     /// Interrupt the corresponding sandbox from running.
     ///
     /// - If this is called while the vcpu is running, then it will interrupt the vcpu and return `true`.
@@ -348,7 +348,19 @@ pub trait InterruptHandle: Send + Sync {
     /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
     fn kill(&self) -> bool;
 
-    /// Returns true iff the corresponding sandbox has been dropped
+    /// Used by a debugger to interrupt the corresponding sandbox from running.
+    ///
+    /// - If this is called while the vcpu is running, then it will interrupt the vcpu and return `true`.
+    /// - If this is called while the vcpu is not running, (for example during a host call), the
+    ///     vcpu will not immediately be interrupted, but will prevent the vcpu from running **the next time**
+    ///     it's scheduled, and returns `false`.
+    ///
+    /// # Note
+    /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
+    #[cfg(gdb)]
+    fn kill_from_debugger(&self) -> bool;
+
+    /// Returns true if the corresponding sandbox has been dropped
     fn dropped(&self) -> bool;
 }
 
@@ -383,6 +395,12 @@ pub(super) struct LinuxInterruptHandle {
     /// 2. ensure that if a vm is killed while a host call is running,
     ///     the vm will not re-enter the guest after the host call returns.
     cancel_requested: AtomicBool,
+    /// True when the debugger has requested the VM to be interrupted. Set immediately when
+    /// `kill_from_debugger()` is called, and cleared when the vcpu is no longer running.
+    /// This is used to make sure stale signals do not interrupt the the wrong vcpu
+    /// (a vcpu may only be interrupted by a debugger if `debug_interrupt` is true),
+    #[cfg(gdb)]
+    debug_interrupt: AtomicBool,
     /// Whether the corresponding vm is dropped
     dropped: AtomicBool,
     /// Retry delay between signals sent to the vcpu thread
@@ -421,13 +439,8 @@ impl LinuxInterruptHandle {
         let generation = raw & !Self::RUNNING_BIT;
         (running, generation)
     }
-}
 
-#[cfg(any(kvm, mshv))]
-impl InterruptHandle for LinuxInterruptHandle {
-    fn kill(&self) -> bool {
-        self.cancel_requested.store(true, Ordering::Relaxed);
-
+    fn send_signal(&self) -> bool {
         let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
         let mut sent_signal = false;
         let mut target_generation: Option<u64> = None;
@@ -455,6 +468,20 @@ impl InterruptHandle for LinuxInterruptHandle {
         }
 
         sent_signal
+    }
+}
+
+#[cfg(any(kvm, mshv))]
+impl InterruptHandle for LinuxInterruptHandle {
+    fn kill(&self) -> bool {
+        self.cancel_requested.store(true, Ordering::Relaxed);
+
+        self.send_signal()
+    }
+    #[cfg(gdb)]
+    fn kill_from_debugger(&self) -> bool {
+        self.debug_interrupt.store(true, Ordering::Relaxed);
+        self.send_signal()
     }
     fn dropped(&self) -> bool {
         self.dropped.load(Ordering::Relaxed)

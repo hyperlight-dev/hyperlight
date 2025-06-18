@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::sync::Arc;
+
 use crossbeam_channel::TryRecvError;
 use gdbstub::arch::Arch;
 use gdbstub::common::Signal;
@@ -30,20 +32,21 @@ use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 
 use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError, X86_64Regs};
+use crate::hypervisor::InterruptHandle;
 
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
 pub(crate) struct HyperlightSandboxTarget {
     /// Hypervisor communication channels
     hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>,
-    /// Thread ID
-    thread_id: u64,
+    /// Interrupt handle for the vCPU thread
+    interrupt_handle: Option<Arc<dyn InterruptHandle>>,
 }
 
 impl HyperlightSandboxTarget {
-    pub(crate) fn new(hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>, thread_id: u64) -> Self {
+    pub(crate) fn new(hyp_conn: DebugCommChannel<DebugMsg, DebugResponse>) -> Self {
         HyperlightSandboxTarget {
             hyp_conn,
-            thread_id,
+            interrupt_handle: None,
         }
     }
 
@@ -60,9 +63,9 @@ impl HyperlightSandboxTarget {
         self.hyp_conn.send(ev)
     }
 
-    /// Returns the thread ID
-    pub(crate) fn get_thread_id(&self) -> u64 {
-        self.thread_id
+    /// Set the interrupt handle for the vCPU thread
+    pub(crate) fn set_interrupt_handle(&mut self, handle: Arc<dyn InterruptHandle>) {
+        self.interrupt_handle = Some(handle);
     }
 
     /// Waits for a response over the communication channel
@@ -111,6 +114,17 @@ impl HyperlightSandboxTarget {
                 log::error!("Unexpected message received: {:?}", msg);
                 Err(GdbTargetError::UnexpectedMessage)
             }
+        }
+    }
+
+    /// Interrupts the vCPU execution
+    pub(crate) fn interrupt_vcpu(&mut self) -> bool {
+        if let Some(handle) = &self.interrupt_handle {
+            handle.kill_from_debugger()
+        } else {
+            log::warn!("No interrupt handle set, cannot interrupt vCPU");
+
+            false
         }
     }
 }
@@ -464,7 +478,7 @@ mod tests {
     fn test_gdb_target() {
         let (gdb_conn, hyp_conn) = DebugCommChannel::unbounded();
 
-        let mut target = HyperlightSandboxTarget::new(hyp_conn, 0);
+        let mut target = HyperlightSandboxTarget::new(hyp_conn);
 
         // Check response to read registers - send the response first to not be blocked
         // by the recv call in the target
