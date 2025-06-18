@@ -256,6 +256,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 entrypoint_ptr.absolute()?,
                 rsp_ptr.absolute()?,
                 HandleWrapper::from(mmap_file_handle),
+                #[cfg(gdb)]
+                gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
             )?;
