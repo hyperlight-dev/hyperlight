@@ -14,6 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Benchmarks are only meaningful and should only run with release builds.
+// Debug builds have different performance characteristics and would not provide
+// useful benchmarking data for performance regression testing.
+#[cfg(debug_assertions)]
+compile_error!(
+    "Benchmarks must be run with release builds only. Use `cargo bench --release` or `just bench`."
+);
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{
