@@ -24,7 +24,7 @@ workspace = true
 goblin = { version = "0.10" }
 rand = { version = "0.9" }
 cfg-if = { version = "1.0.1" }
-libc = { version = "0.2.173" }
+libc = { version = "0.2.174" }
 flatbuffers = "25.2.10"
 page_size = "0.6.0"
 termcolor = "1.2.0"
