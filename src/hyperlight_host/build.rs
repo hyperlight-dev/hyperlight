@@ -89,7 +89,7 @@ fn main() -> Result<()> {
     // Benchmarks should only run with optimized builds (opt-level 1+)
     println!("cargo:rustc-check-cfg=cfg(unoptimized_build)");
     println!("cargo:rustc-check-cfg=cfg(optimized_build)");
-    
+
     if let Ok(opt_level) = std::env::var("OPT_LEVEL") {
         if opt_level == "0" {
             // Unoptimized build - benchmarks should not run
