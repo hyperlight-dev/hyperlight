@@ -163,7 +163,7 @@ fmt-apply:
     cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
 clippy target=default-target: (witguest-wit)
-    cargo clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    cargo clippy {{ if target == "debug" { "--lib --bins --tests --examples" } else { "--all-targets" } }} --all-features --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
 clippy-guests target=default-target: (witguest-wit)
     cd src/tests/rust_guests/simpleguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
@@ -229,11 +229,13 @@ bench-download os hypervisor cpu tag="":
     tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu }}.tar.gz -C target/criterion/ --strip-components=1
 
 # Warning: compares to and then OVERWRITES the given baseline
-bench-ci baseline target=default-target features="":
-    cargo bench --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {''} else { "--features " + features } }} -- --verbose --save-baseline {{ baseline }}
+# Benchmarks only run with release builds for performance consistency
+bench-ci baseline features="":
+    cargo bench --profile=release {{ if features =="" {''} else { "--features " + features } }} -- --verbose --save-baseline {{ baseline }}
 
-bench target=default-target features="":
-    cargo bench --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {''} else { "--features " + features } }} -- --verbose
+# Benchmarks only run with release builds for performance consistency  
+bench features="":
+    cargo bench --profile=release {{ if features =="" {''} else { "--features " + features } }} -- --verbose
 
 ###############
 ### FUZZING ###
