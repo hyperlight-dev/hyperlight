@@ -90,7 +90,7 @@ fn main() -> Result<()> {
     // Essentially the kvm and mshv features are ignored on windows as long as you use #[cfg(kvm)] and not #[cfg(feature = "kvm")].
     // You should never use #[cfg(feature = "kvm")] or #[cfg(feature = "mshv")] in the codebase.
     cfg_aliases::cfg_aliases! {
-        gdb: { all(feature = "gdb", debug_assertions, any(feature = "kvm", feature = "mshv2", feature = "mshv3")) },
+        gdb: { all(feature = "gdb", debug_assertions) },
         kvm: { all(feature = "kvm", target_os = "linux") },
         mshv: { all(any(feature = "mshv2", feature = "mshv3"), target_os = "linux") },
         crashdump: { all(feature = "crashdump") },
