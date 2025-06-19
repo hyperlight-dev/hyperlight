@@ -163,7 +163,7 @@ fmt-apply:
     cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
 clippy target=default-target: (witguest-wit)
-    cargo clippy {{ if target == "debug" { "--lib --bins --tests --examples" } else { "--all-targets" } }} --all-features --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    cargo clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
 clippy-guests target=default-target: (witguest-wit)
     cd src/tests/rust_guests/simpleguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
