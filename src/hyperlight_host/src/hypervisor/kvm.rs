@@ -351,35 +351,39 @@ impl KVMDriver {
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
 
-        let ret = Self {
+        let interrupt_handle = Arc::new(LinuxInterruptHandle {
+            running: AtomicU64::new(0),
+            cancel_requested: AtomicBool::new(false),
+            #[cfg(gdb)]
+            debug_interrupt: AtomicBool::new(false),
+            #[cfg(all(
+                target_arch = "x86_64",
+                target_vendor = "unknown",
+                target_os = "linux",
+                target_env = "musl"
+            ))]
+            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
+            #[cfg(not(all(
+                target_arch = "x86_64",
+                target_vendor = "unknown",
+                target_os = "linux",
+                target_env = "musl"
+            )))]
+            tid: AtomicU64::new(unsafe { libc::pthread_self() }),
+            retry_delay: config.get_interrupt_retry_delay(),
+            dropped: AtomicBool::new(false),
+            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+        });
+
+        #[allow(unused_mut)]
+        let mut hv = Self {
             _kvm: kvm,
             _vm_fd: vm_fd,
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
             mem_regions,
-            interrupt_handle: Arc::new(LinuxInterruptHandle {
-                running: AtomicU64::new(0),
-                cancel_requested: AtomicBool::new(false),
-                #[cfg(all(
-                    target_arch = "x86_64",
-                    target_vendor = "unknown",
-                    target_os = "linux",
-                    target_env = "musl"
-                ))]
-                tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
-                #[cfg(not(all(
-                    target_arch = "x86_64",
-                    target_vendor = "unknown",
-                    target_os = "linux",
-                    target_env = "musl"
-                )))]
-                tid: AtomicU64::new(unsafe { libc::pthread_self() }),
-                retry_delay: config.get_interrupt_retry_delay(),
-                dropped: AtomicBool::new(false),
-                sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-            }),
-
+            interrupt_handle: interrupt_handle.clone(),
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
@@ -387,7 +391,13 @@ impl KVMDriver {
             #[cfg(crashdump)]
             rt_cfg,
         };
-        Ok(ret)
+
+        // Send the interrupt handle to the GDB thread if debugging is enabled
+        // This is used to allow the GDB thread to stop the vCPU
+        #[cfg(gdb)]
+        hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
+
+        Ok(hv)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -564,6 +574,13 @@ impl Hypervisor for KVMDriver {
                     e
                 )
             })?;
+        #[cfg(not(gdb))]
+        let debug_interrupt = false;
+        #[cfg(gdb)]
+        let debug_interrupt = self
+            .interrupt_handle
+            .debug_interrupt
+            .load(Ordering::Relaxed);
         // Don't run the vcpu if `cancel_requested` is true
         //
         // Note: if a `InterruptHandle::kill()` called while this thread is **here**
@@ -572,6 +589,7 @@ impl Hypervisor for KVMDriver {
             .interrupt_handle
             .cancel_requested
             .load(Ordering::Relaxed)
+            || debug_interrupt
         {
             Err(kvm_ioctls::Error::new(libc::EINTR))
         } else {
@@ -585,11 +603,14 @@ impl Hypervisor for KVMDriver {
         // Note: if a `InterruptHandle::kill()` called while this thread is **here**
         // Then signals will be sent to this thread until `running` is set to false.
         // This is fine since the signal handler is a no-op.
-        #[allow(unused_variables)]
-        // The variable is only used when `cfg(not(gdb))`, but the flag needs to be reset always anyway
         let cancel_requested = self
             .interrupt_handle
             .cancel_requested
+            .load(Ordering::Relaxed);
+        #[cfg(gdb)]
+        let debug_interrupt = self
+            .interrupt_handle
+            .debug_interrupt
             .load(Ordering::Relaxed);
         // Note: if a `InterruptHandle::kill()` called while this thread is **here**
         // Then `cancel_requested` will be set to true again, which will cancel the **next vcpu run**.
@@ -646,24 +667,20 @@ impl Hypervisor for KVMDriver {
             Err(e) => match e.errno() {
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
                 libc::EINTR => {
-                    // If cancellation was not requested for this specific vm, the vcpu was interrupted because of stale signal
-                    // that was meant to be delivered to a previous/other vcpu on this same thread, so let's ignore it
+                    // If cancellation was not requested for this specific vm, the vcpu was interrupted because of debug interrupt or
+                    // a stale signal that meant to be delivered to a previous/other vcpu on this same thread, so let's ignore it
                     if cancel_requested {
                         self.interrupt_handle
                             .cancel_requested
                             .store(false, Ordering::Relaxed);
                         HyperlightExit::Cancelled()
                     } else {
-                        // In case of the gdb feature, if no cancellation was requested,
-                        // and the debugging is enabled it means the vCPU was stopped because
-                        // of an interrupt coming from the debugger thread
-                        // NOTE: There is a chance that the vCPU was stopped because of a stale
-                        // signal that was meant to be delivered to a previous/other vCPU on this
-                        // same thread, however, we cannot distinguish between the two cases, so
-                        // we assume that the vCPU was stopped because of an interrupt.
-                        // This is fine, because the debugger will be notified about an interrupt
                         #[cfg(gdb)]
-                        if self.debug.is_some() {
+                        if debug_interrupt {
+                            self.interrupt_handle
+                                .debug_interrupt
+                                .store(false, Ordering::Relaxed);
+
                             // If the vCPU was stopped because of an interrupt, we need to
                             // return a special exit reason so that the gdb thread can handle it
                             // and resume execution

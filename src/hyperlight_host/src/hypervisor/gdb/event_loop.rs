@@ -19,10 +19,20 @@ use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::{
     BaseStopReason, DisconnectReason, GdbStub, SingleThreadStopReason, run_blocking,
 };
-use libc::{SIGRTMIN, pthread_kill};
 
 use super::x86_64_target::HyperlightSandboxTarget;
 use super::{DebugResponse, GdbTargetError, VcpuStopReason};
+
+// Signals are defined differently on Windows and Linux, so we use conditional compilation
+#[cfg(target_os = "linux")]
+mod signals {
+    pub use libc::{SIGINT, SIGSEGV};
+}
+#[cfg(windows)]
+mod signals {
+    pub const SIGINT: i8 = 2;
+    pub const SIGSEGV: i8 = 11;
+}
 
 struct GdbBlockingEventLoop;
 
@@ -56,11 +66,11 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                         // to the target thread
                         VcpuStopReason::Interrupt => BaseStopReason::SignalWithThread {
                             tid: (),
-                            signal: Signal(SIGRTMIN() as u8),
+                            signal: Signal(signals::SIGINT as u8),
                         },
                         VcpuStopReason::Crash => BaseStopReason::SignalWithThread {
                             tid: (),
-                            signal: Signal(11),
+                            signal: Signal(signals::SIGSEGV as u8),
                         },
                         VcpuStopReason::Unknown => {
                             log::warn!("Unknown stop reason received");
@@ -105,11 +115,9 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
         log::info!("Received interrupt from GDB client - sending signal to target thread");
 
         // Send a signal to the target thread to interrupt it
-        let ret = unsafe { pthread_kill(target.get_thread_id(), SIGRTMIN()) };
+        let res = target.interrupt_vcpu();
 
-        log::info!("pthread_kill returned {}", ret);
-
-        if ret < 0 && ret != libc::ESRCH {
+        if !res {
             log::error!("Failed to send signal to target thread");
             return Err(GdbTargetError::SendSignalError);
         }
