@@ -2,9 +2,6 @@
 .global __setjmp
 .global _setjmp
 .global setjmp
-.type __setjmp,@function
-.type _setjmp,@function
-.type setjmp,@function
 __setjmp:
 _setjmp:
 setjmp:
