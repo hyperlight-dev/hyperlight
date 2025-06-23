@@ -655,7 +655,7 @@ pub fn emit_hl_unmarshal_param(s: &mut State, id: Ident, pt: &Value) -> TokenStr
 /// are no names in it (i.e. a unit type)
 pub fn emit_hl_unmarshal_result(s: &mut State, id: Ident, rt: &etypes::Result) -> TokenStream {
     match rt {
-        etypes::Result::Named(rs) if rs.is_empty() => quote! { () },
+        etypes::Result::Named(rs) if rs.is_empty() => TokenStream::new(),
         etypes::Result::Unnamed(vt) => {
             let toks = emit_hl_unmarshal_value(s, id, vt);
             quote! { { #toks }.0 }
