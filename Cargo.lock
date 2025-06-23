@@ -1253,7 +1253,7 @@ dependencies = [
  "log",
  "metrics",
  "metrics-exporter-prometheus",
- "metrics-util",
+ "metrics-util 0.20.0",
  "mshv-bindings 0.2.1",
  "mshv-bindings 0.3.2",
  "mshv-ioctls 0.2.1",
@@ -1797,7 +1797,7 @@ dependencies = [
  "indexmap",
  "ipnet",
  "metrics",
- "metrics-util",
+ "metrics-util 0.19.1",
  "quanta",
  "thiserror 2.0.12",
  "tokio",
@@ -1806,9 +1806,25 @@ dependencies = [
 
 [[package]]
 name = "metrics-util"
-version = "0.19.2"
+version = "0.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39803e5c24a697c54492a76469034eee8247bd61825502e0410defc3e98eedf0"
+checksum = "b8496cc523d1f94c1385dd8f0f0c2c480b2b8aeccb5b7e4485ad6365523ae376"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "hashbrown",
+ "metrics",
+ "quanta",
+ "rand",
+ "rand_xoshiro",
+ "sketches-ddsketch",
+]
+
+[[package]]
+name = "metrics-util"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe8db7a05415d0f919ffb905afa37784f71901c9a773188876984b4f769ab986"
 dependencies = [
  "aho-corasick",
  "crossbeam-epoch",
