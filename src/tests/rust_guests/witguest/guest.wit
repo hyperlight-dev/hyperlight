@@ -53,6 +53,8 @@ interface roundtrip {
     enum-a, enum-b, enum-c
   }
   roundtrip-enum: func(x: testenum) -> testenum;
+  // Test case for void return function (no clippy unused_unit warnings)
+  do-something: func(number: u32);
 }
 
 interface host-resource {

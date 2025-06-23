@@ -113,6 +113,9 @@ impl test::wit::Roundtrip for Guest {
     ) -> test::wit::roundtrip::Testenum {
         (Host {}).roundtrip_enum(x)
     }
+    fn do_something(&mut self, number: u32) {
+        (Host {}).do_something(number)
+    }
 }
 
 impl test::wit::TestHostResource for Guest {

@@ -68,15 +68,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                     ResourceItemName::Static(mn) => quote! { #mn },
                 },
             };
-            // Only emit the allow attribute if unmarshal is not empty
-            let unmarshal_with_attr = if unmarshal.is_empty() {
-                quote! {}
-            } else {
-                quote! {
-                    #[allow(clippy::unused_unit)]
-                    #unmarshal
-                }
-            };
+            // Use unmarshal directly since empty TokenStream generates no code
             let decl = quote! {
                 fn #n(&mut self, #(#param_decls),*) -> #result_decl {
                     let mut args = ::alloc::vec::Vec::new();
@@ -87,7 +79,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                         ::hyperlight_common::flatbuffer_wrappers::function_types::ReturnType::VecBytes,
                     );
                     let ::core::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
-                    #unmarshal_with_attr
+                    #unmarshal
                 }
             };
             match fnname {
