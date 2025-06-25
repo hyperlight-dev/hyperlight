@@ -538,7 +538,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
     }
 
     /// Get the guest error data
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_error(&mut self) -> Result<GuestError> {
         self.shared_mem.try_pop_buffer_into::<GuestError>(
             self.layout.output_data_buffer_offset,

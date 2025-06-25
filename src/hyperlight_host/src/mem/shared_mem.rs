@@ -919,7 +919,6 @@ impl HostSharedMemory {
     /// Pops the given given buffer into a `T` and returns it.
     /// NOTE! the data must be a size-prefixed flatbuffer, and
     /// buffer_start_offset must point to the beginning of the buffer
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub fn try_pop_buffer_into<T>(
         &mut self,
         buffer_start_offset: usize,

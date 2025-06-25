@@ -196,7 +196,6 @@ impl GuestError {
 
 impl TryFrom<&[u8]> for GuestError {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
     fn try_from(value: &[u8]) -> Result<Self> {
         let guest_error_fb = size_prefixed_root::<FbGuestError>(value)
             .map_err(|e| anyhow::anyhow!("Error while reading GuestError: {:?}", e))?;
