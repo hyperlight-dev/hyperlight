@@ -61,6 +61,7 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                                 (#(#marshal,)*)
                             );
                             let ::std::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
+                            #[allow(clippy::unused_unit)]
                             #unmarshal
                         }
                     }

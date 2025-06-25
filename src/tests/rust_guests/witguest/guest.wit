@@ -25,6 +25,7 @@ interface roundtrip {
   roundtrip-tuple: func(x: tuple<string, u8>) -> tuple<string, u8>;
   roundtrip-option: func(x: option<string>) -> option<string>;
   roundtrip-result: func(x: result<char, string>) -> result<char, string>;
+  roundtrip-no-result: func(x: u32);
 
   record testrecord {
     contents: string,

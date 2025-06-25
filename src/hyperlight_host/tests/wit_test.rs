@@ -155,6 +155,8 @@ impl test::wit::Roundtrip for Host {
     ) -> test::wit::roundtrip::Testenum {
         x
     }
+
+    fn roundtrip_no_result(&mut self, _x: u32) {}
 }
 
 struct TestResource {
@@ -329,6 +331,11 @@ mod wit_test {
     make_test! { roundtrip_flags_large, in arb_largeflags() }
     make_test! { roundtrip_variant,     in arb_testvariant() }
     make_test! { roundtrip_enum,        in arb_testenum() }
+
+    #[test]
+    fn test_simple_func() {
+        sb().roundtrip().roundtrip_no_result(42);
+    }
 
     #[test]
     fn test_host_resource() {
