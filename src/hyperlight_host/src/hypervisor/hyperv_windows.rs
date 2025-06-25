@@ -32,7 +32,7 @@ use windows::Win32::System::Hypervisor::{
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandler, OutBHandlerCaller};
+use super::handlers::{MemAccessHandlerWrapper, OutBHandler};
 use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
