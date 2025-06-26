@@ -4,6 +4,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.7.0] - 2025-06-26
+
+### Fixed
+- gdb: fix sandbox function cancellation when gdb enabled by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/621
+- Let windows decide at which address to map shared memory in surrogate process by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/637
+- Don't log expected error on each guest function call by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/662
+- Adds a missing clippy allow by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/663
+
+### Changed
+- improve the performance of building page tables by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/635
+- Make interrupt retry delay methods Linux-only by @copilot-swe-agent in https://github.com/hyperlight-dev/hyperlight/pull/647
+  
+### Added
+- Support ELF core dump creation on guest crash by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/417
+- Added capability to load extra blob data in sandbox by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/605
+- Add license scan report and status by @fossabot in https://github.com/hyperlight-dev/hyperlight/pull/598
+- Create GOVERNANCE.md by @benazirk in https://github.com/hyperlight-dev/hyperlight/pull/556
+- [host] adds init-paging feature by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/639
+- Enable guest debugging for HyperV on windows by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/478
+
+### Removed  
+- Remove support for building PE files from hyperlight-guest-bin build.rs by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/572
+
 ## [v0.6.1] - 2025-06-12
 
 ### Fixed

@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-common"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-macro"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "env_logger",
  "hyperlight-component-util",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-util"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "itertools 0.14.0",
  "log",
@@ -1202,7 +1202,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "hyperlight-common",
@@ -1211,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-bin"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "buddy_system_allocator",
  "cc",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-host"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "bitflags 2.9.1",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight_guest_capi"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "cbindgen",
  "hyperlight-common",
