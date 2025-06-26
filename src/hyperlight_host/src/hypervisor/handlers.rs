@@ -18,33 +18,9 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{instrument, Span};
 
+/// Re-export OutBHandler from the outb module where it naturally belongs
+pub(crate) use crate::sandbox::outb::OutBHandler;
 use crate::{new_error, Result};
-
-pub(crate) type OutBHandlerFunction = Box<dyn FnMut(u16, u32) -> Result<()> + Send>;
-
-/// A `OutBHandler` implementation using a `OutBHandlerFunction`
-///
-/// Note: This handler must live no longer than the `Sandbox` to which it belongs
-pub(crate) struct OutBHandler(Arc<Mutex<OutBHandlerFunction>>);
-
-impl From<OutBHandlerFunction> for OutBHandler {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn from(func: OutBHandlerFunction) -> Self {
-        Self(Arc::new(Mutex::new(func)))
-    }
-}
-
-impl OutBHandler {
-    /// Function that gets called when an outb operation has occurred.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub fn call(&mut self, port: u16, payload: u32) -> Result<()> {
-        let mut func = self
-            .0
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        func(port, payload)
-    }
-}
 
 /// The trait representing custom logic to handle the case when
 /// a Hypervisor's virtual CPU (vCPU) informs Hyperlight a memory access

@@ -26,10 +26,42 @@ use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
 use super::mem_mgr::MemMgrWrapper;
-use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::{new_error, HyperlightError, Result};
+
+/// A `OutBHandler` implementation that contains the required data directly
+///
+/// Note: This handler must live no longer than the `Sandbox` to which it belongs
+pub(crate) struct OutBHandler {
+    mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
+    host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
+}
+
+impl OutBHandler {
+    /// Create a new OutBHandler with the required dependencies
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn new(
+        mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
+        host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
+    ) -> Self {
+        Self {
+            mem_mgr_wrapper,
+            host_funcs_wrapper,
+        }
+    }
+
+    /// Function that gets called when an outb operation has occurred.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub fn call(&mut self, port: u16, payload: u32) -> Result<()> {
+        handle_outb_impl(
+            &mut self.mem_mgr_wrapper,
+            self.host_funcs_wrapper.clone(),
+            port,
+            payload,
+        )
+    }
+}
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level="Trace")]
 pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Result<()> {
@@ -146,7 +178,7 @@ fn outb_abort(mem_mgr: &mut MemMgrWrapper<HostSharedMemory>, data: u32) -> Resul
 
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-fn handle_outb_impl(
+pub(crate) fn handle_outb_impl(
     mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
     host_funcs: Arc<Mutex<FunctionRegistry>>,
     port: u16,
@@ -189,18 +221,10 @@ fn handle_outb_impl(
 /// TODO: pass at least the `host_funcs_wrapper` param by reference.
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn outb_handler_wrapper(
-    mut mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
+    mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
     host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
 ) -> Arc<Mutex<OutBHandler>> {
-    let outb_func: OutBHandlerFunction = Box::new(move |port, payload| {
-        handle_outb_impl(
-            &mut mem_mgr_wrapper,
-            host_funcs_wrapper.clone(),
-            port,
-            payload,
-        )
-    });
-    let outb_hdl = OutBHandler::from(outb_func);
+    let outb_hdl = OutBHandler::new(mem_mgr_wrapper, host_funcs_wrapper);
     Arc::new(Mutex::new(outb_hdl))
 }
 
