@@ -104,7 +104,7 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
             #[allow(static_mut_refs)]
             let peb_ptr = GUEST_HANDLE.peb().unwrap();
 
-            let srand_seed = ((peb_address << 8 ^ seed >> 4) >> 32) as u32;
+            let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
 
             // Set the seed for the random number generator for C code using rand;
             srand(srand_seed);

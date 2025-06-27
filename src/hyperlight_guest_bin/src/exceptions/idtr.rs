@@ -49,6 +49,7 @@ pub(crate) unsafe fn load_idt() {
 
         // Use &raw mut to get a mutable raw pointer, then dereference it
         // this is to avoid the clippy warning "shared reference to mutable static"
+        #[allow(clippy::deref_addrof)]
         let idtr = &mut *(&raw mut IDTR);
         idtr.init(expected_base, idt_size as u16);
         idtr.load();

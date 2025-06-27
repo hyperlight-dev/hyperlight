@@ -42,6 +42,7 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
     // Find the function definition for the function call.
     // Use &raw const to get an immutable reference to the static HashMap
     // this is to avoid the clippy warning "shared reference to mutable static"
+    #[allow(clippy::deref_addrof)]
     if let Some(registered_function_definition) =
         unsafe { (*(&raw const REGISTERED_GUEST_FUNCTIONS)).get(&function_call.function_name) }
     {
@@ -90,7 +91,7 @@ fn internal_dispatch_function() -> Result<()> {
         .expect("Function call deserialization failed");
 
     let result_vec = call_guest_function(function_call).inspect_err(|e| {
-        handle.write_error(e.kind.clone(), Some(e.message.as_str()));
+        handle.write_error(e.kind, Some(e.message.as_str()));
     })?;
 
     handle.push_shared_output_data(result_vec)

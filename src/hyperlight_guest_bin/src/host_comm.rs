@@ -101,7 +101,7 @@ pub fn print_output_with_host_print(function_call: &FunctionCall) -> Result<Vec<
 pub unsafe extern "C" fn _putchar(c: c_char) {
     let handle = unsafe { GUEST_HANDLE };
     let char = c as u8;
-    let mut message_buffer = unsafe { &mut MESSAGE_BUFFER };
+    let message_buffer = unsafe { &mut MESSAGE_BUFFER };
 
     // Extend buffer capacity if it's empty (like `with_capacity` in lazy_static).
     // TODO: replace above Vec::new() with Vec::with_capacity once it's stable in const contexts.
@@ -113,12 +113,12 @@ pub unsafe extern "C" fn _putchar(c: c_char) {
 
     if message_buffer.len() == BUFFER_SIZE || char == b'\0' {
         let str = if char == b'\0' {
-            CStr::from_bytes_until_nul(&message_buffer)
+            CStr::from_bytes_until_nul(message_buffer)
                 .expect("No null byte in buffer")
                 .to_string_lossy()
                 .into_owned()
         } else {
-            String::from_utf8(mem::take(&mut message_buffer))
+            String::from_utf8(mem::take(message_buffer))
                 .expect("Failed to convert buffer to string")
         };
 
