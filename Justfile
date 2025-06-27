@@ -176,6 +176,46 @@ clippy-apply-fix-unix:
 clippy-apply-fix-windows:
     cargo clippy --target x86_64-pc-windows-msvc --fix --all 
 
+# Generate and test all possible feature combinations for a package
+clippy-feature-combinations package target=default-target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    # Get all features for the package
+    features=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "{{package}}") | .features | keys[]' | grep -v default || true)
+    
+    echo "Testing {{package}} with no features..."
+    cargo clippy -p {{package}} --all-targets --no-default-features --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    
+    echo "Testing {{package}} with default features..."
+    cargo clippy -p {{package}} --all-targets --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    
+    # Test each feature individually
+    for feature in $features; do
+        echo "Testing {{package}} with feature: $feature"
+        cargo clippy -p {{package}} --all-targets --no-default-features --features "$feature" --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings || echo "Feature $feature failed for {{package}}"
+    done
+    
+    # Test all features together
+    if [ -n "$features" ]; then
+        all_features=$(echo $features | tr '\n' ',' | sed 's/,$//')
+        echo "Testing {{package}} with all features: $all_features"
+        cargo clippy -p {{package}} --all-targets --no-default-features --features "$all_features" --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings || echo "All features failed for {{package}}"
+    fi
+
+# Run clippy with feature combinations for all packages
+clippy-exhaustive target=default-target: (witguest-wit)
+    ./hack/clippy-package-features.sh hyperlight-host {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-guest {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-guest-bin {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-common {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-testing {{ target }}
+    just clippy-guests {{ target }}
+
+# Test a specific package with all feature combinations
+clippy-package package target=default-target: (witguest-wit)
+    ./hack/clippy-package-features.sh {{ package }} {{ target }}
+
 # Verify Minimum Supported Rust Version
 verify-msrv:
     ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-lib hyperlight-common
