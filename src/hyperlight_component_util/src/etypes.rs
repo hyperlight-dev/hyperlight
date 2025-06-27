@@ -136,17 +136,11 @@ pub struct Param<'a> {
     pub ty: Value<'a>,
 }
 
-#[derive(Debug, Clone)]
-pub enum Result<'a> {
-    Unnamed(Value<'a>),
-    Named(Vec<Param<'a>>),
-}
-
 /// functype_e in the specification
 #[derive(Debug, Clone)]
 pub struct Func<'a> {
     pub params: Vec<Param<'a>>,
-    pub result: Result<'a>,
+    pub result: Option<Value<'a>>,
 }
 
 /// In the spec, this does not exist, but a validation rule ensures an

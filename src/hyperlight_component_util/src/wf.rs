@@ -268,10 +268,8 @@ impl<'p, 'a> Ctx<'p, 'a> {
             .iter()
             .try_for_each(|fp: &'r Param<'a>| self.wf_value(param_pos, &fp.ty))?;
         match &ft.result {
-            crate::etypes::Result::Unnamed(vt) => self.wf_value(result_pos, vt),
-            crate::etypes::Result::Named(ps) => ps
-                .iter()
-                .try_for_each(|fp: &'r Param<'a>| self.wf_value(result_pos, &fp.ty)),
+            Some(vt) => self.wf_value(result_pos, vt),
+            None => Ok(()),
         }
     }
     fn wf_type_bound<'r>(
