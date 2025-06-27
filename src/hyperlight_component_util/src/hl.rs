@@ -19,7 +19,7 @@ use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
 use crate::emit::{State, kebab_to_cons, kebab_to_var};
-use crate::etypes::{self, Defined, Handleable, TypeBound, Tyvar, Value};
+use crate::etypes::{Defined, Handleable, TypeBound, Tyvar, Value};
 use crate::rtypes;
 
 /// Construct a string that can be used "on the wire" to identify a
@@ -653,14 +653,13 @@ pub fn emit_hl_unmarshal_param(s: &mut State, id: Ident, pt: &Value) -> TokenStr
 ///
 /// Precondition: the result type must only be a named result if there
 /// are no names in it (i.e. a unit type)
-pub fn emit_hl_unmarshal_result(s: &mut State, id: Ident, rt: &etypes::Result) -> TokenStream {
+pub fn emit_hl_unmarshal_result(s: &mut State, id: Ident, rt: &Option<Value<'_>>) -> TokenStream {
     match rt {
-        etypes::Result::Named(rs) if rs.is_empty() => quote! { () },
-        etypes::Result::Unnamed(vt) => {
+        Some(vt) => {
             let toks = emit_hl_unmarshal_value(s, id, vt);
             quote! { { #toks }.0 }
         }
-        _ => panic!("named results not supported"),
+        None => quote! { () },
     }
 }
 
@@ -678,13 +677,12 @@ pub fn emit_hl_marshal_param(s: &mut State, id: Ident, pt: &Value) -> TokenStrea
 ///
 /// Precondition: the result type must only be a named result if there
 /// are no names in it (a unit type)
-pub fn emit_hl_marshal_result(s: &mut State, id: Ident, rt: &etypes::Result) -> TokenStream {
+pub fn emit_hl_marshal_result(s: &mut State, id: Ident, rt: &Option<Value<'_>>) -> TokenStream {
     match rt {
-        etypes::Result::Named(rs) if rs.is_empty() => quote! { ::alloc::vec::Vec::new() },
-        etypes::Result::Unnamed(vt) => {
+        None => quote! { ::alloc::vec::Vec::new() },
+        Some(vt) => {
             let toks = emit_hl_marshal_value(s, id, vt);
             quote! { { #toks } }
         }
-        _ => panic!("named results not supported"),
     }
 }

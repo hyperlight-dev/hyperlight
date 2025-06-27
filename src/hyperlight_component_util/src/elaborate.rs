@@ -24,14 +24,14 @@ limitations under the License.
 //! substitute.rs for more details of the approach here).
 
 use wasmparser::{
-    ComponentAlias, ComponentDefinedType, ComponentFuncResult, ComponentFuncType,
-    ComponentOuterAliasKind, ComponentType, ComponentTypeDeclaration, ComponentTypeRef,
-    ComponentValType, CompositeInnerType, CoreType, InstanceTypeDeclaration, ModuleTypeDeclaration,
-    OuterAliasKind, PrimitiveValType, TypeBounds, TypeRef,
+    ComponentAlias, ComponentDefinedType, ComponentFuncType, ComponentOuterAliasKind,
+    ComponentType, ComponentTypeDeclaration, ComponentTypeRef, ComponentValType,
+    CompositeInnerType, CoreType, InstanceTypeDeclaration, ModuleTypeDeclaration, OuterAliasKind,
+    PrimitiveValType, TypeBounds, TypeRef,
 };
 
 use crate::etypes::{
-    self, BoundedTyvar, Component, CoreDefined, CoreExportDecl, CoreExternDesc, CoreModule,
+    BoundedTyvar, Component, CoreDefined, CoreExportDecl, CoreExternDesc, CoreModule,
     CoreOrComponentExternDesc, Ctx, Defined, ExternDecl, ExternDesc, FloatWidth, Func, Handleable,
     Instance, IntWidth, Name, Param, QualifiedInstance, RecordField, Resource, ResourceId,
     TypeBound, Tyvar, Value, VariantCase,
@@ -366,6 +366,7 @@ impl<'p, 'a> Ctx<'p, 'a> {
                 PrimitiveValType::F64 => Value::F(FloatWidth::F64),
                 PrimitiveValType::Char => Value::Char,
                 PrimitiveValType::String => Value::String,
+                PrimitiveValType::ErrorContext => panic!("async not yet supported"),
             }),
         }
     }
@@ -428,9 +429,12 @@ impl<'p, 'a> Ctx<'p, 'a> {
                 Defined::Handleable(h) => Ok(Value::Borrow(h.clone())),
                 _ => Err(Error::HandleToNonResource),
             },
-            ComponentDefinedType::Future(_)
-            | ComponentDefinedType::Stream(_)
-            | ComponentDefinedType::ErrorContext => panic!("async not yet supported"),
+            ComponentDefinedType::Future(_) | ComponentDefinedType::Stream(_) => {
+                panic!("async not yet supported")
+            }
+            ComponentDefinedType::FixedSizeList(vt, _) => {
+                Ok(Value::List(Box::new(self.elab_value(vt)?)))
+            }
         }
     }
 
@@ -446,18 +450,9 @@ impl<'p, 'a> Ctx<'p, 'a> {
                     })
                 })
                 .collect::<Result<Vec<_>, Error<'a>>>()?,
-            result: match &ft.results {
-                ComponentFuncResult::Unnamed(vt) => etypes::Result::Unnamed(self.elab_value(vt)?),
-                ComponentFuncResult::Named(rs) => etypes::Result::Named(
-                    rs.iter()
-                        .map(|(n, vt)| {
-                            Ok(Param {
-                                name: Name { name: n },
-                                ty: self.elab_value(vt)?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, Error<'a>>>()?,
-                ),
+            result: match &ft.result {
+                Some(vt) => Some(self.elab_value(vt)?),
+                None => None,
             },
         })
     }
