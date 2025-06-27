@@ -65,9 +65,19 @@ jobs:
         run: just fmt-check
 
       - name: clippy
+        if: ${{ (runner.os == 'Windows' )}}
         run: |
           just clippy ${{ matrix.config }}
           just clippy-guests ${{ matrix.config }}
+
+      # note: this is just temporary to check if we caught all the clippy warnings
+      # I plan to move out of dep_rust in this PR with a follow-up commit.
+      - name: clippy exhaustive check
+        if: ${{ (runner.os == 'Linux' )}}
+        run: |
+          sudo apt-get install -y jq || true
+          sudo dnf install -y jq || true
+          just clippy-exhaustive ${{ matrix.config }}
 
       # Does not check for updated Cargo.lock files for test rust guests as this causes an issue with this checkwhen deoendabot updates dependencies in common crates
       - name: Ensure up-to-date Cargo.lock

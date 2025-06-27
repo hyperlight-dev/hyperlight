@@ -41,13 +41,13 @@ impl GuestHandle {
         let user_memory_region_size = unsafe { (*peb_ptr).init_data.size };
 
         if num > user_memory_region_size {
-            return Err(HyperlightGuestError::new(
+            Err(HyperlightGuestError::new(
                 ErrorCode::GuestError,
                 format!(
                     "Requested {} bytes from user memory, but only {} bytes are available",
                     num, user_memory_region_size
                 ),
-            ));
+            ))
         } else {
             let user_memory_region_slice =
                 unsafe { core::slice::from_raw_parts(user_memory_region_ptr, num as usize) };
@@ -142,7 +142,7 @@ impl GuestHandle {
     /// Write an error to the shared output data buffer.
     pub fn write_error(&self, error_code: ErrorCode, message: Option<&str>) {
         let guest_error: GuestError = GuestError::new(
-            error_code.clone(),
+            error_code,
             message.map_or("".to_string(), |m| m.to_string()),
         );
         let guest_error_buffer: Vec<u8> = (&guest_error)

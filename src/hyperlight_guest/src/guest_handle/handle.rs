@@ -30,6 +30,12 @@ pub struct GuestHandle {
     peb: Option<*mut HyperlightPEB>,
 }
 
+impl Default for GuestHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GuestHandle {
     /// Creates a new uninitialized guest state.
     pub const fn new() -> Self {
