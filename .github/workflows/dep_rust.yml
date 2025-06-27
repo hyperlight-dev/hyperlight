@@ -31,6 +31,49 @@ defaults:
     shell: bash
 
 jobs:
+  code-checks:
+    if: ${{ inputs.docs_only == 'false' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        hypervisor: ['hyperv-ws2025', kvm]
+        config: [debug, release]
+    runs-on: ${{ fromJson(
+      format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-amd"]', 
+        (matrix.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
+        matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || 'kvm')) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hyperlight-dev/ci-setup-workflow@v1.5.0
+        with:
+          rust-toolchain: "1.85" 
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Does not check for updated Cargo.lock files for test rust guests as this causes an issue with this checkwhen deoendabot updates dependencies in common crates
+      - name: Ensure up-to-date Cargo.lock
+        run: |
+          cargo fetch --locked
+
+      - name: fmt
+        run: just fmt-check
+
+      - name: clippy
+        if: ${{ (runner.os == 'Windows' )}}
+        run: |
+          just clippy ${{ matrix.config }}
+          just clippy-guests ${{ matrix.config }}
+
+      - name: clippy exhaustive check
+        if: ${{ (runner.os == 'Linux' )}}
+        run: |
+          just clippy-exhaustive ${{ matrix.config }}
+
+      - name: Verify MSRV
+        run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
+
   build:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 60
@@ -61,19 +104,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: fmt
-        run: just fmt-check
-
-      - name: clippy
-        run: |
-          just clippy ${{ matrix.config }}
-          just clippy-guests ${{ matrix.config }}
-
-      # Does not check for updated Cargo.lock files for test rust guests as this causes an issue with this checkwhen deoendabot updates dependencies in common crates
-      - name: Ensure up-to-date Cargo.lock
-        run: |
-          cargo fetch --locked
-
       - name: Get gh action service name
         if: ${{ (runner.os == 'Windows' )}}
         run: (Get-Service actions.runner.*) | Foreach { $_.Name, $_.UserName, $_.ServiceType }
@@ -92,9 +122,6 @@ jobs:
           just move-c-guests ${{ matrix.config }}
       - name: Build
         run: just build ${{ matrix.config }}
-
-      - name: Verify MSRV
-        run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
 
       - name: Run Rust tests
         env:
