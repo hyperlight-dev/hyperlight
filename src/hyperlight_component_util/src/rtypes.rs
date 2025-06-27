@@ -30,7 +30,7 @@ use crate::emit::{
 };
 use crate::etypes::{
     Component, Defined, ExternDecl, ExternDesc, Func, Handleable, ImportExport, Instance, Param,
-    Result, TypeBound, Tyvar, Value,
+    TypeBound, Tyvar, Value,
 };
 
 /// When referring to an instance or resource trait, emit a token
@@ -521,11 +521,10 @@ pub fn emit_func_param(s: &mut State, p: &Param) -> TokenStream {
 ///
 /// Precondition: the result type must only be a named result if there
 /// are no names in it (i.e. a unit type)
-pub fn emit_func_result(s: &mut State, r: &Result) -> TokenStream {
+pub fn emit_func_result(s: &mut State, r: &Option<Value<'_>>) -> TokenStream {
     match r {
-        Result::Unnamed(vt) => emit_value(s, vt),
-        Result::Named(rs) if rs.is_empty() => quote! { () },
-        _ => panic!("multiple named function results are not currently supported"),
+        Some(vt) => emit_value(s, vt),
+        None => quote! { () },
     }
 }
 
