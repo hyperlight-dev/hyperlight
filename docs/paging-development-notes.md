@@ -1,6 +1,6 @@
 # Paging in Hyperlight
 
-Hyperlight uses paging, which means the all addresses inside a Hyperlight VM are treated as virtual addresses by the processor. Specifically, Hyperlight uses (ordinary) 4-level paging. 4-level paging is used because we set the following control registers on logical cores inside a VM: `CR0.PG = 1, CR4.PAE = 1, IA32_EFER.LME = 1, and CR4.LA57 = 0`. A Hyperlight VM is limited to 1GB of addressable memory, see below for more details. These control register settings have the following effects:
+Hyperlight uses paging, which means that all addresses inside a Hyperlight VM are treated as virtual addresses by the processor. Specifically, Hyperlight uses (ordinary) 4-level paging. 4-level paging is used because we set the following control registers on logical cores inside a VM: `CR0.PG = 1, CR4.PAE = 1, IA32_EFER.LME = 1, and CR4.LA57 = 0`. A Hyperlight VM is limited to 1GB of addressable memory, see below for more details. These control register settings have the following effects:
 
 - `CR0.PG = 1`: Enables paging
 - `CR4.PAE = 1`: Enables Physical Address Extension (PAE) mode (this is required for 4-level paging)
