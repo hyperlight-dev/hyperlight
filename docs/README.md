@@ -18,7 +18,7 @@ Given a guest, then, Hyperlight takes some simple steps prior to executing it, i
 
 ## Basics: Hyperlight architecture
 
-This project is composed internally of several internal components, depicted in the below diagram:
+This project is composed internally of several components, depicted in the below diagram:
 
 ![Hyperlight architecture](./assets/hyperlight_arch.png)
 
