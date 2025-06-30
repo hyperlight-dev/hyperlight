@@ -159,13 +159,15 @@ fn maybe_with_seccomp<T: Send>(
     syscalls: Option<&[ExtraAllowedSyscall]>,
     f: impl FnOnce() -> Result<T> + Send,
 ) -> Result<T> {
+    use std::thread;
+
     use crate::seccomp::guest::get_seccomp_filter_for_host_function_worker_thread;
 
     // Use a scoped thread so that we can pass around references without having to clone them.
-    crossbeam::thread::scope(|s| {
-        s.builder()
+    thread::scope(|s| {
+        thread::Builder::new()
             .name(format!("Host Function Worker Thread for: {name:?}"))
-            .spawn(move |_| {
+            .spawn_scoped(s, move || {
                 let seccomp_filter = get_seccomp_filter_for_host_function_worker_thread(syscalls)?;
                 seccomp_filter
                     .iter()
@@ -194,7 +196,6 @@ fn maybe_with_seccomp<T: Send>(
             .join()
             .map_err(|_| new_error!("Error joining thread executing host function"))?
     })
-    .map_err(|_| new_error!("Error joining thread executing host function"))?
 }
 
 #[cfg(not(all(feature = "seccomp", target_os = "linux")))]
