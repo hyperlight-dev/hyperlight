@@ -31,6 +31,42 @@ defaults:
     shell: bash
 
 jobs:
+  clippy:
+    if: ${{ inputs.docs_only == 'false' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        hypervisor: ['hyperv-ws2025', kvm]
+        config: [debug, release]
+    runs-on: ${{ fromJson(
+      format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-amd"]', 
+        (matrix.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
+        matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || 'kvm') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hyperlight-dev/ci-setup-workflow@v1.5.0
+        with:
+          rust-toolchain: "1.85" 
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: clippy
+        if: ${{ (runner.os == 'Windows' )}}
+        run: |
+          just clippy ${{ matrix.config }}
+          just clippy-guests ${{ matrix.config }}
+
+      # note: this is just temporary to check if we caught all the clippy warnings
+      # I plan to move out of dep_rust in this PR with a follow-up commit.
+      - name: clippy exhaustive check
+        if: ${{ (runner.os == 'Linux' )}}
+        run: |
+          sudo apt-get install -y jq || true
+          sudo dnf install -y jq || true
+          just clippy-exhaustive ${{ matrix.config }}
+
   build:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 60
@@ -63,21 +99,6 @@ jobs:
 
       - name: fmt
         run: just fmt-check
-
-      - name: clippy
-        if: ${{ (runner.os == 'Windows' )}}
-        run: |
-          just clippy ${{ matrix.config }}
-          just clippy-guests ${{ matrix.config }}
-
-      # note: this is just temporary to check if we caught all the clippy warnings
-      # I plan to move out of dep_rust in this PR with a follow-up commit.
-      - name: clippy exhaustive check
-        if: ${{ (runner.os == 'Linux' )}}
-        run: |
-          sudo apt-get install -y jq || true
-          sudo dnf install -y jq || true
-          just clippy-exhaustive ${{ matrix.config }}
 
       # Does not check for updated Cargo.lock files for test rust guests as this causes an issue with this checkwhen deoendabot updates dependencies in common crates
       - name: Ensure up-to-date Cargo.lock
