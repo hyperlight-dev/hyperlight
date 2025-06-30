@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#![deny(dead_code, missing_docs, unused_mut)]
+#![warn(dead_code, missing_docs, unused_mut)]
 //! This crate contains an SDK that is used to execute specially-
 // compiled binaries within a very lightweight hypervisor environment.
 

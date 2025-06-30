@@ -77,3 +77,9 @@ pub(crate) enum HypervisorType {
     #[cfg(target_os = "windows")]
     Whp,
 }
+
+// Compiler error if no hypervisor type is available
+#[cfg(not(any(kvm, mshv, target_os = "windows")))]
+compile_error!(
+    "No hypervisor type is available for the current platform. Please enable either the `kvm` or `mshv` cargo feature."
+);
