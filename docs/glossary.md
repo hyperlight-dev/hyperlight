@@ -54,7 +54,7 @@ The interface that a guest must implement is specific to the associated [host](#
 
 A micro virtual machine is an execution environment managed by a hypervisor that isolates a [guest](#guest) from the [host](#host). A hypervisor prevents the guest from directly accessing the host's resources, such as memory, filesystem, devices, memory or CPU.
 
-We use the term Micro Virtual Machine as the VMs are very lightweight compared to traditional VMs, they contains no operating system or other unnecessary components. The goal is to provide a minimal environment for executing workloads with low latency and high density. However the isolation provided by the hypervisor is the same as that of a traditional VM.
+We use the term Micro Virtual Machine as the VMs are very lightweight compared to traditional VMs, containing no operating system or other unnecessary components. The goal is to provide a minimal environment for executing workloads with low latency and high density. However the isolation provided by the hypervisor is the same as that of a traditional VM.
 
 ## Workload
 
