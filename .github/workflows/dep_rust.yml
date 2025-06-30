@@ -42,7 +42,7 @@ jobs:
     runs-on: ${{ fromJson(
       format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-amd"]', 
         (matrix.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
-        matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || 'kvm') }}
+        matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || 'kvm')) }}
     steps:
       - uses: actions/checkout@v4
 
