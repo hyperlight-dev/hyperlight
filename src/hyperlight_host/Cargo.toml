@@ -23,7 +23,7 @@ workspace = true
 [dependencies]
 gdbstub = { version = "0.7.6", optional = true }
 gdbstub_arch = { version = "0.3.2", optional = true }
-goblin = { version = "0.10" }
+goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "endian_fd"] }
 rand = { version = "0.9" }
 cfg-if = { version = "1.0.1" }
 libc = { version = "0.2.174" }
