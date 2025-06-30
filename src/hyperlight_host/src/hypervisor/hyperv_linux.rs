@@ -441,7 +441,9 @@ impl HypervLinuxDriver {
         // Send the interrupt handle to the GDB thread if debugging is enabled
         // This is used to allow the GDB thread to stop the vCPU
         #[cfg(gdb)]
-        hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
+        if hv.debug.is_some() {
+            hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
+        }
 
         Ok(hv)
     }

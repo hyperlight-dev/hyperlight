@@ -41,14 +41,27 @@ fn get_sandbox_cfg() -> Option<SandboxConfiguration> {
 fn main() -> hyperlight_host::Result<()> {
     let cfg = get_sandbox_cfg();
 
-    // Create an uninitialized sandbox with a guest binary
-    let mut uninitialized_sandbox = UninitializedSandbox::new(
+    // Create an uninitialized sandbox with a guest binary and debug enabled
+    let mut uninitialized_sandbox_dbg = UninitializedSandbox::new(
         hyperlight_host::GuestBinary::FilePath(
             hyperlight_testing::simple_guest_as_string().unwrap(),
         ),
         cfg, // sandbox configuration
     )?;
 
+    // Create an uninitialized sandbox with a guest binary
+    let mut uninitialized_sandbox = UninitializedSandbox::new(
+        hyperlight_host::GuestBinary::FilePath(
+            hyperlight_testing::simple_guest_as_string().unwrap(),
+        ),
+        None, // sandbox configuration
+    )?;
+
+    // Register a host functions
+    uninitialized_sandbox_dbg.register("Sleep5Secs", || {
+        thread::sleep(std::time::Duration::from_secs(5));
+        Ok(())
+    })?;
     // Register a host functions
     uninitialized_sandbox.register("Sleep5Secs", || {
         thread::sleep(std::time::Duration::from_secs(5));
@@ -56,11 +69,23 @@ fn main() -> hyperlight_host::Result<()> {
     })?;
     // Note: This function is unused, it's just here for demonstration purposes
 
-    // Initialize sandbox to be able to call host functions
+    // Initialize sandboxes to be able to call host functions
+    let mut multi_use_sandbox_dbg: MultiUseSandbox =
+        uninitialized_sandbox_dbg.evolve(Noop::default())?;
     let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default())?;
 
     // Call guest function
-    let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
+    let message =
+        "Hello, World! I am executing inside of a VM with debugger attached :)\n".to_string();
+    multi_use_sandbox_dbg
+        .call_guest_function_by_name::<i32>(
+            "PrintOutput", // function must be defined in the guest binary
+            message.clone(),
+        )
+        .unwrap();
+
+    let message =
+        "Hello, World! I am executing inside of a VM without debugger attached :)\n".to_string();
     multi_use_sandbox
         .call_guest_function_by_name::<i32>(
             "PrintOutput", // function must be defined in the guest binary
