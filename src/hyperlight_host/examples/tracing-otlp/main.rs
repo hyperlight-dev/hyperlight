@@ -34,14 +34,14 @@ use hyperlight_host::{GuestBinary, MultiUseSandbox, Result as HyperlightResult};
 use hyperlight_testing::simple_guest_as_string;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::{KeyValue, global};
-use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
 //use opentelemetry_sdk::runtime::Tokio;
 use opentelemetry_sdk::Resource;
 use opentelemetry_semantic_conventions::attribute::SERVICE_VERSION;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-const ENDPOINT_ADDR: &str = "http://localhost:4317";
+const ENDPOINT_ADDR: &str = "http://localhost:4318/v1/traces";
 
 fn fn_writer(_msg: String) -> HyperlightResult<i32> {
     Ok(0)
@@ -64,7 +64,8 @@ fn init_tracing_subscriber(
     addr: &str,
 ) -> Result<SdkTracerProvider, Box<dyn Error + Send + Sync + 'static>> {
     let exporter = SpanExporter::builder()
-        .with_tonic()
+        .with_http()
+        .with_protocol(Protocol::HttpBinary)
         .with_endpoint(addr)
         .build()?;
 
@@ -218,7 +219,7 @@ mod test {
 
     use super::*;
 
-    const TESTER_ADDR: &str = "127.0.0.1:4317";
+    const TESTER_ADDR: &str = "127.0.0.1:4318";
 
     async fn handle(mut stream: TcpStream) -> Result<()> {
         let mut buf = Vec::with_capacity(128);
