@@ -120,7 +120,7 @@ pub(crate) fn get_seccomp_filter_for_host_function_worker_thread(
     )?
     .try_into()?;
 
-    // If `openat` is an exclicitly allowed syscall, we shouldn't return the filter that forces it to return EACCES.
+    // If `openat` is an explicitly allowed syscall, we shouldn't return the filter that forces it to return EACCES.
     if let Some(extra_syscalls) = extra_allowed_syscalls {
         if extra_syscalls.contains(&libc::SYS_openat) {
             return Ok(vec![allowlist]);

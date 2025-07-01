@@ -82,7 +82,7 @@ fn guest_call_benchmark(c: &mut Criterion) {
 fn guest_call_benchmark_large_param(c: &mut Criterion) {
     let mut group = c.benchmark_group("guest_functions_with_large_parameters");
     #[cfg(target_os = "windows")]
-    group.sample_size(10); // This benchark is very slow on Windows, so we reduce the sample size to avoid long test runs.
+    group.sample_size(10); // This benchmark is very slow on Windows, so we reduce the sample size to avoid long test runs.
 
     // This benchmark includes time to first clone a vector and string, so it is not a "pure' benchmark of the guest call, but it's still useful
     group.bench_function("guest_call_with_large_parameters", |b| {
