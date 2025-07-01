@@ -136,11 +136,13 @@ pub struct Param<'a> {
     pub ty: Value<'a>,
 }
 
+pub type Result<'a> = Option<Value<'a>>;
+
 /// functype_e in the specification
 #[derive(Debug, Clone)]
 pub struct Func<'a> {
     pub params: Vec<Param<'a>>,
-    pub result: Option<Value<'a>>,
+    pub result: Result<'a>,
 }
 
 /// In the spec, this does not exist, but a validation rule ensures an
