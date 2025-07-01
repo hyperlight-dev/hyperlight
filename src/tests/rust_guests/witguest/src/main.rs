@@ -113,6 +113,9 @@ impl test::wit::Roundtrip for Guest {
     ) -> test::wit::roundtrip::Testenum {
         (Host {}).roundtrip_enum(x)
     }
+    fn roundtrip_fix_list(&mut self, x: Vec<u8>) -> Vec<u8> {
+        (Host {}).roundtrip_fix_list(x)
+    }
     fn roundtrip_no_result(&mut self, x: u32) {
         (Host {}).roundtrip_no_result(x)
     }
