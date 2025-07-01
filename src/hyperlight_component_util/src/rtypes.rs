@@ -29,8 +29,8 @@ use crate::emit::{
     split_wit_name,
 };
 use crate::etypes::{
-    Component, Defined, ExternDecl, ExternDesc, Func, Handleable, ImportExport, Instance, Param,
-    TypeBound, Tyvar, Value,
+    self, Component, Defined, ExternDecl, ExternDesc, Func, Handleable, ImportExport, Instance,
+    Param, TypeBound, Tyvar, Value,
 };
 
 /// When referring to an instance or resource trait, emit a token
@@ -521,7 +521,7 @@ pub fn emit_func_param(s: &mut State, p: &Param) -> TokenStream {
 ///
 /// Precondition: the result type must only be a named result if there
 /// are no names in it (i.e. a unit type)
-pub fn emit_func_result(s: &mut State, r: &Option<Value<'_>>) -> TokenStream {
+pub fn emit_func_result(s: &mut State, r: &etypes::Result<'_>) -> TokenStream {
     match r {
         Some(vt) => emit_value(s, vt),
         None => quote! { () },

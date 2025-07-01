@@ -134,7 +134,10 @@ where
         pts.iter().map(|pt| self.param(pt)).collect()
     }
 
-    fn result(&self, rt: &Option<Value<'a>>) -> Result<Option<Value<'a>>, Self::Error> {
+    fn result(
+        &self,
+        rt: &crate::etypes::Result<'a>,
+    ) -> Result<crate::etypes::Result<'a>, Self::Error> {
         Ok(match rt {
             Some(vt) => Some(self.value(vt)?),
             None => None,
