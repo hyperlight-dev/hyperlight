@@ -432,8 +432,8 @@ impl<'p, 'a> Ctx<'p, 'a> {
             ComponentDefinedType::Future(_) | ComponentDefinedType::Stream(_) => {
                 panic!("async not yet supported")
             }
-            ComponentDefinedType::FixedSizeList(vt, _) => {
-                Ok(Value::List(Box::new(self.elab_value(vt)?)))
+            ComponentDefinedType::FixedSizeList(vt, size) => {
+                Ok(Value::FixList(Box::new(self.elab_value(vt)?), *size))
             }
         }
     }

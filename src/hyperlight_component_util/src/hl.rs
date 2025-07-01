@@ -223,6 +223,20 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
                 (#retid, cursor)
             }
         }
+        Value::FixList(vt, _size) => {
+            let inid = format_ident!("{}_elem", id);
+            let vtun = emit_hl_unmarshal_value(s, inid.clone(), vt);
+            quote! {
+                let mut cursor = 0;
+                let arr = ::core::array::from_fn(|_i| {
+                    let #inid = &#id[cursor..];
+                    let (x, b) = { #vtun };
+                    cursor += b;
+                    x
+                });
+                (arr, cursor)
+            }
+        }
         Value::Record(_) => panic!("record not at top level of valtype"),
         Value::Tuple(vts) => {
             let inid = format_ident!("{}_elem", id);
@@ -513,6 +527,25 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
                     #retid.extend({ #vtun })
                 }
                 #retid
+            }
+        }
+        Value::FixList(vt, _size) => {
+            // Optimize for byte arrays ie. [u8; N]
+            if matches!(vt.as_ref(), Value::S(_) | Value::U(_) | Value::F(_)) {
+                quote! {
+                    alloc::vec::Vec::from(#id.as_slice())
+                }
+            } else {
+                let retid = format_ident!("{}_fixlist", id);
+                let inid = format_ident!("{}_elem", id);
+                let vtun = emit_hl_marshal_value(s, inid.clone(), vt);
+                quote! {
+                    let mut #retid = alloc::vec::Vec::new();
+                    for #inid in #id {
+                        #retid.extend({ #vtun })
+                    }
+                    #retid
+                }
             }
         }
         Value::Record(_) => panic!("record not at top level of valtype"),

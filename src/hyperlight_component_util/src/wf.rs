@@ -213,6 +213,7 @@ impl<'p, 'a> Ctx<'p, 'a> {
             Value::Char => Ok(()),
             Value::String => Ok(()),
             Value::List(vt) => self.wf_value(p_, vt),
+            Value::FixList(vt, _) => self.wf_value(p_, vt),
             Value::Record(rfs) => anon_err.and(self.wf_record_fields(p_, rfs)),
             Value::Variant(vcs) => anon_err.and(self.wf_variant_cases(p_, vcs)),
             Value::Flags(ns) => anon_err.and(error_if_duplicates_by(

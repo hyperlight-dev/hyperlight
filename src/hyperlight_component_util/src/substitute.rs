@@ -96,6 +96,7 @@ where
             Value::Char => Value::Char,
             Value::String => Value::String,
             Value::List(vt) => Value::List(Box::new(self.value(vt)?)),
+            Value::FixList(vt, size) => Value::FixList(Box::new(self.value(vt)?), *size),
             Value::Record(rfs) => Value::Record(self.record_fields(rfs)?),
             Value::Variant(vcs) => Value::Variant(self.variant_cases(vcs)?),
             Value::Flags(ns) => Value::Flags(ns.clone()),
