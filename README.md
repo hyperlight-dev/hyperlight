@@ -33,15 +33,16 @@ It is followed by an example of a simple guest application using the Hyperlight 
 ### Host
 
 ```rust
-use std::{thread, sync::{Arc, Mutex}};
+use std::thread;
 
-use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-use hyperlight_host::{UninitializedSandbox, MultiUseSandbox, func::HostFunction0, sandbox_state::transition::Noop, sandbox_state::sandbox::EvolvableSandbox};
+use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
+use hyperlight_host::sandbox_state::transition::Noop;
+use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 
 fn main() -> hyperlight_host::Result<()> {
     // Create an uninitialized sandbox with a guest binary
     let mut uninitialized_sandbox = UninitializedSandbox::new(
-        hyperlight_host::GuestBinary::FilePath(hyperlight_testing::simple_guest_as_string().unwrap()),
+        hyperlight_host::GuestBinary::FilePath("path/to/your/guest/binary".to_string()),
         None // default configuration
     )?;
 
@@ -59,12 +60,10 @@ fn main() -> hyperlight_host::Result<()> {
     let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
     // in order to call a function it first must be defined in the guest and exposed so that
     // the host can call it
-    let result: i32 = multi_use_sandbox.call_guest_function_by_name(
+    multi_use_sandbox.call_guest_function_by_name::<i32>(
         "PrintOutput",
         message,
-    );
-
-    assert!(result.is_ok());
+    )?;
 
     Ok(())
 }
@@ -84,22 +83,21 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterType, ParameterValue, ReturnType,
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result_from_int;
+use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::register_function;
-use hyperlight_guest_bin::host_comm::{call_host_function, call_host_function_without_returning_result};
+use hyperlight_guest_bin::host_comm::call_host_function;
 
 fn print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
-        call_host_function(
+        let result = call_host_function::<i32>(
             "HostPrint",
             Some(Vec::from(&[ParameterValue::String(message.to_string())])),
             ReturnType::Int,
         )?;
-        let result = get_host_value_return_as_int()?;
-        Ok(get_flatbuffer_result_from_int(result))
+        Ok(get_flatbuffer_result(result))
     } else {
         Err(HyperlightGuestError::new(
             ErrorCode::GuestFunctionParameterTypeMismatch,
@@ -114,7 +112,7 @@ pub extern "C" fn hyperlight_main() {
         "PrintOutput".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::Int,
-        print_output as i64,
+        print_output as usize,
     );
     register_function(print_output_def);
 }
@@ -127,6 +125,28 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         function_name,
     ));
 }
+```
+
+**Note**: Guest applications require a specific build configuration. Create a `.cargo/config.toml` file in your guest project with the following content:
+
+```toml
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = [
+  "-C",
+  "code-model=small",
+  "-C",
+  "link-args=-e entrypoint",
+]
+linker = "rust-lld"
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
 ```
 
 For additional examples of using the Hyperlight host Rust library, see
