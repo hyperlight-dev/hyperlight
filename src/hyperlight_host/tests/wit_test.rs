@@ -155,7 +155,10 @@ impl test::wit::Roundtrip for Host {
     ) -> test::wit::roundtrip::Testenum {
         x
     }
-    fn roundtrip_fix_list(&mut self, x: Vec<u8>) -> Vec<u8> {
+    fn roundtrip_fix_list(&mut self, x: [u8; 4]) -> [u8; 4] {
+        x
+    }
+    fn roundtrip_fix_list_string(&mut self, x: [String; 4]) -> [String; 4] {
         x
     }
 
@@ -334,10 +337,11 @@ mod wit_test {
     make_test! { roundtrip_flags_large, in arb_largeflags() }
     make_test! { roundtrip_variant,     in arb_testvariant() }
     make_test! { roundtrip_enum,        in arb_testenum() }
-    make_test! { roundtrip_fix_list,    : Vec<u8> }
+    make_test! { roundtrip_fix_list,    : [u8; 4] }
+    make_test! { roundtrip_fix_list_string, : [String; 4] }
 
     #[test]
-    fn test_simple_func() {
+    fn test_roundtrip_no_result() {
         sb().roundtrip().roundtrip_no_result(42);
     }
 

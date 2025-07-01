@@ -83,6 +83,7 @@ pub enum Value<'a> {
     Char,
     String,
     List(Box<Value<'a>>),
+    FixList(Box<Value<'a>>, u32),
     Record(Vec<RecordField<'a>>),
     Tuple(Vec<Value<'a>>),
     Flags(Vec<Name<'a>>),

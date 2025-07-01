@@ -281,6 +281,11 @@ pub fn emit_value(s: &mut State, vt: &Value) -> TokenStream {
             let vt = emit_value(s, vt);
             quote! { alloc::vec::Vec<#vt> }
         }
+        Value::FixList(vt, size) => {
+            let vt = emit_value(s, vt);
+            let size = *size as usize;
+            quote! { [#vt; #size] }
+        }
         Value::Record(_) => panic!("record not at top level of valtype"),
         Value::Tuple(vts) => {
             let vts = vts.iter().map(|vt| emit_value(s, vt)).collect::<Vec<_>>();
