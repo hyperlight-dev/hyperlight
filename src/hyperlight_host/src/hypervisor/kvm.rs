@@ -21,7 +21,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use kvm_bindings::{KVM_MEM_READONLY, kvm_fpu, kvm_regs, kvm_userspace_memory_region};
+use hyperlight_common::mem::{PAGE_SIZE_USIZE, PAGES_IN_BLOCK};
+use kvm_bindings::{
+    KVM_MEM_LOG_DIRTY_PAGES, KVM_MEM_READONLY, kvm_fpu, kvm_regs, kvm_userspace_memory_region,
+};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::LevelFilter;
@@ -43,7 +46,8 @@ use super::{
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::bitmap::{bit_index_iterator, new_page_bitmap};
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::sandbox::SandboxConfiguration;
 #[cfg(crashdump)]
@@ -284,7 +288,7 @@ mod debug {
 /// A Hypervisor driver for KVM on Linux
 pub(crate) struct KVMDriver {
     _kvm: Kvm,
-    _vm_fd: VmFd,
+    vm_fd: VmFd,
     vcpu_fd: VcpuFd,
     entrypoint: u64,
     orig_rsp: GuestPtr,
@@ -329,7 +333,7 @@ impl KVMDriver {
                 userspace_addr: region.host_region.start as u64,
                 flags: match perm_flags {
                     MemoryRegionFlags::READ => KVM_MEM_READONLY,
-                    _ => 0, // normal, RWX
+                    _ => KVM_MEM_LOG_DIRTY_PAGES, // normal, RWX
                 },
             };
             unsafe { vm_fd.set_user_memory_region(kvm_region) }
@@ -378,7 +382,7 @@ impl KVMDriver {
         #[allow(unused_mut)]
         let mut hv = Self {
             _kvm: kvm,
-            _vm_fd: vm_fd,
+            vm_fd,
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
@@ -717,6 +721,45 @@ impl Hypervisor for KVMDriver {
 
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
+    }
+
+    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        let mut page_indices = vec![];
+        let mut current_page = 0;
+        // Iterate over all memory regions and get the dirty pages for each region ignoring guard pages which cannot be dirty
+        for (i, mem_region) in self.mem_regions.iter().enumerate() {
+            let num_pages = mem_region.guest_region.len() / PAGE_SIZE_USIZE;
+            let bitmap = match mem_region.flags {
+                MemoryRegionFlags::READ => {
+                    // read-only page. It can never be dirty so return zero dirty pages.
+                    new_page_bitmap(mem_region.guest_region.len(), false)?
+                }
+                _ => {
+                    if mem_region.region_type == MemoryRegionType::GuardPage {
+                        //  Trying to get dirty pages for a guard page region results in a VMMSysError(2)
+                        new_page_bitmap(mem_region.guest_region.len(), false)?
+                    } else {
+                        // Get the dirty bitmap for the memory region
+                        self.vm_fd
+                            .get_dirty_log(i as u32, mem_region.guest_region.len())?
+                    }
+                }
+            };
+            for page_idx in bit_index_iterator(&bitmap) {
+                page_indices.push(current_page + page_idx);
+            }
+            current_page += num_pages;
+        }
+
+        // covert vec of page indices to vec of blocks
+        let mut res = new_page_bitmap(current_page * PAGE_SIZE_USIZE, false)?;
+        for page_idx in page_indices {
+            let block_idx = page_idx / PAGES_IN_BLOCK;
+            let bit_idx = page_idx % PAGES_IN_BLOCK;
+            res[block_idx] |= 1 << bit_idx;
+        }
+
+        Ok(res)
     }
 
     #[cfg(crashdump)]
