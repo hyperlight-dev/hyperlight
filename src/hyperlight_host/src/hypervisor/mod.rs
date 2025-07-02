@@ -80,6 +80,7 @@ cfg_if::cfg_if! {
         pub(crate) const CR4_PAE: u64 = 1 << 5;
         pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
         pub(crate) const CR4_OSXMMEXCPT: u64 = 1 << 10;
+        pub(crate) const CR4_OSXSAVE: u64 = 1 << 18;
         pub(crate) const CR0_PE: u64 = 1;
         pub(crate) const CR0_MP: u64 = 1 << 1;
         pub(crate) const CR0_ET: u64 = 1 << 4;
@@ -91,6 +92,11 @@ cfg_if::cfg_if! {
         pub(crate) const EFER_LMA: u64 = 1 << 10;
         pub(crate) const EFER_SCE: u64 = 1;
         pub(crate) const EFER_NX: u64 = 1 << 11;
+
+        // XCR0 (Extended Control Register 0) bits for XSAVE features
+        pub(crate) const XCR0_X87: u64 = 1 << 0;      // x87 FPU state
+        pub(crate) const XCR0_SSE: u64 = 1 << 1;      // SSE state (XMM registers)
+        pub(crate) const XCR0_AVX: u64 = 1 << 2;      // AVX state (YMM registers)
     }
 }
 

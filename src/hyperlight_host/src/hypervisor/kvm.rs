@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use kvm_bindings::{KVM_MEM_READONLY, kvm_fpu, kvm_regs, kvm_userspace_memory_region};
+use kvm_bindings::{KVM_MEM_READONLY, kvm_fpu, kvm_regs, kvm_userspace_memory_region, kvm_xcrs};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::LevelFilter;
@@ -37,8 +37,8 @@ use super::handlers::DbgMemAccessHandlerWrapper;
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 #[cfg(feature = "init-paging")]
 use super::{
-    CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
-    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
+    CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT,
+    CR4_OSXSAVE, CR4_PAE, EFER_LMA, EFER_LME, EFER_NX, EFER_SCE, XCR0_AVX, XCR0_SSE, XCR0_X87,
 };
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
@@ -336,6 +336,7 @@ impl KVMDriver {
         })?;
 
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
+        Self::setup_cpuid(&kvm, &mut vcpu_fd)?;
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
 
         #[cfg(gdb)]
@@ -409,7 +410,7 @@ impl KVMDriver {
         cfg_if::cfg_if! {
             if #[cfg(feature = "init-paging")] {
                 sregs.cr3 = _pml4_addr;
-                sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT;
+                sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_OSXSAVE;
                 sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP;
                 sregs.efer = EFER_LME | EFER_LMA | EFER_SCE | EFER_NX;
                 sregs.cs.l = 1; // required for 64-bit mode
@@ -419,6 +420,120 @@ impl KVMDriver {
             }
         }
         vcpu_fd.set_sregs(&sregs)?;
+
+        // Setup XCR0 (Extended Control Register 0) to enable SIMD features
+        // This is required for AVX and other SIMD instruction support
+        // Only set XCR0 if the init-paging feature is enabled
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "init-paging")] {
+                // Create a properly initialized kvm_xcrs structure
+                let mut xcrs: kvm_xcrs = unsafe { std::mem::zeroed() };
+
+                // Set XCR0 to enable x87 FPU (required), SSE, and AVX
+                // XCR0 bit 0 (x87) must always be set for any XSAVE features
+                xcrs.xcrs[0].xcr = 0;  // XCR0 register number
+                xcrs.xcrs[0].value = XCR0_X87 | XCR0_SSE | XCR0_AVX;
+                xcrs.nr_xcrs = 1;
+
+                println!("Setting XCRs: XCR0={:#x}, nr_xcrs={}", xcrs.xcrs[0].value, xcrs.nr_xcrs);
+
+                match vcpu_fd.set_xcrs(&xcrs) {
+                    Ok(_) => {
+                        println!("Successfully set XCR0 to enable SIMD features: {:#x}", xcrs.xcrs[0].value);
+                    },
+                    Err(e) => {
+                        println!("Failed to set XCRs (XCR0) for SIMD support: {:?}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Setup the CPUID for the vCPU to enable SIMD features.
+    /// This is done by just mirroring the host's CPUID in the guest.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    fn setup_cpuid(kvm: &Kvm, vcpu_fd: &mut VcpuFd) -> Result<()> {
+        // Get the supported CPUID from the host machine
+        let cpuid = kvm.get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)?;
+
+        let entries = cpuid.as_slice();
+
+        // https://en.wikipedia.org/wiki/CPUID
+        // sse: EAX=1, EDX bit 25
+        if !entries
+            .get(1)
+            .map(|entry| entry.edx & (1 << 25) != 0)
+            .unwrap_or(false)
+        {
+            return Err(new_error!("SSE support not detected on the host machine"));
+        }
+        // sse2 is EAX=1, EDX bit 26
+        if !entries
+            .get(1)
+            .map(|entry| entry.edx & (1 << 26) != 0)
+            .unwrap_or(false)
+        {
+            return Err(new_error!("SSE2 support not detected on the host machine"));
+        }
+        // sse3 is EAX=1, ECX bit 0
+        if !entries
+            .get(1)
+            .map(|entry| entry.ecx & (1 << 0) != 0)
+            .unwrap_or(false)
+        {
+            return Err(new_error!("SSE3 support not detected on the host machine"));
+        }
+        // ssse3 is EAX=1, ECX bit 9
+        if !entries
+            .get(1)
+            .map(|entry| entry.ecx & (1 << 9) != 0)
+            .unwrap_or(false)
+        {
+            return Err(new_error!("SSSE3 support not detected on the host machine"));
+        }
+        // sse4.1 is EAX=1, ECX bit 19
+        if !entries
+            .get(1)
+            .map(|entry| entry.ecx & (1 << 19) != 0)
+            .unwrap_or(false)
+        {
+            return Err(new_error!(
+                "SSE4.1 support not detected on the host machine"
+            ));
+        }
+        // sse4.2 is EAX=1, ECX bit 20
+        if !entries
+            .get(1)
+            .map(|entry| entry.ecx & (1 << 20) != 0)
+            .unwrap_or(false)
+        {
+            return Err(new_error!(
+                "SSE4.2 support not detected on the host machine"
+            ));
+        }
+        // avx is EAX=1, ECX bit 28
+        if !entries
+            .get(1)
+            .map(|entry| entry.ecx & (1 << 28) != 0)
+            .unwrap_or(false)
+        {
+            return Err(new_error!("AVX support not detected on the host machine"));
+        }
+        // avx2 is EAX=7, EBX bit 5
+        if !entries
+            .get(7)
+            .map(|entry| entry.ebx & (1 << 5) != 0)
+            .unwrap_or(false)
+        {
+            return Err(new_error!("AVX2 support not detected on the host machine"));
+        }
+
+        // Set the CPUID for the guest's vCPU to be the same as the host's
+        vcpu_fd.set_cpuid2(&cpuid)?;
+        println!("CPUID set successfully for SIMD support");
+
         Ok(())
     }
 }

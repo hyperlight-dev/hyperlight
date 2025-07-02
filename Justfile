@@ -13,6 +13,7 @@ simpleguest_source := "src/tests/rust_guests/simpleguest/target/x86_64-unknown-n
 dummyguest_source := "src/tests/rust_guests/dummyguest/target/x86_64-unknown-none"
 callbackguest_source := "src/tests/rust_guests/callbackguest/target/x86_64-unknown-none"
 witguest_source := "src/tests/rust_guests/witguest/target/x86_64-unknown-none"
+simdguest_source := "src/tests/rust_guests/simdguest/target/x86_64-unknown-none"
 rust_guests_bin_dir := "src/tests/rust_guests/bin"
 
 ################
@@ -43,12 +44,14 @@ build-rust-guests target=default-target: (witguest-wit)
     cd src/tests/rust_guests/simpleguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }} 
     cd src/tests/rust_guests/dummyguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }} 
     cd src/tests/rust_guests/witguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
+    cd src/tests/rust_guests/simdguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
 
 @move-rust-guests target=default-target:
     cp {{ callbackguest_source }}/{{ target }}/callbackguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ simpleguest_source }}/{{ target }}/simpleguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ dummyguest_source }}/{{ target }}/dummyguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ witguest_source }}/{{ target }}/witguest* {{ rust_guests_bin_dir }}/{{ target }}/
+    cp {{ simdguest_source }}/{{ target }}/simdguest* {{ rust_guests_bin_dir }}/{{ target }}/
 
 build-and-move-rust-guests: (build-rust-guests "debug") (move-rust-guests "debug") (build-rust-guests "release") (move-rust-guests "release")
 build-and-move-c-guests: (build-c-guests "debug") (move-c-guests "debug") (build-c-guests "release") (move-c-guests "release")
@@ -61,6 +64,7 @@ clean-rust:
     cd src/tests/rust_guests/dummyguest && cargo clean
     cd src/tests/rust_guests/callbackguest && cargo clean
     cd src/tests/rust_guests/witguest && cargo clean
+    cd src/tests/rust_guests/simdguest && cargo clean
     cd src/tests/rust_guests/witguest && rm -f interface.wasm
     git clean -fdx src/tests/c_guests/bin src/tests/rust_guests/bin
 
@@ -149,6 +153,7 @@ fmt-check:
     cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml -- --check
+    cargo +nightly fmt --manifest-path src/tests/rust_guests/simdguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml -- --check
 
 check-license-headers:
@@ -160,6 +165,7 @@ fmt-apply:
     cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml
+    cargo +nightly fmt --manifest-path src/tests/rust_guests/simdguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
 clippy target=default-target: (witguest-wit)
@@ -169,6 +175,7 @@ clippy-guests target=default-target: (witguest-wit)
     cd src/tests/rust_guests/simpleguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
     cd src/tests/rust_guests/callbackguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
     cd src/tests/rust_guests/witguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    cd src/tests/rust_guests/simdguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
 clippy-apply-fix-unix:
     cargo clippy --fix --all 
