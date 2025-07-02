@@ -187,6 +187,11 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         None
     }
 
+    /// Get dirty pages as a bitmap (Vec<u64>).
+    /// Each bit in a u64 represents a page.
+    /// This also clears the bitflags, marking the pages as non-dirty.
+    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>>;
+
     /// Get InterruptHandle to underlying VM
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
 
@@ -548,12 +553,14 @@ pub(crate) mod tests {
         let rt_cfg: SandboxRuntimeConfig = Default::default();
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
+        let tracker = sandbox.tracker;
         let (_hshm, mut gshm) = sandbox.mgr.build();
         let mut vm = set_up_hypervisor_partition(
             &mut gshm,
             &config,
             #[cfg(any(crashdump, gdb))]
             &rt_cfg,
+            tracker,
         )?;
         vm.initialise(
             RawPtr::from(0x230000),
