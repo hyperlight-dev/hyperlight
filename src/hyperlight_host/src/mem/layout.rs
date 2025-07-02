@@ -246,7 +246,7 @@ impl SandboxMemoryLayout {
     pub(crate) const BASE_ADDRESS: usize = 0x0;
 
     // the offset into a sandbox's input/output buffer where the stack starts
-    const STACK_POINTER_SIZE_BYTES: u64 = 8;
+    pub(crate) const STACK_POINTER_SIZE_BYTES: u64 = 8;
 
     /// Create a new `SandboxMemoryLayout` with the given
     /// `SandboxConfiguration`, code size and stack/heap size.
@@ -397,7 +397,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset in guest memory to the output data pointer.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_output_data_pointer_offset(&self) -> usize {
+    pub(super) fn get_output_data_pointer_offset(&self) -> usize {
         // This field is immediately after the output data size field,
         // which is a `u64`.
         self.get_output_data_size_offset() + size_of::<u64>()
@@ -429,7 +429,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset in guest memory to the input data pointer.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_input_data_pointer_offset(&self) -> usize {
+    pub(super) fn get_input_data_pointer_offset(&self) -> usize {
         // The input data pointer is immediately after the input
         // data size field in the input data `GuestMemoryRegion` struct which is a `u64`.
         self.get_input_data_size_offset() + size_of::<u64>()
