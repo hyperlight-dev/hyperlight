@@ -28,6 +28,7 @@ use super::uninitialized::SandboxRuntimeConfig;
 use crate::HyperlightError::NoHypervisorFound;
 use crate::hypervisor::Hypervisor;
 use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
+use crate::mem::dirty_page_tracking::DirtyPageTracker;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -73,11 +74,13 @@ where
     ) -> Result<ResSandbox>,
 {
     let (hshm, mut gshm) = u_sbox.mgr.build();
+
     let mut vm = set_up_hypervisor_partition(
         &mut gshm,
         &u_sbox.config,
         #[cfg(any(crashdump, gdb))]
         &u_sbox.rt_cfg,
+        u_sbox.tracker,
     )?;
     let outb_hdl = outb_handler_wrapper(hshm.clone(), u_sbox.host_funcs.clone());
 
@@ -129,9 +132,12 @@ where
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
     evolve_impl(
         u_sbox,
-        |hf, mut hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
+        |hf, mut hshm, mut vm, out_hdl, mem_hdl, dispatch_ptr| {
             {
-                hshm.as_mut().push_state()?;
+                let vm_dirty_pages = vm.get_and_clear_dirty_pages()?;
+                let layout = hshm.unwrap_mgr().layout;
+                hshm.as_mut()
+                    .create_initial_snapshot(Some(&vm_dirty_pages), &layout)?;
             }
             Ok(MultiUseSandbox::from_uninit(
                 hf,
@@ -151,6 +157,7 @@ pub(crate) fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
+    tracker: Option<DirtyPageTracker>,
 ) -> Result<Box<dyn Hypervisor>> {
     #[cfg(feature = "init-paging")]
     let rsp_ptr = {
@@ -163,6 +170,10 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(not(feature = "init-paging"))]
     let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
     let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
+
+    let tracker = tracker.ok_or_else(|| new_error!("No Dirty page tracker found"))?;
+    mgr.shared_mem
+        .with_exclusivity(|e| e.stop_tracking_dirty_pages(tracker))??;
     let base_ptr = GuestPtr::try_from(Offset::from(0))?;
     let pml4_ptr = {
         let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
