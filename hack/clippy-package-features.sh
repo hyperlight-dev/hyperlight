@@ -15,20 +15,26 @@ TARGET="$2"
 # Convert target for cargo profile
 PROFILE=$([ "$TARGET" = "debug" ] && echo "dev" || echo "$TARGET")
 
-# Required features for compilation (only for hyperlight-host)
+# Required features needed so the rust packages can compile
 if [[ "$PACKAGE" == "hyperlight-host" ]]; then
     REQUIRED_FEATURES="kvm,mshv3"
-    # Get all features for the package (excluding default and required features)
-    features=$(cargo metadata --format-version 1 --no-deps | jq -r ".packages[] | select(.name == \"$PACKAGE\") | .features | keys[]" | grep -v -E "^(default|kvm|mshv3)$" || true)
 elif [[ "$PACKAGE" == "hyperlight-guest-bin" ]]; then
     REQUIRED_FEATURES="printf"
-    # Get all features for the package (excluding default and required features)
-    features=$(cargo metadata --format-version 1 --no-deps | jq -r ".packages[] | select(.name == \"$PACKAGE\") | .features | keys[]" | grep -v -E "^(default|printf)$" || true)
 else 
     REQUIRED_FEATURES=""
-    # Get all features for the package (excluding default)
-    features=$(cargo metadata --format-version 1 --no-deps | jq -r ".packages[] | select(.name == \"$PACKAGE\") | .features | keys[]" | grep -v "^default$" || true)
 fi
+
+# Build grep exclusion pattern
+if [[ -n "$REQUIRED_FEATURES" ]]; then
+    # Convert comma-separated features to grep pattern: "kvm,mshv3" -> "^(default|kvm|mshv3)$"
+    required_pattern=$(echo "$REQUIRED_FEATURES" | sed 's/,/|/g')
+    grep_pattern="^(default|${required_pattern})$"
+else
+    grep_pattern="^default$"
+fi
+
+# Get all features for the package (excluding default and required features)
+features=$(cargo metadata --format-version 1 --no-deps | jq -r --arg pkg "$PACKAGE" '.packages[] | select(.name == $pkg) | .features | keys[]' | grep -v -E "$grep_pattern" || true)
 
 # Test with minimal features
 if [[ -n "$REQUIRED_FEATURES" ]]; then
