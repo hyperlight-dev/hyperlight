@@ -25,15 +25,9 @@ use hyperlight_common::mem::HyperlightPEB;
 ///
 /// Guests are expected to initialize this and store it. For example, you
 /// could store it in a global variable.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct GuestHandle {
     peb: Option<*mut HyperlightPEB>,
-}
-
-impl Default for GuestHandle {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl GuestHandle {
