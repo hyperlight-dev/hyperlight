@@ -93,6 +93,7 @@ impl FunctionRegistry {
     /// Return `Ok` if the function was found and was of the right signature,
     /// and `Err` otherwise.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    #[allow(dead_code)]
     pub(super) fn host_print(&mut self, msg: String) -> Result<i32> {
         let res = self.call_host_func_impl("HostPrint", vec![ParameterValue::String(msg)])?;
         res.try_into()

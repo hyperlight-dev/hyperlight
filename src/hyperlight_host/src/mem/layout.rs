@@ -381,6 +381,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset in guest memory to the OutB pointer.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(super) fn get_outb_pointer_offset(&self) -> usize {
         // The outb pointer is immediately after the code pointer
         // in the `CodeAndOutBPointers` struct which is a u64
@@ -389,6 +390,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset in guest memory to the OutB context.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(super) fn get_outb_context_offset(&self) -> usize {
         // The outb context is immediately after the outb pointer
         // in the `CodeAndOutBPointers` struct which is a u64
@@ -416,6 +418,7 @@ impl SandboxMemoryLayout {
     /// This function exists to accommodate the macro that generates C API
     /// compatible functions.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(crate) fn get_output_data_offset(&self) -> usize {
         self.output_data_buffer_offset
     }
@@ -452,6 +455,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset in guest memory to the PEB address
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(super) fn get_in_process_peb_offset(&self) -> usize {
         self.peb_offset
     }
@@ -486,6 +490,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset to the guest guard page
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub fn get_guard_page_offset(&self) -> usize {
         self.guard_page_offset
     }
