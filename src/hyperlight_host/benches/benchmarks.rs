@@ -17,34 +17,26 @@ limitations under the License.
 // Benchmarks are only meaningful and should only run with optimized builds.
 // Unoptimized builds have different performance characteristics and would not provide
 // useful benchmarking data for performance regression testing.
+#![cfg(optimized_build)]
 
-#[cfg(optimized_build)]
 use criterion::{Criterion, criterion_group, criterion_main};
-#[cfg(optimized_build)]
 use hyperlight_host::GuestBinary;
-#[cfg(optimized_build)]
 use hyperlight_host::sandbox::{
     Callable, MultiUseSandbox, SandboxConfiguration, UninitializedSandbox,
 };
-#[cfg(optimized_build)]
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
-#[cfg(optimized_build)]
 use hyperlight_host::sandbox_state::transition::Noop;
-#[cfg(optimized_build)]
 use hyperlight_testing::simple_guest_as_string;
 
-#[cfg(optimized_build)]
 fn create_uninit_sandbox() -> UninitializedSandbox {
     let path = simple_guest_as_string().unwrap();
     UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap()
 }
 
-#[cfg(optimized_build)]
 fn create_multiuse_sandbox() -> MultiUseSandbox {
     create_uninit_sandbox().evolve(Noop::default()).unwrap()
 }
 
-#[cfg(optimized_build)]
 fn guest_call_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("guest_functions");
 
@@ -92,7 +84,6 @@ fn guest_call_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(optimized_build)]
 fn guest_call_benchmark_large_param(c: &mut Criterion) {
     let mut group = c.benchmark_group("guest_functions_with_large_parameters");
     #[cfg(target_os = "windows")]
@@ -128,7 +119,6 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(optimized_build)]
 fn sandbox_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sandboxes");
 
@@ -168,19 +158,10 @@ fn sandbox_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(optimized_build)]
 criterion_group! {
     name = benches;
     config = Criterion::default();
     targets = guest_call_benchmark, sandbox_benchmark, guest_call_benchmark_large_param
 }
 
-#[cfg(optimized_build)]
 criterion_main!(benches);
-
-// For unoptimized builds, provide a minimal main function that explains benchmarks are not available
-#[cfg(unoptimized_build)]
-fn main() {
-    eprintln!("Benchmarks are only available in optimized builds. Use `cargo bench --release` or `just bench`.");
-    std::process::exit(1);
-}
