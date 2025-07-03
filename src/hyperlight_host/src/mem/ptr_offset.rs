@@ -32,11 +32,13 @@ pub(crate) struct Offset(u64);
 impl Offset {
     /// Get the offset representing `0`
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(super) fn zero() -> Self {
         Self::default()
     }
 
     /// round up to the nearest multiple of `alignment`
+    #[allow(dead_code)]
     pub(super) fn round_up_to(self, alignment: u64) -> Self {
         let remainder = self.0 % alignment;
         let multiples = self.0 / alignment;

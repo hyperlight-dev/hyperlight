@@ -285,6 +285,7 @@ where
     /// `shared_mem` to indicate the address of the outb pointer and context
     /// for calling outb function
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(crate) fn set_outb_address_and_context(&mut self, addr: u64, context: u64) -> Result<()> {
         let pointer_offset = self.layout.get_outb_pointer_offset();
         let context_offset = self.layout.get_outb_context_offset();

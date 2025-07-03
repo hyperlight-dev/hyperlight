@@ -44,7 +44,7 @@ impl SharedMemorySnapshot {
     /// Take another snapshot of the internally-stored `SharedMemory`,
     /// then store it internally.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-
+    #[allow(dead_code)]
     pub(super) fn replace_snapshot<S: SharedMemory>(&mut self, shared_mem: &mut S) -> Result<()> {
         self.snapshot = shared_mem.with_exclusivity(|e| e.copy_all_to_vec())??;
         Ok(())
