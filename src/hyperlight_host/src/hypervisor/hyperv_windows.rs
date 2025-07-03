@@ -501,13 +501,13 @@ impl Hypervisor for HypervWindowsDriver {
 pub mod tests {
     use std::sync::{Arc, Mutex};
 
+    use hyperlight_testing::dummy_guest_as_string;
     use serial_test::serial;
 
     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
     use crate::hypervisor::tests::test_initialise;
     use crate::sandbox::uninitialized::{GuestBinary, UninitializedSandbox};
     use crate::Result;
-    use hyperlight_testing::dummy_guest_as_string;
 
     #[test]
     #[serial]
@@ -517,10 +517,8 @@ pub mod tests {
         let (hshm, gshm) = sandbox.mgr.build();
         drop(gshm);
         let host_funcs = sandbox.host_funcs.clone();
-        
-        let outb_handler = {
-            crate::sandbox::outb::outb_handler_wrapper(hshm.clone(), host_funcs)
-        };
+
+        let outb_handler = { crate::sandbox::outb::outb_handler_wrapper(hshm.clone(), host_funcs) };
         let mem_access_handler = {
             let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
             Arc::new(Mutex::new(MemAccessHandler::from(func)))

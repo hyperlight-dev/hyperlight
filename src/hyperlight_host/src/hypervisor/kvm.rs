@@ -637,13 +637,14 @@ impl Hypervisor for KVMDriver {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use hyperlight_testing::dummy_guest_as_string;
+
     #[cfg(gdb)]
     use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
     use crate::hypervisor::handlers::{MemAccessHandler, OutBHandler};
     use crate::hypervisor::tests::test_initialise;
     use crate::sandbox::uninitialized::{GuestBinary, UninitializedSandbox};
     use crate::Result;
-    use hyperlight_testing::dummy_guest_as_string;
 
     #[cfg(gdb)]
     struct DbgMemAccessHandler {}
@@ -674,10 +675,9 @@ mod tests {
         let (hshm, gshm) = sandbox.mgr.build();
         drop(gshm);
         let host_funcs = sandbox.host_funcs.clone();
-        
-        let outb_handler: Arc<Mutex<OutBHandler>> = {
-            crate::sandbox::outb::outb_handler_wrapper(hshm.clone(), host_funcs)
-        };
+
+        let outb_handler: Arc<Mutex<OutBHandler>> =
+            { crate::sandbox::outb::outb_handler_wrapper(hshm.clone(), host_funcs) };
         let mem_access_handler = {
             let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
             Arc::new(Mutex::new(MemAccessHandler::from(func)))
