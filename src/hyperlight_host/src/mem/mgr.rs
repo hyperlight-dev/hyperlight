@@ -265,10 +265,33 @@ where
         }
     }
 
+    pub(crate) fn snapshot(&mut self) -> Result<SharedMemorySnapshot> {
+        SharedMemorySnapshot::new(&mut self.shared_mem, self.mapped_rgns)
+    }
+
+    
+    /// This function restores a memory snapshot the given snapshot.
+    ///
+    /// Returns the number of memory regions mapped into the sandbox
+    /// that need to be unmapped in order for the restore to be
+    /// completed.
+    pub(crate) fn restore_snapshot(&mut self, snapshot: &SharedMemorySnapshot) -> Result<u64> {
+        if self.shared_mem.mem_size() != snapshot.mem_size() {
+            return Err(new_error!(
+                "Snapshot size does not match current memory size: {} != {}",
+                self.shared_mem.raw_mem_size(),
+                snapshot.mem_size()
+            ));
+        }
+        let old_rgns = self.mapped_rgns;
+        self.mapped_rgns = snapshot.restore_from_snapshot(&mut self.shared_mem)?;
+        Ok(old_rgns - self.mapped_rgns)
+    }
+
     /// this function will create a memory snapshot and push it onto the stack of snapshots
     /// It should be used when you want to save the state of the memory, for example, when evolving a sandbox to a new state
     pub(crate) fn push_state(&mut self) -> Result<()> {
-        let snapshot = SharedMemorySnapshot::new(&mut self.shared_mem, self.mapped_rgns)?;
+        let snapshot = self.snapshot()?;
         self.snapshots
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
@@ -285,16 +308,14 @@ where
     /// that need to be unmapped in order for the restore to be
     /// completed.
     pub(crate) fn restore_state_from_last_snapshot(&mut self) -> Result<u64> {
-        let mut snapshots = self
+        let snapshots = self
             .snapshots
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        let last = snapshots.last_mut();
-        if last.is_none() {
+        let last = snapshots.last();
+        let Some(snapshot) = last else {
             log_then_return!(NoMemorySnapshot);
-        }
-        #[allow(clippy::unwrap_used)] // We know that last is not None because we checked it above
-        let snapshot = last.unwrap();
+        };
         let old_rgns = self.mapped_rgns;
         self.mapped_rgns = snapshot.restore_from_snapshot(&mut self.shared_mem)?;
         Ok(old_rgns - self.mapped_rgns)

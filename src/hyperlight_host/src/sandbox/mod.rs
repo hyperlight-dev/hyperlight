@@ -37,6 +37,9 @@ pub mod uninitialized;
 /// initialized `Sandbox`es.
 pub(crate) mod uninitialized_evolve;
 
+/// Representation of a snapshot of a `Sandbox`.
+pub mod snapshot;
+
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 mod callable;
 
