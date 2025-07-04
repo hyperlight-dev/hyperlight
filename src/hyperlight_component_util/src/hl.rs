@@ -223,6 +223,20 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
                 (#retid, cursor)
             }
         }
+        Value::FixList(vt, _size) => {
+            let inid = format_ident!("{}_elem", id);
+            let vtun = emit_hl_unmarshal_value(s, inid.clone(), vt);
+            quote! {
+                let mut cursor = 0;
+                let arr = ::core::array::from_fn(|_i| {
+                    let #inid = &#id[cursor..];
+                    let (x, b) = { #vtun };
+                    cursor += b;
+                    x
+                });
+                (arr, cursor)
+            }
+        }
         Value::Record(_) => panic!("record not at top level of valtype"),
         Value::Tuple(vts) => {
             let inid = format_ident!("{}_elem", id);
@@ -515,6 +529,25 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
                 #retid
             }
         }
+        Value::FixList(vt, _size) => {
+            // Optimize for byte arrays ie. [u8; N]
+            if matches!(vt.as_ref(), Value::S(_) | Value::U(_) | Value::F(_)) {
+                quote! {
+                    alloc::vec::Vec::from(#id.as_slice())
+                }
+            } else {
+                let retid = format_ident!("{}_fixlist", id);
+                let inid = format_ident!("{}_elem", id);
+                let vtun = emit_hl_marshal_value(s, inid.clone(), vt);
+                quote! {
+                    let mut #retid = alloc::vec::Vec::new();
+                    for #inid in #id {
+                        #retid.extend({ #vtun })
+                    }
+                    #retid
+                }
+            }
+        }
         Value::Record(_) => panic!("record not at top level of valtype"),
         Value::Tuple(vts) => {
             let retid = format_ident!("{}_tuple", id);
@@ -653,14 +686,13 @@ pub fn emit_hl_unmarshal_param(s: &mut State, id: Ident, pt: &Value) -> TokenStr
 ///
 /// Precondition: the result type must only be a named result if there
 /// are no names in it (i.e. a unit type)
-pub fn emit_hl_unmarshal_result(s: &mut State, id: Ident, rt: &etypes::Result) -> TokenStream {
+pub fn emit_hl_unmarshal_result(s: &mut State, id: Ident, rt: &etypes::Result<'_>) -> TokenStream {
     match rt {
-        etypes::Result::Named(rs) if rs.is_empty() => quote! { () },
-        etypes::Result::Unnamed(vt) => {
+        Some(vt) => {
             let toks = emit_hl_unmarshal_value(s, id, vt);
             quote! { { #toks }.0 }
         }
-        _ => panic!("named results not supported"),
+        None => quote! { () },
     }
 }
 
@@ -680,11 +712,10 @@ pub fn emit_hl_marshal_param(s: &mut State, id: Ident, pt: &Value) -> TokenStrea
 /// are no names in it (a unit type)
 pub fn emit_hl_marshal_result(s: &mut State, id: Ident, rt: &etypes::Result) -> TokenStream {
     match rt {
-        etypes::Result::Named(rs) if rs.is_empty() => quote! { ::alloc::vec::Vec::new() },
-        etypes::Result::Unnamed(vt) => {
+        None => quote! { ::alloc::vec::Vec::new() },
+        Some(vt) => {
             let toks = emit_hl_marshal_value(s, id, vt);
             quote! { { #toks } }
         }
-        _ => panic!("named results not supported"),
     }
 }

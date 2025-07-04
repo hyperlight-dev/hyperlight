@@ -21,6 +21,8 @@ extern crate alloc;
 extern crate hyperlight_guest;
 
 mod bindings;
+use alloc::string::String;
+
 use bindings::*;
 
 struct Guest {}
@@ -112,6 +114,12 @@ impl test::wit::Roundtrip for Guest {
         x: test::wit::roundtrip::Testenum,
     ) -> test::wit::roundtrip::Testenum {
         (Host {}).roundtrip_enum(x)
+    }
+    fn roundtrip_fix_list(&mut self, x: [u8; 4]) -> [u8; 4] {
+        (Host {}).roundtrip_fix_list(x)
+    }
+    fn roundtrip_fix_list_string(&mut self, x: [String; 4]) -> [String; 4] {
+        (Host {}).roundtrip_fix_list_string(x)
     }
     fn roundtrip_no_result(&mut self, x: u32) {
         (Host {}).roundtrip_no_result(x)
