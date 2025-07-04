@@ -176,6 +176,19 @@ clippy-apply-fix-unix:
 clippy-apply-fix-windows:
     cargo clippy --target x86_64-pc-windows-msvc --fix --all 
 
+# Run clippy with feature combinations for all packages
+clippy-exhaustive target=default-target: (witguest-wit)
+    ./hack/clippy-package-features.sh hyperlight-host {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-guest {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-guest-bin {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-common {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-testing {{ target }}
+    just clippy-guests {{ target }}
+
+# Test a specific package with all feature combinations
+clippy-package package target=default-target: (witguest-wit)
+    ./hack/clippy-package-features.sh {{ package }} {{ target }}
+
 # Verify Minimum Supported Rust Version
 verify-msrv:
     ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-lib hyperlight-common
