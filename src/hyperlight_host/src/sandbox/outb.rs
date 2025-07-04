@@ -241,7 +241,7 @@ mod tests {
 
         let new_mgr = || {
             let mut exe_info = simple_guest_exe_info().unwrap();
-            let mut mgr = SandboxMemoryManager::load_guest_binary_into_memory(
+            let (mut mgr, _) = SandboxMemoryManager::load_guest_binary_into_memory(
                 sandbox_cfg,
                 &mut exe_info,
                 None,
@@ -356,7 +356,7 @@ mod tests {
         tracing::subscriber::with_default(subscriber.clone(), || {
             let new_mgr = || {
                 let mut exe_info = simple_guest_exe_info().unwrap();
-                let mut mgr = SandboxMemoryManager::load_guest_binary_into_memory(
+                let (mut mgr, _) = SandboxMemoryManager::load_guest_binary_into_memory(
                     sandbox_cfg,
                     &mut exe_info,
                     None,

@@ -24,6 +24,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use hyperlight_common::mem::{PAGE_SIZE_USIZE, PAGES_IN_BLOCK};
 use tracing::{Span, instrument};
 
 use super::exe::ExeInfo;
@@ -33,8 +34,9 @@ use super::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryReg
 use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
-use super::shared_mem_snapshot::SharedMemorySnapshot;
-use crate::HyperlightError::NoMemorySnapshot;
+use super::shared_memory_snapshot_manager::SharedMemorySnapshotManager;
+use crate::mem::bitmap::{bitmap_union, new_page_bitmap};
+use crate::mem::dirty_page_tracking::DirtyPageTracker;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::GuestBlob;
 use crate::{Result, log_then_return, new_error};
@@ -73,9 +75,8 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) load_addr: RawPtr,
     /// Offset for the execution entrypoint from `load_addr`
     pub(crate) entrypoint_offset: Offset,
-    /// A vector of memory snapshots that can be used to save and  restore the state of the memory
-    /// This is used by the Rust Sandbox implementation (rather than the mem_snapshot field above which only exists to support current C API)
-    snapshots: Arc<Mutex<Vec<SharedMemorySnapshot>>>,
+    /// Shared memory snapshots that can be used to save and  restore the state of the memory
+    snapshot_manager: Arc<Mutex<Option<SharedMemorySnapshotManager>>>,
 }
 
 impl<S> SandboxMemoryManager<S>
@@ -95,7 +96,7 @@ where
             shared_mem,
             load_addr,
             entrypoint_offset,
-            snapshots: Arc::new(Mutex::new(Vec::new())),
+            snapshot_manager: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -262,14 +263,50 @@ where
         }
     }
 
-    /// this function will create a memory snapshot and push it onto the stack of snapshots
-    /// It should be used when you want to save the state of the memory, for example, when evolving a sandbox to a new state
-    pub(crate) fn push_state(&mut self) -> Result<()> {
-        let snapshot = SharedMemorySnapshot::new(&mut self.shared_mem)?;
-        self.snapshots
+    /// this function will create an initial snapshot and then create the SnapshotManager
+    pub(crate) fn create_initial_snapshot(
+        &mut self,
+        dirty_bitmap: Option<&Vec<u64>>,
+        layout: &SandboxMemoryLayout,
+    ) -> Result<()> {
+        let mut existing_snapshot_manager = self
+            .snapshot_manager
             .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .push(snapshot);
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        if existing_snapshot_manager.is_some() {
+            log_then_return!("Snapshot manager already initialized, not creating a new one");
+        }
+        let merged_page_map = if let Some(host_dirty_page_map) = self
+            .shared_mem
+            .with_exclusivity(|e| e.get_and_clear_host_dirty_page_map())??
+        {
+            // covert vec of page indices to vec of blocks
+            // memory size is the size of the shared memory minus the 2 guard pages
+            let mut res = new_page_bitmap(self.shared_mem.mem_size() - 2 * PAGE_SIZE_USIZE, false)?;
+            for page_idx in host_dirty_page_map {
+                let block_idx = page_idx / PAGES_IN_BLOCK;
+                let bit_idx = page_idx % PAGES_IN_BLOCK;
+                res[block_idx] |= 1 << bit_idx;
+            }
+
+            // merge the host dirty page map into the dirty bitmap
+            let len = res.len();
+            let merged = bitmap_union(&res, dirty_bitmap.unwrap_or(&vec![0; len]));
+            Some(merged)
+        } else {
+            None
+        };
+
+        let dirty_page_map = if let Some(ref dirty_page_map) = merged_page_map {
+            Some(dirty_page_map)
+        } else {
+            dirty_bitmap
+        };
+
+        let snapshot_manager =
+            SharedMemorySnapshotManager::new(&mut self.shared_mem, dirty_page_map, layout)?;
+        existing_snapshot_manager.replace(snapshot_manager);
         Ok(())
     }
 
@@ -277,33 +314,57 @@ where
     /// off the stack
     /// It should be used when you want to restore the state of the memory to a previous state but still want to
     /// retain that state, for example after calling a function in the guest
-    pub(crate) fn restore_state_from_last_snapshot(&mut self) -> Result<()> {
-        let mut snapshots = self
-            .snapshots
+    pub(crate) fn restore_state_from_last_snapshot(&mut self, dirty_bitmap: &[u64]) -> Result<()> {
+        let mut snapshot_manager = self
+            .snapshot_manager
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        let last = snapshots.last_mut();
-        if last.is_none() {
-            log_then_return!(NoMemorySnapshot);
+
+        match snapshot_manager.as_mut() {
+            None => {
+                log_then_return!("Snapshot manager not initialized");
+            }
+            Some(snapshot_manager) => {
+                snapshot_manager.restore_from_snapshot(&mut self.shared_mem, dirty_bitmap)
+            }
         }
-        #[allow(clippy::unwrap_used)] // We know that last is not None because we checked it above
-        let snapshot = last.unwrap();
-        snapshot.restore_from_snapshot(&mut self.shared_mem)
     }
 
     /// this function pops the last snapshot off the stack and restores the memory to the previous state
     /// It should be used when you want to restore the state of the memory to a previous state and do not need to retain that state
     /// for example when devolving a sandbox to a previous state.
-    pub(crate) fn pop_and_restore_state_from_snapshot(&mut self) -> Result<()> {
-        let last = self
-            .snapshots
+    pub(crate) fn pop_and_restore_state_from_snapshot(
+        &mut self,
+        dirty_bitmap: &[u64],
+    ) -> Result<()> {
+        let mut snapshot_manager = self
+            .snapshot_manager
             .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .pop();
-        if last.is_none() {
-            log_then_return!(NoMemorySnapshot);
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        match snapshot_manager.as_mut() {
+            None => {
+                log_then_return!("Snapshot manager not initialized");
+            }
+            Some(snapshot_manager) => snapshot_manager
+                .pop_and_restore_state_from_snapshot(&mut self.shared_mem, dirty_bitmap),
         }
-        self.restore_state_from_last_snapshot()
+    }
+
+    pub(crate) fn push_state(&mut self, dirty_bitmap: Option<&Vec<u64>>) -> Result<()> {
+        let mut snapshot_manager = self
+            .snapshot_manager
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        match snapshot_manager.as_mut() {
+            None => {
+                log_then_return!("Snapshot manager not initialized");
+            }
+            Some(snapshot_manager) => {
+                snapshot_manager.create_new_snapshot(&mut self.shared_mem, dirty_bitmap)
+            }
+        }
     }
 
     /// Sets `addr` to the correct offset in the memory referenced by
@@ -338,7 +399,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         cfg: SandboxConfiguration,
         exe_info: &mut ExeInfo,
         guest_blob: Option<&GuestBlob>,
-    ) -> Result<Self> {
+    ) -> Result<(Self, DirtyPageTracker)> {
         let guest_blob_size = guest_blob.map(|b| b.data.len()).unwrap_or(0);
         let guest_blob_mem_flags = guest_blob.map(|b| b.permissions);
 
@@ -351,6 +412,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             guest_blob_mem_flags,
         )?;
         let mut shared_mem = ExclusiveSharedMemory::new(layout.get_memory_size()?)?;
+        let tracker = shared_mem.start_tracking_dirty_pages()?;
 
         let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
 
@@ -369,7 +431,10 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
         )?;
 
-        Ok(Self::new(layout, shared_mem, load_addr, entrypoint_offset))
+        Ok((
+            Self::new(layout, shared_mem, load_addr, entrypoint_offset),
+            tracker,
+        ))
     }
 
     /// Writes host function details to memory
@@ -405,6 +470,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             host_function_call_buffer.as_slice(),
             self.layout.host_function_definitions_buffer_offset,
         )?;
+
         Ok(())
     }
 
@@ -430,14 +496,14 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 layout: self.layout,
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
-                snapshots: Arc::new(Mutex::new(Vec::new())),
+                snapshot_manager: Arc::new(Mutex::new(None)),
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
                 layout: self.layout,
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
-                snapshots: Arc::new(Mutex::new(Vec::new())),
+                snapshot_manager: Arc::new(Mutex::new(None)),
             },
         )
     }

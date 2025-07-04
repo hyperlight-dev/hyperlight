@@ -19,7 +19,7 @@ use std::ffi::c_void;
 use std::io::Error;
 #[cfg(target_os = "linux")]
 use std::ptr::null_mut;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{Span, instrument};
@@ -39,6 +39,7 @@ use windows::core::PCSTR;
 use crate::HyperlightError::MemoryAllocationFailed;
 #[cfg(target_os = "windows")]
 use crate::HyperlightError::{MemoryRequestTooBig, WindowsAPIError};
+use crate::mem::dirty_page_tracking::{DirtyPageTracker, DirtyPageTracking};
 use crate::{Result, log_then_return, new_error};
 
 /// Makes sure that the given `offset` and `size` are within the bounds of the memory with size `mem_size`.
@@ -95,6 +96,7 @@ pub struct HostMapping {
     size: usize,
     #[cfg(target_os = "windows")]
     handle: HANDLE,
+    dirty_pages: Mutex<Option<Vec<usize>>>,
 }
 
 impl Drop for HostMapping {
@@ -383,8 +385,48 @@ impl ExclusiveSharedMemory {
             region: Arc::new(HostMapping {
                 ptr: addr as *mut u8,
                 size: total_size,
+                dirty_pages: None.into(),
             }),
         })
+    }
+
+    /// Starts tracking dirty pages in the shared memory region.
+    pub(super) fn start_tracking_dirty_pages(&self) -> Result<DirtyPageTracker> {
+        DirtyPageTracker::new(self)
+    }
+
+    /// Stop tracking dirty pages in the shared memory region.
+    pub(crate) fn stop_tracking_dirty_pages(&self, tracker: DirtyPageTracker) -> Result<()> {
+        let dirty_pages = tracker.get_dirty_pages();
+        let mut existing_dirty_pages = self
+            .region
+            .dirty_pages
+            .lock()
+            .map_err(|e| new_error!("Failed to lock dirty_pages: {}", e))?;
+
+        match existing_dirty_pages.as_mut() {
+            Some(existing) => {
+                // merge the new dirty pages with the existing ones
+                existing.extend(dirty_pages);
+                existing.sort_unstable();
+                existing.dedup();
+            }
+            None => {
+                *existing_dirty_pages = Some(dirty_pages);
+            }
+        }
+
+        Ok(())
+    }
+
+    // Take the dirty pages
+    pub(super) fn get_and_clear_host_dirty_page_map(&self) -> Result<Option<Vec<usize>>> {
+        Ok(self
+            .region
+            .dirty_pages
+            .lock()
+            .map_err(|e| new_error!("Failed to lock dirty_pages: {}", e))?
+            .take())
     }
 
     /// Create a new region of shared memory with the given minimum
@@ -498,6 +540,7 @@ impl ExclusiveSharedMemory {
                 ptr: addr.Value as *mut u8,
                 size: total_size,
                 handle,
+                dirty_pages: None.into(),
             }),
         })
     }
@@ -613,12 +656,30 @@ impl ExclusiveSharedMemory {
         Ok(())
     }
 
+    /// Copies bytes to slice from self starting at offset
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
+        let data = self.as_slice();
+        bounds_check!(offset, slice.len(), data.len());
+        slice.copy_from_slice(&data[offset..offset + slice.len()]);
+        Ok(())
+    }
+
     /// Return the address of memory at an offset to this `SharedMemory` checking
     /// that the memory is within the bounds of the `SharedMemory`.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn calculate_address(&self, offset: usize) -> Result<usize> {
         bounds_check!(offset, 0, self.mem_size());
         Ok(self.base_addr() + offset)
+    }
+
+    /// Fill the memory in the range `[offset, offset + len)` with `value`
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub fn zero_fill(&mut self, offset: usize, len: usize) -> Result<()> {
+        bounds_check!(offset, len, self.mem_size());
+        let data = self.as_mut_slice();
+        data[offset..offset + len].fill(0);
+        Ok(())
     }
 
     generate_reader!(read_u8, u8);
@@ -678,6 +739,9 @@ pub trait SharedMemory {
     /// Return a readonly reference to the host mapping backing this SharedMemory
     fn region(&self) -> &HostMapping;
 
+    /// Return an Arc clone of the host mapping backing this SharedMemory
+    fn region_arc(&self) -> Arc<HostMapping>;
+
     /// Return the base address of the host mapping of this
     /// region. Following the general Rust philosophy, this does not
     /// need to be marked as `unsafe` because doing anything with this
@@ -728,6 +792,11 @@ impl SharedMemory for ExclusiveSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
     }
+
+    fn region_arc(&self) -> Arc<HostMapping> {
+        Arc::clone(&self.region)
+    }
+
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
@@ -740,6 +809,11 @@ impl SharedMemory for GuestSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
     }
+
+    fn region_arc(&self) -> Arc<HostMapping> {
+        Arc::clone(&self.region)
+    }
+
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
@@ -982,6 +1056,11 @@ impl SharedMemory for HostSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
     }
+
+    fn region_arc(&self) -> Arc<HostMapping> {
+        Arc::clone(&self.region)
+    }
+
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,

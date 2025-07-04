@@ -180,7 +180,7 @@ fn interrupt_same_thread() {
         }
     });
 
-    for _ in 0..NUM_ITERS {
+    for i in 0..NUM_ITERS {
         barrier.wait();
         sbox1
             .call_guest_function_by_name::<String>("Echo", "hello".to_string())
@@ -190,7 +190,7 @@ fn interrupt_same_thread() {
                 // Only allow successful calls or interrupted.
                 // The call can be successful in case the call is finished before kill() is called.
             }
-            _ => panic!("Unexpected return"),
+            Err(e) => panic!("Unexpected return from sandbox 2: {:?} iteration {}", e, i),
         };
         sbox3
             .call_guest_function_by_name::<String>("Echo", "hello".to_string())
@@ -234,7 +234,7 @@ fn interrupt_same_thread_no_barrier() {
                 // Only allow successful calls or interrupted.
                 // The call can be successful in case the call is finished before kill() is called.
             }
-            _ => panic!("Unexpected return"),
+            Err(e) => panic!("Unexpected return from sandbox 2: {:?}", e),
         };
         sbox3
             .call_guest_function_by_name::<String>("Echo", "hello".to_string())
@@ -784,5 +784,34 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
         sbox1
             .call_guest_function_by_name::<()>("LogMessage", (message.to_string(), level as i32))
             .unwrap();
+    }
+}
+
+#[test]
+// Test to ensure that the state of a sandbox is reset after each function call
+// This uses the simpleguest and calls the "echo" function 1000 times with a 64-character string
+// The fact that we can successfully call the function 1000 times and get consistent
+// results indicates that the sandbox state is being properly reset between calls.
+// If there were state leaks, we would expect to see failures or inconsistent behavior
+// as the calls accumulate, specifically the input buffer would fill up and cause an error
+// if the default size of the input buffer is changed this test should be updated accordingly
+fn sandbox_state_reset_between_calls() {
+    let mut sbox = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+
+    // Create a 64-character test string
+    let test_string = "A".repeat(64);
+
+    // Call the echo function 1000 times
+    for i in 0..1000 {
+        let result = sbox
+            .call_guest_function_by_name::<String>("Echo", test_string.clone())
+            .unwrap();
+
+        // Verify that the echo function returns the same string we sent
+        assert_eq!(
+            result, test_string,
+            "Echo function returned unexpected result on iteration {}: expected '{}', got '{}'",
+            i, test_string, result
+        );
     }
 }
