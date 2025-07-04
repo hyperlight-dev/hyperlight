@@ -28,6 +28,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use tracing::{Span, instrument};
 
 use super::host_funcs::FunctionRegistry;
+use super::snapshot::Snapshot;
 use super::{MemMgrWrapper, WrapperGetter};
 use crate::func::call_ctx::MultiUseGuestCallContext;
 use crate::func::guest_err::check_for_guest_error;
@@ -161,6 +162,23 @@ impl MultiUseSandbox {
     #[instrument(skip_all, parent = Span::current())]
     pub fn new_call_context(self) -> MultiUseGuestCallContext {
         MultiUseGuestCallContext::start(self)
+    }
+
+    /// Create a snapshot of the current state of the sandbox's memory.
+    #[instrument(err(Debug), skip_all, parent = Span::current())]
+    pub fn snapshot(&mut self) -> Result<Snapshot> {
+        let snapshot = self.mem_mgr.unwrap_mgr_mut().snapshot()?;
+        Ok(Snapshot { inner: snapshot })
+    }
+
+    /// Restore the sandbox's memory to the state captured in the given snapshot.
+    #[instrument(err(Debug), skip_all, parent = Span::current())]
+    pub fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
+        let rgns_to_unmap = self.mem_mgr
+            .unwrap_mgr_mut()
+            .restore_snapshot(&snapshot.inner)?;
+        unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
+        Ok(())
     }
 
     /// Call a guest function by name, with the given return type and arguments.

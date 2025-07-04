@@ -22,7 +22,7 @@ use crate::Result;
 /// A wrapper around a `SharedMemory` reference and a snapshot
 /// of the memory therein
 #[derive(Clone)]
-pub(super) struct SharedMemorySnapshot {
+pub(crate) struct SharedMemorySnapshot {
     snapshot: Vec<u8>,
     /// How many non-main-RAM regions were mapped when this snapshot was taken?
     mapped_rgns: u64,
@@ -54,11 +54,17 @@ impl SharedMemorySnapshot {
     /// into the internally-stored `SharedMemory`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn restore_from_snapshot<S: SharedMemory>(
-        &mut self,
+        &self,
         shared_mem: &mut S,
     ) -> Result<u64> {
         shared_mem.with_exclusivity(|e| e.copy_from_slice(self.snapshot.as_slice(), 0))??;
         Ok(self.mapped_rgns)
+    }
+
+    /// Return the size of the snapshot in bytes.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(super) fn mem_size(&self) -> usize {
+        self.snapshot.len()
     }
 }
 
