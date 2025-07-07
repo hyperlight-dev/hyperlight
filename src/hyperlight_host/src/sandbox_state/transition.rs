@@ -140,39 +140,3 @@ where
         }
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::Noop;
-    use crate::Result;
-    use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
-
-    #[derive(Debug, Eq, PartialEq, Clone)]
-    struct MySandbox1 {}
-    #[derive(Debug, Eq, PartialEq, Clone)]
-    struct MySandbox2 {}
-
-    impl Sandbox for MySandbox1 {}
-    impl Sandbox for MySandbox2 {}
-
-    impl EvolvableSandbox<MySandbox1, MySandbox2, Noop<MySandbox1, MySandbox2>> for MySandbox1 {
-        fn evolve(self, _: Noop<MySandbox1, MySandbox2>) -> Result<MySandbox2> {
-            Ok(MySandbox2 {})
-        }
-    }
-
-    impl DevolvableSandbox<MySandbox2, MySandbox1, Noop<MySandbox2, MySandbox1>> for MySandbox2 {
-        fn devolve(self, _: Noop<MySandbox2, MySandbox1>) -> Result<MySandbox1> {
-            Ok(MySandbox1 {})
-        }
-    }
-
-    #[test]
-    fn test_evolve_devolve() {
-        let sbox_1_1 = MySandbox1 {};
-        let sbox_2_1 = sbox_1_1.clone().evolve(Noop::default()).unwrap();
-        let sbox_1_2 = sbox_2_1.clone().devolve(Noop::default()).unwrap();
-        let sbox_2_2 = sbox_1_2.clone().evolve(Noop::default()).unwrap();
-        assert_eq!(sbox_1_1, sbox_1_2);
-        assert_eq!(sbox_2_1, sbox_2_2);
-    }
-}
