@@ -30,9 +30,8 @@ use crate::{Result, new_error};
 /// into a next state. That "next state" may in turn know how to roll back
 /// to the root node.
 ///
-/// These transitions are expressed as `EvolvableSandbox` and
-/// `DevolvableSandbox` implementations any `Sandbox` implementation can
-/// opt into.
+/// These transitions are expressed as `EvolvableSandbox` implementations
+/// any `Sandbox` implementation can opt into.
 pub trait Sandbox: Sized + Debug {
     /// Check to ensure the current stack cookie matches the one that
     /// was selected when the stack was constructed.
@@ -69,12 +68,4 @@ pub trait EvolvableSandbox<Cur: Sandbox, Next: Sandbox, T: TransitionMetadata<Cu
 {
     /// Evolve `Self` to `Next` providing Metadata.
     fn evolve(self, tsn: T) -> Result<Next>;
-}
-
-/// A `Sandbox` that knows how to roll back to a "previous" `Sandbox`
-pub trait DevolvableSandbox<Cur: Sandbox, Prev: Sandbox, T: TransitionMetadata<Cur, Prev>>:
-    Sandbox
-{
-    /// Devolve `Self` to `Prev` providing Metadata.
-    fn devolve(self, tsn: T) -> Result<Prev>;
 }

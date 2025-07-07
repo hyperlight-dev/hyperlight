@@ -43,8 +43,8 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
-use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
-use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
+use crate::sandbox_state::sandbox::{EvolvableSandbox, Sandbox};
+use crate::sandbox_state::transition::MultiUseContextCallback;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// A sandbox that supports being used Multiple times.
@@ -357,27 +357,6 @@ impl std::fmt::Debug for MultiUseSandbox {
         f.debug_struct("MultiUseSandbox")
             .field("stack_guard", &self.mem_mgr.get_stack_cookie())
             .finish()
-    }
-}
-
-impl DevolvableSandbox<MultiUseSandbox, MultiUseSandbox, Noop<MultiUseSandbox, MultiUseSandbox>>
-    for MultiUseSandbox
-{
-    /// Consume `self` and move it back to a `MultiUseSandbox` with previous state.
-    ///
-    /// The purpose of this function is to allow multiple states to be associated with a single MultiUseSandbox.
-    ///
-    /// An implementation such as HyperlightJs or HyperlightWasm can use this to call guest functions to load JS or WASM code and then evolve the sandbox causing state to be captured.
-    /// The new MultiUseSandbox can then be used to call guest functions to execute the loaded code.
-    /// The devolve can be used to return the MultiUseSandbox to the state before the code was loaded. Thus avoiding initialisation overhead
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn devolve(mut self, _tsn: Noop<MultiUseSandbox, MultiUseSandbox>) -> Result<MultiUseSandbox> {
-        let rgns_to_unmap = self
-            .mem_mgr
-            .unwrap_mgr_mut()
-            .pop_and_restore_state_from_snapshot()?;
-        unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
-        Ok(self)
     }
 }
 

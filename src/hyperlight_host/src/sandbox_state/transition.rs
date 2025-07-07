@@ -22,9 +22,9 @@ use super::sandbox::Sandbox;
 use crate::Result;
 use crate::func::call_ctx::MultiUseGuestCallContext;
 
-/// Metadata about an evolution or devolution. Any `Sandbox` implementation
-/// that also implements `EvolvableSandbox` or `DevolvableSandbox`
-/// can decide the following things in a type-safe way:
+/// Metadata about an evolution. Any `Sandbox` implementation
+/// that also implements `EvolvableSandbox` can decide the following
+/// things in a type-safe way:
 ///
 /// 1. That transition is possible
 /// 2. That transition requires a specific kind of metadata
@@ -40,8 +40,7 @@ use crate::func::call_ctx::MultiUseGuestCallContext;
 /// ```
 ///
 /// ...then you can define a metadata-free evolve transition between
-/// `MySandbox1` and `MySandbox2`, and a devolve transition that requires
-/// a callback between `MySandbox2` and `MySandbox` as follows:
+/// `MySandbox1` and `MySandbox2` as follows:
 ///
 /// ```ignore
 /// impl EvolvableSandbox<
@@ -65,7 +64,7 @@ pub trait TransitionMetadata<Cur: Sandbox, Next: Sandbox> {}
 
 /// Transition metadata that contains and does nothing. `Noop` is a
 /// placeholder when you want to implement an `EvolvableSandbox`
-/// or `DevolvableSandbox` that needs no additional metadata to succeed.
+/// that needs no additional metadata to succeed.
 ///
 /// Construct one of these by using the `default()` method.
 pub struct Noop<Cur: Sandbox, Next: Sandbox> {
