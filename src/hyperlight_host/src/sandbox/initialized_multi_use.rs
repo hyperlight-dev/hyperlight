@@ -425,7 +425,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::{Callable, SandboxConfiguration};
-    use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox};
+    use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
 
@@ -469,26 +469,30 @@ mod tests {
     }
 
     /// Tests that evolving from MultiUseSandbox to MultiUseSandbox creates a new state
-    /// and devolving from MultiUseSandbox to MultiUseSandbox restores the previous state
+    /// and restoring a snapshot from before evolving restores the previous state
     #[test]
-    fn evolve_devolve_handles_state_correctly() {
-        let sbox1: MultiUseSandbox = {
+    fn snapshot_evolve_restore_handles_state_correctly() {
+        let mut sbox: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve(Noop::default())
         }
         .unwrap();
 
+        let snapshot = sbox.snapshot().unwrap();
+
         let func = Box::new(|call_ctx: &mut MultiUseGuestCallContext| {
             call_ctx.call::<i32>("AddToStatic", 5i32)?;
             Ok(())
         });
         let transition_func = MultiUseContextCallback::from(func);
-        let mut sbox2 = sbox1.evolve(transition_func).unwrap();
-        let res: i32 = sbox2.call_guest_function_by_name("GetStatic", ()).unwrap();
+        let mut sbox = sbox.evolve(transition_func).unwrap();
+
+        let res: i32 = sbox.call_guest_function_by_name("GetStatic", ()).unwrap();
         assert_eq!(res, 5);
-        let mut sbox3: MultiUseSandbox = sbox2.devolve(Noop::default()).unwrap();
-        let res: i32 = sbox3.call_guest_function_by_name("GetStatic", ()).unwrap();
+
+        sbox.restore(&snapshot).unwrap();
+        let res: i32 = sbox.call_guest_function_by_name("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
     }
 
