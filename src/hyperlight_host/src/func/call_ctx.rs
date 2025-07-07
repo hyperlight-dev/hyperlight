@@ -47,15 +47,6 @@ impl MultiUseGuestCallContext {
     pub fn start(sbox: MultiUseSandbox) -> Self {
         Self { sbox }
     }
-
-    /// Close out the context and get back the internally-stored
-    /// `MultiUseSandbox`. Future contexts opened by the returned sandbox
-    /// will have guest state restored.
-    #[instrument(err(Debug), skip(self), parent = Span::current())]
-    pub fn finish(mut self) -> Result<MultiUseSandbox> {
-        self.sbox.restore_state()?;
-        Ok(self.sbox)
-    }
 }
 
 impl Callable for MultiUseGuestCallContext {
@@ -96,8 +87,6 @@ mod tests {
 
     use hyperlight_testing::simple_guest_as_string;
 
-    use super::MultiUseGuestCallContext;
-    use crate::sandbox::Callable;
     use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
@@ -134,12 +123,12 @@ mod tests {
         // requests to execute batches of calls
         let recv_hdl = thread::spawn(move || {
             let mut sbox: MultiUseSandbox = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+            let snapshot = sbox.snapshot().unwrap();
             while let Ok(calls) = recv.recv() {
-                let mut ctx = sbox.new_call_context();
                 for call in calls {
-                    call.call(&mut ctx);
+                    call.call(&mut sbox);
                 }
-                sbox = ctx.finish().unwrap();
+                sbox.restore(&snapshot).unwrap();
             }
         });
 
@@ -151,11 +140,15 @@ mod tests {
                     let calls = vec![
                         TestFuncCall::new(move |ctx| {
                             let msg = format!("Hello {}", i);
-                            let ret: String = ctx.call("Echo", msg.clone()).unwrap();
+                            let ret: String = ctx
+                                .call_guest_function_by_name("Echo", msg.clone())
+                                .unwrap();
                             assert_eq!(ret, msg)
                         }),
                         TestFuncCall::new(move |ctx| {
-                            let ret: i32 = ctx.call("CallMalloc", i + 2).unwrap();
+                            let ret: i32 = ctx
+                                .call_guest_function_by_name("CallMalloc", i + 2)
+                                .unwrap();
                             assert_eq!(ret, i + 2)
                         }),
                     ];
@@ -187,7 +180,9 @@ mod tests {
             let snapshot = self.sandbox.snapshot()?;
             let mut sum: i32 = 0;
             for n in 0..i {
-                let result = self.sandbox.call_guest_function_by_name::<i32>("AddToStatic", n);
+                let result = self
+                    .sandbox
+                    .call_guest_function_by_name::<i32>("AddToStatic", n);
                 sum += n;
                 println!("{:?}", result);
                 let result = result.unwrap();
@@ -226,14 +221,14 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    struct TestFuncCall(Box<dyn FnOnce(&mut MultiUseGuestCallContext) + Send>);
+    struct TestFuncCall(Box<dyn FnOnce(&mut MultiUseSandbox) + Send>);
 
     impl TestFuncCall {
-        fn new(f: impl FnOnce(&mut MultiUseGuestCallContext) + Send + 'static) -> Self {
+        fn new(f: impl FnOnce(&mut MultiUseSandbox) + Send + 'static) -> Self {
             TestFuncCall(Box::new(f))
         }
 
-        fn call(self, ctx: &mut MultiUseGuestCallContext) {
+        fn call(self, ctx: &mut MultiUseSandbox) {
             (self.0)(ctx);
         }
     }
