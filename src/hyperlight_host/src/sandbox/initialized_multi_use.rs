@@ -285,15 +285,6 @@ impl MultiUseSandbox {
         })
     }
 
-    /// Restore the Sandbox's state
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn restore_state(&mut self) -> Result<()> {
-        let mem_mgr = self.mem_mgr.unwrap_mgr_mut();
-        let rgns_to_unmap = mem_mgr.restore_state_from_last_snapshot()?;
-        unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
-        Ok(())
-    }
-
     pub(crate) fn call_guest_function_by_name_no_reset(
         &mut self,
         function_name: &str,
@@ -327,8 +318,7 @@ impl MultiUseSandbox {
             self.check_stack_guard()?;
             check_for_guest_error(self.get_mgr_wrapper_mut())?;
 
-            self
-                .get_mgr_wrapper_mut()
+            self.get_mgr_wrapper_mut()
                 .as_mut()
                 .get_guest_function_call_result()
         })();
