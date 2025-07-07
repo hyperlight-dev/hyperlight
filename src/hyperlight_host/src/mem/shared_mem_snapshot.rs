@@ -53,10 +53,7 @@ impl SharedMemorySnapshot {
     /// Copy the memory from the internally-stored memory snapshot
     /// into the internally-stored `SharedMemory`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn restore_from_snapshot<S: SharedMemory>(
-        &self,
-        shared_mem: &mut S,
-    ) -> Result<u64> {
+    pub(super) fn restore_from_snapshot<S: SharedMemory>(&self, shared_mem: &mut S) -> Result<u64> {
         shared_mem.with_exclusivity(|e| e.copy_from_slice(self.snapshot.as_slice(), 0))??;
         Ok(self.mapped_rgns)
     }

@@ -321,21 +321,6 @@ where
         Ok(old_rgns - self.mapped_rgns)
     }
 
-    /// this function pops the last snapshot off the stack and restores the memory to the previous state
-    /// It should be used when you want to restore the state of the memory to a previous state and do not need to retain that state
-    /// for example when devolving a sandbox to a previous state.
-    pub(crate) fn pop_and_restore_state_from_snapshot(&mut self) -> Result<u64> {
-        let last = self
-            .snapshots
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .pop();
-        if last.is_none() {
-            log_then_return!(NoMemorySnapshot);
-        }
-        self.restore_state_from_last_snapshot()
-    }
-
     /// Sets `addr` to the correct offset in the memory referenced by
     /// `shared_mem` to indicate the address of the outb pointer and context
     /// for calling outb function
