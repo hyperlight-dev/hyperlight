@@ -18,7 +18,6 @@ extern crate hyperlight_host;
 use std::sync::{Arc, Barrier};
 use std::thread::{JoinHandle, spawn};
 
-use hyperlight_host::sandbox::Callable;
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -116,10 +115,10 @@ fn do_hyperlight_stuff() {
     // Call a function that gets cancelled by the host function 5 times to generate some metrics.
 
     for _ in 0..NUM_CALLS {
-        let mut ctx = multiuse_sandbox.new_call_context();
         barrier.wait();
-        ctx.call::<()>("Spin", ()).unwrap_err();
-        multiuse_sandbox = ctx.finish().unwrap();
+        multiuse_sandbox
+            .call_guest_function_by_name::<()>("Spin", ())
+            .unwrap_err();
     }
 
     for join_handle in join_handles {

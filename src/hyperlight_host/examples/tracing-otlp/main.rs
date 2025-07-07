@@ -26,7 +26,6 @@ use std::io::stdin;
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread::{JoinHandle, spawn};
 
-use hyperlight_host::sandbox::Callable;
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
 use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
@@ -184,10 +183,10 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                         uuid = %id,
                     );
                     let _entered = span.enter();
-                    let mut ctx = multiuse_sandbox.new_call_context();
                     barrier.wait();
-                    ctx.call::<()>("Spin", ()).unwrap_err();
-                    multiuse_sandbox = ctx.finish().unwrap();
+                    multiuse_sandbox
+                        .call_guest_function_by_name::<()>("Spin", ())
+                        .unwrap_err();
                 }
                 thread.join().expect("Thread panicked");
             }
