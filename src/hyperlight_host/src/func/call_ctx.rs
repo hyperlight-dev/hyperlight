@@ -17,7 +17,6 @@ limitations under the License.
 use tracing::{Span, instrument};
 
 use super::{ParameterTuple, SupportedReturnType};
-use crate::mem::memory_region::MemoryRegion;
 use crate::sandbox::Callable;
 use crate::{MultiUseSandbox, Result};
 /// A context for calling guest functions.
@@ -56,44 +55,6 @@ impl MultiUseGuestCallContext {
     pub fn finish(mut self) -> Result<MultiUseSandbox> {
         self.sbox.restore_state()?;
         Ok(self.sbox)
-    }
-    /// Close out the context and get back the internally-stored
-    /// `MultiUseSandbox`.
-    ///
-    /// Note that this method is pub(crate) and does not reset the state of the
-    /// sandbox.
-    ///
-    /// It is intended to be used when evolving a MultiUseSandbox to a new state
-    /// and is not intended to be called publicly. It allows the state of the guest to be altered
-    /// during the evolution of one sandbox state to another, enabling the new state created
-    /// to be captured and stored in the Sandboxes state stack.
-    ///
-    pub(crate) fn finish_no_reset(self) -> MultiUseSandbox {
-        self.sbox
-    }
-
-    /// Map a region of host memory into the sandbox.
-    ///
-    /// Depending on the host platform, there are likely alignment
-    /// requirements of at least one page for base and len.
-    ///
-    /// `rgn.region_type` is ignored, since guest PTEs are not created
-    /// for the new memory.
-    ///
-    /// # Safety
-    /// It is the caller's responsibility to ensure that the host side
-    /// of the region remains intact and is not written to until this
-    /// mapping is removed, either due to the destruction of the
-    /// sandbox or due to a state rollback
-    pub unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
-        unsafe { self.sbox.map_region(rgn) }
-    }
-
-    /// Map the contents of a file into the guest at a particular address
-    ///
-    /// Returns the length of the mapping
-    pub fn map_file_cow(&mut self, fp: &std::path::Path, guest_base: u64) -> Result<u64> {
-        self.sbox.map_file_cow(fp, guest_base)
     }
 }
 
