@@ -16,11 +16,7 @@ limitations under the License.
 
 use std::marker::PhantomData;
 
-use tracing::{Span, instrument};
-
 use super::sandbox::Sandbox;
-use crate::Result;
-use crate::func::call_ctx::MultiUseGuestCallContext;
 
 /// Metadata about an evolution. Any `Sandbox` implementation
 /// that also implements `EvolvableSandbox` can decide the following
@@ -82,60 +78,3 @@ impl<Cur: Sandbox, Next: Sandbox> Default for Noop<Cur, Next> {
 }
 
 impl<Cur: Sandbox, Next: Sandbox> TransitionMetadata<Cur, Next> for Noop<Cur, Next> {}
-
-/// A `TransitionMetadata` that calls a callback. The callback function takes
-/// a mutable reference to a `MultiUseGuestCallContext` and returns a `Result<()>`
-/// to signify success or failure of the function.
-///
-/// The function use the context to call guest functions.
-///
-/// Construct one of these by passing your callback to
-/// `MultiUseContextCallback::from`, as in the following code (assuming `MySandbox`
-/// is a `Sandbox` implementation):
-///
-/// ```ignore
-/// let my_cb_fn: dyn FnOnce(&mut MultiUseGuestCallContext) -> Result<()> = |_sbox| {
-///     println!("hello world!");
-/// };
-/// let mutating_cb = MultiUseContextCallback::from(my_cb_fn);
-/// ```
-pub struct MultiUseContextCallback<'func, Cur: Sandbox, F>
-where
-    F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()> + 'func,
-{
-    cur_ph: PhantomData<Cur>,
-    fn_life_ph: PhantomData<&'func ()>,
-    cb: F,
-}
-
-impl<Cur: Sandbox, Next: Sandbox, F> TransitionMetadata<Cur, Next>
-    for MultiUseContextCallback<'_, Cur, F>
-where
-    F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()>,
-{
-}
-
-impl<Cur: Sandbox, F> MultiUseContextCallback<'_, Cur, F>
-where
-    F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()>,
-{
-    /// Invokes the callback on the provided guest context
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn call(self, cur: &mut MultiUseGuestCallContext) -> Result<()> {
-        (self.cb)(cur)
-    }
-}
-
-impl<'a, Cur: Sandbox, F> From<F> for MultiUseContextCallback<'a, Cur, F>
-where
-    F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()> + 'a,
-{
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn from(val: F) -> Self {
-        MultiUseContextCallback {
-            cur_ph: PhantomData,
-            fn_life_ph: PhantomData,
-            cb: val,
-        }
-    }
-}

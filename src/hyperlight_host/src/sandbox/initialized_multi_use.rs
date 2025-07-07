@@ -43,8 +43,7 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
-use crate::sandbox_state::sandbox::{EvolvableSandbox, Sandbox};
-use crate::sandbox_state::transition::MultiUseContextCallback;
+use crate::sandbox_state::sandbox::Sandbox;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// A sandbox that supports being used Multiple times.
@@ -196,6 +195,26 @@ impl MultiUseSandbox {
             );
             self.restore_state()?;
             Output::from_value(ret?)
+        })
+    }
+
+    /// Call a guest function by name, with the given return type and arguments.
+    /// The changes made to the sandbox are persisted
+    #[instrument(err(Debug), skip(self, args), parent = Span::current())]
+    pub fn persist_call_guest_function_by_name<Output: SupportedReturnType>(
+        &mut self,
+        func_name: &str,
+        args: impl ParameterTuple,
+    ) -> Result<Output> {
+        maybe_time_and_emit_guest_call(func_name, || {
+            let ret = self.call_guest_function_by_name_no_reset(
+                func_name,
+                Output::TYPE,
+                args.into_value(),
+            );
+            let ret = Output::from_value(ret?);
+            self.mem_mgr.unwrap_mgr_mut().push_state()?;
+            ret
         })
     }
 
@@ -360,37 +379,6 @@ impl std::fmt::Debug for MultiUseSandbox {
     }
 }
 
-impl<'a, F>
-    EvolvableSandbox<
-        MultiUseSandbox,
-        MultiUseSandbox,
-        MultiUseContextCallback<'a, MultiUseSandbox, F>,
-    > for MultiUseSandbox
-where
-    F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()> + 'a,
-{
-    /// The purpose of this function is to allow multiple states to be associated with a single MultiUseSandbox.
-    ///
-    /// An implementation such as HyperlightJs or HyperlightWasm can use this to call guest functions to load JS or WASM code and then evolve the sandbox causing state to be captured.
-    /// The new MultiUseSandbox can then be used to call guest functions to execute the loaded code.
-    ///
-    /// The evolve function creates a new MultiUseCallContext which is then passed to a callback function  allowing the
-    /// callback function to call guest functions as part of the evolve process, once the callback function  is complete
-    /// the context is finished using a crate internal method that does not restore the prior state of the Sandbox.
-    /// It then creates a mew  memory snapshot on the snapshot stack and returns the MultiUseSandbox
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn evolve(
-        self,
-        transition_func: MultiUseContextCallback<'a, MultiUseSandbox, F>,
-    ) -> Result<MultiUseSandbox> {
-        let mut ctx = self.new_call_context();
-        transition_func.call(&mut ctx)?;
-        let mut sbox = ctx.finish_no_reset();
-        sbox.mem_mgr.unwrap_mgr_mut().push_state()?;
-        Ok(sbox)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Barrier};
@@ -398,14 +386,13 @@ mod tests {
 
     use hyperlight_testing::simple_guest_as_string;
 
-    use crate::func::call_ctx::MultiUseGuestCallContext;
     #[cfg(target_os = "linux")]
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
     #[cfg(target_os = "linux")]
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::{Callable, SandboxConfiguration};
     use crate::sandbox_state::sandbox::EvolvableSandbox;
-    use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
+    use crate::sandbox_state::transition::Noop;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
 
     // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
@@ -460,18 +447,13 @@ mod tests {
 
         let snapshot = sbox.snapshot().unwrap();
 
-        let func = Box::new(|call_ctx: &mut MultiUseGuestCallContext| {
-            call_ctx.call::<i32>("AddToStatic", 5i32)?;
-            Ok(())
-        });
-        let transition_func = MultiUseContextCallback::from(func);
-        let mut sbox = sbox.evolve(transition_func).unwrap();
+        let _ = sbox.persist_call_guest_function_by_name::<i32>("AddToStatic", 5i32).unwrap();
 
-        let res: i32 = sbox.call_guest_function_by_name("GetStatic", ()).unwrap();
+        let res: i32 = sbox.persist_call_guest_function_by_name("GetStatic", ()).unwrap();
         assert_eq!(res, 5);
 
         sbox.restore(&snapshot).unwrap();
-        let res: i32 = sbox.call_guest_function_by_name("GetStatic", ()).unwrap();
+        let res: i32 = sbox.persist_call_guest_function_by_name("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
     }
 
