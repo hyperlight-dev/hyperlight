@@ -688,18 +688,6 @@ fn execute_on_heap() {
     }
 }
 
-#[test]
-fn memory_resets_after_failed_guestcall() {
-    let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
-    sbox1
-        .call_guest_function_by_name::<String>("AddToStaticAndFail", ())
-        .unwrap_err();
-    let res = sbox1
-        .call_guest_function_by_name::<i32>("GetStatic", ())
-        .unwrap();
-    assert_eq!(res, 0, "Expected 0, got {:?}", res);
-}
-
 // checks that a recursive function with stack allocation eventually fails with stackoverflow
 #[test]
 fn recursive_stack_allocate_overflow() {

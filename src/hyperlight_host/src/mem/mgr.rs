@@ -561,4 +561,25 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.layout.sandbox_memory_config.get_output_data_size(),
         )
     }
+
+    pub(crate) fn clear_io_buffers(&mut self) {
+        // Clear the output data buffer
+        loop {
+            let Ok(_) = self.shared_mem.try_pop_buffer_into::<Vec<u8>>(
+                self.layout.output_data_buffer_offset,
+                self.layout.sandbox_memory_config.get_output_data_size(),
+            ) else {
+                break;
+            };
+        }
+        // Clear the input data buffer
+        loop {
+            let Ok(_) = self.shared_mem.try_pop_buffer_into::<Vec<u8>>(
+                self.layout.input_data_buffer_offset,
+                self.layout.sandbox_memory_config.get_input_data_size(),
+            ) else {
+                break;
+            };
+        }
+    }
 }
