@@ -181,27 +181,9 @@ impl MultiUseSandbox {
     }
 
     /// Call a guest function by name, with the given return type and arguments.
-    #[instrument(err(Debug), skip(self, args), parent = Span::current())]
-    pub fn call_guest_function_by_name<Output: SupportedReturnType>(
-        &mut self,
-        func_name: &str,
-        args: impl ParameterTuple,
-    ) -> Result<Output> {
-        maybe_time_and_emit_guest_call(func_name, || {
-            let ret = self.call_guest_function_by_name_no_reset(
-                func_name,
-                Output::TYPE,
-                args.into_value(),
-            );
-            self.restore_state()?;
-            Output::from_value(ret?)
-        })
-    }
-
-    /// Call a guest function by name, with the given return type and arguments.
     /// The changes made to the sandbox are persisted
     #[instrument(err(Debug), skip(self, args), parent = Span::current())]
-    pub fn persist_call_guest_function_by_name<Output: SupportedReturnType>(
+    pub fn call_guest_function_by_name<Output: SupportedReturnType + std::fmt::Debug>(
         &mut self,
         func_name: &str,
         args: impl ParameterTuple,
@@ -213,7 +195,7 @@ impl MultiUseSandbox {
                 args.into_value(),
             );
             let ret = Output::from_value(ret?);
-            self.mem_mgr.unwrap_mgr_mut().push_state()?;
+            self.mem_mgr.unwrap_mgr_mut().push_state().unwrap();
             ret
         })
     }
@@ -298,7 +280,7 @@ impl MultiUseSandbox {
     ) -> Result<ReturnValue> {
         maybe_time_and_emit_guest_call(func_name, || {
             let ret = self.call_guest_function_by_name_no_reset(func_name, ret_type, args);
-            self.restore_state()?;
+            self.mem_mgr.unwrap_mgr_mut().push_state()?;
             ret
         })
     }
@@ -318,35 +300,43 @@ impl MultiUseSandbox {
         return_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
-        let fc = FunctionCall::new(
-            function_name.to_string(),
-            Some(args),
-            FunctionCallType::Guest,
-            return_type,
-        );
+        let res = (|| {
+            let fc = FunctionCall::new(
+                function_name.to_string(),
+                Some(args),
+                FunctionCallType::Guest,
+                return_type,
+            );
 
-        let buffer: Vec<u8> = fc
-            .try_into()
-            .map_err(|_| HyperlightError::Error("Failed to serialize FunctionCall".to_string()))?;
+            let buffer: Vec<u8> = fc.try_into().map_err(|_| {
+                HyperlightError::Error("Failed to serialize FunctionCall".to_string())
+            })?;
 
-        self.get_mgr_wrapper_mut()
-            .as_mut()
-            .write_guest_function_call(&buffer)?;
+            self.get_mgr_wrapper_mut()
+                .as_mut()
+                .write_guest_function_call(&buffer)?;
 
-        self.vm.dispatch_call_from_host(
-            self.dispatch_ptr.clone(),
-            self.out_hdl.clone(),
-            self.mem_hdl.clone(),
-            #[cfg(gdb)]
-            self.dbg_mem_access_fn.clone(),
-        )?;
+            self.vm.dispatch_call_from_host(
+                self.dispatch_ptr.clone(),
+                self.out_hdl.clone(),
+                self.mem_hdl.clone(),
+                #[cfg(gdb)]
+                self.dbg_mem_access_fn.clone(),
+            )?;
 
-        self.check_stack_guard()?;
-        check_for_guest_error(self.get_mgr_wrapper_mut())?;
+            self.check_stack_guard()?;
+            check_for_guest_error(self.get_mgr_wrapper_mut())?;
 
-        self.get_mgr_wrapper_mut()
-            .as_mut()
-            .get_guest_function_call_result()
+            self
+                .get_mgr_wrapper_mut()
+                .as_mut()
+                .get_guest_function_call_result()
+        })();
+
+        // TODO: Do we want to allow re-entrant guest function calls?
+        self.get_mgr_wrapper_mut().as_mut().clear_io_buffers();
+
+        res
     }
 
     /// Get a handle to the interrupt handler for this sandbox,
@@ -447,13 +437,14 @@ mod tests {
 
         let snapshot = sbox.snapshot().unwrap();
 
-        let _ = sbox.persist_call_guest_function_by_name::<i32>("AddToStatic", 5i32).unwrap();
+        let _ = sbox.call_guest_function_by_name::<i32>("AddToStatic", 5i32)
+            .unwrap();
 
-        let res: i32 = sbox.persist_call_guest_function_by_name("GetStatic", ()).unwrap();
+        let res: i32 = sbox.call_guest_function_by_name("GetStatic", ()).unwrap();
         assert_eq!(res, 5);
 
         sbox.restore(&snapshot).unwrap();
-        let res: i32 = sbox.persist_call_guest_function_by_name("GetStatic", ()).unwrap();
+        let res: i32 = sbox.call_guest_function_by_name("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
     }
 

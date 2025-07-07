@@ -183,27 +183,27 @@ mod tests {
             let sbox: MultiUseSandbox = new_uninit().unwrap().evolve(Noop::default()).unwrap();
             Self { sandbox: sbox }
         }
-        pub fn call_add_to_static_multiple_times(mut self, i: i32) -> Result<TestSandbox> {
-            let mut ctx = self.sandbox.new_call_context();
+        pub fn call_add_to_static_multiple_times(&mut self, i: i32) -> Result<()> {
+            let snapshot = self.sandbox.snapshot()?;
             let mut sum: i32 = 0;
             for n in 0..i {
-                let result = ctx.call::<i32>("AddToStatic", n);
+                let result = self.sandbox.call_guest_function_by_name::<i32>("AddToStatic", n);
                 sum += n;
                 println!("{:?}", result);
                 let result = result.unwrap();
                 assert_eq!(result, sum);
             }
-            let result = ctx.finish();
-            assert!(result.is_ok());
-            self.sandbox = result.unwrap();
-            Ok(self)
+            self.sandbox.restore(&snapshot)?;
+            Ok(())
         }
 
-        pub fn call_add_to_static(mut self, i: i32) -> Result<()> {
+        pub fn call_add_to_static(&mut self, i: i32) -> Result<()> {
+            let snapshot = self.sandbox.snapshot()?;
             for n in 0..i {
                 let result = self
                     .sandbox
                     .call_guest_function_by_name::<i32>("AddToStatic", n);
+                self.sandbox.restore(&snapshot)?;
                 println!("{:?}", result);
                 let result = result.unwrap();
                 assert_eq!(result, n);
@@ -214,14 +214,14 @@ mod tests {
 
     #[test]
     fn ensure_multiusesandbox_multi_calls_dont_reset_state() {
-        let sandbox = TestSandbox::new();
+        let mut sandbox = TestSandbox::new();
         let result = sandbox.call_add_to_static_multiple_times(5);
         assert!(result.is_ok());
     }
 
     #[test]
     fn ensure_multiusesandbox_single_calls_do_reset_state() {
-        let sandbox = TestSandbox::new();
+        let mut sandbox = TestSandbox::new();
         let result = sandbox.call_add_to_static(5);
         assert!(result.is_ok());
     }
