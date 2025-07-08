@@ -34,7 +34,6 @@ use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags}
 use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
-use crate::sandbox_state::transition::Noop;
 use crate::{MultiUseSandbox, Result, log_then_return, new_error};
 
 #[cfg(all(target_os = "linux", feature = "seccomp"))]
@@ -112,7 +111,7 @@ impl crate::sandbox_state::sandbox::Sandbox for UninitializedSandbox {
 impl UninitializedSandbox {
     /// Evolve `self` to a `MultiUseSandbox` without any additional metadata.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub fn evolve(self, _: Noop<UninitializedSandbox, MultiUseSandbox>) -> Result<MultiUseSandbox> {
+    pub fn evolve(self) -> Result<MultiUseSandbox> {
         evolve_impl_multi_use(self)
     }
 }
@@ -426,7 +425,6 @@ mod tests {
 
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
-    use crate::sandbox_state::transition::Noop;
     use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
     #[test]
@@ -437,7 +435,7 @@ mod tests {
             GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&buffer));
 
         let uninitialized_sandbox = UninitializedSandbox::new(guest_env, None).unwrap();
-        let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default()).unwrap();
+        let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
 
         let res = sandbox
             .call_guest_function_by_name::<Vec<u8>>("ReadFromUserMemory", (4u64, buffer.to_vec()))
@@ -481,7 +479,7 @@ mod tests {
 
         // Get a Sandbox from an uninitialized sandbox without a call back function
 
-        let _sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default()).unwrap();
+        let _sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
 
         // Test with a valid guest binary buffer
 
@@ -529,7 +527,7 @@ mod tests {
 
             usbox.register("test0", |arg: i32| Ok(arg + 1)).unwrap();
 
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
+            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -554,7 +552,7 @@ mod tests {
 
             usbox.register("test1", |a: i32, b: i32| Ok(a + b)).unwrap();
 
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
+            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -587,7 +585,7 @@ mod tests {
                 })
                 .unwrap();
 
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
+            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -605,7 +603,7 @@ mod tests {
         // calling a function that doesn't exist
         {
             let usbox = uninitialized_sandbox();
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
+            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -829,7 +827,7 @@ mod tests {
                         .unwrap();
 
                     let sandbox = uninitialized_sandbox
-                        .evolve(Noop::default())
+                        .evolve()
                         .unwrap_or_else(|_| {
                             panic!("Failed to initialize UninitializedSandbox thread {}", i)
                         });
@@ -1120,7 +1118,7 @@ mod tests {
                 );
                 res.unwrap()
             };
-            let _: Result<MultiUseSandbox> = sbox.evolve(Noop::default());
+            let _: Result<MultiUseSandbox> = sbox.evolve();
 
             let num_calls = TEST_LOGGER.num_log_calls();
 

@@ -3,7 +3,6 @@
 use std::sync::{Mutex, OnceLock};
 
 use hyperlight_host::sandbox::uninitialized::GuestBinary;
-use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simple_guest_for_fuzzing_as_string;
 use libfuzzer_sys::{Corpus, fuzz_target};
@@ -22,7 +21,7 @@ fuzz_target!(
         )
         .unwrap();
 
-        let mu_sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
+        let mu_sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();
     },
 

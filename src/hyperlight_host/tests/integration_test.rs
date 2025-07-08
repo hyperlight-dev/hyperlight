@@ -22,7 +22,6 @@ use std::time::Duration;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use hyperlight_testing::{
@@ -60,7 +59,7 @@ fn interrupt_host_call() {
         .register_with_extra_allowed_syscalls("Spin", spin, vec![libc::SYS_clock_nanosleep])
         .unwrap();
 
-    let mut sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
+    let mut sandbox: MultiUseSandbox = usbox.evolve().unwrap();
     let interrupt_handle = sandbox.interrupt_handle();
     assert!(!interrupt_handle.dropped()); // not yet dropped
 
@@ -82,7 +81,7 @@ fn interrupt_host_call() {
 /// Makes sure a running guest call can be interrupted by the host
 #[test]
 fn interrupt_in_progress_guest_call() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
     let interrupt_handle = sbox1.interrupt_handle();
@@ -117,7 +116,7 @@ fn interrupt_in_progress_guest_call() {
 /// Makes sure interrupting a vm before the guest call has started also prevents the guest call from being executed
 #[test]
 fn interrupt_guest_call_in_advance() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
     let interrupt_handle = sbox1.interrupt_handle();
@@ -159,9 +158,9 @@ fn interrupt_guest_call_in_advance() {
 /// all possible interleavings, but can hopefully increases confidence somewhat.
 #[test]
 fn interrupt_same_thread() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
-    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
-    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -201,9 +200,9 @@ fn interrupt_same_thread() {
 /// Same test as above but with no per-iteration barrier, to get more possible interleavings.
 #[test]
 fn interrupt_same_thread_no_barrier() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
-    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
-    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -247,8 +246,8 @@ fn interrupt_same_thread_no_barrier() {
 // and that anther sandbox on the original thread does not get incorrectly killed
 #[test]
 fn interrupt_moved_sandbox() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
-    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let interrupt_handle = sbox1.interrupt_handle();
     let interrupt_handle2 = sbox2.interrupt_handle();
@@ -299,7 +298,7 @@ fn interrupt_custom_signal_no_and_retry_delay() {
         Some(config),
     )
     .unwrap()
-    .evolve(Noop::default())
+    .evolve()
     .unwrap();
 
     let interrupt_handle = sbox1.interrupt_handle();
@@ -339,7 +338,7 @@ fn interrupt_spamming_host_call() {
             // do nothing
         })
         .unwrap();
-    let mut sbox1: MultiUseSandbox = uninit.evolve(Noop::default()).unwrap();
+    let mut sbox1: MultiUseSandbox = uninit.evolve().unwrap();
 
     let interrupt_handle = sbox1.interrupt_handle();
 
@@ -368,7 +367,7 @@ fn print_four_args_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None);
-    let mut sbox1 = uninit.unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = uninit.unwrap().evolve().unwrap();
 
     let res = sbox1.call_guest_function_by_name::<i32>(
         "PrintFourArgs",
@@ -381,7 +380,7 @@ fn print_four_args_c_guest() {
 // Checks that guest can abort with a specific code.
 #[test]
 fn guest_abort() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
     let error_code: u8 = 13; // this is arbitrary
     let res = sbox1
         .call_guest_function_by_name::<()>("GuestAbortWithCode", error_code as i32)
@@ -394,7 +393,7 @@ fn guest_abort() {
 
 #[test]
 fn guest_abort_with_context1() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
     let res = sbox1
         .call_guest_function_by_name::<()>("GuestAbortWithMessage", (25_i32, "Oh no".to_string()))
@@ -407,7 +406,7 @@ fn guest_abort_with_context1() {
 
 #[test]
 fn guest_abort_with_context2() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
     // The buffer size for the panic context is 1024 bytes.
     // This test will see what happens if the panic message is longer than that
@@ -461,7 +460,7 @@ fn guest_abort_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None);
-    let mut sbox1 = uninit.unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = uninit.unwrap().evolve().unwrap();
 
     let res = sbox1
         .call_guest_function_by_name::<()>(
@@ -478,7 +477,7 @@ fn guest_abort_c_guest() {
 #[test]
 fn guest_panic() {
     // this test is rust-specific
-    let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
 
     let res = sbox1
         .call_guest_function_by_name::<()>("guest_panic", "Error... error...".to_string())
@@ -492,7 +491,7 @@ fn guest_panic() {
 #[test]
 fn guest_malloc() {
     // this test is rust-only
-    let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
 
     let size_to_allocate = 2000_i32;
     sbox1
@@ -502,7 +501,7 @@ fn guest_malloc() {
 
 #[test]
 fn guest_allocate_vec() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
     let size_to_allocate = 2000_i32;
 
@@ -519,7 +518,7 @@ fn guest_allocate_vec() {
 // checks that malloc failures are captured correctly
 #[test]
 fn guest_malloc_abort() {
-    let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
 
     let size = 20000000_i32; // some big number that should fail when allocated
 
@@ -543,7 +542,7 @@ fn guest_malloc_abort() {
         Some(cfg),
     )
     .unwrap();
-    let mut sbox2 = uninit.evolve(Noop::default()).unwrap();
+    let mut sbox2 = uninit.evolve().unwrap();
 
     let res = sbox2.call_guest_function_by_name::<i32>(
         "CallMalloc", // uses the rust allocator to allocate a vector on heap
@@ -563,7 +562,7 @@ fn dynamic_stack_allocate_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None);
-    let mut sbox1: MultiUseSandbox = uninit.unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1: MultiUseSandbox = uninit.unwrap().evolve().unwrap();
 
     let res: i32 = sbox1
         .call_guest_function_by_name("StackAllocate", 100_i32)
@@ -579,7 +578,7 @@ fn dynamic_stack_allocate_c_guest() {
 // checks that a small buffer on stack works
 #[test]
 fn static_stack_allocate() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
     let res: i32 = sbox1.call_guest_function_by_name("SmallVar", ()).unwrap();
     assert_eq!(res, 1024);
@@ -588,7 +587,7 @@ fn static_stack_allocate() {
 // checks that a huge buffer on stack fails with stackoverflow
 #[test]
 fn static_stack_allocate_overflow() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
     let res = sbox1
         .call_guest_function_by_name::<i32>("LargeVar", ())
         .unwrap_err();
@@ -598,7 +597,7 @@ fn static_stack_allocate_overflow() {
 // checks that a recursive function with stack allocation works, (that chkstk can be called without overflowing)
 #[test]
 fn recursive_stack_allocate() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
     let iterations = 1_i32;
 
@@ -628,7 +627,7 @@ fn guard_page_check() {
     for offset in offsets_from_page_guard_start {
         // we have to create a sandbox each iteration because can't reuse after MMIO error in release mode
 
-        let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+        let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
         let result = sbox1.call_guest_function_by_name::<String>("test_write_raw_ptr", offset);
         if guard_range.contains(&offset) {
             // should have failed
@@ -645,7 +644,7 @@ fn guard_page_check() {
 #[test]
 fn guard_page_check_2() {
     // this test is rust-guest only
-    let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
 
     let result = sbox1
         .call_guest_function_by_name::<()>("InfiniteRecursion", ())
@@ -655,7 +654,7 @@ fn guard_page_check_2() {
 
 #[test]
 fn execute_on_stack() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
     let result = sbox1
         .call_guest_function_by_name::<String>("ExecuteOnStack", ())
@@ -671,7 +670,7 @@ fn execute_on_stack() {
 #[test]
 #[ignore] // ran from Justfile because requires feature "executable_heap"
 fn execute_on_heap() {
-    let mut sbox1 = new_uninit_rust().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
     let result = sbox1.call_guest_function_by_name::<String>("ExecuteOnHeap", ());
 
     println!("{:#?}", result);
@@ -690,7 +689,7 @@ fn execute_on_heap() {
 // checks that a recursive function with stack allocation eventually fails with stackoverflow
 #[test]
 fn recursive_stack_allocate_overflow() {
-    let mut sbox1 = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
     let iterations = 10_i32;
 
@@ -765,7 +764,7 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
             sbox.set_max_guest_log_level(levelfilter);
         }
 
-        let mut sbox1 = sbox.evolve(Noop::default()).unwrap();
+        let mut sbox1 = sbox.evolve().unwrap();
 
         let message = format!("Hello from log_message level {}", level as i32);
         sbox1

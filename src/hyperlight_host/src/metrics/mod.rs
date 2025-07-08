@@ -93,7 +93,6 @@ mod tests {
     use metrics_util::CompositeKey;
 
     use super::*;
-    use crate::sandbox_state::transition::Noop;
     use crate::{GuestBinary, UninitializedSandbox};
 
     #[test]
@@ -107,7 +106,7 @@ mod tests {
             )
             .unwrap();
 
-            let mut multi = uninit.evolve(Noop::default()).unwrap();
+            let mut multi = uninit.evolve().unwrap();
             let interrupt_handle = multi.interrupt_handle();
 
             // interrupt the guest function call to "Spin" after 1 second
