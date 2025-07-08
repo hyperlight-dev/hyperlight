@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "trace_guest")]
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +26,8 @@ use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::outb::{Exception, OutBAction};
+#[cfg(feature = "trace_guest")]
+use hyperlight_guest_tracing::TraceRecord;
 use log::{Level, Record};
 use tracing::{Span, instrument};
 use tracing_log::format_trace;
@@ -33,7 +35,7 @@ use tracing_log::format_trace;
 use super::host_funcs::FunctionRegistry;
 use super::mem_mgr::MemMgrWrapper;
 use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction, OutBHandlerWrapper};
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "trace_guest")]
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -211,6 +213,53 @@ pub(super) fn record_trace_frame<F: FnOnce(&mut std::fs::File)>(
     Ok(())
 }
 
+#[cfg(feature = "trace_guest")]
+pub(super) fn record_guest_trace_frame<F: FnOnce(&mut std::fs::File)>(
+    trace_info: &TraceInfo,
+    frame_id: u64,
+    cycles: u64,
+    write_frame: F,
+) -> Result<()> {
+    let Ok(mut out) = trace_info.file.lock() else {
+        return Ok(());
+    };
+    // frame structure:
+    // 16 bytes timestamp
+
+    // The number of cycles spent in the guest relative to the first received trace record
+    let cycles_spent = cycles
+        - trace_info
+            .guest_start_tsc
+            .as_ref()
+            .map_or_else(|| 0, |c| *c);
+    // Convert cycles to microseconds based on the TSC frequency
+    let micros = cycles_spent as f64 / trace_info.tsc_freq as f64 * 1_000_000f64;
+
+    // Convert to a Duration
+    let guest_duration = std::time::Duration::from_micros(micros as u64);
+
+    // Calculate the time when the guest started execution relative to the host epoch
+    // Note: This is relative to the time saved when the `TraceInfo` was created (before the
+    // Hypervisor is created).
+    let guest_start_time = trace_info
+        .guest_start_epoch
+        .as_ref()
+        .unwrap_or(&trace_info.epoch)
+        .saturating_duration_since(trace_info.epoch);
+
+    // Calculate the timestamp when the actual frame was recorded relative to the host epoch
+    let timestamp = guest_start_time
+        .checked_add(guest_duration)
+        .unwrap_or(guest_duration);
+
+    let _ = out.write_all(&timestamp.as_micros().to_ne_bytes());
+    // 8 bytes frame type id
+    let _ = out.write_all(&frame_id.to_ne_bytes());
+    // frame data
+    write_frame(&mut out);
+    Ok(())
+}
+
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 fn handle_outb_impl(
@@ -286,6 +335,54 @@ fn handle_outb_impl(
                 let _ = f.write_all(&ptr.to_ne_bytes());
                 write_stack(f, &stack);
             })
+        }
+        #[cfg(feature = "trace_guest")]
+        OutBAction::TraceRecord => {
+            let Ok(len) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RAX) else {
+                return Ok(());
+            };
+            let Ok(ptr) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RCX) else {
+                return Ok(());
+            };
+            let mut buffer = vec![0u8; len as usize * std::mem::size_of::<TraceRecord>()];
+            let buffer = &mut buffer[..];
+
+            // Read the trace records from the guest memory
+            // TODO: maybe this can be done without copying?
+            mem_mgr
+                .as_ref()
+                .shared_mem
+                .copy_to_slice(buffer, ptr as usize - SandboxMemoryLayout::BASE_ADDRESS)
+                // .read::<u64>((addr - SandboxMemoryLayout::BASE_ADDRESS as u64) as usize)
+                .map_err(|e| {
+                    new_error!(
+                        "Failed to copy trace records from guest memory to host: {:?}",
+                        e
+                    )
+                })?;
+
+            let traces = unsafe {
+                std::slice::from_raw_parts(buffer.as_ptr() as *const TraceRecord, len as usize)
+            };
+
+            {
+                let trace_info = _hv.trace_info_as_mut();
+                // Store the start guest cycles if not already set
+                // This is the `entrypoint` of the guest execution
+                // This should be set only once, at the start of the guest execution
+                if trace_info.guest_start_tsc.is_none() && !traces.is_empty() {
+                    trace_info.guest_start_tsc = Some(traces[0].cycles);
+                }
+            }
+
+            for record in traces {
+                record_guest_trace_frame(_hv.trace_info_as_ref(), 4u64, record.cycles, |f| {
+                    let _ = f.write_all(&record.msg_len.to_ne_bytes());
+                    let _ = f.write_all(&record.msg[..record.msg_len]);
+                })?
+            }
+
+            Ok(())
         }
     }
 }

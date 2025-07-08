@@ -270,12 +270,15 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     }
 
     /// Read a register for trace/unwind purposes
-    #[cfg(feature = "unwind_guest")]
+    #[cfg(feature = "trace_guest")]
     fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64>;
 
     /// Get a reference of the trace info for the guest
     #[cfg(feature = "trace_guest")]
     fn trace_info_as_ref(&self) -> &TraceInfo;
+    /// Get a mutable reference of the trace info for the guest
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_mut(&mut self) -> &mut TraceInfo;
 }
 
 /// A virtual CPU that can be run until an exit occurs
