@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex};
 
 use common::new_uninit;
 use hyperlight_host::sandbox::{Callable, SandboxConfiguration};
-use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{
     GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
 };
@@ -84,7 +83,7 @@ fn float_roundtrip() {
         f32::NAN,
         -f32::NAN,
     ];
-    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
     for f in doubles.iter() {
         let res: f64 = sandbox
             .call_guest_function_by_name("EchoDouble", *f)
@@ -331,7 +330,7 @@ fn callback_test_helper() -> Result<()> {
         })?;
 
         // call guest function that calls host function
-        let mut init_sandbox: MultiUseSandbox = sandbox.evolve(Noop::default())?;
+        let mut init_sandbox: MultiUseSandbox = sandbox.evolve()?;
         let msg = "Hello world";
         init_sandbox.call_guest_function_by_name::<i32>("GuestMethod1", msg.to_string())?;
 
@@ -373,7 +372,7 @@ fn host_function_error() -> Result<()> {
         })?;
 
         // call guest function that calls host function
-        let mut init_sandbox: MultiUseSandbox = sandbox.evolve(Noop::default())?;
+        let mut init_sandbox: MultiUseSandbox = sandbox.evolve()?;
         let msg = "Hello world";
         let res = init_sandbox
             .call_guest_function_by_name::<i32>("GuestMethod1", msg.to_string())

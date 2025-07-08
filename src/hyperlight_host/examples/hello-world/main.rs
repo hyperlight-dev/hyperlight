@@ -16,7 +16,6 @@ limitations under the License.
 #![allow(clippy::disallowed_macros)]
 use std::thread;
 
-use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 
 fn main() -> hyperlight_host::Result<()> {
@@ -36,7 +35,7 @@ fn main() -> hyperlight_host::Result<()> {
     // Note: This function is unused, it's just here for demonstration purposes
 
     // Initialize sandbox to be able to call host functions
-    let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default())?;
+    let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
 
     // Call guest function
     let message = "Hello, World! I am executing inside of a VM :)\n".to_string();

@@ -15,8 +15,7 @@ limitations under the License.
 */
 #![allow(clippy::disallowed_macros)]
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, Result};
+use hyperlight_host::{GuestBinary, Result};
 use hyperlight_testing::simple_guest_as_string;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -40,7 +39,7 @@ fn main() -> Result<()> {
     let usandbox = UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None)?;
 
     let mut sbox = usandbox
-        .evolve(Noop::<UninitializedSandbox, MultiUseSandbox>::default())
+        .evolve()
         .unwrap();
 
     // do the function call

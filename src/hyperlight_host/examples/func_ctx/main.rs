@@ -15,7 +15,6 @@ limitations under the License.
 */
 
 use hyperlight_host::sandbox::{MultiUseSandbox, UninitializedSandbox};
-use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, Result};
 use hyperlight_testing::simple_guest_as_string;
 
@@ -25,7 +24,7 @@ fn main() {
     let mut sbox1: MultiUseSandbox = {
         let path = simple_guest_as_string().unwrap();
         let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-        u_sbox.evolve(Noop::default())
+        u_sbox.evolve()
     }
     .unwrap();
 

@@ -20,8 +20,7 @@ use std::sync::{Arc, Barrier};
 use std::thread::{JoinHandle, spawn};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, Result};
+use hyperlight_host::{GuestBinary, Result};
 use hyperlight_testing::simple_guest_as_string;
 use tracing_forest::ForestLayer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -74,10 +73,7 @@ fn run_example() -> Result<()> {
             usandbox.register_print(fn_writer)?;
 
             // Initialize the sandbox.
-
-            let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
-
-            let mut multiuse_sandbox = usandbox.evolve(no_op)?;
+            let mut multiuse_sandbox = usandbox.evolve()?;
 
             // Call a guest function 5 times to generate some log entries.
             for _ in 0..5 {
@@ -106,10 +102,7 @@ fn run_example() -> Result<()> {
         UninitializedSandbox::new(GuestBinary::FilePath(hyperlight_guest_path.clone()), None)?;
 
     // Initialize the sandbox.
-
-    let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
-
-    let mut multiuse_sandbox = usandbox.evolve(no_op)?;
+    let mut multiuse_sandbox = usandbox.evolve()?;
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
 
     // Call a function that gets cancelled by the host function 5 times to generate some log entries.

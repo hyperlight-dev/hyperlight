@@ -19,7 +19,6 @@ use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{
     Callable, MultiUseSandbox, SandboxConfiguration, UninitializedSandbox,
 };
-use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_testing::simple_guest_as_string;
 
 fn create_uninit_sandbox() -> UninitializedSandbox {
@@ -28,7 +27,7 @@ fn create_uninit_sandbox() -> UninitializedSandbox {
 }
 
 fn create_multiuse_sandbox() -> MultiUseSandbox {
-    create_uninit_sandbox().evolve(Noop::default()).unwrap()
+    create_uninit_sandbox().evolve().unwrap()
 }
 
 fn guest_call_benchmark(c: &mut Criterion) {
@@ -65,7 +64,7 @@ fn guest_call_benchmark(c: &mut Criterion) {
             .unwrap();
 
         let mut multiuse_sandbox: MultiUseSandbox =
-            uninitialized_sandbox.evolve(Noop::default()).unwrap();
+            uninitialized_sandbox.evolve().unwrap();
 
         b.iter(|| {
             multiuse_sandbox
@@ -97,7 +96,7 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
             Some(config),
         )
         .unwrap();
-        let mut sandbox = sandbox.evolve(Noop::default()).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
 
         b.iter(|| {
             sandbox

@@ -19,8 +19,7 @@ use std::sync::{Arc, Barrier};
 use std::thread::{JoinHandle, spawn};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, Result};
+use hyperlight_host::{GuestBinary, Result};
 use hyperlight_testing::simple_guest_as_string;
 
 // Run this rust example with the flag --features "function_call_metrics" to enable more metrics to be emitted
@@ -57,10 +56,7 @@ fn do_hyperlight_stuff() {
             usandbox.register_print(fn_writer)?;
 
             // Initialize the sandbox.
-
-            let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
-
-            let mut multiuse_sandbox = usandbox.evolve(no_op).expect("Failed to evolve sandbox");
+            let mut multiuse_sandbox = usandbox.evolve().expect("Failed to evolve sandbox");
 
             // Call a guest function 5 times to generate some metrics.
             for _ in 0..5 {
@@ -91,10 +87,7 @@ fn do_hyperlight_stuff() {
             .expect("Failed to create UninitializedSandbox");
 
     // Initialize the sandbox.
-
-    let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
-
-    let mut multiuse_sandbox = usandbox.evolve(no_op).expect("Failed to evolve sandbox");
+    let mut multiuse_sandbox = usandbox.evolve().expect("Failed to evolve sandbox");
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
 
     const NUM_CALLS: i32 = 5;

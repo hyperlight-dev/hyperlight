@@ -307,7 +307,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::{Callable, SandboxConfiguration};
-    use crate::sandbox_state::transition::Noop;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
 
     // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
@@ -321,7 +320,7 @@ mod tests {
         let mut sbox1: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
-            u_sbox.evolve(Noop::default())
+            u_sbox.evolve()
         }
         .unwrap();
 
@@ -332,7 +331,7 @@ mod tests {
         let mut sbox2: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
-            u_sbox.evolve(Noop::default())
+            u_sbox.evolve()
         }
         .unwrap();
 
@@ -352,7 +351,7 @@ mod tests {
         let mut sbox: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve(Noop::default())
+            u_sbox.evolve()
         }
         .unwrap();
 
@@ -389,7 +388,7 @@ mod tests {
 
             usbox.register("MakeGetpidSyscall", make_get_pid_syscall)?;
 
-            let mut sbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
+            let mut sbox: MultiUseSandbox = usbox.evolve()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -425,7 +424,7 @@ mod tests {
             )?;
             // ^^^ note, we are allowing SYS_getpid
 
-            let mut sbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
+            let mut sbox: MultiUseSandbox = usbox.evolve()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -479,7 +478,7 @@ mod tests {
             .unwrap();
             ubox.register("Openat_Hostfunc", make_openat_syscall)?;
 
-            let mut sbox = ubox.evolve(Noop::default()).unwrap();
+            let mut sbox = ubox.evolve().unwrap();
             let host_func_result = sbox
                 .call_guest_function_by_name::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
@@ -509,7 +508,7 @@ mod tests {
                 make_openat_syscall,
                 [libc::SYS_openat],
             )?;
-            let mut sbox = ubox.evolve(Noop::default()).unwrap();
+            let mut sbox = ubox.evolve().unwrap();
             let host_func_result = sbox
                 .call_guest_function_by_name::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
@@ -532,7 +531,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
+        let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
 
         let res: Result<()> = multi_use_sandbox.call_guest_function_by_name("TriggerException", ());
 
@@ -573,7 +572,7 @@ mod tests {
                     .unwrap();
 
                     let mut multi_use_sandbox: MultiUseSandbox =
-                        usbox.evolve(Noop::default()).unwrap();
+                        usbox.evolve().unwrap();
 
                     let res: i32 = multi_use_sandbox
                         .call_guest_function_by_name("GetStatic", ())
@@ -601,7 +600,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .evolve(Noop::default())
+        .evolve()
         .unwrap();
 
         let expected = b"hello world";

@@ -104,7 +104,6 @@ mod tests {
     use hyperlight_testing::simple_guest_as_string;
 
     use crate::sandbox::uninitialized::GuestBinary;
-    use crate::sandbox_state::transition::Noop;
     use crate::{MultiUseSandbox, UninitializedSandbox, new_error};
 
     #[test]
@@ -166,7 +165,7 @@ mod tests {
                         .unwrap();
 
                     let sandbox = uninitialized_sandbox
-                        .evolve(Noop::default())
+                        .evolve()
                         .unwrap_or_else(|_| {
                             panic!("Failed to initialize UninitializedSandbox thread {}", i)
                         });
