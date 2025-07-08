@@ -31,6 +31,8 @@ pub mod memory_region;
 /// Functionality that wraps a `SandboxMemoryLayout` and a
 /// `SandboxMemoryConfig` to mutate a sandbox's memory as necessary.
 pub mod mgr;
+/// A compact snapshot representation for memory pages
+pub(crate) mod page_snapshot;
 /// Structures to represent pointers into guest and host memory
 pub mod ptr;
 /// Structures to represent memory address spaces into which pointers
@@ -47,5 +49,7 @@ pub mod shared_mem_snapshot;
 /// Utilities for writing shared memory tests
 #[cfg(test)]
 pub(crate) mod shared_mem_tests;
+/// A wrapper around a `SharedMemory` to manage snapshots of the memory
+pub mod shared_memory_snapshot_manager;
 #[cfg(target_os = "windows")]
 mod windows_dirty_page_tracker;

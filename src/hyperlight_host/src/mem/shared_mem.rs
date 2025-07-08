@@ -627,12 +627,30 @@ impl ExclusiveSharedMemory {
         Ok(())
     }
 
+    /// Copies bytes from `self` to `dst` starting at offset
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub fn copy_to_slice(&self, dst: &mut [u8], offset: usize) -> Result<()> {
+        let data = self.as_slice();
+        bounds_check!(offset, dst.len(), data.len());
+        dst.copy_from_slice(&data[offset..offset + dst.len()]);
+        Ok(())
+    }
+
     /// Return the address of memory at an offset to this `SharedMemory` checking
     /// that the memory is within the bounds of the `SharedMemory`.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn calculate_address(&self, offset: usize) -> Result<usize> {
         bounds_check!(offset, 0, self.mem_size());
         Ok(self.base_addr() + offset)
+    }
+
+    /// Fill the memory in the range `[offset, offset + len)` with `value`
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub fn zero_fill(&mut self, offset: usize, len: usize) -> Result<()> {
+        bounds_check!(offset, len, self.mem_size());
+        let data = self.as_mut_slice();
+        data[offset..offset + len].fill(0);
+        Ok(())
     }
 
     generate_reader!(read_u8, u8);
