@@ -16,7 +16,6 @@ limitations under the License.
 #![allow(clippy::disallowed_macros)]
 use std::thread;
 
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 

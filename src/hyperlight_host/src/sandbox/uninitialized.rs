@@ -34,7 +34,6 @@ use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags}
 use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
-use crate::sandbox_state::sandbox::EvolvableSandbox;
 use crate::sandbox_state::transition::Noop;
 use crate::{MultiUseSandbox, Result, log_then_return, new_error};
 
@@ -110,16 +109,10 @@ impl crate::sandbox_state::sandbox::Sandbox for UninitializedSandbox {
     }
 }
 
-impl
-    EvolvableSandbox<
-        UninitializedSandbox,
-        MultiUseSandbox,
-        Noop<UninitializedSandbox, MultiUseSandbox>,
-    > for UninitializedSandbox
-{
+impl UninitializedSandbox {
     /// Evolve `self` to a `MultiUseSandbox` without any additional metadata.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn evolve(self, _: Noop<UninitializedSandbox, MultiUseSandbox>) -> Result<MultiUseSandbox> {
+    pub fn evolve(self, _: Noop<UninitializedSandbox, MultiUseSandbox>) -> Result<MultiUseSandbox> {
         evolve_impl_multi_use(self)
     }
 }
@@ -433,7 +426,6 @@ mod tests {
 
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
-    use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
     use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 

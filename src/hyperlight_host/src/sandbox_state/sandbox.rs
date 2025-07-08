@@ -18,7 +18,6 @@ use std::fmt::Debug;
 
 use tracing::{Span, instrument};
 
-use super::transition::TransitionMetadata;
 use crate::{Result, new_error};
 
 /// The minimal functionality of a Hyperlight sandbox. Most of the types
@@ -29,9 +28,8 @@ use crate::{Result, new_error};
 /// in the state machine to which it belongs, and it may know how to "evolve"
 /// into a next state. That "next state" may in turn know how to roll back
 /// to the root node.
-///
-/// These transitions are expressed as `EvolvableSandbox` implementations
-/// any `Sandbox` implementation can opt into.
+/// 
+/// TODO: fix this comment, it is not accurate anymore
 pub trait Sandbox: Sized + Debug {
     /// Check to ensure the current stack cookie matches the one that
     /// was selected when the stack was constructed.
@@ -60,12 +58,4 @@ pub trait UninitializedSandbox: Sandbox {
 
     /// Retrieves mutable reference to strongly typed `UninitializedSandbox`
     fn get_uninitialized_sandbox_mut(&mut self) -> &mut crate::sandbox::UninitializedSandbox;
-}
-
-/// A `Sandbox` that knows how to "evolve" into a next state.
-pub trait EvolvableSandbox<Cur: Sandbox, Next: Sandbox, T: TransitionMetadata<Cur, Next>>:
-    Sandbox
-{
-    /// Evolve `Self` to `Next` providing Metadata.
-    fn evolve(self, tsn: T) -> Result<Next>;
 }

@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex};
 
 use common::new_uninit;
 use hyperlight_host::sandbox::{Callable, SandboxConfiguration};
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{
     GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,

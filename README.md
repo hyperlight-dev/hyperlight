@@ -35,7 +35,6 @@ It is followed by an example of a simple guest application using the Hyperlight 
 ```rust
 use std::thread;
 
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 

@@ -347,7 +347,6 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
             pub(crate) rt: ::std::sync::Arc<::std::sync::Mutex<#rtsid<T>>>,
         }
         pub(crate) fn register_host_functions<I: #ns::#import_trait + ::std::marker::Send + 'static, S: ::hyperlight_host::func::Registerable>(sb: &mut S, i: I) -> ::std::sync::Arc<::std::sync::Mutex<#rtsid<I>>> {
-            use ::hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
             let rts = ::std::sync::Arc::new(::std::sync::Mutex::new(#rtsid::new()));
             let #import_id = ::std::sync::Arc::new(::std::sync::Mutex::new(i));
             #(#imports)*
@@ -361,7 +360,7 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
             fn instantiate<I: #ns::#import_trait + ::std::marker::Send + 'static>(mut self, i: I) -> Self::Exports<I> {
                 let rts = register_host_functions(&mut self, i);
                 let noop = ::core::default::Default::default();
-                let sb = ::hyperlight_host::sandbox_state::sandbox::EvolvableSandbox::evolve(self, noop).unwrap();
+                let sb = self.evolve(noop).unwrap();
                 #wrapper_name {
                     sb,
                     rt: rts,

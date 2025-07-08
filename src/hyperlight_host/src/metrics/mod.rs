@@ -93,7 +93,6 @@ mod tests {
     use metrics_util::CompositeKey;
 
     use super::*;
-    use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
     use crate::{GuestBinary, UninitializedSandbox};
 
