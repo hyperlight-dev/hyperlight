@@ -563,9 +563,29 @@ pub(crate) mod tests {
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
         let (_hshm, mut gshm) = sandbox.mgr.build();
+
+        let mut regions = gshm.layout.get_memory_regions(&gshm.shared_mem)?;
+
+        // Set up shared memory to calculate rsp_ptr
+        #[cfg(feature = "init-paging")]
+        let rsp_ptr = {
+            use crate::mem::ptr::GuestPtr;
+            let rsp_u64 = gshm.set_up_page_tables(&mut regions)?;
+            let rsp_raw = RawPtr::from(rsp_u64);
+            GuestPtr::try_from(rsp_raw)
+        }?;
+        #[cfg(not(feature = "init-paging"))]
+        let rsp_ptr = {
+            use crate::mem::ptr::GuestPtr;
+            use crate::mem::ptr_offset::Offset;
+            GuestPtr::try_from(Offset::from(0))
+        }?;
+
         let mut vm = set_up_hypervisor_partition(
             &mut gshm,
             &config,
+            rsp_ptr,
+            regions,
             #[cfg(any(crashdump, gdb))]
             &rt_cfg,
         )?;
