@@ -1,0 +1,30 @@
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = [
+  "-C",
+  "code-model=small",
+  "-C",
+  "link-args=-e entrypoint",
+  "-C",
+  "target-feature=-soft-float,+avx2",
+  # Note. Setting soft-float via target-features is deprecated due to possibly introducing ABI-unsoundness, but we need it if we want to use x86_64-unknown-none as a target.
+  #   In the future if this breaks, we can create a custom target that does not deafult to +soft-float.
+  #
+  # Note: on x86_64, avx2 also implies:
+  # - avx
+  # - sse4.2
+  # - sse4.1
+  # - ssse3
+  # - sse3
+  # - sse2
+  # - sse
+]
+linker = "rust-lld"
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

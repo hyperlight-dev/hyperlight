@@ -96,6 +96,14 @@ pub fn dummy_guest_as_string() -> Result<String> {
         .ok_or_else(|| anyhow!("couldn't convert dummy guest PathBuf to string"))
 }
 
+/// Get a fully qualified OS-specific path to the simdguest elf binary
+pub fn simdguest_as_string() -> Result<String> {
+    let buf = rust_guest_as_pathbuf("simdguest");
+    buf.to_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("couldn't convert simd guest PathBuf to string"))
+}
+
 pub fn c_guest_as_pathbuf(guest: &str) -> PathBuf {
     let build_dir_selector = if cfg!(debug_assertions) {
         "debug"
