@@ -93,6 +93,7 @@ impl TryFrom<u8> for Exception {
 /// - TraceRecordStack: records the stack trace of the guest
 /// - TraceMemoryAlloc: records memory allocation events
 /// - TraceMemoryFree: records memory deallocation events
+/// - TraceRecord: records a trace event in the guest
 pub enum OutBAction {
     Log = 99,
     CallFunction = 101,
@@ -101,9 +102,11 @@ pub enum OutBAction {
     #[cfg(feature = "unwind_guest")]
     TraceRecordStack = 104,
     #[cfg(feature = "mem_profile")]
-    TraceMemoryAlloc,
+    TraceMemoryAlloc = 105,
     #[cfg(feature = "mem_profile")]
-    TraceMemoryFree,
+    TraceMemoryFree = 106,
+    #[cfg(feature = "trace_guest")]
+    TraceRecord = 107,
 }
 
 impl TryFrom<u16> for OutBAction {
@@ -120,6 +123,8 @@ impl TryFrom<u16> for OutBAction {
             105 => Ok(OutBAction::TraceMemoryAlloc),
             #[cfg(feature = "mem_profile")]
             106 => Ok(OutBAction::TraceMemoryFree),
+            #[cfg(feature = "trace_guest")]
+            107 => Ok(OutBAction::TraceRecord),
             _ => Err(anyhow::anyhow!("Invalid OutBAction value: {}", val)),
         }
     }
