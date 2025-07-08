@@ -8,3 +8,9 @@ hyperlight-guest = { path = "../../../hyperlight_guest" }
 hyperlight-guest-bin = { path = "../../../hyperlight_guest_bin" }
 hyperlight-common = { path = "../../../hyperlight_common", default-features = false }
 hyperlight-component-macro = { path = "../../../hyperlight_component_macro" }
+
+[features]
+default = []
+trace_guest = ["hyperlight-guest-bin/trace_guest"]
+unwind_guest = ["hyperlight-common/unwind_guest"]
+mem_profile = ["hyperlight-common/mem_profile", "hyperlight-guest-bin/mem_profile"]
