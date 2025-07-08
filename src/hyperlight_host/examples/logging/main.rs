@@ -19,7 +19,6 @@ extern crate hyperlight_host;
 use std::sync::{Arc, Barrier};
 
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result};
 use hyperlight_testing::simple_guest_as_string;

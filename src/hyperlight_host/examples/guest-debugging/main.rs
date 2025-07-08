@@ -19,7 +19,6 @@ use std::thread;
 use hyperlight_host::sandbox::SandboxConfiguration;
 #[cfg(gdb)]
 use hyperlight_host::sandbox::config::DebugInfo;
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 

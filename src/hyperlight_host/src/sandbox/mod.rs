@@ -104,7 +104,6 @@ mod tests {
     use hyperlight_testing::simple_guest_as_string;
 
     use crate::sandbox::uninitialized::GuestBinary;
-    use crate::sandbox_state::sandbox::EvolvableSandbox;
     use crate::sandbox_state::transition::Noop;
     use crate::{MultiUseSandbox, UninitializedSandbox, new_error};
 

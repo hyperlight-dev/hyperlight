@@ -15,7 +15,6 @@ limitations under the License.
 */
 
 use hyperlight_host::sandbox::{MultiUseSandbox, UninitializedSandbox};
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{GuestBinary, Result};
 use hyperlight_testing::simple_guest_as_string;

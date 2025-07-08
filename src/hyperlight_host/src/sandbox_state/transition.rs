@@ -18,6 +18,8 @@ use std::marker::PhantomData;
 
 use super::sandbox::Sandbox;
 
+/// TODO: fix this comment, it is not accurate anymore.
+/// 
 /// Metadata about an evolution. Any `Sandbox` implementation
 /// that also implements `EvolvableSandbox` can decide the following
 /// things in a type-safe way:

@@ -20,7 +20,6 @@ use std::sync::{Mutex, OnceLock};
 
 use hyperlight_host::func::{ParameterValue, ReturnType};
 use hyperlight_host::sandbox::uninitialized::GuestBinary;
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
 use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simple_guest_for_fuzzing_as_string;
