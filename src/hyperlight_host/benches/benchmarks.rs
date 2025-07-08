@@ -38,13 +38,9 @@ fn guest_call_benchmark(c: &mut Criterion) {
     // Benchmarks a single guest function call.
     // The benchmark does **not** include the time to reset the sandbox memory after the call.
     group.bench_function("guest_call", |b| {
-        let mut call_ctx = create_multiuse_sandbox().new_call_context();
+        let mut sbox = create_multiuse_sandbox();
 
-        b.iter(|| {
-            call_ctx
-                .call::<String>("Echo", "hello\n".to_string())
-                .unwrap()
-        });
+        b.iter(|| sbox.call::<String>("Echo", "hello\n".to_string()).unwrap());
     });
 
     // Benchmarks a single guest function call.
@@ -69,11 +65,14 @@ fn guest_call_benchmark(c: &mut Criterion) {
             .register("HostAdd", |a: i32, b: i32| Ok(a + b))
             .unwrap();
 
-        let multiuse_sandbox: MultiUseSandbox =
+        let mut multiuse_sandbox: MultiUseSandbox =
             uninitialized_sandbox.evolve(Noop::default()).unwrap();
-        let mut call_ctx = multiuse_sandbox.new_call_context();
 
-        b.iter(|| call_ctx.call::<i32>("Add", (1_i32, 41_i32)).unwrap());
+        b.iter(|| {
+            multiuse_sandbox
+                .call::<i32>("Add", (1_i32, 41_i32))
+                .unwrap()
+        });
     });
 
     group.finish();
@@ -137,17 +136,6 @@ fn sandbox_benchmark(c: &mut Criterion) {
     // Benchmarks the time to create a new sandbox and drop it.
     group.bench_function("create_sandbox_and_drop", |b| {
         b.iter(create_multiuse_sandbox);
-    });
-
-    // Benchmarks the time to create a new sandbox and create a new call context.
-    // Does **not** include the time to drop the sandbox or the call context.
-    group.bench_function("create_sandbox_and_call_context", |b| {
-        b.iter_with_large_drop(|| create_multiuse_sandbox().new_call_context());
-    });
-
-    // Benchmarks the time to create a new sandbox, create a new call context, and drop the call context.
-    group.bench_function("create_sandbox_and_call_context_and_drop", |b| {
-        b.iter(|| create_multiuse_sandbox().new_call_context());
     });
 
     group.finish();

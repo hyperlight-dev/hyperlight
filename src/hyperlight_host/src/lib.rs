@@ -85,9 +85,6 @@ pub use sandbox::is_hypervisor_present;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
 
-/// The re-export for the `MultiUseGuestCallContext` type`
-pub use crate::func::call_ctx::MultiUseGuestCallContext;
-
 /// The universal `Result` type used throughout the Hyperlight codebase.
 pub type Result<T> = core::result::Result<T, error::HyperlightError>;
 

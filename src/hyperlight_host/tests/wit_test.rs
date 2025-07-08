@@ -18,7 +18,7 @@ limitations under the License.
 use std::sync::{Arc, Mutex};
 
 use hyperlight_common::resource::BorrowedResourceGuard;
-use hyperlight_host::{GuestBinary, MultiUseGuestCallContext, UninitializedSandbox};
+use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::wit_guest_as_string;
 
 extern crate alloc;
@@ -280,7 +280,7 @@ impl test::wit::TestImports for Host {
     }
 }
 
-fn sb() -> TestSandbox<Host, MultiUseGuestCallContext> {
+fn sb() -> TestSandbox<Host, MultiUseSandbox> {
     let path = wit_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None).unwrap();

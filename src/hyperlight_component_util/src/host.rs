@@ -357,14 +357,13 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
             #(#exports)*
         }
         impl #ns::#r#trait for ::hyperlight_host::sandbox::UninitializedSandbox {
-            type Exports<I: #ns::#import_trait + ::std::marker::Send> = #wrapper_name<I, ::hyperlight_host::func::call_ctx::MultiUseGuestCallContext>;
+            type Exports<I: #ns::#import_trait + ::std::marker::Send> = #wrapper_name<I, ::hyperlight_host::sandbox::initialized_multi_use::MultiUseSandbox>;
             fn instantiate<I: #ns::#import_trait + ::std::marker::Send + 'static>(mut self, i: I) -> Self::Exports<I> {
                 let rts = register_host_functions(&mut self, i);
                 let noop = ::core::default::Default::default();
                 let sb = ::hyperlight_host::sandbox_state::sandbox::EvolvableSandbox::evolve(self, noop).unwrap();
-                let cc = ::hyperlight_host::func::call_ctx::MultiUseGuestCallContext::start(sb);
                 #wrapper_name {
-                    sb: cc,
+                    sb,
                     rt: rts,
                 }
             }

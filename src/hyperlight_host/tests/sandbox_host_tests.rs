@@ -35,16 +35,16 @@ use crate::common::{get_callbackguest_uninit_sandboxes, get_simpleguest_sandboxe
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn pass_byte_array() {
-    for sandbox in get_simpleguest_sandboxes(None).into_iter() {
-        let mut ctx = sandbox.new_call_context();
+    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
         const LEN: usize = 10;
         let bytes = vec![1u8; LEN];
-        let res: Vec<u8> = ctx
+        let res: Vec<u8> = sandbox
             .call("SetByteArrayToZero", bytes.clone())
             .expect("Expected VecBytes");
         assert_eq!(res, [0; LEN]);
 
-        ctx.call::<i32>("SetByteArrayToZeroNoLength", bytes.clone())
+        sandbox
+            .call::<i32>("SetByteArrayToZeroNoLength", bytes.clone())
             .unwrap_err(); // missing length param
     }
 }
