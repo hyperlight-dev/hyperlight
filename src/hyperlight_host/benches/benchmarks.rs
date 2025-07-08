@@ -43,13 +43,15 @@ fn guest_call_benchmark(c: &mut Criterion) {
 
     // Benchmarks a single guest function call.
     // The benchmark does include the time to reset the sandbox memory after the call.
-    group.bench_function("guest_call_with_reset", |b| {
-        let mut sandbox = create_multiuse_sandbox();
+    group.bench_function("guest_call_with_restore", |b| {
+        let mut sbox = create_multiuse_sandbox();
+        let snapshot = sbox.snapshot().unwrap();
 
         b.iter(|| {
-            sandbox
-                .call_guest_function_by_name::<String>("Echo", "hello\n".to_string())
-                .unwrap()
+            sbox
+                .call::<String>("Echo", "hello\n".to_string())
+                .unwrap();
+            sbox.restore(&snapshot).unwrap();
         });
     });
 
