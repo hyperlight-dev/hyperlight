@@ -105,6 +105,17 @@ pub(crate) struct TraceInfo {
     /// early as the creation of the sandbox being traced.
     #[allow(dead_code)]
     pub epoch: std::time::Instant,
+    /// The frequency of the timestamp counter.
+    #[allow(dead_code)]
+    pub tsc_freq: u64,
+    /// The epoch at which the guest started, if it has started.
+    /// This is used to calculate the time spent in the guest relative to the
+    /// time of the host.
+    #[allow(dead_code)]
+    pub guest_start_epoch: Option<std::time::Instant>,
+    /// The start guest time, in TSC cycles, for the current guest.
+    #[allow(dead_code)]
+    pub guest_start_tsc: Option<u64>,
     /// The file to which the trace is being written
     #[allow(dead_code)]
     pub file: Arc<Mutex<std::fs::File>>,
@@ -139,8 +150,13 @@ impl TraceInfo {
             let cache = framehop::x86_64::CacheX86_64::new();
             (unwinder, Arc::new(Mutex::new(cache)))
         };
+        let tsc_freq = Self::calculate_tsc_freq()?;
+
         let ret = Self {
             epoch: std::time::Instant::now(),
+            tsc_freq,
+            guest_start_epoch: None,
+            guest_start_tsc: None,
             file: Arc::new(Mutex::new(std::fs::File::create_new(path)?)),
             #[cfg(feature = "unwind_guest")]
             unwind_module,
@@ -155,6 +171,24 @@ impl TraceInfo {
             let _ = f.write_all(hash.as_bytes());
         })?;
         Ok(ret)
+    }
+
+    /// Calculate the TSC frequency based on the RDTSC instruction.
+    fn calculate_tsc_freq() -> crate::Result<u64> {
+        if !hyperlight_guest_tracing::invariant_tsc::has_invariant_tsc() {
+            return Err(crate::new_error!(
+                "Invariant TSC is not supported on this platform"
+            ));
+        }
+        let start = hyperlight_guest_tracing::invariant_tsc::read_tsc();
+        let start_time = std::time::Instant::now();
+        // Sleep for 1 second to get a good sample
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let end = hyperlight_guest_tracing::invariant_tsc::read_tsc();
+        let end_time = std::time::Instant::now();
+        let elapsed = end_time.duration_since(start_time).as_secs_f64();
+
+        Ok(((end - start) as f64 / elapsed) as u64)
     }
 }
 

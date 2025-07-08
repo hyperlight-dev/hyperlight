@@ -44,7 +44,7 @@ use {
     std::sync::Mutex,
 };
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "trace_guest")]
 use super::TraceRegister;
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
@@ -732,6 +732,12 @@ impl Hypervisor for HypervWindowsDriver {
                 Reserved: Default::default(),
             }
         } else {
+            #[cfg(feature = "trace_guest")]
+            if self.trace_info.guest_start_epoch.is_none() {
+                // Set the guest start epoch to the current time, before running the vcpu
+                crate::debug!("MSHV - Guest Start Epoch set");
+                self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
+            }
             self.processor.run()?
         };
         self.interrupt_handle
@@ -1046,7 +1052,7 @@ impl Hypervisor for HypervWindowsDriver {
         Ok(())
     }
 
-    #[cfg(feature = "unwind_guest")]
+    #[cfg(feature = "trace_guest")]
     fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
         let regs = self.processor.get_regs()?;
         match reg {
@@ -1061,6 +1067,10 @@ impl Hypervisor for HypervWindowsDriver {
     #[cfg(feature = "trace_guest")]
     fn trace_info_as_ref(&self) -> &TraceInfo {
         &self.trace_info
+    }
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
+        &mut self.trace_info
     }
 }
 

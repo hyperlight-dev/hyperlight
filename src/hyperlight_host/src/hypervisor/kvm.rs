@@ -29,7 +29,7 @@ use tracing::{Span, instrument};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "trace_guest")]
 use super::TraceRegister;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
@@ -643,6 +643,13 @@ impl Hypervisor for KVMDriver {
         {
             Err(kvm_ioctls::Error::new(libc::EINTR))
         } else {
+            #[cfg(feature = "trace_guest")]
+            if self.trace_info.guest_start_epoch.is_none() {
+                // Set the guest start epoch to the current time, before running the vcpu
+                crate::debug!("KVM - Guest Start Epoch set");
+                self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
+            }
+
             // Note: if a `InterruptHandle::kill()` called while this thread is **here**
             // Then the vcpu will run, but we will keep sending signals to this thread
             // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
@@ -965,7 +972,7 @@ impl Hypervisor for KVMDriver {
         Ok(())
     }
 
-    #[cfg(feature = "unwind_guest")]
+    #[cfg(feature = "trace_guest")]
     fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
         let regs = self.vcpu_fd.get_regs()?;
         Ok(match reg {
@@ -980,6 +987,10 @@ impl Hypervisor for KVMDriver {
     #[cfg(feature = "trace_guest")]
     fn trace_info_as_ref(&self) -> &TraceInfo {
         &self.trace_info
+    }
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
+        &mut self.trace_info
     }
 }
 
