@@ -18,48 +18,6 @@ use std::marker::PhantomData;
 
 use super::sandbox::Sandbox;
 
-/// TODO: fix this comment, it is not accurate anymore.
-/// 
-/// Metadata about an evolution. Any `Sandbox` implementation
-/// that also implements `EvolvableSandbox` can decide the following
-/// things in a type-safe way:
-///
-/// 1. That transition is possible
-/// 2. That transition requires a specific kind of metadata
-///
-/// For example, if you have the following structs:
-///
-/// ```ignore
-/// struct MySandbox1 {}
-/// struct MySandbox2 {}
-///
-/// impl Sandbox for MySandbox1 {...}
-/// impl Sandbox for MySandbox2 {...}
-/// ```
-///
-/// ...then you can define a metadata-free evolve transition between
-/// `MySandbox1` and `MySandbox2` as follows:
-///
-/// ```ignore
-/// impl EvolvableSandbox<
-///     MySandbox1,
-///     MySandbox2,
-///     Noop<MySandbox1, MySandbox2>
-/// > for MySandbox1 {
-///     fn evolve(
-///         self,
-///         _: Noop<MySandbox1, MySandbox2>
-///     ) -> Result<MySandbox2> {
-///         Ok(MySandbox2{})
-///     }
-/// }
-///
-/// ```
-///
-/// Most transitions will likely involve `Noop`, but some may involve
-/// implementing their own.
-pub trait TransitionMetadata<Cur: Sandbox, Next: Sandbox> {}
-
 /// Transition metadata that contains and does nothing. `Noop` is a
 /// placeholder when you want to implement an `EvolvableSandbox`
 /// that needs no additional metadata to succeed.
@@ -78,5 +36,3 @@ impl<Cur: Sandbox, Next: Sandbox> Default for Noop<Cur, Next> {
         }
     }
 }
-
-impl<Cur: Sandbox, Next: Sandbox> TransitionMetadata<Cur, Next> for Noop<Cur, Next> {}
