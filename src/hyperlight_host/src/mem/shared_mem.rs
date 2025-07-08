@@ -39,6 +39,7 @@ use windows::core::PCSTR;
 use crate::HyperlightError::MemoryAllocationFailed;
 #[cfg(target_os = "windows")]
 use crate::HyperlightError::{MemoryRequestTooBig, WindowsAPIError};
+use crate::mem::dirty_page_tracking::{DirtyPageTracker, DirtyPageTracking};
 use crate::{Result, log_then_return, new_error};
 
 /// Makes sure that the given `offset` and `size` are within the bounds of the memory with size `mem_size`.
@@ -387,6 +388,19 @@ impl ExclusiveSharedMemory {
         })
     }
 
+    /// Starts tracking dirty pages in the shared memory region.
+    pub(super) fn start_tracking_dirty_pages(&self) -> Result<DirtyPageTracker> {
+        DirtyPageTracker::new(self)
+    }
+
+    /// Stop tracking dirty pages in the shared memory region.
+    pub(crate) fn stop_tracking_dirty_pages(
+        &self,
+        tracker: DirtyPageTracker,
+    ) -> Result<Vec<usize>> {
+        tracker.get_dirty_pages()
+    }
+
     /// Create a new region of shared memory with the given minimum
     /// size in bytes. The region will be surrounded by guard pages.
     ///
@@ -678,6 +692,9 @@ pub trait SharedMemory {
     /// Return a readonly reference to the host mapping backing this SharedMemory
     fn region(&self) -> &HostMapping;
 
+    /// Return an Arc clone of the host mapping backing this SharedMemory
+    fn region_arc(&self) -> Arc<HostMapping>;
+
     /// Return the base address of the host mapping of this
     /// region. Following the general Rust philosophy, this does not
     /// need to be marked as `unsafe` because doing anything with this
@@ -728,6 +745,9 @@ impl SharedMemory for ExclusiveSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
     }
+    fn region_arc(&self) -> Arc<HostMapping> {
+        Arc::clone(&self.region)
+    }
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
@@ -740,6 +760,11 @@ impl SharedMemory for GuestSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
     }
+
+    fn region_arc(&self) -> Arc<HostMapping> {
+        Arc::clone(&self.region)
+    }
+
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
@@ -982,6 +1007,11 @@ impl SharedMemory for HostSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
     }
+
+    fn region_arc(&self) -> Arc<HostMapping> {
+        Arc::clone(&self.region)
+    }
+
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,

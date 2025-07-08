@@ -16,12 +16,16 @@ limitations under the License.
 
 /// Various helper functions for working with bitmaps
 pub(crate) mod bitmap;
+/// a module for tracking dirty pages in the host.
+pub(crate) mod dirty_page_tracking;
 /// A simple ELF loader
 pub(crate) mod elf;
 /// A generic wrapper for executable files (PE, ELF, etc)
 pub(crate) mod exe;
 /// Functionality to establish a sandbox's memory layout.
 pub mod layout;
+#[cfg(target_os = "linux")]
+mod linux_dirty_page_tracker;
 /// memory regions to be mapped inside a vm
 pub mod memory_region;
 /// Functionality that wraps a `SandboxMemoryLayout` and a
@@ -43,3 +47,5 @@ pub mod shared_mem_snapshot;
 /// Utilities for writing shared memory tests
 #[cfg(test)]
 pub(crate) mod shared_mem_tests;
+#[cfg(target_os = "windows")]
+mod windows_dirty_page_tracker;
