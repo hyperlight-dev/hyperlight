@@ -21,8 +21,6 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::outb::Exception;
 use hyperlight_guest::exit::abort_with_code_and_message;
 
-use crate::paging;
-
 /// See AMD64 Architecture Programmer's Manual, Volume 2
 ///     §8.9.3 Interrupt Stack Frame, pp. 283--284
 ///       Figure 8-14: Long-Mode Stack After Interrupt---Same Privilege,
@@ -56,9 +54,9 @@ const _: () = assert!(size_of::<Context>() == 152 + 512);
 
 // TODO: This will eventually need to end up in a per-thread context,
 // when there are threads.
-pub static handlers: [core::sync::atomic::AtomicU64; 31] =
+pub static HANDLERS: [core::sync::atomic::AtomicU64; 31] =
     [const { core::sync::atomic::AtomicU64::new(0) }; 31];
-type handler_t = fn(n: u64, info: *mut ExceptionInfo, ctx: *mut Context, pf_addr: u64) -> bool;
+pub type HandlerT = fn(n: u64, info: *mut ExceptionInfo, ctx: *mut Context, pf_addr: u64) -> bool;
 
 /// Exception handler
 #[unsafe(no_mangle)]
@@ -89,15 +87,12 @@ pub extern "C" fn hl_exception_handler(
     // vectors (0-31)
     if exception_number < 31 {
         let handler =
-            handlers[exception_number as usize].load(core::sync::atomic::Ordering::Acquire);
+            HANDLERS[exception_number as usize].load(core::sync::atomic::Ordering::Acquire);
         if handler != 0
             && unsafe {
-                core::mem::transmute::<_, handler_t>(handler)(
-                    exception_number,
-                    exn_info,
-                    ctx,
-                    page_fault_address,
-                )
+                core::mem::transmute::<u64, fn(u64, *mut ExceptionInfo, *mut Context, u64) -> bool>(
+                    handler,
+                )(exception_number, exn_info, ctx, page_fault_address)
             }
         {
             return;

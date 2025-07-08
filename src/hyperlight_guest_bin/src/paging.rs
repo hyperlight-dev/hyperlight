@@ -53,8 +53,16 @@ struct MapResponse {
 }
 
 /// Assumption: all are page-aligned
+/// # Safety
+/// This function modifies pages backing a virtual memory range which is inherently unsafe w.r.t.
+/// the Rust memory model.
+/// When using this function note:
+/// - No locking is performed before touching page table data structures,
+///   as such do not use concurrently with any other page table operations
+/// - TLB invalidation is not performed,
+///   if previously-unmapped ranges are not being mapped, TLB invalidation may need to be performed afterwards.
 pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
-    let mut pml4_base: u64 = 0;
+    let mut pml4_base: u64;
     unsafe {
         asm!("mov {}, cr3", out(reg) pml4_base);
     }
@@ -71,12 +79,18 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
     .map(|r| unsafe { alloc_pte_if_needed(r) })
     .flat_map(modify_ptes::<20, 12>)
     .map(|r| map_normal(phys_base, virt_base, r))
-    .collect::<()>();
+    .for_each(drop);
 }
 
 #[allow(unused)]
 /// This function is not presently used for anything, but is useful
 /// for debugging
+/// # Safety
+/// This function traverses page table data structures, and should not be called concurrently
+/// with any other operations that modify the page table.
+/// # Panics
+/// This function will panic if:
+/// - A page map request resolves to multiple page table entries
 pub unsafe fn dbg_print_address_pte(address: u64) -> u64 {
     let mut pml4_base: u64 = 0;
     unsafe {
@@ -105,11 +119,18 @@ pub unsafe fn dbg_print_address_pte(address: u64) -> u64 {
     if addrs.len() != 1 {
         panic!("impossible: 1 page map request resolved to multiple PTEs");
     }
-    return addrs[0];
+    addrs[0]
 }
 
 /// Allocate n contiguous physical pages and return the physical
 /// addresses of the pages in question.
+/// # Safety
+/// This function is not inherently unsafe but will likely become so in the future
+/// when a real physical page allocator is implemented.
+/// # Panics
+/// This function will panic if:
+/// - The Layout creation fails
+/// - Memory allocation fails
 pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
     // Currently, since all of main memory is idmap'd, we can just
     // allocate any appropriately aligned section of memory.
@@ -125,8 +146,11 @@ pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
     }
 }
 
-pub unsafe fn require_pte_exist(x: MapResponse) -> MapRequest {
-    let mut pte: u64 = 0;
+/// # Safety
+/// This function traverses page table data structures, and should not be called concurrently
+/// with any other operations that modify the page table.
+unsafe fn require_pte_exist(x: MapResponse) -> MapRequest {
+    let mut pte: u64;
     unsafe {
         asm!("mov {}, qword ptr [{}]", out(reg) pte, in(reg) x.entry_ptr);
     }
@@ -141,9 +165,12 @@ pub unsafe fn require_pte_exist(x: MapResponse) -> MapRequest {
     }
 }
 
-/// Page-mapping callback to allocate a next-level page table if necessary
-pub unsafe fn alloc_pte_if_needed(x: MapResponse) -> MapRequest {
-    let mut pte: u64 = 0;
+/// Page-mapping callback to allocate a next-level page table if necessary.
+/// # Safety
+/// This function modifies page table data structures, and should not be called concurrently
+/// with any other operations that modify the page table.
+unsafe fn alloc_pte_if_needed(x: MapResponse) -> MapRequest {
+    let mut pte: u64;
     unsafe {
         asm!("mov {}, qword ptr [{}]", out(reg) pte, in(reg) x.entry_ptr);
     }
@@ -157,6 +184,9 @@ pub unsafe fn alloc_pte_if_needed(x: MapResponse) -> MapRequest {
     }
     let page_addr = unsafe { alloc_phys_pages(1) };
     unsafe { ptov(page_addr).write_bytes(0u8, OS_PAGE_SIZE as usize) };
+
+    #[allow(clippy::identity_op)]
+    #[allow(clippy::precedence)]
     let pte = page_addr |
         1 << 5 | // A   - we don't track accesses at table level
         0 << 4 | // PCD - leave caching enabled
@@ -178,6 +208,8 @@ pub unsafe fn alloc_pte_if_needed(x: MapResponse) -> MapRequest {
 ///
 /// TODO: support permissions; currently mapping is always RWX
 fn map_normal(phys_base: u64, virt_base: *mut u8, r: MapResponse) {
+    #[allow(clippy::identity_op)]
+    #[allow(clippy::precedence)]
     let pte = (phys_base + (r.vmin as u64 - virt_base as u64)) |
         1 << 6 | // D   - we don't presently track dirty state for anything
         1 << 5 | // A   - we don't presently track access for anything
@@ -194,27 +226,27 @@ fn map_normal(phys_base: u64, virt_base: *mut u8, r: MapResponse) {
 #[inline(always)]
 /// Utility function to extract an (inclusive on both ends) bit range
 /// from a quadword.
-fn bits<const high_bit: u8, const low_bit: u8>(x: u64) -> u64 {
-    (x & ((1 << (high_bit + 1)) - 1)) >> low_bit
+fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
+    (x & ((1 << (HIGH_BIT + 1)) - 1)) >> LOW_BIT
 }
 
-struct ModifyPteIterator<const high_bit: u8, const low_bit: u8> {
+struct ModifyPteIterator<const HIGH_BIT: u8, const LOW_BIT: u8> {
     request: MapRequest,
     n: u64,
 }
-impl<const high_bit: u8, const low_bit: u8> Iterator for ModifyPteIterator<high_bit, low_bit> {
+impl<const HIGH_BIT: u8, const LOW_BIT: u8> Iterator for ModifyPteIterator<HIGH_BIT, LOW_BIT> {
     type Item = MapResponse;
     fn next(&mut self) -> Option<Self::Item> {
-        if (self.n << low_bit) >= self.request.len {
+        if (self.n << LOW_BIT) >= self.request.len {
             return None;
         }
         // next stage parameters
-        let next_vmin = self.request.vmin.wrapping_add((self.n << low_bit) as usize);
+        let next_vmin = self.request.vmin.wrapping_add((self.n << LOW_BIT) as usize);
         let entry_ptr = ptov(self.request.table_base)
-            .wrapping_add((bits::<high_bit, low_bit>(next_vmin as u64) << 3) as usize)
+            .wrapping_add((bits::<HIGH_BIT, LOW_BIT>(next_vmin as u64) << 3) as usize)
             as *mut u64;
-        let len_from_here = self.request.len - (self.n << low_bit);
-        let next_len = core::cmp::min(len_from_here, 1 << low_bit);
+        let len_from_here = self.request.len - (self.n << LOW_BIT);
+        let next_len = core::cmp::min(len_from_here, 1 << LOW_BIT);
 
         // update our state
         self.n += 1;
@@ -226,9 +258,9 @@ impl<const high_bit: u8, const low_bit: u8> Iterator for ModifyPteIterator<high_
         })
     }
 }
-fn modify_ptes<const high_bit: u8, const low_bit: u8>(
+fn modify_ptes<const HIGH_BIT: u8, const LOW_BIT: u8>(
     r: MapRequest,
-) -> ModifyPteIterator<high_bit, low_bit> {
+) -> ModifyPteIterator<HIGH_BIT, LOW_BIT> {
     ModifyPteIterator { request: r, n: 0 }
 }
 
@@ -236,7 +268,7 @@ pub fn flush_tlb() {
     // Currently this just always flips CR4.PGE back and forth to
     // trigger a tlb flush. We should use a faster approach where
     // available
-    let mut orig_cr4: u64 = 0;
+    let mut orig_cr4: u64;
     unsafe {
         asm!("mov {}, cr4", out(reg) orig_cr4);
     }
