@@ -806,11 +806,9 @@ mod tests {
                         .host_print(format!("Print from UninitializedSandbox on Thread {}\n", i))
                         .unwrap();
 
-                    let sandbox = uninitialized_sandbox
-                        .evolve()
-                        .unwrap_or_else(|_| {
-                            panic!("Failed to initialize UninitializedSandbox thread {}", i)
-                        });
+                    let sandbox = uninitialized_sandbox.evolve().unwrap_or_else(|_| {
+                        panic!("Failed to initialize UninitializedSandbox thread {}", i)
+                    });
 
                     sq.push(sandbox).unwrap_or_else(|_| {
                         panic!("Failed to push UninitializedSandbox thread {}", i)

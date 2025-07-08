@@ -68,8 +68,7 @@ fn main() -> hyperlight_host::Result<()> {
     // Note: This function is unused, it's just here for demonstration purposes
 
     // Initialize sandboxes to be able to call host functions
-    let mut multi_use_sandbox_dbg: MultiUseSandbox =
-        uninitialized_sandbox_dbg.evolve()?;
+    let mut multi_use_sandbox_dbg: MultiUseSandbox = uninitialized_sandbox_dbg.evolve()?;
     let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
 
     // Call guest function

@@ -126,23 +126,20 @@ where
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    evolve_impl(
-        u_sbox,
-        |hf, hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
+    evolve_impl(u_sbox, |hf, hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
+        #[cfg(gdb)]
+        let dbg_mem_wrapper = dbg_mem_access_handler_wrapper(hshm.clone());
+        Ok(MultiUseSandbox::from_uninit(
+            hf,
+            hshm,
+            vm,
+            out_hdl,
+            mem_hdl,
+            dispatch_ptr,
             #[cfg(gdb)]
-            let dbg_mem_wrapper = dbg_mem_access_handler_wrapper(hshm.clone());
-            Ok(MultiUseSandbox::from_uninit(
-                hf,
-                hshm,
-                vm,
-                out_hdl,
-                mem_hdl,
-                dispatch_ptr,
-                #[cfg(gdb)]
-                dbg_mem_wrapper,
-            ))
-        },
-    )
+            dbg_mem_wrapper,
+        ))
+    })
 }
 
 pub(crate) fn set_up_hypervisor_partition(

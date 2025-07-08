@@ -63,8 +63,7 @@ fn guest_call_benchmark(c: &mut Criterion) {
             .register("HostAdd", |a: i32, b: i32| Ok(a + b))
             .unwrap();
 
-        let mut multiuse_sandbox: MultiUseSandbox =
-            uninitialized_sandbox.evolve().unwrap();
+        let mut multiuse_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
 
         b.iter(|| {
             multiuse_sandbox
