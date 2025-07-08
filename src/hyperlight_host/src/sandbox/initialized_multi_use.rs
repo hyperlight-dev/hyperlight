@@ -124,9 +124,7 @@ impl MultiUseSandbox {
                 Output::TYPE,
                 args.into_value(),
             );
-            let ret = Output::from_value(ret?);
-            self.mem_mgr.unwrap_mgr_mut().push_state().unwrap();
-            ret
+            Output::from_value(ret?)
         })
     }
 
@@ -209,13 +207,11 @@ impl MultiUseSandbox {
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
         maybe_time_and_emit_guest_call(func_name, || {
-            let ret = self.call_guest_function_by_name_no_reset(func_name, ret_type, args);
-            self.mem_mgr.unwrap_mgr_mut().push_state()?;
-            ret
+            self.call_guest_function_by_name_no_reset(func_name, ret_type, args)
         })
     }
 
-    pub(crate) fn call_guest_function_by_name_no_reset(
+    fn call_guest_function_by_name_no_reset(
         &mut self,
         function_name: &str,
         return_type: ReturnType,

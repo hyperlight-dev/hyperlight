@@ -15,7 +15,6 @@ limitations under the License.
 */
 
 use std::cmp::Ordering;
-use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
@@ -34,7 +33,6 @@ use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use super::shared_mem_snapshot::SharedMemorySnapshot;
-use crate::HyperlightError::NoMemorySnapshot;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::GuestBlob;
 use crate::{Result, log_then_return, new_error};
@@ -75,9 +73,6 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) entrypoint_offset: Offset,
     /// How many memory regions were mapped after sandbox creation
     pub(crate) mapped_rgns: u64,
-    /// A vector of memory snapshots that can be used to save and  restore the state of the memory
-    /// This is used by the Rust Sandbox implementation (rather than the mem_snapshot field above which only exists to support current C API)
-    snapshots: Arc<Mutex<Vec<SharedMemorySnapshot>>>,
 }
 
 impl<S> SandboxMemoryManager<S>
@@ -98,7 +93,6 @@ where
             load_addr,
             entrypoint_offset,
             mapped_rgns: 0,
-            snapshots: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -288,39 +282,6 @@ where
         Ok(old_rgns - self.mapped_rgns)
     }
 
-    /// this function will create a memory snapshot and push it onto the stack of snapshots
-    /// It should be used when you want to save the state of the memory, for example, when evolving a sandbox to a new state
-    pub(crate) fn push_state(&mut self) -> Result<()> {
-        let snapshot = self.snapshot()?;
-        self.snapshots
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .push(snapshot);
-        Ok(())
-    }
-
-    /// this function restores a memory snapshot from the last snapshot in the list but does not pop the snapshot
-    /// off the stack
-    /// It should be used when you want to restore the state of the memory to a previous state but still want to
-    /// retain that state, for example after calling a function in the guest
-    ///
-    /// Returns the number of memory regions mapped into the sandbox
-    /// that need to be unmapped in order for the restore to be
-    /// completed.
-    pub(crate) fn restore_state_from_last_snapshot(&mut self) -> Result<u64> {
-        let snapshots = self
-            .snapshots
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        let last = snapshots.last();
-        let Some(snapshot) = last else {
-            log_then_return!(NoMemorySnapshot);
-        };
-        let old_rgns = self.mapped_rgns;
-        self.mapped_rgns = snapshot.restore_from_snapshot(&mut self.shared_mem)?;
-        Ok(old_rgns - self.mapped_rgns)
-    }
-
     /// Sets `addr` to the correct offset in the memory referenced by
     /// `shared_mem` to indicate the address of the outb pointer and context
     /// for calling outb function
@@ -446,7 +407,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
-                snapshots: Arc::new(Mutex::new(Vec::new())),
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
@@ -454,7 +414,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
-                snapshots: Arc::new(Mutex::new(Vec::new())),
             },
         )
     }

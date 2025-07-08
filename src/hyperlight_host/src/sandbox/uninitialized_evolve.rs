@@ -129,19 +129,18 @@ where
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
     evolve_impl(
         u_sbox,
-        |hf, mut hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
-            {
-                hshm.as_mut().push_state()?;
-            }
+        |hf, hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
+            #[cfg(gdb)]
+            let dbg_mem_wrapper = dbg_mem_access_handler_wrapper(hshm.clone());
             Ok(MultiUseSandbox::from_uninit(
                 hf,
-                hshm.clone(),
+                hshm,
                 vm,
                 out_hdl,
                 mem_hdl,
                 dispatch_ptr,
                 #[cfg(gdb)]
-                dbg_mem_access_handler_wrapper(hshm),
+                dbg_mem_wrapper,
             ))
         },
     )
