@@ -62,6 +62,7 @@ type handler_t = fn(n: u64, info: *mut ExceptionInfo, ctx: *mut Context, pf_addr
 
 /// Exception handler
 #[unsafe(no_mangle)]
+#[hyperlight_guest_tracing_macro::trace_function]
 pub extern "C" fn hl_exception_handler(
     stack_pointer: u64,
     exception_number: u64,
