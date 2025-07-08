@@ -42,7 +42,6 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
-use crate::sandbox_state::sandbox::Sandbox;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// A sandbox that supports being used Multiple times.
@@ -241,7 +240,7 @@ impl MultiUseSandbox {
                 self.dbg_mem_access_fn.clone(),
             )?;
 
-            self.check_stack_guard()?;
+            self.mem_mgr.check_stack_guard()?;
             check_for_guest_error(self.get_mgr_wrapper_mut())?;
 
             self.get_mgr_wrapper_mut()
@@ -274,12 +273,6 @@ impl WrapperGetter for MultiUseSandbox {
     }
     fn get_mgr_wrapper_mut(&mut self) -> &mut MemMgrWrapper<HostSharedMemory> {
         &mut self.mem_mgr
-    }
-}
-
-impl Sandbox for MultiUseSandbox {
-    fn check_stack_guard(&self) -> Result<bool> {
-        self.mem_mgr.check_stack_guard()
     }
 }
 

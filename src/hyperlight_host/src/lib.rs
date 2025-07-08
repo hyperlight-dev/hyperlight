@@ -58,9 +58,6 @@ pub mod metrics;
 /// outside this file. Types from this module needed for public consumption are
 /// re-exported below.
 pub mod sandbox;
-/// `trait`s and other functionality for dealing with defining sandbox
-/// states and moving between them
-pub mod sandbox_state;
 #[cfg(all(feature = "seccomp", target_os = "linux"))]
 pub(crate) mod seccomp;
 /// Signal handling for Linux

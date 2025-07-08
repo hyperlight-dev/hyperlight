@@ -34,7 +34,7 @@ use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags}
 use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
-use crate::{MultiUseSandbox, Result, log_then_return, new_error};
+use crate::{MultiUseSandbox, Result, new_error};
 
 #[cfg(all(target_os = "linux", feature = "seccomp"))]
 const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
@@ -80,31 +80,11 @@ pub struct UninitializedSandbox {
     pub(crate) rt_cfg: SandboxRuntimeConfig,
 }
 
-impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn get_uninitialized_sandbox(&self) -> &crate::sandbox::UninitializedSandbox {
-        self
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn get_uninitialized_sandbox_mut(&mut self) -> &mut crate::sandbox::UninitializedSandbox {
-        self
-    }
-}
-
 impl Debug for UninitializedSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UninitializedSandbox")
             .field("memory_layout", &self.mgr.unwrap_mgr().layout)
             .finish()
-    }
-}
-
-impl crate::sandbox_state::sandbox::Sandbox for UninitializedSandbox {
-    fn check_stack_guard(&self) -> Result<bool> {
-        log_then_return!(
-            "Checking the stack cookie before the sandbox is initialized is unsupported"
-        );
     }
 }
 
