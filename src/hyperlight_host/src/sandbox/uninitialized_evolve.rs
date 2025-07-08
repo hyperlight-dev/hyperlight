@@ -41,7 +41,6 @@ use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
-use crate::sandbox_state::sandbox::Sandbox;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_error};
@@ -58,7 +57,7 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_
 /// If this doesn't make sense, and you want to change this type,
 /// please reach out to a Hyperlight developer before making the change.
 #[instrument(err(Debug), skip_all, , parent = Span::current(), level = "Trace")]
-fn evolve_impl<TransformFunc, ResSandbox: Sandbox>(
+fn evolve_impl<TransformFunc, ResSandbox>(
     u_sbox: UninitializedSandbox,
     transform: TransformFunc,
 ) -> Result<ResSandbox>
