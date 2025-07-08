@@ -17,6 +17,8 @@ limitations under the License.
 pub const PAGE_SHIFT: u64 = 12;
 pub const PAGE_SIZE: u64 = 1 << 12;
 pub const PAGE_SIZE_USIZE: usize = 1 << 12;
+// The number of pages in 1 "block". A single u64 can be used as bitmap to keep track of all dirty pages in a block.
+pub const PAGES_IN_BLOCK: usize = 64;
 
 /// A memory region in the guest address space
 #[derive(Debug, Clone, Copy)]

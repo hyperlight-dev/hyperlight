@@ -29,6 +29,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use log::{LevelFilter, error};
+#[cfg(mshv3)]
+use mshv_bindings::MSHV_GPAP_ACCESS_OP_CLEAR;
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 use mshv_bindings::{
@@ -75,6 +77,9 @@ use crate::sandbox::SandboxConfiguration;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
+
+#[cfg(mshv2)]
+const CLEAR_DIRTY_BIT_FLAG: u64 = 0b100;
 
 #[cfg(gdb)]
 mod debug {
@@ -351,6 +356,7 @@ impl HypervLinuxDriver {
             vm_fd.initialize()?;
             vm_fd
         };
+        vm_fd.enable_dirty_page_tracking()?;
 
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
 
@@ -391,12 +397,30 @@ impl HypervLinuxDriver {
             (None, None)
         };
 
+        let mut base_pfn = u64::MAX;
+        let mut total_size: usize = 0;
+
         mem_regions.iter().try_for_each(|region| {
-            let mshv_region = region.to_owned().into();
+            let mshv_region: mshv_user_mem_region = region.to_owned().into();
+            if base_pfn == u64::MAX {
+                base_pfn = mshv_region.guest_pfn;
+            }
+            total_size += mshv_region.size as usize;
             vm_fd.map_user_memory(mshv_region)
         })?;
 
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr.absolute()?)?;
+
+        // get/clear the dirty page bitmap, mshv sets all the bit dirty at initialization
+        // if we dont clear them then we end up taking a complete snapsot of memory page by page which gets
+        // progressively slower as the sandbox size increases
+        // the downside of doing this here is that the call to get_dirty_log will takes longer as the number of pages increase
+        // but for larger sandboxes its easily cheaper than copying all the pages
+
+        #[cfg(mshv2)]
+        vm_fd.get_dirty_log(base_pfn, total_size, CLEAR_DIRTY_BIT_FLAG)?;
+        #[cfg(mshv3)]
+        vm_fd.get_dirty_log(base_pfn, total_size, MSHV_GPAP_ACCESS_OP_CLEAR as u8)?;
 
         let interrupt_handle = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
@@ -861,6 +885,27 @@ impl Hypervisor for HypervLinuxDriver {
 
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
+    }
+
+    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        let first_mshv_region: mshv_user_mem_region = self
+            .mem_regions
+            .first()
+            .ok_or(new_error!(
+                "tried to get dirty page bitmap of 0-sized region"
+            ))?
+            .to_owned()
+            .into();
+        let total_size = self.mem_regions.iter().map(|r| r.guest_region.len()).sum();
+        let res = self.vm_fd.get_dirty_log(
+            first_mshv_region.guest_pfn,
+            total_size,
+            #[cfg(mshv2)]
+            CLEAR_DIRTY_BIT_FLAG,
+            #[cfg(mshv3)]
+            (MSHV_GPAP_ACCESS_OP_CLEAR as u8),
+        )?;
+        Ok(res)
     }
 
     #[cfg(crashdump)]
