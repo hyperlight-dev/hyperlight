@@ -262,7 +262,11 @@ impl MultiUseSandbox {
 }
 
 impl Callable for MultiUseSandbox {
-    fn call<Output: SupportedReturnType>(&mut self, func_name: &str, args: impl ParameterTuple) -> Result<Output> {
+    fn call<Output: SupportedReturnType>(
+        &mut self,
+        func_name: &str,
+        args: impl ParameterTuple,
+    ) -> Result<Output> {
         self.call_guest_function_by_name(func_name, args)
     }
 }
@@ -325,11 +329,12 @@ mod tests {
         .unwrap();
 
         for i in 0..1000 {
-            sbox2.call::<i32>(
-                "PrintUsingPrintf",
-                format!("Hello World {}\n", i).to_string(),
-            )
-            .unwrap();
+            sbox2
+                .call::<i32>(
+                    "PrintUsingPrintf",
+                    format!("Hello World {}\n", i).to_string(),
+                )
+                .unwrap();
         }
     }
 
@@ -560,8 +565,7 @@ mod tests {
                     )
                     .unwrap();
 
-                    let mut multi_use_sandbox: MultiUseSandbox =
-                        usbox.evolve().unwrap();
+                    let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
 
                     let res: i32 = multi_use_sandbox
                         .call_guest_function_by_name("GetStatic", ())
