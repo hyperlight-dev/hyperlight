@@ -102,7 +102,8 @@ impl MultiUseSandbox {
     /// Restore the sandbox's memory to the state captured in the given snapshot.
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
-        let rgns_to_unmap = self.mem_mgr
+        let rgns_to_unmap = self
+            .mem_mgr
             .unwrap_mgr_mut()
             .restore_snapshot(&snapshot.inner)?;
         unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
