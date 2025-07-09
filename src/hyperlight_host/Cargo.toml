@@ -118,7 +118,7 @@ cfg_aliases = "0.2.1"
 built = { version = "0.8.0", optional = true, features = ["chrono", "git2"] }
 
 [features]
-default = ["kvm", "mshv2", "seccomp", "build-metadata", "init-paging"]
+default = ["kvm", "mshv3", "seccomp", "build-metadata", "init-paging"]
 seccomp = ["dep:seccompiler"]
 function_call_metrics = []
 executable_heap = []
@@ -127,6 +127,7 @@ print_debug = []
 # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged.
 crashdump = ["dep:chrono"]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
+# This feature is deprecated in favor of mshv3
 mshv2 = ["dep:mshv-bindings2", "dep:mshv-ioctls2"]
 mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]
 # This enables easy debug in the guest

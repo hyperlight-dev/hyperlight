@@ -73,7 +73,7 @@ clean-rust:
 # convenience recipe to run all tests with the given target and features (similar to CI)
 test-like-ci config=default-target hypervisor="kvm":
     @# with default features
-    just test {{config}} {{ if hypervisor == "mshv3" {"mshv3"} else {""} }}
+    just test {{config}} {{ if hypervisor == "mshv" {"mshv2"} else {""} }}
 
     @# with only one driver enabled + seccomp + build-metadata + init-paging
     just test {{config}} seccomp,build-metadata,init-paging,{{ if hypervisor == "mshv" {"mshv2"} else if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
@@ -119,7 +119,7 @@ test-integration guest target=default-target features="":
 test-seccomp target=default-target features="":
     @# run seccomp test with feature "seccomp" on and off
     cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --lib {{ if features =="" {''} else { "--features " + features } }} -- --ignored
-    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --no-default-features {{ if features =~"mshv3" {"--features init-paging,mshv3"} else {"--features mshv2,init-paging,kvm" } }} --lib -- --ignored
+    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --no-default-features {{ if features =~"mshv2" {"--features init-paging,mshv2"} else {"--features mshv3,init-paging,kvm" } }} --lib -- --ignored
 
 # tests compilation with no default features on different platforms
 test-compilation-no-default-features target=default-target:
@@ -239,7 +239,7 @@ tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
 # Downloads the benchmarks result from the given release tag.
 # If tag is not given, defaults to latest release
 # Options for os: "Windows", or "Linux"
-# Options for Linux hypervisor: "kvm", "mshv"
+# Options for Linux hypervisor: "kvm", "mshv", "mshv3"
 # Options for Windows hypervisor: "hyperv"
 # Options for cpu: "amd", "intel"
 bench-download os hypervisor cpu tag="":

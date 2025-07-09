@@ -146,9 +146,9 @@ mod tests {
         write_cmds_file(&cmd_file_path, &out_file_path)
             .expect("Failed to write gdb commands to file");
 
-        #[cfg(mshv3)]
-        let features = "gdb,mshv3";
-        #[cfg(not(mshv3))]
+        #[cfg(mshv2)] // mshv3 is a default feature is mutually exclusive with the mshv2 feature
+        let features = "gdb,mshv2";
+        #[cfg(not(mshv2))]
         let features = "gdb";
 
         let mut guest_child = Command::new("cargo")

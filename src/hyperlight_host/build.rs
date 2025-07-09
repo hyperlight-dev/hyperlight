@@ -96,11 +96,11 @@ fn main() -> Result<()> {
         crashdump: { all(feature = "crashdump") },
         // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.
         print_debug: { all(feature = "print_debug", debug_assertions) },
-        // the following features are mutually exclusive but rather than enforcing that here we are enabling mshv3 to override mshv2 when both are enabled
-        // because mshv2 is in the default feature set we want to allow users to enable mshv3 without having to set --no-default-features and the re-enable
+        // the following features are mutually exclusive but rather than enforcing that here we are enabling mshv2 to override mshv3 when both are enabled
+        // because mshv3 is in the default feature set we want to allow users to enable mshv2 without having to set --no-default-features and the re-enable
         // the other features they want.
-        mshv2: { all(feature = "mshv2", not(feature="mshv3"), target_os = "linux") },
-        mshv3: { all(feature = "mshv3", target_os = "linux") },
+        mshv2: { all(feature = "mshv2", target_os = "linux") },
+        mshv3: { all(feature = "mshv3", not(feature="mshv2"), target_os = "linux") },
     }
 
     #[cfg(feature = "build-metadata")]
