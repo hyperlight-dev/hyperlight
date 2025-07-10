@@ -362,9 +362,6 @@ mod tests {
             "Safe offset exceeds init_data bounds"
         );
 
-        // Start tracking dirty pages
-        let tracker = shared_mem.start_tracking_dirty_pages().unwrap();
-
         // Initial data - only initialize safe page, leave other pages as zero
         let initial_data = vec![0xAA; PAGE_SIZE_USIZE];
         shared_mem
@@ -372,7 +369,7 @@ mod tests {
             .unwrap();
 
         // Stop tracking and get dirty pages bitmap
-        let dirty_pages_vec = shared_mem.stop_tracking_dirty_pages(tracker).unwrap();
+        let dirty_pages_vec = shared_mem.get_dirty_pages().unwrap();
 
         // Convert to bitmap format
         let mut dirty_pages = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
@@ -436,9 +433,6 @@ mod tests {
             "Safe offset exceeds init_data bounds"
         );
 
-        // Start tracking dirty pages
-        let tracker = shared_mem.start_tracking_dirty_pages().unwrap();
-
         // State 1: Initial state
         let state1_data = vec![0x11; PAGE_SIZE_USIZE];
         shared_mem
@@ -446,7 +440,7 @@ mod tests {
             .unwrap();
 
         // Stop tracking and get dirty pages bitmap
-        let dirty_pages_vec = shared_mem.stop_tracking_dirty_pages(tracker).unwrap();
+        let dirty_pages_vec = shared_mem.get_dirty_pages().unwrap();
 
         // Convert to bitmap format
         let mut dirty_pages = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
@@ -464,12 +458,11 @@ mod tests {
                 .unwrap();
 
         // State 2: Modify and create second snapshot
-        let tracker2 = shared_mem.start_tracking_dirty_pages().unwrap();
         let state2_data = vec![0x22; PAGE_SIZE_USIZE];
         shared_mem
             .copy_from_slice(&state2_data, safe_offset)
             .unwrap();
-        let dirty_pages_vec2 = shared_mem.stop_tracking_dirty_pages(tracker2).unwrap();
+        let dirty_pages_vec2 = shared_mem.get_dirty_pages().unwrap();
 
         let mut dirty_pages2 = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
         for page_idx in dirty_pages_vec2 {
@@ -544,7 +537,6 @@ mod tests {
         ];
 
         // Start tracking dirty pages
-        let tracker = shared_mem.start_tracking_dirty_pages().unwrap();
 
         // Initialize data in init_data pages
         for (i, &page_offset) in page_offsets.iter().enumerate() {
@@ -564,7 +556,7 @@ mod tests {
         }
 
         // Stop tracking and get dirty pages bitmap
-        let dirty_pages_vec = shared_mem.stop_tracking_dirty_pages(tracker).unwrap();
+        let dirty_pages_vec = shared_mem.get_dirty_pages().unwrap();
 
         // Convert to bitmap format
         let mut dirty_pages = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
@@ -632,7 +624,6 @@ mod tests {
         );
 
         // Start tracking dirty pages
-        let tracker1 = shared_mem.start_tracking_dirty_pages().unwrap();
 
         // Cycle 1: Set initial data
         let cycle1_page0 = (0..PAGE_SIZE_USIZE)
@@ -647,7 +638,7 @@ mod tests {
             .unwrap();
 
         // Stop tracking and get dirty pages bitmap
-        let dirty_pages_vec1 = shared_mem.stop_tracking_dirty_pages(tracker1).unwrap();
+        let dirty_pages_vec1 = shared_mem.get_dirty_pages().unwrap();
 
         // Convert to bitmap format
         let mut dirty_pages = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
@@ -664,7 +655,6 @@ mod tests {
                 .unwrap();
 
         // Cycle 2: Modify and snapshot
-        let tracker2 = shared_mem.start_tracking_dirty_pages().unwrap();
         let cycle2_page0 = vec![0x02; PAGE_SIZE_USIZE];
         let cycle2_page1 = (0..PAGE_SIZE_USIZE)
             .map(|i| ((i + 100) % 256) as u8)
@@ -676,7 +666,7 @@ mod tests {
             .copy_from_slice(&cycle2_page1, safe_offset2)
             .unwrap();
 
-        let dirty_pages_vec2 = shared_mem.stop_tracking_dirty_pages(tracker2).unwrap();
+        let dirty_pages_vec2 = shared_mem.get_dirty_pages().unwrap();
 
         let mut dirty_pages2 = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
         for page_idx in dirty_pages_vec2 {
@@ -758,9 +748,6 @@ mod tests {
             "Init data area too small for testing"
         );
 
-        // Start tracking dirty pages
-        let tracker = shared_mem.start_tracking_dirty_pages().unwrap();
-
         // Only initialize one page in the init_data area
         let page1_offset = init_data_offset + PAGE_SIZE_USIZE; // Skip first page for safety
         let page1_data = vec![0xFF; PAGE_SIZE_USIZE];
@@ -769,7 +756,7 @@ mod tests {
             .unwrap();
 
         // Stop tracking and get dirty pages bitmap
-        let dirty_pages_vec = shared_mem.stop_tracking_dirty_pages(tracker).unwrap();
+        let dirty_pages_vec = shared_mem.stop_tracking_dirty_pages().unwrap();
 
         // Convert to bitmap format
         let mut dirty_pages_snapshot = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
@@ -896,7 +883,6 @@ mod tests {
         );
 
         // Start tracking dirty pages
-        let tracker = shared_mem.start_tracking_dirty_pages().unwrap();
 
         // Use the init_data area - this is safe and won't interfere with other layout structures
         let base_page = (init_data_offset + PAGE_SIZE_USIZE) / PAGE_SIZE_USIZE; // Skip first page for safety
@@ -921,7 +907,7 @@ mod tests {
         }
 
         // Stop tracking and get dirty pages bitmap
-        let dirty_pages_vec = shared_mem.stop_tracking_dirty_pages(tracker).unwrap();
+        let dirty_pages_vec = shared_mem.get_dirty_pages().unwrap();
 
         // Convert to bitmap format
         let mut dirty_pages = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
@@ -939,7 +925,6 @@ mod tests {
                 .unwrap();
 
         // Simulate function call 1: modify pages 0 and 2
-        let tracker1 = shared_mem.start_tracking_dirty_pages().unwrap();
         let func1_page0 = vec![0x10; PAGE_SIZE_USIZE];
         let func1_page2 = vec![0x12; PAGE_SIZE_USIZE];
         shared_mem
@@ -949,7 +934,7 @@ mod tests {
             .copy_from_slice(&func1_page2, page_offsets[2] * PAGE_SIZE_USIZE)
             .unwrap();
 
-        let dirty_pages_vec1 = shared_mem.stop_tracking_dirty_pages(tracker1).unwrap();
+        let dirty_pages_vec1 = shared_mem.get_dirty_pages().unwrap();
 
         let mut dirty_pages1 = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
         for page_idx in dirty_pages_vec1 {
@@ -966,7 +951,6 @@ mod tests {
             .unwrap();
 
         // Simulate function call 2: modify pages 1 and 3
-        let tracker2 = shared_mem.start_tracking_dirty_pages().unwrap();
         let func2_page1 = vec![0x21; PAGE_SIZE_USIZE];
         let func2_page3 = vec![0x23; PAGE_SIZE_USIZE];
         shared_mem
@@ -976,7 +960,7 @@ mod tests {
             .copy_from_slice(&func2_page3, page_offsets[3] * PAGE_SIZE_USIZE)
             .unwrap();
 
-        let dirty_pages_vec2 = shared_mem.stop_tracking_dirty_pages(tracker2).unwrap();
+        let dirty_pages_vec2 = shared_mem.get_dirty_pages().unwrap();
 
         let mut dirty_pages2 = new_page_bitmap(shared_mem.mem_size(), false).unwrap();
         for page_idx in dirty_pages_vec2 {
@@ -1129,7 +1113,6 @@ mod tests {
         );
 
         // Start tracking dirty pages
-        let tracker = shared_mem.start_tracking_dirty_pages().unwrap();
 
         // Initialize all pages with different patterns - use safe offsets within init_data area
         let base_page = (init_data_offset + PAGE_SIZE_USIZE) / PAGE_SIZE_USIZE; // Skip first page for safety
@@ -1167,7 +1150,7 @@ mod tests {
         }
 
         // Stop tracking and get dirty pages bitmap
-        let dirty_pages_vec = shared_mem.stop_tracking_dirty_pages(tracker).unwrap();
+        let dirty_pages_vec = shared_mem.get_dirty_pages().unwrap();
 
         // Convert to bitmap format - only track specific pages (1, 3, 5)
         let mut dirty_pages = new_page_bitmap(shared_mem.mem_size(), false).unwrap();

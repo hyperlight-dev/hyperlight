@@ -23,7 +23,7 @@ use libc::{PROT_READ, PROT_WRITE, mprotect};
 use lockfree::map::Map;
 use log::error;
 
-use crate::mem::shared_mem::{HostMapping, SharedMemory};
+use crate::mem::shared_mem::HostMapping;
 use crate::{Result, new_error};
 
 // Tracker metadata stored in global lock-free storage
@@ -81,18 +81,16 @@ unsafe impl Send for LinuxDirtyPageTracker {}
 
 impl LinuxDirtyPageTracker {
     /// Create a new dirty page tracker for the given shared memory
-    pub(super) fn new<T: SharedMemory>(shared_memory: &T) -> Result<Self> {
-        let mapping = shared_memory.region_arc();
-        let base_addr = shared_memory.base_addr();
-        let size = shared_memory.mem_size();
-
-        if size == 0 {
+    pub(super) fn new(mapping: Arc<HostMapping>) -> Result<Self> {
+        if mapping.size == 0 {
             return Err(new_error!("Cannot track empty memory region"));
         }
 
-        if base_addr % PAGE_SIZE_USIZE != 0 {
+        if mapping.ptr as usize % PAGE_SIZE_USIZE != 0 {
             return Err(new_error!("Base address must be page-aligned"));
         }
+        let base_addr = mapping.ptr as usize + PAGE_SIZE_USIZE; // Start after the first page to avoid tracking guard page
+        let size = mapping.size - 2 * PAGE_SIZE_USIZE; // Exclude guard pages at start and end
 
         // Get the current process ID
         let current_pid = std::process::id();
@@ -107,7 +105,7 @@ impl LinuxDirtyPageTracker {
                 let existing_start = tracker_data.base_addr;
                 let existing_end = tracker_data.base_addr + tracker_data.size;
                 let new_start = base_addr;
-                let new_end = base_addr + size;
+                let new_end = base_addr.wrapping_add(size);
 
                 // Check for overlap: two ranges [a,b) and [c,d) overlap if max(a,c) < min(b,d)
                 // Equivalently: they DON'T overlap if b <= c || d <= a
@@ -165,7 +163,29 @@ impl LinuxDirtyPageTracker {
 
     /// Get all dirty page indices for this tracker.
     /// NOTE: This is not a bitmap, but a vector of indices where each index corresponds to a page that has been written to.
-    pub(super) fn get_dirty_pages(self) -> Result<Vec<usize>> {
+    #[cfg(test)]
+    pub(super) fn get_dirty_pages(&self) -> Result<Vec<usize>> {
+        let res: Vec<usize> = if let Some(tracker_data) = get_trackers().get(&self.id) {
+            let mut dirty_pages = Vec::new();
+            let tracker_data = tracker_data.val();
+            for (idx, dirty) in tracker_data.dirty_pages.iter().enumerate() {
+                if dirty.load(Ordering::Acquire) {
+                    dirty_pages.push(idx);
+                }
+            }
+            dirty_pages
+        } else {
+            return Err(new_error!(
+                "Tried to get dirty pages from tracker, but no tracker data found"
+            ));
+        };
+
+        Ok(res)
+    }
+
+    /// Get all dirty page indices for this tracker.
+    /// NOTE: This is not a bitmap, but a vector of indices where each index corresponds to a page that has been written to.
+    pub(super) fn stop_tracking_and_get_dirty_pages(self) -> Result<Vec<usize>> {
         let res: Vec<usize> = if let Some(tracker_data) = get_trackers().get(&self.id) {
             let mut dirty_pages = Vec::new();
             let tracker_data = tracker_data.val();
@@ -185,12 +205,6 @@ impl LinuxDirtyPageTracker {
         drop(self);
 
         Ok(res)
-    }
-
-    #[cfg(test)]
-    /// Check if a memory address falls within this tracker's region
-    fn contains_address(&self, addr: usize) -> bool {
-        addr >= self.base_addr && addr < self.base_addr + self.size
     }
 
     /// Install global SIGSEGV handler if not already installed
@@ -335,6 +349,12 @@ impl LinuxDirtyPageTracker {
             }
         }
     }
+
+    #[cfg(test)]
+    /// Check if a memory address falls within this tracker's region
+    fn contains_address(&self, addr: usize) -> bool {
+        addr >= self.base_addr && addr < self.base_addr + self.size
+    }
 }
 
 impl Drop for LinuxDirtyPageTracker {
@@ -362,74 +382,17 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap, munmap};
+    use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap};
     use rand::{Rng, rng};
 
     use super::*;
-    use crate::mem::shared_mem::{HostMapping, SharedMemory};
+    use crate::mem::shared_mem::{ExclusiveSharedMemory, HostMapping, SharedMemory};
 
     const PAGE_SIZE: usize = 4096;
 
-    /// Helper function to create a tracker from raw memory parameters
-    fn create_test_tracker(base_addr: usize, size: usize) -> Result<LinuxDirtyPageTracker> {
-        let test_memory = TestSharedMemory::new(base_addr, size);
-        LinuxDirtyPageTracker::new(&test_memory)
-    }
-
-    /// Test implementation of SharedMemory for raw memory regions
-    struct TestSharedMemory {
-        mapping: Arc<HostMapping>,
-        base_addr: usize,
-        size: usize,
-    }
-
-    impl TestSharedMemory {
-        fn new(base_addr: usize, size: usize) -> Self {
-            // Create a real ExclusiveSharedMemory and extract its mapping
-            // This ensures we have a proper HostMapping for testing
-            let total_size = size + 2 * PAGE_SIZE_USIZE;
-            let exclusive = crate::mem::shared_mem::ExclusiveSharedMemory::new(total_size).unwrap();
-            let mapping = exclusive.region_arc();
-
-            Self {
-                mapping,
-                base_addr,
-                size,
-            }
-        }
-    }
-
-    impl SharedMemory for TestSharedMemory {
-        fn region(&self) -> &HostMapping {
-            &self.mapping
-        }
-
-        fn region_arc(&self) -> Arc<HostMapping> {
-            Arc::clone(&self.mapping)
-        }
-
-        fn base_addr(&self) -> usize {
-            self.base_addr
-        }
-
-        fn mem_size(&self) -> usize {
-            self.size
-        }
-
-        fn with_exclusivity<
-            T,
-            F: FnOnce(&mut crate::mem::shared_mem::ExclusiveSharedMemory) -> T,
-        >(
-            &mut self,
-            _f: F,
-        ) -> crate::Result<T> {
-            unimplemented!("TestSharedMemory doesn't support with_exclusivity")
-        }
-    }
-
     /// Helper to create page-aligned memory for testing
     /// Returns (pointer, size) tuple
-    fn create_aligned_memory(size: usize) -> (*mut u8, usize) {
+    fn create_aligned_memory(size: usize) -> Arc<HostMapping> {
         let addr = unsafe {
             mmap(
                 null_mut(),
@@ -445,535 +408,216 @@ mod tests {
             panic!("Failed to allocate aligned memory with mmap");
         }
 
-        (addr as *mut u8, size)
-    }
-
-    /// Helper to clean up mmap'd memory
-    unsafe fn free_aligned_memory(ptr: *mut u8, size: usize) {
-        if unsafe { munmap(ptr as *mut libc::c_void, size) } != 0 {
-            eprintln!("Warning: Failed to unmap memory");
-        }
+        // HostMapping is only non-Send/Sync because raw pointers
+        // are not ("as a lint", as the Rust docs say). We don't
+        // want to mark HostMapping Send/Sync immediately, because
+        // that could socially imply that it's "safe" to use
+        // unsafe accesses from multiple threads at once. Instead, we
+        // directly impl Send and Sync on this type. Since this
+        // type does have Send and Sync manually impl'd, the Arc
+        // is not pointless as the lint suggests.
+        #[allow(clippy::arc_with_non_send_sync)]
+        Arc::new(HostMapping {
+            ptr: addr as *mut u8,
+            size,
+        })
     }
 
     #[test]
     fn test_tracker_creation() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 4);
-        let addr = memory_ptr as usize;
-
-        let test_memory = TestSharedMemory::new(addr, memory_size);
-        let tracker = LinuxDirtyPageTracker::new(&test_memory);
-        println!("Tracker created: {:?}", tracker);
-        assert!(tracker.is_ok());
-        let tracker = tracker.unwrap();
-
-        // Explicitly drop tracker before freeing memory
-        drop(tracker);
-
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
-    }
-
-    #[test]
-    fn test_zero_size_memory_fails() {
-        let addr = 0x1000; // Page-aligned address
-        let test_memory = TestSharedMemory::new(addr, 0);
-        let result = LinuxDirtyPageTracker::new(&test_memory);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_unaligned_address_fails() {
-        let unaligned_addr = 0x1001; // Not page-aligned
-        let size = PAGE_SIZE;
-        let test_memory = TestSharedMemory::new(unaligned_addr, size);
-        let result = LinuxDirtyPageTracker::new(&test_memory);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_overlapping_trackers_all_fail() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 20); // Large enough for all test cases
-        let base_memory_addr = memory_ptr as usize;
-
-        // Define test cases for different overlap scenarios
-        // Each test case: (existing_offset, existing_size, new_offset, new_size, description)
-        let test_cases = vec![
-            // Case 1: New range completely overlaps existing (new contains existing)
-            (
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 8,
-                "new contains existing",
-            ),
-            // Case 2: New range completely contained by existing (existing contains new)
-            (
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 8,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                "existing contains new",
-            ),
-            // Case 3: New range overlaps start of existing
-            (
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 4,
-                "new overlaps start of existing",
-            ),
-            // Case 4: New range overlaps end of existing
-            (
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                "new overlaps end of existing",
-            ),
-            // Case 5: New range exactly matches existing
-            (
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                "new exactly matches existing",
-            ),
-            // Case 6: New range starts at same address but different size
-            (
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 2,
-                "new starts same, smaller size",
-            ),
-            (
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                "new starts same, larger size",
-            ),
-            // Case 7: New range ends at same address but different start
-            (
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 6,
-                PAGE_SIZE * 2,
-                "new ends same, different start",
-            ),
-            (
-                PAGE_SIZE * 6,
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                "new ends same, earlier start",
-            ),
-            // Case 8: Single page overlaps
-            (
-                PAGE_SIZE * 4,
-                PAGE_SIZE,
-                PAGE_SIZE * 4,
-                PAGE_SIZE,
-                "single page exact match",
-            ),
-            (
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 5,
-                PAGE_SIZE,
-                "single page within existing",
-            ),
-            // Case 9: Multi-page overlaps
-            (
-                PAGE_SIZE * 5,
-                PAGE_SIZE * 3,
-                PAGE_SIZE * 3,
-                PAGE_SIZE * 4,
-                "multi-page partial overlap start",
-            ),
-            (
-                PAGE_SIZE * 3,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 5,
-                PAGE_SIZE * 3,
-                "multi-page partial overlap end",
-            ),
-        ];
-
-        for (i, (existing_offset, existing_size, new_offset, new_size, description)) in
-            test_cases.iter().enumerate()
-        {
-            println!("Test case {}: {}", i + 1, description);
-
-            let existing_addr = base_memory_addr + existing_offset;
-            let new_addr = base_memory_addr + new_offset;
-
-            println!(
-                "  Existing: [{:#x}, {:#x}) (size: {})",
-                existing_addr,
-                existing_addr + existing_size,
-                existing_size
-            );
-            println!(
-                "  New:      [{:#x}, {:#x}) (size: {})",
-                new_addr,
-                new_addr + new_size,
-                new_size
-            );
-
-            // Create the first tracker
-            let test_memory1 = TestSharedMemory::new(existing_addr, *existing_size);
-            let tracker1 = LinuxDirtyPageTracker::new(&test_memory1);
-            assert!(
-                tracker1.is_ok(),
-                "Failed to create first tracker for test case: {}",
-                description
-            );
-            let tracker1 = tracker1.unwrap();
-
-            // Try to create overlapping tracker - this should fail
-            let test_memory2 = TestSharedMemory::new(new_addr, *new_size);
-            let tracker2_result = LinuxDirtyPageTracker::new(&test_memory2);
-            assert!(
-                tracker2_result.is_err(),
-                "Expected overlapping tracker to fail for test case: {}\n  Existing: [{:#x}, {:#x})\n  New: [{:#x}, {:#x})",
-                description,
-                existing_addr,
-                existing_addr + existing_size,
-                new_addr,
-                new_addr + new_size
-            );
-
-            println!("  ✓ Correctly rejected overlap");
-
-            // Clean up by dropping the tracker
-            drop(tracker1);
-            println!();
-        }
-
-        // Test cases that should NOT overlap (adjacent ranges)
-        let non_overlapping_cases = [
-            // Case 1: Adjacent ranges (end of first == start of second)
-            (
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 8,
-                PAGE_SIZE * 4,
-                "adjacent ranges (end to start)",
-            ),
-            // Case 2: Adjacent ranges (end of second == start of first)
-            (
-                PAGE_SIZE * 8,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                PAGE_SIZE * 4,
-                "adjacent ranges (start to end)",
-            ),
-            // Case 3: Completely separate ranges
-            (
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 6,
-                PAGE_SIZE * 2,
-                "completely separate ranges",
-            ),
-            (
-                PAGE_SIZE * 10,
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 2,
-                PAGE_SIZE * 2,
-                "completely separate ranges (reversed)",
-            ),
-        ];
-
-        println!("Testing non-overlapping cases (these should succeed):");
-        for (i, (existing_offset, existing_size, new_offset, new_size, description)) in
-            non_overlapping_cases.iter().enumerate()
-        {
-            println!("Non-overlap test case {}: {}", i + 1, description);
-
-            let existing_addr = base_memory_addr + existing_offset;
-            let new_addr = base_memory_addr + new_offset;
-
-            println!(
-                "  Existing: [{:#x}, {:#x}) (size: {})",
-                existing_addr,
-                existing_addr + existing_size,
-                existing_size
-            );
-            println!(
-                "  New:      [{:#x}, {:#x}) (size: {})",
-                new_addr,
-                new_addr + new_size,
-                new_size
-            );
-
-            // Create the first tracker
-            let test_memory1 = TestSharedMemory::new(existing_addr, *existing_size);
-            let tracker1 = LinuxDirtyPageTracker::new(&test_memory1);
-            assert!(
-                tracker1.is_ok(),
-                "Failed to create first tracker for non-overlap test: {}",
-                description
-            );
-            let tracker1 = tracker1.unwrap();
-
-            // Try to create non-overlapping tracker - this should succeed
-            let test_memory2 = TestSharedMemory::new(new_addr, *new_size);
-            let tracker2_result = LinuxDirtyPageTracker::new(&test_memory2);
-            assert!(
-                tracker2_result.is_ok(),
-                "Expected non-overlapping tracker to succeed for test case: {}\n  Existing: [{:#x}, {:#x})\n  New: [{:#x}, {:#x})",
-                description,
-                existing_addr,
-                existing_addr + existing_size,
-                new_addr,
-                new_addr + new_size
-            );
-
-            let tracker2 = tracker2_result.unwrap();
-            println!("  ✓ Correctly allowed non-overlapping ranges");
-
-            // Clean up
-            drop(tracker1);
-            drop(tracker2);
-            println!();
-        }
-
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
-    }
-
-    #[test]
-    fn test_three_way_overlap_detection() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 15);
-        let base_addr = memory_ptr as usize;
-
-        // Create two non-overlapping trackers first
-        let tracker1 = create_test_tracker(base_addr + PAGE_SIZE * 2, PAGE_SIZE * 3).unwrap();
-        let tracker2 = create_test_tracker(base_addr + PAGE_SIZE * 8, PAGE_SIZE * 3).unwrap();
-
-        // Try to create a tracker that overlaps with tracker1
-        let overlap_with_1 = create_test_tracker(base_addr + PAGE_SIZE * 3, PAGE_SIZE * 3);
-        assert!(
-            overlap_with_1.is_err(),
-            "Should reject overlap with first tracker"
-        );
-
-        // Try to create a tracker that overlaps with tracker2
-        let overlap_with_2 = create_test_tracker(base_addr + PAGE_SIZE * 7, PAGE_SIZE * 3);
-        assert!(
-            overlap_with_2.is_err(),
-            "Should reject overlap with second tracker"
-        );
-
-        // Try to create a tracker that spans both (overlaps with both)
-        let overlap_with_both = create_test_tracker(base_addr + PAGE_SIZE * 4, PAGE_SIZE * 6);
-        assert!(
-            overlap_with_both.is_err(),
-            "Should reject overlap with both trackers"
-        );
-
-        // Create a tracker that doesn't overlap with either (should succeed)
-        let no_overlap = create_test_tracker(base_addr + PAGE_SIZE * 12, PAGE_SIZE * 2);
-        assert!(no_overlap.is_ok(), "Should allow non-overlapping tracker");
-
-        // Explicitly drop all trackers before freeing memory
-        drop(tracker1);
-        drop(tracker2);
-        drop(no_overlap);
-
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
+        let mut memory = ExclusiveSharedMemory::new(5 * 4096).unwrap();
+        memory.stop_tracking_dirty_pages().unwrap();
     }
 
     #[test]
     fn test_get_dirty_pages_initially_empty() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 4);
-        let addr = memory_ptr as usize;
+        let mut memory = ExclusiveSharedMemory::new(5 * 4096).unwrap();
 
-        let tracker = create_test_tracker(addr, memory_size).unwrap();
-        let dirty_pages = tracker.get_dirty_pages().unwrap();
-        assert!(dirty_pages.is_empty());
+        let bitmap = memory
+            .stop_tracking_dirty_pages()
+            .expect("Failed to stop tracking dirty pages");
 
-        // tracker is already dropped by get_dirty_pages() call above
-
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
+        assert!(bitmap.is_empty(), "Dirty pages should be empty initially");
     }
 
     #[test]
     fn test_random_page_dirtying() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 10);
-        let addr = memory_ptr as usize;
+        const MEMORY_SIZE: usize = 4096;
+        let mut memory = ExclusiveSharedMemory::new(MEMORY_SIZE).unwrap();
 
-        let tracker = create_test_tracker(addr, memory_size).unwrap();
+        let bitmap = memory.get_dirty_pages().expect("Failed to get dirty pages");
 
-        // Simulate random page access by directly writing to memory
-        // This should trigger the SIGSEGV handler and mark pages as dirty
+        assert!(bitmap.is_empty(), "Dirty pages should be empty initially");
 
-        // generate 5 random page indices to dirty
-        let mut pages_to_dirty: HashSet<usize> = HashSet::new();
-        while pages_to_dirty.len() < 5 {
-            let page_idx = rand::random::<u8>() % 10; // 0 to 9
-            pages_to_dirty.insert(page_idx as usize);
+        let mem = memory.as_mut_slice();
+        let five_random_idx = rand::rng()
+            .sample_iter(rand::distr::Uniform::new(0, MEMORY_SIZE).unwrap())
+            .take(5)
+            .collect::<Vec<usize>>();
+
+        println!("Random indices: {:?}", &five_random_idx);
+
+        for idx in &five_random_idx {
+            mem[*idx] = 1; // Write to random indices
         }
-
-        for &page_idx in &pages_to_dirty {
-            let page_offset = page_idx * PAGE_SIZE;
-            if page_offset < memory_size {
-                // Write to the memory to trigger dirty tracking
-                unsafe {
-                    let write_addr = (addr + page_offset + 100) as *mut u8;
-                    std::ptr::write_volatile(write_addr, 42);
-                }
-            }
-        }
-
-        let dirty_pages = tracker.get_dirty_pages().unwrap();
-
-        println!("Dirty Pages expected: {:?}", pages_to_dirty);
-        println!("Dirty pages found: {:?}", dirty_pages);
-
-        // check that the dirty pages only contain the indices we wrote to
-        for &page_idx in &pages_to_dirty {
+        let dirty_pages = memory
+            .stop_tracking_dirty_pages()
+            .expect("Failed to stop tracking dirty pages");
+        assert!(
+            !dirty_pages.is_empty(),
+            "Dirty pages should not be empty after writes"
+        );
+        for idx in five_random_idx {
+            let page_idx = idx / PAGE_SIZE;
             assert!(
                 dirty_pages.contains(&page_idx),
-                "Page {} should be dirty",
-                page_idx
+                "Page {} should be dirty after writing to index {}",
+                page_idx,
+                idx
             );
-        }
-        // Check that no other pages are dirty
-        for &page_idx in &dirty_pages {
-            assert!(
-                pages_to_dirty.contains(&page_idx),
-                "Unexpected dirty page: {}",
-                page_idx
-            );
-        }
-
-        // tracker is already dropped by get_dirty_pages() call above
-
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
         }
     }
 
     #[test]
     fn test_multiple_trackers_different_regions() {
-        let (memory_ptr1, memory_size1) = create_aligned_memory(PAGE_SIZE * 4);
-        let (memory_ptr2, memory_size2) = create_aligned_memory(PAGE_SIZE * 4);
-        let addr1 = memory_ptr1 as usize;
-        let addr2 = memory_ptr2 as usize;
+        const MEMORY_SIZE: usize = PAGE_SIZE * 4;
 
-        let tracker1 = create_test_tracker(addr1, memory_size1).unwrap();
-        let tracker2 = create_test_tracker(addr2, memory_size2).unwrap();
+        let mut memory1 = ExclusiveSharedMemory::new(MEMORY_SIZE).unwrap();
+        let mut memory2 = ExclusiveSharedMemory::new(MEMORY_SIZE).unwrap();
+
+        // Verify initial state is clean
+        let bitmap1 = memory1
+            .get_dirty_pages()
+            .expect("Failed to get dirty pages");
+        let bitmap2 = memory2
+            .get_dirty_pages()
+            .expect("Failed to get dirty pages");
+        assert!(bitmap1.is_empty(), "Dirty pages should be empty initially");
+        assert!(bitmap2.is_empty(), "Dirty pages should be empty initially");
 
         // Write to different memory regions
-        unsafe {
-            std::ptr::write_volatile((addr1 + 100) as *mut u8, 1);
-            std::ptr::write_volatile((addr2 + PAGE_SIZE + 200) as *mut u8, 2);
-        }
+        let mem1 = memory1.as_mut_slice();
+        let mem2 = memory2.as_mut_slice();
 
-        let dirty1 = tracker1.get_dirty_pages().unwrap();
-        let dirty2 = tracker2.get_dirty_pages().unwrap();
+        mem1[100] = 1; // Write to offset 100 in first memory region (page 0)
+        mem2[PAGE_SIZE + 200] = 2; // Write to offset 200 in second memory region (page 1)
+
+        let dirty1 = memory1.stop_tracking_dirty_pages().unwrap();
+        let dirty2 = memory2.stop_tracking_dirty_pages().unwrap();
 
         // Verify each tracker only reports pages that were actually written to
-        // Tracker1: wrote to offset 100, which is in page 0
-        assert!(dirty1.contains(&0), "Tracker 1 should have page 0 dirty");
-        assert_eq!(dirty1.len(), 1, "Tracker 1 should only have 1 dirty page");
+        // Memory1: wrote to offset 100, which is in page 0
+        assert!(dirty1.contains(&0), "Memory 1 should have page 0 dirty");
+        assert_eq!(dirty1.len(), 1, "Memory 1 should only have 1 dirty page");
 
-        // Tracker2: wrote to offset PAGE_SIZE + 200, which is in page 1
-        assert!(dirty2.contains(&1), "Tracker 2 should have page 1 dirty");
-        assert_eq!(dirty2.len(), 1, "Tracker 2 should only have 1 dirty page");
-
-        // Verify that each tracker's dirty pages are within expected bounds
-        for &page_idx in &dirty1 {
-            assert!(
-                page_idx < 4,
-                "Tracker 1 page index {} out of bounds",
-                page_idx
-            );
-        }
-        for &page_idx in &dirty2 {
-            assert!(
-                page_idx < 4,
-                "Tracker 2 page index {} out of bounds",
-                page_idx
-            );
-        }
-
-        unsafe {
-            free_aligned_memory(memory_ptr1, memory_size1);
-            free_aligned_memory(memory_ptr2, memory_size2);
-        }
+        // Memory2: wrote to offset 200, which is in page 1
+        assert!(dirty2.contains(&1), "Memory 2 should have page 1 dirty");
+        assert_eq!(dirty2.len(), 1, "Memory 2 should only have 1 dirty page");
     }
 
     #[test]
     fn test_cleanup_on_drop() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 2);
-        let addr = memory_ptr as usize;
+        const MEMORY_SIZE: usize = PAGE_SIZE * 2;
+        let mut memory = ExclusiveSharedMemory::new(MEMORY_SIZE).unwrap();
 
-        // Create tracker in a scope to test drop behavior
-        {
-            let tracker = create_test_tracker(addr, memory_size).unwrap();
+        // Verify initial state is clean
+        let bitmap = memory.get_dirty_pages().expect("Failed to get dirty pages");
+        assert!(bitmap.is_empty(), "Dirty pages should be empty initially");
 
-            // Write to memory to verify tracking works
-            unsafe {
-                std::ptr::write_volatile((addr + 100) as *mut u8, 42);
-            }
+        // Get memory slice - this should work initially
+        let mem = memory.as_mut_slice();
 
-            let _ = tracker.get_dirty_pages();
-        } // tracker is dropped here
+        // Memory should be read-only during tracking (writes will trigger SIGSEGV but get handled)
+        // Write to memory to verify tracking works - this should succeed due to signal handler
+        mem[100] = 42;
 
-        // Create a new tracker for the same memory region
-        // This should work without issues if data was properly cleaned up
-        let new_tracker = create_test_tracker(addr, memory_size);
+        let raw_addr = memory.raw_ptr();
+        let raw_size = memory.raw_mem_size();
+        // Verify the write was tracked
+        let dirty_pages_before_stop = memory.get_dirty_pages().expect("Failed to get dirty pages");
         assert!(
-            new_tracker.is_ok(),
-            "Data not properly cleaned up on tracker drop"
+            !dirty_pages_before_stop.is_empty(),
+            "Should have dirty pages after write"
+        );
+        assert!(
+            dirty_pages_before_stop.contains(&0),
+            "Page 0 should be dirty"
         );
 
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
+        drop(memory); // Explicitly drop the memory
+
+        // now try mmap the memory again, it should work
+        let res = unsafe {
+            libc::mmap(
+                raw_addr as *mut libc::c_void,
+                raw_size,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+
+        assert!(
+            res != MAP_FAILED,
+            "Failed to remap memory after tracker drop: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     #[test]
     fn test_page_boundaries() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 3);
-        let addr = memory_ptr as usize;
+        const MEMORY_SIZE: usize = PAGE_SIZE * 3;
+        let mut memory = ExclusiveSharedMemory::new(MEMORY_SIZE).unwrap();
 
-        let tracker = create_test_tracker(addr, memory_size).unwrap();
+        // Verify initial state is clean
+        let bitmap = memory.get_dirty_pages().expect("Failed to get dirty pages");
+        assert!(bitmap.is_empty(), "Dirty pages should be empty initially");
 
-        // Write to different offsets within the first page
+        let mem = memory.as_mut_slice();
+
+        // Write to different offsets within the first tracked page
+        // Remember: tracker excludes the first page (guard page), so we need to offset by PAGE_SIZE
         let offsets = [0, 1, 100, 1000, PAGE_SIZE - 1];
 
         for &offset in &offsets {
-            unsafe {
-                std::ptr::write_volatile((addr + offset) as *mut u8, offset as u8);
-            }
+            // Write to the first tracked page (which is the second page in the memory region)
+            mem[offset] = offset as u8;
         }
 
-        let dirty_pages = tracker.get_dirty_pages().unwrap();
+        let dirty_pages = memory.stop_tracking_dirty_pages().unwrap();
 
         // All writes to the same page should result in the same page being dirty
-        if !dirty_pages.is_empty() {
-            // Check that page indices are within bounds
-            for &page_idx in &dirty_pages {
-                assert!(page_idx < 3, "Page index out of bounds: {}", page_idx);
-            }
-        }
+        assert!(
+            !dirty_pages.is_empty(),
+            "Should have dirty pages after writes"
+        );
+        assert!(
+            dirty_pages.contains(&0),
+            "Page 0 should be dirty after writes to first tracked page"
+        );
 
-        // tracker is already dropped by get_dirty_pages() call above
+        // Since all writes were to the same page, we should only have one dirty page
+        assert_eq!(
+            dirty_pages.len(),
+            1,
+            "Should only have one dirty page since all writes were to the same page"
+        );
 
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
+        // Now test writing to different pages
+        let mut memory2 = ExclusiveSharedMemory::new(MEMORY_SIZE).unwrap();
+        let mem2 = memory2.as_mut_slice();
+
+        // Write to first tracked page (page 0 in tracker terms)
+        mem2[100] = 1;
+        // Write to second tracked page (page 1 in tracker terms) - this is the third page in memory
+        mem2[PAGE_SIZE] = 2;
+
+        let dirty_pages2 = memory2.stop_tracking_dirty_pages().unwrap();
+
+        assert_eq!(dirty_pages2.len(), 2, "Should have two dirty pages");
+        assert!(dirty_pages2.contains(&0), "Page 0 should be dirty");
+        assert!(dirty_pages2.contains(&1), "Page 1 should be dirty");
     }
 
     #[test]
@@ -994,52 +638,46 @@ mod tests {
             let handle = thread::spawn(move || {
                 let mut rng = rng();
 
-                // Generate random memory size between 1MB and 10MB
                 let memory_size = rng.random_range(MIN_MEMORY_SIZE..=MAX_MEMORY_SIZE);
 
                 // Ensure memory size is page-aligned
                 let memory_size = (memory_size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-                let num_pages = memory_size / PAGE_SIZE;
 
-                let (memory_ptr, _) = create_aligned_memory(memory_size);
-                let addr = memory_ptr as usize;
-
-                // Create tracker (must succeed)
-                let tracker =
-                    create_test_tracker(addr, memory_size).expect("Failed to create tracker");
+                let mut memory = ExclusiveSharedMemory::new(memory_size)
+                    .expect("Failed to create shared memory");
 
                 // Wait for all threads to finish allocating before starting writes
                 start_writing_barrier.wait();
 
-                // Track which pages we write to
+                // Track which pages we write to (in tracker page indices)
                 let mut pages_written = HashSet::new();
                 let mut total_writes = 0;
 
-                // Perform random memory updates
-                for _update_id in 0..UPDATES_PER_THREAD {
-                    // Generate random page index
-                    let page_idx = rng.random_range(0..num_pages);
-                    let page_offset = page_idx * PAGE_SIZE;
+                // Perform random memory updates in a scope to ensure slice is dropped
+                {
+                    let mem = memory.as_mut_slice();
 
-                    // Generate random offset within the page (avoid last byte to prevent overruns)
-                    let within_page_offset = rng.random_range(0..(PAGE_SIZE - 1));
-                    let write_addr = addr + page_offset + within_page_offset;
+                    for _ in 0..UPDATES_PER_THREAD {
+                        // Generate random offset within the entire slice
+                        let write_offset = rng.random_range(0..mem.len());
 
-                    // Generate random value to write
-                    let value = rng.random::<u8>();
+                        // Calculate which tracker page this corresponds to
+                        let tracker_page_idx = write_offset / PAGE_SIZE;
 
-                    // Write to memory to trigger dirty tracking
-                    unsafe {
-                        std::ptr::write_volatile(write_addr as *mut u8, value);
+                        // Generate random value to write
+                        let value = rng.random::<u8>();
+
+                        // Write to memory to trigger dirty tracking
+                        mem[write_offset] = value;
+
+                        // Track this page as written to (HashSet handles duplicates)
+                        pages_written.insert(tracker_page_idx);
+                        total_writes += 1;
                     }
-
-                    // Track this page as written to (HashSet handles duplicates)
-                    pages_written.insert(page_idx);
-                    total_writes += 1;
-                }
+                } // mem goes out of scope here
 
                 // Final verification: check that ALL pages we wrote to are marked as dirty
-                let final_dirty_pages = tracker.get_dirty_pages().unwrap();
+                let final_dirty_pages = memory.stop_tracking_dirty_pages().unwrap();
 
                 // Check that every page we wrote to is marked as dirty
                 for &page_idx in &pages_written {
@@ -1051,6 +689,31 @@ mod tests {
                         pages_written,
                         final_dirty_pages
                     );
+                }
+
+                // Verify that dirty pages don't contain extra pages we didn't write to
+                for &dirty_page in &final_dirty_pages {
+                    assert!(
+                        pages_written.contains(&dirty_page),
+                        "Thread {}: Found dirty page {} that was not written to. Pages written: {:?}",
+                        thread_id,
+                        dirty_page,
+                        pages_written
+                    );
+                }
+
+                // Additional check: verify that pages we didn't write to are not dirty
+                for page_idx in 0..(memory_size / PAGE_SIZE) {
+                    if !pages_written.contains(&page_idx) {
+                        assert!(
+                            !final_dirty_pages.contains(&page_idx),
+                            "Thread {}: Page {} was not written but is marked dirty. Pages written: {:?}, Pages dirty: {:?}",
+                            thread_id,
+                            page_idx,
+                            pages_written,
+                            final_dirty_pages
+                        );
+                    }
                 }
 
                 // Verify that the number of unique dirty pages matches unique pages written
@@ -1077,11 +740,6 @@ mod tests {
                         dirty_page,
                         pages_written
                     );
-                }
-
-                // Clean up
-                unsafe {
-                    free_aligned_memory(memory_ptr, memory_size);
                 }
 
                 (pages_written.len(), dirty_pages_set.len(), total_writes)
@@ -1139,153 +797,45 @@ mod tests {
 
     #[test]
     fn test_tracker_contains_address() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 2);
-        let addr = memory_ptr as usize;
+        const MEMORY_SIZE: usize = PAGE_SIZE * 10;
+        let mapping = create_aligned_memory(MEMORY_SIZE);
+        let tracker = LinuxDirtyPageTracker::new(mapping.clone()).unwrap();
 
-        let tracker = create_test_tracker(addr, memory_size).unwrap();
+        let base = mapping.ptr as usize;
 
-        // Test address checking (internal method)
-        assert!(tracker.contains_address(addr));
-        assert!(tracker.contains_address(addr + 100));
-        assert!(tracker.contains_address(addr + memory_size - 1));
-        assert!(!tracker.contains_address(addr - 1));
-        assert!(!tracker.contains_address(addr + memory_size));
+        // Test all addresses in the memory region
+        for offset in 0..MEMORY_SIZE {
+            let address = base + offset;
 
-        // Explicitly drop tracker before freeing memory
-        drop(tracker);
+            // First page (guard page) and last page (guard page) should not be contained
+            let is_first_page = offset < PAGE_SIZE;
+            let is_last_page = offset >= MEMORY_SIZE - PAGE_SIZE;
 
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
-    }
-
-    #[test]
-    fn test_write_protection_active() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE);
-        let addr = memory_ptr as usize;
-
-        let tracker = create_test_tracker(addr, memory_size).unwrap();
-
-        // Memory should be write-protected initially
-        // Writing should trigger SIGSEGV (which gets handled by our signal handler)
-        unsafe {
-            std::ptr::write_volatile((addr + 100) as *mut u8, 42);
-        }
-
-        // If we get here without crashing, the signal handler worked
-
-        // Explicitly drop tracker before freeing memory
-        drop(tracker);
-
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
-    }
-
-    #[test]
-    fn test_stress_multiple_writes() {
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 5);
-        let addr = memory_ptr as usize;
-
-        let tracker = create_test_tracker(addr, memory_size).unwrap();
-
-        // Write to many different pages and offsets
-        for page in 0..5 {
-            for offset in [0, 100, 500, 1000, PAGE_SIZE - 1] {
-                let write_addr = addr + (page * PAGE_SIZE) + offset;
-                if write_addr < addr + memory_size {
-                    unsafe {
-                        std::ptr::write_volatile(write_addr as *mut u8, (page + offset) as u8);
-                    }
-                }
+            if is_first_page || is_last_page {
+                assert!(
+                    !tracker.contains_address(address),
+                    "Address at offset {} (page {}) should not be contained (guard page)",
+                    offset,
+                    offset / PAGE_SIZE
+                );
+            } else {
+                assert!(
+                    tracker.contains_address(address),
+                    "Address at offset {} (page {}) should be contained",
+                    offset,
+                    offset / PAGE_SIZE
+                );
             }
         }
 
-        let dirty_pages = tracker.get_dirty_pages().unwrap();
-        println!("Stress test dirty pages: {:?}", dirty_pages);
-
-        // Verify all page indices are valid
-        for &page_idx in &dirty_pages {
-            assert!(page_idx < 5, "Invalid page index: {}", page_idx);
-        }
-
-        // tracker is already dropped by get_dirty_pages() call above
-
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
-    }
-
-    #[test]
-    fn test_pid_tracking_and_isolation() {
-        let (memory_ptr1, memory_size1) = create_aligned_memory(PAGE_SIZE * 4);
-        let (memory_ptr2, memory_size2) = create_aligned_memory(PAGE_SIZE * 4);
-        let addr1 = memory_ptr1 as usize;
-        let addr2 = memory_ptr2 as usize;
-
-        // Create two trackers
-        let tracker1 = create_test_tracker(addr1, memory_size1).unwrap();
-        let tracker2 = create_test_tracker(addr2, memory_size2).unwrap();
-
-        let current_pid = std::process::id();
-
-        // Verify that tracker data contains the correct PID
-        let trackers = get_trackers();
-        let tracker1_data = trackers.get(&tracker1.id).unwrap();
-        let tracker2_data = trackers.get(&tracker2.id).unwrap();
-
-        assert_eq!(
-            tracker1_data.val().pid,
-            current_pid,
-            "Tracker 1 should store the current process ID"
-        );
-        assert_eq!(
-            tracker2_data.val().pid,
-            current_pid,
-            "Tracker 2 should store the current process ID"
-        );
-
-        // Explicitly drop trackers before freeing memory
-        drop(tracker1);
-        drop(tracker2);
-
-        // Clean up
-        unsafe {
-            free_aligned_memory(memory_ptr1, memory_size1);
-            free_aligned_memory(memory_ptr2, memory_size2);
-        }
-    }
-
-    #[test]
-    fn test_overlap_detection_with_same_virtual_addresses() {
-        // This test verifies that overlap detection is now scoped per process
-        // In a real multi-process scenario, different processes could have the same
-        // virtual addresses that map to different physical memory, so overlaps
-        // should only be checked within the same process.
-
-        let (memory_ptr, memory_size) = create_aligned_memory(PAGE_SIZE * 4);
-        let addr = memory_ptr as usize;
-
-        // Create a tracker for this address range
-        let tracker1 = create_test_tracker(addr, memory_size).unwrap();
-
-        // Verify the tracker is storing the current PID
-        let current_pid = std::process::id();
-        let trackers = get_trackers();
-        let tracker_data = trackers.get(&tracker1.id).unwrap();
-        assert_eq!(tracker_data.val().pid, current_pid);
-
-        // Creating an overlapping tracker with the same PID should fail
-        let overlap_result = create_test_tracker(addr + PAGE_SIZE, PAGE_SIZE * 2);
+        // try some random addresses far from the base address
         assert!(
-            overlap_result.is_err(),
-            "Creating overlapping tracker in same process should fail"
+            !tracker.contains_address(base - 213217),
+            "Address far from base should not be contained"
         );
-
-        // Clean up
-        drop(tracker1);
-        unsafe {
-            free_aligned_memory(memory_ptr, memory_size);
-        }
+        assert!(
+            !tracker.contains_address(base + MEMORY_SIZE + 12345),
+            "Address far from end should not be contained"
+        );
     }
 }

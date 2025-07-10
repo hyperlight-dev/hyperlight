@@ -14,21 +14,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::sync::Arc;
+
 use tracing::{Span, instrument};
 
 #[cfg(target_os = "linux")]
 pub use super::linux_dirty_page_tracker::LinuxDirtyPageTracker as PlatformDirtyPageTracker;
-use super::shared_mem::SharedMemory;
+use super::shared_mem::HostMapping;
 #[cfg(target_os = "windows")]
 pub use super::windows_dirty_page_tracker::WindowsDirtyPageTracker as PlatformDirtyPageTracker;
 use crate::Result;
 
 /// Trait defining the interface for dirty page tracking implementations
 pub trait DirtyPageTracking {
-    fn get_dirty_pages(self) -> Result<Vec<usize>>;
+    #[cfg(test)]
+    fn get_dirty_pages(&self) -> Result<Vec<usize>>;
+    fn uninstall(self) -> Result<Vec<usize>>;
 }
 
 /// Cross-platform dirty page tracker that delegates to platform-specific implementations
+#[derive(Debug)]
 pub struct DirtyPageTracker {
     inner: PlatformDirtyPageTracker,
 }
@@ -36,14 +41,19 @@ pub struct DirtyPageTracker {
 impl DirtyPageTracker {
     /// Create a new dirty page tracker for the given shared memory
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    pub fn new<T: SharedMemory>(shared_memory: &T) -> Result<Self> {
-        let inner = PlatformDirtyPageTracker::new(shared_memory)?;
+    pub fn new(mapping: Arc<HostMapping>) -> Result<Self> {
+        let inner = PlatformDirtyPageTracker::new(mapping)?;
         Ok(Self { inner })
     }
 }
 
 impl DirtyPageTracking for DirtyPageTracker {
-    fn get_dirty_pages(self) -> Result<Vec<usize>> {
+    fn uninstall(self) -> Result<Vec<usize>> {
+        self.inner.stop_tracking_and_get_dirty_pages()
+    }
+
+    #[cfg(test)]
+    fn get_dirty_pages(&self) -> Result<Vec<usize>> {
         self.inner.get_dirty_pages()
     }
 }

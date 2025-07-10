@@ -36,7 +36,6 @@ use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use super::shared_memory_snapshot_manager::SharedMemorySnapshotManager;
 use crate::mem::bitmap::{bitmap_union, new_page_bitmap};
-use crate::mem::dirty_page_tracking::DirtyPageTracker;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::GuestBlob;
 use crate::{Result, log_then_return, new_error};
@@ -388,7 +387,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         cfg: SandboxConfiguration,
         exe_info: &mut ExeInfo,
         guest_blob: Option<&GuestBlob>,
-    ) -> Result<(Self, DirtyPageTracker)> {
+    ) -> Result<Self> {
         let guest_blob_size = guest_blob.map(|b| b.data.len()).unwrap_or(0);
         let guest_blob_mem_flags = guest_blob.map(|b| b.permissions);
 
@@ -401,7 +400,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             guest_blob_mem_flags,
         )?;
         let mut shared_mem = ExclusiveSharedMemory::new(layout.get_memory_size()?)?;
-        let tracker = shared_mem.start_tracking_dirty_pages()?;
 
         let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
 
@@ -420,10 +418,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
         )?;
 
-        Ok((
-            Self::new(layout, shared_mem, load_addr, entrypoint_offset),
-            tracker,
-        ))
+        Ok(Self::new(layout, shared_mem, load_addr, entrypoint_offset))
     }
 
     /// Writes host function details to memory

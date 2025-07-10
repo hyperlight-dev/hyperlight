@@ -29,7 +29,6 @@ use crate::func::host_functions::{HostFunction, register_host_function};
 use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(feature = "build-metadata")]
 use crate::log_build_details;
-use crate::mem::dirty_page_tracking::DirtyPageTracker;
 use crate::mem::exe::ExeInfo;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
@@ -81,7 +80,6 @@ pub struct UninitializedSandbox {
     pub(crate) config: SandboxConfiguration,
     #[cfg(any(crashdump, gdb))]
     pub(crate) rt_cfg: SandboxRuntimeConfig,
-    pub(crate) tracker: Option<DirtyPageTracker>,
 }
 
 impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
@@ -252,7 +250,7 @@ impl UninitializedSandbox {
             }
         };
 
-        let (mut mgr, tracker) = UninitializedSandbox::load_guest_binary(
+        let mut mgr = UninitializedSandbox::load_guest_binary(
             sandbox_cfg,
             &guest_binary,
             guest_blob.as_ref(),
@@ -278,7 +276,6 @@ impl UninitializedSandbox {
             config: sandbox_cfg,
             #[cfg(any(crashdump, gdb))]
             rt_cfg,
-            tracker: Some(tracker),
         };
 
         // If we were passed a writer for host print register it otherwise use the default.
@@ -309,10 +306,7 @@ impl UninitializedSandbox {
         cfg: SandboxConfiguration,
         guest_binary: &GuestBinary,
         guest_blob: Option<&GuestBlob>,
-    ) -> Result<(
-        SandboxMemoryManager<ExclusiveSharedMemory>,
-        DirtyPageTracker,
-    )> {
+    ) -> Result<SandboxMemoryManager<ExclusiveSharedMemory>> {
         let mut exe_info = match guest_binary {
             GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(bin_path_str)?,
             GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,

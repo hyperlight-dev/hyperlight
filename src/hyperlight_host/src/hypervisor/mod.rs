@@ -512,6 +512,7 @@ pub(crate) mod tests {
     #[cfg(gdb)]
     use crate::hypervisor::DbgMemAccessHandlerCaller;
     use crate::mem::ptr::RawPtr;
+    use crate::mem::shared_mem::SharedMemory;
     use crate::sandbox::uninitialized::GuestBinary;
     #[cfg(any(crashdump, gdb))]
     use crate::sandbox::uninitialized::SandboxRuntimeConfig;
@@ -580,6 +581,10 @@ pub(crate) mod tests {
             use crate::mem::ptr_offset::Offset;
             GuestPtr::try_from(Offset::from(0))
         }?;
+
+        // We need to stop tracking dirty pages from the host side before we start the guest
+        gshm.shared_mem
+            .with_exclusivity(|e| e.stop_tracking_dirty_pages())??;
 
         let mut vm = set_up_hypervisor_partition(
             &mut gshm,

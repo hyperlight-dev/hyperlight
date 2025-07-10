@@ -19,7 +19,7 @@ use std::ffi::c_void;
 use std::io::Error;
 #[cfg(target_os = "linux")]
 use std::ptr::null_mut;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{Span, instrument};
@@ -92,8 +92,8 @@ macro_rules! generate_writer {
 /// Send or Sync, since it doesn't ensure any particular synchronization.
 #[derive(Debug)]
 pub struct HostMapping {
-    ptr: *mut u8,
-    size: usize,
+    pub(crate) ptr: *mut u8,
+    pub(crate) size: usize,
     #[cfg(target_os = "windows")]
     handle: HANDLE,
 }
@@ -134,6 +134,7 @@ impl Drop for HostMapping {
 #[derive(Debug)]
 pub struct ExclusiveSharedMemory {
     region: Arc<HostMapping>,
+    signal_dirty_bitmap_tracker: Arc<Mutex<Option<DirtyPageTracker>>>,
 }
 unsafe impl Send for ExclusiveSharedMemory {}
 
@@ -148,6 +149,7 @@ unsafe impl Send for ExclusiveSharedMemory {}
 #[derive(Debug)]
 pub struct GuestSharedMemory {
     region: Arc<HostMapping>,
+    signal_dirty_bitmap_tracker: Arc<Mutex<Option<DirtyPageTracker>>>,
     /// The lock that indicates this shared memory is being used by non-Rust code
     ///
     /// This lock _must_ be held whenever the guest is executing,
@@ -299,6 +301,8 @@ unsafe impl Send for GuestSharedMemory {}
 #[derive(Clone, Debug)]
 pub struct HostSharedMemory {
     region: Arc<HostMapping>,
+    signal_dirty_bitmap_tracker: Arc<Mutex<Option<DirtyPageTracker>>>,
+
     lock: Arc<RwLock<()>>,
 }
 unsafe impl Send for HostSharedMemory {}
@@ -371,34 +375,56 @@ impl ExclusiveSharedMemory {
             return Err(MprotectFailed(Error::last_os_error().raw_os_error()));
         }
 
+        // HostMapping is only non-Send/Sync because raw pointers
+        // are not ("as a lint", as the Rust docs say). We don't
+        // want to mark HostMapping Send/Sync immediately, because
+        // that could socially imply that it's "safe" to use
+        // unsafe accesses from multiple threads at once. Instead, we
+        // directly impl Send and Sync on this type. Since this
+        // type does have Send and Sync manually impl'd, the Arc
+        // is not pointless as the lint suggests.
+        #[allow(clippy::arc_with_non_send_sync)]
+        let host_mapping = Arc::new(HostMapping {
+            ptr: addr as *mut u8,
+            size: total_size,
+        });
+
+        let dirty_page_tracker = Arc::new(Mutex::new(Some(DirtyPageTracker::new(Arc::clone(
+            &host_mapping,
+        ))?)));
+
         Ok(Self {
-            // HostMapping is only non-Send/Sync because raw pointers
-            // are not ("as a lint", as the Rust docs say). We don't
-            // want to mark HostMapping Send/Sync immediately, because
-            // that could socially imply that it's "safe" to use
-            // unsafe accesses from multiple threads at once. Instead, we
-            // directly impl Send and Sync on this type. Since this
-            // type does have Send and Sync manually impl'd, the Arc
-            // is not pointless as the lint suggests.
-            #[allow(clippy::arc_with_non_send_sync)]
-            region: Arc::new(HostMapping {
-                ptr: addr as *mut u8,
-                size: total_size,
-            }),
+            region: host_mapping,
+            signal_dirty_bitmap_tracker: dirty_page_tracker,
         })
     }
 
-    /// Starts tracking dirty pages in the shared memory region.
-    pub(super) fn start_tracking_dirty_pages(&self) -> Result<DirtyPageTracker> {
-        DirtyPageTracker::new(self)
+    #[cfg(test)]
+    pub(crate) fn get_dirty_pages(&self) -> Result<Vec<usize>> {
+        self.signal_dirty_bitmap_tracker
+            .try_lock()
+            .map_err(|_| new_error!("Failed to acquire lock on dirty page tracker"))?
+            .as_ref()
+            .ok_or_else(|| {
+                new_error!("Dirty page tracker was not initialized, cannot get dirty pages")
+            })?
+            .get_dirty_pages()
+            .map_err(|e| new_error!("Failed to get dirty pages: {}", e))
     }
 
     /// Stop tracking dirty pages in the shared memory region.
-    pub(crate) fn stop_tracking_dirty_pages(
-        &self,
-        tracker: DirtyPageTracker,
-    ) -> Result<Vec<usize>> {
-        tracker.get_dirty_pages()
+    pub(crate) fn stop_tracking_dirty_pages(&mut self) -> Result<Vec<usize>> {
+        self.signal_dirty_bitmap_tracker
+            .try_lock()
+            .map_err(|_| new_error!("Failed to acquire lock on dirty page tracker"))?
+            .take()
+            .ok_or_else(|| {
+                new_error!(
+                    "Dirty page tracker was not initialized, cannot stop tracking dirty pages"
+                )
+            })?
+            .uninstall()
+            .map_err(|e| new_error!("Failed to stop tracking dirty pages: {}", e))
     }
 
     /// Create a new region of shared memory with the given minimum
@@ -686,10 +712,12 @@ impl ExclusiveSharedMemory {
         (
             HostSharedMemory {
                 region: self.region.clone(),
+                signal_dirty_bitmap_tracker: self.signal_dirty_bitmap_tracker.clone(),
                 lock: lock.clone(),
             },
             GuestSharedMemory {
                 region: self.region.clone(),
+                signal_dirty_bitmap_tracker: self.signal_dirty_bitmap_tracker.clone(),
                 lock: lock.clone(),
             },
         )
@@ -709,9 +737,6 @@ impl ExclusiveSharedMemory {
 pub trait SharedMemory {
     /// Return a readonly reference to the host mapping backing this SharedMemory
     fn region(&self) -> &HostMapping;
-
-    /// Return an Arc clone of the host mapping backing this SharedMemory
-    fn region_arc(&self) -> Arc<HostMapping>;
 
     /// Return the base address of the host mapping of this
     /// region. Following the general Rust philosophy, this does not
@@ -763,9 +788,6 @@ impl SharedMemory for ExclusiveSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
     }
-    fn region_arc(&self) -> Arc<HostMapping> {
-        Arc::clone(&self.region)
-    }
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
@@ -779,10 +801,6 @@ impl SharedMemory for GuestSharedMemory {
         &self.region
     }
 
-    fn region_arc(&self) -> Arc<HostMapping> {
-        Arc::clone(&self.region)
-    }
-
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
@@ -793,6 +811,7 @@ impl SharedMemory for GuestSharedMemory {
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
         let mut excl = ExclusiveSharedMemory {
             region: self.region.clone(),
+            signal_dirty_bitmap_tracker: self.signal_dirty_bitmap_tracker.clone(),
         };
         let ret = f(&mut excl);
         drop(excl);
@@ -1026,10 +1045,6 @@ impl SharedMemory for HostSharedMemory {
         &self.region
     }
 
-    fn region_arc(&self) -> Arc<HostMapping> {
-        Arc::clone(&self.region)
-    }
-
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
@@ -1040,6 +1055,7 @@ impl SharedMemory for HostSharedMemory {
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
         let mut excl = ExclusiveSharedMemory {
             region: self.region.clone(),
+            signal_dirty_bitmap_tracker: self.signal_dirty_bitmap_tracker.clone(),
         };
         let ret = f(&mut excl);
         drop(excl);

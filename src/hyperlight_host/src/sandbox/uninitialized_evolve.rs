@@ -60,7 +60,7 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_
 /// please reach out to a Hyperlight developer before making the change.
 #[instrument(err(Debug), skip_all, , parent = Span::current(), level = "Trace")]
 fn evolve_impl<TransformFunc, ResSandbox: Sandbox>(
-    mut u_sbox: UninitializedSandbox,
+    u_sbox: UninitializedSandbox,
     transform: TransformFunc,
 ) -> Result<ResSandbox>
 where
@@ -75,15 +75,6 @@ where
     ) -> Result<ResSandbox>,
 {
     let (hshm, mut gshm) = u_sbox.mgr.build();
-
-    let tracker = match u_sbox.tracker.take() {
-        Some(tracker) => tracker,
-        None => {
-            return Err(new_error!(
-                "Failed to take tracker from UninitializedSandbox"
-            ));
-        }
-    };
 
     let outb_hdl = outb_handler_wrapper(hshm.clone(), u_sbox.host_funcs.clone());
 
@@ -120,7 +111,7 @@ where
     // before entering VM (and before mapping memory into VM), stop tracking dirty pages from the host side
     let dirty_host_pages_idx = gshm
         .get_shared_mem_mut()
-        .with_exclusivity(|e| e.stop_tracking_dirty_pages(tracker))??;
+        .with_exclusivity(|e| e.stop_tracking_dirty_pages())??;
 
     let mut vm = set_up_hypervisor_partition(
         &mut gshm,
