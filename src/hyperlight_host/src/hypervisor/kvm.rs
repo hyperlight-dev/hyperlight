@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use kvm_bindings::{KVM_MEM_READONLY, kvm_fpu, kvm_regs, kvm_userspace_memory_region};
+use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::LevelFilter;
@@ -284,7 +284,8 @@ mod debug {
 /// A Hypervisor driver for KVM on Linux
 pub(crate) struct KVMDriver {
     _kvm: Kvm,
-    _vm_fd: VmFd,
+    vm_fd: VmFd,
+    page_size: usize,
     vcpu_fd: VcpuFd,
     entrypoint: u64,
     orig_rsp: GuestPtr,
@@ -317,21 +318,9 @@ impl KVMDriver {
 
         let vm_fd = kvm.create_vm_with_type(0)?;
 
-        let perm_flags =
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
-
         mem_regions.iter().enumerate().try_for_each(|(i, region)| {
-            let perm_flags = perm_flags.intersection(region.flags);
-            let kvm_region = kvm_userspace_memory_region {
-                slot: i as u32,
-                guest_phys_addr: region.guest_region.start as u64,
-                memory_size: (region.guest_region.end - region.guest_region.start) as u64,
-                userspace_addr: region.host_region.start as u64,
-                flags: match perm_flags {
-                    MemoryRegionFlags::READ => KVM_MEM_READONLY,
-                    _ => 0, // normal, RWX
-                },
-            };
+            let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
+            kvm_region.slot = i as u32;
             unsafe { vm_fd.set_user_memory_region(kvm_region) }
         })?;
 
@@ -378,7 +367,8 @@ impl KVMDriver {
         #[allow(unused_mut)]
         let mut hv = Self {
             _kvm: kvm,
-            _vm_fd: vm_fd,
+            vm_fd,
+            page_size: 0,
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
@@ -463,6 +453,8 @@ impl Hypervisor for KVMDriver {
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
+        self.page_size = page_size as usize;
+
         let max_guest_log_level: u64 = match max_guest_log_level {
             Some(level) => level as u64,
             None => self.get_max_log_level().into(),
@@ -494,16 +486,40 @@ impl Hypervisor for KVMDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn map_region(&mut self, _rgn: &MemoryRegion) -> Result<()> {
-        log_then_return!("Mapping host memory into the guest not yet supported on this platform");
+    unsafe fn map_region(&mut self, region: &MemoryRegion) -> Result<()> {
+        if [
+            region.guest_region.start,
+            region.guest_region.end,
+            region.host_region.start,
+            region.host_region.end,
+        ]
+        .iter()
+        .any(|x| x % self.page_size != 0)
+        {
+            log_then_return!(
+                "region is not page-aligned {:x}, {region:?}",
+                self.page_size
+            );
+        }
+
+        let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
+        kvm_region.slot = self.mem_regions.len() as u32;
+        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
+        self.mem_regions.push(region.to_owned());
+        Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     unsafe fn unmap_regions(&mut self, n: u64) -> Result<()> {
-        if n > 0 {
-            log_then_return!(
-                "Mapping host memory into the guest not yet supported on this platform"
-            );
+        let n_keep = self.mem_regions.len() - n as usize;
+        for (k, region) in self.mem_regions.split_off(n_keep).iter().enumerate() {
+            let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
+            kvm_region.slot = (n_keep + k) as u32;
+            // Setting memory_size to 0 unmaps the slot's region
+            // From https://docs.kernel.org/virt/kvm/api.html
+            // > Deleting a slot is done by passing zero for memory_size.
+            kvm_region.memory_size = 0;
+            unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
         }
         Ok(())
     }

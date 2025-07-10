@@ -30,6 +30,8 @@ use bitflags::bitflags;
 #[cfg(mshv)]
 use hyperlight_common::mem::PAGE_SHIFT;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
+#[cfg(kvm)]
+use kvm_bindings::{KVM_MEM_READONLY, kvm_userspace_memory_region};
 #[cfg(mshv2)]
 use mshv_bindings::{
     HV_MAP_GPA_EXECUTABLE, HV_MAP_GPA_PERMISSIONS_NONE, HV_MAP_GPA_READABLE, HV_MAP_GPA_WRITABLE,
@@ -305,6 +307,27 @@ impl From<MemoryRegion> for mshv_user_mem_region {
                 flags,
                 ..Default::default()
             }
+        }
+    }
+}
+
+#[cfg(kvm)]
+impl From<MemoryRegion> for kvm_bindings::kvm_userspace_memory_region {
+    fn from(region: MemoryRegion) -> Self {
+        let perm_flags =
+            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
+
+        let perm_flags = perm_flags.intersection(region.flags);
+
+        kvm_userspace_memory_region {
+            slot: 0,
+            guest_phys_addr: region.guest_region.start as u64,
+            memory_size: (region.guest_region.end - region.guest_region.start) as u64,
+            userspace_addr: region.host_region.start as u64,
+            flags: match perm_flags {
+                MemoryRegionFlags::READ => KVM_MEM_READONLY,
+                _ => 0, // normal, RWX
+            },
         }
     }
 }

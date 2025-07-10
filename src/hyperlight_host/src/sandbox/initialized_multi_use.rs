@@ -402,6 +402,10 @@ mod tests {
     use hyperlight_testing::simple_guest_as_string;
 
     use crate::func::call_ctx::MultiUseGuestCallContext;
+    #[cfg(target_os = "linux")]
+    use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
+    #[cfg(target_os = "linux")]
+    use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::{Callable, SandboxConfiguration};
     use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox};
     use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
@@ -691,6 +695,63 @@ mod tests {
 
         for handle in handles {
             handle.join().unwrap();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_mmap() {
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+        )
+        .unwrap()
+        .evolve(Noop::default())
+        .unwrap();
+
+        let expected = b"hello world";
+        let map_mem = page_aligned_memory(expected);
+        let guest_base = 0x1_0000_0000; // Arbitrary guest base address
+
+        unsafe {
+            sbox.map_region(&region_for_memory(&map_mem, guest_base))
+                .unwrap();
+        }
+
+        let _guard = map_mem.lock.try_read().unwrap();
+        let actual: Vec<u8> = sbox
+            .call_guest_function_by_name(
+                "ReadMappedBuffer",
+                (guest_base as u64, expected.len() as u64),
+            )
+            .unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn page_aligned_memory(src: &[u8]) -> GuestSharedMemory {
+        use hyperlight_common::mem::PAGE_SIZE_USIZE;
+
+        let len = src.len().div_ceil(PAGE_SIZE_USIZE) * PAGE_SIZE_USIZE;
+
+        let mut mem = ExclusiveSharedMemory::new(len).unwrap();
+        mem.copy_from_slice(src, 0).unwrap();
+
+        let (_, guest_mem) = mem.build();
+
+        guest_mem
+    }
+
+    #[cfg(target_os = "linux")]
+    fn region_for_memory(mem: &GuestSharedMemory, guest_base: usize) -> MemoryRegion {
+        let ptr = mem.base_addr();
+        let len = mem.mem_size();
+        MemoryRegion {
+            host_region: ptr..(ptr + len),
+            guest_region: guest_base..(guest_base + len),
+            flags: MemoryRegionFlags::READ,
+            region_type: MemoryRegionType::Heap,
         }
     }
 }
