@@ -128,7 +128,7 @@ jobs:
           CARGO_TERM_COLOR: always
         run: |
           # with default features
-          just test ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+          just test ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
 
           # with only one driver enabled (driver mshv/kvm feature is ignored on windows) + seccomp 
           just test ${{ matrix.config }} seccomp,${{ matrix.hypervisor == 'mshv' && 'mshv2' || matrix.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }} 
@@ -154,20 +154,20 @@ jobs:
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
-        run: just run-rust-examples-linux ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+        run: just run-rust-examples-linux ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
 
       - name: Run Rust Gdb tests - linux
         if: runner.os == 'Linux'
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
-        run: just test-rust-gdb-debugging ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+        run: just test-rust-gdb-debugging ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
 
       - name: Run Rust Crashdump tests
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
-        run: just test-rust-crashdump ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+        run: just test-rust-crashdump ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
 
       - name: Download benchmarks from "latest"
         run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} ${{ matrix.cpu}} dev-latest # compare to prerelease
@@ -178,5 +178,5 @@ jobs:
 
       - name: Run benchmarks
         run: |
-          just bench-ci main ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+          just bench-ci main ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
         if: ${{ matrix.config == 'release' }}

@@ -57,7 +57,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Benchmarks
-        run: just bench-ci main release ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+        run: just bench-ci main release ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
 
       - uses: actions/upload-artifact@v4
         with:
