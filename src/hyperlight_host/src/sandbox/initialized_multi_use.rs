@@ -270,7 +270,8 @@ impl MultiUseSandbox {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn restore_state(&mut self) -> Result<()> {
         let mem_mgr = self.mem_mgr.unwrap_mgr_mut();
-        let rgns_to_unmap = mem_mgr.restore_state_from_last_snapshot()?;
+        let (dirty_sandbox_pages, _) = self.vm.get_and_clear_dirty_pages()?;
+        let rgns_to_unmap = mem_mgr.restore_state_from_last_snapshot(&dirty_sandbox_pages)?;
         unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
         Ok(())
     }
@@ -354,10 +355,11 @@ impl DevolvableSandbox<MultiUseSandbox, MultiUseSandbox, Noop<MultiUseSandbox, M
     /// The devolve can be used to return the MultiUseSandbox to the state before the code was loaded. Thus avoiding initialisation overhead
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn devolve(mut self, _tsn: Noop<MultiUseSandbox, MultiUseSandbox>) -> Result<MultiUseSandbox> {
+        let (dirty_sandbox_pages, _) = self.vm.get_and_clear_dirty_pages()?;
         let rgns_to_unmap = self
             .mem_mgr
             .unwrap_mgr_mut()
-            .pop_and_restore_state_from_snapshot()?;
+            .pop_and_restore_state_from_snapshot(&dirty_sandbox_pages)?;
         unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
         Ok(self)
     }
@@ -389,7 +391,10 @@ where
         let mut ctx = self.new_call_context();
         transition_func.call(&mut ctx)?;
         let mut sbox = ctx.finish_no_reset();
-        sbox.mem_mgr.unwrap_mgr_mut().push_state()?;
+        let (dirty_sandbox_pages, _) = sbox.vm.get_and_clear_dirty_pages()?;
+        sbox.mem_mgr
+            .unwrap_mgr_mut()
+            .push_state(&dirty_sandbox_pages)?;
         Ok(sbox)
     }
 }
@@ -736,6 +741,7 @@ mod tests {
         let len = src.len().div_ceil(PAGE_SIZE_USIZE) * PAGE_SIZE_USIZE;
 
         let mut mem = ExclusiveSharedMemory::new(len).unwrap();
+        mem.stop_tracking_dirty_pages().unwrap();
         mem.copy_from_slice(src, 0).unwrap();
 
         let (_, guest_mem) = mem.build();

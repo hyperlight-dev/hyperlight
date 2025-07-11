@@ -78,7 +78,7 @@ jobs:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 60
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         hypervisor: [hyperv, 'hyperv-ws2025', mshv, mshv3, kvm] # hyperv is windows, mshv and kvm are linux
         cpu: [amd, intel]

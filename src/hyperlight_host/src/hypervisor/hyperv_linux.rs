@@ -29,6 +29,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use log::{LevelFilter, error};
+#[cfg(mshv3)]
+use mshv_bindings::MSHV_GPAP_ACCESS_OP_CLEAR;
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 use mshv_bindings::{
@@ -75,6 +77,9 @@ use crate::sandbox::SandboxConfiguration;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
+
+#[cfg(mshv2)]
+const CLEAR_DIRTY_BIT_FLAG: u64 = 0b100;
 
 #[cfg(gdb)]
 mod debug {
@@ -302,6 +307,7 @@ pub(crate) struct HypervLinuxDriver {
     vcpu_fd: VcpuFd,
     entrypoint: u64,
     mem_regions: Vec<MemoryRegion>,
+    n_initial_regions: usize,
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<LinuxInterruptHandle>,
 
@@ -351,6 +357,7 @@ impl HypervLinuxDriver {
             vm_fd.initialize()?;
             vm_fd
         };
+        vm_fd.enable_dirty_page_tracking()?;
 
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
 
@@ -391,12 +398,40 @@ impl HypervLinuxDriver {
             (None, None)
         };
 
+        let mut base_pfn = u64::MAX;
+        let mut total_size: usize = 0;
+
         mem_regions.iter().try_for_each(|region| {
-            let mshv_region = region.to_owned().into();
+            let mshv_region: mshv_user_mem_region = region.to_owned().into();
+            if base_pfn == u64::MAX {
+                base_pfn = mshv_region.guest_pfn;
+            }
+            total_size += mshv_region.size as usize;
             vm_fd.map_user_memory(mshv_region)
         })?;
 
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr.absolute()?)?;
+
+        // get/clear the dirty page bitmap, mshv sets all the bit dirty at initialization
+        // if we dont clear them then we end up taking a complete snapsot of memory page by page which gets
+        // progressively slower as the sandbox size increases
+        // the downside of doing this here is that the call to get_dirty_log will takes longer as the number of pages increase
+        // but for larger sandboxes its easily cheaper than copying all the pages
+
+        // Clear dirty bits for each memory region separately since they may not be contiguous
+        for region in &mem_regions {
+            let mshv_region: mshv_user_mem_region = region.to_owned().into();
+            let region_size = region.guest_region.len();
+
+            #[cfg(mshv2)]
+            vm_fd.get_dirty_log(mshv_region.guest_pfn, region_size, CLEAR_DIRTY_BIT_FLAG)?;
+            #[cfg(mshv3)]
+            vm_fd.get_dirty_log(
+                mshv_region.guest_pfn,
+                region_size,
+                MSHV_GPAP_ACCESS_OP_CLEAR as u8,
+            )?;
+        }
 
         let interrupt_handle = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
@@ -428,6 +463,7 @@ impl HypervLinuxDriver {
             page_size: 0,
             vm_fd,
             vcpu_fd,
+            n_initial_regions: mem_regions.len(),
             mem_regions,
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
@@ -863,6 +899,50 @@ impl Hypervisor for HypervLinuxDriver {
         self.interrupt_handle.clone()
     }
 
+    // TODO: Implement getting additional host-mapped dirty pages.
+    fn get_and_clear_dirty_pages(&mut self) -> Result<(Vec<u64>, Option<Vec<Vec<u64>>>)> {
+        let first_mshv_region: mshv_user_mem_region = self
+            .mem_regions
+            .first()
+            .ok_or(new_error!(
+                "tried to get dirty page bitmap of 0-sized region"
+            ))?
+            .to_owned()
+            .into();
+
+        let n_contiguous = self
+            .mem_regions
+            .windows(2)
+            .take_while(|window| window[0].guest_region.end == window[1].guest_region.start)
+            .count()
+            + 1; // +1 because windows(2) gives us n-1 pairs for n regions
+
+        if n_contiguous != self.n_initial_regions {
+            return Err(new_error!(
+                "get_and_clear_dirty_pages: not all regions are contiguous, expected {} but got {}",
+                self.n_initial_regions,
+                n_contiguous
+            ));
+        }
+
+        let sandbox_total_size = self
+            .mem_regions
+            .iter()
+            .take(n_contiguous)
+            .map(|r| r.guest_region.len())
+            .sum();
+
+        let sandbox_dirty_pages = self.vm_fd.get_dirty_log(
+            first_mshv_region.guest_pfn,
+            sandbox_total_size,
+            #[cfg(mshv2)]
+            CLEAR_DIRTY_BIT_FLAG,
+            #[cfg(mshv3)]
+            (MSHV_GPAP_ACCESS_OP_CLEAR as u8),
+        )?;
+        Ok((sandbox_dirty_pages, None))
+    }
+
     #[cfg(crashdump)]
     fn crashdump_context(&self) -> Result<Option<super::crashdump::CrashDumpContext>> {
         if self.rt_cfg.guest_core_dump {
@@ -1113,7 +1193,8 @@ mod tests {
             return;
         }
         const MEM_SIZE: usize = 0x3000;
-        let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
+        let mut gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
+        gm.stop_tracking_dirty_pages().unwrap();
         let rsp_ptr = GuestPtr::try_from(0).unwrap();
         let pml4_ptr = GuestPtr::try_from(0).unwrap();
         let entrypoint_ptr = GuestPtr::try_from(0).unwrap();

@@ -196,6 +196,14 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         None
     }
 
+    /// Get dirty pages as a bitmap (Vec<u64>).
+    /// Each bit in a u64 represents a page.
+    /// This also clears the bitflags, marking the pages as non-dirty.
+    /// The Vec<u64> in the tuple is the bitmap of the first contiguous memory regions, which represents the sandbox itself.
+    /// The Vec<Vec<u64>> in the tuple are the host-mapped regions, which aren't necessarily contiguous, and not yet implemented
+    #[allow(clippy::type_complexity)]
+    fn get_and_clear_dirty_pages(&mut self) -> Result<(Vec<u64>, Option<Vec<Vec<u64>>>)>;
+
     /// Get InterruptHandle to underlying VM
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
 
@@ -507,6 +515,7 @@ pub(crate) mod tests {
     #[cfg(gdb)]
     use crate::hypervisor::DbgMemAccessHandlerCaller;
     use crate::mem::ptr::RawPtr;
+    use crate::mem::shared_mem::SharedMemory;
     use crate::sandbox::uninitialized::GuestBinary;
     #[cfg(any(crashdump, gdb))]
     use crate::sandbox::uninitialized::SandboxRuntimeConfig;
@@ -558,9 +567,33 @@ pub(crate) mod tests {
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
         let (_hshm, mut gshm) = sandbox.mgr.build();
+
+        let regions = gshm.layout.get_memory_regions(&gshm.shared_mem)?;
+
+        // Set up shared memory to calculate rsp_ptr
+        #[cfg(feature = "init-paging")]
+        let rsp_ptr = {
+            use crate::mem::ptr::GuestPtr;
+            let rsp_u64 = gshm.set_up_page_tables(&regions)?;
+            let rsp_raw = RawPtr::from(rsp_u64);
+            GuestPtr::try_from(rsp_raw)
+        }?;
+        #[cfg(not(feature = "init-paging"))]
+        let rsp_ptr = {
+            use crate::mem::ptr::GuestPtr;
+            use crate::mem::ptr_offset::Offset;
+            GuestPtr::try_from(Offset::from(0))
+        }?;
+
+        // We need to stop tracking dirty pages from the host side before we start the guest
+        gshm.shared_mem
+            .with_exclusivity(|e| e.stop_tracking_dirty_pages())??;
+
         let mut vm = set_up_hypervisor_partition(
             &mut gshm,
             &config,
+            rsp_ptr,
+            regions,
             #[cfg(any(crashdump, gdb))]
             &rt_cfg,
         )?;

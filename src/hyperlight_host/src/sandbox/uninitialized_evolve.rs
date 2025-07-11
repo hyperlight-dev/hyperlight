@@ -29,12 +29,11 @@ use crate::HyperlightError::NoHypervisorFound;
 use crate::hypervisor::Hypervisor;
 use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
 use crate::mem::layout::SandboxMemoryLayout;
+use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
-use crate::mem::shared_mem::GuestSharedMemory;
-#[cfg(feature = "init-paging")]
-use crate::mem::shared_mem::SharedMemory;
+use crate::mem::shared_mem::{GuestSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -70,15 +69,11 @@ where
         Arc<Mutex<dyn OutBHandlerCaller>>,
         Arc<Mutex<dyn MemAccessHandlerCaller>>,
         RawPtr,
+        &[usize], // dirty host pages (indices, not bitmap)
     ) -> Result<ResSandbox>,
 {
     let (hshm, mut gshm) = u_sbox.mgr.build();
-    let mut vm = set_up_hypervisor_partition(
-        &mut gshm,
-        &u_sbox.config,
-        #[cfg(any(crashdump, gdb))]
-        &u_sbox.rt_cfg,
-    )?;
+
     let outb_hdl = outb_handler_wrapper(hshm.clone(), u_sbox.host_funcs.clone());
 
     let seed = {
@@ -98,6 +93,32 @@ where
 
     #[cfg(target_os = "linux")]
     setup_signal_handlers(&u_sbox.config)?;
+
+    let regions = gshm.layout.get_memory_regions(&gshm.shared_mem)?;
+
+    // Set up shared memory before stopping dirty page tracking to ensure page table setup is tracked
+    #[cfg(feature = "init-paging")]
+    let rsp_ptr = {
+        let rsp_u64 = gshm.set_up_page_tables(&regions)?;
+        let rsp_raw = RawPtr::from(rsp_u64);
+        GuestPtr::try_from(rsp_raw)
+    }?;
+    #[cfg(not(feature = "init-paging"))]
+    let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
+
+    // before entering VM (and before mapping memory into VM), stop tracking dirty pages from the host side
+    let dirty_host_pages_idx = gshm
+        .get_shared_mem_mut()
+        .with_exclusivity(|e| e.stop_tracking_dirty_pages())??;
+
+    let mut vm = set_up_hypervisor_partition(
+        &mut gshm,
+        &u_sbox.config,
+        rsp_ptr,
+        regions,
+        #[cfg(any(crashdump, gdb))]
+        &u_sbox.rt_cfg,
+    )?;
 
     vm.initialise(
         peb_addr,
@@ -122,6 +143,7 @@ where
         outb_hdl,
         mem_access_hdl,
         RawPtr::from(dispatch_function_addr),
+        &dirty_host_pages_idx,
     )
 }
 
@@ -129,9 +151,15 @@ where
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
     evolve_impl(
         u_sbox,
-        |hf, mut hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
+        |hf, mut hshm, mut vm, out_hdl, mem_hdl, dispatch_ptr, host_dirty_pages_idx| {
             {
-                hshm.as_mut().push_state()?;
+                let (sandbox_dirty_pages_bitmap, _) = vm.get_and_clear_dirty_pages()?;
+                let layout = hshm.unwrap_mgr().layout;
+                hshm.as_mut().create_initial_snapshot(
+                    &sandbox_dirty_pages_bitmap,
+                    host_dirty_pages_idx,
+                    &layout,
+                )?;
             }
             Ok(MultiUseSandbox::from_uninit(
                 hf,
@@ -150,19 +178,10 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 pub(crate) fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
+    rsp_ptr: GuestPtr,
+    regions: Vec<MemoryRegion>,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
 ) -> Result<Box<dyn Hypervisor>> {
-    #[cfg(feature = "init-paging")]
-    let rsp_ptr = {
-        let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-        let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
-        let rsp_u64 = mgr.set_up_shared_memory(mem_size, &mut regions)?;
-        let rsp_raw = RawPtr::from(rsp_u64);
-        GuestPtr::try_from(rsp_raw)
-    }?;
-    #[cfg(not(feature = "init-paging"))]
-    let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
     let base_ptr = GuestPtr::try_from(Offset::from(0))?;
     let pml4_ptr = {
         let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;

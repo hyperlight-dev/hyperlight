@@ -24,6 +24,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use hyperlight_common::mem::PAGES_IN_BLOCK;
 use tracing::{Span, instrument};
 
 use super::exe::ExeInfo;
@@ -33,8 +34,8 @@ use super::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryReg
 use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
-use super::shared_mem_snapshot::SharedMemorySnapshot;
-use crate::HyperlightError::NoMemorySnapshot;
+use super::shared_memory_snapshot_manager::SharedMemorySnapshotManager;
+use crate::mem::bitmap::{bitmap_union, new_page_bitmap};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::GuestBlob;
 use crate::{Result, log_then_return, new_error};
@@ -75,9 +76,8 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) entrypoint_offset: Offset,
     /// How many memory regions were mapped after sandbox creation
     pub(crate) mapped_rgns: u64,
-    /// A vector of memory snapshots that can be used to save and  restore the state of the memory
-    /// This is used by the Rust Sandbox implementation (rather than the mem_snapshot field above which only exists to support current C API)
-    snapshots: Arc<Mutex<Vec<SharedMemorySnapshot>>>,
+    /// Shared memory snapshots that can be used to save and  restore the state of the memory
+    snapshot_manager: Arc<Mutex<Option<SharedMemorySnapshotManager>>>,
 }
 
 impl<S> SandboxMemoryManager<S>
@@ -98,7 +98,7 @@ where
             load_addr,
             entrypoint_offset,
             mapped_rgns: 0,
-            snapshots: Arc::new(Mutex::new(Vec::new())),
+            snapshot_manager: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -107,17 +107,12 @@ where
         &mut self.shared_mem
     }
 
-    /// Set up the hypervisor partition in the given `SharedMemory` parameter
-    /// `shared_mem`, with the given memory size `mem_size`
+    /// Set up the page tables in the shared memory
     // TODO: This should perhaps happen earlier and use an
     // ExclusiveSharedMemory from the beginning.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     #[cfg(feature = "init-paging")]
-    pub(crate) fn set_up_shared_memory(
-        &mut self,
-        mem_size: u64,
-        regions: &mut [MemoryRegion],
-    ) -> Result<u64> {
+    pub(crate) fn set_up_page_tables(&mut self, regions: &[MemoryRegion]) -> Result<u64> {
         let rsp: u64 = self.layout.get_top_of_user_stack_offset() as u64
             + SandboxMemoryLayout::BASE_ADDRESS as u64
             + self.layout.stack_size as u64
@@ -126,6 +121,7 @@ where
             // test from `sandbox_host_tests` fails. We should investigate this further.
             // See issue #498 for more details.
             - 0x28;
+        let mem_size = self.shared_mem.mem_size();
 
         self.shared_mem.with_exclusivity(|shared_mem| {
             // Create PDL4 table with only 1 PML4E
@@ -153,8 +149,6 @@ where
             // We need one PT for every 2MB of memory that is mapped
             // We can use the memory size to calculate the number of PTs we need
             // We round up mem_size/2MB
-
-            let mem_size = usize::try_from(mem_size)?;
 
             let num_pages: usize = mem_size.div_ceil(AMOUNT_OF_MEMORY_PER_PT);
 
@@ -265,14 +259,36 @@ where
         }
     }
 
-    /// this function will create a memory snapshot and push it onto the stack of snapshots
-    /// It should be used when you want to save the state of the memory, for example, when evolving a sandbox to a new state
-    pub(crate) fn push_state(&mut self) -> Result<()> {
-        let snapshot = SharedMemorySnapshot::new(&mut self.shared_mem, self.mapped_rgns)?;
-        self.snapshots
+    /// this function will create an initial snapshot and then create the SnapshotManager
+    pub(crate) fn create_initial_snapshot(
+        &mut self,
+        vm_dirty_bitmap: &[u64],
+        host_dirty_page_idx: &[usize],
+        layout: &SandboxMemoryLayout,
+    ) -> Result<()> {
+        let mut existing_snapshot_manager = self
+            .snapshot_manager
             .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .push(snapshot);
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        if existing_snapshot_manager.is_some() {
+            log_then_return!("Snapshot manager already initialized, not creating a new one");
+        }
+
+        // covert vec of page indices to bitmap
+        let mut res = new_page_bitmap(self.shared_mem.mem_size(), false)?;
+        for page_idx in host_dirty_page_idx {
+            let block_idx = page_idx / PAGES_IN_BLOCK;
+            let bit_idx = page_idx % PAGES_IN_BLOCK;
+            res[block_idx] |= 1 << bit_idx;
+        }
+
+        // merge the host dirty page map into the dirty bitmap
+        let merged = bitmap_union(&res, vm_dirty_bitmap);
+
+        let mut snapshot_manager = SharedMemorySnapshotManager::new(&mut self.shared_mem, layout)?;
+        snapshot_manager.create_new_snapshot(&mut self.shared_mem, &merged, self.mapped_rgns)?;
+        existing_snapshot_manager.replace(snapshot_manager);
         Ok(())
     }
 
@@ -284,35 +300,62 @@ where
     /// Returns the number of memory regions mapped into the sandbox
     /// that need to be unmapped in order for the restore to be
     /// completed.
-    pub(crate) fn restore_state_from_last_snapshot(&mut self) -> Result<u64> {
-        let mut snapshots = self
-            .snapshots
+    pub(crate) fn restore_state_from_last_snapshot(&mut self, dirty_bitmap: &[u64]) -> Result<u64> {
+        let mut snapshot_manager = self
+            .snapshot_manager
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        let last = snapshots.last_mut();
-        if last.is_none() {
-            log_then_return!(NoMemorySnapshot);
+
+        match snapshot_manager.as_mut() {
+            None => {
+                log_then_return!("Snapshot manager not initialized");
+            }
+            Some(snapshot_manager) => {
+                let old_rgns = self.mapped_rgns;
+                self.mapped_rgns =
+                    snapshot_manager.restore_from_snapshot(&mut self.shared_mem, dirty_bitmap)?;
+                Ok(old_rgns - self.mapped_rgns)
+            }
         }
-        #[allow(clippy::unwrap_used)] // We know that last is not None because we checked it above
-        let snapshot = last.unwrap();
-        let old_rgns = self.mapped_rgns;
-        self.mapped_rgns = snapshot.restore_from_snapshot(&mut self.shared_mem)?;
-        Ok(old_rgns - self.mapped_rgns)
     }
 
     /// this function pops the last snapshot off the stack and restores the memory to the previous state
     /// It should be used when you want to restore the state of the memory to a previous state and do not need to retain that state
     /// for example when devolving a sandbox to a previous state.
-    pub(crate) fn pop_and_restore_state_from_snapshot(&mut self) -> Result<u64> {
-        let last = self
-            .snapshots
+    pub(crate) fn pop_and_restore_state_from_snapshot(
+        &mut self,
+        dirty_bitmap: &[u64],
+    ) -> Result<u64> {
+        let mut snapshot_manager = self
+            .snapshot_manager
             .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .pop();
-        if last.is_none() {
-            log_then_return!(NoMemorySnapshot);
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        match snapshot_manager.as_mut() {
+            None => {
+                log_then_return!("Snapshot manager not initialized");
+            }
+            Some(snapshot_manager) => snapshot_manager
+                .pop_and_restore_state_from_snapshot(&mut self.shared_mem, dirty_bitmap),
         }
-        self.restore_state_from_last_snapshot()
+    }
+
+    pub(crate) fn push_state(&mut self, dirty_bitmap: &[u64]) -> Result<()> {
+        let mut snapshot_manager = self
+            .snapshot_manager
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+
+        match snapshot_manager.as_mut() {
+            None => {
+                log_then_return!("Snapshot manager not initialized");
+            }
+            Some(snapshot_manager) => snapshot_manager.create_new_snapshot(
+                &mut self.shared_mem,
+                dirty_bitmap,
+                self.mapped_rgns,
+            ),
+        }
     }
 
     /// Sets `addr` to the correct offset in the memory referenced by
@@ -440,7 +483,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
-                snapshots: Arc::new(Mutex::new(Vec::new())),
+                snapshot_manager: Arc::new(Mutex::new(None)),
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
@@ -448,7 +491,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
-                snapshots: Arc::new(Mutex::new(Vec::new())),
+                snapshot_manager: Arc::new(Mutex::new(None)),
             },
         )
     }

@@ -250,17 +250,15 @@ impl UninitializedSandbox {
             }
         };
 
-        let mut mem_mgr_wrapper = {
-            let mut mgr = UninitializedSandbox::load_guest_binary(
-                sandbox_cfg,
-                &guest_binary,
-                guest_blob.as_ref(),
-            )?;
+        let mut mgr = UninitializedSandbox::load_guest_binary(
+            sandbox_cfg,
+            &guest_binary,
+            guest_blob.as_ref(),
+        )?;
 
-            let stack_guard = Self::create_stack_guard();
-            mgr.set_stack_guard(&stack_guard)?;
-            MemMgrWrapper::new(mgr, stack_guard)
-        };
+        let stack_guard = Self::create_stack_guard();
+        mgr.set_stack_guard(&stack_guard)?;
+        let mut mem_mgr_wrapper = MemMgrWrapper::new(mgr, stack_guard);
 
         mem_mgr_wrapper.write_memory_layout()?;
 
