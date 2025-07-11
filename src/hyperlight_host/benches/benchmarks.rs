@@ -19,8 +19,6 @@ use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{
     Callable, MultiUseSandbox, SandboxConfiguration, UninitializedSandbox,
 };
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
-use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_testing::simple_guest_as_string;
 
 fn create_uninit_sandbox() -> UninitializedSandbox {
@@ -29,7 +27,7 @@ fn create_uninit_sandbox() -> UninitializedSandbox {
 }
 
 fn create_multiuse_sandbox() -> MultiUseSandbox {
-    create_uninit_sandbox().evolve(Noop::default()).unwrap()
+    create_uninit_sandbox().evolve().unwrap()
 }
 
 fn guest_call_benchmark(c: &mut Criterion) {
@@ -38,24 +36,20 @@ fn guest_call_benchmark(c: &mut Criterion) {
     // Benchmarks a single guest function call.
     // The benchmark does **not** include the time to reset the sandbox memory after the call.
     group.bench_function("guest_call", |b| {
-        let mut call_ctx = create_multiuse_sandbox().new_call_context();
+        let mut sbox = create_multiuse_sandbox();
 
-        b.iter(|| {
-            call_ctx
-                .call::<String>("Echo", "hello\n".to_string())
-                .unwrap()
-        });
+        b.iter(|| sbox.call::<String>("Echo", "hello\n".to_string()).unwrap());
     });
 
     // Benchmarks a single guest function call.
     // The benchmark does include the time to reset the sandbox memory after the call.
-    group.bench_function("guest_call_with_reset", |b| {
-        let mut sandbox = create_multiuse_sandbox();
+    group.bench_function("guest_call_with_restore", |b| {
+        let mut sbox = create_multiuse_sandbox();
+        let snapshot = sbox.snapshot().unwrap();
 
         b.iter(|| {
-            sandbox
-                .call_guest_function_by_name::<String>("Echo", "hello\n".to_string())
-                .unwrap()
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            sbox.restore(&snapshot).unwrap();
         });
     });
 
@@ -69,11 +63,13 @@ fn guest_call_benchmark(c: &mut Criterion) {
             .register("HostAdd", |a: i32, b: i32| Ok(a + b))
             .unwrap();
 
-        let multiuse_sandbox: MultiUseSandbox =
-            uninitialized_sandbox.evolve(Noop::default()).unwrap();
-        let mut call_ctx = multiuse_sandbox.new_call_context();
+        let mut multiuse_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
 
-        b.iter(|| call_ctx.call::<i32>("Add", (1_i32, 41_i32)).unwrap());
+        b.iter(|| {
+            multiuse_sandbox
+                .call::<i32>("Add", (1_i32, 41_i32))
+                .unwrap()
+        });
     });
 
     group.finish();
@@ -99,7 +95,7 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
             Some(config),
         )
         .unwrap();
-        let mut sandbox = sandbox.evolve(Noop::default()).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
 
         b.iter(|| {
             sandbox
@@ -137,17 +133,6 @@ fn sandbox_benchmark(c: &mut Criterion) {
     // Benchmarks the time to create a new sandbox and drop it.
     group.bench_function("create_sandbox_and_drop", |b| {
         b.iter(create_multiuse_sandbox);
-    });
-
-    // Benchmarks the time to create a new sandbox and create a new call context.
-    // Does **not** include the time to drop the sandbox or the call context.
-    group.bench_function("create_sandbox_and_call_context", |b| {
-        b.iter_with_large_drop(|| create_multiuse_sandbox().new_call_context());
-    });
-
-    // Benchmarks the time to create a new sandbox, create a new call context, and drop the call context.
-    group.bench_function("create_sandbox_and_call_context_and_drop", |b| {
-        b.iter(|| create_multiuse_sandbox().new_call_context());
     });
 
     group.finish();

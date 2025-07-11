@@ -14,8 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use hyperlight_host::func::HostFunction;
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
-use hyperlight_host::sandbox_state::transition::Noop;
+use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result, UninitializedSandbox};
 use hyperlight_testing::{
     c_callback_guest_as_string, c_simple_guest_as_string, callback_guest_as_string,
@@ -34,9 +33,12 @@ pub fn new_uninit() -> Result<UninitializedSandbox> {
 
 /// Use this instead of the `new_uninit` if you want your test to only run with the rust guest, not the c guest
 pub fn new_uninit_rust() -> Result<UninitializedSandbox> {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_input_data_size(112 * 500 + 7); // 1 MiB
+    //cfg.set_output_data_size(500 * 100); // 1 MiB
     UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        None,
+        Some(cfg),
     )
 }
 
@@ -56,7 +58,7 @@ pub fn get_simpleguest_sandboxes(
             if let Some(writer) = writer.clone() {
                 sandbox.register_print(writer).unwrap();
             }
-            sandbox.evolve(Noop::default()).unwrap()
+            sandbox.evolve().unwrap()
         })
         .collect()
 }

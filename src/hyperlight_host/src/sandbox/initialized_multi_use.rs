@@ -28,8 +28,8 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use tracing::{Span, instrument};
 
 use super::host_funcs::FunctionRegistry;
-use super::{MemMgrWrapper, WrapperGetter};
-use crate::func::call_ctx::MultiUseGuestCallContext;
+use super::snapshot::Snapshot;
+use super::{Callable, MemMgrWrapper, WrapperGetter};
 use crate::func::guest_err::check_for_guest_error;
 use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(gdb)]
@@ -42,8 +42,6 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
-use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox, Sandbox};
-use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
 use crate::{HyperlightError, Result, log_then_return};
 
 /// A sandbox that supports being used Multiple times.
@@ -94,76 +92,26 @@ impl MultiUseSandbox {
         }
     }
 
-    /// Create a new `MultiUseCallContext` suitable for making 0 or more
-    /// calls to guest functions within the same context.
-    ///
-    /// Since this function consumes `self`, the returned
-    /// `MultiUseGuestCallContext` is guaranteed mutual exclusion for calling
-    /// functions within the sandbox. This guarantee is enforced at compile
-    /// time, and no locks, atomics, or any other mutual exclusion mechanisms
-    /// are used at runtime.
-    ///
-    /// If you have called this function, have a `MultiUseGuestCallContext`,
-    /// and wish to "return" it to a `MultiUseSandbox`, call the `finish`
-    /// method on the context.
-    ///
-    /// Example usage (compiled as a "no_run" doctest since the test binary
-    /// will not be found):
-    ///
-    /// ```no_run
-    /// use hyperlight_host::sandbox::{UninitializedSandbox, MultiUseSandbox};
-    /// use hyperlight_common::flatbuffer_wrappers::function_types::{ReturnType, ParameterValue, ReturnValue};
-    /// use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
-    /// use hyperlight_host::sandbox_state::transition::Noop;
-    /// use hyperlight_host::GuestBinary;
-    ///
-    /// // First, create a new uninitialized sandbox, then evolve it to become
-    /// // an initialized, single-use one.
-    /// let u_sbox = UninitializedSandbox::new(
-    ///     GuestBinary::FilePath("some_guest_binary".to_string()),
-    ///     None,
-    /// ).unwrap();
-    /// let sbox: MultiUseSandbox = u_sbox.evolve(Noop::default()).unwrap();
-    /// // Next, create a new call context from the single-use sandbox.
-    /// // After this line, your code will not compile if you try to use the
-    /// // original `sbox` variable.
-    /// let mut ctx = sbox.new_call_context();
-    ///
-    /// // Do a guest call with the context. Assumes that the loaded binary
-    /// // ("some_guest_binary") has a function therein called "SomeGuestFunc"
-    /// // that takes a single integer argument and returns an integer.
-    /// match ctx.call(
-    ///     "SomeGuestFunc",
-    ///     ReturnType::Int,
-    ///     Some(vec![ParameterValue::Int(1)])
-    /// ) {
-    ///     Ok(ReturnValue::Int(i)) => println!(
-    ///         "got successful return value {}",
-    ///         i,
-    ///     ),
-    ///     other => panic!(
-    ///         "failed to get return value as expected ({:?})",
-    ///         other,
-    ///     ),
-    /// };
-    /// // You can make further calls with the same context if you want.
-    /// // Otherwise, `ctx` will be dropped and all resources, including the
-    /// // underlying `MultiUseSandbox`, will be released and no further
-    /// // contexts can be created from that sandbox.
-    /// //
-    /// // If you want to avoid
-    /// // that behavior, call `finish` to convert the context back to
-    /// // the original `MultiUseSandbox`, as follows:
-    /// let _orig_sbox = ctx.finish();
-    /// // Now, you can operate on the original sandbox again (i.e. add more
-    /// // host functions etc...), create new contexts, and so on.
-    /// ```
-    #[instrument(skip_all, parent = Span::current())]
-    pub fn new_call_context(self) -> MultiUseGuestCallContext {
-        MultiUseGuestCallContext::start(self)
+    /// Create a snapshot of the current state of the sandbox's memory.
+    #[instrument(err(Debug), skip_all, parent = Span::current())]
+    pub fn snapshot(&mut self) -> Result<Snapshot> {
+        let snapshot = self.mem_mgr.unwrap_mgr_mut().snapshot()?;
+        Ok(Snapshot { inner: snapshot })
+    }
+
+    /// Restore the sandbox's memory to the state captured in the given snapshot.
+    #[instrument(err(Debug), skip_all, parent = Span::current())]
+    pub fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
+        let rgns_to_unmap = self
+            .mem_mgr
+            .unwrap_mgr_mut()
+            .restore_snapshot(&snapshot.inner)?;
+        unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
+        Ok(())
     }
 
     /// Call a guest function by name, with the given return type and arguments.
+    /// The changes made to the sandbox are persisted
     #[instrument(err(Debug), skip(self, args), parent = Span::current())]
     pub fn call_guest_function_by_name<Output: SupportedReturnType>(
         &mut self,
@@ -176,7 +124,6 @@ impl MultiUseSandbox {
                 Output::TYPE,
                 args.into_value(),
             );
-            self.restore_state()?;
             Output::from_value(ret?)
         })
     }
@@ -260,62 +207,68 @@ impl MultiUseSandbox {
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
         maybe_time_and_emit_guest_call(func_name, || {
-            let ret = self.call_guest_function_by_name_no_reset(func_name, ret_type, args);
-            self.restore_state()?;
-            ret
+            self.call_guest_function_by_name_no_reset(func_name, ret_type, args)
         })
     }
 
-    /// Restore the Sandbox's state
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn restore_state(&mut self) -> Result<()> {
-        let mem_mgr = self.mem_mgr.unwrap_mgr_mut();
-        let rgns_to_unmap = mem_mgr.restore_state_from_last_snapshot()?;
-        unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
-        Ok(())
-    }
-
-    pub(crate) fn call_guest_function_by_name_no_reset(
+    fn call_guest_function_by_name_no_reset(
         &mut self,
         function_name: &str,
         return_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
-        let fc = FunctionCall::new(
-            function_name.to_string(),
-            Some(args),
-            FunctionCallType::Guest,
-            return_type,
-        );
+        let res = (|| {
+            let fc = FunctionCall::new(
+                function_name.to_string(),
+                Some(args),
+                FunctionCallType::Guest,
+                return_type,
+            );
 
-        let buffer: Vec<u8> = fc
-            .try_into()
-            .map_err(|_| HyperlightError::Error("Failed to serialize FunctionCall".to_string()))?;
+            let buffer: Vec<u8> = fc.try_into().map_err(|_| {
+                HyperlightError::Error("Failed to serialize FunctionCall".to_string())
+            })?;
 
-        self.get_mgr_wrapper_mut()
-            .as_mut()
-            .write_guest_function_call(&buffer)?;
+            self.get_mgr_wrapper_mut()
+                .as_mut()
+                .write_guest_function_call(&buffer)?;
 
-        self.vm.dispatch_call_from_host(
-            self.dispatch_ptr.clone(),
-            self.out_hdl.clone(),
-            self.mem_hdl.clone(),
-            #[cfg(gdb)]
-            self.dbg_mem_access_fn.clone(),
-        )?;
+            self.vm.dispatch_call_from_host(
+                self.dispatch_ptr.clone(),
+                self.out_hdl.clone(),
+                self.mem_hdl.clone(),
+                #[cfg(gdb)]
+                self.dbg_mem_access_fn.clone(),
+            )?;
 
-        self.check_stack_guard()?;
-        check_for_guest_error(self.get_mgr_wrapper_mut())?;
+            self.mem_mgr.check_stack_guard()?;
+            check_for_guest_error(self.get_mgr_wrapper_mut())?;
 
-        self.get_mgr_wrapper_mut()
-            .as_mut()
-            .get_guest_function_call_result()
+            self.get_mgr_wrapper_mut()
+                .as_mut()
+                .get_guest_function_call_result()
+        })();
+
+        // TODO: Do we want to allow re-entrant guest function calls?
+        self.get_mgr_wrapper_mut().as_mut().clear_io_buffers();
+
+        res
     }
 
     /// Get a handle to the interrupt handler for this sandbox,
     /// capable of interrupting guest execution.
     pub fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.vm.interrupt_handle()
+    }
+}
+
+impl Callable for MultiUseSandbox {
+    fn call<Output: SupportedReturnType>(
+        &mut self,
+        func_name: &str,
+        args: impl ParameterTuple,
+    ) -> Result<Output> {
+        self.call_guest_function_by_name(func_name, args)
     }
 }
 
@@ -328,69 +281,11 @@ impl WrapperGetter for MultiUseSandbox {
     }
 }
 
-impl Sandbox for MultiUseSandbox {
-    fn check_stack_guard(&self) -> Result<bool> {
-        self.mem_mgr.check_stack_guard()
-    }
-}
-
 impl std::fmt::Debug for MultiUseSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MultiUseSandbox")
             .field("stack_guard", &self.mem_mgr.get_stack_cookie())
             .finish()
-    }
-}
-
-impl DevolvableSandbox<MultiUseSandbox, MultiUseSandbox, Noop<MultiUseSandbox, MultiUseSandbox>>
-    for MultiUseSandbox
-{
-    /// Consume `self` and move it back to a `MultiUseSandbox` with previous state.
-    ///
-    /// The purpose of this function is to allow multiple states to be associated with a single MultiUseSandbox.
-    ///
-    /// An implementation such as HyperlightJs or HyperlightWasm can use this to call guest functions to load JS or WASM code and then evolve the sandbox causing state to be captured.
-    /// The new MultiUseSandbox can then be used to call guest functions to execute the loaded code.
-    /// The devolve can be used to return the MultiUseSandbox to the state before the code was loaded. Thus avoiding initialisation overhead
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn devolve(mut self, _tsn: Noop<MultiUseSandbox, MultiUseSandbox>) -> Result<MultiUseSandbox> {
-        let rgns_to_unmap = self
-            .mem_mgr
-            .unwrap_mgr_mut()
-            .pop_and_restore_state_from_snapshot()?;
-        unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
-        Ok(self)
-    }
-}
-
-impl<'a, F>
-    EvolvableSandbox<
-        MultiUseSandbox,
-        MultiUseSandbox,
-        MultiUseContextCallback<'a, MultiUseSandbox, F>,
-    > for MultiUseSandbox
-where
-    F: FnOnce(&mut MultiUseGuestCallContext) -> Result<()> + 'a,
-{
-    /// The purpose of this function is to allow multiple states to be associated with a single MultiUseSandbox.
-    ///
-    /// An implementation such as HyperlightJs or HyperlightWasm can use this to call guest functions to load JS or WASM code and then evolve the sandbox causing state to be captured.
-    /// The new MultiUseSandbox can then be used to call guest functions to execute the loaded code.
-    ///
-    /// The evolve function creates a new MultiUseCallContext which is then passed to a callback function  allowing the
-    /// callback function to call guest functions as part of the evolve process, once the callback function  is complete
-    /// the context is finished using a crate internal method that does not restore the prior state of the Sandbox.
-    /// It then creates a mew  memory snapshot on the snapshot stack and returns the MultiUseSandbox
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn evolve(
-        self,
-        transition_func: MultiUseContextCallback<'a, MultiUseSandbox, F>,
-    ) -> Result<MultiUseSandbox> {
-        let mut ctx = self.new_call_context();
-        transition_func.call(&mut ctx)?;
-        let mut sbox = ctx.finish_no_reset();
-        sbox.mem_mgr.unwrap_mgr_mut().push_state()?;
-        Ok(sbox)
     }
 }
 
@@ -401,14 +296,11 @@ mod tests {
 
     use hyperlight_testing::simple_guest_as_string;
 
-    use crate::func::call_ctx::MultiUseGuestCallContext;
     #[cfg(target_os = "linux")]
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
     #[cfg(target_os = "linux")]
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::{Callable, SandboxConfiguration};
-    use crate::sandbox_state::sandbox::{DevolvableSandbox, EvolvableSandbox};
-    use crate::sandbox_state::transition::{MultiUseContextCallback, Noop};
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
 
     // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
@@ -419,58 +311,55 @@ mod tests {
         cfg.set_heap_size(20 * 1024);
         cfg.set_stack_size(16 * 1024);
 
-        let sbox1: MultiUseSandbox = {
+        let mut sbox1: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
-            u_sbox.evolve(Noop::default())
+            u_sbox.evolve()
         }
         .unwrap();
-
-        let mut ctx = sbox1.new_call_context();
 
         for _ in 0..1000 {
-            ctx.call::<String>("Echo", "hello".to_string()).unwrap();
+            sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
         }
 
-        let sbox2: MultiUseSandbox = {
+        let mut sbox2: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
-            u_sbox.evolve(Noop::default())
+            u_sbox.evolve()
         }
         .unwrap();
 
-        let mut ctx = sbox2.new_call_context();
-
         for i in 0..1000 {
-            ctx.call::<i32>(
-                "PrintUsingPrintf",
-                format!("Hello World {}\n", i).to_string(),
-            )
-            .unwrap();
+            sbox2
+                .call::<i32>(
+                    "PrintUsingPrintf",
+                    format!("Hello World {}\n", i).to_string(),
+                )
+                .unwrap();
         }
     }
 
     /// Tests that evolving from MultiUseSandbox to MultiUseSandbox creates a new state
-    /// and devolving from MultiUseSandbox to MultiUseSandbox restores the previous state
+    /// and restoring a snapshot from before evolving restores the previous state
     #[test]
-    fn evolve_devolve_handles_state_correctly() {
-        let sbox1: MultiUseSandbox = {
+    fn snapshot_evolve_restore_handles_state_correctly() {
+        let mut sbox: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve(Noop::default())
+            u_sbox.evolve()
         }
         .unwrap();
 
-        let func = Box::new(|call_ctx: &mut MultiUseGuestCallContext| {
-            call_ctx.call::<i32>("AddToStatic", 5i32)?;
-            Ok(())
-        });
-        let transition_func = MultiUseContextCallback::from(func);
-        let mut sbox2 = sbox1.evolve(transition_func).unwrap();
-        let res: i32 = sbox2.call_guest_function_by_name("GetStatic", ()).unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+
+        sbox.call_guest_function_by_name::<i32>("AddToStatic", 5i32)
+            .unwrap();
+
+        let res: i32 = sbox.call_guest_function_by_name("GetStatic", ()).unwrap();
         assert_eq!(res, 5);
-        let mut sbox3: MultiUseSandbox = sbox2.devolve(Noop::default()).unwrap();
-        let res: i32 = sbox3.call_guest_function_by_name("GetStatic", ()).unwrap();
+
+        sbox.restore(&snapshot).unwrap();
+        let res: i32 = sbox.call_guest_function_by_name("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
     }
 
@@ -494,7 +383,7 @@ mod tests {
 
             usbox.register("MakeGetpidSyscall", make_get_pid_syscall)?;
 
-            let mut sbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
+            let mut sbox: MultiUseSandbox = usbox.evolve()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -530,7 +419,7 @@ mod tests {
             )?;
             // ^^^ note, we are allowing SYS_getpid
 
-            let mut sbox: MultiUseSandbox = usbox.evolve(Noop::default())?;
+            let mut sbox: MultiUseSandbox = usbox.evolve()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -584,7 +473,7 @@ mod tests {
             .unwrap();
             ubox.register("Openat_Hostfunc", make_openat_syscall)?;
 
-            let mut sbox = ubox.evolve(Noop::default()).unwrap();
+            let mut sbox = ubox.evolve().unwrap();
             let host_func_result = sbox
                 .call_guest_function_by_name::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
@@ -614,7 +503,7 @@ mod tests {
                 make_openat_syscall,
                 [libc::SYS_openat],
             )?;
-            let mut sbox = ubox.evolve(Noop::default()).unwrap();
+            let mut sbox = ubox.evolve().unwrap();
             let host_func_result = sbox
                 .call_guest_function_by_name::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
@@ -637,7 +526,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve(Noop::default()).unwrap();
+        let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
 
         let res: Result<()> = multi_use_sandbox.call_guest_function_by_name("TriggerException", ());
 
@@ -677,8 +566,7 @@ mod tests {
                     )
                     .unwrap();
 
-                    let mut multi_use_sandbox: MultiUseSandbox =
-                        usbox.evolve(Noop::default()).unwrap();
+                    let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
 
                     let res: i32 = multi_use_sandbox
                         .call_guest_function_by_name("GetStatic", ())
@@ -706,7 +594,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .evolve(Noop::default())
+        .evolve()
         .unwrap();
 
         let expected = b"hello world";

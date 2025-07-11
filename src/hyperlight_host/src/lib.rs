@@ -58,9 +58,6 @@ pub mod metrics;
 /// outside this file. Types from this module needed for public consumption are
 /// re-exported below.
 pub mod sandbox;
-/// `trait`s and other functionality for dealing with defining sandbox
-/// states and moving between them
-pub mod sandbox_state;
 #[cfg(all(feature = "seccomp", target_os = "linux"))]
 pub(crate) mod seccomp;
 /// Signal handling for Linux
@@ -84,9 +81,6 @@ pub use sandbox::UninitializedSandbox;
 pub use sandbox::is_hypervisor_present;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
-
-/// The re-export for the `MultiUseGuestCallContext` type`
-pub use crate::func::call_ctx::MultiUseGuestCallContext;
 
 /// The universal `Result` type used throughout the Hyperlight codebase.
 pub type Result<T> = core::result::Result<T, error::HyperlightError>;

@@ -37,6 +37,9 @@ pub mod uninitialized;
 /// initialized `Sandbox`es.
 pub(crate) mod uninitialized_evolve;
 
+/// Representation of a snapshot of a `Sandbox`.
+pub mod snapshot;
+
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 mod callable;
 
@@ -101,8 +104,6 @@ mod tests {
     use hyperlight_testing::simple_guest_as_string;
 
     use crate::sandbox::uninitialized::GuestBinary;
-    use crate::sandbox_state::sandbox::EvolvableSandbox;
-    use crate::sandbox_state::transition::Noop;
     use crate::{MultiUseSandbox, UninitializedSandbox, new_error};
 
     #[test]
@@ -163,11 +164,9 @@ mod tests {
                         ))
                         .unwrap();
 
-                    let sandbox = uninitialized_sandbox
-                        .evolve(Noop::default())
-                        .unwrap_or_else(|_| {
-                            panic!("Failed to initialize UninitializedSandbox thread {}", i)
-                        });
+                    let sandbox = uninitialized_sandbox.evolve().unwrap_or_else(|_| {
+                        panic!("Failed to initialize UninitializedSandbox thread {}", i)
+                    });
 
                     sq.push(sandbox).unwrap_or_else(|_| {
                         panic!("Failed to push UninitializedSandbox thread {}", i)

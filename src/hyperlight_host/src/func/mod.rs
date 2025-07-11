@@ -14,10 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-/// Context structures used to allow the user to call one or more guest
-/// functions on the same Hyperlight sandbox instance, all from within the
-/// same state and mutual exclusion context.
-pub mod call_ctx;
 /// Functionality to check for errors after a guest call
 pub(crate) mod guest_err;
 /// Definitions and functionality to enable guest-to-host function calling,

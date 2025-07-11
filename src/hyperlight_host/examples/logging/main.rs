@@ -18,11 +18,8 @@ extern crate hyperlight_host;
 
 use std::sync::{Arc, Barrier};
 
-use hyperlight_host::sandbox::Callable;
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
-use hyperlight_host::sandbox_state::transition::Noop;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, Result};
+use hyperlight_host::{GuestBinary, Result};
 use hyperlight_testing::simple_guest_as_string;
 
 fn fn_writer(_msg: String) -> Result<i32> {
@@ -48,10 +45,7 @@ fn main() -> Result<()> {
             usandbox.register_print(fn_writer)?;
 
             // Initialize the sandbox.
-
-            let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
-
-            let mut multiuse_sandbox = usandbox.evolve(no_op)?;
+            let mut multiuse_sandbox = usandbox.evolve()?;
 
             // Call a guest function 5 times to generate some log entries.
             for _ in 0..5 {
@@ -81,10 +75,7 @@ fn main() -> Result<()> {
         UninitializedSandbox::new(GuestBinary::FilePath(hyperlight_guest_path.clone()), None)?;
 
     // Initialize the sandbox.
-
-    let no_op = Noop::<UninitializedSandbox, MultiUseSandbox>::default();
-
-    let mut multiuse_sandbox = usandbox.evolve(no_op)?;
+    let mut multiuse_sandbox = usandbox.evolve()?;
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -102,10 +93,10 @@ fn main() -> Result<()> {
     // Call a function that gets cancelled by the host function 5 times to generate some log entries.
 
     for _ in 0..NUM_CALLS {
-        let mut ctx = multiuse_sandbox.new_call_context();
         barrier.wait();
-        ctx.call::<()>("Spin", ()).unwrap_err();
-        multiuse_sandbox = ctx.finish().unwrap();
+        multiuse_sandbox
+            .call_guest_function_by_name::<()>("Spin", ())
+            .unwrap_err();
     }
     thread.join().unwrap();
 

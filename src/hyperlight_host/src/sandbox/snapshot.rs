@@ -1,5 +1,5 @@
 /*
-Copyright 2025  The Hyperlight Authors.
+Copyright 2025 The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-/// The standardized `Sandbox` trait and the ways it ban be transitioned
-/// to a different `Sandbox` trait
-pub mod sandbox;
-/// Metadata about transitions between `Sandbox` states
-pub mod transition;
+use crate::mem::shared_mem_snapshot::SharedMemorySnapshot;
+
+/// A snapshot capturing the state of the memory in a `MultiUseSandbox`.
+#[derive(Clone)]
+pub struct Snapshot {
+    /// TODO: Use Arc<SharedMemorySnapshot>
+    pub(crate) inner: SharedMemorySnapshot,
+}

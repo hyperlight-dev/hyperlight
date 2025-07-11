@@ -20,8 +20,6 @@ use std::sync::{Arc, Mutex};
 
 use common::new_uninit;
 use hyperlight_host::sandbox::{Callable, SandboxConfiguration};
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
-use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{
     GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
 };
@@ -35,16 +33,16 @@ use crate::common::{get_callbackguest_uninit_sandboxes, get_simpleguest_sandboxe
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn pass_byte_array() {
-    for sandbox in get_simpleguest_sandboxes(None).into_iter() {
-        let mut ctx = sandbox.new_call_context();
+    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
         const LEN: usize = 10;
         let bytes = vec![1u8; LEN];
-        let res: Vec<u8> = ctx
+        let res: Vec<u8> = sandbox
             .call("SetByteArrayToZero", bytes.clone())
             .expect("Expected VecBytes");
         assert_eq!(res, [0; LEN]);
 
-        ctx.call::<i32>("SetByteArrayToZeroNoLength", bytes.clone())
+        sandbox
+            .call::<i32>("SetByteArrayToZeroNoLength", bytes.clone())
             .unwrap_err(); // missing length param
     }
 }
@@ -85,7 +83,7 @@ fn float_roundtrip() {
         f32::NAN,
         -f32::NAN,
     ];
-    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve(Noop::default()).unwrap();
+    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
     for f in doubles.iter() {
         let res: f64 = sandbox
             .call_guest_function_by_name("EchoDouble", *f)
@@ -332,7 +330,7 @@ fn callback_test_helper() -> Result<()> {
         })?;
 
         // call guest function that calls host function
-        let mut init_sandbox: MultiUseSandbox = sandbox.evolve(Noop::default())?;
+        let mut init_sandbox: MultiUseSandbox = sandbox.evolve()?;
         let msg = "Hello world";
         init_sandbox.call_guest_function_by_name::<i32>("GuestMethod1", msg.to_string())?;
 
@@ -374,7 +372,7 @@ fn host_function_error() -> Result<()> {
         })?;
 
         // call guest function that calls host function
-        let mut init_sandbox: MultiUseSandbox = sandbox.evolve(Noop::default())?;
+        let mut init_sandbox: MultiUseSandbox = sandbox.evolve()?;
         let msg = "Hello world";
         let res = init_sandbox
             .call_guest_function_by_name::<i32>("GuestMethod1", msg.to_string())

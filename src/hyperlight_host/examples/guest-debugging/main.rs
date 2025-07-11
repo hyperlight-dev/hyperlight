@@ -19,8 +19,6 @@ use std::thread;
 use hyperlight_host::sandbox::SandboxConfiguration;
 #[cfg(gdb)]
 use hyperlight_host::sandbox::config::DebugInfo;
-use hyperlight_host::sandbox_state::sandbox::EvolvableSandbox;
-use hyperlight_host::sandbox_state::transition::Noop;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
 
 /// Build a sandbox configuration that enables GDB debugging when the `gdb` feature is enabled.
@@ -70,9 +68,8 @@ fn main() -> hyperlight_host::Result<()> {
     // Note: This function is unused, it's just here for demonstration purposes
 
     // Initialize sandboxes to be able to call host functions
-    let mut multi_use_sandbox_dbg: MultiUseSandbox =
-        uninitialized_sandbox_dbg.evolve(Noop::default())?;
-    let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default())?;
+    let mut multi_use_sandbox_dbg: MultiUseSandbox = uninitialized_sandbox_dbg.evolve()?;
+    let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
 
     // Call guest function
     let message =

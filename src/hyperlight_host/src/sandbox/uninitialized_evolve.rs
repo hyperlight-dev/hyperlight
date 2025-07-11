@@ -41,7 +41,6 @@ use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::mem_access::mem_access_handler_wrapper;
 use crate::sandbox::outb::outb_handler_wrapper;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
-use crate::sandbox_state::sandbox::Sandbox;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_error};
@@ -58,7 +57,7 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_
 /// If this doesn't make sense, and you want to change this type,
 /// please reach out to a Hyperlight developer before making the change.
 #[instrument(err(Debug), skip_all, , parent = Span::current(), level = "Trace")]
-fn evolve_impl<TransformFunc, ResSandbox: Sandbox>(
+fn evolve_impl<TransformFunc, ResSandbox>(
     u_sbox: UninitializedSandbox,
     transform: TransformFunc,
 ) -> Result<ResSandbox>
@@ -127,24 +126,20 @@ where
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    evolve_impl(
-        u_sbox,
-        |hf, mut hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
-            {
-                hshm.as_mut().push_state()?;
-            }
-            Ok(MultiUseSandbox::from_uninit(
-                hf,
-                hshm.clone(),
-                vm,
-                out_hdl,
-                mem_hdl,
-                dispatch_ptr,
-                #[cfg(gdb)]
-                dbg_mem_access_handler_wrapper(hshm),
-            ))
-        },
-    )
+    evolve_impl(u_sbox, |hf, hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
+        #[cfg(gdb)]
+        let dbg_mem_wrapper = dbg_mem_access_handler_wrapper(hshm.clone());
+        Ok(MultiUseSandbox::from_uninit(
+            hf,
+            hshm,
+            vm,
+            out_hdl,
+            mem_hdl,
+            dispatch_ptr,
+            #[cfg(gdb)]
+            dbg_mem_wrapper,
+        ))
+    })
 }
 
 pub(crate) fn set_up_hypervisor_partition(

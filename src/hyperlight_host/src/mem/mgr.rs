@@ -15,7 +15,6 @@ limitations under the License.
 */
 
 use std::cmp::Ordering;
-use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
@@ -34,7 +33,6 @@ use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use super::shared_mem_snapshot::SharedMemorySnapshot;
-use crate::HyperlightError::NoMemorySnapshot;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::GuestBlob;
 use crate::{Result, log_then_return, new_error};
@@ -75,9 +73,6 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) entrypoint_offset: Offset,
     /// How many memory regions were mapped after sandbox creation
     pub(crate) mapped_rgns: u64,
-    /// A vector of memory snapshots that can be used to save and  restore the state of the memory
-    /// This is used by the Rust Sandbox implementation (rather than the mem_snapshot field above which only exists to support current C API)
-    snapshots: Arc<Mutex<Vec<SharedMemorySnapshot>>>,
 }
 
 impl<S> SandboxMemoryManager<S>
@@ -98,7 +93,6 @@ where
             load_addr,
             entrypoint_offset,
             mapped_rgns: 0,
-            snapshots: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -265,54 +259,26 @@ where
         }
     }
 
-    /// this function will create a memory snapshot and push it onto the stack of snapshots
-    /// It should be used when you want to save the state of the memory, for example, when evolving a sandbox to a new state
-    pub(crate) fn push_state(&mut self) -> Result<()> {
-        let snapshot = SharedMemorySnapshot::new(&mut self.shared_mem, self.mapped_rgns)?;
-        self.snapshots
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .push(snapshot);
-        Ok(())
+    pub(crate) fn snapshot(&mut self) -> Result<SharedMemorySnapshot> {
+        SharedMemorySnapshot::new(&mut self.shared_mem, self.mapped_rgns)
     }
 
-    /// this function restores a memory snapshot from the last snapshot in the list but does not pop the snapshot
-    /// off the stack
-    /// It should be used when you want to restore the state of the memory to a previous state but still want to
-    /// retain that state, for example after calling a function in the guest
+    /// This function restores a memory snapshot the given snapshot.
     ///
     /// Returns the number of memory regions mapped into the sandbox
     /// that need to be unmapped in order for the restore to be
     /// completed.
-    pub(crate) fn restore_state_from_last_snapshot(&mut self) -> Result<u64> {
-        let mut snapshots = self
-            .snapshots
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        let last = snapshots.last_mut();
-        if last.is_none() {
-            log_then_return!(NoMemorySnapshot);
+    pub(crate) fn restore_snapshot(&mut self, snapshot: &SharedMemorySnapshot) -> Result<u64> {
+        if self.shared_mem.mem_size() != snapshot.mem_size() {
+            return Err(new_error!(
+                "Snapshot size does not match current memory size: {} != {}",
+                self.shared_mem.raw_mem_size(),
+                snapshot.mem_size()
+            ));
         }
-        #[allow(clippy::unwrap_used)] // We know that last is not None because we checked it above
-        let snapshot = last.unwrap();
         let old_rgns = self.mapped_rgns;
         self.mapped_rgns = snapshot.restore_from_snapshot(&mut self.shared_mem)?;
         Ok(old_rgns - self.mapped_rgns)
-    }
-
-    /// this function pops the last snapshot off the stack and restores the memory to the previous state
-    /// It should be used when you want to restore the state of the memory to a previous state and do not need to retain that state
-    /// for example when devolving a sandbox to a previous state.
-    pub(crate) fn pop_and_restore_state_from_snapshot(&mut self) -> Result<u64> {
-        let last = self
-            .snapshots
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .pop();
-        if last.is_none() {
-            log_then_return!(NoMemorySnapshot);
-        }
-        self.restore_state_from_last_snapshot()
     }
 
     /// Sets `addr` to the correct offset in the memory referenced by
@@ -440,7 +406,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
-                snapshots: Arc::new(Mutex::new(Vec::new())),
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
@@ -448,7 +413,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
-                snapshots: Arc::new(Mutex::new(Vec::new())),
             },
         )
     }
@@ -554,5 +518,26 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.layout.output_data_buffer_offset,
             self.layout.sandbox_memory_config.get_output_data_size(),
         )
+    }
+
+    pub(crate) fn clear_io_buffers(&mut self) {
+        // Clear the output data buffer
+        loop {
+            let Ok(_) = self.shared_mem.try_pop_buffer_into::<Vec<u8>>(
+                self.layout.output_data_buffer_offset,
+                self.layout.sandbox_memory_config.get_output_data_size(),
+            ) else {
+                break;
+            };
+        }
+        // Clear the input data buffer
+        loop {
+            let Ok(_) = self.shared_mem.try_pop_buffer_into::<Vec<u8>>(
+                self.layout.input_data_buffer_offset,
+                self.layout.sandbox_memory_config.get_input_data_size(),
+            ) else {
+                break;
+            };
+        }
     }
 }

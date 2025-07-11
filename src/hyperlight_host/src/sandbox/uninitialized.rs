@@ -34,9 +34,7 @@ use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags}
 use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
-use crate::sandbox_state::sandbox::EvolvableSandbox;
-use crate::sandbox_state::transition::Noop;
-use crate::{MultiUseSandbox, Result, log_then_return, new_error};
+use crate::{MultiUseSandbox, Result, new_error};
 
 #[cfg(all(target_os = "linux", feature = "seccomp"))]
 const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
@@ -82,18 +80,6 @@ pub struct UninitializedSandbox {
     pub(crate) rt_cfg: SandboxRuntimeConfig,
 }
 
-impl crate::sandbox_state::sandbox::UninitializedSandbox for UninitializedSandbox {
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn get_uninitialized_sandbox(&self) -> &crate::sandbox::UninitializedSandbox {
-        self
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn get_uninitialized_sandbox_mut(&mut self) -> &mut crate::sandbox::UninitializedSandbox {
-        self
-    }
-}
-
 impl Debug for UninitializedSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UninitializedSandbox")
@@ -102,24 +88,10 @@ impl Debug for UninitializedSandbox {
     }
 }
 
-impl crate::sandbox_state::sandbox::Sandbox for UninitializedSandbox {
-    fn check_stack_guard(&self) -> Result<bool> {
-        log_then_return!(
-            "Checking the stack cookie before the sandbox is initialized is unsupported"
-        );
-    }
-}
-
-impl
-    EvolvableSandbox<
-        UninitializedSandbox,
-        MultiUseSandbox,
-        Noop<UninitializedSandbox, MultiUseSandbox>,
-    > for UninitializedSandbox
-{
+impl UninitializedSandbox {
     /// Evolve `self` to a `MultiUseSandbox` without any additional metadata.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn evolve(self, _: Noop<UninitializedSandbox, MultiUseSandbox>) -> Result<MultiUseSandbox> {
+    pub fn evolve(self) -> Result<MultiUseSandbox> {
         evolve_impl_multi_use(self)
     }
 }
@@ -433,8 +405,6 @@ mod tests {
 
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
-    use crate::sandbox_state::sandbox::EvolvableSandbox;
-    use crate::sandbox_state::transition::Noop;
     use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
     #[test]
@@ -445,7 +415,7 @@ mod tests {
             GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&buffer));
 
         let uninitialized_sandbox = UninitializedSandbox::new(guest_env, None).unwrap();
-        let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default()).unwrap();
+        let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
 
         let res = sandbox
             .call_guest_function_by_name::<Vec<u8>>("ReadFromUserMemory", (4u64, buffer.to_vec()))
@@ -489,7 +459,7 @@ mod tests {
 
         // Get a Sandbox from an uninitialized sandbox without a call back function
 
-        let _sandbox: MultiUseSandbox = uninitialized_sandbox.evolve(Noop::default()).unwrap();
+        let _sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
 
         // Test with a valid guest binary buffer
 
@@ -537,7 +507,7 @@ mod tests {
 
             usbox.register("test0", |arg: i32| Ok(arg + 1)).unwrap();
 
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
+            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -562,7 +532,7 @@ mod tests {
 
             usbox.register("test1", |a: i32, b: i32| Ok(a + b)).unwrap();
 
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
+            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -595,7 +565,7 @@ mod tests {
                 })
                 .unwrap();
 
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
+            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -613,7 +583,7 @@ mod tests {
         // calling a function that doesn't exist
         {
             let usbox = uninitialized_sandbox();
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve(Noop::default());
+            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -836,11 +806,9 @@ mod tests {
                         .host_print(format!("Print from UninitializedSandbox on Thread {}\n", i))
                         .unwrap();
 
-                    let sandbox = uninitialized_sandbox
-                        .evolve(Noop::default())
-                        .unwrap_or_else(|_| {
-                            panic!("Failed to initialize UninitializedSandbox thread {}", i)
-                        });
+                    let sandbox = uninitialized_sandbox.evolve().unwrap_or_else(|_| {
+                        panic!("Failed to initialize UninitializedSandbox thread {}", i)
+                    });
 
                     sq.push(sandbox).unwrap_or_else(|_| {
                         panic!("Failed to push UninitializedSandbox thread {}", i)
@@ -1128,7 +1096,7 @@ mod tests {
                 );
                 res.unwrap()
             };
-            let _: Result<MultiUseSandbox> = sbox.evolve(Noop::default());
+            let _: Result<MultiUseSandbox> = sbox.evolve();
 
             let num_calls = TEST_LOGGER.num_log_calls();
 
