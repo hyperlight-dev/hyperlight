@@ -83,7 +83,6 @@ impl Drop for SurrogateProcess {
                         "Failed to return surrogate process to surrogate process manager when dropping : {:?}",
                         e
                     );
-                    return;
                 }
             },
             Err(e) => {
@@ -91,7 +90,6 @@ impl Drop for SurrogateProcess {
                     "Failed to get surrogate process manager when dropping SurrogateProcess: {:?}",
                     e
                 );
-                return;
             }
         }
     }

@@ -29,6 +29,8 @@ use tracing::{Span, instrument};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
+#[cfg(feature = "trace_guest")]
+use super::TraceRegister;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
@@ -46,6 +48,8 @@ use crate::HyperlightError;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::sandbox::SandboxConfiguration;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
@@ -298,12 +302,17 @@ pub(crate) struct KVMDriver {
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
+    #[cfg(feature = "trace_guest")]
+    #[allow(dead_code)]
+    trace_info: TraceInfo,
 }
 
 impl KVMDriver {
     /// Create a new instance of a `KVMDriver`, with only control registers
     /// set. Standard registers will not be set, and `initialise` must
     /// be called to do so.
+    #[allow(clippy::too_many_arguments)]
+    // TODO: refactor this function to take fewer arguments. Add trace_info to rt_cfg
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
@@ -313,6 +322,7 @@ impl KVMDriver {
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<Self> {
         let kvm = Kvm::new()?;
 
@@ -380,6 +390,8 @@ impl KVMDriver {
             gdb_conn,
             #[cfg(crashdump)]
             rt_cfg,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         };
 
         // Send the interrupt handle to the GDB thread if debugging is enabled
@@ -586,7 +598,12 @@ impl Hypervisor for KVMDriver {
             outb_handle_fn
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .call(port, value)?;
+                .call(
+                    #[cfg(feature = "trace_guest")]
+                    self,
+                    port,
+                    value,
+                )?;
         }
 
         Ok(())
@@ -626,6 +643,13 @@ impl Hypervisor for KVMDriver {
         {
             Err(kvm_ioctls::Error::new(libc::EINTR))
         } else {
+            #[cfg(feature = "trace_guest")]
+            if self.trace_info.guest_start_epoch.is_none() {
+                // Set the guest start epoch to the current time, before running the vcpu
+                crate::debug!("KVM - Guest Start Epoch set");
+                self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
+            }
+
             // Note: if a `InterruptHandle::kill()` called while this thread is **here**
             // Then the vcpu will run, but we will keep sending signals to this thread
             // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
@@ -946,6 +970,27 @@ impl Hypervisor for KVMDriver {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "trace_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+        let regs = self.vcpu_fd.get_regs()?;
+        Ok(match reg {
+            TraceRegister::RAX => regs.rax,
+            TraceRegister::RCX => regs.rcx,
+            TraceRegister::RIP => regs.rip,
+            TraceRegister::RSP => regs.rsp,
+            TraceRegister::RBP => regs.rbp,
+        })
+    }
+
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_ref(&self) -> &TraceInfo {
+        &self.trace_info
+    }
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
+        &mut self.trace_info
     }
 }
 

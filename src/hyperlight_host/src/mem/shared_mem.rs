@@ -502,6 +502,7 @@ impl ExclusiveSharedMemory {
         })
     }
 
+    #[allow(dead_code)]
     pub(super) fn make_memory_executable(&self) -> Result<()> {
         #[cfg(target_os = "windows")]
         {
@@ -616,6 +617,7 @@ impl ExclusiveSharedMemory {
     /// Return the address of memory at an offset to this `SharedMemory` checking
     /// that the memory is within the bounds of the `SharedMemory`.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(crate) fn calculate_address(&self, offset: usize) -> Result<usize> {
         bounds_check!(offset, 0, self.mem_size());
         Ok(self.base_addr() + offset)

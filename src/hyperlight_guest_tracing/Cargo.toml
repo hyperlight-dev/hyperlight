@@ -1,0 +1,17 @@
+[package]
+name = "hyperlight-guest-tracing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = """Provides the tracing functionality for the hyperlight guest."""
+
+[dependencies]
+hyperlight-common = { workspace = true, default-features = false, features = ["trace_guest"] }
+spin = "0.10.0"
+
+[lints]
+workspace = true

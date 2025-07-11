@@ -189,6 +189,7 @@ impl MultiUseSandbox {
     /// `rgn.region_type` is ignored, since guest PTEs are not created
     /// for the new memory.
     ///
+    /// # Safety
     /// It is the caller's responsibility to ensure that the host side
     /// of the region remains intact and is not written to until this
     /// mapping is removed, either due to the destruction of the

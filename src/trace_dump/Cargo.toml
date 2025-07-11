@@ -1,0 +1,14 @@
+[package]
+name = "trace_dump"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[dependencies]
+addr2line = "0.24.2"
+piet-common = { version = "0.6.2", features = [ "png" ] }
+blake3 = { version = "1.5.5" }
+
+[[bin]]
+name = "trace_dump"
+path = "main.rs"

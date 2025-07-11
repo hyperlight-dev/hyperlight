@@ -40,10 +40,17 @@ pub(crate) mod uninitialized_evolve;
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 mod callable;
 
+#[cfg(feature = "unwind_guest")]
+use std::io::Write;
+#[cfg(feature = "trace_guest")]
+use std::sync::{Arc, Mutex};
+
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 pub use callable::Callable;
 /// Re-export for `SandboxConfiguration` type
 pub use config::SandboxConfiguration;
+#[cfg(feature = "unwind_guest")]
+use framehop::Unwinder;
 /// Re-export for the `MultiUseSandbox` type
 pub use initialized_multi_use::MultiUseSandbox;
 use tracing::{Span, instrument};
@@ -84,6 +91,102 @@ pub type ExtraAllowedSyscall = i64;
 #[instrument(skip_all, parent = Span::current())]
 pub fn is_hypervisor_present() -> bool {
     hypervisor::get_available_hypervisor().is_some()
+}
+
+#[cfg(feature = "trace_guest")]
+#[derive(Clone)]
+/// The information that trace collection requires in order to write
+/// an accurate trace.
+pub(crate) struct TraceInfo {
+    /// The epoch against which trace events are timed; at least as
+    /// early as the creation of the sandbox being traced.
+    #[allow(dead_code)]
+    pub epoch: std::time::Instant,
+    /// The frequency of the timestamp counter.
+    #[allow(dead_code)]
+    pub tsc_freq: u64,
+    /// The epoch at which the guest started, if it has started.
+    /// This is used to calculate the time spent in the guest relative to the
+    /// time of the host.
+    #[allow(dead_code)]
+    pub guest_start_epoch: Option<std::time::Instant>,
+    /// The start guest time, in TSC cycles, for the current guest.
+    #[allow(dead_code)]
+    pub guest_start_tsc: Option<u64>,
+    /// The file to which the trace is being written
+    #[allow(dead_code)]
+    pub file: Arc<Mutex<std::fs::File>>,
+    /// The unwind information for the current guest
+    #[cfg(feature = "unwind_guest")]
+    #[allow(dead_code)]
+    pub unwind_module: Arc<dyn crate::mem::exe::UnwindInfo>,
+    /// The framehop unwinder for the current guest
+    #[cfg(feature = "unwind_guest")]
+    pub unwinder: framehop::x86_64::UnwinderX86_64<Vec<u8>>,
+    /// The framehop cache
+    #[cfg(feature = "unwind_guest")]
+    pub unwind_cache: Arc<Mutex<framehop::x86_64::CacheX86_64>>,
+}
+#[cfg(feature = "trace_guest")]
+impl TraceInfo {
+    /// Create a new TraceInfo by saving the current time as the epoch
+    /// and generating a random filename.
+    pub fn new(
+        #[cfg(feature = "unwind_guest")] unwind_module: Arc<dyn crate::mem::exe::UnwindInfo>,
+    ) -> crate::Result<Self> {
+        let mut path = std::env::current_dir()?;
+        path.push("trace");
+        path.push(uuid::Uuid::new_v4().to_string());
+        path.set_extension("trace");
+        #[cfg(feature = "unwind_guest")]
+        let hash = unwind_module.hash();
+        #[cfg(feature = "unwind_guest")]
+        let (unwinder, unwind_cache) = {
+            let mut unwinder = framehop::x86_64::UnwinderX86_64::new();
+            unwinder.add_module(unwind_module.clone().as_module());
+            let cache = framehop::x86_64::CacheX86_64::new();
+            (unwinder, Arc::new(Mutex::new(cache)))
+        };
+        let tsc_freq = Self::calculate_tsc_freq()?;
+
+        let ret = Self {
+            epoch: std::time::Instant::now(),
+            tsc_freq,
+            guest_start_epoch: None,
+            guest_start_tsc: None,
+            file: Arc::new(Mutex::new(std::fs::File::create_new(path)?)),
+            #[cfg(feature = "unwind_guest")]
+            unwind_module,
+            #[cfg(feature = "unwind_guest")]
+            unwinder,
+            #[cfg(feature = "unwind_guest")]
+            unwind_cache,
+        };
+        /* write a frame identifying the binary */
+        #[cfg(feature = "unwind_guest")]
+        self::outb::record_trace_frame(&ret, 0, |f| {
+            let _ = f.write_all(hash.as_bytes());
+        })?;
+        Ok(ret)
+    }
+
+    /// Calculate the TSC frequency based on the RDTSC instruction.
+    fn calculate_tsc_freq() -> crate::Result<u64> {
+        if !hyperlight_guest_tracing::invariant_tsc::has_invariant_tsc() {
+            return Err(crate::new_error!(
+                "Invariant TSC is not supported on this platform"
+            ));
+        }
+        let start = hyperlight_guest_tracing::invariant_tsc::read_tsc();
+        let start_time = std::time::Instant::now();
+        // Sleep for 1 second to get a good sample
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let end = hyperlight_guest_tracing::invariant_tsc::read_tsc();
+        let end_time = std::time::Instant::now();
+        let elapsed = end_time.duration_since(start_time).as_secs_f64();
+
+        Ok(((end - start) as f64 / elapsed) as u64)
+    }
 }
 
 pub(crate) trait WrapperGetter {

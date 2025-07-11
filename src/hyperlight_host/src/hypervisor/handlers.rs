@@ -18,14 +18,21 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{Span, instrument};
 
+#[cfg(feature = "trace_guest")]
+use super::Hypervisor;
 use crate::{Result, new_error};
 
 /// The trait representing custom logic to handle the case when
 /// a Hypervisor's virtual CPU (vCPU) informs Hyperlight the guest
 /// has initiated an outb operation.
-pub trait OutBHandlerCaller: Sync + Send {
+pub(crate) trait OutBHandlerCaller: Sync + Send {
     /// Function that gets called when an outb operation has occurred.
-    fn call(&mut self, port: u16, payload: u32) -> Result<()>;
+    fn call(
+        &mut self,
+        #[cfg(feature = "trace_guest")] hv: &mut dyn Hypervisor,
+        port: u16,
+        payload: u32,
+    ) -> Result<()>;
 }
 
 /// A convenient type representing a common way `OutBHandler` implementations
@@ -34,8 +41,12 @@ pub trait OutBHandlerCaller: Sync + Send {
 /// Note: This needs to be wrapped in a Mutex to be able to grab a mutable
 /// reference to the underlying data (i.e., handle_outb in `Sandbox` takes
 /// a &mut self).
-pub type OutBHandlerWrapper = Arc<Mutex<dyn OutBHandlerCaller>>;
+pub(crate) type OutBHandlerWrapper = Arc<Mutex<dyn OutBHandlerCaller>>;
 
+#[cfg(feature = "trace_guest")]
+pub(crate) type OutBHandlerFunction =
+    Box<dyn FnMut(&mut dyn Hypervisor, u16, u32) -> Result<()> + Send>;
+#[cfg(not(feature = "trace_guest"))]
 pub(crate) type OutBHandlerFunction = Box<dyn FnMut(u16, u32) -> Result<()> + Send>;
 
 /// A `OutBHandler` implementation using a `OutBHandlerFunction`
@@ -52,12 +63,22 @@ impl From<OutBHandlerFunction> for OutBHandler {
 
 impl OutBHandlerCaller for OutBHandler {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn call(&mut self, port: u16, payload: u32) -> Result<()> {
+    fn call(
+        &mut self,
+        #[cfg(feature = "trace_guest")] hv: &mut dyn Hypervisor,
+        port: u16,
+        payload: u32,
+    ) -> Result<()> {
         let mut func = self
             .0
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        func(port, payload)
+        func(
+            #[cfg(feature = "trace_guest")]
+            hv,
+            port,
+            payload,
+        )
     }
 }
 
