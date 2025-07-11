@@ -25,8 +25,11 @@ use tracing::{Span, instrument};
 use windows::Win32::System::Hypervisor::{
     WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT,
     WHV_RUN_VP_EXIT_REASON, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
-    WHvCancelRunVirtualProcessor, WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4,
-    WHvX64RegisterCs, WHvX64RegisterEfer,
+    WHvCancelRunVirtualProcessor, WHvX64RegisterCs,
+};
+#[cfg(feature = "init-paging")]
+use windows::Win32::System::Hypervisor::{
+    WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4, WHvX64RegisterEfer,
 };
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
@@ -399,16 +402,22 @@ impl HypervWindowsDriver {
         ])?;
 
         #[cfg(not(feature = "init-paging"))]
-        proc.set_registers(&[(
-            WHvX64RegisterCs,
-            WHV_REGISTER_VALUE {
-                Segment: WHV_X64_SEGMENT_REGISTER {
-                    Base: 0,
-                    Selector: 0,
-                    ..Default::default()
+        {
+            proc.set_registers(&[(
+                WHvX64RegisterCs,
+                WHV_REGISTER_VALUE {
+                    Segment: WHV_X64_SEGMENT_REGISTER {
+                        Base: 0,
+                        Selector: 0,
+                        Limit: 0xFFFF,
+                        Anonymous: WHV_X64_SEGMENT_REGISTER_0 {
+                            Attributes: 0b1011 | (1 << 4) | (1 << 7), // Type (11: Execute/Read, accessed) | S (code segment) | P (present)
+                        },
+                        ..Default::default()
+                    },
                 },
-            },
-        )])?;
+            )])?;
+        }
 
         Ok(())
     }

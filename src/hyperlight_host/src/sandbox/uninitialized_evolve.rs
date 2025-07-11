@@ -33,7 +33,7 @@ use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::GuestSharedMemory;
-#[cfg(feature = "init-paging")]
+#[cfg(any(feature = "init-paging", target_os = "windows"))]
 use crate::mem::shared_mem::SharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;

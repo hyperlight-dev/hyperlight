@@ -84,7 +84,7 @@ test-like-ci config=default-target hypervisor="kvm":
     cargo check -p hyperlight-host --features gdb
 
     @# without any driver (should fail to compile)
-    just test-compilation-fail {{config}}
+    just test-compilation-no-default-features {{config}}
 
     @# test the crashdump feature
     just test-rust-crashdump {{config}}
@@ -121,10 +121,12 @@ test-seccomp target=default-target features="":
     cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --lib {{ if features =="" {''} else { "--features " + features } }} -- --ignored
     cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --no-default-features {{ if features =~"mshv3" {"--features init-paging,mshv3"} else {"--features mshv2,init-paging,kvm" } }} --lib -- --ignored
 
-# runs tests that ensure compilation fails when it should
-test-compilation-fail target=default-target:
-    @# the following should fail on linux because one of kvm, mshv, or mshv3 feature must be specified, which is why the exit code is inverted with an !.
-    {{ if os() == "linux" { "! cargo check -p hyperlight-host --no-default-features 2> /dev/null"} else { "" } }}
+# tests compilation with no default features on different platforms
+test-compilation-no-default-features target=default-target:
+    @# Linux should fail without a hypervisor feature (kvm, mshv, or mshv3)
+    {{ if os() == "linux" { "! cargo check -p hyperlight-host --no-default-features 2> /dev/null" } else { "" } }}
+    @# Windows should succeed even without default features
+    {{ if os() == "windows" { "cargo check -p hyperlight-host --no-default-features" } else { "" } }}
 
 # runs tests that exercise gdb debugging
 test-rust-gdb-debugging target=default-target features="":

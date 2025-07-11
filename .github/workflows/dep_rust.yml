@@ -138,8 +138,8 @@ jobs:
           cargo check -p hyperlight-host --features print_debug
           cargo check -p hyperlight-host --features gdb
 
-          # without any driver (shouldn't compile)
-          just test-compilation-fail ${{ matrix.config }}
+          # without any features
+          just test-compilation-no-default-features ${{ matrix.config }}
 
         # One of the examples is flaky on Windows GH runners, so this allows us to disable it for now
       - name: Run Rust examples - windows
