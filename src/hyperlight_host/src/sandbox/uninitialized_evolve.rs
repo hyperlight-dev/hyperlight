@@ -33,9 +33,7 @@ use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
-use crate::mem::shared_mem::GuestSharedMemory;
-#[cfg(feature = "init-paging")]
-use crate::mem::shared_mem::SharedMemory;
+use crate::mem::shared_mem::{GuestSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -96,12 +94,12 @@ where
     #[cfg(target_os = "linux")]
     setup_signal_handlers(&u_sbox.config)?;
 
-    let mut regions = gshm.layout.get_memory_regions(&gshm.shared_mem)?;
+    let regions = gshm.layout.get_memory_regions(&gshm.shared_mem)?;
 
     // Set up shared memory before stopping dirty page tracking to ensure page table setup is tracked
     #[cfg(feature = "init-paging")]
     let rsp_ptr = {
-        let rsp_u64 = gshm.set_up_page_tables(&mut regions)?;
+        let rsp_u64 = gshm.set_up_page_tables(&regions)?;
         let rsp_raw = RawPtr::from(rsp_u64);
         GuestPtr::try_from(rsp_raw)
     }?;
@@ -155,10 +153,10 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         u_sbox,
         |hf, mut hshm, mut vm, out_hdl, mem_hdl, dispatch_ptr, host_dirty_pages_idx| {
             {
-                let vm_dirty_pages_bitmap = vm.get_and_clear_dirty_pages()?;
+                let (sandbox_dirty_pages_bitmap, _) = vm.get_and_clear_dirty_pages()?;
                 let layout = hshm.unwrap_mgr().layout;
                 hshm.as_mut().create_initial_snapshot(
-                    &vm_dirty_pages_bitmap,
+                    &sandbox_dirty_pages_bitmap,
                     host_dirty_pages_idx,
                     &layout,
                 )?;

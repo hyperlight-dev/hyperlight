@@ -19,17 +19,15 @@ use std::sync::Arc;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{Span, instrument};
 
+use super::bitmap::{bit_index_iterator, new_page_bitmap};
 use super::dirty_page_tracking::DirtyPageTracking;
-use super::shared_mem::{HostMapping, SharedMemory};
+use super::shared_mem::HostMapping;
 use crate::Result;
 
 /// Windows implementation of dirty page tracking
+#[derive(Debug)]
 pub struct WindowsDirtyPageTracker {
-    _base_addr: usize,
-    _size: usize,
-    num_pages: usize,
-    /// Keep a reference to the HostMapping to ensure memory lifetime
-    _mapping: Arc<HostMapping>,
+    size: usize,
 }
 
 // DirtyPageTracker should be Send because:
@@ -41,27 +39,30 @@ unsafe impl Send for WindowsDirtyPageTracker {}
 impl WindowsDirtyPageTracker {
     /// Create a new Windows dirty page tracker
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    pub fn new<T: SharedMemory>(shared_memory: &T) -> Result<Self> {
-        let mapping = shared_memory.region_arc();
-        let base_addr = shared_memory.base_addr();
-        let size = shared_memory.mem_size();
-        let num_pages = size.div_ceil(PAGE_SIZE_USIZE);
+    pub fn new(mapping: Arc<HostMapping>) -> Result<Self> {
+        let size = mapping.size - 2 * PAGE_SIZE_USIZE; // Exclude guard pages at start and end
 
-        Ok(Self {
-            _base_addr: base_addr,
-            _size: size,
-            num_pages,
-            _mapping: mapping,
-        })
+        Ok(Self { size })
     }
 }
 
 impl DirtyPageTracking for WindowsDirtyPageTracker {
-    /// Returns a dirty page bitmap with all bits set for the memory size
-    /// This is a simplified implementation that marks all pages as dirty
-    /// until we implement actual dirty page tracking
-    fn get_dirty_pages(self) -> Result<Vec<usize>> {
-        // Return all page indices from 0 to num_pages-1
-        Ok((0..self.num_pages).collect()) // exclude the guard pages
+    #[cfg(test)]
+    fn get_dirty_pages(&self) -> Result<Vec<usize>> {
+        let bitmap = new_page_bitmap(self.size, true)?;
+        Ok(bit_index_iterator(&bitmap).collect())
+    }
+
+    fn uninstall(self) -> Result<Vec<usize>> {
+        let bitmap = new_page_bitmap(self.size, true)?;
+        Ok(bit_index_iterator(&bitmap).collect())
+    }
+}
+
+impl WindowsDirtyPageTracker {
+    /// Stop tracking dirty pages and return the list of dirty pages
+    pub fn stop_tracking_and_get_dirty_pages(self) -> Result<Vec<usize>> {
+        let bitmap = new_page_bitmap(self.size, true)?;
+        Ok(bit_index_iterator(&bitmap).collect())
     }
 }

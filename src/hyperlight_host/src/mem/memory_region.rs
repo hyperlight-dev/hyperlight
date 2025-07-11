@@ -30,9 +30,8 @@ use bitflags::bitflags;
 #[cfg(mshv)]
 use hyperlight_common::mem::PAGE_SHIFT;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
-use kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES;
 #[cfg(kvm)]
-use kvm_bindings::{KVM_MEM_READONLY, kvm_userspace_memory_region};
+use kvm_bindings::{KVM_MEM_LOG_DIRTY_PAGES, KVM_MEM_READONLY, kvm_userspace_memory_region};
 #[cfg(mshv2)]
 use mshv_bindings::{
     HV_MAP_GPA_EXECUTABLE, HV_MAP_GPA_PERMISSIONS_NONE, HV_MAP_GPA_READABLE, HV_MAP_GPA_WRITABLE,

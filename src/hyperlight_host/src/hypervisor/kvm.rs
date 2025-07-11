@@ -292,6 +292,7 @@ pub(crate) struct KVMDriver {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
+    n_initial_regions: usize,
     interrupt_handle: Arc<LinuxInterruptHandle>,
 
     #[cfg(gdb)]
@@ -374,6 +375,7 @@ impl KVMDriver {
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
+            n_initial_regions: mem_regions.len(),
             mem_regions,
             interrupt_handle: interrupt_handle.clone(),
             #[cfg(gdb)]
@@ -752,11 +754,27 @@ impl Hypervisor for KVMDriver {
         self.interrupt_handle.clone()
     }
 
-    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>> {
+    // TODO: Implement getting additional host-mapped dirty pages.
+    fn get_and_clear_dirty_pages(&mut self) -> Result<(Vec<u64>, Option<Vec<Vec<u64>>>)> {
+        let n_contiguous = self
+            .mem_regions
+            .windows(2)
+            .take_while(|window| window[0].guest_region.end == window[1].guest_region.start)
+            .count()
+            + 1; // +1 because windows(2) gives us n-1 pairs for n regions
+
+        if n_contiguous != self.n_initial_regions {
+            return Err(new_error!(
+                "get_and_clear_dirty_pages: not all regions are contiguous, expected {} but got {}",
+                self.n_initial_regions,
+                n_contiguous
+            ));
+        }
         let mut page_indices = vec![];
         let mut current_page = 0;
+
         // Iterate over all memory regions and get the dirty pages for each region ignoring guard pages which cannot be dirty
-        for (i, mem_region) in self.mem_regions.iter().enumerate() {
+        for (i, mem_region) in self.mem_regions.iter().take(n_contiguous).enumerate() {
             let num_pages = mem_region.guest_region.len() / PAGE_SIZE_USIZE;
             let bitmap = match mem_region.flags {
                 MemoryRegionFlags::READ => {
@@ -780,15 +798,15 @@ impl Hypervisor for KVMDriver {
             current_page += num_pages;
         }
 
-        // covert vec of page indices to vec of blocks
-        let mut res = new_page_bitmap(current_page * PAGE_SIZE_USIZE, false)?;
+        // convert vec of page indices to vec of blocks
+        let mut sandbox_dirty_pages = new_page_bitmap(current_page * PAGE_SIZE_USIZE, false)?;
         for page_idx in page_indices {
             let block_idx = page_idx / PAGES_IN_BLOCK;
             let bit_idx = page_idx % PAGES_IN_BLOCK;
-            res[block_idx] |= 1 << bit_idx;
+            sandbox_dirty_pages[block_idx] |= 1 << bit_idx;
         }
 
-        Ok(res)
+        Ok((sandbox_dirty_pages, None))
     }
 
     #[cfg(crashdump)]

@@ -112,7 +112,7 @@ where
     // ExclusiveSharedMemory from the beginning.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     #[cfg(feature = "init-paging")]
-    pub(crate) fn set_up_page_tables(&mut self, regions: &mut [MemoryRegion]) -> Result<u64> {
+    pub(crate) fn set_up_page_tables(&mut self, regions: &[MemoryRegion]) -> Result<u64> {
         let rsp: u64 = self.layout.get_top_of_user_stack_offset() as u64
             + SandboxMemoryLayout::BASE_ADDRESS as u64
             + self.layout.stack_size as u64
@@ -286,12 +286,8 @@ where
         // merge the host dirty page map into the dirty bitmap
         let merged = bitmap_union(&res, vm_dirty_bitmap);
 
-        let snapshot_manager = SharedMemorySnapshotManager::new(
-            &mut self.shared_mem,
-            &merged,
-            layout,
-            self.mapped_rgns,
-        )?;
+        let mut snapshot_manager = SharedMemorySnapshotManager::new(&mut self.shared_mem, layout)?;
+        snapshot_manager.create_new_snapshot(&mut self.shared_mem, &merged, self.mapped_rgns)?;
         existing_snapshot_manager.replace(snapshot_manager);
         Ok(())
     }
@@ -300,6 +296,10 @@ where
     /// off the stack
     /// It should be used when you want to restore the state of the memory to a previous state but still want to
     /// retain that state, for example after calling a function in the guest
+    ///
+    /// Returns the number of memory regions mapped into the sandbox
+    /// that need to be unmapped in order for the restore to be
+    /// completed.
     pub(crate) fn restore_state_from_last_snapshot(&mut self, dirty_bitmap: &[u64]) -> Result<u64> {
         let mut snapshot_manager = self
             .snapshot_manager
@@ -311,7 +311,10 @@ where
                 log_then_return!("Snapshot manager not initialized");
             }
             Some(snapshot_manager) => {
-                snapshot_manager.restore_from_snapshot(&mut self.shared_mem, dirty_bitmap)
+                let old_rgns = self.mapped_rgns;
+                self.mapped_rgns =
+                    snapshot_manager.restore_from_snapshot(&mut self.shared_mem, dirty_bitmap)?;
+                Ok(old_rgns - self.mapped_rgns)
             }
         }
     }

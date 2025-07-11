@@ -199,7 +199,10 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     /// Get dirty pages as a bitmap (Vec<u64>).
     /// Each bit in a u64 represents a page.
     /// This also clears the bitflags, marking the pages as non-dirty.
-    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>>;
+    /// The Vec<u64> in the tuple is the bitmap of the first contiguous memory regions, which represents the sandbox itself.
+    /// The Vec<Vec<u64>> in the tuple are the host-mapped regions, which aren't necessarily contiguous, and not yet implemented
+    #[allow(clippy::type_complexity)]
+    fn get_and_clear_dirty_pages(&mut self) -> Result<(Vec<u64>, Option<Vec<Vec<u64>>>)>;
 
     /// Get InterruptHandle to underlying VM
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
@@ -565,13 +568,13 @@ pub(crate) mod tests {
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
         let (_hshm, mut gshm) = sandbox.mgr.build();
 
-        let mut regions = gshm.layout.get_memory_regions(&gshm.shared_mem)?;
+        let regions = gshm.layout.get_memory_regions(&gshm.shared_mem)?;
 
         // Set up shared memory to calculate rsp_ptr
         #[cfg(feature = "init-paging")]
         let rsp_ptr = {
             use crate::mem::ptr::GuestPtr;
-            let rsp_u64 = gshm.set_up_page_tables(&mut regions)?;
+            let rsp_u64 = gshm.set_up_page_tables(&regions)?;
             let rsp_raw = RawPtr::from(rsp_u64);
             GuestPtr::try_from(rsp_raw)
         }?;

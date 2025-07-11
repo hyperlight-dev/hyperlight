@@ -307,6 +307,7 @@ pub(crate) struct HypervLinuxDriver {
     vcpu_fd: VcpuFd,
     entrypoint: u64,
     mem_regions: Vec<MemoryRegion>,
+    n_initial_regions: usize,
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<LinuxInterruptHandle>,
 
@@ -417,10 +418,20 @@ impl HypervLinuxDriver {
         // the downside of doing this here is that the call to get_dirty_log will takes longer as the number of pages increase
         // but for larger sandboxes its easily cheaper than copying all the pages
 
-        #[cfg(mshv2)]
-        vm_fd.get_dirty_log(base_pfn, total_size, CLEAR_DIRTY_BIT_FLAG)?;
-        #[cfg(mshv3)]
-        vm_fd.get_dirty_log(base_pfn, total_size, MSHV_GPAP_ACCESS_OP_CLEAR as u8)?;
+        // Clear dirty bits for each memory region separately since they may not be contiguous
+        for region in &mem_regions {
+            let mshv_region: mshv_user_mem_region = region.to_owned().into();
+            let region_size = region.guest_region.len();
+
+            #[cfg(mshv2)]
+            vm_fd.get_dirty_log(mshv_region.guest_pfn, region_size, CLEAR_DIRTY_BIT_FLAG)?;
+            #[cfg(mshv3)]
+            vm_fd.get_dirty_log(
+                mshv_region.guest_pfn,
+                region_size,
+                MSHV_GPAP_ACCESS_OP_CLEAR as u8,
+            )?;
+        }
 
         let interrupt_handle = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
@@ -452,6 +463,7 @@ impl HypervLinuxDriver {
             page_size: 0,
             vm_fd,
             vcpu_fd,
+            n_initial_regions: mem_regions.len(),
             mem_regions,
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
@@ -887,7 +899,8 @@ impl Hypervisor for HypervLinuxDriver {
         self.interrupt_handle.clone()
     }
 
-    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>> {
+    // TODO: Implement getting additional host-mapped dirty pages.
+    fn get_and_clear_dirty_pages(&mut self) -> Result<(Vec<u64>, Option<Vec<Vec<u64>>>)> {
         let first_mshv_region: mshv_user_mem_region = self
             .mem_regions
             .first()
@@ -896,16 +909,38 @@ impl Hypervisor for HypervLinuxDriver {
             ))?
             .to_owned()
             .into();
-        let total_size = self.mem_regions.iter().map(|r| r.guest_region.len()).sum();
-        let res = self.vm_fd.get_dirty_log(
+
+        let n_contiguous = self
+            .mem_regions
+            .windows(2)
+            .take_while(|window| window[0].guest_region.end == window[1].guest_region.start)
+            .count()
+            + 1; // +1 because windows(2) gives us n-1 pairs for n regions
+
+        if n_contiguous != self.n_initial_regions {
+            return Err(new_error!(
+                "get_and_clear_dirty_pages: not all regions are contiguous, expected {} but got {}",
+                self.n_initial_regions,
+                n_contiguous
+            ));
+        }
+
+        let sandbox_total_size = self
+            .mem_regions
+            .iter()
+            .take(n_contiguous)
+            .map(|r| r.guest_region.len())
+            .sum();
+
+        let sandbox_dirty_pages = self.vm_fd.get_dirty_log(
             first_mshv_region.guest_pfn,
-            total_size,
+            sandbox_total_size,
             #[cfg(mshv2)]
             CLEAR_DIRTY_BIT_FLAG,
             #[cfg(mshv3)]
             (MSHV_GPAP_ACCESS_OP_CLEAR as u8),
         )?;
-        Ok(res)
+        Ok((sandbox_dirty_pages, None))
     }
 
     #[cfg(crashdump)]
@@ -1158,7 +1193,8 @@ mod tests {
             return;
         }
         const MEM_SIZE: usize = 0x3000;
-        let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
+        let mut gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
+        gm.stop_tracking_dirty_pages().unwrap();
         let rsp_ptr = GuestPtr::try_from(0).unwrap();
         let pml4_ptr = GuestPtr::try_from(0).unwrap();
         let entrypoint_ptr = GuestPtr::try_from(0).unwrap();

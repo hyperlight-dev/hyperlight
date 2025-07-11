@@ -45,15 +45,8 @@ impl SharedMemorySnapshotManager {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn new<S: SharedMemory>(
         shared_mem: &mut S,
-        dirty_page_bitmap: &[u64],
         layout: &SandboxMemoryLayout,
-        mapped_rgns: u64,
     ) -> Result<Self> {
-        // Build a snapshot of memory from the dirty_page_map
-
-        let diff =
-            Self::build_snapshot_from_dirty_page_map(shared_mem, dirty_page_bitmap, mapped_rgns)?;
-
         // Get the input output buffer details from the layout so that they can be reset to their initial state
         let input_data_size_offset = layout.get_input_data_size_offset();
         let output_data_size_offset = layout.get_output_data_size_offset();
@@ -76,7 +69,7 @@ impl SharedMemorySnapshotManager {
         })??;
 
         Ok(Self {
-            snapshots: vec![diff],
+            snapshots: vec![],
             input_data_size,
             output_data_size,
             output_data_buffer_offset,
@@ -84,12 +77,12 @@ impl SharedMemorySnapshotManager {
         })
     }
 
-    fn build_snapshot_from_dirty_page_map<S: SharedMemory>(
+    pub(super) fn create_new_snapshot<S: SharedMemory>(
+        &mut self,
         shared_mem: &mut S,
         dirty_page_bitmap: &[u64],
         mapped_rgns: u64,
-    ) -> Result<PageSnapshot> {
-        // If there is no dirty page map, return an empty snapshot
+    ) -> Result<()> {
         if dirty_page_bitmap.is_empty() {
             return Err(new_error!(
                 "Tried to build snapshot from empty dirty page bitmap"
@@ -143,18 +136,6 @@ impl SharedMemorySnapshotManager {
 
         // Create the snapshot with the pre-allocated buffer
         let snapshot = PageSnapshot::with_pages_and_buffer(dirty_pages, buffer, mapped_rgns);
-
-        Ok(snapshot)
-    }
-
-    pub(super) fn create_new_snapshot<S: SharedMemory>(
-        &mut self,
-        shared_mem: &mut S,
-        dirty_page_map: &[u64],
-        mapped_rgns: u64,
-    ) -> Result<()> {
-        let snapshot =
-            Self::build_snapshot_from_dirty_page_map(shared_mem, dirty_page_map, mapped_rgns)?;
         self.snapshots.push(snapshot);
         Ok(())
     }
@@ -383,8 +364,11 @@ mod tests {
 
         // Create snapshot
         let mut snapshot_manager =
-            super::SharedMemorySnapshotManager::new(&mut shared_mem, &dirty_pages, &layout, 0)
-                .unwrap();
+            super::SharedMemorySnapshotManager::new(&mut shared_mem, &layout).unwrap();
+
+        snapshot_manager
+            .create_new_snapshot(&mut shared_mem, &dirty_pages, 0)
+            .unwrap();
 
         // Modify memory
         let modified_data = vec![0xBB; PAGE_SIZE_USIZE];
@@ -454,8 +438,11 @@ mod tests {
 
         // Create initial snapshot (State 1)
         let mut snapshot_manager =
-            super::SharedMemorySnapshotManager::new(&mut shared_mem, &dirty_pages, &layout, 0)
-                .unwrap();
+            super::SharedMemorySnapshotManager::new(&mut shared_mem, &layout).unwrap();
+
+        snapshot_manager
+            .create_new_snapshot(&mut shared_mem, &dirty_pages, 0)
+            .unwrap();
 
         // State 2: Modify and create second snapshot
         let state2_data = vec![0x22; PAGE_SIZE_USIZE];
@@ -570,8 +557,10 @@ mod tests {
 
         // Create snapshot
         let mut snapshot_manager =
-            super::SharedMemorySnapshotManager::new(&mut shared_mem, &dirty_pages, &layout, 0)
-                .unwrap();
+            super::SharedMemorySnapshotManager::new(&mut shared_mem, &layout).unwrap();
+        snapshot_manager
+            .create_new_snapshot(&mut shared_mem, &dirty_pages, 0)
+            .unwrap();
 
         // Modify first and third pages
         let modified_data = [vec![0x11; PAGE_SIZE_USIZE], vec![0x22; PAGE_SIZE_USIZE]];
@@ -651,8 +640,10 @@ mod tests {
         }
 
         let mut snapshot_manager =
-            super::SharedMemorySnapshotManager::new(&mut shared_mem, &dirty_pages, &layout, 0)
-                .unwrap();
+            super::SharedMemorySnapshotManager::new(&mut shared_mem, &layout).unwrap();
+        snapshot_manager
+            .create_new_snapshot(&mut shared_mem, &dirty_pages, 0)
+            .unwrap();
 
         // Cycle 2: Modify and snapshot
         let cycle2_page0 = vec![0x02; PAGE_SIZE_USIZE];
@@ -768,13 +759,11 @@ mod tests {
             }
         }
 
-        let mut snapshot_manager = super::SharedMemorySnapshotManager::new(
-            &mut shared_mem,
-            &dirty_pages_snapshot,
-            &layout,
-            0,
-        )
-        .unwrap();
+        let mut snapshot_manager =
+            super::SharedMemorySnapshotManager::new(&mut shared_mem, &layout).unwrap();
+        snapshot_manager
+            .create_new_snapshot(&mut shared_mem, &dirty_pages_snapshot, 0)
+            .unwrap();
 
         // Modify pages in init_data area
         let page0_offset = init_data_offset;
@@ -921,8 +910,10 @@ mod tests {
 
         // Create initial checkpoint
         let mut snapshot_manager =
-            super::SharedMemorySnapshotManager::new(&mut shared_mem, &dirty_pages, &layout, 0)
-                .unwrap();
+            super::SharedMemorySnapshotManager::new(&mut shared_mem, &layout).unwrap();
+        snapshot_manager
+            .create_new_snapshot(&mut shared_mem, &dirty_pages, 0)
+            .unwrap();
 
         // Simulate function call 1: modify pages 0 and 2
         let func1_page0 = vec![0x10; PAGE_SIZE_USIZE];
@@ -1168,8 +1159,10 @@ mod tests {
 
         // Create snapshot
         let mut snapshot_manager =
-            super::SharedMemorySnapshotManager::new(&mut shared_mem, &dirty_pages, &layout, 0)
-                .unwrap();
+            super::SharedMemorySnapshotManager::new(&mut shared_mem, &layout).unwrap();
+        snapshot_manager
+            .create_new_snapshot(&mut shared_mem, &dirty_pages, 0)
+            .unwrap();
 
         // Modify only the dirty pages
         let modified_patterns = [

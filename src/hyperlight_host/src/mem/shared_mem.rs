@@ -524,21 +524,28 @@ impl ExclusiveSharedMemory {
             log_then_return!(WindowsAPIError(e.clone()));
         }
 
+        // HostMapping is only non-Send/Sync because raw pointers
+        // are not ("as a lint", as the Rust docs say). We don't
+        // want to mark HostMapping Send/Sync immediately, because
+        // that could socially imply that it's "safe" to use
+        // unsafe accesses from multiple threads at once. Instead, we
+        // directly impl Send and Sync on this type. Since this
+        // type does have Send and Sync manually impl'd, the Arc
+        // is not pointless as the lint suggests.
+        #[allow(clippy::arc_with_non_send_sync)]
+        let host_mapping = Arc::new(HostMapping {
+            ptr: addr.Value as *mut u8,
+            size: total_size,
+            handle,
+        });
+
+        let dirty_page_tracker = Arc::new(Mutex::new(Some(DirtyPageTracker::new(Arc::clone(
+            &host_mapping,
+        ))?)));
+
         Ok(Self {
-            // HostMapping is only non-Send/Sync because raw pointers
-            // are not ("as a lint", as the Rust docs say). We don't
-            // want to mark HostMapping Send/Sync immediately, because
-            // that could socially imply that it's "safe" to use
-            // unsafe accesses from multiple threads at once. Instead, we
-            // directly impl Send and Sync on this type. Since this
-            // type does have Send and Sync manually impl'd, the Arc
-            // is not pointless as the lint suggests.
-            #[allow(clippy::arc_with_non_send_sync)]
-            region: Arc::new(HostMapping {
-                ptr: addr.Value as *mut u8,
-                size: total_size,
-                handle,
-            }),
+            region: host_mapping,
+            signal_dirty_bitmap_tracker: dirty_page_tracker,
         })
     }
 
