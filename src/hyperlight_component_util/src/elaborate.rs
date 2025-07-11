@@ -429,11 +429,11 @@ impl<'p, 'a> Ctx<'p, 'a> {
                 Defined::Handleable(h) => Ok(Value::Borrow(h.clone())),
                 _ => Err(Error::HandleToNonResource),
             },
-            ComponentDefinedType::Future(_) | ComponentDefinedType::Stream(_) => {
-                panic!("async not yet supported")
-            }
             ComponentDefinedType::FixedSizeList(vt, size) => {
                 Ok(Value::FixList(Box::new(self.elab_value(vt)?), *size))
+            },
+            ComponentDefinedType::Future(_) | ComponentDefinedType::Stream(_) => {
+                panic!("async not yet supported")
             }
         }
     }
@@ -441,19 +441,16 @@ impl<'p, 'a> Ctx<'p, 'a> {
     fn elab_func<'c>(&'c mut self, ft: &ComponentFuncType<'a>) -> Result<Func<'a>, Error<'a>> {
         Ok(Func {
             params: ft
-                .params
-                .iter()
-                .map(|(n, vt)| {
-                    Ok(Param {
-                        name: Name { name: n },
-                        ty: self.elab_value(vt)?,
-                    })
+            .params
+            .iter()
+            .map(|(n, vt)| {
+                Ok(Param {
+                name: Name { name: n },
+                ty: self.elab_value(vt)?,
                 })
-                .collect::<Result<Vec<_>, Error<'a>>>()?,
-            result: match &ft.result {
-                Some(vt) => Some(self.elab_value(vt)?),
-                None => None,
-            },
+            })
+            .collect::<Result<Vec<_>, Error<'a>>>()?,
+            result: ft.result.as_ref().map(|vt| self.elab_value(vt)).transpose()?,
         })
     }
 
