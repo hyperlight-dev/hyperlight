@@ -118,8 +118,44 @@ impl test::wit::Roundtrip for Guest {
     fn roundtrip_fix_list(&mut self, x: [u8; 4]) -> [u8; 4] {
         (Host {}).roundtrip_fix_list(x)
     }
+    fn roundtrip_fix_list_u32(&mut self, x: [u32; 4]) -> [u32; 4] {
+        (Host {}).roundtrip_fix_list_u32(x)
+    }
+    fn roundtrip_fix_list_u64(&mut self, x: [u64; 4]) -> [u64; 4] {
+        (Host {}).roundtrip_fix_list_u64(x)
+    }
+    fn roundtrip_fix_list_i8(&mut self, x: [i8; 4]) -> [i8; 4] {
+        (Host {}).roundtrip_fix_list_i8(x)
+    }
+    fn roundtrip_fix_list_i16(&mut self, x: [i16; 4]) -> [i16; 4] {
+        (Host {}).roundtrip_fix_list_i16(x)
+    }
+    fn roundtrip_fix_list_i32(&mut self, x: [i32; 4]) -> [i32; 4] {
+        (Host {}).roundtrip_fix_list_i32(x)
+    }
+    fn roundtrip_fix_list_i64(&mut self, x: [i64; 4]) -> [i64; 4] {
+        (Host {}).roundtrip_fix_list_i64(x)
+    }
+    fn roundtrip_fix_list_f32(&mut self, x: [f32; 4]) -> [f32; 4] {
+        (Host {}).roundtrip_fix_list_f32(x)
+    }
+    fn roundtrip_fix_list_f64(&mut self, x: [f64; 4]) -> [f64; 4] {
+        (Host {}).roundtrip_fix_list_f64(x)
+    }
+    fn roundtrip_fix_list_u8_size8(&mut self, x: [u8; 8]) -> [u8; 8] {
+        (Host {}).roundtrip_fix_list_u8_size8(x)
+    }
+    fn roundtrip_fix_list_u64_size2(&mut self, x: [u64; 2]) -> [u64; 2] {
+        (Host {}).roundtrip_fix_list_u64_size2(x)
+    }
     fn roundtrip_fix_list_string(&mut self, x: [String; 4]) -> [String; 4] {
         (Host {}).roundtrip_fix_list_string(x)
+    }
+    fn roundtrip_fix_array_of_lists(&mut self, x: [Vec<u8>; 3]) -> [Vec<u8>; 3] {
+        x
+    }
+    fn roundtrip_fix_array_of_string_lists(&mut self, x: [Vec<String>; 2]) -> [Vec<String>; 2] {
+        x
     }
     fn roundtrip_no_result(&mut self, x: u32) {
         (Host {}).roundtrip_no_result(x)
