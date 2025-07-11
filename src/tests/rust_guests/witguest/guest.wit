@@ -26,6 +26,20 @@ interface roundtrip {
   roundtrip-option: func(x: option<string>) -> option<string>;
   roundtrip-result: func(x: result<char, string>) -> result<char, string>;
   roundtrip-no-result: func(x: u32);
+  roundtrip-fix-list: func(x: list<u8, 4>) -> list<u8, 4>;
+  roundtrip-fix-list-u32: func(x: list<u32, 4>) -> list<u32, 4>;
+  roundtrip-fix-list-u64: func(x: list<u64, 4>) -> list<u64, 4>;
+  roundtrip-fix-list-i8: func(x: list<s8, 4>) -> list<s8, 4>;
+  roundtrip-fix-list-i16: func(x: list<s16, 4>) -> list<s16, 4>;
+  roundtrip-fix-list-i32: func(x: list<s32, 4>) -> list<s32, 4>;
+  roundtrip-fix-list-i64: func(x: list<s64, 4>) -> list<s64, 4>;
+  roundtrip-fix-list-f32: func(x: list<f32, 4>) -> list<f32, 4>;
+  roundtrip-fix-list-f64: func(x: list<f64, 4>) -> list<f64, 4>;
+  roundtrip-fix-list-u8-size8: func(x: list<u8, 8>) -> list<u8, 8>;
+  roundtrip-fix-list-u64-size2: func(x: list<u64, 2>) -> list<u64, 2>;
+  roundtrip-fix-list-string: func(x: list<string, 4>) -> list<string, 4>;
+  roundtrip-fix-array-of-lists: func(x: list<list<u8>, 3>) -> list<list<u8>, 3>;
+  roundtrip-fix-array-of-string-lists: func(x: list<list<string>, 2>) -> list<list<string>, 2>;
 
   record testrecord {
     contents: string,

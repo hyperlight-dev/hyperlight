@@ -29,8 +29,8 @@ use crate::emit::{
     split_wit_name,
 };
 use crate::etypes::{
-    Component, Defined, ExternDecl, ExternDesc, Func, Handleable, ImportExport, Instance, Param,
-    Result, TypeBound, Tyvar, Value,
+    self, Component, Defined, ExternDecl, ExternDesc, Func, Handleable, ImportExport, Instance,
+    Param, TypeBound, Tyvar, Value,
 };
 
 /// When referring to an instance or resource trait, emit a token
@@ -281,6 +281,11 @@ pub fn emit_value(s: &mut State, vt: &Value) -> TokenStream {
             let vt = emit_value(s, vt);
             quote! { alloc::vec::Vec<#vt> }
         }
+        Value::FixList(vt, size) => {
+            let vt = emit_value(s, vt);
+            let size = *size as usize;
+            quote! { [#vt; #size] }
+        }
         Value::Record(_) => panic!("record not at top level of valtype"),
         Value::Tuple(vts) => {
             let vts = vts.iter().map(|vt| emit_value(s, vt)).collect::<Vec<_>>();
@@ -521,11 +526,10 @@ pub fn emit_func_param(s: &mut State, p: &Param) -> TokenStream {
 ///
 /// Precondition: the result type must only be a named result if there
 /// are no names in it (i.e. a unit type)
-pub fn emit_func_result(s: &mut State, r: &Result) -> TokenStream {
+pub fn emit_func_result(s: &mut State, r: &etypes::Result<'_>) -> TokenStream {
     match r {
-        Result::Unnamed(vt) => emit_value(s, vt),
-        Result::Named(rs) if rs.is_empty() => quote! { () },
-        _ => panic!("multiple named function results are not currently supported"),
+        Some(vt) => emit_value(s, vt),
+        None => quote! { () },
     }
 }
 

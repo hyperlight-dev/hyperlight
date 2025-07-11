@@ -213,6 +213,7 @@ impl<'p, 'a> Ctx<'p, 'a> {
             Value::Char => Ok(()),
             Value::String => Ok(()),
             Value::List(vt) => self.wf_value(p_, vt),
+            Value::FixList(vt, _) => self.wf_value(p_, vt),
             Value::Record(rfs) => anon_err.and(self.wf_record_fields(p_, rfs)),
             Value::Variant(vcs) => anon_err.and(self.wf_variant_cases(p_, vcs)),
             Value::Flags(ns) => anon_err.and(error_if_duplicates_by(
@@ -268,10 +269,8 @@ impl<'p, 'a> Ctx<'p, 'a> {
             .iter()
             .try_for_each(|fp: &'r Param<'a>| self.wf_value(param_pos, &fp.ty))?;
         match &ft.result {
-            crate::etypes::Result::Unnamed(vt) => self.wf_value(result_pos, vt),
-            crate::etypes::Result::Named(ps) => ps
-                .iter()
-                .try_for_each(|fp: &'r Param<'a>| self.wf_value(result_pos, &fp.ty)),
+            Some(vt) => self.wf_value(result_pos, vt),
+            None => Ok(()),
         }
     }
     fn wf_type_bound<'r>(

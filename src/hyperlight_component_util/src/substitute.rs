@@ -96,6 +96,7 @@ where
             Value::Char => Value::Char,
             Value::String => Value::String,
             Value::List(vt) => Value::List(Box::new(self.value(vt)?)),
+            Value::FixList(vt, size) => Value::FixList(Box::new(self.value(vt)?), *size),
             Value::Record(rfs) => Value::Record(self.record_fields(rfs)?),
             Value::Variant(vcs) => Value::Variant(self.variant_cases(vcs)?),
             Value::Flags(ns) => Value::Flags(ns.clone()),
@@ -139,8 +140,8 @@ where
         rt: &crate::etypes::Result<'a>,
     ) -> Result<crate::etypes::Result<'a>, Self::Error> {
         Ok(match rt {
-            crate::etypes::Result::Unnamed(vt) => crate::etypes::Result::Unnamed(self.value(vt)?),
-            crate::etypes::Result::Named(pts) => crate::etypes::Result::Named(self.params(pts)?),
+            Some(vt) => Some(self.value(vt)?),
+            None => None,
         })
     }
 
