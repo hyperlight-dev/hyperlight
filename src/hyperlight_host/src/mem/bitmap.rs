@@ -15,7 +15,9 @@ limitations under the License.
 */
 
 use hyperlight_common::mem::{PAGE_SIZE_USIZE, PAGES_IN_BLOCK};
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
+use super::layout::SandboxMemoryLayout;
 use crate::{Result, log_then_return};
 
 // Contains various helper functions for dealing with bitmaps.
@@ -91,6 +93,107 @@ impl Iterator for SetBitIndices<'_> {
         self.current &= self.current - 1; // Clear the least significant set bit
         Some((self.block_index - 1) * 64 + trailing_zeros as usize) // block_index guaranteed to be > 0 at this point
     }
+}
+
+// Unused but useful for debugging
+// Prints the dirty bitmap in a human-readable format, coloring each page according to its region
+// NOTE: Might need to be updated if the memory layout changes
+#[allow(dead_code)]
+pub(crate) fn print_dirty_bitmap(bitmap: &[u64], layout: &SandboxMemoryLayout) {
+    let mut stdout = StandardStream::stdout(ColorChoice::Auto);
+
+    // Helper function to determine which memory region a page belongs to
+    fn get_region_info(page_index: usize, layout: &SandboxMemoryLayout) -> (&'static str, Color) {
+        let page_offset = page_index * PAGE_SIZE_USIZE;
+
+        // Check each memory region in order, using available methods and approximations
+        if page_offset >= layout.init_data_offset {
+            ("INIT_DATA", Color::Ansi256(129)) // Purple
+        } else if page_offset >= layout.get_top_of_user_stack_offset() {
+            ("STACK", Color::Ansi256(208)) // Orange
+        } else if page_offset >= layout.get_guard_page_offset() {
+            ("GUARD_PAGE", Color::White)
+        } else if page_offset >= layout.guest_heap_buffer_offset {
+            ("HEAP", Color::Red)
+        } else if page_offset >= layout.output_data_buffer_offset {
+            ("OUTPUT_DATA", Color::Green)
+        } else if page_offset >= layout.input_data_buffer_offset {
+            ("INPUT_DATA", Color::Blue)
+        } else if page_offset >= layout.host_function_definitions_buffer_offset {
+            ("HOST_FUNC_DEF", Color::Cyan)
+        } else if page_offset >= layout.peb_address {
+            ("PEB", Color::Magenta)
+        } else if page_offset >= layout.get_guest_code_offset() {
+            ("CODE", Color::Yellow)
+        } else {
+            // Everything up to and including guest code should be PAGE_TABLES
+            ("PAGE_TABLES", Color::Ansi256(14)) // Bright cyan
+        }
+    }
+
+    let mut num_dirty_pages = 0;
+    for &block in bitmap.iter() {
+        num_dirty_pages += block.count_ones() as usize;
+    }
+
+    for (i, &block) in bitmap.iter().enumerate() {
+        if block != 0 {
+            print!("Block {:3}: ", i);
+
+            // Print each bit in the block with appropriate color
+            for bit_pos in 0..64 {
+                let bit_mask = 1u64 << bit_pos;
+                let page_index = i * 64 + bit_pos;
+                let (_region_name, color) = get_region_info(page_index, layout);
+
+                let mut color_spec = ColorSpec::new();
+                color_spec.set_fg(Some(color));
+
+                if block & bit_mask != 0 {
+                    // Make 1s bold with dark background to stand out from 0s
+                    color_spec.set_bold(true).set_bg(Some(Color::Black));
+                    let _ = stdout.set_color(&color_spec);
+                    print!("1");
+                } else {
+                    // 0s are colored but not bold, no background
+                    let _ = stdout.set_color(&color_spec);
+                    print!("0");
+                }
+                let _ = stdout.reset();
+            }
+
+            // Print a legend for this block showing which regions are represented
+            let mut regions_in_block = std::collections::HashMap::new();
+            for bit_pos in 0..64 {
+                let bit_mask = 1u64 << bit_pos;
+                if block & bit_mask != 0 {
+                    let page_index = i * 64 + bit_pos;
+                    let (region_name, color) = get_region_info(page_index, layout);
+                    regions_in_block.insert(region_name, color);
+                }
+            }
+
+            if !regions_in_block.is_empty() {
+                print!(" [");
+                let mut sorted_regions: Vec<_> = regions_in_block.iter().collect();
+                sorted_regions.sort_by_key(|(name, _)| *name);
+                for (i, (region_name, color)) in sorted_regions.iter().enumerate() {
+                    if i > 0 {
+                        print!(", ");
+                    }
+                    let mut color_spec = ColorSpec::new();
+                    color_spec.set_fg(Some(**color)).set_bold(true);
+                    let _ = stdout.set_color(&color_spec);
+                    print!("{}", region_name);
+                    let _ = stdout.reset();
+                }
+                print!("]");
+            }
+            println!();
+        }
+    }
+    // Print the total number of dirty pages
+    println!("Total dirty pages: {}", num_dirty_pages);
 }
 
 #[cfg(test)]
