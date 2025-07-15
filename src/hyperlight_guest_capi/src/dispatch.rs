@@ -26,7 +26,9 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::GuestFunctionRegister;
-use hyperlight_guest_bin::host_comm::call_host_function_without_returning_result;
+use hyperlight_guest_bin::host_comm::{
+    call_host_function_without_returning_result, get_user_memory,
+};
 
 use crate::types::{FfiFunctionCall, FfiVec};
 static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister = GuestFunctionRegister::new();
@@ -113,4 +115,16 @@ pub extern "C" fn hl_call_host_function(function_call: &FfiFunctionCall) {
     // The C API will then call specific getter functions to fetch the properly typed return value
     let _ = call_host_function_without_returning_result(&func_name, Some(parameters), return_type)
         .expect("Failed to call host function");
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_user_memory_ptr() -> *const u8 {
+    let (user_memory_region_ptr, _) = get_user_memory();
+    user_memory_region_ptr
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_user_memory_size() -> u64 {
+    let (_, user_memory_region_size) = get_user_memory();
+    user_memory_region_size
 }

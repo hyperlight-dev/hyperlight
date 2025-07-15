@@ -91,7 +91,7 @@ pub(crate) struct SandboxMemoryLayout {
     pub(super) stack_size: usize,
     /// The heap size of this sandbox.
     pub(super) heap_size: usize,
-    init_data_size: usize,
+    pub(crate) init_data_size: usize,
 
     /// The following fields are offsets to the actual PEB struct fields.
     /// They are used when writing the PEB struct itself
@@ -114,7 +114,7 @@ pub(crate) struct SandboxMemoryLayout {
     guest_heap_buffer_offset: usize,
     guard_page_offset: usize,
     guest_user_stack_buffer_offset: usize, // the lowest address of the user stack
-    init_data_offset: usize,
+    pub(crate) init_data_offset: usize,
 
     // other
     pub(crate) peb_address: usize,

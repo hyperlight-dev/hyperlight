@@ -95,6 +95,22 @@ impl MultiUseGuestCallContext {
     pub fn map_file_cow(&mut self, fp: &std::path::Path, guest_base: u64) -> Result<u64> {
         self.sbox.map_file_cow(fp, guest_base)
     }
+
+    /// Write new data to init data
+    pub fn rewrite_init_data(&mut self, user_memory: &[u8]) -> Result<()> {
+        use crate::sandbox::WrapperGetter;
+        let mem_mgr = self.sbox.get_mgr_wrapper_mut();
+        mem_mgr.rewrite_init_data(user_memory)?;
+        Ok(())
+    }
+
+    /// Read init data
+    pub fn read_init_data(&mut self, user_memory: &mut [u8]) -> Result<()> {
+        use crate::sandbox::WrapperGetter;
+        let mem_mgr = self.sbox.get_mgr_wrapper_mut();
+        mem_mgr.read_init_data(user_memory)?;
+        Ok(())
+    }
 }
 
 impl Callable for MultiUseGuestCallContext {

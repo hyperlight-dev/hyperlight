@@ -120,4 +120,24 @@ impl MemMgrWrapper<HostSharedMemory> {
         self.unwrap_mgr()
             .check_stack_guard(*self.get_stack_cookie())
     }
+
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn rewrite_init_data(&mut self, user_memory: &[u8]) -> Result<()> {
+        let mgr = self.unwrap_mgr_mut();
+        let layout = mgr.layout;
+        let shared_mem = mgr.get_shared_mem_mut();
+        assert!(user_memory.len() <= layout.init_data_size);
+        shared_mem.copy_from_slice(user_memory, layout.init_data_offset)?;
+        Ok(())
+    }
+
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn read_init_data(&mut self, user_memory: &mut [u8]) -> Result<()> {
+        let mgr = self.unwrap_mgr_mut();
+        let layout = mgr.layout;
+        let shared_mem = mgr.get_shared_mem_mut();
+        assert!(user_memory.len() <= layout.init_data_size);
+        shared_mem.copy_to_slice(user_memory, layout.init_data_offset)?;
+        Ok(())
+    }
 }

@@ -36,9 +36,7 @@ use crate::exit::out32;
 impl GuestHandle {
     /// Get user memory region as bytes.
     pub fn read_n_bytes_from_user_memory(&self, num: u64) -> Result<Vec<u8>> {
-        let peb_ptr = self.peb().unwrap();
-        let user_memory_region_ptr = unsafe { (*peb_ptr).init_data.ptr as *mut u8 };
-        let user_memory_region_size = unsafe { (*peb_ptr).init_data.size };
+        let (user_memory_region_ptr, user_memory_region_size) = self.get_user_memory();
 
         if num > user_memory_region_size {
             Err(HyperlightGuestError::new(
@@ -55,6 +53,14 @@ impl GuestHandle {
 
             Ok(user_memory_region_bytes)
         }
+    }
+
+    pub fn get_user_memory(&self) -> (*const u8, u64) {
+        let peb_ptr = self.peb().unwrap();
+        let user_memory_region_ptr = unsafe { (*peb_ptr).init_data.ptr as *const u8 };
+        let user_memory_region_size = unsafe { (*peb_ptr).init_data.size };
+
+        (user_memory_region_ptr, user_memory_region_size)
     }
 
     /// Get a return value from a host function call.
