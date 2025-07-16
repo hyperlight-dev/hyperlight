@@ -19,9 +19,9 @@ use std::ffi::c_void;
 use std::io::Error;
 #[cfg(target_os = "linux")]
 use std::ptr::null_mut;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use hyperlight_common::mem::{PAGE_SIZE_USIZE, PAGES_IN_BLOCK};
 use tracing::{Span, instrument};
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
@@ -78,8 +78,10 @@ macro_rules! generate_writer {
         #[allow(dead_code)]
         pub(crate) fn $fname(&mut self, offset: usize, value: $ty) -> Result<()> {
             let data = self.as_mut_slice();
-            bounds_check!(offset, std::mem::size_of::<$ty>(), data.len());
-            data[offset..offset + std::mem::size_of::<$ty>()].copy_from_slice(&value.to_le_bytes());
+            let size = std::mem::size_of::<$ty>();
+            bounds_check!(offset, size, data.len());
+            data[offset..offset + size].copy_from_slice(&value.to_le_bytes());
+            self.mark_pages_dirty(offset, size)?;
             Ok(())
         }
     };
@@ -133,6 +135,7 @@ impl Drop for HostMapping {
 #[derive(Debug)]
 pub struct ExclusiveSharedMemory {
     region: Arc<HostMapping>,
+    dirty_page_tracker: Arc<Mutex<Vec<u64>>>,
 }
 unsafe impl Send for ExclusiveSharedMemory {}
 
@@ -147,6 +150,8 @@ unsafe impl Send for ExclusiveSharedMemory {}
 #[derive(Debug)]
 pub struct GuestSharedMemory {
     region: Arc<HostMapping>,
+    dirty_page_tracker: Arc<Mutex<Vec<u64>>>,
+
     /// The lock that indicates this shared memory is being used by non-Rust code
     ///
     /// This lock _must_ be held whenever the guest is executing,
@@ -298,6 +303,8 @@ unsafe impl Send for GuestSharedMemory {}
 #[derive(Clone, Debug)]
 pub struct HostSharedMemory {
     region: Arc<HostMapping>,
+    dirty_page_tracker: Arc<Mutex<Vec<u64>>>,
+
     lock: Arc<RwLock<()>>,
 }
 unsafe impl Send for HostSharedMemory {}
@@ -316,6 +323,7 @@ impl ExclusiveSharedMemory {
         };
 
         use crate::error::HyperlightError::{MemoryRequestTooBig, MmapFailed, MprotectFailed};
+        use crate::mem::bitmap::new_page_bitmap;
 
         if min_size_bytes == 0 {
             return Err(new_error!("Cannot create shared memory with size 0"));
@@ -370,21 +378,37 @@ impl ExclusiveSharedMemory {
             return Err(MprotectFailed(Error::last_os_error().raw_os_error()));
         }
 
+        // HostMapping is only non-Send/Sync because raw pointers
+        // are not ("as a lint", as the Rust docs say). We don't
+        // want to mark HostMapping Send/Sync immediately, because
+        // that could socially imply that it's "safe" to use
+        // unsafe accesses from multiple threads at once. Instead, we
+        // directly impl Send and Sync on this type. Since this
+        // type does have Send and Sync manually impl'd, the Arc
+        // is not pointless as the lint suggests.
+        #[allow(clippy::arc_with_non_send_sync)]
+        let host_mapping = Arc::new(HostMapping {
+            ptr: addr as *mut u8,
+            size: total_size,
+        });
+
+        let dirty_page_tracker = new_page_bitmap(min_size_bytes, false)?;
+
         Ok(Self {
-            // HostMapping is only non-Send/Sync because raw pointers
-            // are not ("as a lint", as the Rust docs say). We don't
-            // want to mark HostMapping Send/Sync immediately, because
-            // that could socially imply that it's "safe" to use
-            // unsafe accesses from multiple threads at once. Instead, we
-            // directly impl Send and Sync on this type. Since this
-            // type does have Send and Sync manually impl'd, the Arc
-            // is not pointless as the lint suggests.
-            #[allow(clippy::arc_with_non_send_sync)]
-            region: Arc::new(HostMapping {
-                ptr: addr as *mut u8,
-                size: total_size,
-            }),
+            region: host_mapping,
+            dirty_page_tracker: Arc::new(Mutex::new(dirty_page_tracker)),
         })
+    }
+
+    /// Gets the dirty bitmap and then clears it in self.
+    pub(crate) fn get_and_clear_dirty_pages(&self) -> Result<Vec<u64>> {
+        let mut guard = self
+            .dirty_page_tracker
+            .try_lock()
+            .map_err(|_| new_error!("Failed to acquire lock on dirty page tracker"))?;
+        let mut bitmap = vec![0; guard.len()];
+        core::mem::swap(&mut bitmap, &mut *guard);
+        Ok(bitmap)
     }
 
     /// Create a new region of shared memory with the given minimum
@@ -394,6 +418,8 @@ impl ExclusiveSharedMemory {
     #[cfg(target_os = "windows")]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
+        use super::bitmap::new_page_bitmap;
+
         if min_size_bytes == 0 {
             return Err(new_error!("Cannot create shared memory with size 0"));
         }
@@ -484,21 +510,26 @@ impl ExclusiveSharedMemory {
             log_then_return!(WindowsAPIError(e.clone()));
         }
 
+        // HostMapping is only non-Send/Sync because raw pointers
+        // are not ("as a lint", as the Rust docs say). We don't
+        // want to mark HostMapping Send/Sync immediately, because
+        // that could socially imply that it's "safe" to use
+        // unsafe accesses from multiple threads at once. Instead, we
+        // directly impl Send and Sync on this type. Since this
+        // type does have Send and Sync manually impl'd, the Arc
+        // is not pointless as the lint suggests.
+        #[allow(clippy::arc_with_non_send_sync)]
+        let host_mapping = Arc::new(HostMapping {
+            ptr: addr.Value as *mut u8,
+            size: total_size,
+            handle,
+        });
+
+        let dirty_page_tracker = new_page_bitmap(min_size_bytes, false)?;
+
         Ok(Self {
-            // HostMapping is only non-Send/Sync because raw pointers
-            // are not ("as a lint", as the Rust docs say). We don't
-            // want to mark HostMapping Send/Sync immediately, because
-            // that could socially imply that it's "safe" to use
-            // unsafe accesses from multiple threads at once. Instead, we
-            // directly impl Send and Sync on this type. Since this
-            // type does have Send and Sync manually impl'd, the Arc
-            // is not pointless as the lint suggests.
-            #[allow(clippy::arc_with_non_send_sync)]
-            region: Arc::new(HostMapping {
-                ptr: addr.Value as *mut u8,
-                size: total_size,
-                handle,
-            }),
+            region: host_mapping,
+            dirty_page_tracker: Arc::new(Mutex::new(dirty_page_tracker)),
         })
     }
 
@@ -613,6 +644,16 @@ impl ExclusiveSharedMemory {
         let data = self.as_mut_slice();
         bounds_check!(offset, src.len(), data.len());
         data[offset..offset + src.len()].copy_from_slice(src);
+        self.mark_pages_dirty(offset, src.len())?;
+        Ok(())
+    }
+
+    /// Copies bytes from `self` to `dst` starting at offset
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub fn copy_to_slice(&self, dst: &mut [u8], offset: usize) -> Result<()> {
+        let data = self.as_slice();
+        bounds_check!(offset, dst.len(), data.len());
+        dst.copy_from_slice(&data[offset..offset + dst.len()]);
         Ok(())
     }
 
@@ -622,6 +663,40 @@ impl ExclusiveSharedMemory {
     pub(crate) fn calculate_address(&self, offset: usize) -> Result<usize> {
         bounds_check!(offset, 0, self.mem_size());
         Ok(self.base_addr() + offset)
+    }
+
+    /// Fill the memory in the range `[offset, offset + len)` with `value`
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub fn zero_fill(&mut self, offset: usize, len: usize) -> Result<()> {
+        bounds_check!(offset, len, self.mem_size());
+        let data = self.as_mut_slice();
+        data[offset..offset + len].fill(0);
+        self.mark_pages_dirty(offset, len)?;
+        Ok(())
+    }
+
+    /// Same as `copy_from_slice` but doesn't dirty the pages.
+    /// # Safety
+    /// This function is unsafe because it does not mark the pages as dirty.
+    /// Only use this if you are certain that the pages do not need to be marked as dirty.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub unsafe fn copy_from_slice_no_dirty(&mut self, src: &[u8], offset: usize) -> Result<()> {
+        let data = self.as_mut_slice();
+        bounds_check!(offset, src.len(), data.len());
+        data[offset..offset + src.len()].copy_from_slice(src);
+        Ok(())
+    }
+
+    /// Same as `zero_fill` but doesn't dirty the pages.
+    /// # Safety
+    /// This function is unsafe because it does not mark the pages as dirty.
+    /// Only use this if you are certain that the pages do not need to be marked as dirty.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) unsafe fn zero_fill_no_dirty(&mut self, offset: usize, len: usize) -> Result<()> {
+        bounds_check!(offset, len, self.mem_size());
+        let data = self.as_mut_slice();
+        data[offset..offset + len].fill(0);
+        Ok(())
     }
 
     generate_reader!(read_u8, u8);
@@ -657,13 +732,20 @@ impl ExclusiveSharedMemory {
         (
             HostSharedMemory {
                 region: self.region.clone(),
+                dirty_page_tracker: self.dirty_page_tracker.clone(),
                 lock: lock.clone(),
             },
             GuestSharedMemory {
                 region: self.region.clone(),
+                dirty_page_tracker: self.dirty_page_tracker.clone(),
                 lock: lock.clone(),
             },
         )
+    }
+
+    /// Marks pages that cover bytes [offset, offset + size) as dirty
+    pub(super) fn mark_pages_dirty(&self, offset: usize, size: usize) -> Result<()> {
+        mark_pages_dirty_helper(&self.dirty_page_tracker, self.mem_size(), offset, size)
     }
 
     /// Gets the file handle of the shared memory region for this Sandbox
@@ -743,6 +825,7 @@ impl SharedMemory for GuestSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
     }
+
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
@@ -753,6 +836,7 @@ impl SharedMemory for GuestSharedMemory {
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
         let mut excl = ExclusiveSharedMemory {
             region: self.region.clone(),
+            dirty_page_tracker: self.dirty_page_tracker.clone(),
         };
         let ret = f(&mut excl);
         drop(excl);
@@ -803,7 +887,7 @@ impl HostSharedMemory {
     /// Write a value of type T, whose representation is the same
     /// between the sandbox and the host, and which has no invalid bit
     /// patterns
-    pub fn write<T: AllValid>(&self, offset: usize, data: T) -> Result<()> {
+    pub fn write<T: AllValid>(&mut self, offset: usize, data: T) -> Result<()> {
         bounds_check!(offset, std::mem::size_of::<T>(), self.mem_size());
         unsafe {
             let slice: &[u8] = core::slice::from_raw_parts(
@@ -812,6 +896,7 @@ impl HostSharedMemory {
             );
             self.copy_from_slice(slice, offset)?;
         }
+        self.mark_pages_dirty(offset, std::mem::size_of::<T>())?;
         Ok(())
     }
 
@@ -834,9 +919,8 @@ impl HostSharedMemory {
         Ok(())
     }
 
-    /// Copy the contents of the sandbox at the specified offset into
-    /// the slice
-    pub fn copy_from_slice(&self, slice: &[u8], offset: usize) -> Result<()> {
+    /// Copy the contents of the given slice into self
+    pub fn copy_from_slice(&mut self, slice: &[u8], offset: usize) -> Result<()> {
         bounds_check!(offset, slice.len(), self.mem_size());
         let base = self.base_ptr().wrapping_add(offset);
         let guard = self
@@ -850,6 +934,7 @@ impl HostSharedMemory {
             }
         }
         drop(guard);
+        self.mark_pages_dirty(offset, slice.len())?;
         Ok(())
     }
 
@@ -867,6 +952,7 @@ impl HostSharedMemory {
             unsafe { base.wrapping_add(i).write_volatile(value) };
         }
         drop(guard);
+        self.mark_pages_dirty(offset, len)?;
         Ok(())
     }
 
@@ -979,12 +1065,18 @@ impl HostSharedMemory {
 
         Ok(to_return)
     }
+
+    /// Marks pages that cover bytes [offset, offset + size) as dirty
+    pub(super) fn mark_pages_dirty(&self, offset: usize, size: usize) -> Result<()> {
+        mark_pages_dirty_helper(&self.dirty_page_tracker, self.mem_size(), offset, size)
+    }
 }
 
 impl SharedMemory for HostSharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
     }
+
     fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
         &mut self,
         f: F,
@@ -995,12 +1087,37 @@ impl SharedMemory for HostSharedMemory {
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
         let mut excl = ExclusiveSharedMemory {
             region: self.region.clone(),
+            dirty_page_tracker: self.dirty_page_tracker.clone(),
         };
         let ret = f(&mut excl);
         drop(excl);
         drop(guard);
         Ok(ret)
     }
+}
+
+/// Helper function to mark pages as dirty in a dirty page tracker bitmap.
+/// This function encapsulates the common logic used by both ExclusiveSharedMemory
+/// and HostSharedMemory implementations.
+fn mark_pages_dirty_helper(
+    dirty_page_tracker: &Arc<Mutex<Vec<u64>>>,
+    mem_size: usize,
+    offset: usize,
+    size: usize,
+) -> Result<()> {
+    bounds_check!(offset, size, mem_size);
+    let mut bitmap = dirty_page_tracker
+        .try_lock()
+        .map_err(|_| new_error!("Failed to lock dirty page tracker"))?;
+
+    let start_page = offset / PAGE_SIZE_USIZE;
+    let end_page = (offset + size - 1) / PAGE_SIZE_USIZE; // offset + size - 1 is the last affected byte.
+    for page_idx in start_page..=end_page {
+        let block_idx = page_idx / PAGES_IN_BLOCK;
+        let bit_idx = page_idx % PAGES_IN_BLOCK;
+        bitmap[block_idx] |= 1 << bit_idx;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1048,7 +1165,7 @@ mod tests {
         let mem_size: usize = 4096;
         let vec_len = 10;
         let eshm = ExclusiveSharedMemory::new(mem_size)?;
-        let (hshm, _) = eshm.build();
+        let (mut hshm, _) = eshm.build();
         let vec = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         // write the value to the memory at the beginning.
         hshm.copy_from_slice(&vec, 0)?;
@@ -1135,8 +1252,8 @@ mod tests {
     #[test]
     fn clone() {
         let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
-        let (hshm1, _) = eshm.build();
-        let hshm2 = hshm1.clone();
+        let (mut hshm1, _) = eshm.build();
+        let mut hshm2 = hshm1.clone();
 
         // after hshm1 is cloned, hshm1 and hshm2 should have identical
         // memory sizes and pointers.
@@ -1222,6 +1339,156 @@ mod tests {
             !maps_contain_addr(addr, &maps_after_drop),
             "shared memory address {:#x} was found in the process map, but shouldn't be",
             addr
+        );
+    }
+
+    #[test]
+    fn get_and_clear_dirty_pages_comprehensive() {
+        use hyperlight_common::mem::PAGE_SIZE_USIZE;
+
+        // Test with small memory (8 pages, single u64 bitmap)
+        let small_mem_size = PAGE_SIZE_USIZE * 8;
+        let mut eshm_small = ExclusiveSharedMemory::new(small_mem_size).unwrap();
+
+        // Initially, no pages should be dirty
+        let initial_dirty = eshm_small.get_and_clear_dirty_pages().unwrap();
+        assert_eq!(
+            initial_dirty.len(),
+            1,
+            "Small memory should have 1 u64 in bitmap"
+        );
+        assert!(
+            initial_dirty.iter().all(|&x| x == 0),
+            "Initial dirty pages should be empty"
+        );
+
+        // Test copy_from_slice - should mark pages as dirty
+        let test_data = vec![0xAA; PAGE_SIZE_USIZE + 100]; // spans 2 pages
+        eshm_small.copy_from_slice(&test_data, 0).unwrap();
+        let dirty1 = eshm_small.get_and_clear_dirty_pages().unwrap();
+        // Should have bits 0 and 1 set (first two pages), others should be 0
+        assert_eq!(
+            dirty1[0], 0b11,
+            "First two pages should be marked dirty, others should not"
+        );
+
+        // After clearing, should be empty again
+        let cleared = eshm_small.get_and_clear_dirty_pages().unwrap();
+        assert!(
+            cleared.iter().all(|&x| x == 0),
+            "Dirty pages should be cleared"
+        );
+
+        // Test write methods - should mark pages as dirty
+        eshm_small
+            .write_u64(PAGE_SIZE_USIZE * 3 + 100, 0x1234567890ABCDEF)
+            .unwrap(); // Write to page 3
+        let dirty2 = eshm_small.get_and_clear_dirty_pages().unwrap();
+        // Should have only bit 3 set (page 3), all others should be 0
+        assert_eq!(
+            dirty2[0],
+            1 << 3,
+            "Only page 3 should be marked dirty after write_u64"
+        );
+
+        // Test that unsafe methods don't mark pages as dirty
+        unsafe {
+            eshm_small
+                .copy_from_slice_no_dirty(&[0x77; 100], PAGE_SIZE_USIZE)
+                .unwrap();
+            eshm_small
+                .zero_fill_no_dirty(PAGE_SIZE_USIZE + 200, 500)
+                .unwrap();
+        }
+        let dirty_after_unsafe = eshm_small.get_and_clear_dirty_pages().unwrap();
+        assert!(
+            dirty_after_unsafe.iter().all(|&x| x == 0),
+            "Unsafe restore methods should not mark pages as dirty"
+        );
+
+        // Test with large memory (131 pages, multiple u64s in bitmap)
+        let large_mem_size = PAGE_SIZE_USIZE * 131; // More than 64 pages to span multiple u64s
+        let mut eshm_large = ExclusiveSharedMemory::new(large_mem_size).unwrap();
+
+        let initial_large = eshm_large.get_and_clear_dirty_pages().unwrap();
+        assert!(
+            initial_large.len() == 3,
+            "Large memory should have multiple u64s in bitmap"
+        );
+        assert!(
+            initial_large.iter().all(|&x| x == 0),
+            "Initial large dirty pages should be empty"
+        );
+
+        // Test writing to different u64 blocks
+        // Write to page 10 (first u64)
+        eshm_large
+            .write_u32(PAGE_SIZE_USIZE * 10, 0xDEADBEEF)
+            .unwrap();
+        // Write to page 65 (second u64)
+        eshm_large
+            .write_u32(PAGE_SIZE_USIZE * 65, 0xCAFEBABE)
+            .unwrap();
+        // Write to page 130 (third u64)
+        eshm_large
+            .write_u32(PAGE_SIZE_USIZE * 130, 0xFEEDFACE)
+            .unwrap();
+
+        let dirty_large = eshm_large.get_and_clear_dirty_pages().unwrap();
+
+        // Check first u64 (pages 0-63)
+        assert_eq!(
+            dirty_large[0],
+            1 << 10,
+            "Only page 10 should be dirty in first u64"
+        );
+
+        // Check second u64 (pages 64-127)
+        assert_eq!(
+            dirty_large[1],
+            1 << 1,
+            "Only page 65 should be dirty in second u64 (bit 1)"
+        );
+
+        // Check third u64 (pages 128+)
+        assert_eq!(
+            dirty_large[2],
+            1 << 2,
+            "Only page 130 should be dirty in third u64 (bit 2: 130-128=2)"
+        );
+
+        // Test operations spanning multiple pages across u64 boundaries
+        let boundary_data = vec![0x55; PAGE_SIZE_USIZE * 3]; // Spans 3 pages
+        eshm_large
+            .copy_from_slice(&boundary_data, PAGE_SIZE_USIZE * 62)
+            .unwrap(); // Pages 62, 63, 64 (crosses u64 boundary)
+
+        let boundary_dirty = eshm_large.get_and_clear_dirty_pages().unwrap();
+        // Check pages 62-63 in first u64, page 64 in second u64
+        assert_eq!(
+            boundary_dirty[0],
+            0b11 << 62,
+            "Only pages 62-63 should be dirty in first u64"
+        );
+        assert_eq!(
+            boundary_dirty[1], 0b1,
+            "Only page 64 should be dirty in second u64"
+        );
+        assert_eq!(
+            boundary_dirty[2], 0,
+            "No pages should be dirty in third u64"
+        );
+
+        // Verify that read operations don't mark pages as dirty in large memory
+        eshm_large.read_u64(0).unwrap();
+        eshm_large.as_slice();
+        eshm_large.copy_all_to_vec().unwrap();
+        let mut dst = vec![0; 100];
+        eshm_large.copy_to_slice(&mut dst, 100).unwrap();
+        let dirty_after_reads = eshm_large.get_and_clear_dirty_pages().unwrap();
+        assert!(
+            dirty_after_reads.iter().all(|&x| x == 0),
+            "Read operations should not mark pages as dirty in large memory"
         );
     }
 
