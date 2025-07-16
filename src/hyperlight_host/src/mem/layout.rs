@@ -224,18 +224,24 @@ impl SandboxMemoryLayout {
     pub(crate) const PML4_OFFSET: usize = 0x0000;
     /// The offset into the sandbox's memory where the Page Directory Pointer
     /// Table starts.
+    #[cfg(feature = "init-paging")]
     pub(super) const PDPT_OFFSET: usize = 0x1000;
     /// The offset into the sandbox's memory where the Page Directory starts.
+    #[cfg(feature = "init-paging")]
     pub(super) const PD_OFFSET: usize = 0x2000;
     /// The offset into the sandbox's memory where the Page Tables start.
+    #[cfg(feature = "init-paging")]
     pub(super) const PT_OFFSET: usize = 0x3000;
     /// The address (not the offset) to the start of the page directory
+    #[cfg(feature = "init-paging")]
     pub(super) const PD_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PD_OFFSET;
     /// The address (not the offset) into sandbox memory where the Page
     /// Directory Pointer Table starts
+    #[cfg(feature = "init-paging")]
     pub(super) const PDPT_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PDPT_OFFSET;
     /// The address (not the offset) into sandbox memory where the Page
     /// Tables start
+    #[cfg(feature = "init-paging")]
     pub(super) const PT_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PT_OFFSET;
     /// The maximum amount of memory a single sandbox will be allowed.
     /// The addressable virtual memory with current paging setup is virtual address 0x0 - 0x40000000 (excl.),

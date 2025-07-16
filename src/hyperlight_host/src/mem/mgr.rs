@@ -340,6 +340,9 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             shared_mem.write_u64(offset, load_addr_u64)?;
         }
 
+        // The load method returns a LoadInfo which can also be a different type once the
+        // `unwind_guest` feature is enabled.
+        #[allow(clippy::let_unit_value)]
         let load_info = exe_info.load(
             load_addr.clone().try_into()?,
             &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
