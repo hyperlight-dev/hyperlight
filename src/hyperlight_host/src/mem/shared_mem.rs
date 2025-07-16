@@ -576,7 +576,10 @@ impl ExclusiveSharedMemory {
     ///   the safety documentation of pointer::offset.
     ///
     ///   This is ensured by a check in ::new()
-    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
+    ///
+    /// Additionally, writes to the returned slice will not mark pages as dirty.
+    /// User must call `mark_pages_dirty` manually to mark pages as dirty.
+    fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.base_ptr(), self.mem_size()) }
     }
 
