@@ -206,8 +206,9 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
 
             (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
 
-            trace!("hyperlight_main");
-            hyperlight_main();
+            trace!("hyperlight_main",
+                hyperlight_main();
+            );
         }
     });
 

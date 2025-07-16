@@ -16,13 +16,12 @@ limitations under the License.
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::parse::{Parse, ParseStream};
-use syn::{ItemFn, Lit, parse_macro_input};
+use syn::{ItemFn, parse_macro_input};
 
 /// A procedural macro attribute for tracing function calls.
 /// Usage:
 /// ```rust
-/// #[trace_function]
+/// #[hyperlight_guest_tracing_macro::trace_function]
 /// fn my_function() {
 /// //     // Function body
 /// }
@@ -79,63 +78,139 @@ pub fn trace_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Input structure for the trace macro
-struct TraceInput {
-    message: Lit,
+// Input structure for the trace macro
+struct TraceMacroInput {
+    message: syn::Lit,
+    statement: Option<proc_macro2::TokenStream>,
 }
 
-impl Parse for TraceInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(TraceInput {
-            message: input.parse()?,
-        })
+impl syn::parse::Parse for TraceMacroInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let message: syn::Lit = input.parse()?;
+        if !matches!(message, syn::Lit::Str(_)) {
+            return Err(input.error("first argument to trace! must be a string literal"));
+        }
+        let statement = if input.peek(syn::Token![,]) {
+            let _: syn::Token![,] = input.parse()?;
+            Some(input.parse()?)
+        } else {
+            None
+        };
+        Ok(TraceMacroInput { message, statement })
     }
 }
 
-/// This macro creates a trace record with a message.
+/// This macro creates a trace record with a message, or traces a block with entry/exit records.
 ///
 /// Usage:
 /// ```rust
+/// use hyperlight_guest_tracing_macro::trace;
 /// trace!("message");
+/// trace!("message", { /* block of code */ });
+/// ```
+///
+/// When called with an expression or statement as the second argument, it is wrapped in a block,
+/// entry and exit trace records are created at the start and end of block, and the result of the block is returned.
+///
+/// # Examples
+///
+/// ## Basic usage: trace with message only
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// trace!("hello");
+/// ```
+///
+/// ## Trace with a block, returning a value
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// let x = trace!("block", { 42 });
+/// assert_eq!(x, 42);
+/// ```
+///
+/// ## Trace with a block using local variables
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// let y = 10;
+/// let z = trace!("sum", { y + 5 });
+/// assert_eq!(z, 15);
+/// ```
+///
+/// ## Trace with a block that returns a reference
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// let s = String::from("abc");
+/// let r: &str = trace!("ref", { &s });
+/// assert_eq!(r, "abc");
+/// ```
+///
+/// ## Control flow: `return` inside the block returns from the function
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// fn foo() -> i32 {
+///     let _ = trace!("fail", {
+///         // This return only exits the closure, not the function `foo`.
+///         return 42;
+///     });
+///     assert!(false, "This should not be reached");
+/// }
+/// ```
+///
+/// ## Control flow: `break` inside the block exits the outer loop
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// let mut x = 0;
+/// for i in 1..3 {
+///     x = i;
+///     let _ = trace!("msg", {
+///         // This break should exit the loop.
+///         break;
+///     });
+/// }
+/// assert_eq!(x, 1, "Loop should break after the first iteration");
 /// ```
 #[proc_macro]
 pub fn trace(input: TokenStream) -> TokenStream {
-    // Convert to proc_macro2::TokenStream for parsing
-    let input2: proc_macro2::TokenStream = input.clone().into();
-
-    // Try to parse as message
-    if let Ok(parsed) = syn::parse2::<TraceInput>(input2) {
-        let trace_message = match parsed.message {
-            Lit::Str(lit_str) => lit_str.value(),
-            _ => "expression".to_string(),
+    let parsed = syn::parse_macro_input!(input as TraceMacroInput);
+    let trace_message = match parsed.message {
+        syn::Lit::Str(ref lit_str) => lit_str.value(),
+        _ => unreachable!(),
+    };
+    if let Some(statement) = parsed.statement {
+        let entry = format!("+ {}", trace_message);
+        let exit = format!("- {}", trace_message);
+        let expanded = quote! {
+            {
+                #[cfg(feature = "trace_guest")]
+                hyperlight_guest_tracing::create_trace_record(#entry);
+                let __trace_result = #statement;
+                #[cfg(feature = "trace_guest")]
+                hyperlight_guest_tracing::create_trace_record(#exit);
+                __trace_result
+            }
         };
-
+        TokenStream::from(expanded)
+    } else {
         let expanded = quote! {
             {
                 #[cfg(feature = "trace_guest")]
                 hyperlight_guest_tracing::create_trace_record(#trace_message);
             }
         };
-
-        return TokenStream::from(expanded);
+        TokenStream::from(expanded)
     }
-
-    // Fallback: treat the entire input as an expression with default message
-    let expanded = quote! {
-        {
-            #[cfg(feature = "trace_guest")]
-            hyperlight_guest_tracing::create_trace_record("expression");
-        }
-    };
-
-    TokenStream::from(expanded)
 }
 
 /// This macro flushes the trace buffer, sending any remaining trace records to the host.
 ///
 /// Usage:
 /// ```rust
-/// flush!();
+/// hyperlight_guest_tracing_macro::flush!();
 /// ```
 #[proc_macro]
 pub fn flush(_input: TokenStream) -> TokenStream {

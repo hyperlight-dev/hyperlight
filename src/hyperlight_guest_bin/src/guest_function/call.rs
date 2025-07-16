@@ -62,8 +62,7 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
             core::mem::transmute::<usize, GuestFunc>(function_pointer)
         };
 
-        hyperlight_guest_tracing_macro::trace!("Calling guest function");
-        p_function(&function_call)
+        hyperlight_guest_tracing_macro::trace!("guest_function", p_function(&function_call))
     } else {
         // The given function is not registered. The guest should implement a function called guest_dispatch_function to handle this.
 
@@ -74,8 +73,9 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
             fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>>;
         }
 
-        hyperlight_guest_tracing_macro::trace!("Guest function {} not found");
-        unsafe { guest_dispatch_function(function_call) }
+        hyperlight_guest_tracing_macro::trace!("default guest function", unsafe {
+            guest_dispatch_function(function_call)
+        })
     }
 }
 
