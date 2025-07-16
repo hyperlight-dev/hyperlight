@@ -14,39 +14,28 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use hyperlight_host::sandbox::{MultiUseSandbox, UninitializedSandbox};
-use hyperlight_host::{GuestBinary, Result};
+use hyperlight_host::GuestBinary;
+use hyperlight_host::sandbox::UninitializedSandbox;
 use hyperlight_testing::simple_guest_as_string;
 
 fn main() {
     // create a new `MultiUseSandbox` configured to run the `simpleguest.exe`
     // test guest binary
-    let mut sbox1: MultiUseSandbox = {
-        let path = simple_guest_as_string().unwrap();
-        let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-        u_sbox.evolve()
-    }
-    .unwrap();
+    let path = simple_guest_as_string().unwrap();
+    let mut sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+        .unwrap()
+        .evolve()
+        .unwrap();
 
-    // create a new call context from the sandbox, then do some calls with it.
-    do_calls(&mut sbox1).unwrap();
-
-    // create a new call context from the returned sandbox, then do some calls
-    // with that one
-    do_calls(&mut sbox1).unwrap();
-}
-
-/// Given a `MultiUseGuestCallContext` derived from an existing
-/// `MultiUseSandbox` configured to run the `simpleguest.exe` test guest
-/// binary, do several calls against that binary, print their results, then
-/// call `ctx.finish()` and return the resulting `MultiUseSandbox`. Return an `Err`
-/// if anything failed.
-fn do_calls(sbox: &mut MultiUseSandbox) -> Result<()> {
-    let res: String = sbox.call_guest_function_by_name("Echo", "hello".to_string())?;
+    // Do several calls against a sandbox running the `simpleguest.exe` binary,
+    // and print their results
+    let res: String = sbox
+        .call_guest_function_by_name("Echo", "hello".to_string())
+        .unwrap();
     println!("got Echo res: {res}");
 
-    let res: i32 = sbox.call_guest_function_by_name("CallMalloc", 200_i32)?;
+    let res: i32 = sbox
+        .call_guest_function_by_name("CallMalloc", 200_i32)
+        .unwrap();
     println!("got CallMalloc res: {res}");
-
-    Ok(())
 }

@@ -263,7 +263,7 @@ where
         SharedMemorySnapshot::new(&mut self.shared_mem, self.mapped_rgns)
     }
 
-    /// This function restores a memory snapshot the given snapshot.
+    /// This function restores a memory snapshot from a given snapshot.
     ///
     /// Returns the number of memory regions mapped into the sandbox
     /// that need to be unmapped in order for the restore to be
