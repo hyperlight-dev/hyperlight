@@ -341,7 +341,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 
         exe_info.load(
             load_addr.clone().try_into()?,
-            &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
+            layout.get_guest_code_offset(),
+            &mut shared_mem,
         )?;
 
         Ok(Self::new(layout, shared_mem, load_addr, entrypoint_offset))
