@@ -232,8 +232,13 @@ pub(super) fn record_guest_trace_frame<F: FnOnce(&mut std::fs::File)>(
             .guest_start_tsc
             .as_ref()
             .map_or_else(|| 0, |c| *c);
+
     // Convert cycles to microseconds based on the TSC frequency
-    let micros = cycles_spent as f64 / trace_info.tsc_freq as f64 * 1_000_000f64;
+    let tsc_freq = trace_info
+        .tsc_freq
+        .as_ref()
+        .ok_or_else(|| new_error!("TSC frequency not set in TraceInfo"))?;
+    let micros = cycles_spent as f64 / *tsc_freq as f64 * 1_000_000f64;
 
     // Convert to a Duration
     let guest_duration = std::time::Duration::from_micros(micros as u64);
@@ -353,7 +358,6 @@ fn handle_outb_impl(
                 .as_ref()
                 .shared_mem
                 .copy_to_slice(buffer, ptr as usize - SandboxMemoryLayout::BASE_ADDRESS)
-                // .read::<u64>((addr - SandboxMemoryLayout::BASE_ADDRESS as u64) as usize)
                 .map_err(|e| {
                     new_error!(
                         "Failed to copy trace records from guest memory to host: {:?}",
@@ -367,11 +371,24 @@ fn handle_outb_impl(
 
             {
                 let trace_info = _hv.trace_info_as_mut();
-                // Store the start guest cycles if not already set
-                // This is the `entrypoint` of the guest execution
-                // This should be set only once, at the start of the guest execution
-                if trace_info.guest_start_tsc.is_none() && !traces.is_empty() {
-                    trace_info.guest_start_tsc = Some(traces[0].cycles);
+
+                // Calculate the TSC frequency based on the current TSC reading
+                // This is done only once, when the first trace record is received
+                // Ideally, we should use a timer or a clock to measure the time elapsed,
+                // but that adds delays.
+                // To avoid that we store the TSC value and a timestamp right
+                // before starting the guest execution and then calculate the TSC frequency when
+                // the first trace record is received, based on the current TSC value and clock.
+                if trace_info.tsc_freq.is_none() {
+                    trace_info.calculate_tsc_freq()?;
+
+                    // After the TSC frequency is calculated, we no longer need the value of TSC
+                    // recorded on the host when the guest started, so we can set the guest_start_tsc field
+                    // to store the TSC value recorded on the guest when the guest started executing.
+                    // This is used to calculate the records timestamps relative to the first trace record.
+                    if !traces.is_empty() {
+                        trace_info.guest_start_tsc = Some(traces[0].cycles);
+                    }
                 }
             }
 

@@ -645,9 +645,11 @@ impl Hypervisor for KVMDriver {
         } else {
             #[cfg(feature = "trace_guest")]
             if self.trace_info.guest_start_epoch.is_none() {
-                // Set the guest start epoch to the current time, before running the vcpu
+                // Store the guest start epoch and cycles to trace the guest execution time
                 crate::debug!("KVM - Guest Start Epoch set");
                 self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
+                self.trace_info.guest_start_tsc =
+                    Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
             }
 
             // Note: if a `InterruptHandle::kill()` called while this thread is **here**

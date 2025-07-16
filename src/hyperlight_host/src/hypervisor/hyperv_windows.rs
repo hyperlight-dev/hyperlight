@@ -734,8 +734,10 @@ impl Hypervisor for HypervWindowsDriver {
         } else {
             #[cfg(feature = "trace_guest")]
             if self.trace_info.guest_start_epoch.is_none() {
-                // Set the guest start epoch to the current time, before running the vcpu
-                crate::debug!("MSHV - Guest Start Epoch set");
+                // Store the guest start epoch and cycles to trace the guest execution time
+                crate::debug!("HyperV - Guest Start Epoch set");
+                self.trace_info.guest_start_tsc =
+                    Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
                 self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
             }
             self.processor.run()?
