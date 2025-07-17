@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
@@ -73,6 +74,8 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) entrypoint_offset: Offset,
     /// How many memory regions were mapped after sandbox creation
     pub(crate) mapped_rgns: u64,
+    /// Most recent snapshot taken, in other words, the most recent state that `self` has been in (disregarding currently dirty pages)
+    pub(crate) most_recent_snapshot: Option<Arc<SharedMemorySnapshot>>,
 }
 
 impl<S> SandboxMemoryManager<S>
@@ -93,6 +96,7 @@ where
             load_addr,
             entrypoint_offset,
             mapped_rgns: 0,
+            most_recent_snapshot: None,
         }
     }
 
@@ -259,8 +263,18 @@ where
         }
     }
 
-    pub(crate) fn snapshot(&mut self) -> Result<SharedMemorySnapshot> {
-        SharedMemorySnapshot::new(&mut self.shared_mem, self.mapped_rgns)
+    pub(crate) fn snapshot(
+        &mut self,
+        dirty_pages_bitmap: &[u64],
+    ) -> Result<Arc<SharedMemorySnapshot>> {
+        let snapshot = Arc::new(SharedMemorySnapshot::new(
+            &mut self.shared_mem,
+            dirty_pages_bitmap,
+            self.mapped_rgns,
+            self.most_recent_snapshot.clone(),
+        )?);
+        self.most_recent_snapshot = Some(snapshot.clone());
+        Ok(snapshot)
     }
 
     /// This function restores a memory snapshot from a given snapshot.
@@ -268,16 +282,21 @@ where
     /// Returns the number of memory regions mapped into the sandbox
     /// that need to be unmapped in order for the restore to be
     /// completed.
-    pub(crate) fn restore_snapshot(&mut self, snapshot: &SharedMemorySnapshot) -> Result<u64> {
-        if self.shared_mem.mem_size() != snapshot.mem_size() {
-            return Err(new_error!(
-                "Snapshot size does not match current memory size: {} != {}",
-                self.shared_mem.raw_mem_size(),
-                snapshot.mem_size()
-            ));
-        }
+    pub(crate) fn restore_snapshot(
+        &mut self,
+        snapshot: &Arc<SharedMemorySnapshot>,
+        dirty_pages_bitmap: &[u64],
+    ) -> Result<u64> {
         let old_rgns = self.mapped_rgns;
-        self.mapped_rgns = snapshot.restore_from_snapshot(&mut self.shared_mem)?;
+        self.mapped_rgns = snapshot.restore_from_snapshot(
+            &mut self.shared_mem,
+            dirty_pages_bitmap,
+            &self.most_recent_snapshot,
+        )?;
+
+        // Update the most recent snapshot to the one we just restored to
+        self.most_recent_snapshot = Some(snapshot.clone());
+
         Ok(old_rgns - self.mapped_rgns)
     }
 
@@ -407,6 +426,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
+                most_recent_snapshot: self.most_recent_snapshot.clone(),
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
@@ -414,6 +434,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
+                most_recent_snapshot: self.most_recent_snapshot.clone(),
             },
         )
     }
