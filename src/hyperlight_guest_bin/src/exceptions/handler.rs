@@ -65,6 +65,10 @@ pub extern "C" fn hl_exception_handler(
     exception_number: u64,
     page_fault_address: u64,
 ) {
+    // This function does not return, so wrapping it in a tracing macro
+    // issues a warning of unreachable code.
+    hyperlight_guest_tracing_macro::trace!("> hl_exception_handler");
+
     let ctx = stack_pointer as *mut Context;
     let exn_info = (stack_pointer + size_of::<Context>() as u64) as *mut ExceptionInfo;
 

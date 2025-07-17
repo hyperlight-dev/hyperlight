@@ -136,6 +136,7 @@ impl MultiUseSandbox {
     /// `rgn.region_type` is ignored, since guest PTEs are not created
     /// for the new memory.
     ///
+    /// # Safety
     /// It is the caller's responsibility to ensure that the host side
     /// of the region remains intact and is not written to until this
     /// mapping is removed, either due to the destruction of the
@@ -161,6 +162,7 @@ impl MultiUseSandbox {
     /// Map the contents of a file into the guest at a particular address
     ///
     /// Returns the length of the mapping
+    #[allow(dead_code)]
     #[instrument(err(Debug), skip(self, _fp, _guest_base), parent = Span::current())]
     pub(crate) fn map_file_cow(&mut self, _fp: &Path, _guest_base: u64) -> Result<u64> {
         #[cfg(windows)]

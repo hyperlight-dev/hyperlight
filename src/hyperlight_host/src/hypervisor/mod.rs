@@ -20,6 +20,8 @@ use tracing::{Span, instrument};
 use crate::error::HyperlightError::ExecutionCanceledByHost;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 use crate::{HyperlightError, Result, log_then_return, new_error};
 
 /// Util for handling x87 fpu state
@@ -114,6 +116,21 @@ pub enum HyperlightExit {
     Unknown(String),
     /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
     Retry(),
+}
+
+/// Registers which may be useful for tracing/stack unwinding
+#[cfg(feature = "trace_guest")]
+pub enum TraceRegister {
+    /// RAX
+    RAX,
+    /// RCX
+    RCX,
+    /// RIP
+    RIP,
+    /// RSP
+    RSP,
+    /// RBP
+    RBP,
 }
 
 /// A common set of hypervisor functionality
@@ -251,6 +268,17 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     ) -> Result<()> {
         unimplemented!()
     }
+
+    /// Read a register for trace/unwind purposes
+    #[cfg(feature = "trace_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64>;
+
+    /// Get a reference of the trace info for the guest
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_ref(&self) -> &TraceInfo;
+    /// Get a mutable reference of the trace info for the guest
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_mut(&mut self) -> &mut TraceInfo;
 }
 
 /// A virtual CPU that can be run until an exit occurs
@@ -259,7 +287,7 @@ pub struct VirtualCPU {}
 impl VirtualCPU {
     /// Run the given hypervisor until a halt instruction is reached
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub fn run(
+    pub(crate) fn run(
         hv: &mut dyn Hypervisor,
         outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
@@ -503,7 +531,7 @@ pub(crate) mod tests {
 
     use hyperlight_testing::dummy_guest_as_string;
 
-    use super::handlers::{MemAccessHandler, OutBHandler};
+    use super::handlers::{MemAccessHandler, OutBHandler, OutBHandlerFunction};
     #[cfg(gdb)]
     use crate::hypervisor::DbgMemAccessHandlerCaller;
     use crate::mem::ptr::RawPtr;
@@ -538,11 +566,6 @@ pub(crate) mod tests {
             return Ok(());
         }
 
-        let outb_handler: Arc<Mutex<OutBHandler>> = {
-            let func: Box<dyn FnMut(u16, u32) -> Result<()> + Send> =
-                Box::new(|_, _| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(OutBHandler::from(func)))
-        };
         let mem_access_handler = {
             let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
             Arc::new(Mutex::new(MemAccessHandler::from(func)))
@@ -563,7 +586,16 @@ pub(crate) mod tests {
             &config,
             #[cfg(any(crashdump, gdb))]
             &rt_cfg,
+            sandbox.load_info,
         )?;
+        let outb_handler: Arc<Mutex<OutBHandler>> = {
+            #[cfg(feature = "trace_guest")]
+            #[allow(clippy::type_complexity)]
+            let func: OutBHandlerFunction = Box::new(|_, _, _| -> Result<()> { Ok(()) });
+            #[cfg(not(feature = "trace_guest"))]
+            let func: OutBHandlerFunction = Box::new(|_, _| -> Result<()> { Ok(()) });
+            Arc::new(Mutex::new(OutBHandler::from(func)))
+        };
         vm.initialise(
             RawPtr::from(0x230000),
             1234567890,

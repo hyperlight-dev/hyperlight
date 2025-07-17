@@ -224,18 +224,24 @@ impl SandboxMemoryLayout {
     pub(crate) const PML4_OFFSET: usize = 0x0000;
     /// The offset into the sandbox's memory where the Page Directory Pointer
     /// Table starts.
+    #[cfg(feature = "init-paging")]
     pub(super) const PDPT_OFFSET: usize = 0x1000;
     /// The offset into the sandbox's memory where the Page Directory starts.
+    #[cfg(feature = "init-paging")]
     pub(super) const PD_OFFSET: usize = 0x2000;
     /// The offset into the sandbox's memory where the Page Tables start.
+    #[cfg(feature = "init-paging")]
     pub(super) const PT_OFFSET: usize = 0x3000;
     /// The address (not the offset) to the start of the page directory
+    #[cfg(feature = "init-paging")]
     pub(super) const PD_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PD_OFFSET;
     /// The address (not the offset) into sandbox memory where the Page
     /// Directory Pointer Table starts
+    #[cfg(feature = "init-paging")]
     pub(super) const PDPT_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PDPT_OFFSET;
     /// The address (not the offset) into sandbox memory where the Page
     /// Tables start
+    #[cfg(feature = "init-paging")]
     pub(super) const PT_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PT_OFFSET;
     /// The maximum amount of memory a single sandbox will be allowed.
     /// The addressable virtual memory with current paging setup is virtual address 0x0 - 0x40000000 (excl.),
@@ -381,6 +387,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset in guest memory to the OutB pointer.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(super) fn get_outb_pointer_offset(&self) -> usize {
         // The outb pointer is immediately after the code pointer
         // in the `CodeAndOutBPointers` struct which is a u64
@@ -389,6 +396,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset in guest memory to the OutB context.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(super) fn get_outb_context_offset(&self) -> usize {
         // The outb context is immediately after the outb pointer
         // in the `CodeAndOutBPointers` struct which is a u64
@@ -416,6 +424,7 @@ impl SandboxMemoryLayout {
     /// This function exists to accommodate the macro that generates C API
     /// compatible functions.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(crate) fn get_output_data_offset(&self) -> usize {
         self.output_data_buffer_offset
     }
@@ -452,6 +461,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset in guest memory to the PEB address
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(super) fn get_in_process_peb_offset(&self) -> usize {
         self.peb_offset
     }
@@ -486,6 +496,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset to the guest guard page
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub fn get_guard_page_offset(&self) -> usize {
         self.guard_page_offset
     }

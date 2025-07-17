@@ -285,6 +285,7 @@ where
     /// `shared_mem` to indicate the address of the outb pointer and context
     /// for calling outb function
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(crate) fn set_outb_address_and_context(&mut self, addr: u64, context: u64) -> Result<()> {
         let pointer_offset = self.layout.get_outb_pointer_offset();
         let context_offset = self.layout.get_outb_context_offset();
@@ -311,17 +312,17 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn load_guest_binary_into_memory(
         cfg: SandboxConfiguration,
-        exe_info: &mut ExeInfo,
+        exe_info: ExeInfo,
         guest_blob: Option<&GuestBlob>,
-    ) -> Result<Self> {
+    ) -> Result<(Self, super::exe::LoadInfo)> {
         let guest_blob_size = guest_blob.map(|b| b.data.len()).unwrap_or(0);
         let guest_blob_mem_flags = guest_blob.map(|b| b.permissions);
 
         let layout = SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
-            usize::try_from(cfg.get_stack_size(exe_info))?,
-            usize::try_from(cfg.get_heap_size(exe_info))?,
+            usize::try_from(cfg.get_stack_size(&exe_info))?,
+            usize::try_from(cfg.get_heap_size(&exe_info))?,
             guest_blob_size,
             guest_blob_mem_flags,
         )?;
@@ -339,12 +340,18 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             shared_mem.write_u64(offset, load_addr_u64)?;
         }
 
-        exe_info.load(
+        // The load method returns a LoadInfo which can also be a different type once the
+        // `unwind_guest` feature is enabled.
+        #[allow(clippy::let_unit_value)]
+        let load_info = exe_info.load(
             load_addr.clone().try_into()?,
             &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
         )?;
 
-        Ok(Self::new(layout, shared_mem, load_addr, entrypoint_offset))
+        Ok((
+            Self::new(layout, shared_mem, load_addr, entrypoint_offset),
+            load_info,
+        ))
     }
 
     /// Writes host function details to memory

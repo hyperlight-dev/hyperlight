@@ -44,6 +44,8 @@ use {
     std::sync::Mutex,
 };
 
+#[cfg(feature = "trace_guest")]
+use super::TraceRegister;
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 use super::surrogate_process::SurrogateProcess;
@@ -60,6 +62,8 @@ use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, debug, log_then_return, new_error};
@@ -283,6 +287,9 @@ pub(crate) struct HypervWindowsDriver {
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
+    #[cfg(feature = "trace_guest")]
+    #[allow(dead_code)]
+    trace_info: TraceInfo,
 }
 /* This does not automatically impl Send/Sync because the host
  * address of the shared memory region is a raw pointer, which are
@@ -294,6 +301,7 @@ unsafe impl Sync for HypervWindowsDriver {}
 
 impl HypervWindowsDriver {
     #[allow(clippy::too_many_arguments)]
+    // TODO: refactor this function to take fewer arguments. Add trace_info to rt_cfg
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
@@ -304,6 +312,7 @@ impl HypervWindowsDriver {
         mmap_file_handle: HandleWrapper,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
+        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
     ) -> Result<Self> {
         // create and setup hypervisor partition
         let mut partition = VMPartition::new(1)?;
@@ -354,6 +363,8 @@ impl HypervWindowsDriver {
             gdb_conn,
             #[cfg(crashdump)]
             rt_cfg,
+            #[cfg(feature = "trace_guest")]
+            trace_info,
         };
 
         // Send the interrupt handle to the GDB thread if debugging is enabled
@@ -683,7 +694,12 @@ impl Hypervisor for HypervWindowsDriver {
         outb_handle_fn
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .call(port, val)?;
+            .call(
+                #[cfg(feature = "trace_guest")]
+                self,
+                port,
+                val,
+            )?;
 
         let mut regs = self.processor.get_regs()?;
         regs.rip = rip + instruction_length;
@@ -716,6 +732,14 @@ impl Hypervisor for HypervWindowsDriver {
                 Reserved: Default::default(),
             }
         } else {
+            #[cfg(feature = "trace_guest")]
+            if self.trace_info.guest_start_epoch.is_none() {
+                // Store the guest start epoch and cycles to trace the guest execution time
+                crate::debug!("HyperV - Guest Start Epoch set");
+                self.trace_info.guest_start_tsc =
+                    Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
+                self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
+            }
             self.processor.run()?
         };
         self.interrupt_handle
@@ -1028,6 +1052,27 @@ impl Hypervisor for HypervWindowsDriver {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "trace_guest")]
+    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+        let regs = self.processor.get_regs()?;
+        match reg {
+            TraceRegister::RAX => Ok(regs.rax),
+            TraceRegister::RCX => Ok(regs.rcx),
+            TraceRegister::RIP => Ok(regs.rip),
+            TraceRegister::RSP => Ok(regs.rsp),
+            TraceRegister::RBP => Ok(regs.rbp),
+        }
+    }
+
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_ref(&self) -> &TraceInfo {
+        &self.trace_info
+    }
+    #[cfg(feature = "trace_guest")]
+    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
+        &mut self.trace_info
     }
 }
 

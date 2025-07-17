@@ -28,6 +28,7 @@ use super::uninitialized::SandboxRuntimeConfig;
 use crate::HyperlightError::NoHypervisorFound;
 use crate::hypervisor::Hypervisor;
 use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
+use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -35,6 +36,8 @@ use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(any(feature = "init-paging", target_os = "windows"))]
 use crate::mem::shared_mem::SharedMemory;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::TraceInfo;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -77,6 +80,7 @@ where
         &u_sbox.config,
         #[cfg(any(crashdump, gdb))]
         &u_sbox.rt_cfg,
+        u_sbox.load_info,
     )?;
     let outb_hdl = outb_handler_wrapper(hshm.clone(), u_sbox.host_funcs.clone());
 
@@ -146,6 +150,7 @@ pub(crate) fn set_up_hypervisor_partition(
     mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
+    _load_info: LoadInfo,
 ) -> Result<Box<dyn Hypervisor>> {
     #[cfg(feature = "init-paging")]
     let rsp_ptr = {
@@ -204,6 +209,12 @@ pub(crate) fn set_up_hypervisor_partition(
         None
     };
 
+    #[cfg(feature = "trace_guest")]
+    let trace_info = TraceInfo::new(
+        #[cfg(feature = "unwind_guest")]
+        _load_info,
+    )?;
+
     match *get_available_hypervisor() {
         #[cfg(mshv)]
         Some(HypervisorType::Mshv) => {
@@ -217,6 +228,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
+                #[cfg(feature = "trace_guest")]
+                trace_info,
             )?;
             Ok(Box::new(hv))
         }
@@ -233,6 +246,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
+                #[cfg(feature = "trace_guest")]
+                trace_info,
             )?;
             Ok(Box::new(hv))
         }
@@ -255,6 +270,8 @@ pub(crate) fn set_up_hypervisor_partition(
                 gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
+                #[cfg(feature = "trace_guest")]
+                trace_info,
             )?;
             Ok(Box::new(hv))
         }

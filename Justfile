@@ -38,11 +38,11 @@ witguest-wit:
     cargo install --locked wasm-tools
     cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
 
-build-rust-guests target=default-target: (witguest-wit)
-    cd src/tests/rust_guests/callbackguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
-    cd src/tests/rust_guests/simpleguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }} 
-    cd src/tests/rust_guests/dummyguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }} 
-    cd src/tests/rust_guests/witguest && cargo build --profile={{ if target == "debug" { "dev" } else { target } }}
+build-rust-guests target=default-target features="": (witguest-wit)
+    cd src/tests/rust_guests/callbackguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
+    cd src/tests/rust_guests/simpleguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
+    cd src/tests/rust_guests/dummyguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
+    cd src/tests/rust_guests/witguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
 
 @move-rust-guests target=default-target:
     cp {{ callbackguest_source }}/{{ target }}/callbackguest* {{ rust_guests_bin_dir }}/{{ target }}/
@@ -82,12 +82,16 @@ test-like-ci config=default-target hypervisor="kvm":
     cargo check -p hyperlight-host --features crashdump
     cargo check -p hyperlight-host --features print_debug
     cargo check -p hyperlight-host --features gdb
+    cargo check -p hyperlight-host --features trace_guest,unwind_guest,mem_profile
 
     @# without any driver (should fail to compile)
     just test-compilation-no-default-features {{config}}
 
     @# test the crashdump feature
     just test-rust-crashdump {{config}}
+
+    @# test the tracing related features
+    just test-rust-tracing {{config}} {{ if hypervisor == "mshv3" {"mshv3"} else {""} }}
 
 # runs all tests
 test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-seccomp target features)
@@ -141,6 +145,25 @@ test-rust-gdb-debugging target=default-target features="":
 test-rust-crashdump target=default-target features="":
     cargo test --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }} -- test_crashdump
 
+# rust test for tracing
+test-rust-tracing target=default-target features="":
+    # Run tests for the tracing guest and macro
+    cargo test -p hyperlight-guest-tracing --profile={{ if target == "debug" { "dev" } else { target } }}
+    cargo test -p hyperlight-guest-tracing-macro --profile={{ if target == "debug" { "dev" } else { target } }}
+
+    # Prepare the tracing guest for testing
+    just build-rust-guests {{ target }} trace_guest
+    just move-rust-guests {{ target }}
+    # Run hello-world example with tracing enabled to get the trace output
+    # Capture the trace file path and print use it afterwards to run cargo run -p trace_dump
+    cargo run --profile={{ if target == "debug" { "dev" } else { target } }} --example hello-world --features {{ if features =="" {'trace_guest'} else { "trace_guest," + features } }} \
+        | sed -n 's/.*Creating trace file at: \(.*\)/\1/p' \
+        | xargs -I {} cargo run -p trace_dump ./{{ simpleguest_source }}/{{ target }}/simpleguest {} list_frames
+
+    # Rebuild the tracing guest without the tracing feature
+    # This is to ensure that the tracing feature does not affect the other tests
+    just build-rust-guests {{ target }}
+    just move-rust-guests {{ target }}
 
 ################
 ### LINTING ####
