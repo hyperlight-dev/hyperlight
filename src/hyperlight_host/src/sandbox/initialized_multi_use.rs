@@ -36,11 +36,12 @@ use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
 use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
 use crate::hypervisor::{Hypervisor, InterruptHandle};
+use crate::mem::bitmap::bitmap_union;
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
-use crate::mem::shared_mem::HostSharedMemory;
+use crate::mem::shared_mem::{HostSharedMemory, SharedMemory};
 use crate::metrics::maybe_time_and_emit_guest_call;
 use crate::{HyperlightError, Result, log_then_return};
 
@@ -95,17 +96,39 @@ impl MultiUseSandbox {
     /// Create a snapshot of the current state of the sandbox's memory.
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn snapshot(&mut self) -> Result<Snapshot> {
-        let snapshot = self.mem_mgr.unwrap_mgr_mut().snapshot()?;
+        let host_dirty_pages = self
+            .get_mgr_wrapper_mut()
+            .unwrap_mgr_mut()
+            .get_shared_mem_mut()
+            .with_exclusivity(|e| e.get_and_clear_dirty_pages())??;
+        let vm_dirty_pages = self.vm.get_and_clear_dirty_pages()?;
+
+        let dirty_pages_bitmap = bitmap_union(&vm_dirty_pages, &host_dirty_pages)?;
+
+        let snapshot = self
+            .mem_mgr
+            .unwrap_mgr_mut()
+            .snapshot(&dirty_pages_bitmap)?;
+
         Ok(Snapshot { inner: snapshot })
     }
 
     /// Restore the sandbox's memory to the state captured in the given snapshot.
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
+        let host_dirty_pages = self
+            .get_mgr_wrapper_mut()
+            .unwrap_mgr_mut()
+            .get_shared_mem_mut()
+            .with_exclusivity(|e| e.get_and_clear_dirty_pages())??;
+        let vm_dirty_pages = self.vm.get_and_clear_dirty_pages()?;
+
+        let dirty_pages_bitmap = bitmap_union(&vm_dirty_pages, &host_dirty_pages)?;
+
         let rgns_to_unmap = self
             .mem_mgr
             .unwrap_mgr_mut()
-            .restore_snapshot(&snapshot.inner)?;
+            .restore_snapshot(&snapshot.inner, &dirty_pages_bitmap)?;
         unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
         Ok(())
     }
