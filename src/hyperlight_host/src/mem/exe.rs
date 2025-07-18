@@ -20,6 +20,7 @@ use std::vec::Vec;
 
 use super::elf::ElfInfo;
 use super::ptr_offset::Offset;
+use super::shared_mem::ExclusiveSharedMemory;
 use crate::Result;
 
 // This is used extremely infrequently, so being unusually large for PE
@@ -71,10 +72,15 @@ impl ExeInfo {
     // copying into target, but the PE loader chooses to apply
     // relocations in its owned representation of the PE contents,
     // which requires it to be &mut.
-    pub fn load(&mut self, load_addr: usize, target: &mut [u8]) -> Result<()> {
+    pub fn load(
+        &mut self,
+        load_addr: usize,
+        guest_code_offset: usize,
+        target: &mut ExclusiveSharedMemory,
+    ) -> Result<()> {
         match self {
             ExeInfo::Elf(elf) => {
-                elf.load_at(load_addr, target)?;
+                elf.load_at(load_addr, guest_code_offset, target)?;
             }
         }
         Ok(())

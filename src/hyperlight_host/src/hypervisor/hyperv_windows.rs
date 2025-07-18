@@ -58,6 +58,7 @@ use super::{
 use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
+use crate::mem::bitmap::new_page_bitmap;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 #[cfg(crashdump)]
@@ -615,13 +616,21 @@ impl Hypervisor for HypervWindowsDriver {
         Ok(())
     }
 
+    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        // For now we just mark all pages dirty which is the equivalent of taking a full snapshot
+        let total_size = self.mem_regions.iter().map(|r| r.guest_region.len()).sum();
+        new_page_bitmap(total_size, true)
+    }
+
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     unsafe fn map_region(&mut self, _rgn: &MemoryRegion) -> Result<()> {
-        log_then_return!("Mapping host memory into the guest not yet supported on this platform");
+        // TODO: when adding support, also update `get_and_clear_dirty_pages`, see kvm/mshv for details
+        log_then_return!("Mapping host memory into the guest not yet supported on this platform.");
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     unsafe fn unmap_regions(&mut self, n: u64) -> Result<()> {
+        // TODO: when adding support, also update `get_and_clear_dirty_pages`, see kvm/mshv for details
         if n > 0 {
             log_then_return!(
                 "Mapping host memory into the guest not yet supported on this platform"

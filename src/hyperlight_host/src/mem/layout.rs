@@ -111,10 +111,10 @@ pub(crate) struct SandboxMemoryLayout {
     pub(crate) host_function_definitions_buffer_offset: usize,
     pub(super) input_data_buffer_offset: usize,
     pub(super) output_data_buffer_offset: usize,
-    guest_heap_buffer_offset: usize,
+    pub(super) guest_heap_buffer_offset: usize,
     guard_page_offset: usize,
     guest_user_stack_buffer_offset: usize, // the lowest address of the user stack
-    init_data_offset: usize,
+    pub(super) init_data_offset: usize,
 
     // other
     pub(crate) peb_address: usize,
