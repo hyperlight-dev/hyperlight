@@ -33,59 +33,33 @@ use crate::{new_error, HyperlightError, Result};
 /// A `OutBHandler` implementation that contains the required data directly
 ///
 /// Note: This handler must live no longer than the `Sandbox` to which it belongs
-/// Note: To avoid double Arc<Mutex<>> wrapping, we store FunctionRegistry directly
-/// when possible, falling back to Arc<Mutex<>> only when necessary for sharing.
 pub(crate) struct OutBHandler {
     mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
-    host_funcs: FunctionRegistryStorage,
-}
-
-/// Storage for FunctionRegistry that avoids double Arc<Mutex<>> wrapping when possible
-enum FunctionRegistryStorage {
-    /// Direct ownership when FunctionRegistry doesn't need to be shared
-    Owned(FunctionRegistry),
-    /// Shared ownership when FunctionRegistry needs to be shared with other components
-    Shared(Arc<Mutex<FunctionRegistry>>),
+    host_funcs: Arc<Mutex<FunctionRegistry>>,
 }
 
 impl OutBHandler {
-    /// Create a new OutBHandler with owned FunctionRegistry to avoid double Arc<Mutex<>> wrapping
+    /// Create a new OutBHandler
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn new_with_owned_registry(
+    pub fn new(
         mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
-        host_funcs: FunctionRegistry,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
     ) -> Self {
         Self {
             mem_mgr_wrapper,
-            host_funcs: FunctionRegistryStorage::Owned(host_funcs),
-        }
-    }
-
-    /// Create a new OutBHandler with shared FunctionRegistry (fallback for compatibility)
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn new_with_shared_registry(
-        mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
-        host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
-    ) -> Self {
-        Self {
-            mem_mgr_wrapper,
-            host_funcs: FunctionRegistryStorage::Shared(host_funcs_wrapper),
+            host_funcs,
         }
     }
 
     /// Function that gets called when an outb operation has occurred.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub fn call(&mut self, port: u16, payload: u32) -> Result<()> {
-        match &mut self.host_funcs {
-            FunctionRegistryStorage::Owned(ref registry) => {
-                // Direct access - no extra locking needed
-                handle_outb_impl_direct(&mut self.mem_mgr_wrapper, registry, port, payload)
-            }
-            FunctionRegistryStorage::Shared(arc_mutex) => {
-                // Shared access - requires locking (original behavior)
-                handle_outb_impl(&mut self.mem_mgr_wrapper, arc_mutex.clone(), port, payload)
-            }
-        }
+        handle_outb_impl(
+            &mut self.mem_mgr_wrapper,
+            self.host_funcs.clone(),
+            port,
+            payload,
+        )
     }
 }
 
@@ -217,10 +191,6 @@ pub(crate) fn handle_outb_impl(
             let name = call.function_name.clone();
             let args: Vec<ParameterValue> = call.parameters.unwrap_or(vec![]);
 
-            // Lock the FunctionRegistry for the minimal time needed to call the function
-            // Note: This creates a brief double-lock situation (OutBHandler + FunctionRegistry)
-            // but it's unavoidable given the current architecture where FunctionRegistry
-            // needs to be shared between OutBHandler and other components
             let res = host_funcs
                 .lock()
                 .map_err(|e| {
@@ -254,82 +224,15 @@ pub(crate) fn handle_outb_impl(
     }
 }
 
-/// Handles OutB operations from the guest (direct access version - no double locking).
-#[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-pub(crate) fn handle_outb_impl_direct(
-    mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
-    host_funcs: &FunctionRegistry,
-    port: u16,
-    data: u32,
-) -> Result<()> {
-    match port.try_into()? {
-        OutBAction::Log => outb_log(mem_mgr.as_mut()),
-        OutBAction::CallFunction => {
-            let call = mem_mgr.as_mut().get_host_function_call()?; // pop output buffer
-            let name = call.function_name.clone();
-            let args: Vec<ParameterValue> = call.parameters.unwrap_or(vec![]);
-
-            // Direct call - no locking needed since we have direct access to FunctionRegistry
-            let res = host_funcs.call_host_function(&name, args)?;
-
-            mem_mgr
-                .as_mut()
-                .write_response_from_host_method_call(&res)?; // push input buffers
-
-            Ok(())
-        }
-        OutBAction::Abort => outb_abort(mem_mgr, data),
-        OutBAction::DebugPrint => {
-            let ch: char = match char::from_u32(data) {
-                Some(c) => c,
-                None => {
-                    return Err(new_error!("Invalid character for logging: {}", data));
-                }
-            };
-
-            eprint!("{}", ch);
-            Ok(())
-        }
-    }
-}
-
-/// Given a `MemMgrWrapper` and ` HostFuncsWrapper` -- both passed by _value_
-///  -- return an `Arc<Mutex<OutBHandler>>` wrapping the core OUTB handler logic.
-///
-/// This function attempts to optimize away double Arc<Mutex<>> wrapping by checking
-/// if the FunctionRegistry can be moved out of its Arc<Mutex<>> (i.e., when it's
-/// no longer shared with other components).
+/// Given a `MemMgrWrapper` and `Arc<Mutex<FunctionRegistry>>` -- both passed by _value_
+/// -- return an `Arc<Mutex<OutBHandler>>` wrapping the core OUTB handler logic.
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn outb_handler_wrapper(
     mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
     host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
 ) -> Arc<Mutex<OutBHandler>> {
-    // Try to extract the FunctionRegistry from Arc<Mutex<>> to avoid double wrapping
-    match Arc::try_unwrap(host_funcs_wrapper) {
-        Ok(mutex) => {
-            // Successfully extracted Arc, now extract from Mutex
-            match mutex.into_inner() {
-                Ok(function_registry) => {
-                    // Success! We can use direct ownership
-                    let outb_hdl =
-                        OutBHandler::new_with_owned_registry(mem_mgr_wrapper, function_registry);
-                    Arc::new(Mutex::new(outb_hdl))
-                }
-                Err(poisoned) => {
-                    // Mutex was poisoned, fall back to shared access
-                    let function_registry = poisoned.into_inner();
-                    let outb_hdl =
-                        OutBHandler::new_with_owned_registry(mem_mgr_wrapper, function_registry);
-                    Arc::new(Mutex::new(outb_hdl))
-                }
-            }
-        }
-        Err(arc_mutex) => {
-            // Arc has multiple references, fall back to shared access
-            let outb_hdl = OutBHandler::new_with_shared_registry(mem_mgr_wrapper, arc_mutex);
-            Arc::new(Mutex::new(outb_hdl))
-        }
-    }
+    let outb_hdl = OutBHandler::new(mem_mgr_wrapper, host_funcs_wrapper);
+    Arc::new(Mutex::new(outb_hdl))
 }
 
 #[cfg(test)]
