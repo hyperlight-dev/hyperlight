@@ -18,6 +18,15 @@ limitations under the License.
 // Unoptimized builds have different performance characteristics and would not provide
 // useful benchmarking data for performance regression testing.
 
+// Provide a fallback main function for unoptimized builds
+// This prevents compilation errors while providing a clear message
+#[cfg(not(optimized_build))]
+fn main() {
+    panic!(
+        "Benchmarks must be run with optimized builds only. Use `cargo bench --release` or `just bench`."
+    );
+}
+
 #[cfg(optimized_build)]
 use criterion::{Criterion, criterion_group, criterion_main};
 #[cfg(optimized_build)]
@@ -177,12 +186,3 @@ criterion_group! {
 
 #[cfg(optimized_build)]
 criterion_main!(benches);
-
-// Provide a fallback main function for unoptimized builds
-// This prevents compilation errors while providing a clear message
-#[cfg(unoptimized_build)]
-fn main() {
-    panic!(
-        "Benchmarks must be run with optimized builds only. Use `cargo bench --release` or `just bench`."
-    );
-}

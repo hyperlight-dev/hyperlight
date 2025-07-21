@@ -151,5 +151,5 @@ jobs:
 
       - name: Run benchmarks
         run: |
-          just bench-ci main ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || ''}}
+          just bench-ci main ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
         if: ${{ matrix.config == 'release' }}
