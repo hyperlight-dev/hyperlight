@@ -31,7 +31,7 @@ use bitflags::bitflags;
 use hyperlight_common::mem::PAGE_SHIFT;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 #[cfg(kvm)]
-use kvm_bindings::{KVM_MEM_READONLY, kvm_userspace_memory_region};
+use kvm_bindings::{KVM_MEM_LOG_DIRTY_PAGES, KVM_MEM_READONLY, kvm_userspace_memory_region};
 #[cfg(mshv2)]
 use mshv_bindings::{
     HV_MAP_GPA_EXECUTABLE, HV_MAP_GPA_PERMISSIONS_NONE, HV_MAP_GPA_READABLE, HV_MAP_GPA_WRITABLE,
@@ -326,7 +326,7 @@ impl From<MemoryRegion> for kvm_bindings::kvm_userspace_memory_region {
             userspace_addr: region.host_region.start as u64,
             flags: match perm_flags {
                 MemoryRegionFlags::READ => KVM_MEM_READONLY,
-                _ => 0, // normal, RWX
+                _ => KVM_MEM_LOG_DIRTY_PAGES, // normal, RWX
             },
         }
     }

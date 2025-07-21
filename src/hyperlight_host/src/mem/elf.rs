@@ -24,6 +24,7 @@ use goblin::elf32::program_header::PT_LOAD;
 #[cfg(feature = "init-paging")]
 use goblin::elf64::program_header::PT_LOAD;
 
+use super::shared_mem::ExclusiveSharedMemory;
 use crate::{Result, log_then_return, new_error};
 
 pub(crate) struct ElfInfo {
@@ -73,15 +74,26 @@ impl ElfInfo {
             .unwrap();
         (max_phdr.p_vaddr + max_phdr.p_memsz - self.get_base_va()) as usize
     }
-    pub(crate) fn load_at(&self, load_addr: usize, target: &mut [u8]) -> Result<()> {
+    pub(crate) fn load_at(
+        &self,
+        load_addr: usize,
+        guest_code_offset: usize,
+        excl: &mut ExclusiveSharedMemory,
+    ) -> Result<()> {
         let base_va = self.get_base_va();
         for phdr in self.phdrs.iter().filter(|phdr| phdr.p_type == PT_LOAD) {
             let start_va = (phdr.p_vaddr - base_va) as usize;
             let payload_offset = phdr.p_offset as usize;
             let payload_len = phdr.p_filesz as usize;
-            target[start_va..start_va + payload_len]
-                .copy_from_slice(&self.payload[payload_offset..payload_offset + payload_len]);
-            target[start_va + payload_len..start_va + phdr.p_memsz as usize].fill(0);
+            excl.copy_from_slice(
+                &self.payload[payload_offset..payload_offset + payload_len],
+                guest_code_offset + start_va,
+            )?;
+
+            excl.zero_fill(
+                guest_code_offset + start_va + payload_len,
+                phdr.p_memsz as usize - payload_len,
+            )?;
         }
         let get_addend = |name, r: &Reloc| {
             r.r_addend
@@ -104,8 +116,10 @@ impl ElfInfo {
             match r.r_type {
                 R_X86_64_RELATIVE => {
                     let addend = get_addend("R_X86_64_RELATIVE", r)?;
-                    target[r.r_offset as usize..r.r_offset as usize + 8]
-                        .copy_from_slice(&(load_addr as i64 + addend).to_le_bytes());
+                    excl.copy_from_slice(
+                        &(load_addr as i64 + addend).to_le_bytes(),
+                        guest_code_offset + r.r_offset as usize,
+                    )?;
                 }
                 R_X86_64_NONE => {}
                 _ => {
