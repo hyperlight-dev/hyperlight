@@ -70,9 +70,7 @@ use gdb::VcpuStopReason;
 
 #[cfg(gdb)]
 use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
-use self::handlers::{
-    MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
-};
+use self::handlers::{MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandler};
 use crate::mem::ptr::RawPtr;
 
 cfg_if::cfg_if! {
@@ -126,7 +124,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
         mem_access_fn: MemAccessHandlerWrapper,
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -151,7 +149,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
         mem_access_fn: MemAccessHandlerWrapper,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
@@ -163,7 +161,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         data: Vec<u8>,
         rip: u64,
         instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
     ) -> Result<()>;
 
     /// Run the vCPU
@@ -261,7 +259,7 @@ impl VirtualCPU {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub fn run(
         hv: &mut dyn Hypervisor,
-        outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
         mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()> {

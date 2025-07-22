@@ -27,7 +27,7 @@ use super::mem_access::dbg_mem_access_handler_wrapper;
 use super::uninitialized::SandboxRuntimeConfig;
 use crate::HyperlightError::NoHypervisorFound;
 use crate::hypervisor::Hypervisor;
-use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
+use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandler};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -66,7 +66,7 @@ where
         Arc<Mutex<FunctionRegistry>>,
         MemMgrWrapper<HostSharedMemory>,
         Box<dyn Hypervisor>,
-        Arc<Mutex<dyn OutBHandlerCaller>>,
+        Arc<Mutex<OutBHandler>>,
         Arc<Mutex<dyn MemAccessHandlerCaller>>,
         RawPtr,
     ) -> Result<ResSandbox>,

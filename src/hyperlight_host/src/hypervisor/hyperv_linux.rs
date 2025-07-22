@@ -25,8 +25,8 @@ extern crate mshv_bindings3 as mshv_bindings;
 extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use log::{LevelFilter, error};
 #[cfg(mshv2)]
@@ -60,7 +60,7 @@ use super::gdb::{
 };
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+use super::handlers::{MemAccessHandlerWrapper, OutBHandler, OutBHandlerCaller};
 #[cfg(feature = "init-paging")]
 use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
@@ -544,7 +544,7 @@ impl Hypervisor for HypervLinuxDriver {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        outb_hdl: OutBHandlerWrapper,
+        outb_hdl: Arc<Mutex<OutBHandler>>,
         mem_access_hdl: MemAccessHandlerWrapper,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -617,7 +617,7 @@ impl Hypervisor for HypervLinuxDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
         mem_access_fn: MemAccessHandlerWrapper,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
@@ -658,7 +658,7 @@ impl Hypervisor for HypervLinuxDriver {
         data: Vec<u8>,
         rip: u64,
         instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
     ) -> Result<()> {
         let mut padded = [0u8; 4];
         let copy_len = data.len().min(4);

@@ -26,7 +26,7 @@ use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
 use super::mem_mgr::MemMgrWrapper;
-use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction, OutBHandlerWrapper};
+use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::{HyperlightError, Result, new_error};
@@ -184,14 +184,14 @@ fn handle_outb_impl(
 }
 
 /// Given a `MemMgrWrapper` and ` HostFuncsWrapper` -- both passed by _value_
-///  -- return an `OutBHandlerWrapper` wrapping the core OUTB handler logic.
+///  -- return an `Arc<Mutex<OutBHandler>>` wrapping the core OUTB handler logic.
 ///
 /// TODO: pass at least the `host_funcs_wrapper` param by reference.
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn outb_handler_wrapper(
     mut mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
     host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
-) -> OutBHandlerWrapper {
+) -> Arc<Mutex<OutBHandler>> {
     let outb_func: OutBHandlerFunction = Box::new(move |port, payload| {
         handle_outb_impl(
             &mut mem_mgr_wrapper,

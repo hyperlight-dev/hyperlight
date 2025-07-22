@@ -16,10 +16,8 @@ limitations under the License.
 
 use std::convert::TryFrom;
 use std::fmt::Debug;
-use std::sync::Arc;
-#[cfg(gdb)]
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
@@ -34,7 +32,7 @@ use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
+use super::handlers::{MemAccessHandlerWrapper, OutBHandler, OutBHandlerCaller};
 #[cfg(feature = "init-paging")]
 use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
@@ -448,7 +446,7 @@ impl Hypervisor for KVMDriver {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        outb_hdl: OutBHandlerWrapper,
+        outb_hdl: Arc<Mutex<OutBHandler>>,
         mem_access_hdl: MemAccessHandlerWrapper,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -528,7 +526,7 @@ impl Hypervisor for KVMDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
         mem_access_fn: MemAccessHandlerWrapper,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
@@ -568,7 +566,7 @@ impl Hypervisor for KVMDriver {
         data: Vec<u8>,
         _rip: u64,
         _instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
+        outb_handle_fn: Arc<Mutex<OutBHandler>>,
     ) -> Result<()> {
         // KVM does not need RIP or instruction length, as it automatically sets the RIP
 
