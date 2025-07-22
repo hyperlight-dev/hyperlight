@@ -536,18 +536,18 @@ pub(crate) mod tests {
             return Ok(());
         }
 
-        // For testing, we'll create a dummy OutBHandler using the same approach as the actual code
-        // This is a minimal test that doesn't need to actually handle outb operations
-        let outb_handler: Arc<Mutex<OutBHandler>> = {
-            use crate::mem::shared_mem::HostSharedMemory;
-            use crate::sandbox::host_funcs::FunctionRegistry;
-            use crate::sandbox::mem_mgr::MemMgrWrapper;
+        // For testing, we'll create a minimal sandbox to get the required components
+        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
+        let config: SandboxConfiguration = Default::default();
+        let sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
+        let (hshm, mut gshm) = sandbox.mgr.build();
 
-            // For testing, we'll skip the outb_handler functionality since it requires
-            // a fully initialized memory manager and function registry.
-            // The hypervisor initialise test doesn't actually need outb functionality.
-            return Ok(());
-        };
+        // Create outb_handler using the same approach as the actual code
+        let outb_handler = Arc::new(Mutex::new(OutBHandler::new(
+            hshm.clone(),
+            sandbox.host_funcs.clone(),
+        )));
         let mem_access_handler = {
             let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
             Arc::new(Mutex::new(MemAccessHandler::from(func)))
@@ -555,14 +555,8 @@ pub(crate) mod tests {
         #[cfg(gdb)]
         let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
 
-        let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
-
-        let config: SandboxConfiguration = Default::default();
         #[cfg(any(crashdump, gdb))]
         let rt_cfg: SandboxRuntimeConfig = Default::default();
-        let sandbox =
-            UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
-        let (_hshm, mut gshm) = sandbox.mgr.build();
         let mut vm = set_up_hypervisor_partition(
             &mut gshm,
             &config,
