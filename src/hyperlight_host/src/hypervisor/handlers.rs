@@ -18,39 +18,34 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{Span, instrument};
 
+use crate::mem::shared_mem::HostSharedMemory;
+use crate::sandbox::host_funcs::FunctionRegistry;
+use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::{Result, new_error};
 
-/// Type alias for the function that handles outb operations
-type OutBHandlerFunction = Box<dyn FnMut(u16, u32) -> Result<()> + Send>;
-
-/// A `OutBHandler` implementation using a function closure
+/// A `OutBHandler` implementation that holds the memory manager and function registry directly
 ///
 /// Note: This handler must live no longer than the `Sandbox` to which it belongs
 pub(crate) struct OutBHandler {
-    func: Arc<Mutex<OutBHandlerFunction>>,
+    mem_mgr: MemMgrWrapper<HostSharedMemory>,
+    host_funcs: Arc<Mutex<FunctionRegistry>>,
 }
 
 impl OutBHandler {
-    pub fn new(func: OutBHandlerFunction) -> Self {
+    pub fn new(
+        mem_mgr: MemMgrWrapper<HostSharedMemory>,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
+    ) -> Self {
         Self {
-            func: Arc::new(Mutex::new(func)),
+            mem_mgr,
+            host_funcs,
         }
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub fn handle_outb(&self, port: u16, payload: u32) -> Result<()> {
-        let mut func = self
-            .func
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        func(port, payload)
-    }
-}
-
-impl From<OutBHandlerFunction> for OutBHandler {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn from(func: OutBHandlerFunction) -> Self {
-        Self::new(func)
+    pub fn handle_outb(&mut self, port: u16, payload: u32) -> Result<()> {
+        // Call the handle_outb function directly
+        crate::sandbox::outb::handle_outb(&mut self.mem_mgr, self.host_funcs.clone(), port, payload)
     }
 }
 

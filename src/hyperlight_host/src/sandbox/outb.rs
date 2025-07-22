@@ -146,7 +146,7 @@ fn outb_abort(mem_mgr: &mut MemMgrWrapper<HostSharedMemory>, data: u32) -> Resul
 
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-fn handle_outb(
+pub(crate) fn handle_outb(
     mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
     host_funcs: Arc<Mutex<FunctionRegistry>>,
     port: u16,
@@ -189,18 +189,10 @@ fn handle_outb(
 /// TODO: pass at least the `host_funcs_wrapper` param by reference.
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn outb_handler_wrapper(
-    mut mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
+    mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
     host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
 ) -> Arc<Mutex<OutBHandler>> {
-    let outb_func: Box<dyn FnMut(u16, u32) -> Result<()> + Send> = Box::new(move |port, payload| {
-        handle_outb(
-            &mut mem_mgr_wrapper,
-            host_funcs_wrapper.clone(),
-            port,
-            payload,
-        )
-    });
-    let outb_hdl = OutBHandler::from(outb_func);
+    let outb_hdl = OutBHandler::new(mem_mgr_wrapper, host_funcs_wrapper);
     Arc::new(Mutex::new(outb_hdl))
 }
 
