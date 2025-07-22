@@ -41,11 +41,10 @@ use {
     super::handlers::DbgMemAccessHandlerWrapper,
     crate::HyperlightError,
     crate::hypervisor::handlers::DbgMemAccessHandlerCaller,
-    std::sync::Mutex,
 };
 
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
-use super::handlers::{MemAccessHandlerWrapper, OutBHandler, OutBHandlerCaller};
+use super::handlers::{MemAccessHandlerWrapper, OutBHandler};
 use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
@@ -683,7 +682,7 @@ impl Hypervisor for HypervWindowsDriver {
         outb_handle_fn
             .try_lock()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .call(port, val)?;
+            .handle_outb(port, val)?;
 
         let mut regs = self.processor.get_regs()?;
         regs.rip = rip + instruction_length;

@@ -32,7 +32,7 @@ use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandler, OutBHandlerCaller};
+use super::handlers::{MemAccessHandlerWrapper, OutBHandler};
 #[cfg(feature = "init-paging")]
 use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
@@ -584,7 +584,7 @@ impl Hypervisor for KVMDriver {
             outb_handle_fn
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .call(port, value)?;
+                .handle_outb(port, value)?;
         }
 
         Ok(())

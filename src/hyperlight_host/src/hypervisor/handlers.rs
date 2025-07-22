@@ -20,36 +20,37 @@ use tracing::{Span, instrument};
 
 use crate::{Result, new_error};
 
-/// The trait representing custom logic to handle the case when
-/// a Hypervisor's virtual CPU (vCPU) informs Hyperlight the guest
-/// has initiated an outb operation.
-pub trait OutBHandlerCaller: Sync + Send {
-    /// Function that gets called when an outb operation has occurred.
-    fn call(&mut self, port: u16, payload: u32) -> Result<()>;
-}
+/// Type alias for the function that handles outb operations
+type OutBHandlerFunction = Box<dyn FnMut(u16, u32) -> Result<()> + Send>;
 
-pub(crate) type OutBHandlerFunction = Box<dyn FnMut(u16, u32) -> Result<()> + Send>;
-
-/// A `OutBHandler` implementation using a `OutBHandlerFunction`
+/// A `OutBHandler` implementation using a function closure
 ///
 /// Note: This handler must live no longer than the `Sandbox` to which it belongs
-pub(crate) struct OutBHandler(Arc<Mutex<OutBHandlerFunction>>);
+pub(crate) struct OutBHandler {
+    func: Arc<Mutex<OutBHandlerFunction>>,
+}
+
+impl OutBHandler {
+    pub fn new(func: OutBHandlerFunction) -> Self {
+        Self {
+            func: Arc::new(Mutex::new(func)),
+        }
+    }
+
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub fn handle_outb(&self, port: u16, payload: u32) -> Result<()> {
+        let mut func = self
+            .func
+            .try_lock()
+            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+        func(port, payload)
+    }
+}
 
 impl From<OutBHandlerFunction> for OutBHandler {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn from(func: OutBHandlerFunction) -> Self {
-        Self(Arc::new(Mutex::new(func)))
-    }
-}
-
-impl OutBHandlerCaller for OutBHandler {
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn call(&mut self, port: u16, payload: u32) -> Result<()> {
-        let mut func = self
-            .0
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        func(port, payload)
+        Self::new(func)
     }
 }
 

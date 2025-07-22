@@ -26,7 +26,7 @@ use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
 use super::mem_mgr::MemMgrWrapper;
-use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction};
+use crate::hypervisor::handlers::OutBHandler;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::{HyperlightError, Result, new_error};
@@ -146,7 +146,7 @@ fn outb_abort(mem_mgr: &mut MemMgrWrapper<HostSharedMemory>, data: u32) -> Resul
 
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-fn handle_outb_impl(
+fn handle_outb(
     mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
     host_funcs: Arc<Mutex<FunctionRegistry>>,
     port: u16,
@@ -192,8 +192,8 @@ pub(crate) fn outb_handler_wrapper(
     mut mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
     host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
 ) -> Arc<Mutex<OutBHandler>> {
-    let outb_func: OutBHandlerFunction = Box::new(move |port, payload| {
-        handle_outb_impl(
+    let outb_func: Box<dyn FnMut(u16, u32) -> Result<()> + Send> = Box::new(move |port, payload| {
+        handle_outb(
             &mut mem_mgr_wrapper,
             host_funcs_wrapper.clone(),
             port,
