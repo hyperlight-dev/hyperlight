@@ -164,7 +164,7 @@ impl MultiUseSandbox {
     /// Returns the length of the mapping
     #[allow(dead_code)]
     #[instrument(err(Debug), skip(self, _fp, _guest_base), parent = Span::current())]
-    pub(crate) fn map_file_cow(&mut self, _fp: &Path, _guest_base: u64) -> Result<u64> {
+    pub fn map_file_cow(&mut self, _fp: &Path, _guest_base: u64) -> Result<u64> {
         #[cfg(windows)]
         log_then_return!("mmap'ing a file into the guest is not yet supported on Windows");
         #[cfg(unix)]
