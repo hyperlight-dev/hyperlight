@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 addr2line = "0.24.2"
-piet-common = { version = "0.6.2", features = [ "png" ] }
+piet-common = { version = "0.7.0", features = [ "png" ] }
 blake3 = { version = "1.5.5" }
 
 [[bin]]
