@@ -69,7 +69,7 @@ pub extern "C" fn hl_exception_handler(
     // call, which generates a warning because of the `abort_with_code_and_message` call which does
     // not return.
     // This is manually added to avoid the warning.
-    hyperlight_guest_tracing_macro::trace!("> hl_exception_handler");
+    hyperlight_guest_tracing::trace!("> hl_exception_handler");
 
     let ctx = stack_pointer as *mut Context;
     let exn_info = (stack_pointer + size_of::<Context>() as u64) as *mut ExceptionInfo;
@@ -101,7 +101,7 @@ pub extern "C" fn hl_exception_handler(
                 )(exception_number, exn_info, ctx, page_fault_address)
             }
         {
-            hyperlight_guest_tracing_macro::trace!("< hl_exception_handler");
+            hyperlight_guest_tracing::trace!("< hl_exception_handler");
             return;
         }
     }

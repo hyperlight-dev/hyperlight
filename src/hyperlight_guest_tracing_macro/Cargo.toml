@@ -10,7 +10,6 @@ readme.workspace = true
 description = """Provides the tracing macros for the hyperlight guest, enabling structured logging and tracing capabilities."""
 
 [dependencies]
-hyperlight-guest-tracing = { workspace = true }
 proc-macro2 = "1.0"
 quote = "1.0.40"
 syn = { version = "2.0.104", features = ["full"] }
