@@ -28,7 +28,7 @@ rand = { version = "0.9" }
 cfg-if = { version = "1.0.1" }
 libc = { version = "0.2.174" }
 flatbuffers = "25.2.10"
-framehop = { version = "0.13.1", optional = true }
+framehop = { version = "0.14.0", optional = true }
 fallible-iterator = { version = "0.3.0", optional = true }
 blake3 = "1.8.2"
 page_size = "0.6.0"
