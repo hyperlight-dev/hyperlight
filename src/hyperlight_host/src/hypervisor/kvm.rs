@@ -36,7 +36,6 @@ use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 #[cfg(feature = "init-paging")]
 use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
@@ -47,9 +46,13 @@ use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, V
 use crate::HyperlightError;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
+use crate::sandbox::host_funcs::FunctionRegistry;
+use crate::sandbox::mem_mgr::MemMgrWrapper;
+use crate::sandbox::outb::handle_outb;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
@@ -295,7 +298,8 @@ pub(crate) struct KVMDriver {
     orig_rsp: GuestPtr,
     mem_regions: Vec<MemoryRegion>,
     interrupt_handle: Arc<LinuxInterruptHandle>,
-
+    mem_mgr: Option<MemMgrWrapper<HostSharedMemory>>,
+    host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
     #[cfg(gdb)]
     debug: Option<KvmDebug>,
     #[cfg(gdb)]
@@ -384,6 +388,8 @@ impl KVMDriver {
             orig_rsp: rsp_gp,
             mem_regions,
             interrupt_handle: interrupt_handle.clone(),
+            mem_mgr: None,
+            host_funcs: None,
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
@@ -460,11 +466,13 @@ impl Hypervisor for KVMDriver {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        outb_hdl: OutBHandlerWrapper,
-        mem_access_hdl: MemAccessHandlerWrapper,
+        mem_mgr: MemMgrWrapper<HostSharedMemory>,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
+        self.mem_mgr = Some(mem_mgr);
+        self.host_funcs = Some(host_funcs);
         self.page_size = page_size as usize;
 
         let max_guest_log_level: u64 = match max_guest_log_level {
@@ -486,13 +494,22 @@ impl Hypervisor for KVMDriver {
         };
         self.vcpu_fd.set_regs(&regs)?;
 
-        VirtualCPU::run(
+        // Extract mem_mgr to avoid borrowing conflicts
+        let mem_mgr = self
+            .mem_mgr
+            .take()
+            .ok_or_else(|| new_error!("mem_mgr should be initialized"))?;
+
+        let result = VirtualCPU::run(
             self.as_mut_hypervisor(),
-            outb_hdl,
-            mem_access_hdl,
+            &mem_mgr,
             #[cfg(gdb)]
             dbg_mem_access_fn,
-        )?;
+        );
+
+        // Put mem_mgr back
+        self.mem_mgr = Some(mem_mgr);
+        result?;
 
         Ok(())
     }
@@ -540,8 +557,7 @@ impl Hypervisor for KVMDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
-        mem_access_fn: MemAccessHandlerWrapper,
+        mem_mgr: &MemMgrWrapper<HostSharedMemory>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -564,8 +580,7 @@ impl Hypervisor for KVMDriver {
         // run
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            outb_handle_fn,
-            mem_access_fn,
+            mem_mgr,
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )?;
@@ -580,7 +595,6 @@ impl Hypervisor for KVMDriver {
         data: Vec<u8>,
         _rip: u64,
         _instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
     ) -> Result<()> {
         // KVM does not need RIP or instruction length, as it automatically sets the RIP
 
@@ -595,15 +609,24 @@ impl Hypervisor for KVMDriver {
             padded[..copy_len].copy_from_slice(&data[..copy_len]);
             let value = u32::from_le_bytes(padded);
 
-            outb_handle_fn
-                .try_lock()
-                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .call(
-                    #[cfg(feature = "trace_guest")]
-                    self,
-                    port,
-                    value,
-                )?;
+            let mem_mgr = self
+                .mem_mgr
+                .as_mut()
+                .ok_or_else(|| new_error!("mem_mgr not initialized"))?;
+            let host_funcs = self
+                .host_funcs
+                .as_ref()
+                .ok_or_else(|| new_error!("host_funcs not initialized"))?
+                .clone();
+
+            handle_outb(
+                mem_mgr,
+                host_funcs,
+                #[cfg(feature = "trace_guest")]
+                self,
+                port,
+                value,
+            )?;
         }
 
         Ok(())

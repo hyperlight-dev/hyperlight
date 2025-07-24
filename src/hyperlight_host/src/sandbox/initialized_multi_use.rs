@@ -34,7 +34,6 @@ use crate::func::guest_err::check_for_guest_error;
 use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(gdb)]
 use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
-use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
 use crate::hypervisor::{Hypervisor, InterruptHandle};
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
@@ -57,8 +56,6 @@ pub struct MultiUseSandbox {
     pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: MemMgrWrapper<HostSharedMemory>,
     vm: Box<dyn Hypervisor>,
-    out_hdl: Arc<Mutex<dyn OutBHandlerCaller>>,
-    mem_hdl: Arc<Mutex<dyn MemAccessHandlerCaller>>,
     dispatch_ptr: RawPtr,
     #[cfg(gdb)]
     dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
@@ -75,8 +72,6 @@ impl MultiUseSandbox {
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: MemMgrWrapper<HostSharedMemory>,
         vm: Box<dyn Hypervisor>,
-        out_hdl: Arc<Mutex<dyn OutBHandlerCaller>>,
-        mem_hdl: Arc<Mutex<dyn MemAccessHandlerCaller>>,
         dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> MultiUseSandbox {
@@ -84,8 +79,6 @@ impl MultiUseSandbox {
             _host_funcs: host_funcs,
             mem_mgr: mgr,
             vm,
-            out_hdl,
-            mem_hdl,
             dispatch_ptr,
             #[cfg(gdb)]
             dbg_mem_access_fn,
@@ -237,8 +230,7 @@ impl MultiUseSandbox {
 
             self.vm.dispatch_call_from_host(
                 self.dispatch_ptr.clone(),
-                self.out_hdl.clone(),
-                self.mem_hdl.clone(),
+                &self.mem_mgr,
                 #[cfg(gdb)]
                 self.dbg_mem_access_fn.clone(),
             )?;

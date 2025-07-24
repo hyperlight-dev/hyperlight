@@ -27,7 +27,6 @@ use super::mem_access::dbg_mem_access_handler_wrapper;
 use super::uninitialized::SandboxRuntimeConfig;
 use crate::HyperlightError::NoHypervisorFound;
 use crate::hypervisor::Hypervisor;
-use crate::hypervisor::handlers::{MemAccessHandlerCaller, OutBHandlerCaller};
 use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
@@ -41,8 +40,6 @@ use crate::sandbox::TraceInfo;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::mem_access::mem_access_handler_wrapper;
-use crate::sandbox::outb::outb_handler_wrapper;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
@@ -69,8 +66,6 @@ where
         Arc<Mutex<FunctionRegistry>>,
         MemMgrWrapper<HostSharedMemory>,
         Box<dyn Hypervisor>,
-        Arc<Mutex<dyn OutBHandlerCaller>>,
-        Arc<Mutex<dyn MemAccessHandlerCaller>>,
         RawPtr,
     ) -> Result<ResSandbox>,
 {
@@ -82,7 +77,6 @@ where
         &u_sbox.rt_cfg,
         u_sbox.load_info,
     )?;
-    let outb_hdl = outb_handler_wrapper(hshm.clone(), u_sbox.host_funcs.clone());
 
     let seed = {
         let mut rng = rand::rng();
@@ -94,7 +88,6 @@ where
     };
 
     let page_size = u32::try_from(page_size::get())?;
-    let mem_access_hdl = mem_access_handler_wrapper(hshm.clone());
 
     #[cfg(gdb)]
     let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(hshm.clone());
@@ -106,8 +99,8 @@ where
         peb_addr,
         seed,
         page_size,
-        outb_hdl.clone(),
-        mem_access_hdl.clone(),
+        hshm.clone(),
+        u_sbox.host_funcs.clone(),
         u_sbox.max_guest_log_level,
         #[cfg(gdb)]
         dbg_mem_access_hdl,
@@ -122,23 +115,19 @@ where
         u_sbox.host_funcs,
         hshm,
         vm,
-        outb_hdl,
-        mem_access_hdl,
         RawPtr::from(dispatch_function_addr),
     )
 }
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    evolve_impl(u_sbox, |hf, hshm, vm, out_hdl, mem_hdl, dispatch_ptr| {
+    evolve_impl(u_sbox, |hf, hshm, vm, dispatch_ptr| {
         #[cfg(gdb)]
         let dbg_mem_wrapper = dbg_mem_access_handler_wrapper(hshm.clone());
         Ok(MultiUseSandbox::from_uninit(
             hf,
             hshm,
             vm,
-            out_hdl,
-            mem_hdl,
             dispatch_ptr,
             #[cfg(gdb)]
             dbg_mem_wrapper,

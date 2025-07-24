@@ -34,14 +34,15 @@ use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
 use super::mem_mgr::MemMgrWrapper;
-use crate::hypervisor::handlers::{OutBHandler, OutBHandlerFunction, OutBHandlerWrapper};
+#[cfg(feature = "trace_guest")]
+use crate::hypervisor::Hypervisor;
 #[cfg(feature = "trace_guest")]
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
-use crate::{HyperlightError, Result, new_error};
 #[cfg(feature = "trace_guest")]
-use crate::{hypervisor::Hypervisor, sandbox::TraceInfo};
+use crate::sandbox::TraceInfo;
+use crate::{HyperlightError, Result, new_error};
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level="Trace")]
 pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Result<()> {
@@ -267,7 +268,7 @@ pub(super) fn record_guest_trace_frame<F: FnOnce(&mut std::fs::File)>(
 
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-fn handle_outb_impl(
+pub(crate) fn handle_outb(
     mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
     host_funcs: Arc<Mutex<FunctionRegistry>>,
     #[cfg(feature = "trace_guest")] _hv: &mut dyn Hypervisor,
@@ -402,31 +403,6 @@ fn handle_outb_impl(
         }
     }
 }
-
-/// Given a `MemMgrWrapper` and ` HostFuncsWrapper` -- both passed by _value_
-///  -- return an `OutBHandlerWrapper` wrapping the core OUTB handler logic.
-///
-/// TODO: pass at least the `host_funcs_wrapper` param by reference.
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub(crate) fn outb_handler_wrapper(
-    mut mem_mgr_wrapper: MemMgrWrapper<HostSharedMemory>,
-    host_funcs_wrapper: Arc<Mutex<FunctionRegistry>>,
-) -> OutBHandlerWrapper {
-    let outb_func: OutBHandlerFunction =
-        Box::new(move |#[cfg(feature = "trace_guest")] hv, port, payload| {
-            handle_outb_impl(
-                &mut mem_mgr_wrapper,
-                host_funcs_wrapper.clone(),
-                #[cfg(feature = "trace_guest")]
-                hv,
-                port,
-                payload,
-            )
-        });
-    let outb_hdl = OutBHandler::from(outb_func);
-    Arc::new(Mutex::new(outb_hdl))
-}
-
 #[cfg(test)]
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
