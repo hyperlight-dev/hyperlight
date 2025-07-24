@@ -60,8 +60,8 @@ clean-rust:
     cd src/tests/rust_guests/simpleguest && cargo clean
     cd src/tests/rust_guests/dummyguest && cargo clean
     cd src/tests/rust_guests/callbackguest && cargo clean
-    cd src/tests/rust_guests/witguest && cargo clean
-    cd src/tests/rust_guests/witguest && rm -f interface.wasm
+    {{ if os() == "windows" { "cd src/tests/rust_guests/witguest -ErrorAction SilentlyContinue; cargo clean" } else { "[ -d src/tests/rust_guests/witguest ] && cd src/tests/rust_guests/witguest && cargo clean || true" } }}
+    {{ if os() == "windows" { "Remove-Item src/tests/rust_guests/witguest/interface.wasm -Force -ErrorAction SilentlyContinue" } else { "rm -f src/tests/rust_guests/witguest/interface.wasm" } }}
     git clean -fdx src/tests/c_guests/bin src/tests/rust_guests/bin
 
 ################
