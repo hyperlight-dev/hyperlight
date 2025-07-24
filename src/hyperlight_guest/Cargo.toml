@@ -15,9 +15,8 @@ Provides only the essential building blocks for interacting with the host enviro
 anyhow = { version = "1.0.98", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 hyperlight-common = { workspace = true }
-hyperlight-guest-tracing = { workspace = true, optional = true }
-hyperlight-guest-tracing-macro = { workspace = true}
+hyperlight-guest-tracing = { workspace = true }
 
 [features]
 default = []
-trace_guest = ["dep:hyperlight-guest-tracing"]
+trace_guest = []

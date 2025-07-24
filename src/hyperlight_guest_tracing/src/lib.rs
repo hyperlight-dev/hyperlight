@@ -36,6 +36,10 @@ const MAX_NO_OF_ENTRIES: usize = 32;
 /// Maximum length of a trace message in bytes.
 pub const MAX_TRACE_MSG_LEN: usize = 64;
 
+/// Re-export the tracing macros
+/// This allows users to use the macros without needing to import them explicitly.
+pub use hyperlight_guest_tracing_macro::*;
+
 #[derive(Debug, Copy, Clone)]
 /// Represents a trace record of a guest with a number of cycles and a message.
 pub struct TraceRecord {

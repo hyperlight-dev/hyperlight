@@ -27,7 +27,7 @@ use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
 
 type GuestFunc = fn(&FunctionCall) -> Result<Vec<u8>>;
 
-#[hyperlight_guest_tracing_macro::trace_function]
+#[hyperlight_guest_tracing::trace_function]
 pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     // Validate this is a Guest Function Call
     if function_call.function_call_type() != FunctionCallType::Guest {
@@ -62,7 +62,7 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
             core::mem::transmute::<usize, GuestFunc>(function_pointer)
         };
 
-        hyperlight_guest_tracing_macro::trace!("guest_function", p_function(&function_call))
+        hyperlight_guest_tracing::trace!("guest_function", p_function(&function_call))
     } else {
         // The given function is not registered. The guest should implement a function called guest_dispatch_function to handle this.
 
@@ -73,7 +73,7 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
             fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>>;
         }
 
-        hyperlight_guest_tracing_macro::trace!("default guest function", unsafe {
+        hyperlight_guest_tracing::trace!("default guest function", unsafe {
             guest_dispatch_function(function_call)
         })
     }
@@ -83,7 +83,7 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
 // and we will leak memory as the epilogue will not be called as halt() is not going to return.
 #[unsafe(no_mangle)]
 #[inline(never)]
-#[hyperlight_guest_tracing_macro::trace_function]
+#[hyperlight_guest_tracing::trace_function]
 fn internal_dispatch_function() -> Result<()> {
     let handle = unsafe { GUEST_HANDLE };
 
@@ -104,7 +104,7 @@ fn internal_dispatch_function() -> Result<()> {
 // This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()
 // which if it were included in the internal_dispatch_function cause the epilogue to not be called because the halt() would not return
 // when running in the hypervisor.
-#[hyperlight_guest_tracing_macro::trace_function]
+#[hyperlight_guest_tracing::trace_function]
 pub(crate) extern "C" fn dispatch_function() {
     // The hyperlight host likes to use one partition and reset it in
     // various ways; if that has happened, there might stale TLB

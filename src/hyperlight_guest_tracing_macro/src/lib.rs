@@ -48,15 +48,6 @@ pub fn trace_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let entry_msg = format!("> {}", fn_name_str);
     let exit_msg = format!("< {}", fn_name_str);
 
-    if entry_msg.len() > hyperlight_guest_tracing::MAX_TRACE_MSG_LEN
-        || exit_msg.len() > hyperlight_guest_tracing::MAX_TRACE_MSG_LEN
-    {
-        panic!(
-            "Trace messages must not exceed {} bytes in length.",
-            hyperlight_guest_tracing::MAX_TRACE_MSG_LEN
-        );
-    }
-
     let expanded = match fn_output {
         syn::ReturnType::Default => {
             // No return value (unit)
@@ -64,11 +55,16 @@ pub fn trace_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #(#fn_attrs)*
                 #fn_vis #fn_sig {
                     #[cfg(feature = "trace_guest")]
-                    hyperlight_guest_tracing::create_trace_record(#entry_msg);
+                    const _: () = assert!(
+                        #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                        "Trace message exceeds the maximum bytes length",
+                    );
+                    #[cfg(feature = "trace_guest")]
+                    ::hyperlight_guest_tracing::create_trace_record(#entry_msg);
                     // Call the original function body
                     #fn_block
                     #[cfg(feature = "trace_guest")]
-                    hyperlight_guest_tracing::create_trace_record(#exit_msg);
+                    ::hyperlight_guest_tracing::create_trace_record(#exit_msg);
                 }
             }
         }
@@ -78,10 +74,15 @@ pub fn trace_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #(#fn_attrs)*
                 #fn_vis #fn_sig {
                     #[cfg(feature = "trace_guest")]
-                    hyperlight_guest_tracing::create_trace_record(concat!("> ", #fn_name_str));
+                    const _: () = assert!(
+                        #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                        "Trace message exceeds the maximum bytes length",
+                    );
+                    #[cfg(feature = "trace_guest")]
+                    ::hyperlight_guest_tracing::create_trace_record(#entry_msg);
                     let __trace_result = (|| #fn_block )();
                     #[cfg(feature = "trace_guest")]
-                    hyperlight_guest_tracing::create_trace_record(concat!("< ", #fn_name_str));
+                    ::hyperlight_guest_tracing::create_trace_record(#exit_msg);
                     __trace_result
                 }
             }
@@ -102,17 +103,6 @@ impl syn::parse::Parse for TraceMacroInput {
         let message: syn::Lit = input.parse()?;
         if !matches!(message, syn::Lit::Str(_)) {
             return Err(input.error("first argument to trace! must be a string literal"));
-        }
-        if let syn::Lit::Str(ref lit_str) = message {
-            if lit_str.value().is_empty() {
-                return Err(input.error("trace message must not be empty"));
-            }
-            if lit_str.value().len() > hyperlight_guest_tracing::MAX_TRACE_MSG_LEN {
-                return Err(input.error(format!(
-                    "trace message must not exceed {} bytes",
-                    hyperlight_guest_tracing::MAX_TRACE_MSG_LEN
-                )));
-            }
         }
 
         let statement = if input.peek(syn::Token![,]) {
@@ -207,15 +197,20 @@ pub fn trace(input: TokenStream) -> TokenStream {
         _ => unreachable!(),
     };
     if let Some(statement) = parsed.statement {
-        let entry = format!("+ {}", trace_message);
-        let exit = format!("- {}", trace_message);
+        let entry_msg = format!("+ {}", trace_message);
+        let exit_msg = format!("- {}", trace_message);
         let expanded = quote! {
             {
                 #[cfg(feature = "trace_guest")]
-                hyperlight_guest_tracing::create_trace_record(#entry);
+                const _: () = assert!(
+                    #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                    "Trace message exceeds the maximum bytes length",
+                );
+                #[cfg(feature = "trace_guest")]
+                ::hyperlight_guest_tracing::create_trace_record(#entry_msg);
                 let __trace_result = #statement;
                 #[cfg(feature = "trace_guest")]
-                hyperlight_guest_tracing::create_trace_record(#exit);
+                ::hyperlight_guest_tracing::create_trace_record(#exit_msg);
                 __trace_result
             }
         };
@@ -224,7 +219,12 @@ pub fn trace(input: TokenStream) -> TokenStream {
         let expanded = quote! {
             {
                 #[cfg(feature = "trace_guest")]
-                hyperlight_guest_tracing::create_trace_record(#trace_message);
+                const _: () = assert!(
+                    #trace_message.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                    "Trace message exceeds the maximum bytes length",
+                );
+                #[cfg(feature = "trace_guest")]
+                ::hyperlight_guest_tracing::create_trace_record(#trace_message);
             }
         };
         TokenStream::from(expanded)
@@ -242,7 +242,7 @@ pub fn flush(_input: TokenStream) -> TokenStream {
     let expanded = quote! {
         {
             #[cfg(feature = "trace_guest")]
-            hyperlight_guest_tracing::flush_trace_buffer();
+            ::hyperlight_guest_tracing::flush_trace_buffer();
         }
     };
 

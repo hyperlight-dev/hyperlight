@@ -32,7 +32,7 @@ use hyperlight_common::mem::HyperlightPEB;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_guest::exit::{abort_with_code_and_message, halt};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
-use hyperlight_guest_tracing_macro::{trace, trace_function};
+use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
 use spin::Once;
 

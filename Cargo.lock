@@ -1390,7 +1390,6 @@ dependencies = [
  "anyhow",
  "hyperlight-common",
  "hyperlight-guest-tracing",
- "hyperlight-guest-tracing-macro",
  "serde_json",
 ]
 
@@ -1405,7 +1404,6 @@ dependencies = [
  "hyperlight-common",
  "hyperlight-guest",
  "hyperlight-guest-tracing",
- "hyperlight-guest-tracing-macro",
  "log",
  "spin 0.10.0",
 ]
@@ -1415,6 +1413,7 @@ name = "hyperlight-guest-tracing"
 version = "0.7.0"
 dependencies = [
  "hyperlight-common",
+ "hyperlight-guest-tracing-macro",
  "spin 0.10.0",
 ]
 
@@ -1422,7 +1421,6 @@ dependencies = [
 name = "hyperlight-guest-tracing-macro"
 version = "0.7.0"
 dependencies = [
- "hyperlight-guest-tracing",
  "proc-macro2",
  "quote",
  "syn",
