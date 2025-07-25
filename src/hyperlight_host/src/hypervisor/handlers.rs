@@ -16,118 +16,11 @@ limitations under the License.
 
 use std::sync::{Arc, Mutex};
 
-use tracing::{Span, instrument};
-
-#[cfg(feature = "trace_guest")]
-use super::Hypervisor;
-use crate::{Result, new_error};
-
-/// The trait representing custom logic to handle the case when
-/// a Hypervisor's virtual CPU (vCPU) informs Hyperlight the guest
-/// has initiated an outb operation.
-pub(crate) trait OutBHandlerCaller: Sync + Send {
-    /// Function that gets called when an outb operation has occurred.
-    fn call(
-        &mut self,
-        #[cfg(feature = "trace_guest")] hv: &mut dyn Hypervisor,
-        port: u16,
-        payload: u32,
-    ) -> Result<()>;
-}
-
-/// A convenient type representing a common way `OutBHandler` implementations
-/// are passed as parameters to functions
-///
-/// Note: This needs to be wrapped in a Mutex to be able to grab a mutable
-/// reference to the underlying data (i.e., handle_outb in `Sandbox` takes
-/// a &mut self).
-pub(crate) type OutBHandlerWrapper = Arc<Mutex<dyn OutBHandlerCaller>>;
-
-#[cfg(feature = "trace_guest")]
-pub(crate) type OutBHandlerFunction =
-    Box<dyn FnMut(&mut dyn Hypervisor, u16, u32) -> Result<()> + Send>;
-#[cfg(not(feature = "trace_guest"))]
-pub(crate) type OutBHandlerFunction = Box<dyn FnMut(u16, u32) -> Result<()> + Send>;
-
-/// A `OutBHandler` implementation using a `OutBHandlerFunction`
-///
-/// Note: This handler must live no longer than the `Sandbox` to which it belongs
-pub(crate) struct OutBHandler(Arc<Mutex<OutBHandlerFunction>>);
-
-impl From<OutBHandlerFunction> for OutBHandler {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn from(func: OutBHandlerFunction) -> Self {
-        Self(Arc::new(Mutex::new(func)))
-    }
-}
-
-impl OutBHandlerCaller for OutBHandler {
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn call(
-        &mut self,
-        #[cfg(feature = "trace_guest")] hv: &mut dyn Hypervisor,
-        port: u16,
-        payload: u32,
-    ) -> Result<()> {
-        let mut func = self
-            .0
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        func(
-            #[cfg(feature = "trace_guest")]
-            hv,
-            port,
-            payload,
-        )
-    }
-}
-
-/// The trait representing custom logic to handle the case when
-/// a Hypervisor's virtual CPU (vCPU) informs Hyperlight a memory access
-/// outside the designated address space has occurred.
-pub trait MemAccessHandlerCaller: Send {
-    /// Function that gets called when unexpected memory access has occurred.
-    fn call(&mut self) -> Result<()>;
-}
-
-/// A convenient type representing a common way `MemAccessHandler` implementations
-/// are passed as parameters to functions
-///
-/// Note: This needs to be wrapped in a Mutex to be able to grab a mutable
-/// reference to the underlying data (i.e., handle_mmio_exit in `Sandbox` takes
-/// a &mut self).
-pub type MemAccessHandlerWrapper = Arc<Mutex<dyn MemAccessHandlerCaller>>;
-
-pub(crate) type MemAccessHandlerFunction = Box<dyn FnMut() -> Result<()> + Send>;
-
-/// A `MemAccessHandler` implementation using `MemAccessHandlerFunction`.
-///
-/// Note: This handler must live for as long as its Sandbox or for
-/// static in the case of its C API usage.
-pub(crate) struct MemAccessHandler(Arc<Mutex<MemAccessHandlerFunction>>);
-
-impl From<MemAccessHandlerFunction> for MemAccessHandler {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn from(func: MemAccessHandlerFunction) -> Self {
-        Self(Arc::new(Mutex::new(func)))
-    }
-}
-
-impl MemAccessHandlerCaller for MemAccessHandler {
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn call(&mut self) -> Result<()> {
-        let mut func = self
-            .0
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        func()
-    }
-}
+use crate::Result;
 
 /// The trait representing custom logic to handle the case when
 /// a Hypervisor's virtual CPU (vCPU) informs Hyperlight a debug memory access
 /// has been requested.
-#[cfg(gdb)]
 pub trait DbgMemAccessHandlerCaller: Send {
     /// Function that gets called when a read is requested.
     fn read(&mut self, addr: usize, data: &mut [u8]) -> Result<()>;
@@ -143,5 +36,4 @@ pub trait DbgMemAccessHandlerCaller: Send {
 ///
 /// Note: This needs to be wrapped in a Mutex to be able to grab a mutable
 /// reference to the underlying data
-#[cfg(gdb)]
 pub type DbgMemAccessHandlerWrapper = Arc<Mutex<dyn DbgMemAccessHandlerCaller>>;

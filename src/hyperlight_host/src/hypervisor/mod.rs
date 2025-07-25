@@ -22,12 +22,13 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
-use crate::{HyperlightError, Result, log_then_return, new_error};
+use crate::{HyperlightError, Result, log_then_return};
 
 /// Util for handling x87 fpu state
 #[cfg(any(kvm, mshv, target_os = "windows"))]
 pub mod fpu;
 /// Handlers for Hypervisor custom logic
+#[cfg(gdb)]
 pub mod handlers;
 /// HyperV-on-linux functionality
 #[cfg(mshv)]
@@ -72,10 +73,11 @@ use gdb::VcpuStopReason;
 
 #[cfg(gdb)]
 use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
-use self::handlers::{
-    MemAccessHandlerCaller, MemAccessHandlerWrapper, OutBHandlerCaller, OutBHandlerWrapper,
-};
 use crate::mem::ptr::RawPtr;
+use crate::mem::shared_mem::HostSharedMemory;
+use crate::sandbox::host_funcs::FunctionRegistry;
+use crate::sandbox::mem_access::handle_mem_access;
+use crate::sandbox::mem_mgr::MemMgrWrapper;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "init-paging")] {
@@ -143,8 +145,8 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        outb_handle_fn: OutBHandlerWrapper,
-        mem_access_fn: MemAccessHandlerWrapper,
+        mem_mgr: MemMgrWrapper<HostSharedMemory>,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
@@ -168,8 +170,7 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
-        mem_access_fn: MemAccessHandlerWrapper,
+        mem_mgr: &MemMgrWrapper<HostSharedMemory>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
 
@@ -180,7 +181,6 @@ pub(crate) trait Hypervisor: Debug + Sync + Send {
         data: Vec<u8>,
         rip: u64,
         instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
     ) -> Result<()>;
 
     /// Run the vCPU
@@ -289,8 +289,7 @@ impl VirtualCPU {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn run(
         hv: &mut dyn Hypervisor,
-        outb_handle_fn: Arc<Mutex<dyn OutBHandlerCaller>>,
-        mem_access_fn: Arc<Mutex<dyn MemAccessHandlerCaller>>,
+        mem_mgr: &MemMgrWrapper<HostSharedMemory>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
     ) -> Result<()> {
         loop {
@@ -306,17 +305,13 @@ impl VirtualCPU {
                     break;
                 }
                 Ok(HyperlightExit::IoOut(port, data, rip, instruction_length)) => {
-                    hv.handle_io(port, data, rip, instruction_length, outb_handle_fn.clone())?
+                    hv.handle_io(port, data, rip, instruction_length)?
                 }
                 Ok(HyperlightExit::Mmio(addr)) => {
                     #[cfg(crashdump)]
                     crashdump::generate_crashdump(hv)?;
 
-                    mem_access_fn
-                        .clone()
-                        .try_lock()
-                        .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                        .call()?;
+                    handle_mem_access(mem_mgr)?;
 
                     log_then_return!("MMIO access address {:#x}", addr);
                 }
@@ -531,10 +526,6 @@ pub(crate) mod tests {
 
     use hyperlight_testing::dummy_guest_as_string;
 
-    use super::handlers::{MemAccessHandler, OutBHandler, OutBHandlerFunction};
-    #[cfg(gdb)]
-    use crate::hypervisor::DbgMemAccessHandlerCaller;
-    use crate::mem::ptr::RawPtr;
     use crate::sandbox::uninitialized::GuestBinary;
     #[cfg(any(crashdump, gdb))]
     use crate::sandbox::uninitialized::SandboxRuntimeConfig;
@@ -542,36 +533,16 @@ pub(crate) mod tests {
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{Result, is_hypervisor_present, new_error};
 
-    #[cfg(gdb)]
-    struct DbgMemAccessHandler {}
-
-    #[cfg(gdb)]
-    impl DbgMemAccessHandlerCaller for DbgMemAccessHandler {
-        fn read(&mut self, _offset: usize, _data: &mut [u8]) -> Result<()> {
-            Ok(())
-        }
-
-        fn write(&mut self, _offset: usize, _data: &[u8]) -> Result<()> {
-            Ok(())
-        }
-
-        fn get_code_offset(&mut self) -> Result<usize> {
-            Ok(0)
-        }
-    }
-
     #[test]
     fn test_initialise() -> Result<()> {
         if !is_hypervisor_present() {
             return Ok(());
         }
 
-        let mem_access_handler = {
-            let func: Box<dyn FnMut() -> Result<()> + Send> = Box::new(|| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(MemAccessHandler::from(func)))
-        };
+        use crate::mem::ptr::RawPtr;
+        use crate::sandbox::host_funcs::FunctionRegistry;
         #[cfg(gdb)]
-        let dbg_mem_access_handler = Arc::new(Mutex::new(DbgMemAccessHandler {}));
+        use crate::sandbox::mem_access::dbg_mem_access_handler_wrapper;
 
         let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
 
@@ -580,7 +551,7 @@ pub(crate) mod tests {
         let rt_cfg: SandboxRuntimeConfig = Default::default();
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
-        let (_hshm, mut gshm) = sandbox.mgr.build();
+        let (mem_mgr, mut gshm) = sandbox.mgr.build();
         let mut vm = set_up_hypervisor_partition(
             &mut gshm,
             &config,
@@ -588,23 +559,29 @@ pub(crate) mod tests {
             &rt_cfg,
             sandbox.load_info,
         )?;
-        let outb_handler: Arc<Mutex<OutBHandler>> = {
-            #[cfg(feature = "trace_guest")]
-            #[allow(clippy::type_complexity)]
-            let func: OutBHandlerFunction = Box::new(|_, _, _| -> Result<()> { Ok(()) });
-            #[cfg(not(feature = "trace_guest"))]
-            let func: OutBHandlerFunction = Box::new(|_, _| -> Result<()> { Ok(()) });
-            Arc::new(Mutex::new(OutBHandler::from(func)))
-        };
+
+        // Set up required parameters for initialise
+        let peb_addr = RawPtr::from(0x1000u64); // Dummy PEB address
+        let seed = 12345u64; // Random seed
+        let page_size = 4096u32; // Standard page size
+        let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
+        let guest_max_log_level = Some(log::LevelFilter::Error);
+
+        #[cfg(gdb)]
+        let dbg_mem_access_fn = dbg_mem_access_handler_wrapper(mem_mgr.clone());
+
+        // Test the initialise method
         vm.initialise(
-            RawPtr::from(0x230000),
-            1234567890,
-            4096,
-            outb_handler,
-            mem_access_handler,
-            None,
+            peb_addr,
+            seed,
+            page_size,
+            mem_mgr,
+            host_funcs,
+            guest_max_log_level,
             #[cfg(gdb)]
-            dbg_mem_access_handler,
-        )
+            dbg_mem_access_fn,
+        )?;
+
+        Ok(())
     }
 }

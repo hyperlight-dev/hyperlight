@@ -25,8 +25,8 @@ extern crate mshv_bindings3 as mshv_bindings;
 extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use log::{LevelFilter, error};
 #[cfg(mshv2)]
@@ -67,7 +67,6 @@ use super::gdb::{
 };
 #[cfg(gdb)]
 use super::handlers::DbgMemAccessHandlerWrapper;
-use super::handlers::{MemAccessHandlerWrapper, OutBHandlerWrapper};
 #[cfg(feature = "init-paging")]
 use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
@@ -78,11 +77,14 @@ use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, V
 use crate::HyperlightError;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::sandbox::SandboxConfiguration;
+use crate::mem::shared_mem::HostSharedMemory;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
+use crate::sandbox::host_funcs::FunctionRegistry;
+use crate::sandbox::outb::handle_outb;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
+use crate::sandbox::{MemMgrWrapper, SandboxConfiguration};
 use crate::{Result, log_then_return, new_error};
 
 #[cfg(gdb)]
@@ -313,7 +315,8 @@ pub(crate) struct HypervLinuxDriver {
     mem_regions: Vec<MemoryRegion>,
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<LinuxInterruptHandle>,
-
+    mem_mgr: Option<MemMgrWrapper<HostSharedMemory>>,
+    host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
     #[cfg(gdb)]
     debug: Option<MshvDebug>,
     #[cfg(gdb)]
@@ -447,6 +450,8 @@ impl HypervLinuxDriver {
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
             interrupt_handle: interrupt_handle.clone(),
+            mem_mgr: None,
+            host_funcs: None,
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
@@ -574,11 +579,13 @@ impl Hypervisor for HypervLinuxDriver {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        outb_hdl: OutBHandlerWrapper,
-        mem_access_hdl: MemAccessHandlerWrapper,
+        mem_mgr: MemMgrWrapper<HostSharedMemory>,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
+        self.mem_mgr = Some(mem_mgr);
+        self.host_funcs = Some(host_funcs);
         self.page_size = page_size as usize;
 
         let max_guest_log_level: u64 = match max_guest_log_level {
@@ -601,13 +608,22 @@ impl Hypervisor for HypervLinuxDriver {
         };
         self.vcpu_fd.set_regs(&regs)?;
 
-        VirtualCPU::run(
+        // Extract mem_mgr to avoid borrowing conflicts
+        let mem_mgr = self
+            .mem_mgr
+            .take()
+            .ok_or_else(|| new_error!("mem_mgr should be initialized"))?;
+
+        let result = VirtualCPU::run(
             self.as_mut_hypervisor(),
-            outb_hdl,
-            mem_access_hdl,
+            &mem_mgr,
             #[cfg(gdb)]
             dbg_mem_access_fn,
-        )?;
+        );
+
+        // Put mem_mgr back
+        self.mem_mgr = Some(mem_mgr);
+        result?;
 
         Ok(())
     }
@@ -647,8 +663,7 @@ impl Hypervisor for HypervLinuxDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        outb_handle_fn: OutBHandlerWrapper,
-        mem_access_fn: MemAccessHandlerWrapper,
+        mem_mgr: &MemMgrWrapper<HostSharedMemory>,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -672,8 +687,7 @@ impl Hypervisor for HypervLinuxDriver {
         // run
         VirtualCPU::run(
             self.as_mut_hypervisor(),
-            outb_handle_fn,
-            mem_access_fn,
+            mem_mgr,
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )?;
@@ -688,22 +702,47 @@ impl Hypervisor for HypervLinuxDriver {
         data: Vec<u8>,
         rip: u64,
         instruction_length: u64,
-        outb_handle_fn: OutBHandlerWrapper,
     ) -> Result<()> {
         let mut padded = [0u8; 4];
         let copy_len = data.len().min(4);
         padded[..copy_len].copy_from_slice(&data[..copy_len]);
         let val = u32::from_le_bytes(padded);
 
-        outb_handle_fn
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .call(
-                #[cfg(feature = "trace_guest")]
-                self,
-                port,
-                val,
-            )?;
+        #[cfg(feature = "trace_guest")]
+        {
+            // We need to handle the borrow checker issue where we need both:
+            // - &mut MemMgrWrapper (from self.mem_mgr.as_mut())
+            // - &mut dyn Hypervisor (from self)
+            // We'll use a temporary approach to extract the mem_mgr temporarily
+            let mem_mgr_option = self.mem_mgr.take();
+            let mut mem_mgr = mem_mgr_option
+                .ok_or_else(|| new_error!("mem_mgr should be initialized before handling IO"))?;
+            let host_funcs = self
+                .host_funcs
+                .as_ref()
+                .ok_or_else(|| new_error!("host_funcs should be initialized before handling IO"))?
+                .clone();
+
+            handle_outb(&mut mem_mgr, host_funcs, self, port, val)?;
+
+            // Put the mem_mgr back
+            self.mem_mgr = Some(mem_mgr);
+        }
+
+        #[cfg(not(feature = "trace_guest"))]
+        {
+            let mem_mgr = self
+                .mem_mgr
+                .as_mut()
+                .ok_or_else(|| new_error!("mem_mgr should be initialized before handling IO"))?;
+            let host_funcs = self
+                .host_funcs
+                .as_ref()
+                .ok_or_else(|| new_error!("host_funcs should be initialized before handling IO"))?
+                .clone();
+
+            handle_outb(mem_mgr, host_funcs, port, val)?;
+        }
 
         // update rip
         self.vcpu_fd.set_reg(&[hv_register_assoc {
