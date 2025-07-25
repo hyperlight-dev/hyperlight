@@ -11,7 +11,11 @@ description = """Provides the tracing functionality for the hyperlight guest."""
 
 [dependencies]
 hyperlight-common = { workspace = true, default-features = false, features = ["trace_guest"] }
+hyperlight-guest-tracing-macro = { workspace = true, optional = true }
 spin = "0.10.0"
 
 [lints]
 workspace = true
+
+[features]
+macros = ["dep:hyperlight-guest-tracing-macro"]
