@@ -326,11 +326,15 @@ bench-download os hypervisor cpu tag="":
     tar -zxvf target/benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu }}.tar.gz -C target/criterion/ --strip-components=1
 
 # Warning: compares to and then OVERWRITES the given baseline
-bench-ci baseline target=default-target features="":
-    cargo bench --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {''} else { "--features " + features } }} -- --verbose --save-baseline {{ baseline }}
+bench-ci baseline target="release" features="":
+    @# Benchmarks should only be run with release builds for meaningful results
+    @if [ "{{ target }}" != "release" ]; then echo "Error: Benchmarks can only be run with release builds. Use 'just bench-ci <baseline> release' instead."; exit 1; fi
+    cargo bench --profile=release {{ if features =="" {''} else { "--features " + features } }} -- --verbose --save-baseline {{ baseline }}
 
-bench target=default-target features="":
-    cargo bench --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {''} else { "--features " + features } }} -- --verbose
+bench target="release" features="":
+    @# Benchmarks should only be run with release builds for meaningful results
+    @if [ "{{ target }}" != "release" ]; then echo "Error: Benchmarks can only be run with release builds. Use 'just bench release' instead."; exit 1; fi
+    cargo bench --profile=release {{ if features =="" {''} else { "--features " + features } }} -- --verbose
 
 ###############
 ### FUZZING ###

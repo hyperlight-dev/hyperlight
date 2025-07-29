@@ -14,6 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Ensure benchmarks only run with release builds for meaningful performance measurements
+#[cfg(debug_assertions)]
+compile_error!(
+    "Benchmarks can only be run with release builds. Use '--release' flag when running benchmarks."
+);
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
