@@ -23,13 +23,18 @@ use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+#[cfg(feature = "init-paging")]
+use hyperlight_common::vm::{
+    self, BasicMapping, Mapping, MappingKind, PAGE_TABLE_ENTRIES_PER_TABLE, PAGE_TABLE_SIZE,
+    PageTableEntry, PhysAddr,
+};
 use tracing::{Span, instrument};
 
 use super::exe::ExeInfo;
 use super::layout::SandboxMemoryLayout;
 use super::memory_region::MemoryRegion;
 #[cfg(feature = "init-paging")]
-use super::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionType};
+use super::memory_region::MemoryRegionFlags;
 use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
@@ -40,16 +45,6 @@ use crate::{Result, log_then_return, new_error};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "init-paging")] {
-        /// Paging Flags
-        ///
-        /// See the following links explaining paging, also see paging-development-notes.md in docs:
-        ///
-        /// * Very basic description: https://stackoverflow.com/a/26945892
-        /// * More in-depth descriptions: https://wiki.osdev.org/Paging
-        pub(crate) const PAGE_PRESENT: u64 = 1; // Page is Present
-        pub(crate) const PAGE_RW: u64 = 1 << 1; // Page is Read/Write (if not set page is read only so long as the WP bit in CR0 is set to 1 - which it is in Hyperlight)
-        pub(crate) const PAGE_USER: u64 = 1 << 2; // User/Supervisor (if this bit is set then the page is accessible by user mode code)
-        pub(crate) const PAGE_NX: u64 = 1 << 63; // Execute Disable (if this bit is set then data in the page cannot be executed)`
         // The amount of memory that can be mapped per page table
         pub(super) const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200_000;
     }
@@ -78,6 +73,62 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) stack_cookie: [u8; STACK_COOKIE_LEN],
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
+}
+
+#[cfg(feature = "init-paging")]
+struct GuestPageTableBuffer {
+    buffer: std::cell::RefCell<Vec<[PageTableEntry; PAGE_TABLE_ENTRIES_PER_TABLE]>>,
+}
+#[cfg(feature = "init-paging")]
+impl vm::TableOps for GuestPageTableBuffer {
+    type TableAddr = (usize, usize);
+    unsafe fn alloc_table(&self) -> (usize, usize) {
+        let mut b = self.buffer.borrow_mut();
+        let page_addr = b.len();
+        b.push([0; PAGE_TABLE_ENTRIES_PER_TABLE]);
+        (page_addr, 0)
+    }
+    fn entry_addr(addr: (usize, usize), offset: u64) -> (usize, usize) {
+        (addr.0, offset as usize >> 3)
+    }
+    unsafe fn read_entry(&self, addr: (usize, usize)) -> PageTableEntry {
+        let b = self.buffer.borrow();
+        b[addr.0][addr.1]
+    }
+    unsafe fn write_entry(&self, addr: (usize, usize), x: PageTableEntry) {
+        let mut b = self.buffer.borrow_mut();
+        b[addr.0][addr.1] = x;
+    }
+    fn to_phys(addr: (usize, usize)) -> PhysAddr {
+        (addr.0 as u64 * PAGE_TABLE_SIZE as u64) + addr.1 as u64
+    }
+    fn from_phys(addr: PhysAddr) -> (usize, usize) {
+        (
+            addr as usize / PAGE_TABLE_SIZE,
+            addr as usize % PAGE_TABLE_SIZE,
+        )
+    }
+    fn root_table(&self) -> (usize, usize) {
+        (0, 0)
+    }
+}
+#[cfg(feature = "init-paging")]
+impl GuestPageTableBuffer {
+    fn new() -> Self {
+        GuestPageTableBuffer {
+            buffer: std::cell::RefCell::new(vec![[0; PAGE_TABLE_ENTRIES_PER_TABLE]]),
+        }
+    }
+    fn into_bytes(self) -> Box<[u8]> {
+        let bx = self.buffer.into_inner().into_boxed_slice();
+        let len = bx.len();
+        unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                Box::into_raw(bx) as *mut u8,
+                len * PAGE_TABLE_SIZE,
+            ))
+        }
+    }
 }
 
 impl<S> SandboxMemoryManager<S>
@@ -121,17 +172,13 @@ where
         &mut self.shared_mem
     }
 
-    /// Set up the hypervisor partition in the given `SharedMemory` parameter
-    /// `shared_mem`, with the given memory size `mem_size`
+    /// Set up the guest page tables in the given `SharedMemory` parameter
+    /// `shared_mem`
     // TODO: This should perhaps happen earlier and use an
     // ExclusiveSharedMemory from the beginning.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     #[cfg(feature = "init-paging")]
-    pub(crate) fn set_up_shared_memory(
-        &mut self,
-        mem_size: u64,
-        regions: &mut [MemoryRegion],
-    ) -> Result<u64> {
+    pub(crate) fn set_up_shared_memory(&mut self, regions: &mut [MemoryRegion]) -> Result<u64> {
         let rsp: u64 = self.layout.get_top_of_user_stack_offset() as u64
             + SandboxMemoryLayout::BASE_ADDRESS as u64
             + self.layout.stack_size as u64
@@ -142,142 +189,35 @@ where
             - 0x28;
 
         self.shared_mem.with_exclusivity(|shared_mem| {
-            // Create PDL4 table with only 1 PML4E
-            shared_mem.write_u64(
-                SandboxMemoryLayout::PML4_OFFSET,
-                SandboxMemoryLayout::PDPT_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW,
-            )?;
-
-            // Create PDPT with only 1 PDPTE
-            shared_mem.write_u64(
-                SandboxMemoryLayout::PDPT_OFFSET,
-                SandboxMemoryLayout::PD_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW,
-            )?;
-
-            for i in 0..512 {
-                let offset = SandboxMemoryLayout::PD_OFFSET + (i * 8);
-                let val_to_write: u64 = (SandboxMemoryLayout::PT_GUEST_ADDRESS as u64
-                    + (i * 4096) as u64)
-                    | PAGE_PRESENT
-                    | PAGE_RW;
-                shared_mem.write_u64(offset, val_to_write)?;
+            let buffer = GuestPageTableBuffer::new();
+            for region in regions.iter() {
+                let readable = region.flags.contains(MemoryRegionFlags::READ);
+                let writable = region.flags.contains(MemoryRegionFlags::WRITE)
+                    // Temporary hack: the stack guard page is
+                    // currently checked for in the host, rather than
+                    // the guest, so we need to mark it writable in
+                    // the Stage 1 translation so that the fault
+                    // exception on a write is taken to the
+                    // hypervisor, rather than the guest kernel
+                    || region.flags.contains(MemoryRegionFlags::STACK_GUARD);
+                let executable = region.flags.contains(MemoryRegionFlags::EXECUTE);
+                let mapping = Mapping {
+                    phys_base: region.guest_region.start as u64,
+                    virt_base: region.guest_region.start as u64,
+                    len: region.guest_region.len() as u64,
+                    kind: MappingKind::BasicMapping(BasicMapping {
+                        readable,
+                        writable,
+                        executable,
+                    }),
+                };
+                unsafe { vm::map(&buffer, mapping) };
             }
-
-            // We only need to create enough PTEs to map the amount of memory we have
-            // We need one PT for every 2MB of memory that is mapped
-            // We can use the memory size to calculate the number of PTs we need
-            // We round up mem_size/2MB
-
-            let mem_size = usize::try_from(mem_size)?;
-
-            let num_pages: usize = mem_size.div_ceil(AMOUNT_OF_MEMORY_PER_PT);
-
-            // Create num_pages PT with 512 PTEs
-            // Pre-allocate buffer for all page table entries to minimize shared memory writes
-            let total_ptes = num_pages * 512;
-            let mut pte_buffer = vec![0u64; total_ptes]; // Pre-allocate u64 buffer directly
-            let mut cached_region_idx: Option<usize> = None; // Cache for optimized region lookup
-            let mut pte_index = 0;
-
-            for p in 0..num_pages {
-                for i in 0..512 {
-                    // Each PTE maps a 4KB page
-                    let flags = match Self::get_page_flags(p, i, regions, &mut cached_region_idx) {
-                        Ok(region_type) => match region_type {
-                            // TODO: We parse and load the exe according to its sections and then
-                            // have the correct flags set rather than just marking the entire binary as executable
-                            MemoryRegionType::Code => PAGE_PRESENT | PAGE_RW | PAGE_USER,
-                            MemoryRegionType::InitData => self
-                                .layout
-                                .init_data_permissions
-                                .map(|perm| perm.translate_flags())
-                                .unwrap_or(DEFAULT_GUEST_BLOB_MEM_FLAGS.translate_flags()),
-                            MemoryRegionType::Stack => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
-                            #[cfg(feature = "executable_heap")]
-                            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER,
-                            #[cfg(not(feature = "executable_heap"))]
-                            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
-                            // The guard page is marked RW and User so that if it gets written to we can detect it in the host
-                            // If/When we implement an interrupt handler for page faults in the guest then we can remove this access and handle things properly there
-                            MemoryRegionType::GuardPage => {
-                                PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX
-                            }
-                            MemoryRegionType::InputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                            MemoryRegionType::OutputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                            MemoryRegionType::Peb => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                            // Host Function Definitions are readonly in the guest
-                            MemoryRegionType::HostFunctionDefinitions => PAGE_PRESENT | PAGE_NX,
-                            MemoryRegionType::PageTables => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                        },
-                        // If there is an error then the address isn't mapped so mark it as not present
-                        Err(_) => 0,
-                    };
-                    let val_to_write = ((p << 21) as u64 | (i << 12) as u64) | flags;
-                    // Write u64 directly to buffer - more efficient than converting to bytes
-                    pte_buffer[pte_index] = val_to_write.to_le();
-                    pte_index += 1;
-                }
-            }
-
-            // Write the entire PTE buffer to shared memory in a single operation
-            // Convert u64 buffer to bytes for writing to shared memory
-            let pte_bytes = unsafe {
-                std::slice::from_raw_parts(pte_buffer.as_ptr() as *const u8, pte_buffer.len() * 8)
-            };
-            shared_mem.copy_from_slice(pte_bytes, SandboxMemoryLayout::PT_OFFSET)?;
+            shared_mem.copy_from_slice(&buffer.into_bytes(), SandboxMemoryLayout::PML4_OFFSET)?;
             Ok::<(), crate::HyperlightError>(())
         })??;
 
         Ok(rsp)
-    }
-
-    /// Optimized page flags getter that maintains state for sequential access patterns
-    #[cfg(feature = "init-paging")]
-    fn get_page_flags(
-        p: usize,
-        i: usize,
-        regions: &[MemoryRegion],
-        cached_region_idx: &mut Option<usize>,
-    ) -> Result<MemoryRegionType> {
-        let addr = (p << 21) + (i << 12);
-
-        // First check if we're still in the cached region
-        if let Some(cached_idx) = *cached_region_idx
-            && cached_idx < regions.len()
-            && regions[cached_idx].guest_region.contains(&addr)
-        {
-            return Ok(regions[cached_idx].region_type);
-        }
-
-        // If not in cached region, try adjacent regions first (common for sequential access)
-        if let Some(cached_idx) = *cached_region_idx {
-            // Check next region
-            if cached_idx + 1 < regions.len()
-                && regions[cached_idx + 1].guest_region.contains(&addr)
-            {
-                *cached_region_idx = Some(cached_idx + 1);
-                return Ok(regions[cached_idx + 1].region_type);
-            }
-        }
-
-        // Fall back to binary search for non-sequential access
-        let idx = regions.binary_search_by(|region| {
-            if region.guest_region.contains(&addr) {
-                std::cmp::Ordering::Equal
-            } else if region.guest_region.start > addr {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Less
-            }
-        });
-
-        match idx {
-            Ok(index) => {
-                *cached_region_idx = Some(index);
-                Ok(regions[index].region_type)
-            }
-            Err(_) => Err(new_error!("Could not find region for address: {}", addr)),
-        }
     }
 
     /// Create a snapshot with the given mapped regions
