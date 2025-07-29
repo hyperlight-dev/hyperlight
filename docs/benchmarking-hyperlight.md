@@ -72,4 +72,6 @@ Found 1 outliers among 100 measurements (1.00%)
 
 ## Running benchmarks locally
 
-Use `just bench [debug/release]` parameter to run benchmarks. Comparing local benchmarks results to github-saved benchmarks doesn't make much sense, since you'd be using different hardware, but you can use `just bench-download os hypervisor [tag] ` to download and extract the GitHub release benchmarks to the correct place folder. You can then run `just bench-ci main` to compare to (and overwrite) the previous release benchmarks. Note that `main` is the name of the baselines stored in GitHub.
+Use `just bench` to run benchmarks with release builds (the only supported configuration). Comparing local benchmark results to github-saved benchmarks doesn't make much sense, since you'd be using different hardware, but you can use `just bench-download os hypervisor [tag] ` to download and extract the GitHub release benchmarks to the correct place folder. You can then run `just bench-ci main` to compare to (and overwrite) the previous release benchmarks. Note that `main` is the name of the baselines stored in GitHub.
+
+**Important**: Benchmarks can only be run with release builds to ensure meaningful performance measurements. Debug builds are not supported for benchmarking.
