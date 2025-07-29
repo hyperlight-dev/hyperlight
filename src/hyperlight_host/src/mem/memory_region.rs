@@ -324,9 +324,11 @@ impl From<MemoryRegion> for kvm_bindings::kvm_userspace_memory_region {
             guest_phys_addr: region.guest_region.start as u64,
             memory_size: (region.guest_region.end - region.guest_region.start) as u64,
             userspace_addr: region.host_region.start as u64,
-            flags: match perm_flags {
-                MemoryRegionFlags::READ => KVM_MEM_READONLY,
-                _ => 0, // normal, RWX
+            flags: if perm_flags.contains(MemoryRegionFlags::WRITE) {
+                0 // RWX
+            } else {
+                // Note: KVM_MEM_READONLY is executable
+                KVM_MEM_READONLY // RX 
             },
         }
     }

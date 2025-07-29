@@ -597,8 +597,12 @@ mod tests {
         let guest_base = 0x1_0000_0000; // Arbitrary guest base address
 
         unsafe {
-            sbox.map_region(&region_for_memory(&map_mem, guest_base))
-                .unwrap();
+            sbox.map_region(&region_for_memory(
+                &map_mem,
+                guest_base,
+                MemoryRegionFlags::READ,
+            ))
+            .unwrap();
         }
 
         let _guard = map_mem.lock.try_read().unwrap();
@@ -610,6 +614,56 @@ mod tests {
             .unwrap();
 
         assert_eq!(actual, expected);
+    }
+
+    // Makes sure MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE executable but not writable
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_mmap_write_exec() {
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+
+        let expected = &[0x90, 0x90, 0x90, 0xC3]; // NOOP slide to RET
+        let map_mem = page_aligned_memory(expected);
+        let guest_base = 0x1_0000_0000; // Arbitrary guest base address
+
+        unsafe {
+            sbox.map_region(&region_for_memory(
+                &map_mem,
+                guest_base,
+                MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+            ))
+            .unwrap();
+        }
+
+        let _guard = map_mem.lock.try_read().unwrap();
+
+        // Execute should pass since memory is executable
+        let succeed = sbox
+            .call_guest_function_by_name::<bool>(
+                "ExecMappedBuffer",
+                (guest_base as u64, expected.len() as u64),
+            )
+            .unwrap();
+        assert!(succeed, "Expected execution of mapped buffer to succeed");
+
+        // write should fail because the memory is mapped as read-only
+        let err = sbox
+            .call_guest_function_by_name::<bool>(
+                "WriteMappedBuffer",
+                (guest_base as u64, expected.len() as u64),
+            )
+            .unwrap_err();
+
+        match err {
+            HyperlightError::MemoryAccessViolation(addr, ..) if addr == guest_base as u64 => {}
+            _ => panic!("Expected MemoryAccessViolation error"),
+        };
     }
 
     #[cfg(target_os = "linux")]
@@ -627,13 +681,17 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn region_for_memory(mem: &GuestSharedMemory, guest_base: usize) -> MemoryRegion {
+    fn region_for_memory(
+        mem: &GuestSharedMemory,
+        guest_base: usize,
+        flags: MemoryRegionFlags,
+    ) -> MemoryRegion {
         let ptr = mem.base_addr();
         let len = mem.mem_size();
         MemoryRegion {
             host_region: ptr..(ptr + len),
             guest_region: guest_base..(guest_base + len),
-            flags: MemoryRegionFlags::READ,
+            flags,
             region_type: MemoryRegionType::Heap,
         }
     }

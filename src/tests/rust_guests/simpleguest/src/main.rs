@@ -798,6 +798,60 @@ fn read_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+fn write_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let (ParameterValue::ULong(base), ParameterValue::ULong(len)) = (
+        function_call.parameters.clone().unwrap()[0].clone(),
+        function_call.parameters.clone().unwrap()[1].clone(),
+    ) {
+        let base = base as usize as *mut u8;
+        let len = len as usize;
+
+        unsafe {
+            hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096)
+        };
+
+        let data = unsafe { core::slice::from_raw_parts_mut(base, len) };
+
+        // should fail
+        data[0] = 0x42;
+
+        // should never reach this
+        Ok(get_flatbuffer_result(true))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to read_mapped_buffer".to_string(),
+        ))
+    }
+}
+
+fn exec_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let (ParameterValue::ULong(base), ParameterValue::ULong(len)) = (
+        function_call.parameters.clone().unwrap()[0].clone(),
+        function_call.parameters.clone().unwrap()[1].clone(),
+    ) {
+        let base = base as usize as *mut u8;
+        let len = len as usize;
+
+        unsafe {
+            hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096)
+        };
+
+        let data = unsafe { core::slice::from_raw_parts(base, len) };
+
+        // Should be safe as long as data is something like a NOOP followed by a RET
+        let func: fn() = unsafe { core::mem::transmute(data.as_ptr()) };
+        func();
+
+        Ok(get_flatbuffer_result(true))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to read_mapped_buffer".to_string(),
+        ))
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn hyperlight_main() {
     let read_from_user_memory_def = GuestFunctionDefinition::new(
@@ -817,6 +871,24 @@ pub extern "C" fn hyperlight_main() {
     );
 
     register_function(read_mapped_buffer_def);
+
+    let write_mapped_buffer_def = GuestFunctionDefinition::new(
+        "WriteMappedBuffer".to_string(),
+        Vec::from(&[ParameterType::ULong, ParameterType::ULong]),
+        ReturnType::Bool,
+        write_mapped_buffer as usize,
+    );
+
+    register_function(write_mapped_buffer_def);
+
+    let exec_mapped_buffer_def = GuestFunctionDefinition::new(
+        "ExecMappedBuffer".to_string(),
+        Vec::from(&[ParameterType::ULong, ParameterType::ULong]),
+        ReturnType::Bool,
+        exec_mapped_buffer as usize,
+    );
+
+    register_function(exec_mapped_buffer_def);
 
     let set_static_def = GuestFunctionDefinition::new(
         "SetStatic".to_string(),
