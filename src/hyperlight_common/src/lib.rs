@@ -38,3 +38,5 @@ pub mod resource;
 
 /// cbindgen:ignore
 pub mod func;
+// cbindgen:ignore
+pub mod vm;
