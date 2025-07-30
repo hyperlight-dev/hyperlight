@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashSet;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
@@ -88,18 +89,35 @@ impl MultiUseSandbox {
     /// Create a snapshot of the current state of the sandbox's memory.
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn snapshot(&mut self) -> Result<Snapshot> {
-        let snapshot = self.mem_mgr.unwrap_mgr_mut().snapshot()?;
-        Ok(Snapshot { inner: snapshot })
+        let mapped_regions_iter = self.vm.get_mapped_regions();
+        let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
+        let memory_snapshot = self.mem_mgr.unwrap_mgr_mut().snapshot(mapped_regions_vec)?;
+        Ok(Snapshot {
+            inner: memory_snapshot,
+        })
     }
 
     /// Restore the sandbox's memory to the state captured in the given snapshot.
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
-        let rgns_to_unmap = self
-            .mem_mgr
+        self.mem_mgr
             .unwrap_mgr_mut()
             .restore_snapshot(&snapshot.inner)?;
-        unsafe { self.vm.unmap_regions(rgns_to_unmap)? };
+
+        let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
+        let snapshot_regions: HashSet<_> = snapshot.inner.regions().iter().cloned().collect();
+
+        let regions_to_unmap = current_regions.difference(&snapshot_regions);
+        let regions_to_map = snapshot_regions.difference(&current_regions);
+
+        for region in regions_to_unmap {
+            unsafe { self.vm.unmap_region(region)? };
+        }
+
+        for region in regions_to_map {
+            unsafe { self.vm.map_region(region)? };
+        }
+
         Ok(())
     }
 
@@ -693,5 +711,58 @@ mod tests {
             flags,
             region_type: MemoryRegionType::Heap,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn allocate_guest_memory() -> GuestSharedMemory {
+        page_aligned_memory(b"test data for snapshot")
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn snapshot_restore_handles_remapping_correctly() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        // 1. Take snapshot 1 with no additional regions mapped
+        let snapshot1 = sbox.snapshot().unwrap();
+        assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
+
+        // 2. Map a memory region
+        let map_mem = allocate_guest_memory();
+        let guest_base = 0x200000000_usize;
+        let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
+
+        unsafe { sbox.map_region(&region).unwrap() };
+        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+
+        // 3. Take snapshot 2 with 1 region mapped
+        let snapshot2 = sbox.snapshot().unwrap();
+        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+
+        // 4. Restore to snapshot 1 (should unmap the region)
+        sbox.restore(&snapshot1).unwrap();
+        assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
+
+        // 5. Restore forward to snapshot 2 (should remap the region)
+        sbox.restore(&snapshot2).unwrap();
+        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+
+        // Verify the region is the same
+        let mut restored_regions = sbox.vm.get_mapped_regions();
+        assert_eq!(*restored_regions.next().unwrap(), region);
+        assert!(restored_regions.next().is_none());
+        drop(restored_regions);
+
+        // 6. Try map the region again (should fail since already mapped)
+        let err = unsafe { sbox.map_region(&region) };
+        assert!(
+            err.is_err(),
+            "Expected error when remapping existing region: {:?}",
+            err
+        );
     }
 }

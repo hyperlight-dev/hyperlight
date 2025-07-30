@@ -27,8 +27,9 @@ use tracing::{Span, instrument};
 
 use super::exe::ExeInfo;
 use super::layout::SandboxMemoryLayout;
+use super::memory_region::MemoryRegion;
 #[cfg(feature = "init-paging")]
-use super::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegionType};
+use super::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionType};
 use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
@@ -259,16 +260,16 @@ where
         }
     }
 
-    pub(crate) fn snapshot(&mut self) -> Result<SharedMemorySnapshot> {
-        SharedMemorySnapshot::new(&mut self.shared_mem, self.mapped_rgns)
+    /// Create a snapshot with the given mapped regions
+    pub(crate) fn snapshot(
+        &mut self,
+        mapped_regions: Vec<MemoryRegion>,
+    ) -> Result<SharedMemorySnapshot> {
+        SharedMemorySnapshot::new(&mut self.shared_mem, mapped_regions)
     }
 
     /// This function restores a memory snapshot from a given snapshot.
-    ///
-    /// Returns the number of memory regions mapped into the sandbox
-    /// that need to be unmapped in order for the restore to be
-    /// completed.
-    pub(crate) fn restore_snapshot(&mut self, snapshot: &SharedMemorySnapshot) -> Result<u64> {
+    pub(crate) fn restore_snapshot(&mut self, snapshot: &SharedMemorySnapshot) -> Result<()> {
         if self.shared_mem.mem_size() != snapshot.mem_size() {
             return Err(new_error!(
                 "Snapshot size does not match current memory size: {} != {}",
@@ -276,9 +277,8 @@ where
                 snapshot.mem_size()
             ));
         }
-        let old_rgns = self.mapped_rgns;
-        self.mapped_rgns = snapshot.restore_from_snapshot(&mut self.shared_mem)?;
-        Ok(old_rgns - self.mapped_rgns)
+        snapshot.restore_from_snapshot(&mut self.shared_mem)?;
+        Ok(())
     }
 
     /// Sets `addr` to the correct offset in the memory referenced by
