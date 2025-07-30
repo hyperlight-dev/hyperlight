@@ -24,6 +24,9 @@ use crate::Result;
 /// of the memory therein
 #[derive(Clone)]
 pub(crate) struct SharedMemorySnapshot {
+    // Unique ID of the sandbox this snapshot was taken from
+    sandbox_id: u64,
+    // Memory of the sandbox at the time this snapshot was taken
     snapshot: Vec<u8>,
     /// The memory regions that were mapped when this snapshot was taken (excluding initial sandbox regions)
     regions: Vec<MemoryRegion>,
@@ -35,11 +38,16 @@ impl SharedMemorySnapshot {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn new<S: SharedMemory>(
         shared_mem: &mut S,
+        sandbox_id: u64,
         regions: Vec<MemoryRegion>,
     ) -> Result<Self> {
         // TODO: Track dirty pages instead of copying entire memory
         let snapshot = shared_mem.with_exclusivity(|e| e.copy_all_to_vec())??;
-        Ok(Self { snapshot, regions })
+        Ok(Self {
+            sandbox_id,
+            snapshot,
+            regions,
+        })
     }
 
     /// Take another snapshot of the internally-stored `SharedMemory`,
@@ -57,6 +65,11 @@ impl SharedMemorySnapshot {
     pub(super) fn restore_from_snapshot<S: SharedMemory>(&self, shared_mem: &mut S) -> Result<()> {
         shared_mem.with_exclusivity(|e| e.copy_from_slice(self.snapshot.as_slice(), 0))??;
         Ok(())
+    }
+
+    /// The id of the sandbox this snapshot was taken from.
+    pub(crate) fn sandbox_id(&self) -> u64 {
+        self.sandbox_id
     }
 
     /// Get the mapped regions from this snapshot
@@ -84,7 +97,7 @@ mod tests {
         let data2 = data1.iter().map(|b| b + 1).collect::<Vec<u8>>();
         let mut gm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
         gm.copy_from_slice(data1.as_slice(), 0).unwrap();
-        let mut snap = super::SharedMemorySnapshot::new(&mut gm, Vec::new()).unwrap();
+        let mut snap = super::SharedMemorySnapshot::new(&mut gm, 0, Vec::new()).unwrap();
         {
             // after the first snapshot is taken, make sure gm has the equivalent
             // of data1

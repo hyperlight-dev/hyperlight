@@ -20,6 +20,7 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::linux::fs::MetadataExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
@@ -31,6 +32,7 @@ use tracing::{Span, instrument};
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
 use super::{Callable, MemMgrWrapper, WrapperGetter};
+use crate::HyperlightError::SnapshotSandboxMismatch;
 use crate::func::guest_err::check_for_guest_error;
 use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(gdb)]
@@ -44,6 +46,9 @@ use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
 use crate::{HyperlightError, Result, log_then_return};
 
+/// Global counter for assigning unique IDs to sandboxes
+static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// A sandbox that supports being used Multiple times.
 /// The implication of being used multiple times is two-fold:
 ///
@@ -53,6 +58,8 @@ use crate::{HyperlightError, Result, log_then_return};
 /// 2. A MultiUseGuestCallContext can be created from the sandbox and used to make multiple guest function calls to the Sandbox.
 ///    in this case the state of the sandbox is not reset until the context is finished and the `MultiUseSandbox` is returned.
 pub struct MultiUseSandbox {
+    /// Unique identifier for this sandbox instance
+    id: u64,
     // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
     pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: MemMgrWrapper<HostSharedMemory>,
@@ -77,6 +84,7 @@ impl MultiUseSandbox {
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> MultiUseSandbox {
         Self {
+            id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             _host_funcs: host_funcs,
             mem_mgr: mgr,
             vm,
@@ -91,7 +99,10 @@ impl MultiUseSandbox {
     pub fn snapshot(&mut self) -> Result<Snapshot> {
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
-        let memory_snapshot = self.mem_mgr.unwrap_mgr_mut().snapshot(mapped_regions_vec)?;
+        let memory_snapshot = self
+            .mem_mgr
+            .unwrap_mgr_mut()
+            .snapshot(self.id, mapped_regions_vec)?;
         Ok(Snapshot {
             inner: memory_snapshot,
         })
@@ -100,6 +111,10 @@ impl MultiUseSandbox {
     /// Restore the sandbox's memory to the state captured in the given snapshot.
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
+        if self.id != snapshot.inner.sandbox_id() {
+            return Err(SnapshotSandboxMismatch);
+        }
+
         self.mem_mgr
             .unwrap_mgr_mut()
             .restore_snapshot(&snapshot.inner)?;
@@ -764,5 +779,37 @@ mod tests {
             "Expected error when remapping existing region: {:?}",
             err
         );
+    }
+
+    #[test]
+    fn snapshot_different_sandbox() {
+        let mut sandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        let mut sandbox2 = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+        assert_ne!(sandbox.id, sandbox2.id);
+
+        let snapshot = sandbox.snapshot().unwrap();
+        let err = sandbox2.restore(&snapshot);
+        assert!(matches!(err, Err(HyperlightError::SnapshotSandboxMismatch)));
+
+        let sandbox_id = sandbox.id;
+        drop(sandbox);
+        drop(sandbox2);
+        drop(snapshot);
+
+        let sandbox3 = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+        assert_ne!(sandbox3.id, sandbox_id);
     }
 }

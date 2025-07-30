@@ -221,6 +221,10 @@ pub enum HyperlightError {
     #[cfg(all(feature = "seccomp", target_os = "linux"))]
     SeccompFilterError(#[from] seccompiler::Error),
 
+    /// Tried to restore snapshot to a sandbox that is not the same as the one the snapshot was taken from
+    #[error("Snapshot was taken from a different sandbox")]
+    SnapshotSandboxMismatch,
+
     /// SystemTimeError
     #[error("SystemTimeError {0:?}")]
     SystemTimeError(#[from] SystemTimeError),

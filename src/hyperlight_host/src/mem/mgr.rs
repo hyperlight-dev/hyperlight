@@ -263,9 +263,10 @@ where
     /// Create a snapshot with the given mapped regions
     pub(crate) fn snapshot(
         &mut self,
+        sandbox_id: u64,
         mapped_regions: Vec<MemoryRegion>,
     ) -> Result<SharedMemorySnapshot> {
-        SharedMemorySnapshot::new(&mut self.shared_mem, mapped_regions)
+        SharedMemorySnapshot::new(&mut self.shared_mem, sandbox_id, mapped_regions)
     }
 
     /// This function restores a memory snapshot from a given snapshot.
