@@ -185,33 +185,6 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Run the vCPU
     fn run(&mut self) -> Result<HyperlightExit>;
 
-    /// Returns a Some(HyperlightExit::AccessViolation(..)) if the given gpa doesn't have
-    /// access its corresponding region. Returns None otherwise, or if the region is not found.
-    fn get_memory_access_violation(
-        &self,
-        gpa: usize,
-        mem_regions: &[MemoryRegion],
-        access_info: MemoryRegionFlags,
-    ) -> Option<HyperlightExit> {
-        // find the region containing the given gpa
-        let region = mem_regions
-            .iter()
-            .find(|region| region.guest_region.contains(&gpa));
-
-        if let Some(region) = region {
-            if !region.flags.contains(access_info)
-                || region.flags.contains(MemoryRegionFlags::STACK_GUARD)
-            {
-                return Some(HyperlightExit::AccessViolation(
-                    gpa as u64,
-                    access_info,
-                    region.flags,
-                ));
-            }
-        }
-        None
-    }
-
     /// Get InterruptHandle to underlying VM
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
 
@@ -281,6 +254,30 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Get a mutable reference of the trace info for the guest
     #[cfg(feature = "trace_guest")]
     fn trace_info_as_mut(&mut self) -> &mut TraceInfo;
+}
+
+/// Returns a Some(HyperlightExit::AccessViolation(..)) if the given gpa doesn't have
+/// access its corresponding region. Returns None otherwise, or if the region is not found.
+pub(crate) fn get_memory_access_violation<'a>(
+    gpa: usize,
+    mut mem_regions: impl Iterator<Item = &'a MemoryRegion>,
+    access_info: MemoryRegionFlags,
+) -> Option<HyperlightExit> {
+    // find the region containing the given gpa
+    let region = mem_regions.find(|region| region.guest_region.contains(&gpa));
+
+    if let Some(region) = region {
+        if !region.flags.contains(access_info)
+            || region.flags.contains(MemoryRegionFlags::STACK_GUARD)
+        {
+            return Some(HyperlightExit::AccessViolation(
+                gpa as u64,
+                access_info,
+                region.flags,
+            ));
+        }
+    }
+    None
 }
 
 /// A virtual CPU that can be run until an exit occurs
