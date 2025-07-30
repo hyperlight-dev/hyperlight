@@ -52,7 +52,7 @@ pub(crate) const DEFAULT_GUEST_BLOB_MEM_FLAGS: MemoryRegionFlags = MemoryRegionF
 
 bitflags! {
     /// flags representing memory permission for a memory region
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
     pub struct MemoryRegionFlags: u32 {
         /// no permissions
         const NONE = 0;
@@ -154,7 +154,7 @@ impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
 }
 
 // only used for debugging
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 /// The type of memory region
 pub enum MemoryRegionType {
     /// The region contains the guest's page tables
@@ -181,7 +181,7 @@ pub enum MemoryRegionType {
 
 /// represents a single memory region inside the guest. All memory within a region has
 /// the same memory permissions
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemoryRegion {
     /// the range of guest memory addresses
     pub guest_region: Range<usize>,

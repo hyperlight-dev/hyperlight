@@ -42,6 +42,7 @@ use super::{
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
+use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
@@ -294,10 +295,15 @@ pub(crate) struct KVMDriver {
     vcpu_fd: VcpuFd,
     entrypoint: u64,
     orig_rsp: GuestPtr,
-    mem_regions: Vec<MemoryRegion>,
     interrupt_handle: Arc<LinuxInterruptHandle>,
     mem_mgr: Option<MemMgrWrapper<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
+
+    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
+    mmap_regions: Vec<(MemoryRegion, u32)>, // Later mapped regions (region, slot number)
+    next_slot: u32,                     // Monotonically increasing slot number
+    freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
+
     #[cfg(gdb)]
     debug: Option<KvmDebug>,
     #[cfg(gdb)]
@@ -384,7 +390,10 @@ impl KVMDriver {
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
-            mem_regions,
+            next_slot: mem_regions.len() as u32,
+            sandbox_regions: mem_regions,
+            mmap_regions: Vec::new(),
+            freed_slots: Vec::new(),
             interrupt_handle: interrupt_handle.clone(),
             mem_mgr: None,
             host_funcs: None,
@@ -434,8 +443,11 @@ impl Debug for KVMDriver {
         let mut f = f.debug_struct("KVM Driver");
         // Output each memory region
 
-        for region in &self.mem_regions {
-            f.field("Memory Region", &region);
+        for region in &self.sandbox_regions {
+            f.field("Sandbox Memory Region", &region);
+        }
+        for region in &self.mmap_regions {
+            f.field("Mapped Memory Region", &region);
         }
         let regs = self.vcpu_fd.get_regs();
         // check that regs is OK and then set field in debug struct
@@ -517,25 +529,45 @@ impl Hypervisor for KVMDriver {
         }
 
         let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
-        kvm_region.slot = self.mem_regions.len() as u32;
+
+        // Try to reuse a freed slot first, otherwise use next_slot
+        let slot = if let Some(freed_slot) = self.freed_slots.pop() {
+            freed_slot
+        } else {
+            let slot = self.next_slot;
+            self.next_slot += 1;
+            slot
+        };
+
+        kvm_region.slot = slot;
         unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
-        self.mem_regions.push(region.to_owned());
+        self.mmap_regions.push((region.to_owned(), slot));
         Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn unmap_regions(&mut self, n: u64) -> Result<()> {
-        let n_keep = self.mem_regions.len() - n as usize;
-        for (k, region) in self.mem_regions.split_off(n_keep).iter().enumerate() {
-            let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
-            kvm_region.slot = (n_keep + k) as u32;
+    unsafe fn unmap_region(&mut self, region: &MemoryRegion) -> Result<()> {
+        if let Some(idx) = self.mmap_regions.iter().position(|(r, _)| r == region) {
+            let (region, slot) = self.mmap_regions.remove(idx);
+            let mut kvm_region: kvm_userspace_memory_region = region.into();
+            kvm_region.slot = slot;
             // Setting memory_size to 0 unmaps the slot's region
             // From https://docs.kernel.org/virt/kvm/api.html
             // > Deleting a slot is done by passing zero for memory_size.
             kvm_region.memory_size = 0;
             unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
+
+            // Add the freed slot to the reuse list
+            self.freed_slots.push(slot);
+
+            Ok(())
+        } else {
+            Err(new_error!("Tried to unmap region that is not mapped"))
         }
-        Ok(())
+    }
+
+    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
+        Box::new(self.mmap_regions.iter().map(|(region, _)| region))
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -717,9 +749,11 @@ impl Hypervisor for KVMDriver {
             Ok(VcpuExit::MmioRead(addr, _)) => {
                 crate::debug!("KVM MMIO Read -Details: Address: {} \n {:#?}", addr, &self);
 
-                match self.get_memory_access_violation(
+                match get_memory_access_violation(
                     addr as usize,
-                    &self.mem_regions,
+                    self.sandbox_regions
+                        .iter()
+                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
                     MemoryRegionFlags::READ,
                 ) {
                     Some(access_violation_exit) => access_violation_exit,
@@ -729,9 +763,11 @@ impl Hypervisor for KVMDriver {
             Ok(VcpuExit::MmioWrite(addr, _)) => {
                 crate::debug!("KVM MMIO Write -Details: Address: {} \n {:#?}", addr, &self);
 
-                match self.get_memory_access_violation(
+                match get_memory_access_violation(
                     addr as usize,
-                    &self.mem_regions,
+                    self.sandbox_regions
+                        .iter()
+                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
                     MemoryRegionFlags::WRITE,
                 ) {
                     Some(access_violation_exit) => access_violation_exit,
@@ -847,7 +883,7 @@ impl Hypervisor for KVMDriver {
             // The [`CrashDumpContext`] accepts xsave as a vector of u8, so we need to convert the
             // xsave region to a vector of u8
             Ok(Some(crashdump::CrashDumpContext::new(
-                &self.mem_regions,
+                &self.sandbox_regions,
                 regs,
                 xsave
                     .region

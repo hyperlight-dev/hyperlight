@@ -157,8 +157,13 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// requirements of at least one page for base and len.
     unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()>;
 
-    /// Unmap the most recent `n` regions mapped by `map_region`
-    unsafe fn unmap_regions(&mut self, n: u64) -> Result<()>;
+    /// Unmap a memory region from the sandbox
+    unsafe fn unmap_region(&mut self, rgn: &MemoryRegion) -> Result<()>;
+
+    /// Get the currently mapped dynamic memory regions (not including sandbox regions)
+    ///
+    /// Note: Box needed for trait to be object-safe :(
+    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_>;
 
     /// Dispatch a call from the host to the guest using the given pointer
     /// to the dispatch function _in the guest's address space_.

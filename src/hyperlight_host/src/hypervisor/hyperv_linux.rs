@@ -75,6 +75,7 @@ use super::{
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
+use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
@@ -312,12 +313,15 @@ pub(crate) struct HypervLinuxDriver {
     page_size: usize,
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
-    entrypoint: u64,
-    mem_regions: Vec<MemoryRegion>,
     orig_rsp: GuestPtr,
+    entrypoint: u64,
     interrupt_handle: Arc<LinuxInterruptHandle>,
     mem_mgr: Option<MemMgrWrapper<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
+
+    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
+    mmap_regions: Vec<MemoryRegion>,    // Later mapped regions
+
     #[cfg(gdb)]
     debug: Option<MshvDebug>,
     #[cfg(gdb)]
@@ -447,7 +451,8 @@ impl HypervLinuxDriver {
             page_size: 0,
             vm_fd,
             vcpu_fd,
-            mem_regions,
+            sandbox_regions: mem_regions,
+            mmap_regions: Vec::new(),
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
             interrupt_handle: interrupt_handle.clone(),
@@ -540,8 +545,11 @@ impl Debug for HypervLinuxDriver {
         f.field("Entrypoint", &self.entrypoint)
             .field("Original RSP", &self.orig_rsp);
 
-        for region in &self.mem_regions {
-            f.field("Memory Region", &region);
+        for region in &self.sandbox_regions {
+            f.field("Sandbox Memory Region", &region);
+        }
+        for region in &self.mmap_regions {
+            f.field("Mapped Memory Region", &region);
         }
 
         let regs = self.vcpu_fd.get_regs();
@@ -631,20 +639,24 @@ impl Hypervisor for HypervLinuxDriver {
         }
         let mshv_region: mshv_user_mem_region = rgn.to_owned().into();
         self.vm_fd.map_user_memory(mshv_region)?;
-        self.mem_regions.push(rgn.to_owned());
+        self.mmap_regions.push(rgn.to_owned());
         Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn unmap_regions(&mut self, n: u64) -> Result<()> {
-        for rgn in self
-            .mem_regions
-            .split_off(self.mem_regions.len() - n as usize)
-        {
-            let mshv_region: mshv_user_mem_region = rgn.to_owned().into();
+    unsafe fn unmap_region(&mut self, region: &MemoryRegion) -> Result<()> {
+        if let Some(pos) = self.mmap_regions.iter().position(|r| r == region) {
+            let removed_region = self.mmap_regions.remove(pos);
+            let mshv_region: mshv_user_mem_region = removed_region.into();
             self.vm_fd.unmap_user_memory(mshv_region)?;
+            Ok(())
+        } else {
+            Err(new_error!("Tried to unmap region that is not mapped"))
         }
-        Ok(())
+    }
+
+    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
+        Box::new(self.mmap_regions.iter())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -867,9 +879,9 @@ impl Hypervisor for HypervLinuxDriver {
                         gpa,
                         &self
                     );
-                    match self.get_memory_access_violation(
+                    match get_memory_access_violation(
                         gpa as usize,
-                        &self.mem_regions,
+                        self.sandbox_regions.iter().chain(self.mmap_regions.iter()),
                         access_info,
                     ) {
                         Some(access_info_violation) => access_info_violation,
@@ -999,7 +1011,7 @@ impl Hypervisor for HypervLinuxDriver {
             });
 
             Ok(Some(crashdump::CrashDumpContext::new(
-                &self.mem_regions,
+                &self.sandbox_regions,
                 regs,
                 xsave.buffer.to_vec(),
                 self.entrypoint,
@@ -1180,7 +1192,7 @@ impl Drop for HypervLinuxDriver {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     fn drop(&mut self) {
         self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
-        for region in &self.mem_regions {
+        for region in self.sandbox_regions.iter().chain(self.mmap_regions.iter()) {
             let mshv_region: mshv_user_mem_region = region.to_owned().into();
             match self.vm_fd.unmap_user_memory(mshv_region) {
                 Ok(_) => (),

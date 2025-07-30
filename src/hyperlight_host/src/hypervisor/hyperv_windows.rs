@@ -57,6 +57,7 @@ use super::{
 };
 use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
+use crate::hypervisor::get_memory_access_violation;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -281,10 +282,13 @@ pub(crate) struct HypervWindowsDriver {
     _surrogate_process: SurrogateProcess, // we need to keep a reference to the SurrogateProcess for the duration of the driver since otherwise it will dropped and the memory mapping will be unmapped and the surrogate process will be returned to the pool
     entrypoint: u64,
     orig_rsp: GuestPtr,
-    mem_regions: Vec<MemoryRegion>,
     interrupt_handle: Arc<WindowsInterruptHandle>,
     mem_mgr: Option<MemMgrWrapper<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
+
+    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
+    mmap_regions: Vec<MemoryRegion>,    // Later mapped regions
+
     #[cfg(gdb)]
     debug: Option<HypervDebug>,
     #[cfg(gdb)]
@@ -358,7 +362,8 @@ impl HypervWindowsDriver {
             _surrogate_process: surrogate_process,
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
-            mem_regions,
+            sandbox_regions: mem_regions,
+            mmap_regions: Vec::new(),
             interrupt_handle: interrupt_handle.clone(),
             mem_mgr: None,
             host_funcs: None,
@@ -457,8 +462,11 @@ impl Debug for HypervWindowsDriver {
         fs.field("Entrypoint", &self.entrypoint)
             .field("Original RSP", &self.orig_rsp);
 
-        for region in &self.mem_regions {
-            fs.field("Memory Region", &region);
+        for region in &self.sandbox_regions {
+            fs.field("Sandbox Memory Region", &region);
+        }
+        for region in &self.mmap_regions {
+            fs.field("Mapped Memory Region", &region);
         }
 
         // Get the registers
@@ -631,18 +639,17 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn map_region(&mut self, _rgn: &MemoryRegion) -> Result<()> {
+    unsafe fn map_region(&mut self, _region: &MemoryRegion) -> Result<()> {
         log_then_return!("Mapping host memory into the guest not yet supported on this platform");
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn unmap_regions(&mut self, n: u64) -> Result<()> {
-        if n > 0 {
-            log_then_return!(
-                "Mapping host memory into the guest not yet supported on this platform"
-            );
-        }
-        Ok(())
+    unsafe fn unmap_region(&mut self, _region: &MemoryRegion) -> Result<()> {
+        log_then_return!("Mapping host memory into the guest not yet supported on this platform");
+    }
+
+    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
+        Box::new(self.mmap_regions.iter())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -824,8 +831,11 @@ impl Hypervisor for HypervWindowsDriver {
                     gpa, access_info, &self
                 );
 
-                match self.get_memory_access_violation(gpa as usize, &self.mem_regions, access_info)
-                {
+                match get_memory_access_violation(
+                    gpa as usize,
+                    self.sandbox_regions.iter().chain(self.mmap_regions.iter()),
+                    access_info,
+                ) {
                     Some(access_info) => access_info,
                     None => HyperlightExit::Mmio(gpa),
                 }
@@ -934,7 +944,7 @@ impl Hypervisor for HypervWindowsDriver {
             });
 
             Ok(Some(crashdump::CrashDumpContext::new(
-                &self.mem_regions,
+                &self.sandbox_regions,
                 regs,
                 xsave,
                 self.entrypoint,
