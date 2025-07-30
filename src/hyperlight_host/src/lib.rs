@@ -14,8 +14,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![warn(dead_code, missing_docs, unused_mut)]
-//! This crate contains an SDK that is used to execute specially-
-// compiled binaries within a very lightweight hypervisor environment.
+//! Hyperlight host runtime for executing guest code in lightweight virtual machines.
+//!
+//! This crate provides the host-side runtime for Hyperlight, enabling safe execution
+//! of untrusted guest code within micro virtual machines with minimal overhead.
+//! The runtime manages sandbox creation, guest function calls, memory isolation,
+//! and host-guest communication.
+//!
+//! The primary entry points are [`UninitializedSandbox`] for initial setup and
+//! [`MultiUseSandbox`] for executing guest functions.
+//!
+//! ## Guest Requirements
+//!
+//! Hyperlight requires specially compiled guest binaries and cannot run regular
+//! container images or executables. Guests must be built using either the Rust
+//! API ([`hyperlight_guest`] with optional use of [`hyperlight_guest_bin`]),
+//! or with the C API (`hyperlight_guest_capi`).
+//!
+//! [`hyperlight_guest`]: https://docs.rs/hyperlight_guest
+//! [`hyperlight_guest_bin`]: https://docs.rs/hyperlight_guest_bin
+//!
 
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::panic))]
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::expect_used))]
