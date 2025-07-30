@@ -62,13 +62,17 @@ pub(crate) struct SandboxRuntimeConfig {
     pub(crate) guest_core_dump: bool,
 }
 
-/// A preliminary `Sandbox`, not yet ready to execute guest code.
+/// A preliminary sandbox that represents allocated memory and registered host functions,
+/// but has not yet created the underlying virtual machine.
 ///
-/// Prior to initializing a full-fledged `Sandbox`, you must create one of
-/// these `UninitializedSandbox`es with the `new` function, register all the
-/// host-implemented functions you need to be available to the guest, then
-/// call  `evolve` to transform your
-/// `UninitializedSandbox` into an initialized `Sandbox`.
+/// This struct holds the configuration and setup needed for a sandbox without actually
+/// creating the VM. It allows you to:
+/// - Set up memory layout and load guest binary data
+/// - Register host functions that will be available to the guest
+/// - Configure sandbox settings before VM creation
+///
+/// The virtual machine is not created until you call [`evolve`](Self::evolve) to transform
+/// this into an initialized [`MultiUseSandbox`].
 pub struct UninitializedSandbox {
     /// Registered host functions
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
@@ -90,7 +94,11 @@ impl Debug for UninitializedSandbox {
 }
 
 impl UninitializedSandbox {
-    /// Evolve `self` to a `MultiUseSandbox` without any additional metadata.
+    /// Creates and initializes the virtual machine, transforming this into a ready-to-use sandbox.
+    ///
+    /// This method consumes the `UninitializedSandbox` and performs the final initialization
+    /// steps to create the underlying virtual machine. Once evolved, the resulting
+    /// [`MultiUseSandbox`] can execute guest code and handle function calls.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub fn evolve(self) -> Result<MultiUseSandbox> {
         evolve_impl_multi_use(self)
@@ -125,7 +133,10 @@ impl<'a> From<&'a [u8]> for GuestBlob<'a> {
     }
 }
 
-/// A `GuestEnvironment` is a structure that contains the guest binary and an optional GuestBinary.
+/// Container for a guest binary and optional initialization data.
+///
+/// This struct combines a guest binary (either from a file or memory buffer) with
+/// optional data that will be available to the guest during execution.
 #[derive(Debug)]
 pub struct GuestEnvironment<'a, 'b> {
     /// The guest binary, which can be a file path or a buffer.
@@ -154,13 +165,12 @@ impl<'a> From<GuestBinary<'a>> for GuestEnvironment<'a, '_> {
 }
 
 impl UninitializedSandbox {
-    /// Create a new sandbox configured to run the binary at path
-    /// `bin_path`.
+    /// Creates a new uninitialized sandbox for the given guest environment.
     ///
-    /// The instrument attribute is used to generate tracing spans and also to emit an error should the Result be an error.
-    /// The skip attribute is used to skip the guest binary from being printed in the tracing span.
-    /// The name attribute is used to name the tracing span.
-    /// The err attribute is used to emit an error should the Result be an error, it uses the std::`fmt::Debug trait` to print the error.
+    /// The guest binary can be provided as either a file path or memory buffer.
+    /// An optional configuration can customize memory sizes and sandbox settings.
+    /// After creation, register host functions using [`register`](Self::register)
+    /// before calling [`evolve`](Self::evolve) to complete initialization and create the VM.
     #[instrument(
         err(Debug),
         skip(env),
@@ -294,14 +304,15 @@ impl UninitializedSandbox {
         SandboxMemoryManager::load_guest_binary_into_memory(cfg, exe_info, guest_blob)
     }
 
-    /// Set the max log level to be used by the guest.
-    /// If this is not set then the log level will be determined by parsing the RUST_LOG environment variable.
-    /// If the RUST_LOG environment variable is not set then the max log level will be set to `LevelFilter::Error`.
+    /// Sets the maximum log level for guest code execution.
+    ///
+    /// If not set, the log level is determined by the `RUST_LOG` environment variable,
+    /// defaulting to [`LevelFilter::Error`] if unset.
     pub fn set_max_guest_log_level(&mut self, log_level: LevelFilter) {
         self.max_guest_log_level = Some(log_level);
     }
 
-    /// Register a host function with the given name in the sandbox.
+    /// Registers a host function that the guest can call.
     pub fn register<Args: ParameterTuple, Output: SupportedReturnType>(
         &mut self,
         name: impl AsRef<str>,
@@ -310,9 +321,10 @@ impl UninitializedSandbox {
         register_host_function(host_func, self, name.as_ref(), None)
     }
 
-    /// Register the host function with the given name in the sandbox.
-    /// Unlike `register`, this variant takes a list of extra syscalls that will
-    /// allowed during the execution of the function handler.
+    /// Registers a host function with additional allowed syscalls during execution.
+    ///
+    /// Unlike [`register`](Self::register), this variant allows specifying extra syscalls
+    /// that will be permitted when the function handler runs.
     #[cfg(all(feature = "seccomp", target_os = "linux"))]
     pub fn register_with_extra_allowed_syscalls<
         Args: ParameterTuple,
@@ -327,10 +339,11 @@ impl UninitializedSandbox {
         register_host_function(host_func, self, name.as_ref(), Some(extra_allowed_syscalls))
     }
 
-    /// Register a host function named "HostPrint" that will be called by the guest
-    /// when it wants to print to the console.
-    /// The "HostPrint" host function is kind of special, as we expect it to have the
-    /// `FnMut(String) -> i32` signature.
+    /// Registers the special "HostPrint" function for guest printing.
+    ///
+    /// This overrides the default behavior of writing to stdout.
+    /// The function expects the signature `FnMut(String) -> i32`
+    /// and will be called when the guest wants to print output.
     pub fn register_print(
         &mut self,
         print_func: impl Into<HostFunction<i32, (String,)>>,
@@ -348,12 +361,10 @@ impl UninitializedSandbox {
         Ok(())
     }
 
-    /// Register a host function named "HostPrint" that will be called by the guest
-    /// when it wants to print to the console.
-    /// The "HostPrint" host function is kind of special, as we expect it to have the
-    /// `FnMut(String) -> i32` signature.
-    /// Unlike `register_print`, this variant takes a list of extra syscalls that will
-    /// allowed during the execution of the function handler.
+    /// Registers the "HostPrint" function with additional allowed syscalls.
+    ///
+    /// Like [`register_print`](Self::register_print), but allows specifying extra syscalls
+    /// that will be permitted during function execution.
     #[cfg(all(feature = "seccomp", target_os = "linux"))]
     pub fn register_print_with_extra_allowed_syscalls(
         &mut self,
