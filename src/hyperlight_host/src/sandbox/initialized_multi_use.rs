@@ -49,14 +49,10 @@ use crate::{HyperlightError, Result, log_then_return};
 /// Global counter for assigning unique IDs to sandboxes
 static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// A sandbox that supports being used Multiple times.
-/// The implication of being used multiple times is two-fold:
+/// A fully initialized sandbox that can execute guest functions multiple times.
 ///
-/// 1. The sandbox can be used to call guest functions multiple times, each time a
-///    guest function is called the state of the sandbox is reset to the state it was in before the call was made.
-///
-/// 2. A MultiUseGuestCallContext can be created from the sandbox and used to make multiple guest function calls to the Sandbox.
-///    in this case the state of the sandbox is not reset until the context is finished and the `MultiUseSandbox` is returned.
+/// Guest functions can be called repeatedly while maintaining state between calls.
+/// The sandbox supports creating snapshots and restoring to previous states.
 pub struct MultiUseSandbox {
     /// Unique identifier for this sandbox instance
     id: u64,
@@ -94,7 +90,29 @@ impl MultiUseSandbox {
         }
     }
 
-    /// Create a snapshot of the current state of the sandbox's memory.
+    /// Creates a snapshot of the sandbox's current memory state.
+    ///
+    /// The snapshot is tied to this specific sandbox instance and can only be
+    /// restored to the same sandbox it was created from.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// // Modify sandbox state
+    /// sandbox.call_guest_function_by_name::<i32>("SetValue", 42)?;
+    ///
+    /// // Create snapshot belonging to this sandbox
+    /// let snapshot = sandbox.snapshot()?;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn snapshot(&mut self) -> Result<Snapshot> {
         let mapped_regions_iter = self.vm.get_mapped_regions();
@@ -108,7 +126,37 @@ impl MultiUseSandbox {
         })
     }
 
-    /// Restore the sandbox's memory to the state captured in the given snapshot.
+    /// Restores the sandbox's memory to a previously captured snapshot state.
+    ///
+    /// The snapshot must have been created from this same sandbox instance.
+    /// Attempting to restore a snapshot from a different sandbox will return
+    /// a [`SnapshotSandboxMismatch`](crate::HyperlightError::SnapshotSandboxMismatch) error.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// // Take initial snapshot from this sandbox
+    /// let snapshot = sandbox.snapshot()?;
+    ///
+    /// // Modify sandbox state
+    /// sandbox.call_guest_function_by_name::<i32>("SetValue", 100)?;
+    /// let value: i32 = sandbox.call_guest_function_by_name("GetValue", ())?;
+    /// assert_eq!(value, 100);
+    ///
+    /// // Restore to previous state (same sandbox)
+    /// sandbox.restore(&snapshot)?;
+    /// let restored_value: i32 = sandbox.call_guest_function_by_name("GetValue", ())?;
+    /// assert_eq!(restored_value, 0); // Back to initial state
+    /// # Ok(())
+    /// # }
+    /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
         if self.id != snapshot.inner.sandbox_id() {
@@ -136,8 +184,37 @@ impl MultiUseSandbox {
         Ok(())
     }
 
-    /// Call a guest function by name, with the given return type and arguments.
-    /// The changes made to the sandbox are persisted
+    /// Calls a guest function by name with the specified arguments.
+    ///
+    /// Changes made to the sandbox during execution are persisted.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// // Call function with no arguments
+    /// let result: i32 = sandbox.call_guest_function_by_name("GetCounter", ())?;
+    ///
+    /// // Call function with single argument
+    /// let doubled: i32 = sandbox.call_guest_function_by_name("Double", 21)?;
+    /// assert_eq!(doubled, 42);
+    ///
+    /// // Call function with multiple arguments
+    /// let sum: i32 = sandbox.call_guest_function_by_name("Add", (10, 32))?;
+    /// assert_eq!(sum, 42);
+    ///
+    /// // Call function returning string
+    /// let message: String = sandbox.call_guest_function_by_name("Echo", "Hello, World!".to_string())?;
+    /// assert_eq!(message, "Hello, World!");
+    /// # Ok(())
+    /// # }
+    /// ```
     #[instrument(err(Debug), skip(self, args), parent = Span::current())]
     pub fn call_guest_function_by_name<Output: SupportedReturnType>(
         &mut self,
@@ -154,19 +231,16 @@ impl MultiUseSandbox {
         })
     }
 
-    /// Map a region of host memory into the sandbox.
+    /// Maps a region of host memory into the sandbox address space.
     ///
-    /// Depending on the host platform, there are likely alignment
-    /// requirements of at least one page for base and len.
-    ///
-    /// `rgn.region_type` is ignored, since guest PTEs are not created
-    /// for the new memory.
+    /// The base address and length must meet platform alignment requirements
+    /// (typically page-aligned). The `region_type` field is ignored as guest
+    /// page table entries are not created.
     ///
     /// # Safety
-    /// It is the caller's responsibility to ensure that the host side
-    /// of the region remains intact and is not written to until this
-    /// mapping is removed, either due to the destruction of the
-    /// sandbox or due to a state rollback
+    ///
+    /// The caller must ensure the host memory region remains valid and unmodified
+    /// for the lifetime of `self`.
     #[instrument(err(Debug), skip(self, rgn), parent = Span::current())]
     pub unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
         if rgn.flags.contains(MemoryRegionFlags::STACK_GUARD) {
@@ -187,7 +261,7 @@ impl MultiUseSandbox {
 
     /// Map the contents of a file into the guest at a particular address
     ///
-    /// Returns the length of the mapping
+    /// Returns the length of the mapping in bytes.
     #[allow(dead_code)]
     #[instrument(err(Debug), skip(self, _fp, _guest_base), parent = Span::current())]
     pub fn map_file_cow(&mut self, _fp: &Path, _guest_base: u64) -> Result<u64> {
@@ -225,7 +299,9 @@ impl MultiUseSandbox {
         }
     }
 
-    /// This function is kept here for fuzz testing the parameter and return types
+    /// Calls a guest function with type-erased parameters and return values.
+    ///
+    /// This function is used for fuzz testing parameter and return type handling.
     #[cfg(feature = "fuzzing")]
     #[instrument(err(Debug), skip(self, args), parent = Span::current())]
     pub fn call_type_erased_guest_function_by_name(
@@ -281,8 +357,35 @@ impl MultiUseSandbox {
         res
     }
 
-    /// Get a handle to the interrupt handler for this sandbox,
-    /// capable of interrupting guest execution.
+    /// Returns a handle for interrupting guest execution.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use std::thread;
+    /// # use std::time::Duration;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// // Get interrupt handle before starting long-running operation
+    /// let interrupt_handle = sandbox.interrupt_handle();
+    ///
+    /// // Spawn thread to interrupt after timeout
+    /// let handle_clone = interrupt_handle.clone();
+    /// thread::spawn(move || {
+    ///     thread::sleep(Duration::from_secs(5));
+    ///     handle_clone.kill();
+    /// });
+    ///
+    /// // This call may be interrupted by the spawned thread
+    /// let result = sandbox.call_guest_function_by_name::<i32>("LongRunningFunction", ());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.vm.interrupt_handle()
     }
