@@ -32,12 +32,12 @@ pub trait SupportedReturnType: Sized + Clone + Send + Sync + 'static {
     fn from_value(value: ReturnValue) -> Result<Self>;
 }
 
-/// A trait to handle either a SupportedReturnType or a Result<impl SupportedReturnType>
+/// A trait to handle either a [`SupportedReturnType`] or a [`Result<impl SupportedReturnType>`]
 pub trait ResultType {
     /// The return type of the supported return value
     type ReturnType: SupportedReturnType;
 
-    /// Convert the return type into a Result<impl SupportedReturnType>
+    /// Convert the return type into a `Result<impl SupportedReturnType>`
     fn into_result(self) -> Result<Self::ReturnType>;
 }
 

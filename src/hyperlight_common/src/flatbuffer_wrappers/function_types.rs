@@ -51,7 +51,7 @@ pub enum ParameterValue {
     String(String),
     /// bool
     Bool(bool),
-    /// Vec<u8>
+    /// `Vec<u8>`
     VecBytes(Vec<u8>),
 }
 
@@ -75,7 +75,7 @@ pub enum ParameterType {
     String,
     /// bool
     Bool,
-    /// Vec<u8>
+    /// `Vec<u8>`
     VecBytes,
 }
 
@@ -100,7 +100,7 @@ pub enum ReturnValue {
     Bool(bool),
     /// ()
     Void(()),
-    /// Vec<u8>
+    /// `Vec<u8>`
     VecBytes(Vec<u8>),
 }
 
@@ -128,7 +128,7 @@ pub enum ReturnType {
     Bool,
     /// ()
     Void,
-    /// Vec<u8>
+    /// `Vec<u8>`
     VecBytes,
 }
 
