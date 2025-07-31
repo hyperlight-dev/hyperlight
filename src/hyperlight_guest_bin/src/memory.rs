@@ -40,36 +40,48 @@ use hyperlight_guest::exit::abort_with_code;
 */
 
 // We assume the maximum alignment for any value is the alignment of u128.
-const MAX_ALIGN: usize = align_of::<u128>();
+const DEFAULT_ALIGN: usize = align_of::<u128>();
+const HEADER_LEN: usize = size_of::<Header>();
+
+#[repr(transparent)]
+// A header that stores the layout information for the allocated memory block.
+struct Header(Layout);
 
 /// Allocates a block of memory with the given size. The memory is only guaranteed to be initialized to 0s if `zero` is true, otherwise
 /// it may or may not be initialized.
 ///
 /// # Safety
 /// The returned pointer must be freed with `memory::free` when it is no longer needed, otherwise memory will leak.
-unsafe fn alloc_helper(size: usize, zero: bool) -> *mut c_void {
+unsafe fn alloc_helper(size: usize, alignment: usize, zero: bool) -> *mut c_void {
     if size == 0 {
         return ptr::null_mut();
     }
 
-    // Allocate a block that includes space for both layout information and data
-    let total_size = size
-        .checked_add(size_of::<Layout>())
-        .expect("data and layout size should not overflow in alloc");
-    let layout = Layout::from_size_align(total_size, MAX_ALIGN).expect("Invalid layout");
+    let actual_align = alignment.max(align_of::<Header>());
+    let data_offset = HEADER_LEN.next_multiple_of(actual_align);
+
+    let Some(total_size) = data_offset.checked_add(size) else {
+        abort_with_code(&[ErrorCode::MallocFailed as u8]);
+    };
+
+    // Create layout for entire allocation
+    let layout =
+        Layout::from_size_align(total_size, actual_align).expect("Invalid layout parameters");
 
     unsafe {
         let raw_ptr = match zero {
             true => alloc::alloc::alloc_zeroed(layout),
             false => alloc::alloc::alloc(layout),
         };
+
         if raw_ptr.is_null() {
             abort_with_code(&[ErrorCode::MallocFailed as u8]);
-        } else {
-            let layout_ptr = raw_ptr as *mut Layout;
-            layout_ptr.write(layout);
-            layout_ptr.add(1) as *mut c_void
         }
+
+        // Place Header immediately before the user data region
+        let header_ptr = raw_ptr.add(data_offset - HEADER_LEN).cast::<Header>();
+        header_ptr.write(Header(layout));
+        raw_ptr.add(data_offset) as *mut c_void
     }
 }
 
@@ -80,7 +92,7 @@ unsafe fn alloc_helper(size: usize, zero: bool) -> *mut c_void {
 /// The returned pointer must be freed with `memory::free` when it is no longer needed, otherwise memory will leak.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn malloc(size: usize) -> *mut c_void {
-    unsafe { alloc_helper(size, false) }
+    unsafe { alloc_helper(size, DEFAULT_ALIGN, false) }
 }
 
 /// Allocates a block of memory for an array of `nmemb` elements, each of `size` bytes.
@@ -95,8 +107,22 @@ pub unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
             .checked_mul(size)
             .expect("nmemb * size should not overflow in calloc");
 
-        alloc_helper(total_size, true)
+        alloc_helper(total_size, DEFAULT_ALIGN, true)
     }
+}
+
+/// Allocates aligned memory.
+///
+/// # Safety
+/// The returned pointer must be freed with `free` when it is no longer needed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aligned_alloc(alignment: usize, size: usize) -> *mut c_void {
+    // Validate alignment
+    if alignment == 0 || (alignment & (alignment - 1)) != 0 {
+        return ptr::null_mut();
+    }
+
+    unsafe { alloc_helper(size, alignment, false) }
 }
 
 /// Frees the memory block pointed to by `ptr`.
@@ -105,12 +131,21 @@ pub unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
 /// `ptr` must be a pointer to a memory block previously allocated by `memory::malloc`, `memory::calloc`, or `memory::realloc`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free(ptr: *mut c_void) {
-    if !ptr.is_null() {
-        unsafe {
-            let block_start = (ptr as *const Layout).sub(1);
-            let layout = block_start.read();
-            alloc::alloc::dealloc(block_start as *mut u8, layout)
-        }
+    if ptr.is_null() {
+        return;
+    }
+
+    let user_ptr = ptr as *const u8;
+
+    unsafe {
+        // Read the Header just before the user data
+        let header_ptr = user_ptr.sub(HEADER_LEN).cast::<Header>();
+        let layout = header_ptr.read().0;
+
+        // Deallocate from the original base pointer
+        let offset = HEADER_LEN.next_multiple_of(layout.align());
+        let raw_ptr = user_ptr.sub(offset) as *mut u8;
+        alloc::alloc::dealloc(raw_ptr, layout);
     }
 }
 
@@ -134,26 +169,24 @@ pub unsafe extern "C" fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void {
         return ptr::null_mut();
     }
 
-    let total_new_size = size
-        .checked_add(size_of::<Layout>())
-        .expect("data and layout size should not overflow in realloc");
+    let user_ptr = ptr as *const u8;
 
-    let block_start = unsafe { (ptr as *const Layout).sub(1) };
-    let old_layout = unsafe { block_start.read() };
-    let new_layout = Layout::from_size_align(total_new_size, MAX_ALIGN).unwrap();
+    unsafe {
+        let header_ptr = user_ptr.sub(HEADER_LEN).cast::<Header>();
 
-    let new_block_start =
-        unsafe { alloc::alloc::realloc(block_start as *mut u8, old_layout, total_new_size) }
-            as *mut Layout;
+        let old_layout = header_ptr.read().0;
+        let old_offset = HEADER_LEN.next_multiple_of(old_layout.align());
+        let old_user_size = old_layout.size() - old_offset;
 
-    if new_block_start.is_null() {
-        // Realloc failed
-        abort_with_code(&[ErrorCode::MallocFailed as u8]);
-    } else {
-        // Update the stored Layout, then return ptr to memory right after the Layout.
-        unsafe {
-            new_block_start.write(new_layout);
-            new_block_start.add(1) as *mut c_void
+        let new_ptr = alloc_helper(size, old_layout.align(), false);
+        if new_ptr.is_null() {
+            return ptr::null_mut();
         }
+
+        let copy_size = old_user_size.min(size);
+        ptr::copy_nonoverlapping(user_ptr, new_ptr as *mut u8, copy_size);
+
+        free(ptr);
+        new_ptr
     }
 }
