@@ -19,14 +19,6 @@ use quote::quote;
 use syn::{ItemFn, parse_macro_input};
 
 /// A procedural macro attribute for tracing function calls.
-/// Usage:
-/// ```rust
-/// #[hyperlight_guest_tracing_macro::trace_function]
-/// fn my_function() {
-/// //     // Function body
-/// }
-/// ```
-///
 /// This macro will create a trace record when the function is called
 ///
 /// The trace record will contain the function name as a string.
@@ -139,78 +131,8 @@ impl syn::parse::Parse for TraceMacroInput {
 
 /// This macro creates a trace record with a message, or traces a block with entry/exit records.
 ///
-/// Usage:
-/// ```rust
-/// use hyperlight_guest_tracing_macro::trace;
-/// trace!("message");
-/// trace!("message", { /* block of code */ });
-/// ```
-///
 /// When called with an expression or statement as the second argument, it is wrapped in a block,
 /// entry and exit trace records are created at the start and end of block, and the result of the block is returned.
-///
-/// # Examples
-///
-/// ## Basic usage: trace with message only
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// trace!("hello");
-/// ```
-///
-/// ## Trace with a block, returning a value
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// let x = trace!("block", { 42 });
-/// assert_eq!(x, 42);
-/// ```
-///
-/// ## Trace with a block using local variables
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// let y = 10;
-/// let z = trace!("sum", { y + 5 });
-/// assert_eq!(z, 15);
-/// ```
-///
-/// ## Trace with a block that returns a reference
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// let s = String::from("abc");
-/// let r: &str = trace!("ref", { &s });
-/// assert_eq!(r, "abc");
-/// ```
-///
-/// ## Control flow: `return` inside the block returns from the function
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// fn foo() -> i32 {
-///     let _ = trace!("fail", {
-///         // This return only exits the closure, not the function `foo`.
-///         return 42;
-///     });
-///     assert!(false, "This should not be reached");
-/// }
-/// ```
-///
-/// ## Control flow: `break` inside the block exits the outer loop
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// let mut x = 0;
-/// for i in 1..3 {
-///     x = i;
-///     let _ = trace!("msg", {
-///         // This break should exit the loop.
-///         break;
-///     });
-/// }
-/// assert_eq!(x, 1, "Loop should break after the first iteration");
-/// ```
 #[proc_macro]
 pub fn trace(input: TokenStream) -> TokenStream {
     let parsed = syn::parse_macro_input!(input as TraceMacroInput);
@@ -272,11 +194,6 @@ pub fn trace(input: TokenStream) -> TokenStream {
 }
 
 /// This macro flushes the trace buffer, sending any remaining trace records to the host.
-///
-/// Usage:
-/// ```rust
-/// hyperlight_guest_tracing_macro::flush!();
-/// ```
 #[proc_macro]
 pub fn flush(_input: TokenStream) -> TokenStream {
     #[cfg(feature = "trace")]
