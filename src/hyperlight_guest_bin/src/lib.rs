@@ -173,12 +173,6 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
             // Set the seed for the random number generator for C code using rand;
             srand(srand_seed);
 
-            // set up the logger
-            let max_log_level = LevelFilter::iter()
-                .nth(max_log_level as usize)
-                .expect("Invalid log level");
-            init_logger(max_log_level);
-
             // This static is to make it easier to implement the __chkstk function in assembly.
             // It also means that should we change the layout of the struct in the future, we
             // don't have to change the assembly code.
@@ -205,6 +199,12 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
             OS_PAGE_SIZE = ops as u32;
 
             (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
+
+            // set up the logger
+            let max_log_level = LevelFilter::iter()
+                .nth(max_log_level as usize)
+                .expect("Invalid log level");
+            init_logger(max_log_level);
 
             trace!("hyperlight_main",
                 hyperlight_main();
