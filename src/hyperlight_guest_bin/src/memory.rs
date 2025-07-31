@@ -50,6 +50,9 @@ struct Header(Layout);
 /// Allocates a block of memory with the given size. The memory is only guaranteed to be initialized to 0s if `zero` is true, otherwise
 /// it may or may not be initialized.
 ///
+/// # Invariants
+/// `alignment` must be non-zero and a power of two
+///
 /// # Safety
 /// The returned pointer must be freed with `memory::free` when it is no longer needed, otherwise memory will leak.
 unsafe fn alloc_helper(size: usize, alignment: usize, zero: bool) -> *mut c_void {
