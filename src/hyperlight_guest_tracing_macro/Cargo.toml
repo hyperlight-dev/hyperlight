@@ -16,6 +16,7 @@ syn = { version = "2.0.104", features = ["full"] }
 
 [features]
 default = []
+trace = []
 
 [lib]
 proc-macro = true

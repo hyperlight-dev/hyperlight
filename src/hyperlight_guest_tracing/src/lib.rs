@@ -18,6 +18,7 @@ limitations under the License.
 /// Re-export the tracing macros
 /// This allows users to use the macros without needing to import them explicitly.
 pub use hyperlight_guest_tracing_macro::*;
+#[cfg(feature = "trace")]
 pub use trace::{create_trace_record, flush_trace_buffer};
 
 /// Maximum length of a trace message in bytes.
@@ -68,6 +69,7 @@ pub mod invariant_tsc {
     }
 }
 
+#[cfg(feature = "trace")]
 mod trace {
     // === Dependencies ===
     extern crate alloc;
