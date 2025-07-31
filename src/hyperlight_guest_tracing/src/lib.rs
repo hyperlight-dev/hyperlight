@@ -17,6 +17,91 @@ limitations under the License.
 
 /// Re-export the tracing macros
 /// This allows users to use the macros without needing to import them explicitly.
+///
+/// # Tracing Macros Usage
+///
+/// ## The `trace_function` macro can be used to trace function calls.
+///
+/// ```rust
+/// #[hyperlight_guest_tracing_macro::trace_function]
+/// fn my_function() {
+/// //     // Function body
+/// }
+/// ```
+///
+/// ## The `trace!` macro can be used to create trace records with a message.
+///
+/// ```rust
+/// use hyperlight_guest_tracing_macro::trace;
+/// trace!("message");
+/// trace!("message", { /* block of code */ });
+/// ```
+///
+/// ## Basic usage: trace with message only
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// trace!("hello");
+/// ```
+///
+/// ## Trace with a block, returning a value
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// let x = trace!("block", { 42 });
+/// assert_eq!(x, 42);
+/// ```
+///
+/// ## Trace with a block using local variables
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// let y = 10;
+/// let z = trace!("sum", { y + 5 });
+/// assert_eq!(z, 15);
+/// ```
+///
+/// ## Trace with a block that returns a reference
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// let s = String::from("abc");
+/// let r: &str = trace!("ref", { &s });
+/// assert_eq!(r, "abc");
+/// ```
+///
+/// ## Control flow: `return` inside the block returns from the function
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// fn foo() -> i32 {
+///     let _ = trace!("fail", {
+///         // This return only exits the closure, not the function `foo`.
+///         return 42;
+///     });
+///     assert!(false, "This should not be reached");
+/// }
+/// ```
+///
+/// ## Control flow: `break` inside the block exits the outer loop
+///
+/// ```
+/// use hyperlight_guest_tracing_macro::trace;
+/// let mut x = 0;
+/// for i in 1..3 {
+///     x = i;
+///     let _ = trace!("msg", {
+///         // This break should exit the loop.
+///         break;
+///     });
+/// }
+/// assert_eq!(x, 1, "Loop should break after the first iteration");
+/// ```
+///
+/// ## Flush the trace buffer
+/// ```rust
+/// hyperlight_guest_tracing_macro::flush!();
+/// ```
 pub use hyperlight_guest_tracing_macro::*;
 #[cfg(feature = "trace")]
 pub use trace::{create_trace_record, flush_trace_buffer};
