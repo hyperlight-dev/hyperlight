@@ -104,6 +104,11 @@ impl syn::parse::Parse for TraceMacroInput {
         if !matches!(message, syn::Lit::Str(_)) {
             return Err(input.error("first argument to trace! must be a string literal"));
         }
+        if let syn::Lit::Str(ref lit_str) = message {
+            if lit_str.value().is_empty() {
+                return Err(input.error("trace message must not be empty"));
+            }
+        }
 
         let statement = if input.peek(syn::Token![,]) {
             let _: syn::Token![,] = input.parse()?;
