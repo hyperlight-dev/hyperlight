@@ -132,7 +132,7 @@ executable_heap = []
 print_debug = []
 # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged.
 crashdump = ["dep:chrono"]
-trace_guest = ["hyperlight-common/trace_guest", "dep:hyperlight-guest-tracing"]
+trace_guest = ["hyperlight-common/trace_guest", "hyperlight-guest-tracing/trace"]
 # This feature enables unwinding the guest stack from the host, in
 # order to produce stack traces for debugging or profiling.
 unwind_guest = [ "trace_guest", "dep:framehop", "dep:fallible-iterator", "hyperlight-common/unwind_guest" ]

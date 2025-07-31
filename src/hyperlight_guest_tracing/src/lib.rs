@@ -18,6 +18,7 @@ limitations under the License.
 /// Re-export the tracing macros
 /// This allows users to use the macros without needing to import them explicitly.
 pub use hyperlight_guest_tracing_macro::*;
+#[cfg(feature = "trace")]
 pub use trace::{create_trace_record, flush_trace_buffer};
 
 /// Maximum length of a trace message in bytes.
@@ -68,6 +69,7 @@ pub mod invariant_tsc {
     }
 }
 
+#[cfg(feature = "trace")]
 mod trace {
     // === Dependencies ===
     extern crate alloc;
@@ -170,6 +172,7 @@ mod trace {
     ///
     /// **NOTE**: If the message is too long it will be truncated to fit within `MAX_TRACE_MSG_LEN`.
     /// This is useful for ensuring that the trace buffer does not overflow.
+    #[inline(always)]
     pub fn create_trace_record(msg: &str) {
         let entry = TraceRecord::from(msg);
         let mut buffer = TRACE_BUFFER.lock();
@@ -178,6 +181,7 @@ mod trace {
     }
 
     /// Flush the trace buffer to send any remaining trace records to the host.
+    #[inline(always)]
     pub fn flush_trace_buffer() {
         let mut buffer = TRACE_BUFFER.lock();
         buffer.flush();

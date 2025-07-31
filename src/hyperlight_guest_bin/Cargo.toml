@@ -17,13 +17,13 @@ and third-party code used by our C-API needed to build a native hyperlight-guest
 default = ["libc", "printf"]
 libc = [] # compile musl libc
 printf = [ "libc" ] # compile printf
-trace_guest = ["hyperlight-common/trace_guest", "hyperlight-guest/trace_guest"]
+trace_guest = ["hyperlight-common/trace_guest", "hyperlight-guest/trace_guest", "hyperlight-guest-tracing/trace"]
 mem_profile = ["hyperlight-common/unwind_guest","hyperlight-common/mem_profile"]
 
 [dependencies]
 hyperlight-guest = { workspace = true, default-features = false }
 hyperlight-common = { workspace = true, default-features = false }
-hyperlight-guest-tracing = { workspace = true }
+hyperlight-guest-tracing = { workspace = true, default-features = false }
 buddy_system_allocator = "0.11.0"
 log = { version = "0.4", default-features = false }
 spin = "0.10.0"

@@ -27,8 +27,7 @@ use syn::{ItemFn, parse_macro_input};
 /// }
 /// ```
 ///
-/// This macro will create a trace record when the function is called, if the `trace_guest`
-/// feature is enabled.
+/// This macro will create a trace record when the function is called
 ///
 /// The trace record will contain the function name as a string.
 /// Note: This macro is intended to be used with the `hyperlight_guest_tracing` crate.
@@ -46,44 +45,62 @@ pub fn trace_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Compose entry/exit messages
     let entry_msg = format!("> {}", fn_name_str);
-    let exit_msg = format!("< {}", fn_name_str);
+    let _exit_msg = format!("< {}", fn_name_str);
 
     let expanded = match fn_output {
         syn::ReturnType::Default => {
             // No return value (unit)
+            #[cfg(feature = "trace")]
             quote! {
                 #(#fn_attrs)*
                 #fn_vis #fn_sig {
-                    #[cfg(feature = "trace_guest")]
                     const _: () = assert!(
                         #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
                         "Trace message exceeds the maximum bytes length",
                     );
-                    #[cfg(feature = "trace_guest")]
                     ::hyperlight_guest_tracing::create_trace_record(#entry_msg);
                     // Call the original function body
                     #fn_block
-                    #[cfg(feature = "trace_guest")]
-                    ::hyperlight_guest_tracing::create_trace_record(#exit_msg);
+                    ::hyperlight_guest_tracing::create_trace_record(#_exit_msg);
+                }
+            }
+            #[cfg(not(feature = "trace"))]
+            quote! {
+                #(#fn_attrs)*
+                #fn_vis #fn_sig {
+                    const _: () = assert!(
+                        #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                        "Trace message exceeds the maximum bytes length",
+                    );
+                    #fn_block
                 }
             }
         }
         syn::ReturnType::Type(_, _) => {
             // Has a return value
+            #[cfg(feature = "trace")]
             quote! {
                 #(#fn_attrs)*
                 #fn_vis #fn_sig {
-                    #[cfg(feature = "trace_guest")]
                     const _: () = assert!(
                         #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
                         "Trace message exceeds the maximum bytes length",
                     );
-                    #[cfg(feature = "trace_guest")]
                     ::hyperlight_guest_tracing::create_trace_record(#entry_msg);
                     let __trace_result = (|| #fn_block )();
-                    #[cfg(feature = "trace_guest")]
-                    ::hyperlight_guest_tracing::create_trace_record(#exit_msg);
+                    ::hyperlight_guest_tracing::create_trace_record(#_exit_msg);
                     __trace_result
+                }
+            }
+            #[cfg(not(feature = "trace"))]
+            quote! {
+                #(#fn_attrs)*
+                #fn_vis #fn_sig {
+                    const _: () = assert!(
+                        #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                        "Trace message exceeds the maximum bytes length",
+                    );
+                    #fn_block
                 }
             }
         }
@@ -203,35 +220,53 @@ pub fn trace(input: TokenStream) -> TokenStream {
     };
     if let Some(statement) = parsed.statement {
         let entry_msg = format!("+ {}", trace_message);
-        let exit_msg = format!("- {}", trace_message);
+        let _exit_msg = format!("- {}", trace_message);
+        #[cfg(feature = "trace")]
         let expanded = quote! {
             {
-                #[cfg(feature = "trace_guest")]
                 const _: () = assert!(
                     #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
                     "Trace message exceeds the maximum bytes length",
                 );
-                #[cfg(feature = "trace_guest")]
                 ::hyperlight_guest_tracing::create_trace_record(#entry_msg);
                 let __trace_result = #statement;
-                #[cfg(feature = "trace_guest")]
-                ::hyperlight_guest_tracing::create_trace_record(#exit_msg);
+                ::hyperlight_guest_tracing::create_trace_record(#_exit_msg);
                 __trace_result
             }
         };
-        TokenStream::from(expanded)
-    } else {
+        #[cfg(not(feature = "trace"))]
         let expanded = quote! {
             {
-                #[cfg(feature = "trace_guest")]
+                const _: () = assert!(
+                    #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                    "Trace message exceeds the maximum bytes length",
+                );
+                #statement
+            }
+        };
+
+        TokenStream::from(expanded)
+    } else {
+        #[cfg(feature = "trace")]
+        let expanded = quote! {
+            {
                 const _: () = assert!(
                     #trace_message.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
                     "Trace message exceeds the maximum bytes length",
                 );
-                #[cfg(feature = "trace_guest")]
                 ::hyperlight_guest_tracing::create_trace_record(#trace_message);
             }
         };
+        #[cfg(not(feature = "trace"))]
+        let expanded = quote! {
+            {
+                const _: () = assert!(
+                    #trace_message.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                    "Trace message exceeds the maximum bytes length",
+                );
+            }
+        };
+
         TokenStream::from(expanded)
     }
 }
@@ -244,12 +279,14 @@ pub fn trace(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro]
 pub fn flush(_input: TokenStream) -> TokenStream {
+    #[cfg(feature = "trace")]
     let expanded = quote! {
         {
-            #[cfg(feature = "trace_guest")]
             ::hyperlight_guest_tracing::flush_trace_buffer();
         }
     };
+    #[cfg(not(feature = "trace"))]
+    let expanded = quote! {};
 
     TokenStream::from(expanded)
 }
