@@ -7,11 +7,12 @@ edition = "2021"
 hyperlight-guest = { path = "../../../hyperlight_guest" }
 hyperlight-guest-bin = { path = "../../../hyperlight_guest_bin" }
 hyperlight-common = { path = "../../../hyperlight_common", default-features = false }
+hyperlight-guest-tracing = { path = "../../../hyperlight_guest_tracing" }
 log = {version = "0.4", default-features = false }
 
 [features]
 default = []
-trace_guest = ["hyperlight-guest-bin/trace_guest"]
+trace_guest = ["hyperlight-guest-bin/trace_guest", "hyperlight-guest/trace_guest", "hyperlight-guest-tracing/trace"]
 unwind_guest = ["hyperlight-common/unwind_guest"]
 mem_profile = ["hyperlight-common/mem_profile", "hyperlight-guest-bin/mem_profile"]
 

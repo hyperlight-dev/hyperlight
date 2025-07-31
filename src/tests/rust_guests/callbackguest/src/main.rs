@@ -37,6 +37,7 @@ use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::guest_logger::log_message;
 use hyperlight_guest_bin::host_comm::{call_host_function, print_output_with_host_print};
 
+#[hyperlight_guest_tracing::trace_function]
 fn send_message_to_host_method(
     method_name: &str,
     guest_message: &str,
@@ -52,6 +53,7 @@ fn send_message_to_host_method(
     Ok(get_flatbuffer_result(res))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn guest_function(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
         send_message_to_host_method("HostMethod", "Hello from GuestFunction, ", message)
@@ -63,6 +65,7 @@ fn guest_function(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn guest_function1(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
         send_message_to_host_method("HostMethod1", "Hello from GuestFunction1, ", message)
@@ -74,6 +77,7 @@ fn guest_function1(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn guest_function2(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
         send_message_to_host_method("HostMethod1", "Hello from GuestFunction2, ", message)
@@ -85,6 +89,7 @@ fn guest_function2(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn guest_function3(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
         send_message_to_host_method("HostMethod1", "Hello from GuestFunction3, ", message)
@@ -96,6 +101,7 @@ fn guest_function3(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn guest_function4(_: &FunctionCall) -> Result<Vec<u8>> {
     call_host_function::<()>(
         "HostMethod4",
@@ -108,6 +114,7 @@ fn guest_function4(_: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn guest_log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (
         ParameterValue::String(message),
@@ -141,6 +148,7 @@ fn guest_log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn call_error_method(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
         send_message_to_host_method("ErrorMethod", "Error From Host: ", message)
@@ -152,11 +160,13 @@ fn call_error_method(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn call_host_spin(_: &FunctionCall) -> Result<Vec<u8>> {
     call_host_function::<()>("Spin", None, ReturnType::Void)?;
     Ok(get_flatbuffer_result(()))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn host_call_loop(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
         loop {
@@ -171,6 +181,7 @@ fn host_call_loop(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 #[no_mangle]
+#[hyperlight_guest_tracing::trace_function]
 pub extern "C" fn hyperlight_main() {
     let print_output_def = GuestFunctionDefinition::new(
         "PrintOutput".to_string(),
@@ -258,6 +269,7 @@ pub extern "C" fn hyperlight_main() {
 }
 
 #[no_mangle]
+#[hyperlight_guest_tracing::trace_function]
 pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     Err(HyperlightGuestError::new(
         ErrorCode::GuestFunctionNotFound,

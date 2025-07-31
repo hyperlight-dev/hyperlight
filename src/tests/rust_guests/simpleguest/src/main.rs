@@ -56,6 +56,7 @@ extern crate hyperlight_guest;
 
 static mut BIGARRAY: [i32; 1024 * 1024] = [0; 1024 * 1024];
 
+#[hyperlight_guest_tracing::trace_function]
 fn set_static(_: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
         #[allow(static_mut_refs)]
@@ -67,6 +68,7 @@ fn set_static(_: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn echo_double(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Double(value) = function_call.parameters.clone().unwrap()[0].clone() {
         Ok(get_flatbuffer_result(value))
@@ -78,6 +80,7 @@ fn echo_double(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn echo_float(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Float(value) = function_call.parameters.clone().unwrap()[0].clone() {
         Ok(get_flatbuffer_result(value))
@@ -89,6 +92,7 @@ fn echo_float(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_output(message: &str) -> Result<Vec<u8>> {
     let res = call_host_function::<i32>(
         "HostPrint",
@@ -99,6 +103,7 @@ fn print_output(message: &str) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(res))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn simple_print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
         print_output(&message)
@@ -110,6 +115,7 @@ fn simple_print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn set_byte_array_to_zero(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::VecBytes(mut vec) = function_call.parameters.clone().unwrap()[0].clone()
     {
@@ -123,6 +129,7 @@ fn set_byte_array_to_zero(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_two_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::String(arg1), ParameterValue::Int(arg2)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -138,6 +145,7 @@ fn print_two_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_three_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::String(arg1), ParameterValue::Int(arg2), ParameterValue::Long(arg3)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -154,6 +162,7 @@ fn print_three_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_four_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (
         ParameterValue::String(arg1),
@@ -179,6 +188,7 @@ fn print_four_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_five_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (
         ParameterValue::String(arg1),
@@ -206,6 +216,7 @@ fn print_five_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_six_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (
         ParameterValue::String(arg1),
@@ -235,6 +246,7 @@ fn print_six_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_seven_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (
         ParameterValue::String(arg1),
@@ -266,6 +278,7 @@ fn print_seven_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_eight_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (
         ParameterValue::String(arg1),
@@ -299,6 +312,7 @@ fn print_eight_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_nine_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (
         ParameterValue::String(arg1),
@@ -334,6 +348,7 @@ fn print_nine_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_ten_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (
         ParameterValue::String(arg1),
@@ -371,6 +386,7 @@ fn print_ten_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn print_eleven_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (
         ParameterValue::String(arg1),
@@ -410,6 +426,7 @@ fn print_eleven_args(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn buffer_overrun(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(value) = function_call.parameters.clone().unwrap()[0].clone() {
         let c_str = value.as_str();
@@ -432,6 +449,7 @@ fn buffer_overrun(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 #[allow(unconditional_recursion)]
+#[hyperlight_guest_tracing::trace_function]
 fn infinite_recursion(_a: &FunctionCall) -> Result<Vec<u8>> {
     // blackbox is needed so something
     //is written to the stack in release mode,
@@ -441,6 +459,7 @@ fn infinite_recursion(_a: &FunctionCall) -> Result<Vec<u8>> {
     infinite_recursion(_a)
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn stack_overflow(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(i) = function_call.parameters.clone().unwrap()[0].clone() {
         loop_stack_overflow(i);
@@ -453,6 +472,7 @@ fn stack_overflow(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 // This function will allocate i * (8KiB + 1B) on the stack
+#[hyperlight_guest_tracing::trace_function]
 fn loop_stack_overflow(i: i32) {
     if i > 0 {
         let _nums = black_box([0u8; 0x2000 + 1]); // chkstk guaranteed to be called for > 8KiB
@@ -460,16 +480,19 @@ fn loop_stack_overflow(i: i32) {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn large_var(_: &FunctionCall) -> Result<Vec<u8>> {
     let _buffer = black_box([0u8; (DEFAULT_GUEST_STACK_SIZE + 1) as usize]);
     Ok(get_flatbuffer_result(DEFAULT_GUEST_STACK_SIZE + 1))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn small_var(_: &FunctionCall) -> Result<Vec<u8>> {
     let _buffer = black_box([0u8; 1024]);
     Ok(get_flatbuffer_result(1024))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn call_malloc(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(size) = function_call.parameters.clone().unwrap()[0].clone() {
         // will panic if OOM, and we need blackbox to avoid optimizing away this test
@@ -484,6 +507,7 @@ fn call_malloc(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn malloc_and_free(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(size) = function_call.parameters.clone().unwrap()[0].clone() {
         let alloc_length = if size < DEFAULT_GUEST_STACK_SIZE {
@@ -503,6 +527,7 @@ fn malloc_and_free(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn echo(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(value) = function_call.parameters.clone().unwrap()[0].clone() {
         Ok(get_flatbuffer_result(&*value))
@@ -514,6 +539,7 @@ fn echo(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn get_size_prefixed_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::VecBytes(data) = function_call.parameters.clone().unwrap()[0].clone() {
         Ok(get_flatbuffer_result(&*data))
@@ -538,6 +564,7 @@ fn spin(_: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn test_abort(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(code) = function_call.parameters.clone().unwrap()[0].clone() {
         abort_with_code(&[code as u8]);
@@ -545,6 +572,7 @@ fn test_abort(function_call: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn test_abort_with_code_and_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::Int(code), ParameterValue::String(message)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -557,6 +585,7 @@ fn test_abort_with_code_and_message(function_call: &FunctionCall) -> Result<Vec<
     Ok(get_flatbuffer_result(()))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn test_guest_panic(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
         panic!("{}", message);
@@ -564,6 +593,7 @@ fn test_guest_panic(function_call: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn test_write_raw_ptr(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Long(offset) = function_call.parameters.clone().unwrap()[0].clone() {
         let min_stack_addr = unsafe { MIN_STACK_ADDRESS };
@@ -587,6 +617,7 @@ fn test_write_raw_ptr(function_call: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result("fail"))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn execute_on_stack(_function_call: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
         let mut noop: u8 = 0x90;
@@ -596,6 +627,7 @@ fn execute_on_stack(_function_call: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result("fail"))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn execute_on_heap(_function_call: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
         // NO-OP followed by RET
@@ -608,6 +640,7 @@ fn execute_on_heap(_function_call: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result("fail"))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn test_rust_malloc(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(code) = function_call.parameters.clone().unwrap()[0].clone() {
         let ptr = unsafe { malloc(code as usize) };
@@ -620,6 +653,7 @@ fn test_rust_malloc(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::String(message), ParameterValue::Int(level)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -642,6 +676,7 @@ fn log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn trigger_exception(_: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
         core::arch::asm!("ud2");
@@ -651,6 +686,7 @@ fn trigger_exception(_: &FunctionCall) -> Result<Vec<u8>> {
 
 static mut COUNTER: i32 = 0;
 
+#[hyperlight_guest_tracing::trace_function]
 fn add_to_static(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(i) = function_call.parameters.clone().unwrap()[0].clone() {
         let res = unsafe {
@@ -666,6 +702,7 @@ fn add_to_static(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn get_static(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if function_call.parameters.is_none() {
         Ok(get_flatbuffer_result(unsafe { COUNTER }))
@@ -677,6 +714,7 @@ fn get_static(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn add_to_static_and_fail(_: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
         COUNTER += 10;
@@ -687,6 +725,7 @@ fn add_to_static_and_fail(_: &FunctionCall) -> Result<Vec<u8>> {
     ))
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn violate_seccomp_filters(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if function_call.parameters.is_none() {
         let res = call_host_function::<u64>("MakeGetpidSyscall", None, ReturnType::ULong)?;
@@ -700,6 +739,7 @@ fn violate_seccomp_filters(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn call_given_paramless_hostfunc_that_returns_i64(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(hostfuncname) =
         function_call.parameters.clone().unwrap()[0].clone()
@@ -715,6 +755,7 @@ fn call_given_paramless_hostfunc_that_returns_i64(function_call: &FunctionCall) 
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn add(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::Int(a), ParameterValue::Int(b)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -735,6 +776,7 @@ fn add(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 // Does nothing, but used for testing large parameters
+#[hyperlight_guest_tracing::trace_function]
 fn large_parameters(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::VecBytes(v), ParameterValue::String(s)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -750,6 +792,7 @@ fn large_parameters(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn read_from_user_memory(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::ULong(num), ParameterValue::VecBytes(expected)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -775,6 +818,7 @@ fn read_from_user_memory(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn read_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::ULong(base), ParameterValue::ULong(len)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -798,6 +842,7 @@ fn read_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn write_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::ULong(base), ParameterValue::ULong(len)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -825,6 +870,7 @@ fn write_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[hyperlight_guest_tracing::trace_function]
 fn exec_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::ULong(base), ParameterValue::ULong(len)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -853,6 +899,7 @@ fn exec_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 #[no_mangle]
+#[hyperlight_guest_tracing::trace_function]
 pub extern "C" fn hyperlight_main() {
     let read_from_user_memory_def = GuestFunctionDefinition::new(
         "ReadFromUserMemory".to_string(),
@@ -1301,6 +1348,7 @@ pub extern "C" fn hyperlight_main() {
 }
 
 #[no_mangle]
+#[hyperlight_guest_tracing::trace_function]
 pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     // This test checks the stack behavior of the input/output buffer
     // by calling the host before serializing the function call.
@@ -1346,6 +1394,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
 }
 
 // Interprets the given guest function call as a host function call and dispatches it to the host.
+#[hyperlight_guest_tracing::trace_function]
 fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
     let mut params = func.parameters.unwrap();
     // first parameter must be string (the name of the host function to call)
