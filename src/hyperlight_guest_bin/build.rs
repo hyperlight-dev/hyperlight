@@ -204,7 +204,7 @@ fn find_next(root_dir: &Path, tool_name: &str) -> PathBuf {
     if let Some(path) = env::var_os(format!("HYPERLIGHT_GUEST_{tool_name}")) {
         return path.into();
     }
-    let path = env::var_os("PATH)").expect("$PATH should exist");
+    let path = env::var_os("PATH").expect("$PATH should exist");
     let paths: Vec<_> = env::split_paths(&path).collect();
     for path in &paths {
         let abs_path = fs::canonicalize(path);
