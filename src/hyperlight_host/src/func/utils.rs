@@ -18,10 +18,9 @@ limitations under the License.
 /// up to 32 parameters. This is useful to implement traits on functions
 /// for may parameter tuples.
 ///
-/// Usage:
-/// ```rust
-/// use hyperlight_host::func::for_each_tuple;
+/// This is an internal utility macro used within the func module.
 ///
+/// ```ignore
 /// macro_rules! my_macro {
 ///     ([$count:expr] ($($name:ident: $type:ident),*)) => {
 ///         // $count is the arity of the tuple
@@ -30,7 +29,7 @@ limitations under the License.
 ///     };
 /// }
 ///
-/// for_each_tuple!(impl_host_function);
+/// for_each_tuple!(my_macro);
 /// ```
 macro_rules! for_each_tuple {
     (@

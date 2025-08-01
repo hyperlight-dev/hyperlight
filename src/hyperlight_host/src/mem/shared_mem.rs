@@ -183,11 +183,11 @@ unsafe impl Send for GuestSharedMemory {}
 ///
 /// Unfortunately, there appears to be no way to do this with defined
 /// behaviour in present Rust (see
-/// e.g. https://github.com/rust-lang/unsafe-code-guidelines/issues/152).
+/// e.g. <https://github.com/rust-lang/unsafe-code-guidelines/issues/152>).
 /// Rust does not yet have its own defined memory model, but in the
 /// interim, it is widely treated as inheriting the current C/C++
 /// memory models.  The most immediate problem is that regardless of
-/// anything else, under those memory models [1, p. 17-18; 2, p. 88],
+/// anything else, under those memory models \[1, p. 17-18; 2, p. 88\],
 ///
 ///   > The execution of a program contains a _data race_ if it
 ///   > contains two [C++23: "potentially concurrent"] conflicting
@@ -205,7 +205,7 @@ unsafe impl Send for GuestSharedMemory {}
 /// Despite Rust's de jure inheritance of the C memory model at the
 /// present time, the compiler in many cases de facto adheres to LLVM
 /// semantics, so it is worthwhile to consider what LLVM does in this
-/// case as well.  According to the the LangRef [3] memory model,
+/// case as well.  According to the the LangRef \[3\] memory model,
 /// loads which are involved in a race that includes at least one
 /// non-atomic access (whether the load or a store) return `undef`,
 /// making them roughly equivalent to reading uninitialized
@@ -213,20 +213,20 @@ unsafe impl Send for GuestSharedMemory {}
 ///
 /// Considering a different direction, recent C++ papers have seemed
 /// to lean towards using `volatile` for similar use cases. For
-/// example, in P1152R0 [4], JF Bastien notes that
+/// example, in P1152R0 \[4\], JF Bastien notes that
 ///
 ///   > We’ve shown that volatile is purposely defined to denote
 ///   > external modifications. This happens for:
 ///   >   - Shared memory with untrusted code, where volatile is the
 ///   >     right way to avoid time-of-check time-of-use (ToCToU)
-///   >     races which lead to security bugs such as [PWN2OWN] and
-///   >     [XENXSA155].
+///   >     races which lead to security bugs such as \[PWN2OWN\] and
+///   >     \[XENXSA155\].
 ///
 /// Unfortunately, although this paper was adopted for C++20 (and,
 /// sadly, mostly un-adopted for C++23, although that does not concern
 /// us), the paper did not actually redefine volatile accesses or data
 /// races to prevent volatile accesses from racing with other accesses
-/// and causing undefined behaviour.  P1382R1 [5] would have amended
+/// and causing undefined behaviour.  P1382R1 \[5\] would have amended
 /// the wording of the data race definition to specifically exclude
 /// volatile, but, unfortunately, despite receiving a
 /// generally-positive reception at its first WG21 meeting more than
@@ -272,8 +272,8 @@ unsafe impl Send for GuestSharedMemory {}
 /// the guest in this case.  Unfortunately, while those operations are
 /// defined in LLVM, they are not presently exposed to Rust. While
 /// atomic fences that are not associated with memory accesses
-/// (std::sync::atomic::fence) might at first glance seem to help with
-/// this problem, they unfortunately do not [6]:
+/// ([`std::sync::atomic::fence`]) might at first glance seem to help with
+/// this problem, they unfortunately do not \[6\]:
 ///
 ///    > A fence ‘A’ which has (at least) Release ordering semantics,
 ///    > synchronizes with a fence ‘B’ with (at least) Acquire
@@ -289,12 +289,12 @@ unsafe impl Send for GuestSharedMemory {}
 /// fence on a vmenter/vmexit between data being read and written.
 /// This is unsafe (not guaranteed in the type system)!
 ///
-/// [1] N3047 C23 Working Draft. https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3047.pdf
-/// [2] N4950 C++23 Working Draft. https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2023/n4950.pdf
-/// [3] LLVM Language Reference Manual, Memory Model for Concurrent Operations. https://llvm.org/docs/LangRef.html#memmodel
-/// [4] P1152R0: Deprecating `volatile`. JF Bastien. https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1152r0.html
-/// [5] P1382R1: `volatile_load<T>` and `volatile_store<T>`. JF Bastien, Paul McKenney, Jeffrey Yasskin, and the indefatigable TBD. https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p1382r1.pdf
-/// [6] Documentation for std::sync::atomic::fence. https://doc.rust-lang.org/std/sync/atomic/fn.fence.html
+/// \[1\] N3047 C23 Working Draft. <https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3047.pdf>
+/// \[2\] N4950 C++23 Working Draft. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2023/n4950.pdf>
+/// \[3\] LLVM Language Reference Manual, Memory Model for Concurrent Operations. <https://llvm.org/docs/LangRef.html#memmodel>
+/// \[4\] P1152R0: Deprecating `volatile`. JF Bastien. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1152r0.html>
+/// \[5\] P1382R1: `volatile_load<T>` and `volatile_store<T>`. JF Bastien, Paul McKenney, Jeffrey Yasskin, and the indefatigable TBD. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p1382r1.pdf>
+/// \[6\] Documentation for std::sync::atomic::fence. <https://doc.rust-lang.org/std/sync/atomic/fn.fence.html>
 #[derive(Clone, Debug)]
 pub struct HostSharedMemory {
     region: Arc<HostMapping>,

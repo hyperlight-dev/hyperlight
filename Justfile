@@ -143,7 +143,7 @@ like-ci config=default-target hypervisor="kvm":
     just bench-ci main {{config}} {{ if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }}
 
 # runs all tests
-test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-seccomp target features)
+test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-seccomp target features) (test-doc target features)
 
 # runs unit tests
 test-unit target=default-target features="":
@@ -218,6 +218,8 @@ test-rust-tracing target=default-target features="":
     just build-rust-guests {{ target }}
     just move-rust-guests {{ target }}
 
+test-doc target=default-target features="":
+    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {''} else { "--features " + features } }} --doc
 ################
 ### LINTING ####
 ################
