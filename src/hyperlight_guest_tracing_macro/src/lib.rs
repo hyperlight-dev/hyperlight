@@ -19,16 +19,7 @@ use quote::quote;
 use syn::{ItemFn, parse_macro_input};
 
 /// A procedural macro attribute for tracing function calls.
-/// Usage:
-/// ```rust
-/// #[hyperlight_guest_tracing_macro::trace_function]
-/// fn my_function() {
-/// //     // Function body
-/// }
-/// ```
-///
-/// This macro will create a trace record when the function is called, if the `trace_guest`
-/// feature is enabled.
+/// This macro will create a trace record when the function is called
 ///
 /// The trace record will contain the function name as a string.
 /// Note: This macro is intended to be used with the `hyperlight_guest_tracing` crate.
@@ -45,45 +36,55 @@ pub fn trace_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_output = &input_fn.sig.output;
 
     // Compose entry/exit messages
-    let entry_msg = format!("> {}", fn_name_str);
-    let exit_msg = format!("< {}", fn_name_str);
+    let _entry_msg = format!("> {}", fn_name_str);
+    let _exit_msg = format!("< {}", fn_name_str);
 
     let expanded = match fn_output {
         syn::ReturnType::Default => {
             // No return value (unit)
+            #[cfg(feature = "trace")]
             quote! {
                 #(#fn_attrs)*
                 #fn_vis #fn_sig {
-                    #[cfg(feature = "trace_guest")]
                     const _: () = assert!(
-                        #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                        #_entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
                         "Trace message exceeds the maximum bytes length",
                     );
-                    #[cfg(feature = "trace_guest")]
-                    ::hyperlight_guest_tracing::create_trace_record(#entry_msg);
+                    ::hyperlight_guest_tracing::create_trace_record(#_entry_msg);
                     // Call the original function body
                     #fn_block
-                    #[cfg(feature = "trace_guest")]
-                    ::hyperlight_guest_tracing::create_trace_record(#exit_msg);
+                    ::hyperlight_guest_tracing::create_trace_record(#_exit_msg);
+                }
+            }
+            #[cfg(not(feature = "trace"))]
+            quote! {
+                #(#fn_attrs)*
+                #fn_vis #fn_sig {
+                    #fn_block
                 }
             }
         }
         syn::ReturnType::Type(_, _) => {
             // Has a return value
+            #[cfg(feature = "trace")]
             quote! {
                 #(#fn_attrs)*
                 #fn_vis #fn_sig {
-                    #[cfg(feature = "trace_guest")]
                     const _: () = assert!(
-                        #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                        #_entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
                         "Trace message exceeds the maximum bytes length",
                     );
-                    #[cfg(feature = "trace_guest")]
-                    ::hyperlight_guest_tracing::create_trace_record(#entry_msg);
+                    ::hyperlight_guest_tracing::create_trace_record(#_entry_msg);
                     let __trace_result = (|| #fn_block )();
-                    #[cfg(feature = "trace_guest")]
-                    ::hyperlight_guest_tracing::create_trace_record(#exit_msg);
+                    ::hyperlight_guest_tracing::create_trace_record(#_exit_msg);
                     __trace_result
+                }
+            }
+            #[cfg(not(feature = "trace"))]
+            quote! {
+                #(#fn_attrs)*
+                #fn_vis #fn_sig {
+                    #fn_block
                 }
             }
         }
@@ -104,6 +105,11 @@ impl syn::parse::Parse for TraceMacroInput {
         if !matches!(message, syn::Lit::Str(_)) {
             return Err(input.error("first argument to trace! must be a string literal"));
         }
+        if let syn::Lit::Str(ref lit_str) = message {
+            if lit_str.value().is_empty() {
+                return Err(input.error("trace message must not be empty"));
+            }
+        }
 
         let statement = if input.peek(syn::Token![,]) {
             let _: syn::Token![,] = input.parse()?;
@@ -117,78 +123,8 @@ impl syn::parse::Parse for TraceMacroInput {
 
 /// This macro creates a trace record with a message, or traces a block with entry/exit records.
 ///
-/// Usage:
-/// ```rust
-/// use hyperlight_guest_tracing_macro::trace;
-/// trace!("message");
-/// trace!("message", { /* block of code */ });
-/// ```
-///
 /// When called with an expression or statement as the second argument, it is wrapped in a block,
 /// entry and exit trace records are created at the start and end of block, and the result of the block is returned.
-///
-/// # Examples
-///
-/// ## Basic usage: trace with message only
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// trace!("hello");
-/// ```
-///
-/// ## Trace with a block, returning a value
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// let x = trace!("block", { 42 });
-/// assert_eq!(x, 42);
-/// ```
-///
-/// ## Trace with a block using local variables
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// let y = 10;
-/// let z = trace!("sum", { y + 5 });
-/// assert_eq!(z, 15);
-/// ```
-///
-/// ## Trace with a block that returns a reference
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// let s = String::from("abc");
-/// let r: &str = trace!("ref", { &s });
-/// assert_eq!(r, "abc");
-/// ```
-///
-/// ## Control flow: `return` inside the block returns from the function
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// fn foo() -> i32 {
-///     let _ = trace!("fail", {
-///         // This return only exits the closure, not the function `foo`.
-///         return 42;
-///     });
-///     assert!(false, "This should not be reached");
-/// }
-/// ```
-///
-/// ## Control flow: `break` inside the block exits the outer loop
-///
-/// ```
-/// use hyperlight_guest_tracing_macro::trace;
-/// let mut x = 0;
-/// for i in 1..3 {
-///     x = i;
-///     let _ = trace!("msg", {
-///         // This break should exit the loop.
-///         break;
-///     });
-/// }
-/// assert_eq!(x, 1, "Loop should break after the first iteration");
-/// ```
 #[proc_macro]
 pub fn trace(input: TokenStream) -> TokenStream {
     let parsed = syn::parse_macro_input!(input as TraceMacroInput);
@@ -197,54 +133,56 @@ pub fn trace(input: TokenStream) -> TokenStream {
         _ => unreachable!(),
     };
     if let Some(statement) = parsed.statement {
-        let entry_msg = format!("+ {}", trace_message);
-        let exit_msg = format!("- {}", trace_message);
+        let _entry_msg = format!("+ {}", trace_message);
+        let _exit_msg = format!("- {}", trace_message);
+        #[cfg(feature = "trace")]
         let expanded = quote! {
             {
-                #[cfg(feature = "trace_guest")]
                 const _: () = assert!(
-                    #entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
+                    #_entry_msg.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
                     "Trace message exceeds the maximum bytes length",
                 );
-                #[cfg(feature = "trace_guest")]
-                ::hyperlight_guest_tracing::create_trace_record(#entry_msg);
+                ::hyperlight_guest_tracing::create_trace_record(#_entry_msg);
                 let __trace_result = #statement;
-                #[cfg(feature = "trace_guest")]
-                ::hyperlight_guest_tracing::create_trace_record(#exit_msg);
+                ::hyperlight_guest_tracing::create_trace_record(#_exit_msg);
                 __trace_result
             }
         };
+        #[cfg(not(feature = "trace"))]
+        let expanded = quote! {
+            #statement
+        };
+
         TokenStream::from(expanded)
     } else {
+        #[cfg(feature = "trace")]
         let expanded = quote! {
             {
-                #[cfg(feature = "trace_guest")]
                 const _: () = assert!(
                     #trace_message.len() <= hyperlight_guest_tracing::MAX_TRACE_MSG_LEN,
                     "Trace message exceeds the maximum bytes length",
                 );
-                #[cfg(feature = "trace_guest")]
                 ::hyperlight_guest_tracing::create_trace_record(#trace_message);
             }
         };
+        #[cfg(not(feature = "trace"))]
+        let expanded = quote! {};
+
         TokenStream::from(expanded)
     }
 }
 
 /// This macro flushes the trace buffer, sending any remaining trace records to the host.
-///
-/// Usage:
-/// ```rust
-/// hyperlight_guest_tracing_macro::flush!();
-/// ```
 #[proc_macro]
 pub fn flush(_input: TokenStream) -> TokenStream {
+    #[cfg(feature = "trace")]
     let expanded = quote! {
         {
-            #[cfg(feature = "trace_guest")]
             ::hyperlight_guest_tracing::flush_trace_buffer();
         }
     };
+    #[cfg(not(feature = "trace"))]
+    let expanded = quote! {};
 
     TokenStream::from(expanded)
 }
