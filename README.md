@@ -58,7 +58,7 @@ fn main() -> hyperlight_host::Result<()> {
     let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
     // in order to call a function it first must be defined in the guest and exposed so that
     // the host can call it
-    multi_use_sandbox.call_guest_function_by_name::<i32>(
+    multi_use_sandbox.call::<i32>(
         "PrintOutput",
         message,
     )?;
