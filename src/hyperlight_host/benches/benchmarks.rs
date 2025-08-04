@@ -27,7 +27,7 @@ fn create_uninit_sandbox() -> UninitializedSandbox {
 }
 
 fn create_multiuse_sandbox() -> Sandbox {
-    create_uninit_sandbox().evolve().unwrap()
+    create_uninit_sandbox().init().unwrap()
 }
 
 fn guest_call_benchmark(c: &mut Criterion) {
@@ -63,7 +63,7 @@ fn guest_call_benchmark(c: &mut Criterion) {
             .register("HostAdd", |a: i32, b: i32| Ok(a + b))
             .unwrap();
 
-        let mut multiuse_sandbox: Sandbox = uninitialized_sandbox.evolve().unwrap();
+        let mut multiuse_sandbox: Sandbox = uninitialized_sandbox.init().unwrap();
 
         b.iter(|| {
             multiuse_sandbox
@@ -95,7 +95,7 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
             Some(config),
         )
         .unwrap();
-        let mut sandbox = sandbox.evolve().unwrap();
+        let mut sandbox = sandbox.init().unwrap();
 
         b.iter(|| {
             sandbox

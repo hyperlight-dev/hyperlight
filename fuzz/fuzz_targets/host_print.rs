@@ -21,7 +21,7 @@ fuzz_target!(
         )
         .unwrap();
 
-        let mu_sbox: Sandbox = u_sbox.evolve().unwrap();
+        let mu_sbox: Sandbox = u_sbox.init().unwrap();
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();
     },
 

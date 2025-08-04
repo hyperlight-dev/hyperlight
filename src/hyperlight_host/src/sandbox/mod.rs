@@ -305,7 +305,7 @@ mod tests {
                         ))
                         .unwrap();
 
-                    let sandbox = uninitialized_sandbox.evolve().unwrap_or_else(|_| {
+                    let sandbox = uninitialized_sandbox.init().unwrap_or_else(|_| {
                         panic!("Failed to initialize UninitializedSandbox thread {}", i)
                     });
 

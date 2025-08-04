@@ -71,8 +71,8 @@ pub(crate) struct SandboxRuntimeConfig {
 /// - Register host functions that will be available to the guest
 /// - Configure sandbox settings before VM creation
 ///
-/// The virtual machine is not created until you call [`evolve`](Self::evolve) to transform
-/// this into an initialized [`MultiUseSandbox`].
+/// The virtual machine is not created until you call [`init`](Self::init) to transform
+/// this into an initialized [`Sandbox`].
 pub struct UninitializedSandbox {
     /// Registered host functions
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
@@ -98,9 +98,9 @@ impl UninitializedSandbox {
     ///
     /// This method consumes the `UninitializedSandbox` and performs the final initialization
     /// steps to create the underlying virtual machine. Once evolved, the resulting
-    /// [`MultiUseSandbox`] can execute guest code and handle function calls.
+    /// [`Sandbox`] can execute guest code and handle function calls.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub fn evolve(self) -> Result<Sandbox> {
+    pub fn init(self) -> Result<Sandbox> {
         evolve_impl_multi_use(self)
     }
 }
@@ -170,7 +170,7 @@ impl UninitializedSandbox {
     /// The guest binary can be provided as either a file path or memory buffer.
     /// An optional configuration can customize memory sizes and sandbox settings.
     /// After creation, register host functions using [`register`](Self::register)
-    /// before calling [`evolve`](Self::evolve) to complete initialization and create the VM.
+    /// before calling [`init`](Self::init) to complete initialization and create the VM.
     #[instrument(
         err(Debug),
         skip(env),
@@ -431,7 +431,7 @@ mod tests {
             GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&buffer));
 
         let uninitialized_sandbox = UninitializedSandbox::new(guest_env, None).unwrap();
-        let mut sandbox: Sandbox = uninitialized_sandbox.evolve().unwrap();
+        let mut sandbox: Sandbox = uninitialized_sandbox.init().unwrap();
 
         let res = sandbox
             .call_guest_function_by_name::<Vec<u8>>("ReadFromUserMemory", (4u64, buffer.to_vec()))
@@ -475,7 +475,7 @@ mod tests {
 
         // Get a Sandbox from an uninitialized sandbox without a call back function
 
-        let _sandbox: Sandbox = uninitialized_sandbox.evolve().unwrap();
+        let _sandbox: Sandbox = uninitialized_sandbox.init().unwrap();
 
         // Test with a valid guest binary buffer
 
@@ -523,7 +523,7 @@ mod tests {
 
             usbox.register("test0", |arg: i32| Ok(arg + 1)).unwrap();
 
-            let sandbox: Result<Sandbox> = usbox.evolve();
+            let sandbox: Result<Sandbox> = usbox.init();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -548,7 +548,7 @@ mod tests {
 
             usbox.register("test1", |a: i32, b: i32| Ok(a + b)).unwrap();
 
-            let sandbox: Result<Sandbox> = usbox.evolve();
+            let sandbox: Result<Sandbox> = usbox.init();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -581,7 +581,7 @@ mod tests {
                 })
                 .unwrap();
 
-            let sandbox: Result<Sandbox> = usbox.evolve();
+            let sandbox: Result<Sandbox> = usbox.init();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -599,7 +599,7 @@ mod tests {
         // calling a function that doesn't exist
         {
             let usbox = uninitialized_sandbox();
-            let sandbox: Result<Sandbox> = usbox.evolve();
+            let sandbox: Result<Sandbox> = usbox.init();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -822,7 +822,7 @@ mod tests {
                         .host_print(format!("Print from UninitializedSandbox on Thread {}\n", i))
                         .unwrap();
 
-                    let sandbox = uninitialized_sandbox.evolve().unwrap_or_else(|_| {
+                    let sandbox = uninitialized_sandbox.init().unwrap_or_else(|_| {
                         panic!("Failed to initialize UninitializedSandbox thread {}", i)
                     });
 
@@ -1112,7 +1112,7 @@ mod tests {
                 );
                 res.unwrap()
             };
-            let _: Result<Sandbox> = sbox.evolve();
+            let _: Result<Sandbox> = sbox.init();
 
             let num_calls = TEST_LOGGER.num_log_calls();
 

@@ -68,7 +68,7 @@ pub struct Sandbox {
 impl Sandbox {
     /// Move an `UninitializedSandbox` into a new `Sandbox` instance.
     ///
-    /// This function is not equivalent to doing an `evolve` from uninitialized
+    /// This function is not equivalent to doing an `init` from uninitialized
     /// to initialized, and is purposely not exposed publicly outside the crate
     /// (as a `From` implementation would be)
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -98,12 +98,12 @@ impl Sandbox {
     /// # Examples
     ///
     /// ```no_run
-    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::{Sandbox, UninitializedSandbox, GuestBinary};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    /// let mut sandbox: Sandbox = UninitializedSandbox::new(
     ///     GuestBinary::FilePath("guest.bin".into()),
     ///     None
-    /// )?.evolve()?;
+    /// )?.init()?;
     ///
     /// // Modify sandbox state
     /// sandbox.call_guest_function_by_name::<i32>("SetValue", 42)?;
@@ -135,12 +135,12 @@ impl Sandbox {
     /// # Examples
     ///
     /// ```no_run
-    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::{Sandbox, UninitializedSandbox, GuestBinary};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    /// let mut sandbox: Sandbox = UninitializedSandbox::new(
     ///     GuestBinary::FilePath("guest.bin".into()),
     ///     None
-    /// )?.evolve()?;
+    /// )?.init()?;
     ///
     /// // Take initial snapshot from this sandbox
     /// let snapshot = sandbox.snapshot()?;
@@ -191,12 +191,12 @@ impl Sandbox {
     /// # Examples
     ///
     /// ```no_run
-    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::{Sandbox, UninitializedSandbox, GuestBinary};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    /// let mut sandbox: Sandbox = UninitializedSandbox::new(
     ///     GuestBinary::FilePath("guest.bin".into()),
     ///     None
-    /// )?.evolve()?;
+    /// )?.init()?;
     ///
     /// // Call function with no arguments
     /// let result: i32 = sandbox.call_guest_function_by_name("GetCounter", ())?;
@@ -362,14 +362,14 @@ impl Sandbox {
     /// # Examples
     ///
     /// ```no_run
-    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::{Sandbox, UninitializedSandbox, GuestBinary};
     /// # use std::thread;
     /// # use std::time::Duration;
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    /// let mut sandbox: Sandbox = UninitializedSandbox::new(
     ///     GuestBinary::FilePath("guest.bin".into()),
     ///     None
-    /// )?.evolve()?;
+    /// )?.init()?;
     ///
     /// // Get interrupt handle before starting long-running operation
     /// let interrupt_handle = sandbox.interrupt_handle();
@@ -443,7 +443,7 @@ mod tests {
         let mut sbox1: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
-            u_sbox.evolve()
+            u_sbox.init()
         }
         .unwrap();
 
@@ -454,7 +454,7 @@ mod tests {
         let mut sbox2: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
-            u_sbox.evolve()
+            u_sbox.init()
         }
         .unwrap();
 
@@ -475,7 +475,7 @@ mod tests {
         let mut sbox: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve()
+            u_sbox.init()
         }
         .unwrap();
 
@@ -513,7 +513,7 @@ mod tests {
 
             usbox.register("MakeGetpidSyscall", make_get_pid_syscall)?;
 
-            let mut sbox: Sandbox = usbox.evolve()?;
+            let mut sbox: Sandbox = usbox.init()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -549,7 +549,7 @@ mod tests {
             )?;
             // ^^^ note, we are allowing SYS_getpid
 
-            let mut sbox: Sandbox = usbox.evolve()?;
+            let mut sbox: Sandbox = usbox.init()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -603,7 +603,7 @@ mod tests {
             .unwrap();
             ubox.register("Openat_Hostfunc", make_openat_syscall)?;
 
-            let mut sbox = ubox.evolve().unwrap();
+            let mut sbox = ubox.init().unwrap();
             let host_func_result = sbox
                 .call_guest_function_by_name::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
@@ -633,7 +633,7 @@ mod tests {
                 make_openat_syscall,
                 [libc::SYS_openat],
             )?;
-            let mut sbox = ubox.evolve().unwrap();
+            let mut sbox = ubox.init().unwrap();
             let host_func_result = sbox
                 .call_guest_function_by_name::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
@@ -656,7 +656,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut multi_use_sandbox: Sandbox = usbox.evolve().unwrap();
+        let mut multi_use_sandbox: Sandbox = usbox.init().unwrap();
 
         let res: Result<()> = multi_use_sandbox.call_guest_function_by_name("TriggerException", ());
 
@@ -696,7 +696,7 @@ mod tests {
                     )
                     .unwrap();
 
-                    let mut multi_use_sandbox: Sandbox = usbox.evolve().unwrap();
+                    let mut multi_use_sandbox: Sandbox = usbox.init().unwrap();
 
                     let res: i32 = multi_use_sandbox
                         .call_guest_function_by_name("GetStatic", ())
@@ -724,7 +724,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .evolve()
+        .init()
         .unwrap();
 
         let expected = b"hello world";
@@ -760,7 +760,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .evolve()
+        .init()
         .unwrap();
 
         let expected = &[0x90, 0x90, 0x90, 0xC3]; // NOOP slide to RET
@@ -842,7 +842,7 @@ mod tests {
         let mut sbox: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve().unwrap()
+            u_sbox.init().unwrap()
         };
 
         // 1. Take snapshot 1 with no additional regions mapped
@@ -889,13 +889,13 @@ mod tests {
         let mut sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve().unwrap()
+            u_sbox.init().unwrap()
         };
 
         let mut sandbox2 = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve().unwrap()
+            u_sbox.init().unwrap()
         };
         assert_ne!(sandbox.id, sandbox2.id);
 
@@ -911,7 +911,7 @@ mod tests {
         let sandbox3 = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve().unwrap()
+            u_sbox.init().unwrap()
         };
         assert_ne!(sandbox3.id, sandbox_id);
     }

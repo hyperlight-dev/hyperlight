@@ -22,7 +22,7 @@ limitations under the License.
 //! and host-guest communication.
 //!
 //! The primary entry points are [`UninitializedSandbox`] for initial setup and
-//! [`MultiUseSandbox`] for executing guest functions.
+//! [`Sandbox`] for executing guest functions.
 //!
 //! ## Guest Requirements
 //!

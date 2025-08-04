@@ -83,7 +83,7 @@ fn float_roundtrip() {
         f32::NAN,
         -f32::NAN,
     ];
-    let mut sandbox: Sandbox = new_uninit().unwrap().evolve().unwrap();
+    let mut sandbox: Sandbox = new_uninit().unwrap().init().unwrap();
     for f in doubles.iter() {
         let res: f64 = sandbox
             .call_guest_function_by_name("EchoDouble", *f)
@@ -330,7 +330,7 @@ fn callback_test_helper() -> Result<()> {
         })?;
 
         // call guest function that calls host function
-        let mut init_sandbox: Sandbox = sandbox.evolve()?;
+        let mut init_sandbox: Sandbox = sandbox.init()?;
         let msg = "Hello world";
         init_sandbox.call_guest_function_by_name::<i32>("GuestMethod1", msg.to_string())?;
 
@@ -372,7 +372,7 @@ fn host_function_error() -> Result<()> {
         })?;
 
         // call guest function that calls host function
-        let mut init_sandbox: Sandbox = sandbox.evolve()?;
+        let mut init_sandbox: Sandbox = sandbox.init()?;
         let msg = "Hello world";
         let res = init_sandbox
             .call_guest_function_by_name::<i32>("GuestMethod1", msg.to_string())

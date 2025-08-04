@@ -359,7 +359,7 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
             type Exports<I: #ns::#import_trait + ::std::marker::Send> = #wrapper_name<I, ::hyperlight_host::sandbox::sandbox::Sandbox>;
             fn instantiate<I: #ns::#import_trait + ::std::marker::Send + 'static>(mut self, i: I) -> Self::Exports<I> {
                 let rts = register_host_functions(&mut self, i);
-                let sb = self.evolve().unwrap();
+                let sb = self.init().unwrap();
                 #wrapper_name {
                     sb,
                     rt: rts,

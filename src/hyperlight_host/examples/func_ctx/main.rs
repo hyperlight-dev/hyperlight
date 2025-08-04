@@ -24,7 +24,7 @@ fn main() {
     let path = simple_guest_as_string().unwrap();
     let mut sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
         .unwrap()
-        .evolve()
+        .init()
         .unwrap();
 
     // Do several calls against a sandbox running the `simpleguest.exe` binary,

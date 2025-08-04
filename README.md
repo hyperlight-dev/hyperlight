@@ -52,7 +52,7 @@ fn main() -> hyperlight_host::Result<()> {
     // Note: This function is unused by the guest code below, it's just here for demonstration purposes
 
     // Initialize sandbox to be able to call host functions
-    let mut multi_use_sandbox = uninitialized_sandbox.evolve()?;
+    let mut multi_use_sandbox = uninitialized_sandbox.init()?;
 
     // Call a function in the guest
     let message = "Hello, World! I am executing inside of a VM :)\n".to_string();

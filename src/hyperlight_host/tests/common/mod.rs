@@ -54,7 +54,7 @@ pub fn get_simpleguest_sandboxes(
             if let Some(writer) = writer.clone() {
                 sandbox.register_print(writer).unwrap();
             }
-            sandbox.evolve().unwrap()
+            sandbox.init().unwrap()
         })
         .collect()
 }

@@ -131,7 +131,7 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                 usandbox.register_print(fn_writer)?;
 
                 // Initialize the sandbox.
-                let mut multiuse_sandbox = usandbox.evolve()?;
+                let mut multiuse_sandbox = usandbox.init()?;
 
                 // Call a guest function 5 times to generate some log entries.
                 for _ in 0..5 {
