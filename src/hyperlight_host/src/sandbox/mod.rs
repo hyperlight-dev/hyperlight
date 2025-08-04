@@ -29,6 +29,7 @@ pub(crate) mod mem_mgr;
 pub(crate) mod outb;
 /// Functionality for dealing with initialized sandboxes that can
 /// call 0 or more guest functions
+#[allow(clippy::module_inception)]
 pub mod sandbox;
 /// Functionality for creating uninitialized sandboxes, manipulating them,
 /// and converting them to initialized sandboxes.
