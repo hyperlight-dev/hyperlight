@@ -20,9 +20,6 @@ pub mod config;
 pub(crate) mod host_funcs;
 /// Functionality for dealing with `Sandbox`es that contain Hypervisors
 pub(crate) mod hypervisor;
-/// Functionality for dealing with initialized sandboxes that can
-/// call 0 or more guest functions
-pub mod sandbox;
 /// Functionality for dealing with memory access from the VM guest
 /// executable
 pub(crate) mod mem_access;
@@ -30,6 +27,9 @@ pub(crate) mod mem_access;
 /// `SandboxMemoryManager`
 pub(crate) mod mem_mgr;
 pub(crate) mod outb;
+/// Functionality for dealing with initialized sandboxes that can
+/// call 0 or more guest functions
+pub mod sandbox;
 /// Functionality for creating uninitialized sandboxes, manipulating them,
 /// and converting them to initialized sandboxes.
 pub mod uninitialized;

@@ -34,7 +34,7 @@ use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags}
 use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
-use crate::{Sandbox, Result, new_error};
+use crate::{Result, Sandbox, new_error};
 
 #[cfg(all(target_os = "linux", feature = "seccomp"))]
 const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
@@ -421,7 +421,7 @@ mod tests {
 
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
-    use crate::{Sandbox, Result, UninitializedSandbox, new_error};
+    use crate::{Result, Sandbox, UninitializedSandbox, new_error};
 
     #[test]
     fn test_load_extra_blob() {

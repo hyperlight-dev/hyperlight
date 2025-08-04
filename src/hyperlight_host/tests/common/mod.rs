@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use hyperlight_host::func::HostFunction;
-use hyperlight_host::{GuestBinary, Sandbox, Result, UninitializedSandbox};
+use hyperlight_host::{GuestBinary, Result, Sandbox, UninitializedSandbox};
 use hyperlight_testing::{
     c_callback_guest_as_string, c_simple_guest_as_string, callback_guest_as_string,
     simple_guest_as_string,

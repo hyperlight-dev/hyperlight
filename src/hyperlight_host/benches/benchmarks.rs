@@ -16,9 +16,7 @@ limitations under the License.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use hyperlight_host::GuestBinary;
-use hyperlight_host::sandbox::{
-    Callable, Sandbox, SandboxConfiguration, UninitializedSandbox,
-};
+use hyperlight_host::sandbox::{Callable, Sandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_testing::simple_guest_as_string;
 
 fn create_uninit_sandbox() -> UninitializedSandbox {

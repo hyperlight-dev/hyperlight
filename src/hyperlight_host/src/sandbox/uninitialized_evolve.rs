@@ -43,7 +43,7 @@ use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
-use crate::{Sandbox, Result, UninitializedSandbox, log_then_return, new_error};
+use crate::{Result, Sandbox, UninitializedSandbox, log_then_return, new_error};
 
 /// The implementation for evolving `UninitializedSandbox`es to
 /// `Sandbox`es.

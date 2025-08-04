@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use common::new_uninit;
 use hyperlight_host::sandbox::{Callable, SandboxConfiguration};
 use hyperlight_host::{
-    GuestBinary, HyperlightError, Sandbox, Result, UninitializedSandbox, new_error,
+    GuestBinary, HyperlightError, Result, Sandbox, UninitializedSandbox, new_error,
 };
 use hyperlight_testing::simple_guest_as_string;
 #[cfg(target_os = "windows")]
