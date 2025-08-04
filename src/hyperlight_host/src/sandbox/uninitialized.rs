@@ -34,7 +34,7 @@ use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags}
 use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
-use crate::{MultiUseSandbox, Result, new_error};
+use crate::{Sandbox, Result, new_error};
 
 #[cfg(all(target_os = "linux", feature = "seccomp"))]
 const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
@@ -100,7 +100,7 @@ impl UninitializedSandbox {
     /// steps to create the underlying virtual machine. Once evolved, the resulting
     /// [`MultiUseSandbox`] can execute guest code and handle function calls.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub fn evolve(self) -> Result<MultiUseSandbox> {
+    pub fn evolve(self) -> Result<Sandbox> {
         evolve_impl_multi_use(self)
     }
 }
@@ -421,7 +421,7 @@ mod tests {
 
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
-    use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
+    use crate::{Sandbox, Result, UninitializedSandbox, new_error};
 
     #[test]
     fn test_load_extra_blob() {
@@ -431,7 +431,7 @@ mod tests {
             GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), Some(&buffer));
 
         let uninitialized_sandbox = UninitializedSandbox::new(guest_env, None).unwrap();
-        let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
+        let mut sandbox: Sandbox = uninitialized_sandbox.evolve().unwrap();
 
         let res = sandbox
             .call_guest_function_by_name::<Vec<u8>>("ReadFromUserMemory", (4u64, buffer.to_vec()))
@@ -475,7 +475,7 @@ mod tests {
 
         // Get a Sandbox from an uninitialized sandbox without a call back function
 
-        let _sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
+        let _sandbox: Sandbox = uninitialized_sandbox.evolve().unwrap();
 
         // Test with a valid guest binary buffer
 
@@ -523,7 +523,7 @@ mod tests {
 
             usbox.register("test0", |arg: i32| Ok(arg + 1)).unwrap();
 
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
+            let sandbox: Result<Sandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -548,7 +548,7 @@ mod tests {
 
             usbox.register("test1", |a: i32, b: i32| Ok(a + b)).unwrap();
 
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
+            let sandbox: Result<Sandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -581,7 +581,7 @@ mod tests {
                 })
                 .unwrap();
 
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
+            let sandbox: Result<Sandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -599,7 +599,7 @@ mod tests {
         // calling a function that doesn't exist
         {
             let usbox = uninitialized_sandbox();
-            let sandbox: Result<MultiUseSandbox> = usbox.evolve();
+            let sandbox: Result<Sandbox> = usbox.evolve();
             assert!(sandbox.is_ok());
             let sandbox = sandbox.unwrap();
 
@@ -780,7 +780,7 @@ mod tests {
     #[test]
     fn check_create_and_use_sandbox_on_different_threads() {
         let unintializedsandbox_queue = Arc::new(ArrayQueue::<UninitializedSandbox>::new(10));
-        let sandbox_queue = Arc::new(ArrayQueue::<MultiUseSandbox>::new(10));
+        let sandbox_queue = Arc::new(ArrayQueue::<Sandbox>::new(10));
 
         for i in 0..10 {
             let simple_guest_path = simple_guest_as_string().expect("Guest Binary Missing");
@@ -1112,7 +1112,7 @@ mod tests {
                 );
                 res.unwrap()
             };
-            let _: Result<MultiUseSandbox> = sbox.evolve();
+            let _: Result<Sandbox> = sbox.evolve();
 
             let num_calls = TEST_LOGGER.num_log_calls();
 

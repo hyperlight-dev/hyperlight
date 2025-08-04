@@ -43,7 +43,7 @@ use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
-use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_error};
+use crate::{Sandbox, Result, UninitializedSandbox, log_then_return, new_error};
 
 /// The implementation for evolving `UninitializedSandbox`es to
 /// `Sandbox`es.
@@ -120,11 +120,11 @@ where
 }
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
+pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Sandbox> {
     evolve_impl(u_sbox, |hf, hshm, vm, dispatch_ptr| {
         #[cfg(gdb)]
         let dbg_mem_wrapper = dbg_mem_access_handler_wrapper(hshm.clone());
-        Ok(MultiUseSandbox::from_uninit(
+        Ok(Sandbox::from_uninit(
             hf,
             hshm,
             vm,

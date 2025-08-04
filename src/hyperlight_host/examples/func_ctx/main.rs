@@ -19,7 +19,7 @@ use hyperlight_host::sandbox::UninitializedSandbox;
 use hyperlight_testing::simple_guest_as_string;
 
 fn main() {
-    // create a new `MultiUseSandbox` configured to run the `simpleguest.exe`
+    // create a new `Sandbox` configured to run the `simpleguest.exe`
     // test guest binary
     let path = simple_guest_as_string().unwrap();
     let mut sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)

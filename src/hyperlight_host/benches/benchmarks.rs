@@ -17,7 +17,7 @@ limitations under the License.
 use criterion::{Criterion, criterion_group, criterion_main};
 use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{
-    Callable, MultiUseSandbox, SandboxConfiguration, UninitializedSandbox,
+    Callable, Sandbox, SandboxConfiguration, UninitializedSandbox,
 };
 use hyperlight_testing::simple_guest_as_string;
 
@@ -26,7 +26,7 @@ fn create_uninit_sandbox() -> UninitializedSandbox {
     UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap()
 }
 
-fn create_multiuse_sandbox() -> MultiUseSandbox {
+fn create_multiuse_sandbox() -> Sandbox {
     create_uninit_sandbox().evolve().unwrap()
 }
 
@@ -63,7 +63,7 @@ fn guest_call_benchmark(c: &mut Criterion) {
             .register("HostAdd", |a: i32, b: i32| Ok(a + b))
             .unwrap();
 
-        let mut multiuse_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
+        let mut multiuse_sandbox: Sandbox = uninitialized_sandbox.evolve().unwrap();
 
         b.iter(|| {
             multiuse_sandbox

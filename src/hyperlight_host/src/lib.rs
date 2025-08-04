@@ -92,7 +92,7 @@ pub use error::HyperlightError;
 /// Re-export for `MemMgrWrapper` type
 /// A sandbox that can call be used to make multiple calls to guest functions,
 /// and otherwise reused multiple times
-pub use sandbox::MultiUseSandbox;
+pub use sandbox::Sandbox;
 /// The re-export for the `UninitializedSandbox` type
 pub use sandbox::UninitializedSandbox;
 /// The re-export for the `is_hypervisor_present` type

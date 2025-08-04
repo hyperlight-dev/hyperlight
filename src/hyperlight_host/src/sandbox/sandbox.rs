@@ -53,7 +53,7 @@ static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// Guest functions can be called repeatedly while maintaining state between calls.
 /// The sandbox supports creating snapshots and restoring to previous states.
-pub struct MultiUseSandbox {
+pub struct Sandbox {
     /// Unique identifier for this sandbox instance
     id: u64,
     // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
@@ -65,8 +65,8 @@ pub struct MultiUseSandbox {
     dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
 }
 
-impl MultiUseSandbox {
-    /// Move an `UninitializedSandbox` into a new `MultiUseSandbox` instance.
+impl Sandbox {
+    /// Move an `UninitializedSandbox` into a new `Sandbox` instance.
     ///
     /// This function is not equivalent to doing an `evolve` from uninitialized
     /// to initialized, and is purposely not exposed publicly outside the crate
@@ -78,7 +78,7 @@ impl MultiUseSandbox {
         vm: Box<dyn Hypervisor>,
         dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> MultiUseSandbox {
+    ) -> Sandbox {
         Self {
             id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             _host_funcs: host_funcs,
@@ -391,7 +391,7 @@ impl MultiUseSandbox {
     }
 }
 
-impl Callable for MultiUseSandbox {
+impl Callable for Sandbox {
     fn call<Output: SupportedReturnType>(
         &mut self,
         func_name: &str,
@@ -401,7 +401,7 @@ impl Callable for MultiUseSandbox {
     }
 }
 
-impl WrapperGetter for MultiUseSandbox {
+impl WrapperGetter for Sandbox {
     fn get_mgr_wrapper(&self) -> &MemMgrWrapper<HostSharedMemory> {
         &self.mem_mgr
     }
@@ -410,9 +410,9 @@ impl WrapperGetter for MultiUseSandbox {
     }
 }
 
-impl std::fmt::Debug for MultiUseSandbox {
+impl std::fmt::Debug for Sandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MultiUseSandbox")
+        f.debug_struct("Sandbox")
             .field("stack_guard", &self.mem_mgr.get_stack_cookie())
             .finish()
     }
@@ -430,7 +430,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::{Callable, SandboxConfiguration};
-    use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+    use crate::{GuestBinary, HyperlightError, Sandbox, Result, UninitializedSandbox};
 
     // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
     // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
@@ -440,7 +440,7 @@ mod tests {
         cfg.set_heap_size(20 * 1024);
         cfg.set_stack_size(16 * 1024);
 
-        let mut sbox1: MultiUseSandbox = {
+        let mut sbox1: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
             u_sbox.evolve()
@@ -451,7 +451,7 @@ mod tests {
             sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
         }
 
-        let mut sbox2: MultiUseSandbox = {
+        let mut sbox2: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
             u_sbox.evolve()
@@ -468,11 +468,11 @@ mod tests {
         }
     }
 
-    /// Tests that evolving from MultiUseSandbox to MultiUseSandbox creates a new state
+    /// Tests that evolving from Sandbox to Sandbox creates a new state
     /// and restoring a snapshot from before evolving restores the previous state
     #[test]
     fn snapshot_evolve_restore_handles_state_correctly() {
-        let mut sbox: MultiUseSandbox = {
+        let mut sbox: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve()
@@ -513,7 +513,7 @@ mod tests {
 
             usbox.register("MakeGetpidSyscall", make_get_pid_syscall)?;
 
-            let mut sbox: MultiUseSandbox = usbox.evolve()?;
+            let mut sbox: Sandbox = usbox.evolve()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -549,7 +549,7 @@ mod tests {
             )?;
             // ^^^ note, we are allowing SYS_getpid
 
-            let mut sbox: MultiUseSandbox = usbox.evolve()?;
+            let mut sbox: Sandbox = usbox.evolve()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -656,7 +656,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
+        let mut multi_use_sandbox: Sandbox = usbox.evolve().unwrap();
 
         let res: Result<()> = multi_use_sandbox.call_guest_function_by_name("TriggerException", ());
 
@@ -696,7 +696,7 @@ mod tests {
                     )
                     .unwrap();
 
-                    let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
+                    let mut multi_use_sandbox: Sandbox = usbox.evolve().unwrap();
 
                     let res: i32 = multi_use_sandbox
                         .call_guest_function_by_name("GetStatic", ())
@@ -839,7 +839,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn snapshot_restore_handles_remapping_correctly() {
-        let mut sbox: MultiUseSandbox = {
+        let mut sbox: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
             u_sbox.evolve().unwrap()

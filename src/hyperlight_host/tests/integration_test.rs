@@ -22,7 +22,7 @@ use std::time::Duration;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{GuestBinary, HyperlightError, Sandbox, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use hyperlight_testing::{
     c_simple_guest_as_string, callback_guest_as_string, simple_guest_as_string,
@@ -59,7 +59,7 @@ fn interrupt_host_call() {
         .register_with_extra_allowed_syscalls("Spin", spin, vec![libc::SYS_clock_nanosleep])
         .unwrap();
 
-    let mut sandbox: MultiUseSandbox = usbox.evolve().unwrap();
+    let mut sandbox: Sandbox = usbox.evolve().unwrap();
     let interrupt_handle = sandbox.interrupt_handle();
     assert!(!interrupt_handle.dropped()); // not yet dropped
 
@@ -81,7 +81,7 @@ fn interrupt_host_call() {
 /// Makes sure a running guest call can be interrupted by the host
 #[test]
 fn interrupt_in_progress_guest_call() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox1: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
     let interrupt_handle = sbox1.interrupt_handle();
@@ -116,7 +116,7 @@ fn interrupt_in_progress_guest_call() {
 /// Makes sure interrupting a vm before the guest call has started also prevents the guest call from being executed
 #[test]
 fn interrupt_guest_call_in_advance() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox1: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
     let interrupt_handle = sbox1.interrupt_handle();
@@ -158,9 +158,9 @@ fn interrupt_guest_call_in_advance() {
 /// all possible interleavings, but can hopefully increases confidence somewhat.
 #[test]
 fn interrupt_same_thread() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox1: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox2: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox3: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -200,9 +200,9 @@ fn interrupt_same_thread() {
 /// Same test as above but with no per-iteration barrier, to get more possible interleavings.
 #[test]
 fn interrupt_same_thread_no_barrier() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox1: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox2: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox3: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -246,8 +246,8 @@ fn interrupt_same_thread_no_barrier() {
 // and that anther sandbox on the original thread does not get incorrectly killed
 #[test]
 fn interrupt_moved_sandbox() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox1: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox2: Sandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let interrupt_handle = sbox1.interrupt_handle();
     let interrupt_handle2 = sbox2.interrupt_handle();
@@ -293,7 +293,7 @@ fn interrupt_custom_signal_no_and_retry_delay() {
     config.set_interrupt_vcpu_sigrtmin_offset(0).unwrap();
     config.set_interrupt_retry_delay(Duration::from_secs(1));
 
-    let mut sbox1: MultiUseSandbox = UninitializedSandbox::new(
+    let mut sbox1: Sandbox = UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
         Some(config),
     )
@@ -338,7 +338,7 @@ fn interrupt_spamming_host_call() {
             // do nothing
         })
         .unwrap();
-    let mut sbox1: MultiUseSandbox = uninit.evolve().unwrap();
+    let mut sbox1: Sandbox = uninit.evolve().unwrap();
 
     let interrupt_handle = sbox1.interrupt_handle();
 
@@ -562,7 +562,7 @@ fn dynamic_stack_allocate_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
     let uninit = UninitializedSandbox::new(guest_path, None);
-    let mut sbox1: MultiUseSandbox = uninit.unwrap().evolve().unwrap();
+    let mut sbox1: Sandbox = uninit.unwrap().evolve().unwrap();
 
     let res: i32 = sbox1
         .call_guest_function_by_name("StackAllocate", 100_i32)
