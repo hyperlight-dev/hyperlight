@@ -75,7 +75,7 @@ fn main() -> hyperlight_host::Result<()> {
     let message =
         "Hello, World! I am executing inside of a VM with debugger attached :)\n".to_string();
     multi_use_sandbox_dbg
-        .call_guest_function_by_name::<i32>(
+        .call::<i32>(
             "PrintOutput", // function must be defined in the guest binary
             message.clone(),
         )
@@ -84,7 +84,7 @@ fn main() -> hyperlight_host::Result<()> {
     let message =
         "Hello, World! I am executing inside of a VM without debugger attached :)\n".to_string();
     multi_use_sandbox
-        .call_guest_function_by_name::<i32>(
+        .call::<i32>(
             "PrintOutput", // function must be defined in the guest binary
             message.clone(),
         )

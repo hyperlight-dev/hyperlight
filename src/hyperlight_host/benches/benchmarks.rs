@@ -16,9 +16,7 @@ limitations under the License.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use hyperlight_host::GuestBinary;
-use hyperlight_host::sandbox::{
-    Callable, MultiUseSandbox, SandboxConfiguration, UninitializedSandbox,
-};
+use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_testing::simple_guest_as_string;
 
 fn create_uninit_sandbox() -> UninitializedSandbox {
@@ -99,10 +97,7 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
 
         b.iter(|| {
             sandbox
-                .call_guest_function_by_name::<()>(
-                    "LargeParameters",
-                    (large_vec.clone(), large_string.clone()),
-                )
+                .call::<()>("LargeParameters", (large_vec.clone(), large_string.clone()))
                 .unwrap()
         });
     });

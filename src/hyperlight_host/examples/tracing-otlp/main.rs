@@ -136,7 +136,7 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                 // Call a guest function 5 times to generate some log entries.
                 for _ in 0..5 {
                     multiuse_sandbox
-                        .call_guest_function_by_name::<String>("Echo", "a".to_string())
+                        .call::<String>("Echo", "a".to_string())
                         .unwrap();
                 }
 
@@ -147,7 +147,7 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                 // Call a guest function that calls the HostPrint host function 5 times to generate some log entries.
                 for _ in 0..5 {
                     multiuse_sandbox
-                        .call_guest_function_by_name::<i32>("PrintOutput", msg.clone())
+                        .call::<i32>("PrintOutput", msg.clone())
                         .unwrap();
                 }
 
@@ -179,9 +179,7 @@ fn run_example(wait_input: bool) -> HyperlightResult<()> {
                     );
                     let _entered = span.enter();
                     barrier.wait();
-                    multiuse_sandbox
-                        .call_guest_function_by_name::<()>("Spin", ())
-                        .unwrap_err();
+                    multiuse_sandbox.call::<()>("Spin", ()).unwrap_err();
                 }
                 thread.join().expect("Thread panicked");
             }

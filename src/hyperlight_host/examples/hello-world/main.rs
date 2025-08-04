@@ -40,7 +40,7 @@ fn main() -> hyperlight_host::Result<()> {
     // Call guest function
     let message = "Hello, World! I am executing inside of a VM :)\n".to_string();
     multi_use_sandbox
-        .call_guest_function_by_name::<i32>(
+        .call::<i32>(
             "PrintOutput", // function must be defined in the guest binary
             message,
         )

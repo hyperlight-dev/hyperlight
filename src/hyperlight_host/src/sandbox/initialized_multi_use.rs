@@ -455,6 +455,7 @@ impl Callable for MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> Result<Output> {
+        #[allow(deprecated)]
         self.call_guest_function_by_name(func_name, args)
     }
 }
@@ -487,7 +488,7 @@ mod tests {
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
     #[cfg(target_os = "linux")]
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
-    use crate::sandbox::{Callable as _, SandboxConfiguration};
+    use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
 
     /// Tests that call_guest_function_by_name restores the state correctly
@@ -505,10 +506,12 @@ mod tests {
         let _ = sbox.call::<i32>("AddToStatic", 5i32).unwrap();
         let res: i32 = sbox.call("GetStatic", ()).unwrap();
         assert_eq!(res, 5);
-        
+
         sbox.restore(&snapshot).unwrap();
         #[allow(deprecated)]
-        let _ = sbox.call_guest_function_by_name::<i32>("AddToStatic", 5i32).unwrap();
+        let _ = sbox
+            .call_guest_function_by_name::<i32>("AddToStatic", 5i32)
+            .unwrap();
         #[allow(deprecated)]
         let res: i32 = sbox.call_guest_function_by_name("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
@@ -595,7 +598,7 @@ mod tests {
 
             let mut sbox: MultiUseSandbox = usbox.evolve()?;
 
-            let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
+            let res: Result<u64> = sbox.call("ViolateSeccompFilters", ());
 
             #[cfg(feature = "seccomp")]
             match res {
@@ -631,7 +634,7 @@ mod tests {
 
             let mut sbox: MultiUseSandbox = usbox.evolve()?;
 
-            let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
+            let res: Result<u64> = sbox.call("ViolateSeccompFilters", ());
 
             match res {
                 Ok(_) => {}
@@ -685,7 +688,7 @@ mod tests {
 
             let mut sbox = ubox.evolve().unwrap();
             let host_func_result = sbox
-                .call_guest_function_by_name::<i64>(
+                .call::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
                     "Openat_Hostfunc".to_string(),
                 )
@@ -714,8 +717,8 @@ mod tests {
                 [libc::SYS_openat],
             )?;
             let mut sbox = ubox.evolve().unwrap();
-            let host_func_result = sbox
-                .call_guest_function_by_name::<i64>(
+            let host_func_result: i64 = sbox
+                .call::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
                     "Openat_Hostfunc".to_string(),
                 )
@@ -738,7 +741,7 @@ mod tests {
 
         let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
 
-        let res: Result<()> = multi_use_sandbox.call_guest_function_by_name("TriggerException", ());
+        let res: Result<()> = multi_use_sandbox.call("TriggerException", ());
 
         assert!(res.is_err());
 
@@ -778,9 +781,7 @@ mod tests {
 
                     let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
 
-                    let res: i32 = multi_use_sandbox
-                        .call_guest_function_by_name("GetStatic", ())
-                        .unwrap();
+                    let res: i32 = multi_use_sandbox.call("GetStatic", ()).unwrap();
 
                     assert_eq!(res, 0);
                 }
@@ -822,7 +823,7 @@ mod tests {
 
         let _guard = map_mem.lock.try_read().unwrap();
         let actual: Vec<u8> = sbox
-            .call_guest_function_by_name(
+            .call(
                 "ReadMappedBuffer",
                 (guest_base as u64, expected.len() as u64),
             )
@@ -860,7 +861,7 @@ mod tests {
 
         // Execute should pass since memory is executable
         let succeed = sbox
-            .call_guest_function_by_name::<bool>(
+            .call::<bool>(
                 "ExecMappedBuffer",
                 (guest_base as u64, expected.len() as u64),
             )
@@ -869,7 +870,7 @@ mod tests {
 
         // write should fail because the memory is mapped as read-only
         let err = sbox
-            .call_guest_function_by_name::<bool>(
+            .call::<bool>(
                 "WriteMappedBuffer",
                 (guest_base as u64, expected.len() as u64),
             )

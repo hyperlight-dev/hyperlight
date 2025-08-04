@@ -116,12 +116,10 @@ mod tests {
             });
 
             multi
-                .call_guest_function_by_name::<i32>("PrintOutput", "Hello".to_string())
+                .call::<i32>("PrintOutput", "Hello".to_string())
                 .unwrap();
 
-            multi
-                .call_guest_function_by_name::<i32>("Spin", ())
-                .unwrap_err();
+            multi.call::<i32>("Spin", ()).unwrap_err();
             thread.join().unwrap();
 
             snapshotter.snapshot()

@@ -50,7 +50,7 @@ fn main() -> Result<()> {
             // Call a guest function 5 times to generate some log entries.
             for _ in 0..5 {
                 multiuse_sandbox
-                    .call_guest_function_by_name::<String>("Echo", "a".to_string())
+                    .call::<String>("Echo", "a".to_string())
                     .unwrap();
             }
 
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
             // Call a guest function that calls the HostPrint host function 5 times to generate some log entries.
             for _ in 0..5 {
                 multiuse_sandbox
-                    .call_guest_function_by_name::<i32>("PrintOutput", msg.clone())
+                    .call::<i32>("PrintOutput", msg.clone())
                     .unwrap();
             }
             Ok(())
@@ -94,9 +94,7 @@ fn main() -> Result<()> {
 
     for _ in 0..NUM_CALLS {
         barrier.wait();
-        multiuse_sandbox
-            .call_guest_function_by_name::<()>("Spin", ())
-            .unwrap_err();
+        multiuse_sandbox.call::<()>("Spin", ()).unwrap_err();
     }
     thread.join().unwrap();
 

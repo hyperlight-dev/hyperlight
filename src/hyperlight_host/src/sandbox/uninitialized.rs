@@ -434,7 +434,7 @@ mod tests {
         let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
 
         let res = sandbox
-            .call_guest_function_by_name::<Vec<u8>>("ReadFromUserMemory", (4u64, buffer.to_vec()))
+            .call::<Vec<u8>>("ReadFromUserMemory", (4u64, buffer.to_vec()))
             .expect("Failed to call ReadFromUserMemory");
 
         assert_eq!(res, buffer.to_vec());
