@@ -21,7 +21,6 @@ use std::sync::Arc;
 use std::vec::Vec;
 
 use super::elf::ElfInfo;
-use super::ptr_offset::Offset;
 use crate::Result;
 
 // This is used extremely infrequently, so being unusually large for PE
@@ -94,9 +93,9 @@ impl ExeInfo {
             ExeInfo::Elf(_) => DEFAULT_ELF_HEAP_RESERVE,
         }
     }
-    pub fn entrypoint(&self) -> Offset {
+    pub fn entrypoint(&self) -> u64 {
         match self {
-            ExeInfo::Elf(elf) => Offset::from(elf.entrypoint_va()),
+            ExeInfo::Elf(elf) => elf.entrypoint_va(),
         }
     }
     pub fn loaded_size(&self) -> usize {

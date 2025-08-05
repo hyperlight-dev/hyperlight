@@ -73,7 +73,6 @@ use gdb::VcpuStopReason;
 
 #[cfg(gdb)]
 use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
-use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::mem_access::handle_mem_access;
@@ -142,7 +141,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     #[allow(clippy::too_many_arguments)]
     fn initialise(
         &mut self,
-        peb_addr: RawPtr,
+        peb_addr: u64,
         seed: u64,
         page_size: u32,
         mem_mgr: MemMgrWrapper<HostSharedMemory>,
@@ -174,7 +173,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Returns `Ok` if the call succeeded, and an `Err` if it failed
     fn dispatch_call_from_host(
         &mut self,
-        dispatch_func_addr: RawPtr,
+        dispatch_func_addr: u64,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()>;
 
@@ -542,7 +541,6 @@ pub(crate) mod tests {
             return Ok(());
         }
 
-        use crate::mem::ptr::RawPtr;
         use crate::sandbox::host_funcs::FunctionRegistry;
         #[cfg(gdb)]
         use crate::sandbox::mem_access::dbg_mem_access_handler_wrapper;
@@ -564,7 +562,7 @@ pub(crate) mod tests {
         )?;
 
         // Set up required parameters for initialise
-        let peb_addr = RawPtr::from(0x1000u64); // Dummy PEB address
+        let peb_addr = 0x1000u64; // Dummy PEB address
         let seed = 12345u64; // Random seed
         let page_size = 4096u32; // Standard page size
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
