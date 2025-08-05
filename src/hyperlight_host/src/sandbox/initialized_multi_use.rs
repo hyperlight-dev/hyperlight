@@ -63,6 +63,8 @@ pub struct MultiUseSandbox {
     dispatch_ptr: RawPtr,
     #[cfg(gdb)]
     dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    /// If the current state of the sandbox has been captured in a snapshot,
+    /// that snapshot is stored here.
     snapshot: Option<Snapshot>,
 }
 
@@ -117,15 +119,19 @@ impl MultiUseSandbox {
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn snapshot(&mut self) -> Result<Snapshot> {
+        if let Some(snapshot) = &self.snapshot {
+            return Ok(snapshot.clone());
+        }
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
         let memory_snapshot = self
             .mem_mgr
             .unwrap_mgr_mut()
             .snapshot(self.id, mapped_regions_vec)?;
-        Ok(Snapshot {
-            inner: Arc::new(memory_snapshot),
-        })
+        let inner = Arc::new(memory_snapshot);
+        let snapshot = Snapshot { inner };
+        self.snapshot = Some(snapshot.clone());
+        Ok(snapshot)
     }
 
     /// Restores the sandbox's memory to a previously captured snapshot state.
@@ -161,6 +167,13 @@ impl MultiUseSandbox {
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
+        if let Some(snap) = &self.snapshot {
+            if Arc::ptr_eq(&snap.inner, &snapshot.inner) {
+                // If the snapshot is already the current one, no need to restore
+                return Ok(());
+            }
+        }
+
         if self.id != snapshot.inner.sandbox_id() {
             return Err(SnapshotSandboxMismatch);
         }
@@ -231,10 +244,7 @@ impl MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> Result<Output> {
-        let snapshot = match &self.snapshot {
-            Some(snapshot) => snapshot.clone(),
-            None => self.snapshot()?,
-        };
+        let snapshot = self.snapshot()?;
         let res = self.call(func_name, args);
         self.restore(&snapshot)?;
         res
@@ -312,6 +322,8 @@ impl MultiUseSandbox {
             // writes can be rolled back when necessary.
             log_then_return!("TODO: Writable mappings not yet supported");
         }
+        // Reset snapshot since we are mutating the sandbox state
+        self.snapshot = None;
         unsafe { self.vm.map_region(rgn) }?;
         self.mem_mgr.unwrap_mgr_mut().mapped_rgns += 1;
         Ok(())
