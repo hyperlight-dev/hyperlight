@@ -39,7 +39,6 @@ use thiserror::Error;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::MemoryRegionFlags;
-use crate::mem::ptr::RawPtr;
 
 /// The error type for Hyperlight operations
 #[derive(Error, Debug)]
@@ -195,10 +194,6 @@ pub enum HyperlightError {
     /// a failure occurred processing a PE file
     #[error("Failure processing PE File {0:?}")]
     PEFileProcessingFailure(#[from] goblin::error::Error),
-
-    /// Raw pointer is less than base address
-    #[error("Raw pointer ({0:?}) was less than the base address ({1})")]
-    RawPointerLessThanBaseAddress(RawPtr, u64),
 
     /// RefCell borrow failed
     #[error("RefCell borrow failed")]

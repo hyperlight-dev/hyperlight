@@ -30,8 +30,6 @@ use super::layout::SandboxMemoryLayout;
 use super::memory_region::MemoryRegion;
 #[cfg(feature = "init-paging")]
 use super::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionType};
-use super::ptr::{GuestPtr, RawPtr};
-use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use super::shared_mem_snapshot::SharedMemorySnapshot;
 use crate::sandbox::SandboxConfiguration;
@@ -69,9 +67,9 @@ pub(crate) struct SandboxMemoryManager<S> {
     /// The memory layout of the underlying shared memory
     pub(crate) layout: SandboxMemoryLayout,
     /// Pointer to where to load memory from
-    pub(crate) load_addr: RawPtr,
+    pub(crate) load_addr: u64,
     /// Offset for the execution entrypoint from `load_addr`
-    pub(crate) entrypoint_offset: Offset,
+    pub(crate) entrypoint_offset: u64,
     /// How many memory regions were mapped after sandbox creation
     pub(crate) mapped_rgns: u64,
 }
@@ -85,8 +83,8 @@ where
     fn new(
         layout: SandboxMemoryLayout,
         shared_mem: S,
-        load_addr: RawPtr,
-        entrypoint_offset: Offset,
+        load_addr: u64,
+        entrypoint_offset: u64,
     ) -> Self {
         Self {
             layout,
@@ -110,12 +108,12 @@ where
     #[cfg(feature = "init-paging")]
     pub(crate) fn set_up_shared_memory(
         &mut self,
-        mem_size: u64,
-        regions: &mut [MemoryRegion],
-    ) -> Result<u64> {
-        let rsp: u64 = self.layout.get_top_of_user_stack_offset() as u64
-            + SandboxMemoryLayout::BASE_ADDRESS as u64
-            + self.layout.stack_size as u64
+        mem_size: usize,
+        regions: &[MemoryRegion],
+    ) -> Result<usize> {
+        let rsp = self.layout.get_top_of_user_stack_offset()
+            + SandboxMemoryLayout::BASE_ADDRESS
+            + self.layout.stack_size
             // TODO: subtracting 0x28 was a requirement for MSVC. It should no longer be
             // necessary now, but, for some reason, without this, the `multiple_parameters`
             // test from `sandbox_host_tests` fails. We should investigate this further.
@@ -148,9 +146,6 @@ where
             // We need one PT for every 2MB of memory that is mapped
             // We can use the memory size to calculate the number of PTs we need
             // We round up mem_size/2MB
-
-            let mem_size = usize::try_from(mem_size)?;
-
             let num_pages: usize = mem_size.div_ceil(AMOUNT_OF_MEMORY_PER_PT);
 
             // Create num_pages PT with 512 PTEs
@@ -329,15 +324,14 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         )?;
         let mut shared_mem = ExclusiveSharedMemory::new(layout.get_memory_size()?)?;
 
-        let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
-
+        let load_addr = layout.get_guest_code_address();
         let entrypoint_offset = exe_info.entrypoint();
 
         let offset = layout.get_code_pointer_offset();
 
         {
             // write the code pointer to shared memory
-            let load_addr_u64: u64 = load_addr.clone().into();
+            let load_addr_u64 = load_addr as u64;
             shared_mem.write_u64(offset, load_addr_u64)?;
         }
 
@@ -345,12 +339,12 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         // `unwind_guest` feature is enabled.
         #[allow(clippy::let_unit_value)]
         let load_info = exe_info.load(
-            load_addr.clone().try_into()?,
+            load_addr,
             &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
         )?;
 
         Ok((
-            Self::new(layout, shared_mem, load_addr, entrypoint_offset),
+            Self::new(layout, shared_mem, load_addr as u64, entrypoint_offset),
             load_info,
         ))
     }
@@ -411,14 +405,14 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             SandboxMemoryManager {
                 shared_mem: hshm,
                 layout: self.layout,
-                load_addr: self.load_addr.clone(),
+                load_addr: self.load_addr,
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
                 layout: self.layout,
-                load_addr: self.load_addr.clone(),
+                load_addr: self.load_addr,
                 entrypoint_offset: self.entrypoint_offset,
                 mapped_rgns: 0,
             },
@@ -450,15 +444,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Get the address of the dispatch function in memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_pointer_to_dispatch_function(&self) -> Result<u64> {
-        let guest_dispatch_function_ptr = self
-            .shared_mem
-            .read::<u64>(self.layout.get_dispatch_function_pointer_offset())?;
-
-        // This pointer is written by the guest library but is accessible to
-        // the guest engine so we should bounds check it before we return it.
-
-        let guest_ptr = GuestPtr::try_from(RawPtr::from(guest_dispatch_function_ptr))?;
-        guest_ptr.absolute()
+        self.shared_mem
+            .read::<u64>(self.layout.get_dispatch_function_pointer_offset())
     }
 
     /// Reads a host function call from memory

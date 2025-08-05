@@ -41,7 +41,6 @@ use crate::hypervisor::{Hypervisor, InterruptHandle};
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
 use crate::{HyperlightError, Result, log_then_return};
@@ -60,7 +59,7 @@ pub struct MultiUseSandbox {
     pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: MemMgrWrapper<HostSharedMemory>,
     vm: Box<dyn Hypervisor>,
-    dispatch_ptr: RawPtr,
+    dispatch_ptr: u64,
     #[cfg(gdb)]
     dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     /// If the current state of the sandbox has been captured in a snapshot,
@@ -79,7 +78,7 @@ impl MultiUseSandbox {
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: MemMgrWrapper<HostSharedMemory>,
         vm: Box<dyn Hypervisor>,
-        dispatch_ptr: RawPtr,
+        dispatch_ptr: u64,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> MultiUseSandbox {
         Self {
@@ -408,7 +407,7 @@ impl MultiUseSandbox {
                 .write_guest_function_call(&buffer)?;
 
             self.vm.dispatch_call_from_host(
-                self.dispatch_ptr.clone(),
+                self.dispatch_ptr,
                 #[cfg(gdb)]
                 self.dbg_mem_access_fn.clone(),
             )?;

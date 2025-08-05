@@ -77,7 +77,6 @@ use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, V
 use crate::HyperlightError;
 use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 #[cfg(feature = "trace_guest")]
@@ -313,7 +312,7 @@ pub(crate) struct HypervLinuxDriver {
     page_size: usize,
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
-    orig_rsp: GuestPtr,
+    orig_rsp: u64,
     entrypoint: u64,
     interrupt_handle: Arc<LinuxInterruptHandle>,
     mem_mgr: Option<MemMgrWrapper<HostSharedMemory>>,
@@ -347,9 +346,9 @@ impl HypervLinuxDriver {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
-        entrypoint_ptr: GuestPtr,
-        rsp_ptr: GuestPtr,
-        pml4_ptr: GuestPtr,
+        entrypoint_ptr: u64,
+        rsp_ptr: u64,
+        pml4_ptr: u64,
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
@@ -380,7 +379,7 @@ impl HypervLinuxDriver {
         #[cfg(gdb)]
         let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
             let mut debug = MshvDebug::new();
-            debug.add_hw_breakpoint(&vcpu_fd, entrypoint_ptr.absolute()?)?;
+            debug.add_hw_breakpoint(&vcpu_fd, entrypoint_ptr)?;
 
             // The bellow intercepts make the vCPU exit with the Exception Intercept exit code
             // Check Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
@@ -419,7 +418,7 @@ impl HypervLinuxDriver {
             vm_fd.map_user_memory(mshv_region)
         })?;
 
-        Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr.absolute()?)?;
+        Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr)?;
 
         let interrupt_handle = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
@@ -453,7 +452,7 @@ impl HypervLinuxDriver {
             vcpu_fd,
             sandbox_regions: mem_regions,
             mmap_regions: Vec::new(),
-            entrypoint: entrypoint_ptr.absolute()?,
+            entrypoint: entrypoint_ptr,
             orig_rsp: rsp_ptr,
             interrupt_handle: interrupt_handle.clone(),
             mem_mgr: None,
@@ -585,7 +584,7 @@ impl Hypervisor for HypervLinuxDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
         &mut self,
-        peb_addr: RawPtr,
+        peb_addr: u64,
         seed: u64,
         page_size: u32,
         mem_mgr: MemMgrWrapper<HostSharedMemory>,
@@ -604,11 +603,11 @@ impl Hypervisor for HypervLinuxDriver {
 
         let regs = StandardRegisters {
             rip: self.entrypoint,
-            rsp: self.orig_rsp.absolute()?,
+            rsp: self.orig_rsp,
             rflags: 2, //bit 1 of rlags is required to be set
 
             // function args
-            rdi: peb_addr.into(),
+            rdi: peb_addr,
             rsi: seed,
             rdx: page_size.into(),
             rcx: max_guest_log_level,
@@ -662,13 +661,13 @@ impl Hypervisor for HypervLinuxDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn dispatch_call_from_host(
         &mut self,
-        dispatch_func_addr: RawPtr,
+        dispatch_func_addr: u64,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
         let regs = StandardRegisters {
-            rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
+            rip: dispatch_func_addr,
+            rsp: self.orig_rsp,
             rflags: 2, //bit 1 of rlags is required to be set
             ..Default::default()
         };
@@ -1245,9 +1244,9 @@ mod tests {
         }
         const MEM_SIZE: usize = 0x3000;
         let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
-        let rsp_ptr = GuestPtr::try_from(0).unwrap();
-        let pml4_ptr = GuestPtr::try_from(0).unwrap();
-        let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
+        let rsp_ptr = 0;
+        let pml4_ptr = 0;
+        let entrypoint_ptr = 0;
         let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
         regions.push_page_aligned(
             MEM_SIZE,

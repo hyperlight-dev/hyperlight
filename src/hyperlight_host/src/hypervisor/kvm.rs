@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,7 +43,6 @@ use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, V
 use crate::HyperlightError;
 use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 #[cfg(feature = "trace_guest")]
@@ -294,7 +292,7 @@ pub(crate) struct KVMDriver {
     page_size: usize,
     vcpu_fd: VcpuFd,
     entrypoint: u64,
-    orig_rsp: GuestPtr,
+    orig_rsp: u64,
     interrupt_handle: Arc<LinuxInterruptHandle>,
     mem_mgr: Option<MemMgrWrapper<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
@@ -356,8 +354,6 @@ impl KVMDriver {
             (None, None)
         };
 
-        let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
-
         let interrupt_handle = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
             cancel_requested: AtomicBool::new(false),
@@ -389,7 +385,7 @@ impl KVMDriver {
             page_size: 0,
             vcpu_fd,
             entrypoint,
-            orig_rsp: rsp_gp,
+            orig_rsp: rsp,
             next_slot: mem_regions.len() as u32,
             sandbox_regions: mem_regions,
             mmap_regions: Vec::new(),
@@ -473,7 +469,7 @@ impl Hypervisor for KVMDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
         &mut self,
-        peb_addr: RawPtr,
+        peb_addr: u64,
         seed: u64,
         page_size: u32,
         mem_mgr: MemMgrWrapper<HostSharedMemory>,
@@ -492,10 +488,10 @@ impl Hypervisor for KVMDriver {
 
         let regs = kvm_regs {
             rip: self.entrypoint,
-            rsp: self.orig_rsp.absolute()?,
+            rsp: self.orig_rsp,
 
             // function args
-            rdi: peb_addr.into(),
+            rdi: peb_addr,
             rsi: seed,
             rdx: page_size.into(),
             rcx: max_guest_log_level,
@@ -573,13 +569,13 @@ impl Hypervisor for KVMDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn dispatch_call_from_host(
         &mut self,
-        dispatch_func_addr: RawPtr,
+        dispatch_func_addr: u64,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
         let regs = kvm_regs {
-            rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
+            rip: dispatch_func_addr,
+            rsp: self.orig_rsp,
             ..Default::default()
         };
         self.vcpu_fd.set_regs(&regs)?;
