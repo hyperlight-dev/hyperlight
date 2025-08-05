@@ -621,7 +621,7 @@ pub struct WitName<'a> {
     pub _version: Vec<&'a str>,
 }
 impl<'a> WitName<'a> {
-    /// Extract a list of Rust module names correspondign to the WIT
+    /// Extract a list of Rust module names corresponding to the WIT
     /// namespace/package
     pub fn namespace_idents(&self) -> Vec<Ident> {
         self.namespaces
