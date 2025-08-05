@@ -36,7 +36,7 @@ pub mod sandbox;
 pub mod uninitialized;
 /// Functionality for properly converting `UninitializedSandbox`es to
 /// initialized `Sandbox`es.
-pub(crate) mod uninitialized_evolve;
+pub(crate) mod uninitialized_init;
 
 /// Representation of a snapshot of a `Sandbox`.
 pub mod snapshot;

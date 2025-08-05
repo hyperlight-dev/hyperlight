@@ -468,10 +468,10 @@ mod tests {
         }
     }
 
-    /// Tests that evolving from Sandbox to Sandbox creates a new state
-    /// and restoring a snapshot from before evolving restores the previous state
+    /// Tests that calling a guest function from a Sandbox mutates its state
+    /// and restoring a snapshot restores the previous state
     #[test]
-    fn snapshot_evolve_restore_handles_state_correctly() {
+    fn snapshot_restore_resets_state_correctly() {
         let mut sbox: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();

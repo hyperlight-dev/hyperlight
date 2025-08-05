@@ -24,7 +24,7 @@ use tracing::{Span, instrument};
 
 use super::host_funcs::{FunctionRegistry, default_writer_func};
 use super::mem_mgr::MemMgrWrapper;
-use super::uninitialized_evolve::evolve_impl_multi_use;
+use super::uninitialized_init::init_impl_multi_use;
 use crate::func::host_functions::{HostFunction, register_host_function};
 use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(feature = "build-metadata")]
@@ -97,11 +97,11 @@ impl UninitializedSandbox {
     /// Creates and initializes the virtual machine, transforming this into a ready-to-use sandbox.
     ///
     /// This method consumes the `UninitializedSandbox` and performs the final initialization
-    /// steps to create the underlying virtual machine. Once evolved, the resulting
+    /// steps to create the underlying virtual machine. Once initialized, the resulting
     /// [`Sandbox`] can execute guest code and handle function calls.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub fn init(self) -> Result<Sandbox> {
-        evolve_impl_multi_use(self)
+        init_impl_multi_use(self)
     }
 }
 

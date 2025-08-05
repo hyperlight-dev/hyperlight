@@ -45,7 +45,7 @@ use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 use crate::signal_handlers::setup_signal_handlers;
 use crate::{Result, Sandbox, UninitializedSandbox, log_then_return, new_error};
 
-/// The implementation for evolving `UninitializedSandbox`es to
+/// The implementation for initializing `UninitializedSandbox`es to
 /// `Sandbox`es.
 ///
 /// Note that `cb_opt`'s type has been carefully considered.
@@ -57,7 +57,7 @@ use crate::{Result, Sandbox, UninitializedSandbox, log_then_return, new_error};
 /// If this doesn't make sense, and you want to change this type,
 /// please reach out to a Hyperlight developer before making the change.
 #[instrument(err(Debug), skip_all, , parent = Span::current(), level = "Trace")]
-fn evolve_impl<TransformFunc, ResSandbox>(
+fn init_impl<TransformFunc, ResSandbox>(
     u_sbox: UninitializedSandbox,
     transform: TransformFunc,
 ) -> Result<ResSandbox>
@@ -120,8 +120,8 @@ where
 }
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Sandbox> {
-    evolve_impl(u_sbox, |hf, hshm, vm, dispatch_ptr| {
+pub(super) fn init_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Sandbox> {
+    init_impl(u_sbox, |hf, hshm, vm, dispatch_ptr| {
         #[cfg(gdb)]
         let dbg_mem_wrapper = dbg_mem_access_handler_wrapper(hshm.clone());
         Ok(Sandbox::from_uninit(
@@ -275,12 +275,12 @@ pub(crate) fn set_up_hypervisor_partition(
 mod tests {
     use hyperlight_testing::{callback_guest_as_string, simple_guest_as_string};
 
-    use super::evolve_impl_multi_use;
+    use super::init_impl_multi_use;
     use crate::UninitializedSandbox;
     use crate::sandbox::uninitialized::GuestBinary;
 
     #[test]
-    fn test_evolve() {
+    fn test_init() {
         let guest_bin_paths = vec![
             simple_guest_as_string().unwrap(),
             callback_guest_as_string().unwrap(),
@@ -289,7 +289,7 @@ mod tests {
             let u_sbox =
                 UninitializedSandbox::new(GuestBinary::FilePath(guest_bin_path.clone()), None)
                     .unwrap();
-            evolve_impl_multi_use(u_sbox).unwrap();
+            init_impl_multi_use(u_sbox).unwrap();
         }
     }
 }
