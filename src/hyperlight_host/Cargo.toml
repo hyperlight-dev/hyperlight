@@ -93,7 +93,7 @@ tracing-serde = "0.2.0"
 serial_test = "3.1.1"
 hyperlight-testing = { workspace = true }
 env_logger = "0.11.8"
-tracing-forest = { version = "0.1.6", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
+tracing-forest = { version = "0.2.0", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
 tracing = "0.1.41"
 tracing-subscriber = {version = "0.3.19", features = ["std", "env-filter"]}
 tracing-opentelemetry = "0.31.0"
