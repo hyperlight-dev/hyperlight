@@ -467,8 +467,7 @@ impl Callable for MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> Result<Output> {
-        #[allow(deprecated)]
-        self.call_guest_function_by_name(func_name, args)
+        self.call(func_name, args)
     }
 }
 
