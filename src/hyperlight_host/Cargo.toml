@@ -40,7 +40,7 @@ tracing-log = "0.2.0"
 tracing-core = "0.1.34"
 hyperlight-common = { workspace = true, default-features = true, features = [ "std" ] }
 hyperlight-guest-tracing = { workspace = true, default-features = true, optional = true }
-vmm-sys-util = "0.14.0"
+vmm-sys-util = "0.15.0"
 crossbeam-channel = "0.5.15"
 thiserror = "2.0.12"
 chrono = { version = "0.4", optional = true }

@@ -53,7 +53,7 @@ use mshv_bindings::{
     hv_register_name, hv_register_name_HV_X64_REGISTER_RAX, hv_register_name_HV_X64_REGISTER_RBP,
     hv_register_name_HV_X64_REGISTER_RCX, hv_register_name_HV_X64_REGISTER_RSP,
 };
-use mshv_ioctls::{Mshv, MshvError, VcpuFd, VmFd};
+use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
@@ -794,9 +794,7 @@ impl Hypervisor for HypervLinuxDriver {
             .load(Ordering::Relaxed)
             || debug_interrupt
         {
-            Err(MshvError::Errno(vmm_sys_util::errno::Error::new(
-                libc::EINTR,
-            )))
+            Err(mshv_ioctls::MshvError::from(libc::EINTR))
         } else {
             #[cfg(feature = "trace_guest")]
             if self.trace_info.guest_start_epoch.is_none() {
@@ -847,7 +845,7 @@ impl Hypervisor for HypervLinuxDriver {
                     HyperlightExit::Halt()
                 }
                 IO_PORT_INTERCEPT_MESSAGE => {
-                    let io_message = m.to_ioport_info()?;
+                    let io_message = m.to_ioport_info().map_err(mshv_ioctls::MshvError::from)?;
                     let port_number = io_message.port_number;
                     let rip = io_message.header.rip;
                     let rax = io_message.rax;
@@ -861,7 +859,7 @@ impl Hypervisor for HypervLinuxDriver {
                     )
                 }
                 UNMAPPED_GPA_MESSAGE => {
-                    let mimo_message = m.to_memory_info()?;
+                    let mimo_message = m.to_memory_info().map_err(mshv_ioctls::MshvError::from)?;
                     let addr = mimo_message.guest_physical_address;
                     crate::debug!(
                         "mshv MMIO unmapped GPA -Details: Address: {} \n {:#?}",
@@ -871,7 +869,7 @@ impl Hypervisor for HypervLinuxDriver {
                     HyperlightExit::Mmio(addr)
                 }
                 INVALID_GPA_ACCESS_MESSAGE => {
-                    let mimo_message = m.to_memory_info()?;
+                    let mimo_message = m.to_memory_info().map_err(mshv_ioctls::MshvError::from)?;
                     let gpa = mimo_message.guest_physical_address;
                     let access_info = MemoryRegionFlags::try_from(mimo_message)?;
                     crate::debug!(
@@ -896,7 +894,8 @@ impl Hypervisor for HypervLinuxDriver {
                 EXCEPTION_INTERCEPT => {
                     // Extract exception info from the message so we can figure out
                     // more information about the vCPU state
-                    let ex_info = match m.to_exception_info() {
+                    let ex_info = match m.to_exception_info().map_err(mshv_ioctls::MshvError::from)
+                    {
                         Ok(info) => info,
                         Err(e) => {
                             log_then_return!("Error converting to exception info: {:?}", e);
