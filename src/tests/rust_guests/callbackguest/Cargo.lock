@@ -72,7 +72,7 @@ checksum = "a8d1add55171497b4705a648c6b583acafb01d58050a51727785f0b2c8e0a2b2"
 
 [[package]]
 name = "hyperlight-common"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "hyperlight-common",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-bin"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "buddy_system_allocator",
  "cc",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "hyperlight-common",
  "hyperlight-guest-tracing-macro",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing-macro"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "proc-macro2",
  "quote",

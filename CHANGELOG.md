@@ -4,6 +4,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.8.0] - 2025-08-08
+
+:warning: `hyperlight_component_macro::host_bindgen` and `hyperlight_component_macro::guest_bindgen` used the `Callable` trait which no longer restores state after each function call and requires an explicit Snapshot Restore using the newly exposed Snapshot API. See https://github.com/hyperlight-dev/hyperlight/pull/697 and https://github.com/hyperlight-dev/hyperlight/pull/761
+
+### Fixed
+- gdb: fix issue "Debug not enabled" when `gdb` feature was enabled by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/678
+- Fix Windows build with `--no-default-features` by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/712
+- fix(guest-bin): move logger initialization by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/755
+- Fix mem mgr not initialized by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/745
+
+### Changed
+- Remove some dev-dependecies and cargo features to speed up compilation by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/535
+- Introduce a separate KVM error variant of HyperlightError. by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/771API. by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/697
+- Evolving and Devolving apis replaced by Snapshot API
+  - Remove sandbox evolving and devolving and replace it with snapshotting API. by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/697
+  - Bring back the previous behavior of `call_guest_function_by_name` by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/761
+
+### Added
+- Memory Mapping Support 
+  - Support mapping host memory into the guest by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/696
+  - Make MultiUseSandbox::map_file_cow public by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/725
+  - Add memory mapping support with KVM by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/709
+  - Make sure mmaped memory is not mapped writeable into sandbox in kvm by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/740
+  - Make snapshots region aware by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/742
+  - Restrict restoring sandboxes to snapshot taken on self by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/746
+- Enable guest tracing  by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/695
+
+### Removed
+- Removed the OutBHandler and MemAccessHandler abstractions and related implementations. by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/732
+  
 ## [v0.7.0] - 2025-06-26
 
 ### Fixed
