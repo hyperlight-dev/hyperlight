@@ -38,7 +38,7 @@ fn main() -> Result<()> {
     // Create a new sandbox.
     let usandbox = UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None)?;
 
-    let mut sbox = usandbox.evolve().unwrap();
+    let mut sbox = usandbox.init().unwrap();
 
     // do the function call
     let current_time = std::time::Instant::now();

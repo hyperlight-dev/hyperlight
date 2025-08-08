@@ -45,7 +45,7 @@ fn main() -> Result<()> {
             usandbox.register_print(fn_writer)?;
 
             // Initialize the sandbox.
-            let mut multiuse_sandbox = usandbox.evolve()?;
+            let mut multiuse_sandbox = usandbox.init()?;
 
             // Call a guest function 5 times to generate some log entries.
             for _ in 0..5 {
@@ -75,7 +75,7 @@ fn main() -> Result<()> {
         UninitializedSandbox::new(GuestBinary::FilePath(hyperlight_guest_path.clone()), None)?;
 
     // Initialize the sandbox.
-    let mut multiuse_sandbox = usandbox.evolve()?;
+    let mut multiuse_sandbox = usandbox.init()?;
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();

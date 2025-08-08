@@ -53,7 +53,7 @@ static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// Guest functions can be called repeatedly while maintaining state between calls.
 /// The sandbox supports creating snapshots and restoring to previous states.
-pub struct MultiUseSandbox {
+pub struct Sandbox {
     /// Unique identifier for this sandbox instance
     id: u64,
     // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
@@ -65,10 +65,10 @@ pub struct MultiUseSandbox {
     dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
 }
 
-impl MultiUseSandbox {
-    /// Move an `UninitializedSandbox` into a new `MultiUseSandbox` instance.
+impl Sandbox {
+    /// Move an `UninitializedSandbox` into a new `Sandbox` instance.
     ///
-    /// This function is not equivalent to doing an `evolve` from uninitialized
+    /// This function is not equivalent to doing an `init` from uninitialized
     /// to initialized, and is purposely not exposed publicly outside the crate
     /// (as a `From` implementation would be)
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -78,7 +78,7 @@ impl MultiUseSandbox {
         vm: Box<dyn Hypervisor>,
         dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
-    ) -> MultiUseSandbox {
+    ) -> Sandbox {
         Self {
             id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             _host_funcs: host_funcs,
@@ -98,12 +98,12 @@ impl MultiUseSandbox {
     /// # Examples
     ///
     /// ```no_run
-    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::{Sandbox, UninitializedSandbox, GuestBinary};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    /// let mut sandbox: Sandbox = UninitializedSandbox::new(
     ///     GuestBinary::FilePath("guest.bin".into()),
     ///     None
-    /// )?.evolve()?;
+    /// )?.init()?;
     ///
     /// // Modify sandbox state
     /// sandbox.call_guest_function_by_name::<i32>("SetValue", 42)?;
@@ -135,12 +135,12 @@ impl MultiUseSandbox {
     /// # Examples
     ///
     /// ```no_run
-    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::{Sandbox, UninitializedSandbox, GuestBinary};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    /// let mut sandbox: Sandbox = UninitializedSandbox::new(
     ///     GuestBinary::FilePath("guest.bin".into()),
     ///     None
-    /// )?.evolve()?;
+    /// )?.init()?;
     ///
     /// // Take initial snapshot from this sandbox
     /// let snapshot = sandbox.snapshot()?;
@@ -191,12 +191,12 @@ impl MultiUseSandbox {
     /// # Examples
     ///
     /// ```no_run
-    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::{Sandbox, UninitializedSandbox, GuestBinary};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    /// let mut sandbox: Sandbox = UninitializedSandbox::new(
     ///     GuestBinary::FilePath("guest.bin".into()),
     ///     None
-    /// )?.evolve()?;
+    /// )?.init()?;
     ///
     /// // Call function with no arguments
     /// let result: i32 = sandbox.call_guest_function_by_name("GetCounter", ())?;
@@ -362,14 +362,14 @@ impl MultiUseSandbox {
     /// # Examples
     ///
     /// ```no_run
-    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # use hyperlight_host::{Sandbox, UninitializedSandbox, GuestBinary};
     /// # use std::thread;
     /// # use std::time::Duration;
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    /// let mut sandbox: Sandbox = UninitializedSandbox::new(
     ///     GuestBinary::FilePath("guest.bin".into()),
     ///     None
-    /// )?.evolve()?;
+    /// )?.init()?;
     ///
     /// // Get interrupt handle before starting long-running operation
     /// let interrupt_handle = sandbox.interrupt_handle();
@@ -391,7 +391,7 @@ impl MultiUseSandbox {
     }
 }
 
-impl Callable for MultiUseSandbox {
+impl Callable for Sandbox {
     fn call<Output: SupportedReturnType>(
         &mut self,
         func_name: &str,
@@ -401,7 +401,7 @@ impl Callable for MultiUseSandbox {
     }
 }
 
-impl WrapperGetter for MultiUseSandbox {
+impl WrapperGetter for Sandbox {
     fn get_mgr_wrapper(&self) -> &MemMgrWrapper<HostSharedMemory> {
         &self.mem_mgr
     }
@@ -410,9 +410,9 @@ impl WrapperGetter for MultiUseSandbox {
     }
 }
 
-impl std::fmt::Debug for MultiUseSandbox {
+impl std::fmt::Debug for Sandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MultiUseSandbox")
+        f.debug_struct("Sandbox")
             .field("stack_guard", &self.mem_mgr.get_stack_cookie())
             .finish()
     }
@@ -430,7 +430,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::{Callable, SandboxConfiguration};
-    use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+    use crate::{GuestBinary, HyperlightError, Result, Sandbox, UninitializedSandbox};
 
     // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
     // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
@@ -440,10 +440,10 @@ mod tests {
         cfg.set_heap_size(20 * 1024);
         cfg.set_stack_size(16 * 1024);
 
-        let mut sbox1: MultiUseSandbox = {
+        let mut sbox1: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
-            u_sbox.evolve()
+            u_sbox.init()
         }
         .unwrap();
 
@@ -451,10 +451,10 @@ mod tests {
             sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
         }
 
-        let mut sbox2: MultiUseSandbox = {
+        let mut sbox2: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
-            u_sbox.evolve()
+            u_sbox.init()
         }
         .unwrap();
 
@@ -468,14 +468,14 @@ mod tests {
         }
     }
 
-    /// Tests that evolving from MultiUseSandbox to MultiUseSandbox creates a new state
-    /// and restoring a snapshot from before evolving restores the previous state
+    /// Tests that calling a guest function from a Sandbox mutates its state
+    /// and restoring a snapshot restores the previous state
     #[test]
-    fn snapshot_evolve_restore_handles_state_correctly() {
-        let mut sbox: MultiUseSandbox = {
+    fn snapshot_restore_resets_state_correctly() {
+        let mut sbox: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve()
+            u_sbox.init()
         }
         .unwrap();
 
@@ -513,7 +513,7 @@ mod tests {
 
             usbox.register("MakeGetpidSyscall", make_get_pid_syscall)?;
 
-            let mut sbox: MultiUseSandbox = usbox.evolve()?;
+            let mut sbox: Sandbox = usbox.init()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -549,7 +549,7 @@ mod tests {
             )?;
             // ^^^ note, we are allowing SYS_getpid
 
-            let mut sbox: MultiUseSandbox = usbox.evolve()?;
+            let mut sbox: Sandbox = usbox.init()?;
 
             let res: Result<u64> = sbox.call_guest_function_by_name("ViolateSeccompFilters", ());
 
@@ -603,7 +603,7 @@ mod tests {
             .unwrap();
             ubox.register("Openat_Hostfunc", make_openat_syscall)?;
 
-            let mut sbox = ubox.evolve().unwrap();
+            let mut sbox = ubox.init().unwrap();
             let host_func_result = sbox
                 .call_guest_function_by_name::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
@@ -633,7 +633,7 @@ mod tests {
                 make_openat_syscall,
                 [libc::SYS_openat],
             )?;
-            let mut sbox = ubox.evolve().unwrap();
+            let mut sbox = ubox.init().unwrap();
             let host_func_result = sbox
                 .call_guest_function_by_name::<i64>(
                     "CallGivenParamlessHostFuncThatReturnsI64",
@@ -656,7 +656,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
+        let mut multi_use_sandbox: Sandbox = usbox.init().unwrap();
 
         let res: Result<()> = multi_use_sandbox.call_guest_function_by_name("TriggerException", ());
 
@@ -696,7 +696,7 @@ mod tests {
                     )
                     .unwrap();
 
-                    let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
+                    let mut multi_use_sandbox: Sandbox = usbox.init().unwrap();
 
                     let res: i32 = multi_use_sandbox
                         .call_guest_function_by_name("GetStatic", ())
@@ -724,7 +724,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .evolve()
+        .init()
         .unwrap();
 
         let expected = b"hello world";
@@ -760,7 +760,7 @@ mod tests {
             None,
         )
         .unwrap()
-        .evolve()
+        .init()
         .unwrap();
 
         let expected = &[0x90, 0x90, 0x90, 0xC3]; // NOOP slide to RET
@@ -839,10 +839,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn snapshot_restore_handles_remapping_correctly() {
-        let mut sbox: MultiUseSandbox = {
+        let mut sbox: Sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve().unwrap()
+            u_sbox.init().unwrap()
         };
 
         // 1. Take snapshot 1 with no additional regions mapped
@@ -889,13 +889,13 @@ mod tests {
         let mut sandbox = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve().unwrap()
+            u_sbox.init().unwrap()
         };
 
         let mut sandbox2 = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve().unwrap()
+            u_sbox.init().unwrap()
         };
         assert_ne!(sandbox.id, sandbox2.id);
 
@@ -911,7 +911,7 @@ mod tests {
         let sandbox3 = {
             let path = simple_guest_as_string().unwrap();
             let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
-            u_sbox.evolve().unwrap()
+            u_sbox.init().unwrap()
         };
         assert_ne!(sandbox3.id, sandbox_id);
     }

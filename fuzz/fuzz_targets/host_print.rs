@@ -3,11 +3,11 @@
 use std::sync::{Mutex, OnceLock};
 
 use hyperlight_host::sandbox::uninitialized::GuestBinary;
-use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{Sandbox, UninitializedSandbox};
 use hyperlight_testing::simple_guest_for_fuzzing_as_string;
 use libfuzzer_sys::{Corpus, fuzz_target};
 
-static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
+static SANDBOX: OnceLock<Mutex<Sandbox>> = OnceLock::new();
 
 // This fuzz target is used to test the HostPrint host function. We generate
 // an arbitrary ParameterValue::String, which is passed to the guest, which passes
@@ -21,7 +21,7 @@ fuzz_target!(
         )
         .unwrap();
 
-        let mu_sbox: MultiUseSandbox = u_sbox.evolve().unwrap();
+        let mu_sbox: Sandbox = u_sbox.init().unwrap();
         SANDBOX.set(Mutex::new(mu_sbox)).unwrap();
     },
 

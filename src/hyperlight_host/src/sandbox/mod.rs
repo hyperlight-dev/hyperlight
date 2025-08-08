@@ -20,9 +20,6 @@ pub mod config;
 pub(crate) mod host_funcs;
 /// Functionality for dealing with `Sandbox`es that contain Hypervisors
 pub(crate) mod hypervisor;
-/// Functionality for dealing with initialized sandboxes that can
-/// call 0 or more guest functions
-pub mod initialized_multi_use;
 /// Functionality for dealing with memory access from the VM guest
 /// executable
 pub(crate) mod mem_access;
@@ -30,12 +27,16 @@ pub(crate) mod mem_access;
 /// `SandboxMemoryManager`
 pub(crate) mod mem_mgr;
 pub(crate) mod outb;
+/// Functionality for dealing with initialized sandboxes that can
+/// call 0 or more guest functions
+#[allow(clippy::module_inception)]
+pub mod sandbox;
 /// Functionality for creating uninitialized sandboxes, manipulating them,
 /// and converting them to initialized sandboxes.
 pub mod uninitialized;
 /// Functionality for properly converting `UninitializedSandbox`es to
 /// initialized `Sandbox`es.
-pub(crate) mod uninitialized_evolve;
+pub(crate) mod uninitialized_init;
 
 /// Representation of a snapshot of a `Sandbox`.
 pub mod snapshot;
@@ -54,8 +55,8 @@ pub use callable::Callable;
 pub use config::SandboxConfiguration;
 #[cfg(feature = "unwind_guest")]
 use framehop::Unwinder;
-/// Re-export for the `MultiUseSandbox` type
-pub use initialized_multi_use::MultiUseSandbox;
+/// Re-export for the `Sandbox` type
+pub use sandbox::Sandbox;
 use tracing::{Span, instrument};
 /// Re-export for `GuestBinary` type
 pub use uninitialized::GuestBinary;
@@ -245,7 +246,7 @@ mod tests {
     use hyperlight_testing::simple_guest_as_string;
 
     use crate::sandbox::uninitialized::GuestBinary;
-    use crate::{MultiUseSandbox, UninitializedSandbox, new_error};
+    use crate::{Sandbox, UninitializedSandbox, new_error};
 
     #[test]
     // TODO: add support for testing on WHP
@@ -269,7 +270,7 @@ mod tests {
     #[test]
     fn check_create_and_use_sandbox_on_different_threads() {
         let unintializedsandbox_queue = Arc::new(ArrayQueue::<UninitializedSandbox>::new(10));
-        let sandbox_queue = Arc::new(ArrayQueue::<MultiUseSandbox>::new(10));
+        let sandbox_queue = Arc::new(ArrayQueue::<Sandbox>::new(10));
 
         for i in 0..10 {
             let simple_guest_path = simple_guest_as_string().expect("Guest Binary Missing");
@@ -305,7 +306,7 @@ mod tests {
                         ))
                         .unwrap();
 
-                    let sandbox = uninitialized_sandbox.evolve().unwrap_or_else(|_| {
+                    let sandbox = uninitialized_sandbox.init().unwrap_or_else(|_| {
                         panic!("Failed to initialize UninitializedSandbox thread {}", i)
                     });
 

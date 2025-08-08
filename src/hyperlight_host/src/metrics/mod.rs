@@ -106,7 +106,7 @@ mod tests {
             )
             .unwrap();
 
-            let mut multi = uninit.evolve().unwrap();
+            let mut multi = uninit.init().unwrap();
             let interrupt_handle = multi.interrupt_handle();
 
             // interrupt the guest function call to "Spin" after 1 second

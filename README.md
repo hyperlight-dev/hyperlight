@@ -35,7 +35,7 @@ It is followed by an example of a simple guest application using the Hyperlight 
 ```rust
 use std::thread;
 
-use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{Sandbox, UninitializedSandbox};
 
 fn main() -> hyperlight_host::Result<()> {
     // Create an uninitialized sandbox with a guest binary
@@ -52,7 +52,7 @@ fn main() -> hyperlight_host::Result<()> {
     // Note: This function is unused by the guest code below, it's just here for demonstration purposes
 
     // Initialize sandbox to be able to call host functions
-    let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
+    let mut multi_use_sandbox = uninitialized_sandbox.init()?;
 
     // Call a function in the guest
     let message = "Hello, World! I am executing inside of a VM :)\n".to_string();

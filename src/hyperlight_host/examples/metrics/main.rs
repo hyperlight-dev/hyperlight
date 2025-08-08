@@ -56,7 +56,7 @@ fn do_hyperlight_stuff() {
             usandbox.register_print(fn_writer)?;
 
             // Initialize the sandbox.
-            let mut multiuse_sandbox = usandbox.evolve().expect("Failed to evolve sandbox");
+            let mut multiuse_sandbox = usandbox.init().expect("Failed to init sandbox");
 
             // Call a guest function 5 times to generate some metrics.
             for _ in 0..5 {
@@ -87,7 +87,7 @@ fn do_hyperlight_stuff() {
             .expect("Failed to create UninitializedSandbox");
 
     // Initialize the sandbox.
-    let mut multiuse_sandbox = usandbox.evolve().expect("Failed to evolve sandbox");
+    let mut multiuse_sandbox = usandbox.init().expect("Failed to init sandbox");
     let interrupt_handle = multiuse_sandbox.interrupt_handle();
 
     const NUM_CALLS: i32 = 5;

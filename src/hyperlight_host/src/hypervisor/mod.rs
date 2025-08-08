@@ -532,7 +532,7 @@ pub(crate) mod tests {
     use crate::sandbox::uninitialized::GuestBinary;
     #[cfg(any(crashdump, gdb))]
     use crate::sandbox::uninitialized::SandboxRuntimeConfig;
-    use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
+    use crate::sandbox::uninitialized_init::set_up_hypervisor_partition;
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{Result, is_hypervisor_present, new_error};
 
