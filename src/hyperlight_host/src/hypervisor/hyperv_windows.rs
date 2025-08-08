@@ -60,7 +60,6 @@ use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::get_memory_access_violation;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
@@ -281,7 +280,7 @@ pub(crate) struct HypervWindowsDriver {
     processor: VMProcessor,
     _surrogate_process: SurrogateProcess, // we need to keep a reference to the SurrogateProcess for the duration of the driver since otherwise it will dropped and the memory mapping will be unmapped and the surrogate process will be returned to the pool
     entrypoint: u64,
-    orig_rsp: GuestPtr,
+    orig_rsp: u64,
     interrupt_handle: Arc<WindowsInterruptHandle>,
     mem_mgr: Option<MemMgrWrapper<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
@@ -361,7 +360,7 @@ impl HypervWindowsDriver {
             processor: proc,
             _surrogate_process: surrogate_process,
             entrypoint,
-            orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
+            orig_rsp: rsp,
             sandbox_regions: mem_regions,
             mmap_regions: Vec::new(),
             interrupt_handle: interrupt_handle.clone(),
@@ -600,7 +599,7 @@ impl Hypervisor for HypervWindowsDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn initialise(
         &mut self,
-        peb_address: RawPtr,
+        peb_address: u64,
         seed: u64,
         page_size: u32,
         mem_mgr: MemMgrWrapper<HostSharedMemory>,
@@ -618,10 +617,10 @@ impl Hypervisor for HypervWindowsDriver {
 
         let regs = WHvGeneralRegisters {
             rip: self.entrypoint,
-            rsp: self.orig_rsp.absolute()?,
+            rsp: self.orig_rsp,
 
             // function args
-            rdi: peb_address.into(),
+            rdi: peb_address,
             rsi: seed,
             rdx: page_size.into(),
             rcx: max_guest_log_level,
@@ -655,13 +654,13 @@ impl Hypervisor for HypervWindowsDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn dispatch_call_from_host(
         &mut self,
-        dispatch_func_addr: RawPtr,
+        dispatch_func_addr: u64,
         #[cfg(gdb)] dbg_mem_access_hdl: DbgMemAccessHandlerWrapper,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
         let regs = WHvGeneralRegisters {
-            rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
+            rip: dispatch_func_addr,
+            rsp: self.orig_rsp,
             rflags: 1 << 1, // eflags bit index 1 is reserved and always needs to be 1
             ..Default::default()
         };
