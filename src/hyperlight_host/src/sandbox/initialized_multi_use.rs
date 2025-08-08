@@ -38,11 +38,12 @@ use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(gdb)]
 use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
 use crate::hypervisor::{Hypervisor, InterruptHandle};
+use crate::mem::bitmap::bitmap_union;
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
-use crate::mem::shared_mem::HostSharedMemory;
+use crate::mem::shared_mem::{HostSharedMemory, SharedMemory};
 use crate::metrics::maybe_time_and_emit_guest_call;
 use crate::{HyperlightError, Result, log_then_return};
 
@@ -117,13 +118,22 @@ impl MultiUseSandbox {
     pub fn snapshot(&mut self) -> Result<Snapshot> {
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
-        let memory_snapshot = self
-            .mem_mgr
+
+        let host_dirty_pages = self
+            .get_mgr_wrapper_mut()
             .unwrap_mgr_mut()
-            .snapshot(self.id, mapped_regions_vec)?;
-        Ok(Snapshot {
-            inner: memory_snapshot,
-        })
+            .get_shared_mem_mut()
+            .with_exclusivity(|e| e.get_and_clear_dirty_pages())??;
+        let vm_dirty_pages = self.vm.get_and_clear_dirty_pages()?;
+        let dirty_pages_bitmap = bitmap_union(&vm_dirty_pages, &host_dirty_pages)?;
+
+        let snapshot = self.mem_mgr.unwrap_mgr_mut().snapshot(
+            self.id,
+            mapped_regions_vec,
+            &dirty_pages_bitmap,
+        )?;
+
+        Ok(Snapshot { inner: snapshot })
     }
 
     /// Restores the sandbox's memory to a previously captured snapshot state.
@@ -163,9 +173,17 @@ impl MultiUseSandbox {
             return Err(SnapshotSandboxMismatch);
         }
 
+        let host_dirty_pages = self
+            .get_mgr_wrapper_mut()
+            .unwrap_mgr_mut()
+            .get_shared_mem_mut()
+            .with_exclusivity(|e| e.get_and_clear_dirty_pages())??;
+        let vm_dirty_pages = self.vm.get_and_clear_dirty_pages()?;
+        let dirty_pages_bitmap = bitmap_union(&vm_dirty_pages, &host_dirty_pages)?;
+
         self.mem_mgr
             .unwrap_mgr_mut()
-            .restore_snapshot(&snapshot.inner)?;
+            .restore_snapshot(&snapshot.inner, &dirty_pages_bitmap)?;
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
         let snapshot_regions: HashSet<_> = snapshot.inner.regions().iter().cloned().collect();

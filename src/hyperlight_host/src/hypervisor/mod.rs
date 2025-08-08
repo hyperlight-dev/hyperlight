@@ -190,6 +190,12 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Run the vCPU
     fn run(&mut self) -> Result<HyperlightExit>;
 
+    /// Get dirty pages as a bitmap (Vec<u64>).
+    /// Each bit in a u64 represents a page.
+    /// This also clears the bitflags, marking the pages as non-dirty.
+    /// TODO: Implement getting additional host-mapped dirty pages.
+    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>>;
+
     /// Get InterruptHandle to underlying VM
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
 

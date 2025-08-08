@@ -59,6 +59,7 @@ use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::get_memory_access_violation;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
+use crate::mem::bitmap::new_page_bitmap;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
@@ -636,6 +637,12 @@ impl Hypervisor for HypervWindowsDriver {
             #[cfg(gdb)]
             dbg_mem_access_hdl,
         )
+    }
+
+    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        // For now we just mark all pages dirty which is the equivalent of taking a full snapshot
+        let total_size = self.mem_regions.iter().map(|r| r.guest_region.len()).sum();
+        new_page_bitmap(total_size, true)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]

@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+/// Various helper functions for working with bitmaps
+pub(crate) mod bitmap;
 /// A simple ELF loader
 pub(crate) mod elf;
 /// A generic wrapper for executable files (PE, ELF, etc)

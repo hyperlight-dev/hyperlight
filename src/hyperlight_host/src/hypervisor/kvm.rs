@@ -19,6 +19,7 @@ use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use hyperlight_common::mem::{PAGE_SIZE_USIZE, PAGES_IN_BLOCK};
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
@@ -43,7 +44,8 @@ use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, V
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::hypervisor::get_memory_access_violation;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::bitmap::{bit_index_iterator, new_page_bitmap};
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
@@ -833,6 +835,47 @@ impl Hypervisor for KVMDriver {
 
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
+    }
+
+    // TODO: Implement getting additional host-mapped dirty pages.
+    fn get_and_clear_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        let mut page_indices = vec![];
+        let mut current_page = 0;
+
+        // Iterate over all memory regions and get the dirty pages for each region ignoring guard pages which cannot be dirty
+        for (i, mem_region) in self.sandbox_regions.iter().enumerate() {
+            let num_pages = mem_region.guest_region.len() / PAGE_SIZE_USIZE;
+            let bitmap = match mem_region.flags {
+                MemoryRegionFlags::READ => {
+                    // read-only page. It can never be dirty so return zero dirty pages.
+                    new_page_bitmap(mem_region.guest_region.len(), false)?
+                }
+                _ => {
+                    if mem_region.region_type == MemoryRegionType::GuardPage {
+                        //  Trying to get dirty pages for a guard page region results in a VMMSysError(2)
+                        new_page_bitmap(mem_region.guest_region.len(), false)?
+                    } else {
+                        // Get the dirty bitmap for the memory region
+                        self.vm_fd
+                            .get_dirty_log(i as u32, mem_region.guest_region.len())?
+                    }
+                }
+            };
+            for page_idx in bit_index_iterator(&bitmap) {
+                page_indices.push(current_page + page_idx);
+            }
+            current_page += num_pages;
+        }
+
+        // convert vec of page indices to vec of blocks
+        let mut sandbox_dirty_pages = new_page_bitmap(current_page * PAGE_SIZE_USIZE, false)?;
+        for page_idx in page_indices {
+            let block_idx = page_idx / PAGES_IN_BLOCK;
+            let bit_idx = page_idx % PAGES_IN_BLOCK;
+            sandbox_dirty_pages[block_idx] |= 1 << bit_idx;
+        }
+
+        Ok(sandbox_dirty_pages)
     }
 
     #[cfg(crashdump)]
