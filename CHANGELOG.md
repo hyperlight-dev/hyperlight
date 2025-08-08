@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fix mem mgr not initialized by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/745
 
 ### Changed
-- Remove some dev-dependecies and cargo features to speed up compilation by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/535
+- Remove some dev-dependencies and cargo features to speed up compilation by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/535
 - Introduce a separate KVM error variant of HyperlightError. by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/771API. by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/697
 - Evolving and Devolving apis replaced by Snapshot API
   - Remove sandbox evolving and devolving and replace it with snapshotting API. by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/697
@@ -26,7 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Support mapping host memory into the guest by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/696
   - Make MultiUseSandbox::map_file_cow public by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/725
   - Add memory mapping support with KVM by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/709
-  - Make sure mmaped memory is not mapped writeable into sandbox in kvm by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/740
+  - Make sure mmapped memory is not mapped writeable into sandbox in kvm by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/740
   - Make snapshots region aware by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/742
   - Restrict restoring sandboxes to snapshot taken on self by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/746
 - Enable guest tracing  by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/695
