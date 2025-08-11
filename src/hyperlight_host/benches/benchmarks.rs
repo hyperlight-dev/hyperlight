@@ -15,9 +15,11 @@ limitations under the License.
 */
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
+use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 
 fn create_uninit_sandbox() -> UninitializedSandbox {
     let path = simple_guest_as_string().unwrap();
@@ -133,9 +135,85 @@ fn sandbox_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+fn function_call_serialization_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("function_call_serialization");
+
+    let function_call = FunctionCall::new(
+        "TestFunction".to_string(),
+        Some(vec![
+            ParameterValue::VecBytes(vec![1; 10 * 1024 * 1024]),
+            ParameterValue::String(String::from_utf8(vec![2; 10 * 1024 * 1024]).unwrap()),
+            ParameterValue::Int(42),
+            ParameterValue::UInt(100),
+            ParameterValue::Long(1000),
+            ParameterValue::ULong(2000),
+            ParameterValue::Float(521521.53),
+            ParameterValue::Double(432.53),
+            ParameterValue::Bool(true),
+            ParameterValue::VecBytes(vec![1; 10 * 1024 * 1024]),
+            ParameterValue::String(String::from_utf8(vec![2; 10 * 1024 * 1024]).unwrap()),
+        ]),
+        FunctionCallType::Guest,
+        ReturnType::Int,
+    );
+
+    let serialized_bytes: Vec<u8> = function_call.clone().try_into().unwrap();
+
+    group.bench_function("serialize_function_call", |b| {
+        b.iter_with_setup(
+            || function_call.clone(),
+            |fc| {
+                let _serialized: Vec<u8> = fc.try_into().unwrap();
+            },
+        );
+    });
+
+    group.bench_function("deserialize_function_call", |b| {
+        b.iter(|| {
+            let _deserialized: FunctionCall = serialized_bytes.as_slice().try_into().unwrap();
+        });
+    });
+
+    group.finish();
+}
+
+#[allow(clippy::disallowed_macros)]
+fn sample_workloads_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sample_workloads");
+
+    fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: String) {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_input_data_size(25 * 1024);
+
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+
+        b.iter_with_setup(
+            || vec![1; 24 * 1024],
+            |input| {
+                let ret: Vec<u8> = sandbox.call("24K_in_8K_out", (input,)).unwrap();
+                assert_eq!(ret.len(), 8 * 1024, "Expected output length to be 8K");
+                std::hint::black_box(ret);
+            },
+        );
+    }
+
+    group.bench_function("24K_in_8K_out_c", |b| {
+        bench_24k_in_8k_out(b, c_simple_guest_as_string().unwrap());
+    });
+
+    group.bench_function("24K_in_8K_out_rust", |b| {
+        bench_24k_in_8k_out(b, simple_guest_as_string().unwrap());
+    });
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default();
-    targets = guest_call_benchmark, sandbox_benchmark, guest_call_benchmark_large_param
+    targets = guest_call_benchmark, sandbox_benchmark, guest_call_benchmark_large_param, function_call_serialization_benchmark, sample_workloads_benchmark
 }
 criterion_main!(benches);

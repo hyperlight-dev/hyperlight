@@ -726,6 +726,19 @@ fn add_to_static_and_fail(_: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 #[hyperlight_guest_tracing::trace_function]
+fn twenty_four_k_in_eight_k_out(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::VecBytes(input) = &function_call.parameters.as_ref().unwrap()[0] {
+        assert!(input.len() == 24 * 1024, "Input must be 24K bytes");
+        Ok(get_flatbuffer_result(&input[..8 * 1024]))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to 24K_in_8K_out".to_string(),
+        ))
+    }
+}
+
+#[hyperlight_guest_tracing::trace_function]
 fn violate_seccomp_filters(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if function_call.parameters.is_none() {
         let res = call_host_function::<u64>("MakeGetpidSyscall", None, ReturnType::ULong)?;
@@ -901,6 +914,14 @@ fn exec_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
 #[no_mangle]
 #[hyperlight_guest_tracing::trace_function]
 pub extern "C" fn hyperlight_main() {
+    let twenty_four_k_in_def = GuestFunctionDefinition::new(
+        "24K_in_8K_out".to_string(),
+        Vec::from(&[ParameterType::VecBytes]),
+        ReturnType::VecBytes,
+        twenty_four_k_in_eight_k_out as usize,
+    );
+    register_function(twenty_four_k_in_def);
+
     let read_from_user_memory_def = GuestFunctionDefinition::new(
         "ReadFromUserMemory".to_string(),
         Vec::from(&[ParameterType::ULong, ParameterType::VecBytes]),
