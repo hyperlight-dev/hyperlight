@@ -181,7 +181,7 @@ impl TryFrom<Parameter<'_>> for ParameterValue {
                 ParameterValue::String(hlstring.value().unwrap_or_default().to_string())
             }),
             FbParameterValue::hlvecbytes => param.value_as_hlvecbytes().map(|hlvecbytes| {
-                ParameterValue::VecBytes(hlvecbytes.value().unwrap_or_default().iter().collect())
+                ParameterValue::VecBytes(hlvecbytes.value().unwrap_or_default().bytes().to_vec())
             }),
             other => {
                 bail!("Unexpected flatbuffer parameter value type: {:?}", other);
