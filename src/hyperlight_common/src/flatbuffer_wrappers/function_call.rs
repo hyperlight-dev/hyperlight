@@ -18,7 +18,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use anyhow::{Error, Result, bail};
-use flatbuffers::{WIPOffset, size_prefixed_root};
+use flatbuffers::{FlatBufferBuilder, WIPOffset, size_prefixed_root};
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
@@ -71,6 +71,140 @@ impl FunctionCall {
     /// The type of the function call.
     pub fn function_call_type(&self) -> FunctionCallType {
         self.function_call_type.clone()
+    }
+
+    /// Encodes self into the given builder and returns the encoded data.
+    pub fn encode<'a>(&self, builder: &'a mut FlatBufferBuilder) -> &'a [u8] {
+        let function_name = builder.create_string(&self.function_name);
+
+        let function_call_type = match self.function_call_type {
+            FunctionCallType::Guest => FbFunctionCallType::guest,
+            FunctionCallType::Host => FbFunctionCallType::host,
+        };
+
+        let expected_return_type = self.expected_return_type.into();
+
+        let parameters = match &self.parameters {
+            Some(p) if !p.is_empty() => {
+                let parameter_offsets: Vec<WIPOffset<Parameter>> = p
+                    .iter()
+                    .map(|param| match param {
+                        ParameterValue::Int(i) => {
+                            let hlint = hlint::create(builder, &hlintArgs { value: *i });
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hlint,
+                                    value: Some(hlint.as_union_value()),
+                                },
+                            )
+                        }
+                        ParameterValue::UInt(ui) => {
+                            let hluint = hluint::create(builder, &hluintArgs { value: *ui });
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hluint,
+                                    value: Some(hluint.as_union_value()),
+                                },
+                            )
+                        }
+                        ParameterValue::Long(l) => {
+                            let hllong = hllong::create(builder, &hllongArgs { value: *l });
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hllong,
+                                    value: Some(hllong.as_union_value()),
+                                },
+                            )
+                        }
+                        ParameterValue::ULong(ul) => {
+                            let hlulong = hlulong::create(builder, &hlulongArgs { value: *ul });
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hlulong,
+                                    value: Some(hlulong.as_union_value()),
+                                },
+                            )
+                        }
+                        ParameterValue::Float(f) => {
+                            let hlfloat = hlfloat::create(builder, &hlfloatArgs { value: *f });
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hlfloat,
+                                    value: Some(hlfloat.as_union_value()),
+                                },
+                            )
+                        }
+                        ParameterValue::Double(d) => {
+                            let hldouble = hldouble::create(builder, &hldoubleArgs { value: *d });
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hldouble,
+                                    value: Some(hldouble.as_union_value()),
+                                },
+                            )
+                        }
+                        ParameterValue::Bool(b) => {
+                            let hlbool = hlbool::create(builder, &hlboolArgs { value: *b });
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hlbool,
+                                    value: Some(hlbool.as_union_value()),
+                                },
+                            )
+                        }
+                        ParameterValue::String(s) => {
+                            let val = builder.create_string(s.as_str());
+                            let hlstring =
+                                hlstring::create(builder, &hlstringArgs { value: Some(val) });
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hlstring,
+                                    value: Some(hlstring.as_union_value()),
+                                },
+                            )
+                        }
+                        ParameterValue::VecBytes(v) => {
+                            let vec_bytes = builder.create_vector(v);
+                            let hlvecbytes = hlvecbytes::create(
+                                builder,
+                                &hlvecbytesArgs {
+                                    value: Some(vec_bytes),
+                                },
+                            );
+                            Parameter::create(
+                                builder,
+                                &ParameterArgs {
+                                    value_type: FbParameterValue::hlvecbytes,
+                                    value: Some(hlvecbytes.as_union_value()),
+                                },
+                            )
+                        }
+                    })
+                    .collect();
+                Some(builder.create_vector(&parameter_offsets))
+            }
+            _ => None,
+        };
+
+        let function_call = FbFunctionCall::create(
+            builder,
+            &FbFunctionCallArgs {
+                function_name: Some(function_name),
+                parameters,
+                function_call_type,
+                expected_return_type,
+            },
+        );
+        builder.finish_size_prefixed(function_call, None);
+        builder.finished_data()
     }
 }
 
@@ -132,168 +266,6 @@ impl TryFrom<&[u8]> for FunctionCall {
     }
 }
 
-impl TryFrom<FunctionCall> for Vec<u8> {
-    type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-    fn try_from(value: FunctionCall) -> Result<Vec<u8>> {
-        let mut builder = flatbuffers::FlatBufferBuilder::new();
-        let function_name = builder.create_string(&value.function_name);
-
-        let function_call_type = match value.function_call_type {
-            FunctionCallType::Guest => FbFunctionCallType::guest,
-            FunctionCallType::Host => FbFunctionCallType::host,
-        };
-
-        let expected_return_type = value.expected_return_type.into();
-
-        let parameters = match &value.parameters {
-            Some(p) => {
-                let num_items = p.len();
-                let mut parameters: Vec<WIPOffset<Parameter>> = Vec::with_capacity(num_items);
-
-                for param in p {
-                    match param {
-                        ParameterValue::Int(i) => {
-                            let hlint = hlint::create(&mut builder, &hlintArgs { value: *i });
-                            let parameter = Parameter::create(
-                                &mut builder,
-                                &ParameterArgs {
-                                    value_type: FbParameterValue::hlint,
-                                    value: Some(hlint.as_union_value()),
-                                },
-                            );
-                            parameters.push(parameter);
-                        }
-                        ParameterValue::UInt(ui) => {
-                            let hluint = hluint::create(&mut builder, &hluintArgs { value: *ui });
-                            let parameter = Parameter::create(
-                                &mut builder,
-                                &ParameterArgs {
-                                    value_type: FbParameterValue::hluint,
-                                    value: Some(hluint.as_union_value()),
-                                },
-                            );
-                            parameters.push(parameter);
-                        }
-                        ParameterValue::Long(l) => {
-                            let hllong = hllong::create(&mut builder, &hllongArgs { value: *l });
-                            let parameter = Parameter::create(
-                                &mut builder,
-                                &ParameterArgs {
-                                    value_type: FbParameterValue::hllong,
-                                    value: Some(hllong.as_union_value()),
-                                },
-                            );
-                            parameters.push(parameter);
-                        }
-                        ParameterValue::ULong(ul) => {
-                            let hlulong =
-                                hlulong::create(&mut builder, &hlulongArgs { value: *ul });
-                            let parameter = Parameter::create(
-                                &mut builder,
-                                &ParameterArgs {
-                                    value_type: FbParameterValue::hlulong,
-                                    value: Some(hlulong.as_union_value()),
-                                },
-                            );
-                            parameters.push(parameter);
-                        }
-                        ParameterValue::Float(f) => {
-                            let hlfloat = hlfloat::create(&mut builder, &hlfloatArgs { value: *f });
-                            let parameter = Parameter::create(
-                                &mut builder,
-                                &ParameterArgs {
-                                    value_type: FbParameterValue::hlfloat,
-                                    value: Some(hlfloat.as_union_value()),
-                                },
-                            );
-                            parameters.push(parameter);
-                        }
-                        ParameterValue::Double(d) => {
-                            let hldouble =
-                                hldouble::create(&mut builder, &hldoubleArgs { value: *d });
-                            let parameter = Parameter::create(
-                                &mut builder,
-                                &ParameterArgs {
-                                    value_type: FbParameterValue::hldouble,
-                                    value: Some(hldouble.as_union_value()),
-                                },
-                            );
-                            parameters.push(parameter);
-                        }
-                        ParameterValue::Bool(b) => {
-                            let hlbool: WIPOffset<hlbool<'_>> =
-                                hlbool::create(&mut builder, &hlboolArgs { value: *b });
-                            let parameter = Parameter::create(
-                                &mut builder,
-                                &ParameterArgs {
-                                    value_type: FbParameterValue::hlbool,
-                                    value: Some(hlbool.as_union_value()),
-                                },
-                            );
-                            parameters.push(parameter);
-                        }
-                        ParameterValue::String(s) => {
-                            let hlstring = {
-                                let val = builder.create_string(s.as_str());
-                                hlstring::create(&mut builder, &hlstringArgs { value: Some(val) })
-                            };
-                            let parameter = Parameter::create(
-                                &mut builder,
-                                &ParameterArgs {
-                                    value_type: FbParameterValue::hlstring,
-                                    value: Some(hlstring.as_union_value()),
-                                },
-                            );
-                            parameters.push(parameter);
-                        }
-                        ParameterValue::VecBytes(v) => {
-                            let vec_bytes = builder.create_vector(v);
-
-                            let hlvecbytes = hlvecbytes::create(
-                                &mut builder,
-                                &hlvecbytesArgs {
-                                    value: Some(vec_bytes),
-                                },
-                            );
-                            let parameter = Parameter::create(
-                                &mut builder,
-                                &ParameterArgs {
-                                    value_type: FbParameterValue::hlvecbytes,
-                                    value: Some(hlvecbytes.as_union_value()),
-                                },
-                            );
-                            parameters.push(parameter);
-                        }
-                    }
-                }
-                parameters
-            }
-            None => Vec::new(),
-        };
-
-        let parameters = if !parameters.is_empty() {
-            Some(builder.create_vector(&parameters))
-        } else {
-            None
-        };
-
-        let function_call = FbFunctionCall::create(
-            &mut builder,
-            &FbFunctionCallArgs {
-                function_name: Some(function_name),
-                parameters,
-                function_call_type,
-                expected_return_type,
-            },
-        );
-        builder.finish_size_prefixed(function_call, None);
-        let res = builder.finished_data().to_vec();
-
-        Ok(res)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -303,7 +275,8 @@ mod tests {
 
     #[test]
     fn read_from_flatbuffer() -> Result<()> {
-        let test_data: Vec<u8> = FunctionCall::new(
+        let mut builder = FlatBufferBuilder::new();
+        let test_data = FunctionCall::new(
             "PrintTwelveArgs".to_string(),
             Some(vec![
                 ParameterValue::String("1".to_string()),
@@ -322,10 +295,9 @@ mod tests {
             FunctionCallType::Guest,
             ReturnType::Int,
         )
-        .try_into()
-        .unwrap();
+        .encode(&mut builder);
 
-        let function_call = FunctionCall::try_from(test_data.as_slice())?;
+        let function_call = FunctionCall::try_from(test_data)?;
         assert_eq!(function_call.function_name, "PrintTwelveArgs");
         assert!(function_call.parameters.is_some());
         let parameters = function_call.parameters.unwrap();

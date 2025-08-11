@@ -23,10 +23,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
+use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use tracing::{Span, instrument};
 
 use super::host_funcs::FunctionRegistry;
@@ -44,7 +46,7 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
-use crate::{HyperlightError, Result, log_then_return};
+use crate::{Result, log_then_return};
 
 /// Global counter for assigning unique IDs to sandboxes
 static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -392,6 +394,8 @@ impl MultiUseSandbox {
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
         let res = (|| {
+            let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
+
             let fc = FunctionCall::new(
                 function_name.to_string(),
                 Some(args),
@@ -399,13 +403,12 @@ impl MultiUseSandbox {
                 return_type,
             );
 
-            let buffer: Vec<u8> = fc.try_into().map_err(|_| {
-                HyperlightError::Error("Failed to serialize FunctionCall".to_string())
-            })?;
+            let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
+            let buffer = fc.encode(&mut builder);
 
             self.get_mgr_wrapper_mut()
                 .as_mut()
-                .write_guest_function_call(&buffer)?;
+                .write_guest_function_call(buffer)?;
 
             self.vm.dispatch_call_from_host(
                 self.dispatch_ptr.clone(),
