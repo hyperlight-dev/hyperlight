@@ -15,8 +15,10 @@ limitations under the License.
 */
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
@@ -157,20 +159,26 @@ fn function_call_serialization_benchmark(c: &mut Criterion) {
         ReturnType::Int,
     );
 
-    let serialized_bytes: Vec<u8> = function_call.clone().try_into().unwrap();
-
     group.bench_function("serialize_function_call", |b| {
-        b.iter_with_setup(
-            || function_call.clone(),
-            |fc| {
-                let _serialized: Vec<u8> = fc.try_into().unwrap();
-            },
-        );
+        b.iter(|| {
+            // We specifically want to include the time to estimate the capacity in this benchmark
+            let estimated_capacity = estimate_flatbuffer_capacity(
+                function_call.function_name.as_str(),
+                function_call.parameters.as_deref().unwrap_or(&[]),
+            );
+            let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
+            let serialized: &[u8] = function_call.encode(&mut builder);
+            std::hint::black_box(serialized);
+        });
     });
 
     group.bench_function("deserialize_function_call", |b| {
+        let mut builder = FlatBufferBuilder::new();
+        let bytes = function_call.clone().encode(&mut builder);
+
         b.iter(|| {
-            let _deserialized: FunctionCall = serialized_bytes.as_slice().try_into().unwrap();
+            let deserialized: FunctionCall = bytes.try_into().unwrap();
+            std::hint::black_box(deserialized);
         });
     });
 

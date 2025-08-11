@@ -85,6 +85,7 @@ name = "hyperlight-guest"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest-tracing",
  "serde_json",

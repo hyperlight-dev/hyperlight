@@ -98,7 +98,7 @@ fn internal_dispatch_function() -> Result<()> {
         handle.write_error(e.kind, Some(e.message.as_str()));
     })?;
 
-    handle.push_shared_output_data(result_vec)
+    handle.push_shared_output_data(&result_vec)
 }
 
 // This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()

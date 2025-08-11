@@ -16,6 +16,7 @@ anyhow = { version = "1.0.99", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 hyperlight-common = { workspace = true }
 hyperlight-guest-tracing = { workspace = true, default-features = false }
+flatbuffers = { version= "25.2.10", default-features = false }
 
 [features]
 default = []

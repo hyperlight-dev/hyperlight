@@ -19,6 +19,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::slice::from_raw_parts;
 
+use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
@@ -27,6 +28,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError}
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::outb::OutBAction;
 
 use super::handle::GuestHandle;
@@ -92,6 +94,9 @@ impl GuestHandle {
         parameters: Option<Vec<ParameterValue>>,
         return_type: ReturnType,
     ) -> Result<()> {
+        let estimated_capacity =
+            estimate_flatbuffer_capacity(function_name, parameters.as_deref().unwrap_or(&[]));
+
         let host_function_call = FunctionCall::new(
             function_name.to_string(),
             parameters,
@@ -99,10 +104,9 @@ impl GuestHandle {
             return_type,
         );
 
-        let host_function_call_buffer: Vec<u8> = host_function_call
-            .try_into()
-            .expect("Unable to serialize host function call");
+        let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
 
+        let host_function_call_buffer = host_function_call.encode(&mut builder);
         self.push_shared_output_data(host_function_call_buffer)?;
 
         unsafe {
@@ -155,7 +159,7 @@ impl GuestHandle {
             .try_into()
             .expect("Invalid guest_error_buffer, could not be converted to a Vec<u8>");
 
-        if let Err(e) = self.push_shared_output_data(guest_error_buffer) {
+        if let Err(e) = self.push_shared_output_data(&guest_error_buffer) {
             panic!("Unable to push guest error to shared output data: {:#?}", e);
         }
     }
@@ -184,7 +188,7 @@ impl GuestHandle {
             .try_into()
             .expect("Failed to convert GuestLogData to bytes");
 
-        self.push_shared_output_data(bytes)
+        self.push_shared_output_data(&bytes)
             .expect("Unable to push log data to shared output data");
 
         unsafe {
