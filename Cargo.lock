@@ -362,9 +362,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.31"
+version = "1.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3a42d84bb6b69d3a8b3eaacf0d88f179e1929695e1ad012b6cf64d9caaa5fd2"
+checksum = "2352e5597e9c544d5e6d9c95190d5d27738ade584fa8db0a16e130e5c2b5296e"
 dependencies = [
  "jobserver",
  "libc",
@@ -2055,7 +2055,7 @@ checksum = "f416b4432174e5a3f956a7887f4c1a4acea9511d81def67fcb8473293630ab9e"
 dependencies = [
  "libc",
  "num_enum",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
  "zerocopy 0.7.35",
 ]
 
@@ -2067,7 +2067,7 @@ checksum = "1e0cb5031f3243a7459b7c13d960d25420980874eebda816db24ce6077e21d43"
 dependencies = [
  "libc",
  "num_enum",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
  "zerocopy 0.8.26",
 ]
 
@@ -2080,7 +2080,7 @@ dependencies = [
  "libc",
  "mshv-bindings 0.2.1",
  "thiserror 1.0.69",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
 ]
 
 [[package]]
@@ -2092,7 +2092,7 @@ dependencies = [
  "libc",
  "mshv-bindings 0.3.2",
  "thiserror 2.0.12",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
 ]
 
 [[package]]
