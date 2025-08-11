@@ -40,9 +40,10 @@ jobs:
         hypervisor: ['hyperv-ws2025', kvm]
         config: [debug, release]
     runs-on: ${{ fromJson(
-      format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-amd"]', 
+      format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
         (matrix.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
-        matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || 'kvm')) }}
+        matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || 'kvm',
+        matrix.hypervisor == 'kvm' && 'cloudtest' || 'amd')) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +89,7 @@ jobs:
         format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
           (matrix.hypervisor == 'hyperv' || matrix.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
           matrix.hypervisor == 'hyperv' && 'win2022' || matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, 
-          matrix.cpu)) }} 
+          matrix.hypervisor == 'kvm' && 'cloudtest' || matrix.cpu)) }} 
     steps:
       - uses: actions/checkout@v4
 
