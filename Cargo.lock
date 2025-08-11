@@ -2055,7 +2055,7 @@ checksum = "f416b4432174e5a3f956a7887f4c1a4acea9511d81def67fcb8473293630ab9e"
 dependencies = [
  "libc",
  "num_enum",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
  "zerocopy 0.7.35",
 ]
 
@@ -2067,7 +2067,7 @@ checksum = "1e0cb5031f3243a7459b7c13d960d25420980874eebda816db24ce6077e21d43"
 dependencies = [
  "libc",
  "num_enum",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
  "zerocopy 0.8.26",
 ]
 
@@ -2080,7 +2080,7 @@ dependencies = [
  "libc",
  "mshv-bindings 0.2.1",
  "thiserror 1.0.69",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
 ]
 
 [[package]]
@@ -2092,7 +2092,7 @@ dependencies = [
  "libc",
  "mshv-bindings 0.3.2",
  "thiserror 2.0.12",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
 ]
 
 [[package]]
@@ -2637,9 +2637,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.95"
+version = "1.0.96"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
+checksum = "beef09f85ae72cea1ef96ba6870c51e6382ebfa4f0e85b643459331f3daa5be0"
 dependencies = [
  "unicode-ident",
 ]
