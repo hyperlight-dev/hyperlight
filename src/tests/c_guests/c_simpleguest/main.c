@@ -4,6 +4,7 @@
 #include "stdint.h"
 #include "string.h"
 #include "stdlib.h"
+#include "assert.h"
 // Included from hyperlight_guest_bin/third_party/printf
 #include "printf.h"
 
@@ -232,6 +233,12 @@ int log_message(const char *message, int64_t level) {
   return -1;
 }
 
+hl_Vec *twenty_four_k_in_eight_k_out(const hl_FunctionCall* params) {
+  hl_Vec input = params->parameters[0].value.VecBytes;
+  assert(input.len == 24 * 1024);
+  return hl_flatbuffer_result_from_Bytes(input.data, 8 * 1024);
+}
+
 HYPERLIGHT_WRAP_FUNCTION(echo, String, 1, String)
 // HYPERLIGHT_WRAP_FUNCTION(set_byte_array_to_zero, 1, VecBytes) is not valid for functions that return VecBytes
 HYPERLIGHT_WRAP_FUNCTION(print_output, Int, 1, String)
@@ -260,6 +267,7 @@ HYPERLIGHT_WRAP_FUNCTION(guest_abort_with_msg, Int, 2, Int, String)
 HYPERLIGHT_WRAP_FUNCTION(guest_abort_with_code, Int, 1, Int)
 HYPERLIGHT_WRAP_FUNCTION(execute_on_stack, Int, 0)
 HYPERLIGHT_WRAP_FUNCTION(log_message, Int, 2, String, Long)
+// HYPERLIGHT_WRAP_FUNCTION(twenty_four_k_in_eight_k_out, VecBytes, 1, VecBytes) is not valid for functions that return VecBytes
 
 void hyperlight_main(void)
 {
@@ -295,6 +303,9 @@ void hyperlight_main(void)
     HYPERLIGHT_REGISTER_FUNCTION("GuestAbortWithMessage", guest_abort_with_msg);
     HYPERLIGHT_REGISTER_FUNCTION("ExecuteOnStack", execute_on_stack);
     HYPERLIGHT_REGISTER_FUNCTION("LogMessage", log_message);
+    // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
+    // so we use hl_register_function_definition directly
+    hl_register_function_definition("24K_in_8K_out", twenty_four_k_in_eight_k_out, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
 }
 
 // This dispatch function is only used when the host dispatches a guest function
