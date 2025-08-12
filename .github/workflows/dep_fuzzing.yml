@@ -30,7 +30,7 @@ jobs:
         target: ${{ fromJson(inputs.targets) }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - uses: hyperlight-dev/ci-setup-workflow@v1.6.0
         with:

@@ -44,7 +44,7 @@ jobs:
         (matrix.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
         matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || 'kvm')) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: hyperlight-dev/ci-setup-workflow@v1.6.0
         with:
@@ -90,7 +90,7 @@ jobs:
           matrix.hypervisor == 'hyperv' && 'win2022' || matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, 
           matrix.cpu)) }} 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # For rust-fmt 
       - name: Set up nightly rust 

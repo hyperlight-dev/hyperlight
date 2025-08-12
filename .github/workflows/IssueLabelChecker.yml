@@ -11,7 +11,7 @@ jobs:
   labeler:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - name: Check and Add label
       run: |
         # The cryptic head -c -1 is because otherwise gh always terminates output with a newline
