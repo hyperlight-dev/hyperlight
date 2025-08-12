@@ -42,7 +42,7 @@ hyperlight-common = { workspace = true, default-features = true, features = [ "s
 hyperlight-guest-tracing = { workspace = true, default-features = true, optional = true }
 vmm-sys-util = "0.15.0"
 crossbeam-channel = "0.5.15"
-thiserror = "2.0.12"
+thiserror = "2.0.14"
 chrono = { version = "0.4", optional = true }
 anyhow = "1.0"
 metrics = "0.24.2"
