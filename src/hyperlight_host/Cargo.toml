@@ -119,7 +119,7 @@ windows = { version = "0.61", features = [
 proc-maps = "0.4.0"
 
 [build-dependencies]
-anyhow = { version = "1.0.98" }
+anyhow = { version = "1.0.99" }
 cfg_aliases = "0.2.1"
 built = { version = "0.8.0", optional = true, features = ["chrono", "git2"] }
 
