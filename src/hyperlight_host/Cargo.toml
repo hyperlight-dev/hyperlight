@@ -21,7 +21,7 @@ bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-
 workspace = true
 
 [dependencies]
-gdbstub = { version = "0.7.6", optional = true }
+gdbstub = { version = "0.7.7", optional = true }
 gdbstub_arch = { version = "0.3.2", optional = true }
 goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "endian_fd"] }
 rand = { version = "0.9" }
