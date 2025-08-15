@@ -30,8 +30,6 @@ use crate::hypervisor::Hypervisor;
 use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(any(feature = "init-paging", target_os = "windows"))]
 use crate::mem::shared_mem::SharedMemory;
@@ -66,7 +64,7 @@ where
         Arc<Mutex<FunctionRegistry>>,
         MemMgrWrapper<HostSharedMemory>,
         Box<dyn Hypervisor>,
-        RawPtr,
+        u64,
     ) -> Result<ResSandbox>,
 {
     let (hshm, mut gshm) = u_sbox.mgr.build();
@@ -82,11 +80,7 @@ where
         let mut rng = rand::rng();
         rng.random::<u64>()
     };
-    let peb_addr = {
-        let peb_u64 = u64::try_from(gshm.layout.peb_address)?;
-        RawPtr::from(peb_u64)
-    };
-
+    let peb_addr = gshm.layout.peb_address as u64;
     let page_size = u32::try_from(page_size::get())?;
 
     #[cfg(gdb)]
@@ -111,12 +105,7 @@ where
         return Err(new_error!("Dispatch function address is null"));
     }
 
-    transform(
-        u_sbox.host_funcs,
-        hshm,
-        vm,
-        RawPtr::from(dispatch_function_addr),
-    )
+    transform(u_sbox.host_funcs, hshm, vm, dispatch_function_addr)
 }
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -141,41 +130,15 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<Box<dyn Hypervisor>> {
-    #[cfg(feature = "init-paging")]
-    let rsp_ptr = {
-        let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-        let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
-        let rsp_u64 = mgr.set_up_shared_memory(mem_size, &mut regions)?;
-        let rsp_raw = RawPtr::from(rsp_u64);
-        GuestPtr::try_from(rsp_raw)
-    }?;
-    #[cfg(not(feature = "init-paging"))]
-    let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
     let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let pml4_ptr = {
-        let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
-        base_ptr + Offset::from(pml4_offset_u64)
-    };
-    let entrypoint_ptr = {
-        let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;
-        GuestPtr::try_from(entrypoint_total_offset)
-    }?;
 
-    if base_ptr != pml4_ptr {
-        log_then_return!(
-            "Error: base_ptr ({:#?}) does not equal pml4_ptr ({:#?})",
-            base_ptr,
-            pml4_ptr
-        );
-    }
-    if entrypoint_ptr <= pml4_ptr {
-        log_then_return!(
-            "Error: entrypoint_ptr ({:#?}) is not greater than pml4_ptr ({:#?})",
-            entrypoint_ptr,
-            pml4_ptr
-        );
-    }
+    #[cfg(feature = "init-paging")]
+    let rsp_ptr = { mgr.set_up_shared_memory(mgr.shared_mem.mem_size(), &regions)? } as u64;
+    #[cfg(not(feature = "init-paging"))]
+    let rsp_ptr = 0;
+
+    let pml4_ptr = SandboxMemoryLayout::PML4_OFFSET as u64;
+    let entrypoint_ptr = mgr.load_addr + mgr.entrypoint_offset;
 
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
@@ -227,9 +190,9 @@ pub(crate) fn set_up_hypervisor_partition(
         Some(HypervisorType::Kvm) => {
             let hv = crate::hypervisor::kvm::KVMDriver::new(
                 regions,
-                pml4_ptr.absolute()?,
-                entrypoint_ptr.absolute()?,
-                rsp_ptr.absolute()?,
+                pml4_ptr,
+                entrypoint_ptr,
+                rsp_ptr,
                 config,
                 #[cfg(gdb)]
                 gdb_conn,
@@ -251,9 +214,9 @@ pub(crate) fn set_up_hypervisor_partition(
             let hv = crate::hypervisor::hyperv_windows::HypervWindowsDriver::new(
                 regions,
                 mgr.shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
-                pml4_ptr.absolute()?,
-                entrypoint_ptr.absolute()?,
-                rsp_ptr.absolute()?,
+                pml4_ptr,
+                entrypoint_ptr,
+                rsp_ptr,
                 HandleWrapper::from(mmap_file_handle),
                 #[cfg(gdb)]
                 gdb_conn,
