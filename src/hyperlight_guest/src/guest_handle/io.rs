@@ -16,7 +16,6 @@ limitations under the License.
 
 use alloc::format;
 use alloc::string::ToString;
-use alloc::vec::Vec;
 use core::any::type_name;
 use core::slice::from_raw_parts_mut;
 
@@ -93,7 +92,7 @@ impl GuestHandle {
 
     /// Pushes the given data onto the shared output data buffer.
     #[hyperlight_guest_tracing::trace_function]
-    pub fn push_shared_output_data(&self, data: Vec<u8>) -> Result<()> {
+    pub fn push_shared_output_data(&self, data: &[u8]) -> Result<()> {
         let peb_ptr = self.peb().unwrap();
         let output_stack_size = unsafe { (*peb_ptr).output_stack.size as usize };
         let output_stack_ptr = unsafe { (*peb_ptr).output_stack.ptr as *mut u8 };
@@ -139,7 +138,7 @@ impl GuestHandle {
 
         // write the actual data
         hyperlight_guest_tracing::trace!("copy data", {
-            odb[stack_ptr_rel as usize..stack_ptr_rel as usize + data.len()].copy_from_slice(&data);
+            odb[stack_ptr_rel as usize..stack_ptr_rel as usize + data.len()].copy_from_slice(data);
         });
 
         // write the offset to the newly written data, to the top of the stack
