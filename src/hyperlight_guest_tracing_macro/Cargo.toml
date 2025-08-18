@@ -12,7 +12,7 @@ description = """Provides the tracing macros for the hyperlight guest, enabling 
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0.40"
-syn = { version = "2.0.105", features = ["full"] }
+syn = { version = "2.0.106", features = ["full"] }
 
 [features]
 default = []
