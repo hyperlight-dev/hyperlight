@@ -182,7 +182,7 @@ impl FlatbufferSerializable for bool {
 /// nearest power of two to match FlatBufferBuilder's allocation strategy.
 ///
 /// The estimations are numbers used are empirically derived based on the tests below and vaguely based
-/// on https://flatbuffers.dev/internals/ and https://github.com/dvidelabs/flatcc/blob/master/doc/binary-format.md#flatbuffers-binary-format
+/// on https://flatbuffers.dev/internals/ and https://github.com/dvidelabs/flatcc/blob/f064cefb2034d1e7407407ce32a6085c322212a7/doc/binary-format.md#flatbuffers-binary-format
 #[inline] // allow cross-crate inlining (for hyperlight-host calls)
 pub fn estimate_flatbuffer_capacity(function_name: &str, args: &[ParameterValue]) -> usize {
     let mut estimated_capacity = 20;
