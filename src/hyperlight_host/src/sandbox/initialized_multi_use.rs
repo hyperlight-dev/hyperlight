@@ -421,9 +421,14 @@ impl MultiUseSandbox {
                 .get_guest_function_call_result()
         })();
 
-        // TODO: Do we want to allow re-entrant guest function calls?
-        self.get_mgr_wrapper_mut().as_mut().clear_io_buffers();
-
+        // In the happy path we do not need to clear io-buffers from the host because:
+        // - the serialized guest function call is zeroed out by the guest during deserialization, see call to `try_pop_shared_input_data_into::<FunctionCall>()`
+        // - the serialized guest function result is zeroed out by us (the host) during deserialization, see `get_guest_function_call_result`
+        // - any serialized host function call are zeroed out by us (the host) during deserialization, see `get_host_function_call`
+        // - any serialized host function result is zeroed out by the guest during deserialization, see `get_host_return_value`
+        if res.is_err() {
+            self.get_mgr_wrapper_mut().as_mut().clear_io_buffers();
+        }
         res
     }
 
@@ -501,6 +506,40 @@ mod tests {
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+
+    // make sure memory is cleared even if host function panics
+    #[test]
+    #[cfg_attr(
+        not(feature = "seccomp"),
+        should_panic(expected = "Host function panic msg")  // if seccomp is not enabled, we do not spawn a new thread for host funcs,
+                                                            // and we do not use catch_unwind to catch any panics.
+    )]
+    fn test_host_func_panic_clear_buffer() {
+        let path = simple_guest_as_string().unwrap();
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_input_data_size(20 * 1024);
+        cfg.set_output_data_size(20 * 1024);
+        let mut u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
+        u_sbox
+            .register("host_panic", |_bytes: Vec<u8>| {
+                panic!("Host function panic msg");
+                #[expect(unreachable_code, reason = "Needed for type inference")]
+                Ok(())
+            })
+            .unwrap();
+        let mut sbox = u_sbox.evolve().unwrap();
+
+        for _ in 0..30 {
+            // if io-buffers are not cleared on host func panic, this would eventually fail due to filling up input/output buffer
+            let res = sbox
+                .call::<Vec<u8>>("CallHostPanic", (vec![1; 1024],))
+                .unwrap_err();
+            assert!(matches!(
+                res,
+                crate::HyperlightError::HostFunctionPanic(func_name, payload) if func_name == "host_panic" && payload == "Host function panic msg"
+            ));
+        }
+    }
 
     /// Tests that call_guest_function_by_name restores the state correctly
     #[test]

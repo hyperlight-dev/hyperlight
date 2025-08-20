@@ -122,6 +122,10 @@ pub enum HyperlightError {
     #[error("HostFunction {0} was not found")]
     HostFunctionNotFound(String),
 
+    /// Host function panicked
+    #[error("Host function '{0}' panicked: {1}")]
+    HostFunctionPanic(String, String),
+
     /// Reading Writing or Seeking data failed.
     #[error("Reading Writing or Seeking data failed {0:?}")]
     IOError(#[from] std::io::Error),

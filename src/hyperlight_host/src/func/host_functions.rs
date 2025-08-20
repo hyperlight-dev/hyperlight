@@ -179,9 +179,28 @@ macro_rules! impl_host_function {
                 let func = Mutex::new(func);
                 HostFunction {
                     func: Arc::new(move |args: ($($P,)*)| {
-                        func.try_lock()
-                            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                            (args)
+                        match func.try_lock() {
+                            Ok(mut guard) => {
+                                // Note: we can not just do `guard(args)` because seccomp violations require this explicit drop-order
+                                // in order to properly catch panics with `catch_unwind`. It's unclear why this is necessary, but without it,
+                                // the test `test_violate_seccomp_filters` will fail in release profile.
+                                let result = guard(args);
+                                drop(guard);
+                                result
+                            },
+                            Err(poison_err) => {
+                                match poison_err {
+                                    // The previous call to this host function panicked, poisoning the lock.
+                                    // We can clear the poison safely.
+                                    std::sync::TryLockError::Poisoned(guard) => {
+                                        guard.into_inner()(args)
+                                    }
+                                    std::sync::TryLockError::WouldBlock => {
+                                        Err(new_error!("Error locking at {}:{}: mutex would block", file!(), line!()))
+                                    }
+                                }
+                            }
+                        }
                     })
                 }
             }
