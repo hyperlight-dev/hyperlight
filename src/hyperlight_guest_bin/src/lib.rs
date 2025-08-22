@@ -36,7 +36,7 @@ use hyperlight_guest::exit::{abort_with_code_and_message, halt};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
 use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
-use spin::{Once};
+use spin::{Once, Mutex, MutexGuard};
 
 // === Modules ===
 #[cfg(target_arch = "x86_64")]
@@ -144,34 +144,37 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     _panic_handler(info)
 }
 
-
 static mut PANIC_MSG: [u8; 512] = [0u8; 512];
 
 #[allow(static_mut_refs)]
-static mut PANIC_BUF: FixedStringBuf = FixedStringBuf{
+static PANIC_BUF: Mutex<FixedStringBuf> = Mutex::new(FixedStringBuf{
     buf: unsafe { &mut PANIC_MSG },
     pos: 0,
-};
-
+});
 
 #[inline(always)]
-#[allow(static_mut_refs)]
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
-    let panic_buf: &mut FixedStringBuf = unsafe { &mut PANIC_BUF };
-    write!(panic_buf, "{}", info).expect("panic: message format failed");
+    let mut panic_buf_guard: MutexGuard<'_, FixedStringBuf<'static>> = PANIC_BUF.lock();
+    let write_res = write!(panic_buf_guard, "{}", info);
+    if let Err(_) = write_res {
+        // reset the buffer to ensure there is space
+        // for the new panic message below
+        panic_buf_guard.reset();
+        panic!("panic: message format failed");
+    }
 
-    // create a CStr from the underlying array in panic_buf.
-    // Note that we do NOT use CString here to avoid allocating
-    let c_string = panic_buf.as_c_str().expect("panic: failed to convert to CStr");
-    unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], c_string.as_ptr()) }
-}
-
-fn _panic_handler_old(info: &core::panic::PanicInfo) {
-let msg = info.to_string();
-    let c_string = alloc::ffi::CString::new(msg)
-        .unwrap_or_else(|_| alloc::ffi::CString::new("panic (invalid utf8)").unwrap());
-
-    unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], c_string.as_ptr()) }
+    // create a CStr from the underlying array in PANIC_BUF using the as_cstr method.
+    // this wraps CStr::from_bytes_until_nul which takes a borrowed byte slice
+    // and does not allocate. 
+    let c_string_res = panic_buf_guard.as_c_str();
+    if let Err(_) = c_string_res {
+        // reset the buffer here as well, to ensure there is space
+        // in the buffer to write the new panic message below.
+        panic_buf_guard.reset();
+        panic!("panic: failed to convert to CStr");
+    }
+    
+    unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], c_string_res.unwrap().as_ptr()) }
 }
 
 // === Entrypoint ===
