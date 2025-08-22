@@ -586,6 +586,9 @@ impl Hypervisor for KVMDriver {
             mxcsr: MXCSR_DEFAULT,
             ..Default::default() // zero out the rest
         };
+
+        // note kvm set_fpu doesn't actually set or read the mxcsr value
+        // https://elixir.bootlin.com/linux/v6.16/source/arch/x86/kvm/x86.c#L12229
         self.vcpu_fd.set_fpu(&fpu)?;
 
         // run
