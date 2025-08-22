@@ -107,7 +107,7 @@
           pname = "hyperlight";
           version = "0.0.0";
           src = lib.cleanSource ./.;
-          cargoHash = "sha256-VRyh3mSF9Fms6rt4usSQGHxzmQleqbomd/KAsG9m6DY=";
+          cargoHash = "sha256-hoeJEBdxaoyLlhQQ4X4Wk5X1QVtQ7RRQYaxkiGg8rWA=";
 
           nativeBuildInputs = [
             azure-cli
