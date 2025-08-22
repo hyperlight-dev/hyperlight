@@ -33,7 +33,6 @@ use core::alloc::Layout;
 use core::ffi::c_char;
 use core::hint::black_box;
 use core::ptr::write_volatile;
-use core::sync::atomic::AtomicPtr;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
