@@ -211,6 +211,17 @@ impl GuestDebug for HypervDebug {
         regs.rip = vcpu_regs.rip;
         regs.rflags = vcpu_regs.rflags;
 
+        // Fetch XMM from WHVP
+        if let Ok(fpu) = vcpu_fd.get_fpu() {
+            regs.xmm = [
+                fpu.xmm0, fpu.xmm1, fpu.xmm2, fpu.xmm3, fpu.xmm4, fpu.xmm5, fpu.xmm6, fpu.xmm7,
+                fpu.xmm8, fpu.xmm9, fpu.xmm10, fpu.xmm11, fpu.xmm12, fpu.xmm13, fpu.xmm14,
+                fpu.xmm15,
+            ];
+        } else {
+            log::warn!("Failed to read FPU/XMM via WHVP for debug registers");
+        }
+
         Ok(())
     }
 
