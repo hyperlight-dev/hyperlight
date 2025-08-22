@@ -110,6 +110,7 @@ pub(crate) struct X86_64Regs {
     pub(crate) rip: u64,
     pub(crate) rflags: u64,
     pub(crate) xmm: [u128; 16],
+    pub(crate) mxcsr: u32,
 }
 
 /// Defines the possible reasons for which a vCPU can be stopped when debugging
