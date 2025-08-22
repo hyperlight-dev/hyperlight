@@ -2,6 +2,9 @@ use core::fmt;
 use core::result::Result;
 use core::ffi::{CStr, FromBytesUntilNulError};
 
+/// FixedStringBuf is a buffer that can hold a fixed-size string.
+/// It is meant to be used with a slice that the user has pre-allocated
+/// to avoid extra allocations during string formatting.
 pub struct FixedStringBuf<'a> {
     pub buf: &'a mut [u8],
     pub pos: usize,
@@ -10,7 +13,7 @@ pub struct FixedStringBuf<'a> {
 impl<'a> fmt::Write for FixedStringBuf<'a> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         // we always reserve 1 byte for the null terminator, 
-        // as the buffer must be convertible to a CStr.
+        // as the buffer must be convertible to CStr.
         let buf_end = self.buf.len() - 1;
         if self.pos + s.len() > buf_end {
             return Err(fmt::Error)
@@ -35,10 +38,17 @@ impl <'a> FixedStringBuf<'a> {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.pos = 0;
+    }
+
+    /// Null terminates the underlying buffer,
+    /// and converts to a CStr which borrows the underlying buffer's slice.
     pub fn as_c_str(&mut self) -> Result<&CStr, FromBytesUntilNulError> {
-        // null terminate buffer. 
+        // null terminate the buffer. 
         // we are guaranteed to have enough space since we always reserve one extra
-        // byte for null in write_str
+        // byte for null in write_str, and assert buf.len() > 0 in the constructor.
+        assert!(self.buf.len() > 0 && self.pos < self.buf.len());
         self.buf[self.pos] = 0;
         CStr::from_bytes_until_nul(&self.buf[..self.pos + 1])
     }
