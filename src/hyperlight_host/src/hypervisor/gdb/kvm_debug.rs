@@ -193,6 +193,17 @@ impl GuestDebug for KvmDebug {
         regs.rip = vcpu_regs.rip;
         regs.rflags = vcpu_regs.rflags;
 
+         // Read XMM registers from FPU state
+        match vcpu_fd.get_fpu() {
+            Ok(fpu) => {
+                // Convert KVM XMM registers ([u8; 16] x 16) to [u128; 16]
+                regs.xmm = fpu.xmm.map(u128::from_le_bytes);;
+            },
+            Err(e) => {
+                log::warn!("Failed to read FPU state for XMM registers: {:?}", e);
+            }
+        }
+
         Ok(())
     }
 
