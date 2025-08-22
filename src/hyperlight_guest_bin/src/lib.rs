@@ -157,10 +157,7 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     let mut panic_buf_guard: MutexGuard<'_, FixedStringBuf<'static>> = PANIC_BUF.lock();
     let write_res = write!(panic_buf_guard, "{}", info);
     if let Err(_) = write_res {
-        // reset the buffer to ensure there is space
-        // for the new panic message below
-        panic_buf_guard.reset();
-        panic!("panic: message format failed");
+        unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], b"panic: message format failed\0".as_ptr() as *const i8)}
     }
 
     // create a CStr from the underlying array in PANIC_BUF using the as_cstr method.
@@ -168,10 +165,7 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     // and does not allocate. 
     let c_string_res = panic_buf_guard.as_c_str();
     if let Err(_) = c_string_res {
-        // reset the buffer here as well, to ensure there is space
-        // in the buffer to write the new panic message below.
-        panic_buf_guard.reset();
-        panic!("panic: failed to convert to CStr");
+        unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], b"panic: failed to convert to CStr\0".as_ptr() as *const i8)}
     }
     
     unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], c_string_res.unwrap().as_ptr()) }
