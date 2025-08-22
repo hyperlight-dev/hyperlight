@@ -144,17 +144,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     _panic_handler(info)
 }
 
-static mut PANIC_MSG: [u8; 512] = [0u8; 512];
-
-#[allow(static_mut_refs)]
-static PANIC_BUF: Mutex<FixedStringBuf> = Mutex::new(FixedStringBuf{
-    buf: unsafe { &mut PANIC_MSG },
-    pos: 0,
-});
+static PANIC_BUF: Mutex<FixedStringBuf<512>> = Mutex::new(FixedStringBuf::new());
 
 #[inline(always)]
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
-    let mut panic_buf_guard: MutexGuard<'_, FixedStringBuf<'static>> = PANIC_BUF.lock();
+    let mut panic_buf_guard = PANIC_BUF.lock();
     let write_res = write!(panic_buf_guard, "{}", info);
     if let Err(_) = write_res {
         unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], b"panic: message format failed\0".as_ptr() as *const i8)}

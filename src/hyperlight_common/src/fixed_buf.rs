@@ -16,17 +16,17 @@ limitations under the License.
 
 use core::fmt;
 use core::result::Result;
-use core::ffi::{CStr, FromBytesUntilNulError};
 
-/// FixedStringBuf is a buffer that can hold a fixed-size string.
+
+/// FixedStringBuf is a buffer that can hold a fixed-size string of capacity N.
 /// It is meant to be used with a slice that the user has pre-allocated
 /// to avoid extra allocations during string formatting.
-pub struct FixedStringBuf<'a> {
-    pub buf: &'a mut [u8],
+pub struct FixedStringBuf<const N: usize> {
+    pub buf: [u8; N],
     pub pos: usize,
 }
 
-impl<'a> fmt::Write for FixedStringBuf<'a> {
+impl<'a, const N: usize> fmt::Write for FixedStringBuf<N> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         // we always reserve 1 byte for the null terminator, 
         // as the buffer must be convertible to CStr.
@@ -41,43 +41,44 @@ impl<'a> fmt::Write for FixedStringBuf<'a> {
     }
 }
 
-impl <'a> FixedStringBuf<'a> {
+impl <const N: usize> FixedStringBuf<N> {
     pub fn as_str(&self) -> Result<&str, core::str::Utf8Error> {
         core::str::from_utf8(&self.buf[..self.pos])
     }
 
-    pub fn new(buf: &'a mut [u8]) -> FixedStringBuf<'a> {
-        assert!(buf.len() > 0);
-        FixedStringBuf {
-            buf,
+    pub const fn new() -> Self {
+        return FixedStringBuf{
+            buf: [0u8; N],
             pos: 0,
         }
     }
 
-    pub fn reset(&mut self) {
-        self.pos = 0;
-    }
-
     /// Null terminates the underlying buffer,
     /// and converts to a CStr which borrows the underlying buffer's slice.
-    pub fn as_c_str(&mut self) -> Result<&CStr, FromBytesUntilNulError> {
+    pub fn as_c_str(&mut self) -> Result<&core::ffi::CStr, core::ffi::FromBytesUntilNulError> {
         // null terminate the buffer. 
         // we are guaranteed to have enough space since we always reserve one extra
         // byte for null in write_str, and assert buf.len() > 0 in the constructor.
         assert!(self.buf.len() > 0 && self.pos < self.buf.len());
         self.buf[self.pos] = 0;
-        CStr::from_bytes_until_nul(&self.buf[..self.pos + 1])
+        core::ffi::CStr::from_bytes_until_nul(&self.buf[..self.pos + 1])
     }
 }
 
+
 mod test {
-    
-    
-    
+    // disable unused import warnings
+    #![allow(unused_imports)]
+    use core::fmt::Write;
+    use core::fmt;
+    use super::FixedStringBuf;
+
     #[test]
     fn test_fixed_buf() {
-        let mut bs = [0; 21];
-        let mut buf = FixedStringBuf::new(&mut bs);
+        let mut buf = FixedStringBuf::<21>::new();
+
+        assert_eq!(buf.as_str().unwrap(), "");
+
         write!(&mut buf, "{}", "0123456789").expect("Failed to write to FixedBuf");
         write!(&mut buf, "{}", "0123456789").expect("Failed to write to FixedBuf");
         assert_eq!(buf.as_str().unwrap(), "01234567890123456789");
@@ -85,5 +86,8 @@ mod test {
 
         let res = write!(&mut buf, "10");
         assert_eq!(res, Err(fmt::Error));
+
+        let c_str = buf.as_c_str().unwrap();
+        assert_eq!(c_str.to_bytes(), b"01234567890123456789");
     }
 }
