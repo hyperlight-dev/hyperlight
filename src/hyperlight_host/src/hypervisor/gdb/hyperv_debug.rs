@@ -218,6 +218,7 @@ impl GuestDebug for HypervDebug {
                 fpu.xmm8, fpu.xmm9, fpu.xmm10, fpu.xmm11, fpu.xmm12, fpu.xmm13, fpu.xmm14,
                 fpu.xmm15,
             ];
+            regs.mxcsr = fpu.mxcsr;
         } else {
             log::warn!("Failed to read FPU/XMM via WHVP for debug registers");
         }

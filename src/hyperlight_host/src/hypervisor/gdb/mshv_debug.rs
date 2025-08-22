@@ -225,6 +225,7 @@ impl GuestDebug for MshvDebug {
             Ok(fpu) => {
                 // MSHV exposes XMM as [[u8; 16]; 16]. Convert to [u128; 16]
                 regs.xmm = fpu.xmm.map(u128::from_le_bytes);
+                regs.mxcsr = fpu.mxcsr;
             }
             Err(e) => {
                 log::warn!("Failed to read FPU state for XMM registers (MSHV): {:?}", e);
@@ -269,8 +270,6 @@ impl GuestDebug for MshvDebug {
 
             rip: regs.rip,
             rflags: regs.rflags,
-
-            
         };
 
         vcpu_fd
