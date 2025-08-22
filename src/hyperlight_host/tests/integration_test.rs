@@ -548,7 +548,7 @@ fn guest_panic_no_alloc() {
 
     let res = sbox.call::<i32>(
         "ExhaustHeap", // uses the rust allocator to allocate small blocks on the heap until OOM
-       () 
+        ()
     ).unwrap_err();
     println!("{:?}", res);
 
