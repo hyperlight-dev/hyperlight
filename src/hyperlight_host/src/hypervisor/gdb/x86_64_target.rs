@@ -228,6 +228,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
                 regs.rip = read_regs.rip;
                 regs.eflags = read_regs.rflags as u32;
                 regs.xmm = read_regs.xmm;
+                regs.mxcsr = read_regs.mxcsr;
 
                 Ok(())
             }
@@ -269,6 +270,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
             rip: regs.rip,
             rflags: u64::from(regs.eflags),
             xmm: regs.xmm,
+            mxcsr: regs.mxcsr,
         };
 
         match self.send_command(DebugMsg::WriteRegisters(regs))? {
