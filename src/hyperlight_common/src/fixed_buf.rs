@@ -55,9 +55,9 @@ impl <'a> FixedStringBuf<'a> {
 }
 
 mod test {
-    use super::{FixedStringBuf};
-    use core::fmt::Write;
-    use core::fmt;
+    
+    
+    
     #[test]
     fn test_fixed_buf() {
         let mut bs = [0; 21];
