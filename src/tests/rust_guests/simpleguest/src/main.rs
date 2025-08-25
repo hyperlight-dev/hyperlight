@@ -898,9 +898,27 @@ fn exec_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+fn call_host_panic(_: &FunctionCall) -> Result<Vec<u8>> {
+    call_host_function::<()>(
+        "host_panic",
+        Some(vec![ParameterValue::VecBytes(vec![1; 1024])]),
+        ReturnType::VecBytes,
+    )
+    .unwrap();
+    Ok(get_flatbuffer_result::<&[u8]>(vec![1; 1024].as_ref()))
+}
+
 #[no_mangle]
 #[hyperlight_guest_tracing::trace_function]
 pub extern "C" fn hyperlight_main() {
+    let call_host_panic_def = GuestFunctionDefinition::new(
+        "CallHostPanic".to_string(),
+        Vec::from(&[ParameterType::VecBytes]),
+        ReturnType::VecBytes,
+        call_host_panic as usize,
+    );
+    register_function(call_host_panic_def);
+
     let read_from_user_memory_def = GuestFunctionDefinition::new(
         "ReadFromUserMemory".to_string(),
         Vec::from(&[ParameterType::ULong, ParameterType::VecBytes]),

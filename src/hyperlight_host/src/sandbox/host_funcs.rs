@@ -190,7 +190,18 @@ fn maybe_with_seccomp<T: Send>(
                             return Err(crate::HyperlightError::DisallowedSyscall);
                         }
 
-                        crate::log_then_return!("Host function {} panicked", name);
+                        let panic_msg = if let Some(s) = err.downcast_ref::<String>() {
+                            s.clone()
+                        } else if let Some(s) = err.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else {
+                            "Unknown panic".to_string()
+                        };
+
+                        Err(crate::HyperlightError::HostFunctionPanic(
+                            name.to_string(),
+                            panic_msg,
+                        ))
                     }
                 }
             })?
