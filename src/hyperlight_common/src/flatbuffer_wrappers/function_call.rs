@@ -74,6 +74,12 @@ impl FunctionCall {
     }
 
     /// Encodes self into the given builder and returns the encoded data.
+    ///
+    /// # Notes
+    ///
+    /// The builder should not be reused after a call to encode, since this function
+    /// does not reset the state of the builder. If you want to reuse the builder,
+    /// you'll need to reset it first.
     pub fn encode<'a>(&self, builder: &'a mut FlatBufferBuilder) -> &'a [u8] {
         let function_name = builder.create_string(&self.function_name);
 
