@@ -34,17 +34,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download Guest Binaries
+      - name: Download Rust Guest Binaries
         uses: actions/download-artifact@v5
         with:
-          name: guest-binaries-release
-          path: ./downloaded-guest-binaries-release
+          name: rust-guest-binaries-release
+          path: ./downloaded-rust-guest-binaries-release
+
+      - name: Download C Guest Binaries
+        uses: actions/download-artifact@v5
+        with:
+          name: c-guest-binaries-release
+          path: ./downloaded-c-guest-binaries-release
 
       - name: Copy Guest Binaries
         run: |
-          cp ./downloaded-guest-binaries-release/callbackguest ./src/tests/rust_guests/bin/release/callbackguest
-          cp ./downloaded-guest-binaries-release/simpleguest ./src/tests/rust_guests/bin/release/simpleguest
-          cp ./downloaded-guest-binaries-release/dummyguest ./src/tests/rust_guests/bin/release/dummyguest
+          cp ./downloaded-rust-guest-binaries-release/callbackguest ./src/tests/rust_guests/bin/release/callbackguest
+          cp ./downloaded-rust-guest-binaries-release/simpleguest ./src/tests/rust_guests/bin/release/simpleguest
+          cp ./downloaded-rust-guest-binaries-release/dummyguest ./src/tests/rust_guests/bin/release/dummyguest
+          cp ./downloaded-c-guest-binaries-release/callbackguest ./src/tests/c_guests/bin/release/callbackguest
+          cp ./downloaded-c-guest-binaries-release/simpleguest ./src/tests/c_guests/bin/release/simpleguest
 
       ### Benchmarks ###
       - name: Fetch tags

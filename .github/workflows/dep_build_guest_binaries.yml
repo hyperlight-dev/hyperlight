@@ -37,15 +37,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and move Rust guests
-        run: just build-and-move-rust-guests
+      - name: Build and move Rust and C guests
+        run: just guests
 
-      - name: Upload Binary Artifacts
+      - name: Upload Rust Guest Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: guest-binaries-${{ matrix.config }}
+          name: rust-guest-binaries-${{ matrix.config }}
           path: |
             src\tests\rust_guests\bin\${{ matrix.config }}\callbackguest
             src\tests\rust_guests\bin\${{ matrix.config }}\dummyguest
             src\tests\rust_guests\bin\${{ matrix.config }}\simpleguest
+          if-no-files-found: error
+
+      - name: Upload C Guest Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-guest-binaries-${{ matrix.config }}
+          path: |
+            src\tests\c_guests\bin\${{ matrix.config }}\callbackguest
+            src\tests\c_guests\bin\${{ matrix.config }}\simpleguest
           if-no-files-found: error
