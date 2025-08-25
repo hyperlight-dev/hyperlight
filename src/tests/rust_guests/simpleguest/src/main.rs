@@ -517,6 +517,11 @@ unsafe fn exhaust_heap(_: &FunctionCall) -> ! {
         ptr = alloc::alloc::alloc_zeroed(layout);
     }
 
+    // after alloc::alloc_zeroed failure (null return when called in loop above)
+    // allocate a Vec to ensure OOM panic
+    let vec = Vec::<i32>::with_capacity(1);
+    black_box(vec);
+
     panic!("function should have panicked before due to OOM")
 }
 

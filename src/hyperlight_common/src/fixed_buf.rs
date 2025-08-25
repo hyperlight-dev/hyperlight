@@ -25,7 +25,7 @@ pub struct FixedStringBuf<const N: usize> {
     pub pos: usize,
 }
 
-impl<'a, const N: usize> fmt::Write for FixedStringBuf<N> {
+impl<const N: usize> fmt::Write for FixedStringBuf<N> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         // we always reserve 1 byte for the null terminator,
         // as the buffer must be convertible to CStr.
@@ -40,16 +40,22 @@ impl<'a, const N: usize> fmt::Write for FixedStringBuf<N> {
     }
 }
 
+impl<const N: usize> Default for FixedStringBuf<N> {
+    fn default() -> Self {
+        FixedStringBuf::<N>::new()
+    }
+}
+
 impl<const N: usize> FixedStringBuf<N> {
     pub fn as_str(&self) -> Result<&str, core::str::Utf8Error> {
         core::str::from_utf8(&self.buf[..self.pos])
     }
 
     pub const fn new() -> Self {
-        return FixedStringBuf {
+        FixedStringBuf {
             buf: [0u8; N],
             pos: 0,
-        };
+        }
     }
 
     /// Null terminates the underlying buffer,
@@ -58,7 +64,7 @@ impl<const N: usize> FixedStringBuf<N> {
         // null terminate the buffer.
         // we are guaranteed to have enough space since we always reserve one extra
         // byte for null in write_str, and assert buf.len() > 0 in the constructor.
-        assert!(self.buf.len() > 0 && self.pos < self.buf.len());
+        assert!(!self.buf.is_empty() && self.pos < self.buf.len());
         self.buf[self.pos] = 0;
         core::ffi::CStr::from_bytes_until_nul(&self.buf[..self.pos + 1])
     }
@@ -78,8 +84,8 @@ mod test {
 
         assert_eq!(buf.as_str().unwrap(), "");
 
-        write!(&mut buf, "{}", "0123456789").expect("Failed to write to FixedBuf");
-        write!(&mut buf, "{}", "0123456789").expect("Failed to write to FixedBuf");
+        write!(&mut buf, "0123456789").expect("Failed to write to FixedBuf");
+        write!(&mut buf, "0123456789").expect("Failed to write to FixedBuf");
         assert_eq!(buf.as_str().unwrap(), "01234567890123456789");
         assert_eq!(buf.pos, 20);
 

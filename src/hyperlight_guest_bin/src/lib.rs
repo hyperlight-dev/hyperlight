@@ -18,7 +18,6 @@ limitations under the License.
 // === Dependencies ===
 extern crate alloc;
 
-use alloc::string::ToString;
 use core::fmt::Write;
 
 use buddy_system_allocator::LockedHeap;
@@ -150,11 +149,11 @@ static PANIC_BUF: Mutex<FixedStringBuf<512>> = Mutex::new(FixedStringBuf::new())
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     let mut panic_buf_guard = PANIC_BUF.lock();
     let write_res = write!(panic_buf_guard, "{}", info);
-    if let Err(_) = write_res {
+    if write_res.is_err() {
         unsafe {
             abort_with_code_and_message(
                 &[ErrorCode::UnknownError as u8],
-                b"panic: message format failed\0".as_ptr() as *const i8,
+                c"panic: message format failed".as_ptr(),
             )
         }
     }
@@ -163,11 +162,11 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     // this wraps CStr::from_bytes_until_nul which takes a borrowed byte slice
     // and does not allocate.
     let c_string_res = panic_buf_guard.as_c_str();
-    if let Err(_) = c_string_res {
+    if c_string_res.is_err() {
         unsafe {
             abort_with_code_and_message(
                 &[ErrorCode::UnknownError as u8],
-                b"panic: failed to convert to CStr\0".as_ptr() as *const i8,
+                c"panic: failed to convert to CStr".as_ptr(),
             )
         }
     }
