@@ -1454,7 +1454,7 @@ dependencies = [
  "hyperlight-component-macro",
  "hyperlight-guest-tracing",
  "hyperlight-testing",
- "kvm-bindings",
+ "kvm-bindings 0.14.0",
  "kvm-ioctls",
  "lazy_static",
  "libc",
@@ -1792,13 +1792,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kvm-bindings"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b3c06ff73c7ce03e780887ec2389d62d2a2a9ddf471ab05c2ff69207cd3f3b4"
+dependencies = [
+ "vmm-sys-util 0.15.0",
+]
+
+[[package]]
 name = "kvm-ioctls"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e00243d27a20feb05cf001ae52ddc79831ac70c020f215ba1153ff9270b650a"
 dependencies = [
  "bitflags 2.9.3",
- "kvm-bindings",
+ "kvm-bindings 0.13.0",
  "libc",
  "vmm-sys-util 0.14.0",
 ]
