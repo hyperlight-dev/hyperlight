@@ -36,7 +36,7 @@ use hyperlight_guest::exit::{abort_with_code_and_message, halt};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
 use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
-use spin::{Mutex, MutexGuard, Once};
+use spin::{Mutex, Once};
 
 // === Modules ===
 #[cfg(target_arch = "x86_64")]
