@@ -265,11 +265,6 @@ pub enum HyperlightError {
     )]
     VectorCapacityIncorrect(usize, usize, i32),
 
-    /// vmm sys Error Occurred
-    #[error("vmm sys Error {0:?}")]
-    #[cfg(target_os = "linux")]
-    VmmSysError(#[from] vmm_sys_util::errno::Error),
-
     /// Windows Error
     #[cfg(target_os = "windows")]
     #[error("Windows API Error Result {0:?}")]
