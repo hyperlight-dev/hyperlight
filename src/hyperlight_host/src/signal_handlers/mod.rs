@@ -32,7 +32,8 @@ pub(crate) fn setup_signal_handlers(config: &SandboxConfiguration) -> crate::Res
         vmm_sys_util::signal::register_signal_handler(
             libc::SIGSYS,
             sigsys_signal_handler::handle_sigsys,
-        )?;
+        )
+        .map_err(crate::HyperlightError::VmmSysError)?;
 
         let original_hook = std::panic::take_hook();
         // Set a custom panic hook that checks for "DisallowedSyscall"
@@ -52,7 +53,8 @@ pub(crate) fn setup_signal_handlers(config: &SandboxConfiguration) -> crate::Res
     vmm_sys_util::signal::register_signal_handler(
         libc::SIGRTMIN() + config.get_interrupt_vcpu_sigrtmin_offset() as c_int,
         vm_kill_signal,
-    )?;
+    )
+    .map_err(crate::HyperlightError::VmmSysError)?;
 
     // Note: For libraries registering signal handlers, it's important to keep in mind that
     // the user of the library could have their own signal handlers that we don't want to
