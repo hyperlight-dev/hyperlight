@@ -546,10 +546,12 @@ fn guest_panic_no_alloc() {
     .unwrap();
     let mut sbox: MultiUseSandbox = uninit.evolve().unwrap();
 
-    let res = sbox.call::<i32>(
-        "ExhaustHeap", // uses the rust allocator to allocate small blocks on the heap until OOM
-        ()
-    ).unwrap_err();
+    let res = sbox
+        .call::<i32>(
+            "ExhaustHeap", // uses the rust allocator to allocate small blocks on the heap until OOM
+            (),
+        )
+        .unwrap_err();
     println!("{:?}", res);
 
     if let HyperlightError::StackOverflow() = res {
@@ -560,7 +562,6 @@ fn guest_panic_no_alloc() {
         res,
         HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
     ));
-
 }
 
 // Tests libc alloca

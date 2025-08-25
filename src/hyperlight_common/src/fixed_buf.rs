@@ -17,7 +17,6 @@ limitations under the License.
 use core::fmt;
 use core::result::Result;
 
-
 /// FixedStringBuf is a buffer that can hold a fixed-size string of capacity N.
 /// It is meant to be used with a slice that the user has pre-allocated
 /// to avoid extra allocations during string formatting.
@@ -28,11 +27,11 @@ pub struct FixedStringBuf<const N: usize> {
 
 impl<'a, const N: usize> fmt::Write for FixedStringBuf<N> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        // we always reserve 1 byte for the null terminator, 
+        // we always reserve 1 byte for the null terminator,
         // as the buffer must be convertible to CStr.
         let buf_end = self.buf.len() - 1;
         if self.pos + s.len() > buf_end {
-            return Err(fmt::Error)
+            return Err(fmt::Error);
         }
 
         self.buf[self.pos..self.pos + s.len()].copy_from_slice(s.as_bytes());
@@ -41,22 +40,22 @@ impl<'a, const N: usize> fmt::Write for FixedStringBuf<N> {
     }
 }
 
-impl <const N: usize> FixedStringBuf<N> {
+impl<const N: usize> FixedStringBuf<N> {
     pub fn as_str(&self) -> Result<&str, core::str::Utf8Error> {
         core::str::from_utf8(&self.buf[..self.pos])
     }
 
     pub const fn new() -> Self {
-        return FixedStringBuf{
+        return FixedStringBuf {
             buf: [0u8; N],
             pos: 0,
-        }
+        };
     }
 
     /// Null terminates the underlying buffer,
     /// and converts to a CStr which borrows the underlying buffer's slice.
     pub fn as_c_str(&mut self) -> Result<&core::ffi::CStr, core::ffi::FromBytesUntilNulError> {
-        // null terminate the buffer. 
+        // null terminate the buffer.
         // we are guaranteed to have enough space since we always reserve one extra
         // byte for null in write_str, and assert buf.len() > 0 in the constructor.
         assert!(self.buf.len() > 0 && self.pos < self.buf.len());
@@ -65,12 +64,12 @@ impl <const N: usize> FixedStringBuf<N> {
     }
 }
 
-
 mod test {
     // disable unused import warnings
     #![allow(unused_imports)]
-    use core::fmt::Write;
     use core::fmt;
+    use core::fmt::Write;
+
     use super::FixedStringBuf;
 
     #[test]

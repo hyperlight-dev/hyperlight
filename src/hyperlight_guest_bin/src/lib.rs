@@ -18,25 +18,25 @@ limitations under the License.
 // === Dependencies ===
 extern crate alloc;
 
-use core::fmt::{Write};
-
 use alloc::string::ToString;
+use core::fmt::Write;
+
 use buddy_system_allocator::LockedHeap;
 #[cfg(target_arch = "x86_64")]
 use exceptions::{gdt::load_gdt, idtr::load_idt};
 use guest_function::call::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
+use hyperlight_common::fixed_buf::FixedStringBuf;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
-use hyperlight_common::fixed_buf::{FixedStringBuf};
 use hyperlight_guest::exit::{abort_with_code_and_message, halt};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
 use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
-use spin::{Once, Mutex, MutexGuard};
+use spin::{Mutex, MutexGuard, Once};
 
 // === Modules ===
 #[cfg(target_arch = "x86_64")]
@@ -151,18 +151,33 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     let mut panic_buf_guard = PANIC_BUF.lock();
     let write_res = write!(panic_buf_guard, "{}", info);
     if let Err(_) = write_res {
-        unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], b"panic: message format failed\0".as_ptr() as *const i8)}
+        unsafe {
+            abort_with_code_and_message(
+                &[ErrorCode::UnknownError as u8],
+                b"panic: message format failed\0".as_ptr() as *const i8,
+            )
+        }
     }
 
     // create a CStr from the underlying array in PANIC_BUF using the as_cstr method.
     // this wraps CStr::from_bytes_until_nul which takes a borrowed byte slice
-    // and does not allocate. 
+    // and does not allocate.
     let c_string_res = panic_buf_guard.as_c_str();
     if let Err(_) = c_string_res {
-        unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], b"panic: failed to convert to CStr\0".as_ptr() as *const i8)}
+        unsafe {
+            abort_with_code_and_message(
+                &[ErrorCode::UnknownError as u8],
+                b"panic: failed to convert to CStr\0".as_ptr() as *const i8,
+            )
+        }
     }
-    
-    unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], c_string_res.unwrap().as_ptr()) }
+
+    unsafe {
+        abort_with_code_and_message(
+            &[ErrorCode::UnknownError as u8],
+            c_string_res.unwrap().as_ptr(),
+        )
+    }
 }
 
 // === Entrypoint ===
