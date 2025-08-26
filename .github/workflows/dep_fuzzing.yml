@@ -20,6 +20,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  issues: write
 
 jobs:
   fuzz:
@@ -60,3 +61,9 @@ jobs:
         with:
           name: fuzz-crash-artifacts
           path: fuzz/artifacts/
+
+      - name: Notify Fuzzing Failure
+        if: failure() # Only run this step if the fuzzing job failed
+        run: ./dev/notify-fuzzing-failure.sh "${{ matrix.target }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
