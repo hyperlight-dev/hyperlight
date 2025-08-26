@@ -27,7 +27,7 @@ hyperlight-guest-tracing = { workspace = true, default-features = false }
 buddy_system_allocator = "0.11.0"
 log = { version = "0.4", default-features = false }
 spin = "0.10.0"
-heapless = "0.9.1"
+heapless = "0.8.0"
 
 [lints]
 workspace = true
