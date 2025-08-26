@@ -18,6 +18,7 @@ limitations under the License.
 // === Dependencies ===
 extern crate alloc;
 
+use core::ffi::CStr;
 use core::fmt::Write;
 
 use buddy_system_allocator::LockedHeap;
@@ -26,7 +27,7 @@ use exceptions::{gdt::load_gdt, idtr::load_idt};
 use guest_function::call::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
-use hyperlight_common::fixed_buf::FixedStringBuf;
+use heapless::String;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
@@ -143,7 +144,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     _panic_handler(info)
 }
 
-static PANIC_BUF: Mutex<FixedStringBuf<512>> = Mutex::new(FixedStringBuf::new());
+static PANIC_BUF: Mutex<String<512>> = Mutex::new(String::new()); 
 
 #[inline(always)]
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
@@ -158,15 +159,23 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
         }
     }
 
-    // create a CStr from the underlying array in PANIC_BUF using the as_cstr method.
-    // this wraps CStr::from_bytes_until_nul which takes a borrowed byte slice
-    // and does not allocate.
-    let c_string_res = panic_buf_guard.as_c_str();
-    if c_string_res.is_err() {
+    let append_res = panic_buf_guard.push('\0');
+    if append_res.is_err() {
         unsafe {
             abort_with_code_and_message(
                 &[ErrorCode::UnknownError as u8],
-                c"panic: failed to convert to CStr".as_ptr(),
+                c"panic: message too long".as_ptr(),
+            )
+        }
+    }
+
+    let c_str_res = CStr::from_bytes_with_nul(panic_buf_guard.as_bytes());
+
+    if c_str_res.is_err() {
+        unsafe {
+            abort_with_code_and_message(
+                &[ErrorCode::UnknownError as u8],
+                c"panic: failed to convert to CString".as_ptr(),
             )
         }
     }
@@ -174,7 +183,7 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     unsafe {
         abort_with_code_and_message(
             &[ErrorCode::UnknownError as u8],
-            c_string_res.unwrap().as_ptr(),
+            c_str_res.unwrap().as_ptr(),
         )
     }
 }

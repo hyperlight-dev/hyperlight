@@ -552,7 +552,6 @@ fn guest_panic_no_alloc() {
             (),
         )
         .unwrap_err();
-    println!("{:?}", res);
 
     if let HyperlightError::StackOverflow() = res {
         panic!("panic on OOM caused stack overflow, this implies allocation in panic handler");

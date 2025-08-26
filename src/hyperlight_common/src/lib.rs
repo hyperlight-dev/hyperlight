@@ -42,5 +42,3 @@ pub mod outb;
 
 /// cbindgen:ignore
 pub mod resource;
-
-pub mod fixed_buf;
