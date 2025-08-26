@@ -144,7 +144,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     _panic_handler(info)
 }
 
-static PANIC_BUF: Mutex<String<512>> = Mutex::new(String::new()); 
+static PANIC_BUF: Mutex<String<512>> = Mutex::new(String::new());
 
 #[inline(always)]
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
