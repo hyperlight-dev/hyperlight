@@ -38,9 +38,7 @@ use {
     super::gdb::{
         DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, HypervDebug, VcpuStopReason,
     },
-    super::handlers::DbgMemAccessHandlerWrapper,
     crate::HyperlightError,
-    crate::hypervisor::handlers::DbgMemAccessHandlerCaller,
 };
 
 #[cfg(feature = "trace_guest")]
@@ -80,7 +78,8 @@ mod debug {
     use super::{HypervWindowsDriver, *};
     use crate::Result;
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
-    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
+    use crate::mem::shared_mem::HostSharedMemory;
+    use crate::sandbox::mem_mgr::MemMgrWrapper;
 
     impl HypervWindowsDriver {
         /// Resets the debug information to disable debugging
@@ -110,7 +109,7 @@ mod debug {
         pub(crate) fn process_dbg_request(
             &mut self,
             req: DebugMsg,
-            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+            dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
         ) -> Result<DebugResponse> {
             if let Some(debug) = self.debug.as_mut() {
                 match req {
@@ -158,12 +157,9 @@ mod debug {
                             .map_err(|e| {
                                 new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
                             })?
-                            .get_code_offset()
-                            .map_err(|e| {
-                                log::error!("Failed to get code offset: {:?}", e);
-
-                                e
-                            })?;
+                            .unwrap_mgr()
+                            .layout
+                            .get_guest_code_address();
 
                         Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
                     }
@@ -606,7 +602,7 @@ impl Hypervisor for HypervWindowsDriver {
         mem_mgr: MemMgrWrapper<HostSharedMemory>,
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_hdl: DbgMemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> Result<()> {
         self.mem_mgr = Some(mem_mgr);
         self.host_funcs = Some(host_funcs);
@@ -656,7 +652,7 @@ impl Hypervisor for HypervWindowsDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_hdl: DbgMemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
         let regs = WHvGeneralRegisters {
@@ -959,7 +955,7 @@ impl Hypervisor for HypervWindowsDriver {
     #[cfg(gdb)]
     fn handle_debug(
         &mut self,
-        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
         stop_reason: super::gdb::VcpuStopReason,
     ) -> Result<()> {
         if self.debug.is_none() {

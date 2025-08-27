@@ -33,12 +33,10 @@ use tracing::{Span, instrument};
 
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
-use super::{Callable, MemMgrWrapper, WrapperGetter};
+use super::{Callable, WrapperGetter};
 use crate::HyperlightError::SnapshotSandboxMismatch;
 use crate::func::guest_err::check_for_guest_error;
 use crate::func::{ParameterTuple, SupportedReturnType};
-#[cfg(gdb)]
-use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
 use crate::hypervisor::{Hypervisor, InterruptHandle};
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
@@ -46,6 +44,7 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
+use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::{Result, log_then_return};
 
 /// Global counter for assigning unique IDs to sandboxes
@@ -64,7 +63,7 @@ pub struct MultiUseSandbox {
     vm: Box<dyn Hypervisor>,
     dispatch_ptr: RawPtr,
     #[cfg(gdb)]
-    dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     snapshot: Option<Snapshot>,
@@ -82,7 +81,7 @@ impl MultiUseSandbox {
         mgr: MemMgrWrapper<HostSharedMemory>,
         vm: Box<dyn Hypervisor>,
         dispatch_ptr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
             id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
