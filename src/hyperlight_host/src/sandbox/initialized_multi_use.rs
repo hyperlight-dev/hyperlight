@@ -612,21 +612,23 @@ mod tests {
 
             let mut sbox: MultiUseSandbox = usbox.evolve()?;
 
-            let res: Result<u64> = sbox.call("ViolateSeccompFilters", ());
+            for _ in 0..10 {
+                let res: Result<u64> = sbox.call("ViolateSeccompFilters", ());
 
-            #[cfg(feature = "seccomp")]
-            match res {
-                Ok(_) => panic!("Expected to fail due to seccomp violation"),
-                Err(e) => match e {
-                    HyperlightError::DisallowedSyscall => {}
-                    _ => panic!("Expected DisallowedSyscall error: {}", e),
-                },
-            }
+                #[cfg(feature = "seccomp")]
+                match res {
+                    Ok(_) => panic!("Expected to fail due to seccomp violation"),
+                    Err(e) => match e {
+                        HyperlightError::DisallowedSyscall => {}
+                        _ => panic!("Expected DisallowedSyscall error: {}", e),
+                    },
+                }
 
-            #[cfg(not(feature = "seccomp"))]
-            match res {
-                Ok(_) => (),
-                Err(e) => panic!("Expected to succeed without seccomp: {}", e),
+                #[cfg(not(feature = "seccomp"))]
+                match res {
+                    Ok(_) => (),
+                    Err(e) => panic!("Expected to succeed without seccomp: {}", e),
+                }
             }
         }
 
@@ -648,11 +650,13 @@ mod tests {
 
             let mut sbox: MultiUseSandbox = usbox.evolve()?;
 
-            let res: Result<u64> = sbox.call("ViolateSeccompFilters", ());
+            for _ in 0..10 {
+                let res: Result<u64> = sbox.call("ViolateSeccompFilters", ());
 
-            match res {
-                Ok(_) => {}
-                Err(e) => panic!("Expected to succeed due to seccomp violation: {}", e),
+                match res {
+                    Ok(_) => {}
+                    Err(e) => panic!("Expected to succeed due to seccomp violation: {}", e),
+                }
             }
         }
 
