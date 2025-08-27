@@ -1,15 +1,21 @@
 // Included from hyperlight_guest_capi/include
 #include "hyperlight_guest.h"
-// Included from hyperlight_guest_bin/third_party/libc
+// Included from hyperlight_guest_bin/third_party/picolibc
 #include "stdint.h"
 #include "string.h"
 #include "stdlib.h"
 #include "assert.h"
-// Included from hyperlight_guest_bin/third_party/printf
-#include "printf.h"
+#include "stdio.h"
 
 #define GUEST_STACK_SIZE (65536) // default stack size
 #define MAX_BUFFER_SIZE (1024)
+
+#define printf_f(fmt, ...)                          \
+  ({                                                \
+    int _r = printf(fmt, ##__VA_ARGS__);            \
+    fflush(stdout);                                 \
+    _r;                                             \
+  })
 
 static char big_array[1024 * 1024] = {0};
 
@@ -29,7 +35,7 @@ hl_Vec *set_byte_array_to_zero(const hl_FunctionCall* params) {
 }
 
 int print_output(const char *message) {
-  int res = printf("%s", message);
+  int res = printf_f("%s", message);
   return res;
 }
 
@@ -108,20 +114,20 @@ int malloc_and_free(int32_t size) {
 }
 
 int print_two_args(const char *arg1, int32_t arg2) {
-  int result = printf("Message: arg1:%s arg2:%d.", arg1, arg2);
+  int result = printf_f("Message: arg1:%s arg2:%d.", arg1, arg2);
 
   return result;
 }
 
 int print_three_args(const char *arg1, int32_t arg2, int64_t arg3) {
-  int result = printf("Message: arg1:%s arg2:%d arg3:%d.", arg1, arg2, arg3);
+  int result = printf_f("Message: arg1:%s arg2:%d arg3:%ld.", arg1, arg2, arg3);
 
   return result;
 }
 
  int print_four_args(const char *arg1, int32_t arg2, int64_t arg3,
                         const char *arg4) {
-  int result = printf("Message: arg1:%s arg2:%d arg3:%d arg4:%s.", arg1, arg2,
+  int result = printf_f("Message: arg1:%s arg2:%d arg3:%ld arg4:%s.", arg1, arg2,
                       arg3, arg4);
 
   return result;
@@ -129,7 +135,7 @@ int print_three_args(const char *arg1, int32_t arg2, int64_t arg3) {
 
  int print_five_args(const char *arg1, int32_t arg2, int64_t arg3,
                         const char *arg4, const char *arg5) {
-  int result = printf("Message: arg1:%s arg2:%d arg3:%d arg4:%s arg5:%s.", arg1,
+  int result = printf_f("Message: arg1:%s arg2:%d arg3:%ld arg4:%s arg5:%s.", arg1,
                       arg2, arg3, arg4, arg5);
 
   return result;
@@ -138,7 +144,7 @@ int print_three_args(const char *arg1, int32_t arg2, int64_t arg3) {
  int print_six_args(const char *arg1, int32_t arg2, int64_t arg3,
                        const char *arg4, const char *arg5, bool arg6) {
   int result =
-      printf("Message: arg1:%s arg2:%d arg3:%d arg4:%s arg5:%s arg6:%s.", arg1,
+      printf_f("Message: arg1:%s arg2:%d arg3:%ld arg4:%s arg5:%s arg6:%s.", arg1,
              arg2, arg3, arg4, arg5, arg6 ? "true" : "false");
 
   return result;
@@ -147,8 +153,8 @@ int print_three_args(const char *arg1, int32_t arg2, int64_t arg3) {
  int print_seven_args(const char *arg1, int32_t arg2, int64_t arg3,
                          const char *arg4, const char *arg5, bool arg6,
                          bool arg7) {
-  int result = printf(
-      "Message: arg1:%s arg2:%d arg3:%d arg4:%s arg5:%s arg6:%s arg7:%s.", arg1,
+  int result = printf_f(
+      "Message: arg1:%s arg2:%d arg3:%ld arg4:%s arg5:%s arg6:%s arg7:%s.", arg1,
       arg2, arg3, arg4, arg5, arg6 ? "true" : "false", arg7 ? "true" : "false");
 
   return result;
@@ -157,7 +163,7 @@ int print_three_args(const char *arg1, int32_t arg2, int64_t arg3) {
  int print_eight_args(const char *arg1, int32_t arg2, int64_t arg3,
                          const char *arg4, const char *arg5, bool arg6,
                          bool arg7, uint32_t arg8) {
-  int result = printf("Message: arg1:%s arg2:%d arg3:%d arg4:%s arg5:%s "
+  int result = printf_f("Message: arg1:%s arg2:%d arg3:%ld arg4:%s arg5:%s "
                       "arg6:%s arg7:%s arg8:%d.",
                       arg1, arg2, arg3, arg4, arg5, arg6 ? "true" : "false",
                       arg7 ? "true" : "false", arg8);
@@ -168,8 +174,8 @@ int print_three_args(const char *arg1, int32_t arg2, int64_t arg3) {
  int print_nine_args(const char *arg1, int32_t arg2, int64_t arg3,
                         const char *arg4, const char *arg5, bool arg6,
                         bool arg7, uint32_t arg8, uint64_t arg9) {
-  int result = printf("Message: arg1:%s arg2:%d arg3:%d arg4:%s arg5:%s "
-                      "arg6:%s arg7:%s arg8:%d arg9:%d.",
+  int result = printf_f("Message: arg1:%s arg2:%d arg3:%ld arg4:%s arg5:%s "
+                      "arg6:%s arg7:%s arg8:%d arg9:%lu.",
                       arg1, arg2, arg3, arg4, arg5, arg6 ? "true" : "false",
                       arg7 ? "true" : "false", arg8, arg9);
 
@@ -179,8 +185,8 @@ int print_three_args(const char *arg1, int32_t arg2, int64_t arg3) {
  int print_ten_args(const char *arg1, int32_t arg2, int64_t arg3,
                        const char *arg4, const char *arg5, bool arg6, bool arg7,
                        uint32_t arg8, uint64_t arg9, int32_t arg10) {
-  int result = printf("Message: arg1:%s arg2:%d arg3:%d arg4:%s arg5:%s "
-                      "arg6:%s arg7:%s arg8:%d arg9:%d arg10:%d.",
+  int result = printf_f("Message: arg1:%s arg2:%d arg3:%ld arg4:%s arg5:%s "
+                      "arg6:%s arg7:%s arg8:%d arg9:%lu arg10:%d.",
                       arg1, arg2, arg3, arg4, arg5, arg6 ? "true" : "false",
                       arg7 ? "true" : "false", arg8, arg9, arg10);
 
@@ -191,8 +197,8 @@ int print_three_args(const char *arg1, int32_t arg2, int64_t arg3) {
                           const char *arg4, const char *arg5, bool arg6,
                           bool arg7, uint32_t arg8, uint64_t arg9,
                           int32_t arg10, float arg11) {
-  int result = printf("Message: arg1:%s arg2:%d arg3:%d arg4:%s arg5:%s "
-                      "arg6:%s arg7:%s arg8:%d arg9:%d arg10:%d arg11:%.3f.",
+  int result = printf_f("Message: arg1:%s arg2:%d arg3:%ld arg4:%s arg5:%s "
+                      "arg6:%s arg7:%s arg8:%d arg9:%lu arg10:%d arg11:%.3f.",
                       arg1, arg2, arg3, arg4, arg5, arg6 ? "true" : "false",
                       arg7 ? "true" : "false", arg8, arg9, arg10, arg11);
 
