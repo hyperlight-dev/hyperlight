@@ -1,11 +1,9 @@
 // Included from hyperlight_guest_capi/include
 #include "hyperlight_guest.h"
-// Included from hyperlight_guest_bin/third_party/libc
+// Included from hyperlight_guest_bin/third_party/picolibc
 #include "stdint.h"
 #include "stdio.h"
 #include "string.h"
-// Included from hyperlight_guest_bin/third_party/printf
-#include "printf.h"
 
 int print_output(const char *message) {
   int res = printf("%s", message);
