@@ -100,7 +100,7 @@ The scheduled fuzzing job has failed again. Please check the workflow logs and a
 - [ ] Fix the underlying issue causing the fuzzing failures"
 
         # Add comment to the existing issue
-        if gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY"; then
+        if gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY" --repo "$REPO"; then
             echo "✅ Added comment to existing issue #$ISSUE_NUMBER: $ISSUE_URL"
         else
             echo "❌ Failed to add comment to existing issue. Creating new issue instead."
@@ -144,7 +144,8 @@ The fuzzing workflow failed during execution. Please check the workflow logs and
         --body "$ISSUE_BODY" \
         --label "$FUZZING_LABEL" \
         --label "$FAILURE_LABEL" \
-        --label "$LIFECYCLE_LABEL"); then
+        --label "$LIFECYCLE_LABEL" \
+        --repo "$REPO"); then
         echo "✅ Created new fuzzing failure issue: $ISSUE_URL"
     else
         echo "❌ Failed to create new fuzzing failure issue"
