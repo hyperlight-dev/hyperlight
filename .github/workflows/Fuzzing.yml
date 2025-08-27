@@ -17,3 +17,16 @@ jobs:
       targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call"]' # Pass as a JSON array
       max_total_time: 18000 # 5 hours in seconds
     secrets: inherit
+
+  notify-failure:
+    runs-on: ubuntu-latest
+    needs: fuzzing
+    if: failure() && needs.fuzzing.result == 'failure'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        
+      - name: Notify Fuzzing Failure
+        run: ./dev/notify-fuzzing-failure.sh "fuzz_host_print,fuzz_guest_call,fuzz_host_call"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
