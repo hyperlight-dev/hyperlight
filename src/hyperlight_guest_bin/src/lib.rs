@@ -51,6 +51,9 @@ pub mod host_comm;
 pub mod memory;
 pub mod paging;
 
+#[cfg(feature = "libc")]
+mod host_bridge;
+
 // Globals
 #[cfg(feature = "mem_profile")]
 struct ProfiledLockedHeap<const ORDER: usize>(LockedHeap<ORDER>);

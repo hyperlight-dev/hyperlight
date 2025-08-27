@@ -43,7 +43,7 @@ build target=default-target:
 guests: build-and-move-rust-guests build-and-move-c-guests
 
 ensure-cargo-hyperlight:
-    command -v cargo-hyperlight >/dev/null 2>&1 || cargo install --locked cargo-hyperlight
+    cargo install --locked --force --git https://github.com/hyperlight-dev/cargo-hyperlight --branch picolibc cargo-hyperlight
 
 witguest-wit:
     command -v wasm-tools >/dev/null 2>&1 || cargo install --locked wasm-tools
