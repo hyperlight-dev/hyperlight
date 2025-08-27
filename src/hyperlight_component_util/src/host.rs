@@ -56,9 +56,13 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                     let unmarshal = emit_hl_unmarshal_result(s, ret.clone(), &ft.result);
                     quote! {
                         fn #n(&mut self, #(#param_decls),*) -> #result_decl {
+                            let args = {
+                                let mut rts = self.rt.lock().unwrap();
+                                (#(#marshal,)*)
+                            };
                             let #ret = ::hyperlight_host::sandbox::Callable::call::<::std::vec::Vec::<u8>>(&mut self.sb,
                                 #hln,
-                                (#(#marshal,)*)
+                                args,
                             );
                             let ::std::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
                             #[allow(clippy::unused_unit)]

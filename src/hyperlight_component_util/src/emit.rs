@@ -589,12 +589,13 @@ impl<'a, 'b> State<'a, 'b> {
     /// ends up with a resource type, in which case we return the
     /// resource index
     pub fn resolve_tv(&self, n: u32) -> (u32, Option<Defined<'b>>) {
-        match &self.bound_vars[self.var_offset + n as usize].bound {
+        let m = n + self.var_offset as u32;
+        match &self.bound_vars[m as usize].bound {
             TypeBound::Eq(Defined::Handleable(Handleable::Var(Tyvar::Bound(nn)))) => {
                 self.resolve_tv(n + 1 + nn)
             }
             TypeBound::Eq(t) => (n, Some(t.clone())),
-            TypeBound::SubResource => (n, None),
+            TypeBound::SubResource => (m, None),
         }
     }
     /// Construct a namespace path referring to the resource trait for
