@@ -29,9 +29,11 @@ use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::alloc::Layout;
 use core::ffi::c_char;
 use core::hint::black_box;
 use core::ptr::write_volatile;
+use core::sync::atomic::AtomicPtr;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -505,6 +507,18 @@ fn call_malloc(function_call: &FunctionCall) -> Result<Vec<u8>> {
             "Invalid parameters passed to call_malloc".to_string(),
         ))
     }
+}
+
+#[hyperlight_guest_tracing::trace_function]
+unsafe fn exhaust_heap(_: &FunctionCall) -> ! {
+    let layout: Layout = Layout::new::<u8>();
+    let mut ptr = alloc::alloc::alloc_zeroed(layout);
+    while !ptr.is_null() {
+        black_box(ptr);
+        ptr = alloc::alloc::alloc_zeroed(layout);
+    }
+
+    panic!("function should have panicked before due to OOM")
 }
 
 #[hyperlight_guest_tracing::trace_function]
@@ -1022,6 +1036,14 @@ pub extern "C" fn hyperlight_main() {
         call_malloc as usize,
     );
     register_function(call_malloc_def);
+
+    let call_malloc_and_panic_def = GuestFunctionDefinition::new(
+        "ExhaustHeap".to_string(),
+        Vec::new(),
+        ReturnType::Int,
+        exhaust_heap as usize,
+    );
+    register_function(call_malloc_and_panic_def);
 
     let malloc_and_free_def = GuestFunctionDefinition::new(
         "MallocAndFree".to_string(),

@@ -18,8 +18,9 @@ limitations under the License.
 // === Dependencies ===
 extern crate alloc;
 
-use alloc::string::ToString;
+use core::fmt::{Write};
 
+use alloc::string::ToString;
 use buddy_system_allocator::LockedHeap;
 #[cfg(target_arch = "x86_64")]
 use exceptions::{gdt::load_gdt, idtr::load_idt};
@@ -30,11 +31,12 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
+use hyperlight_common::fixed_buf::{FixedStringBuf};
 use hyperlight_guest::exit::{abort_with_code_and_message, halt};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
 use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
-use spin::Once;
+use spin::{Once};
 
 // === Modules ===
 #[cfg(target_arch = "x86_64")]
@@ -139,7 +141,33 @@ pub static mut OS_PAGE_SIZE: u32 = 0;
 // to satisfy the clippy when cfg == test
 #[allow(dead_code)]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    let msg = info.to_string();
+    _panic_handler(info)
+}
+
+
+static mut PANIC_MSG: [u8; 512] = [0u8; 512];
+
+#[allow(static_mut_refs)]
+static mut PANIC_BUF: FixedStringBuf = FixedStringBuf{
+    buf: unsafe { &mut PANIC_MSG },
+    pos: 0,
+};
+
+
+#[inline(always)]
+#[allow(static_mut_refs)]
+fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
+    let panic_buf: &mut FixedStringBuf = unsafe { &mut PANIC_BUF };
+    write!(panic_buf, "{}", info).expect("panic: message format failed");
+
+    // create a CStr from the underlying array in panic_buf.
+    // Note that we do NOT use CString here to avoid allocating
+    let c_string = panic_buf.as_c_str().expect("panic: failed to convert to CStr");
+    unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], c_string.as_ptr()) }
+}
+
+fn _panic_handler_old(info: &core::panic::PanicInfo) {
+let msg = info.to_string();
     let c_string = alloc::ffi::CString::new(msg)
         .unwrap_or_else(|_| alloc::ffi::CString::new("panic (invalid utf8)").unwrap());
 

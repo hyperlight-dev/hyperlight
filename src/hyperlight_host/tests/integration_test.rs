@@ -533,6 +533,36 @@ fn guest_malloc_abort() {
     ));
 }
 
+#[test]
+fn guest_panic_no_alloc() {
+    let heap_size = 0x4000;
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_heap_size(heap_size);
+    let uninit = UninitializedSandbox::new(
+        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+        Some(cfg),
+    )
+    .unwrap();
+    let mut sbox: MultiUseSandbox = uninit.evolve().unwrap();
+
+    let res = sbox.call::<i32>(
+        "ExhaustHeap", // uses the rust allocator to allocate small blocks on the heap until OOM
+       () 
+    ).unwrap_err();
+    println!("{:?}", res);
+
+    if let HyperlightError::StackOverflow() = res {
+        panic!("panic on OOM caused stack overflow, this implies allocation in panic handler");
+    }
+
+    assert!(matches!(
+        res,
+        HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
+    ));
+
+}
+
 // Tests libc alloca
 #[test]
 fn dynamic_stack_allocate_c_guest() {
