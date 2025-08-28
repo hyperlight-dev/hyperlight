@@ -14,9 +14,11 @@ set -o pipefail
 ## This script assumes that the gh cli is installed and in the PATH
 ## and that there is a GitHub PAT in the GITHUB_TOKEN env var
 ## with the following permissions:
-##   - repo (read/write)
 ##   - issues (read/write)
 ## or that the user is logged into the gh cli with an account with those permissions
+## 
+## Run this script locally like:
+##   GITHUB_REPOSITORY="fork/hyperlight" GITHUB_RUN_ID=1 ./dev/notify-fuzzing-failure.sh "fuzz_host_print,fuzz_guest_call,fuzz_host_call"
 
 REPO="${GITHUB_REPOSITORY:-hyperlight-dev/hyperlight}"
 WORKFLOW_RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${GITHUB_RUN_ID:-unknown}"
@@ -91,13 +93,7 @@ if [ "$FUZZING_ISSUE_COUNT" -gt 0 ]; then
 **Workflow Run:** [$WORKFLOW_RUN_URL]($WORKFLOW_RUN_URL)
 **Fuzzing Targets:** $FUZZING_TARGETS
 
-The scheduled fuzzing job has failed again. Please check the workflow logs and artifacts for details.
-
-### Next Steps
-- [ ] Review the workflow logs for error details
-- [ ] Download and analyze any crash artifacts
-- [ ] Determine if this is a new issue or related to existing problems
-- [ ] Fix the underlying issue causing the fuzzing failures"
+The scheduled fuzzing job has failed again. Please check the workflow logs and artifacts for details."
 
         # Add comment to the existing issue
         if gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY" --repo "$REPO"; then
@@ -129,7 +125,6 @@ The fuzzing workflow failed during execution. Please check the workflow logs and
 - [ ] Download and analyze any crash artifacts if available
 - [ ] Determine the root cause of the failure
 - [ ] Fix the underlying issue
-- [ ] Verify the fix by running fuzzing locally or waiting for the next scheduled run
 
 ### Related Documentation
 - [Fuzzing README](https://github.com/$REPO/blob/main/fuzz/README.md)

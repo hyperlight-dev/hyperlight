@@ -8,7 +8,6 @@ on:
 permissions:
   id-token: write
   contents: read
-  issues: write
   
 jobs:
   fuzzing:
@@ -21,7 +20,9 @@ jobs:
   notify-failure:
     runs-on: ubuntu-latest
     needs: fuzzing
-    if: failure() && needs.fuzzing.result == 'failure'
+    if: always() && needs.fuzzing.result == 'failure'
+    permissions:
+      issues: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
