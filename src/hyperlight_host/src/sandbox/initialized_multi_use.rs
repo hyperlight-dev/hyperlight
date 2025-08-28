@@ -381,6 +381,8 @@ impl MultiUseSandbox {
         ret_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
+        // Reset snapshot since we are mutating the sandbox state
+        self.snapshot = None;
         maybe_time_and_emit_guest_call(func_name, || {
             self.call_guest_function_by_name_no_reset(func_name, ret_type, args)
         })
