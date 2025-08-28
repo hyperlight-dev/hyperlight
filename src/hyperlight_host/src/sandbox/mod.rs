@@ -37,17 +37,14 @@ pub mod snapshot;
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 mod callable;
 
-#[cfg(feature = "mem_profile")]
-use std::io::Write;
+/// Module for tracing guest execution
 #[cfg(feature = "trace_guest")]
-use std::sync::{Arc, Mutex};
+pub(crate) mod trace;
 
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 pub use callable::Callable;
 /// Re-export for `SandboxConfiguration` type
 pub use config::SandboxConfiguration;
-#[cfg(feature = "mem_profile")]
-use framehop::Unwinder;
 /// Re-export for the `MultiUseSandbox` type
 pub use initialized_multi_use::MultiUseSandbox;
 use tracing::{Span, instrument};
@@ -86,140 +83,6 @@ pub type ExtraAllowedSyscall = i64;
 #[instrument(skip_all, parent = Span::current())]
 pub fn is_hypervisor_present() -> bool {
     hypervisor::get_available_hypervisor().is_some()
-}
-
-/// The information that trace collection requires in order to write
-/// an accurate trace.
-#[derive(Clone)]
-#[cfg(feature = "trace_guest")]
-pub(crate) struct TraceInfo {
-    /// The epoch against which trace events are timed; at least as
-    /// early as the creation of the sandbox being traced.
-    pub epoch: std::time::Instant,
-    /// The frequency of the timestamp counter.
-    pub tsc_freq: Option<u64>,
-    /// The epoch at which the guest started, if it has started.
-    /// This is used to calculate the time spent in the guest relative to the
-    /// time when the host started.
-    pub guest_start_epoch: Option<std::time::Instant>,
-    /// The start guest time, in TSC cycles, for the current guest has a double purpose.
-    /// This field is used in two ways:
-    /// 1. It contains the TSC value recorded on the host when the guest started.
-    ///    This is used to calculate the TSC frequency which is the same on the host and guest.
-    ///    The TSC frequency is used to convert TSC values to timestamps in the trace.
-    ///    **NOTE**: This is only used until the TSC frequency is calculated, when the first
-    ///    records are received.
-    /// 2. To store the TSC value at recorded on the guest when the guest started (first record
-    ///    received)
-    ///    This is used to calculate the records timestamps relative to when guest started.
-    pub guest_start_tsc: Option<u64>,
-    /// The file to which the trace is being written
-    #[allow(dead_code)]
-    pub file: Arc<Mutex<std::fs::File>>,
-    /// The unwind information for the current guest
-    #[allow(dead_code)]
-    #[cfg(feature = "mem_profile")]
-    pub unwind_module: Arc<dyn crate::mem::exe::UnwindInfo>,
-    /// The framehop unwinder for the current guest
-    #[cfg(feature = "mem_profile")]
-    pub unwinder: framehop::x86_64::UnwinderX86_64<Vec<u8>>,
-    /// The framehop cache
-    #[cfg(feature = "mem_profile")]
-    pub unwind_cache: Arc<Mutex<framehop::x86_64::CacheX86_64>>,
-}
-#[cfg(feature = "trace_guest")]
-impl TraceInfo {
-    /// Create a new TraceInfo by saving the current time as the epoch
-    /// and generating a random filename.
-    pub fn new(
-        #[cfg(feature = "mem_profile")] unwind_module: Arc<dyn crate::mem::exe::UnwindInfo>,
-    ) -> crate::Result<Self> {
-        let mut path = std::env::current_dir()?;
-        path.push("trace");
-
-        // create directory if it does not exist
-        if !path.exists() {
-            std::fs::create_dir(&path)?;
-        }
-        path.push(uuid::Uuid::new_v4().to_string());
-        path.set_extension("trace");
-
-        log::info!("Creating trace file at: {}", path.display());
-        println!("Creating trace file at: {}", path.display());
-
-        #[cfg(feature = "mem_profile")]
-        let hash = unwind_module.hash();
-        #[cfg(feature = "mem_profile")]
-        let (unwinder, unwind_cache) = {
-            let mut unwinder = framehop::x86_64::UnwinderX86_64::new();
-            unwinder.add_module(unwind_module.clone().as_module());
-            let cache = framehop::x86_64::CacheX86_64::new();
-            (unwinder, Arc::new(Mutex::new(cache)))
-        };
-        if !hyperlight_guest_tracing::invariant_tsc::has_invariant_tsc() {
-            // If the platform does not support invariant TSC, warn the user.
-            // On Azure nested virtualization, the TSC invariant bit is not correctly reported, this is a known issue.
-            log::warn!(
-                "Invariant TSC is not supported on this platform, trace timestamps may be inaccurate"
-            );
-        }
-
-        let ret = Self {
-            epoch: std::time::Instant::now(),
-            tsc_freq: None,
-            guest_start_epoch: None,
-            guest_start_tsc: None,
-            file: Arc::new(Mutex::new(std::fs::File::create_new(path)?)),
-            #[cfg(feature = "mem_profile")]
-            unwind_module,
-            #[cfg(feature = "mem_profile")]
-            unwinder,
-            #[cfg(feature = "mem_profile")]
-            unwind_cache,
-        };
-        /* write a frame identifying the binary */
-        #[cfg(feature = "mem_profile")]
-        self::outb::record_trace_frame(&ret, 0, |f| {
-            let _ = f.write_all(hash.as_bytes());
-        })?;
-        Ok(ret)
-    }
-
-    /// Calculate the TSC frequency based on the RDTSC instruction on the host.
-    fn calculate_tsc_freq(&mut self) -> crate::Result<()> {
-        let (start, start_time) = match (
-            self.guest_start_tsc.as_ref(),
-            self.guest_start_epoch.as_ref(),
-        ) {
-            (Some(start), Some(start_time)) => (*start, *start_time),
-            _ => {
-                // If the guest start TSC and time are not set, we use the current time and TSC.
-                // This is not ideal, but it allows us to calculate the TSC frequency without
-                // failing.
-                // This is a fallback mechanism to ensure that we can still calculate, however it
-                // should be noted that this may lead to inaccuracies in the TSC frequency.
-                // The start time should be already set before running the guest for each sandbox.
-                log::error!(
-                    "Guest start TSC and time are not set. Calculating TSC frequency will use current time and TSC."
-                );
-                (
-                    hyperlight_guest_tracing::invariant_tsc::read_tsc(),
-                    std::time::Instant::now(),
-                )
-            }
-        };
-
-        let end_time = std::time::Instant::now();
-        let end = hyperlight_guest_tracing::invariant_tsc::read_tsc();
-
-        let elapsed = end_time.duration_since(start_time).as_secs_f64();
-        let tsc_freq = ((end - start) as f64 / elapsed) as u64;
-
-        log::info!("Calculated TSC frequency: {} Hz", tsc_freq);
-        self.tsc_freq = Some(tsc_freq);
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
