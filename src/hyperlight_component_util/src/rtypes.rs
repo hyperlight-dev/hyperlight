@@ -345,7 +345,11 @@ pub fn emit_value(s: &mut State, vt: &Value) -> TokenStream {
                     }
                 } else {
                     let vr = emit_var_ref(s, tv);
-                    quote! { ::hyperlight_common::resource::BorrowedResourceGuard<#vr> }
+                    if s.is_export {
+                        quote! { &#vr }
+                    } else {
+                        quote! { ::hyperlight_common::resource::BorrowedResourceGuard<#vr> }
+                    }
                 }
             }
         },
@@ -607,8 +611,11 @@ fn emit_type_alias<F: Fn(&mut State) -> TokenStream>(
 
 /// Emit (via returning) a Rust trait item corresponding to this
 /// extern decl
+///
+/// See note on emit.rs push_origin for the difference between
+/// origin_was_export and s.is_export.
 fn emit_extern_decl<'a, 'b, 'c>(
-    is_export: bool,
+    origin_was_export: bool,
     s: &'c mut State<'a, 'b>,
     ed: &'c ExternDecl<'b>,
 ) -> TokenStream {
@@ -616,7 +623,7 @@ fn emit_extern_decl<'a, 'b, 'c>(
     match &ed.desc {
         ExternDesc::CoreModule(_) => panic!("core module (im/ex)ports are not supported"),
         ExternDesc::Func(ft) => {
-            let mut s = s.push_origin(is_export, ed.kebab_name);
+            let mut s = s.push_origin(origin_was_export, ed.kebab_name);
             match kebab_to_fn(ed.kebab_name) {
                 FnName::Plain(n) => {
                     let params = ft
@@ -681,7 +688,7 @@ fn emit_extern_decl<'a, 'b, 'c>(
                 TokenStream::new()
             }
             let edn: &'b str = ed.kebab_name;
-            let mut s: State<'_, 'b> = s.push_origin(is_export, edn);
+            let mut s: State<'_, 'b> = s.push_origin(origin_was_export, edn);
             if let Some((n, bound)) = s.is_var_defn(t) {
                 match bound {
                     TypeBound::Eq(t) => {
@@ -708,7 +715,7 @@ fn emit_extern_decl<'a, 'b, 'c>(
             }
         }
         ExternDesc::Instance(it) => {
-            let mut s = s.push_origin(is_export, ed.kebab_name);
+            let mut s = s.push_origin(origin_was_export, ed.kebab_name);
             let wn = split_wit_name(ed.kebab_name);
             emit_instance(&mut s, wn.clone(), it);
 
@@ -831,8 +838,8 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
     s.cur_trait().items.extend(quote! { #(#imports)* });
 
     s.adjust_vars(ct.instance.evars.len() as u32);
-
     s.import_param_var = Some(format_ident!("I"));
+    s.is_export = true;
 
     let export_name = kebab_to_exports_name(wn.name);
     *s.bound_vars = ct

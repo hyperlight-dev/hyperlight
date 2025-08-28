@@ -56,11 +56,19 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                     let unmarshal = emit_hl_unmarshal_result(s, ret.clone(), &ft.result);
                     quote! {
                         fn #n(&mut self, #(#param_decls),*) -> #result_decl {
+                            let mut to_cleanup = Vec::<Box<dyn Drop>>::new();
+                            let marshalled = {
+                                let mut rts = self.rt.lock().unwrap();
+                                #[allow(clippy::unused_unit)]
+                                (#(#marshal,)*)
+                            };
                             let #ret = ::hyperlight_host::sandbox::Callable::call::<::std::vec::Vec::<u8>>(&mut self.sb,
                                 #hln,
-                                (#(#marshal,)*)
+                                marshalled,
                             );
                             let ::std::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
+                            #[allow(clippy::unused_unit)]
+                            let mut rts = self.rt.lock().unwrap();
                             #[allow(clippy::unused_unit)]
                             #unmarshal
                         }
@@ -333,6 +341,8 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
     s.root_component_name = Some((ns.clone(), wn.name));
     s.cur_trait = Some(export_trait.clone());
     s.import_param_var = Some(format_ident!("I"));
+    s.is_export = true;
+
     let exports = ct
         .instance
         .unqualified

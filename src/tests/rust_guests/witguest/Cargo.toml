@@ -8,6 +8,7 @@ hyperlight-guest = { path = "../../../hyperlight_guest" }
 hyperlight-guest-bin = { path = "../../../hyperlight_guest_bin" }
 hyperlight-common = { path = "../../../hyperlight_common", default-features = false }
 hyperlight-component-macro = { path = "../../../hyperlight_component_macro" }
+spin = "0.10.0"
 
 [features]
 default = []

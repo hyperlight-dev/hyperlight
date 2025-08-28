@@ -620,4 +620,5 @@ dependencies = [
  "hyperlight-component-macro",
  "hyperlight-guest",
  "hyperlight-guest-bin",
+ "spin 0.10.0",
 ]
