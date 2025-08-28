@@ -941,11 +941,7 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[cfg(feature = "trace_guest")]
-    fn trace_info_as_ref(&self) -> &TraceInfo {
-        &self.trace_info
-    }
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
+    fn trace_info_mut(&mut self) -> &mut TraceInfo {
         &mut self.trace_info
     }
 }

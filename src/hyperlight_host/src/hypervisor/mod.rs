@@ -25,7 +25,7 @@ use crate::hypervisor::regs::{
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
 #[cfg(feature = "trace_guest")]
-use crate::sandbox::TraceInfo;
+use crate::sandbox::trace::TraceInfo;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// HyperV-on-linux functionality
@@ -313,12 +313,9 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Check stack guard to see if the stack is still valid
     fn check_stack_guard(&self) -> Result<bool>;
 
-    /// Get a reference of the trace info for the guest
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_ref(&self) -> &TraceInfo;
     /// Get a mutable reference of the trace info for the guest
     #[cfg(feature = "trace_guest")]
-    fn trace_info_as_mut(&mut self) -> &mut TraceInfo;
+    fn trace_info_mut(&mut self) -> &mut TraceInfo;
 }
 
 /// Returns a Some(HyperlightExit::AccessViolation(..)) if the given gpa doesn't have

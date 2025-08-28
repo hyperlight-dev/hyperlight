@@ -41,10 +41,10 @@ use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
-#[cfg(feature = "trace_guest")]
-use crate::sandbox::TraceInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::handle_outb;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::trace::TraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
@@ -1031,11 +1031,7 @@ impl Hypervisor for KVMDriver {
     }
 
     #[cfg(feature = "trace_guest")]
-    fn trace_info_as_ref(&self) -> &TraceInfo {
-        &self.trace_info
-    }
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
+    fn trace_info_mut(&mut self) -> &mut TraceInfo {
         &mut self.trace_info
     }
 }
