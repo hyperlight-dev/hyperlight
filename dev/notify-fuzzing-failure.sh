@@ -43,6 +43,7 @@ REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
 ISSUE_TITLE="Fuzzing Job Failure - $(date '+%Y-%m-%d')"
 FUZZING_LABEL="area/testing"
 FAILURE_LABEL="kind/bug"
+FUZZING_KIND_LABEL="kind/fuzzing"
 LIFECYCLE_LABEL="lifecycle/needs-review"
 
 # Search for existing open fuzzing failure issues
@@ -50,7 +51,7 @@ echo "Searching for existing open fuzzing failure issues..."
 EXISTING_ISSUES=$(gh api graphql -f query='
   query($owner: String!, $repo: String!) {
     repository(owner: $owner, name: $repo) {
-      issues(first: 10, states: OPEN, labels: ["area/testing"]) {
+      issues(first: 10, states: OPEN, labels: ["kind/fuzzing"]) {
         totalCount
         nodes {
           number
@@ -66,8 +67,8 @@ EXISTING_ISSUES=$(gh api graphql -f query='
     }
   }' -f owner="$OWNER" -f repo="$REPO_NAME" --jq '.data.repository.issues')
 
-# Filter for fuzzing-related issues
-FUZZING_ISSUES=$(echo "$EXISTING_ISSUES" | jq '.nodes[] | select(.title | test("Fuzzing.*[Ff]ailure"))' 2>/dev/null || echo "")
+# Filter for fuzzing-related issues (now all results should be fuzzing issues due to label filter)
+FUZZING_ISSUES=$(echo "$EXISTING_ISSUES" | jq '.nodes[]' 2>/dev/null || echo "")
 FUZZING_ISSUE_COUNT=0
 if [ -n "$FUZZING_ISSUES" ]; then
     FUZZING_ISSUE_COUNT=$(echo "$FUZZING_ISSUES" | jq -s 'length' 2>/dev/null || echo "0")
@@ -139,6 +140,7 @@ The fuzzing workflow failed during execution. Please check the workflow logs and
         --body "$ISSUE_BODY" \
         --label "$FUZZING_LABEL" \
         --label "$FAILURE_LABEL" \
+        --label "$FUZZING_KIND_LABEL" \
         --label "$LIFECYCLE_LABEL" \
         --repo "$REPO"); then
         echo "✅ Created new fuzzing failure issue: $ISSUE_URL"
