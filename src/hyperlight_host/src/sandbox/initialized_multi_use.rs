@@ -33,6 +33,7 @@ use tracing::{Span, instrument};
 
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
+use super::uninitialized::Builder;
 use super::{Callable, MemMgrWrapper, WrapperGetter};
 use crate::HyperlightError::SnapshotSandboxMismatch;
 use crate::func::guest_err::check_for_guest_error;
@@ -71,6 +72,12 @@ pub struct MultiUseSandbox {
 }
 
 impl MultiUseSandbox {
+    /// A builder for `Sandbox`.
+    /// This builder allows you to configure the sandbox, and register host functions.
+    pub fn builder() -> Builder {
+        Builder::default()
+    }
+
     /// Move an `UninitializedSandbox` into a new `MultiUseSandbox` instance.
     ///
     /// This function is not equivalent to doing an `evolve` from uninitialized

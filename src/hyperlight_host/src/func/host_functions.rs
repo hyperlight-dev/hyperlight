@@ -43,6 +43,7 @@ pub trait Registerable {
         eas: Vec<ExtraAllowedSyscall>,
     ) -> Result<()>;
 }
+
 impl Registerable for UninitializedSandbox {
     fn register_host_function<Args: ParameterTuple, Output: SupportedReturnType>(
         &mut self,
@@ -121,8 +122,9 @@ where
     func: Arc<dyn Fn(Args) -> Result<Output> + Send + Sync + 'static>,
 }
 
+#[derive(Clone)]
 pub(crate) struct TypeErasedHostFunction {
-    func: Box<dyn Fn(Vec<ParameterValue>) -> Result<ReturnValue> + Send + Sync + 'static>,
+    func: Arc<dyn Fn(Vec<ParameterValue>) -> Result<ReturnValue> + Send + Sync + 'static>,
 }
 
 impl<Args, Output> HostFunction<Output, Args>
@@ -149,7 +151,7 @@ where
 {
     fn from(func: HostFunction<Output, Args>) -> TypeErasedHostFunction {
         TypeErasedHostFunction {
-            func: Box::new(move |args: Vec<ParameterValue>| {
+            func: Arc::new(move |args: Vec<ParameterValue>| {
                 let args = Args::from_value(args)?;
                 Ok(func.call(args)?.into_value())
             }),

@@ -56,6 +56,7 @@ impl From<&mut FunctionRegistry> for HostFunctionDetails {
     }
 }
 
+#[derive(Clone)]
 pub struct FunctionEntry {
     pub function: TypeErasedHostFunction,
     pub extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,

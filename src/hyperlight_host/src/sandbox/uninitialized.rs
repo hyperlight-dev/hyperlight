@@ -14,15 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::option::Option;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 use log::LevelFilter;
 use tracing::{Span, instrument};
 
-use super::host_funcs::{FunctionRegistry, default_writer_func};
+use super::host_funcs::{FunctionEntry, FunctionRegistry, default_writer_func};
 use super::mem_mgr::MemMgrWrapper;
 use super::uninitialized_evolve::evolve_impl_multi_use;
 use crate::func::host_functions::{HostFunction, register_host_function};
@@ -34,6 +37,8 @@ use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags}
 use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
+#[cfg(gdb)]
+use crate::sandbox::config::DebugInfo;
 use crate::{MultiUseSandbox, Result, new_error};
 
 #[cfg(all(target_os = "linux", feature = "seccomp"))]
@@ -73,6 +78,8 @@ pub(crate) struct SandboxRuntimeConfig {
 ///
 /// The virtual machine is not created until you call [`evolve`](Self::evolve) to transform
 /// this into an initialized [`MultiUseSandbox`].
+#[doc(hidden)]
+//TODO: deprecate this #[deprecated(since = "0.8.0", note = "Deprecated in favour of Builder")]
 pub struct UninitializedSandbox {
     /// Registered host functions
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
@@ -83,6 +90,212 @@ pub struct UninitializedSandbox {
     #[cfg(any(crashdump, gdb))]
     pub(crate) rt_cfg: SandboxRuntimeConfig,
     pub(crate) load_info: crate::mem::exe::LoadInfo,
+}
+
+/// A builder for `Sandbox`.
+/// This builder allows you to configure the sandbox, and register host functions.
+#[derive(Default)]
+pub struct Builder {
+    config: SandboxConfiguration,
+    host_functions: HashMap<String, FunctionEntry>,
+}
+
+impl Builder {
+    /// The default size of input data
+    pub const DEFAULT_INPUT_SIZE: usize = SandboxConfiguration::DEFAULT_INPUT_SIZE;
+    /// The minimum size of input data
+    pub const MIN_INPUT_SIZE: usize = SandboxConfiguration::MIN_INPUT_SIZE;
+    /// The default size of output data
+    pub const DEFAULT_OUTPUT_SIZE: usize = SandboxConfiguration::DEFAULT_OUTPUT_SIZE;
+    /// The minimum size of output data
+    pub const MIN_OUTPUT_SIZE: usize = SandboxConfiguration::MIN_OUTPUT_SIZE;
+    /// The default size of host function definitionsSET
+    /// Host function definitions has its own page in memory, in order to be READ-ONLY
+    /// from a guest's perspective.
+    pub const DEFAULT_HOST_FUNCTION_DEFINITION_SIZE: usize =
+        SandboxConfiguration::DEFAULT_HOST_FUNCTION_DEFINITION_SIZE;
+    /// The minimum size of host function definitions
+    pub const MIN_HOST_FUNCTION_DEFINITION_SIZE: usize =
+        SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE;
+    /// The default interrupt retry delay
+    #[cfg(target_os = "linux")]
+    pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration =
+        SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY;
+    /// The default signal offset from `SIGRTMIN` used to determine the signal number for interrupting
+    #[cfg(target_os = "linux")]
+    pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 =
+        SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET;
+
+    /// Set the size of the memory buffer that is made available for serialising host function definitions
+    /// the minimum value is MIN_HOST_FUNCTION_DEFINITION_SIZE
+    pub fn host_function_definition_size(&mut self, bytes: usize) -> &mut Self {
+        self.config.set_host_function_definition_size(bytes);
+        self
+    }
+
+    /// Set the size of the memory buffer that is made available for input to the guest
+    /// the minimum value is MIN_INPUT_SIZE
+    pub fn input_data_size(&mut self, bytes: usize) -> &mut Self {
+        self.config.set_input_data_size(bytes);
+        self
+    }
+
+    /// Set the size of the memory buffer that is made available for output from the guest
+    /// the minimum value is MIN_OUTPUT_SIZE
+    pub fn output_data_size(&mut self, output_data_size: usize) -> &mut Self {
+        self.config.set_output_data_size(output_data_size);
+        self
+    }
+
+    /// Set the stack size to use in the guest sandbox.
+    /// If set to 0, the stack size will be determined from the PE file header
+    pub fn stack_size(&mut self, bytes: usize) -> &mut Self {
+        self.config.set_stack_size(bytes as u64);
+        self
+    }
+
+    /// Set the heap size to use in the guest sandbox.
+    /// If set to 0, the heap size will be determined from the PE file header
+    pub fn heap_size(&mut self, bytes: usize) -> &mut Self {
+        self.config.set_heap_size(bytes as u64);
+        self
+    }
+
+    /// Sets the interrupt retry delay
+    #[cfg(target_os = "linux")]
+    pub fn interrupt_retry_delay(&mut self, delay: Duration) -> &mut Self {
+        self.config.set_interrupt_retry_delay(delay);
+        self
+    }
+
+    /// Sets the offset from `SIGRTMIN` to determine the real-time signal used for
+    /// interrupting the VCPU thread.
+    ///
+    /// The final signal number is computed as `SIGRTMIN + offset`, and it must fall within
+    /// the valid range of real-time signals supported by the host system.
+    ///
+    /// Returns an error if the offset exceeds the maximum real-time signal number.
+    #[cfg(target_os = "linux")]
+    pub fn interrupt_vcpu_sigrtmin_offset(&mut self, offset: u8) -> Result<&mut Self> {
+        self.config.set_interrupt_vcpu_sigrtmin_offset(offset)?;
+        Ok(self)
+    }
+
+    /// Enables the guest core dump generation for a sandbox
+    #[cfg(crashdump)]
+    pub fn enable_core_dump(&mut self) -> &mut Self {
+        self.config.set_guest_core_dump(true);
+        self
+    }
+
+    /// Sets the configuration for the guest debug
+    #[cfg(gdb)]
+    pub fn debug_info(&mut self, debug_info: DebugInfo) -> &mut Self {
+        self.config.set_guest_debug_info(debug_info);
+        self
+    }
+
+    /// Register a host function with the given name in the sandbox.
+    pub fn register<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: impl AsRef<str>,
+        host_func: impl Into<HostFunction<Output, Args>>,
+    ) -> &mut Self {
+        let name = name.as_ref().to_string();
+        let entry = FunctionEntry {
+            function: host_func.into().into(),
+            extra_allowed_syscalls: None,
+            parameter_types: Args::TYPE,
+            return_type: Output::TYPE,
+        };
+        self.host_functions.insert(name, entry);
+        self
+    }
+
+    /// Register the host function with the given name in the sandbox.
+    /// Unlike `register`, this variant takes a list of extra syscalls that will
+    /// allowed during the execution of the function handler.
+    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    pub fn register_with_syscalls<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: impl AsRef<str>,
+        host_func: impl Into<HostFunction<Output, Args>>,
+        extra_allowed_syscalls: impl IntoIterator<Item = crate::sandbox::ExtraAllowedSyscall>,
+    ) -> &mut Self {
+        let name = name.as_ref().to_string();
+        let entry = FunctionEntry {
+            function: host_func.into().into(),
+            extra_allowed_syscalls: Some(extra_allowed_syscalls.into_iter().collect()),
+            parameter_types: Args::TYPE,
+            return_type: Output::TYPE,
+        };
+        self.host_functions.insert(name, entry);
+        self
+    }
+
+    /// Register a host function named "HostPrint" that will be called by the guest
+    /// when it wants to print to the console.
+    /// The "HostPrint" host function is kind of special, as we expect it to have the
+    /// `FnMut(String) -> i32` signature.
+    pub fn register_print(
+        &mut self,
+        print_func: impl Into<HostFunction<i32, (String,)>>,
+    ) -> &mut Self {
+        #[cfg(not(all(target_os = "linux", feature = "seccomp")))]
+        self.register("HostPrint", print_func);
+
+        #[cfg(all(target_os = "linux", feature = "seccomp"))]
+        self.register_with_syscalls(
+            "HostPrint",
+            print_func,
+            EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC.iter().copied(),
+        );
+
+        self
+    }
+
+    /// Register a host function named "HostPrint" that will be called by the guest
+    /// when it wants to print to the console.
+    /// The "HostPrint" host function is kind of special, as we expect it to have the
+    /// `FnMut(String) -> i32` signature.
+    /// Unlike `register_print`, this variant takes a list of extra syscalls that will
+    /// allowed during the execution of the function handler.
+    #[cfg(all(target_os = "linux", feature = "seccomp"))]
+    pub fn register_print_with_syscalls(
+        &mut self,
+        print_func: impl Into<HostFunction<i32, (String,)>>,
+        extra_allowed_syscalls: impl IntoIterator<Item = crate::sandbox::ExtraAllowedSyscall>,
+    ) -> &mut Self {
+        self.register_with_syscalls(
+            "HostPrint",
+            print_func,
+            EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC
+                .iter()
+                .copied()
+                .chain(extra_allowed_syscalls),
+        )
+    }
+
+    /// Build a new sandbox configured to run the binary specified by `env`.
+    pub fn build<'a, 'b>(
+        &mut self,
+        env: impl Into<GuestEnvironment<'a, 'b>>,
+    ) -> Result<MultiUseSandbox> {
+        #![allow(deprecated)]
+        let mut sandbox = UninitializedSandbox::new(env, Some(self.config))?;
+        #[allow(clippy::unwrap_used)]
+        // unwrap is ok since no other thread will be holding the lock at this point
+        let mut host_functions = sandbox.host_funcs.try_lock().unwrap();
+        for (name, entry) in self.host_functions.iter() {
+            host_functions.register_host_function(
+                name.to_string(),
+                entry.clone(),
+                sandbox.mgr.unwrap_mgr_mut(),
+            )?;
+        }
+        drop(host_functions);
+        sandbox.evolve()
+    }
 }
 
 impl Debug for UninitializedSandbox {
