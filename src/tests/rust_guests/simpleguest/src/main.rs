@@ -1041,13 +1041,13 @@ pub extern "C" fn hyperlight_main() {
     );
     register_function(call_malloc_def);
 
-    let call_malloc_and_panic_def = GuestFunctionDefinition::new(
+    let exhaust_heap_def = GuestFunctionDefinition::new(
         "ExhaustHeap".to_string(),
         Vec::new(),
         ReturnType::Int,
         exhaust_heap as usize,
     );
-    register_function(call_malloc_and_panic_def);
+    register_function(exhaust_heap_def);
 
     let malloc_and_free_def = GuestFunctionDefinition::new(
         "MallocAndFree".to_string(),

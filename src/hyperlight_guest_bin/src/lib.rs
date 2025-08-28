@@ -170,7 +170,6 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     }
 
     let c_str_res = CStr::from_bytes_with_nul(panic_buf_guard.as_bytes());
-
     if c_str_res.is_err() {
         unsafe {
             abort_with_code_and_message(
