@@ -141,6 +141,18 @@ mod tests {
         #[cfg(not(mshv2))]
         let features = "gdb";
 
+        // build it before running to avoid a race condition below
+        let mut guest_child = Command::new("cargo")
+            .arg("build")
+            .arg("--example")
+            .arg("guest-debugging")
+            .arg("--features")
+            .arg(features)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .status()
+            .map_err(|e| new_error!("Failed to build guest process: {}", e))?;
+
         let mut guest_child = Command::new("cargo")
             .arg("run")
             .arg("--example")
