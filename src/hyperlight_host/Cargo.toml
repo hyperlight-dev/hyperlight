@@ -133,10 +133,7 @@ print_debug = []
 # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged.
 crashdump = ["dep:chrono"]
 trace_guest = ["hyperlight-common/trace_guest", "hyperlight-guest-tracing/trace"]
-# This feature enables unwinding the guest stack from the host, in
-# order to produce stack traces for debugging or profiling.
-unwind_guest = [ "trace_guest", "dep:framehop", "dep:fallible-iterator", "hyperlight-common/unwind_guest" ]
-mem_profile = [ "unwind_guest", "hyperlight-common/mem_profile" ]
+mem_profile = [ "trace_guest", "dep:framehop", "dep:fallible-iterator", "hyperlight-common/mem_profile" ]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 # This feature is deprecated in favor of mshv3
 mshv2 = ["dep:mshv-bindings2", "dep:mshv-ioctls2"]

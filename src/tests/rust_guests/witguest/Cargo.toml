@@ -13,5 +13,4 @@ spin = "0.10.0"
 [features]
 default = []
 trace_guest = ["hyperlight-guest-bin/trace_guest", "hyperlight-guest/trace_guest"]
-unwind_guest = ["hyperlight-common/unwind_guest"]
 mem_profile = ["hyperlight-common/mem_profile", "hyperlight-guest-bin/mem_profile"]

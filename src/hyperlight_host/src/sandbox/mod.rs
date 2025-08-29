@@ -37,7 +37,7 @@ pub mod snapshot;
 /// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
 mod callable;
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 use std::io::Write;
 #[cfg(feature = "trace_guest")]
 use std::sync::{Arc, Mutex};
@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex};
 pub use callable::Callable;
 /// Re-export for `SandboxConfiguration` type
 pub use config::SandboxConfiguration;
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 use framehop::Unwinder;
 /// Re-export for the `MultiUseSandbox` type
 pub use initialized_multi_use::MultiUseSandbox;
@@ -88,10 +88,10 @@ pub fn is_hypervisor_present() -> bool {
     hypervisor::get_available_hypervisor().is_some()
 }
 
-#[cfg(feature = "trace_guest")]
-#[derive(Clone)]
 /// The information that trace collection requires in order to write
 /// an accurate trace.
+#[derive(Clone)]
+#[cfg(feature = "trace_guest")]
 pub(crate) struct TraceInfo {
     /// The epoch against which trace events are timed; at least as
     /// early as the creation of the sandbox being traced.
@@ -117,14 +117,14 @@ pub(crate) struct TraceInfo {
     #[allow(dead_code)]
     pub file: Arc<Mutex<std::fs::File>>,
     /// The unwind information for the current guest
-    #[cfg(feature = "unwind_guest")]
     #[allow(dead_code)]
+    #[cfg(feature = "mem_profile")]
     pub unwind_module: Arc<dyn crate::mem::exe::UnwindInfo>,
     /// The framehop unwinder for the current guest
-    #[cfg(feature = "unwind_guest")]
+    #[cfg(feature = "mem_profile")]
     pub unwinder: framehop::x86_64::UnwinderX86_64<Vec<u8>>,
     /// The framehop cache
-    #[cfg(feature = "unwind_guest")]
+    #[cfg(feature = "mem_profile")]
     pub unwind_cache: Arc<Mutex<framehop::x86_64::CacheX86_64>>,
 }
 #[cfg(feature = "trace_guest")]
@@ -132,7 +132,7 @@ impl TraceInfo {
     /// Create a new TraceInfo by saving the current time as the epoch
     /// and generating a random filename.
     pub fn new(
-        #[cfg(feature = "unwind_guest")] unwind_module: Arc<dyn crate::mem::exe::UnwindInfo>,
+        #[cfg(feature = "mem_profile")] unwind_module: Arc<dyn crate::mem::exe::UnwindInfo>,
     ) -> crate::Result<Self> {
         let mut path = std::env::current_dir()?;
         path.push("trace");
@@ -147,9 +147,9 @@ impl TraceInfo {
         log::info!("Creating trace file at: {}", path.display());
         println!("Creating trace file at: {}", path.display());
 
-        #[cfg(feature = "unwind_guest")]
+        #[cfg(feature = "mem_profile")]
         let hash = unwind_module.hash();
-        #[cfg(feature = "unwind_guest")]
+        #[cfg(feature = "mem_profile")]
         let (unwinder, unwind_cache) = {
             let mut unwinder = framehop::x86_64::UnwinderX86_64::new();
             unwinder.add_module(unwind_module.clone().as_module());
@@ -170,15 +170,15 @@ impl TraceInfo {
             guest_start_epoch: None,
             guest_start_tsc: None,
             file: Arc::new(Mutex::new(std::fs::File::create_new(path)?)),
-            #[cfg(feature = "unwind_guest")]
+            #[cfg(feature = "mem_profile")]
             unwind_module,
-            #[cfg(feature = "unwind_guest")]
+            #[cfg(feature = "mem_profile")]
             unwinder,
-            #[cfg(feature = "unwind_guest")]
+            #[cfg(feature = "mem_profile")]
             unwind_cache,
         };
         /* write a frame identifying the binary */
-        #[cfg(feature = "unwind_guest")]
+        #[cfg(feature = "mem_profile")]
         self::outb::record_trace_frame(&ret, 0, |f| {
             let _ = f.write_all(hash.as_bytes());
         })?;

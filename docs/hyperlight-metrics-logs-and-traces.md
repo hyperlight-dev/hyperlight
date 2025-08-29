@@ -94,12 +94,11 @@ Once the container or the exe is running, the trace output can be viewed in the 
 
 ## Guest Tracing, Unwinding, and Memory Profiling
 
-Hyperlight provides advanced observability features for guest code running inside micro virtual machines. You can enable guest-side tracing, stack unwinding, and memory profiling using the `trace_guest`, `unwind_guest`, and `mem_profile` features. This section explains how to build, run, and inspect guest traces.
+Hyperlight provides advanced observability features for guest code running inside micro virtual machines. You can enable guest-side tracing, stack unwinding, and memory profiling using the `trace_guest` and `mem_profile` features. This section explains how to build, run, and inspect guest traces.
 
 The following features are available for guest tracing:
 - `trace_guest`: Enables tracing for guest code, capturing function calls and execution time.
-- `unwind_guest`: Enables stack unwinding for guest code, allowing you to capture stack traces.
-- `mem_profile`: Enables memory profiling for guest code, capturing memory allocations and usage.
+- `mem_profile`: Enables memory profiling for guest code with stack uwinding, capturing memory allocations and usage.
 
 ### Building a Guest with Tracing Support
 
@@ -140,7 +139,7 @@ This command will list the stack frames and tracing information captured during 
 cargo run -p trace_dump ./src/tests/rust_guests/bin/debug/simpleguest ./trace/<UUID>.trace list_frames
 ```
 
-You can use additional features such as `unwind_guest` and `mem_profile` by enabling them during the build and run steps.
+You can use the `mem_profile` additional feature by enabling them during the build and run steps.
 
 > **Note:** Make sure to follow the build and run steps in order, and ensure that the guest binaries are up to date before running the host example.
 

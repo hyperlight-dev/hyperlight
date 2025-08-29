@@ -18,7 +18,7 @@ default = ["libc", "printf"]
 libc = [] # compile musl libc
 printf = [ "libc" ] # compile printf
 trace_guest = ["hyperlight-common/trace_guest", "hyperlight-guest/trace_guest", "hyperlight-guest-tracing/trace"]
-mem_profile = ["hyperlight-common/unwind_guest","hyperlight-common/mem_profile"]
+mem_profile = ["hyperlight-common/mem_profile"]
 
 [dependencies]
 hyperlight-guest = { workspace = true, default-features = false }
