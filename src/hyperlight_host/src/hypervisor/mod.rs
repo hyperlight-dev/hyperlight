@@ -25,6 +25,8 @@ use crate::metrics::METRIC_GUEST_CANCELLATION;
 use crate::sandbox::TraceInfo;
 use crate::{HyperlightError, Result, log_then_return};
 
+/// Architecture-specific code for the hypervisor.
+pub(crate) mod arch;
 /// Util for handling x87 fpu state
 #[cfg(any(kvm, mshv, target_os = "windows"))]
 pub mod fpu;
@@ -114,21 +116,6 @@ pub enum HyperlightExit {
     Unknown(String),
     /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
     Retry(),
-}
-
-/// Registers which may be useful for tracing/stack unwinding
-#[cfg(feature = "trace_guest")]
-pub enum TraceRegister {
-    /// RAX
-    RAX,
-    /// RCX
-    RCX,
-    /// RIP
-    RIP,
-    /// RSP
-    RSP,
-    /// RBP
-    RBP,
 }
 
 /// A common set of hypervisor functionality
@@ -247,7 +234,7 @@ pub(crate) trait Hypervisor: Debug + Send {
 
     /// Read a register for trace/unwind purposes
     #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64>;
+    fn read_regs(&self) -> Result<arch::X86_64Regs>;
 
     /// Get a reference of the trace info for the guest
     #[cfg(feature = "trace_guest")]

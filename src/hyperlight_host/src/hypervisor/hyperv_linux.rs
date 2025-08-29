@@ -48,18 +48,11 @@ use mshv_bindings::{
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features,
 };
-#[cfg(feature = "trace_guest")]
-use mshv_bindings::{
-    hv_register_name, hv_register_name_HV_X64_REGISTER_RAX, hv_register_name_HV_X64_REGISTER_RBP,
-    hv_register_name_HV_X64_REGISTER_RCX, hv_register_name_HV_X64_REGISTER_RSP,
-};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
-#[cfg(feature = "trace_guest")]
-use super::TraceRegister;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{
@@ -73,6 +66,8 @@ use super::{
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
+#[cfg(feature = "trace_guest")]
+use crate::hypervisor::arch::X86_64Regs;
 use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -93,7 +88,8 @@ mod debug {
 
     use super::mshv_bindings::hv_x64_exception_intercept_message;
     use super::{HypervLinuxDriver, *};
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::arch::X86_64Regs;
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
     use crate::mem::shared_mem::HostSharedMemory;
     use crate::sandbox::mem_mgr::MemMgrWrapper;
     use crate::{Result, new_error};
@@ -561,19 +557,6 @@ impl Debug for HypervLinuxDriver {
         }
 
         f.finish()
-    }
-}
-
-#[cfg(feature = "trace_guest")]
-impl From<TraceRegister> for hv_register_name {
-    fn from(r: TraceRegister) -> Self {
-        match r {
-            TraceRegister::RAX => hv_register_name_HV_X64_REGISTER_RAX,
-            TraceRegister::RCX => hv_register_name_HV_X64_REGISTER_RCX,
-            TraceRegister::RIP => hv_register_name_HV_X64_REGISTER_RIP,
-            TraceRegister::RSP => hv_register_name_HV_X64_REGISTER_RSP,
-            TraceRegister::RBP => hv_register_name_HV_X64_REGISTER_RBP,
-        }
     }
 }
 
@@ -1161,14 +1144,8 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
-        let mut assoc = [hv_register_assoc {
-            name: reg.into(),
-            ..Default::default()
-        }];
-        self.vcpu_fd.get_reg(&mut assoc)?;
-        // safety: all registers that we currently support are 64-bit
-        unsafe { Ok(assoc[0].value.reg64) }
+    fn read_regs(&self) -> Result<X86_64Regs> {
+        Ok(X86_64Regs::from(self.vcpu_fd.get_regs()?))
     }
 
     #[cfg(feature = "trace_guest")]

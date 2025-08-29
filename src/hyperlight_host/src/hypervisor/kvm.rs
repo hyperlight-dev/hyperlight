@@ -27,8 +27,6 @@ use tracing::{Span, instrument};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
-#[cfg(feature = "trace_guest")]
-use super::TraceRegister;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
@@ -40,6 +38,8 @@ use super::{
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
+#[cfg(feature = "trace_guest")]
+use crate::hypervisor::arch::X86_64Regs;
 use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -83,9 +83,8 @@ mod debug {
     use kvm_bindings::kvm_debug_exit_arch;
 
     use super::KVMDriver;
-    use crate::hypervisor::gdb::{
-        DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason, X86_64Regs,
-    };
+    use crate::hypervisor::arch::X86_64Regs;
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
     use crate::mem::shared_mem::HostSharedMemory;
     use crate::sandbox::mem_mgr::MemMgrWrapper;
     use crate::{Result, new_error};
@@ -1038,15 +1037,8 @@ impl Hypervisor for KVMDriver {
     }
 
     #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
-        let regs = self.vcpu_fd.get_regs()?;
-        Ok(match reg {
-            TraceRegister::RAX => regs.rax,
-            TraceRegister::RCX => regs.rcx,
-            TraceRegister::RIP => regs.rip,
-            TraceRegister::RSP => regs.rsp,
-            TraceRegister::RBP => regs.rbp,
-        })
+    fn read_regs(&self) -> Result<X86_64Regs> {
+        Ok(X86_64Regs::from(self.vcpu_fd.get_regs()?))
     }
 
     #[cfg(feature = "trace_guest")]
