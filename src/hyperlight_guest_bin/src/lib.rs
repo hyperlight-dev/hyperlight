@@ -36,7 +36,7 @@ use hyperlight_guest::exit::{abort_with_code_and_message, halt};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
 use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
-use spin::{Mutex, Once};
+use spin::Once;
 
 // === Modules ===
 #[cfg(target_arch = "x86_64")]
@@ -144,12 +144,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     _panic_handler(info)
 }
 
-static PANIC_BUF: Mutex<String<512>> = Mutex::new(String::new());
-
 #[inline(always)]
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
-    let mut panic_buf_guard = PANIC_BUF.lock();
-    let write_res = write!(panic_buf_guard, "{}\0", info);
+    // stack allocate a 256-byte message buffer.
+    let mut panic_buf = String::<256>::new();
+    let write_res = write!(panic_buf, "{}\0", info);
     if write_res.is_err() {
         unsafe {
             abort_with_code_and_message(
@@ -159,7 +158,7 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
         }
     }
 
-    let c_str_res = CStr::from_bytes_with_nul(panic_buf_guard.as_bytes());
+    let c_str_res = CStr::from_bytes_with_nul(panic_buf.as_bytes());
     if c_str_res.is_err() {
         unsafe {
             abort_with_code_and_message(
