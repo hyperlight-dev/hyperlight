@@ -133,7 +133,7 @@ mod tests {
             if #[cfg(feature = "function_call_metrics")] {
                 use metrics::Label;
 
-                let expected_num_metrics = if cfg!(all(feature = "seccomp", target_os = "linux")) {
+                let expected_num_metrics = if cfg!(all(seccomp)) {
                     3 // if seccomp enabled, the host call duration metric is emitted on a separate thread which this local recorder doesn't capture
                 } else {
                     4
@@ -186,7 +186,7 @@ mod tests {
                     "Histogram metric does not match expected value"
                 );
 
-                if !cfg!(all(feature = "seccomp", target_os = "linux")) {
+                if !cfg!(all(seccomp)) {
                     // 4. Host call duration
                     let histogram_key = CompositeKey::new(
                         metrics_util::MetricKind::Histogram,

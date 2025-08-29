@@ -154,7 +154,7 @@ pub(super) fn default_writer_func(s: String) -> Result<i32> {
     }
 }
 
-#[cfg(all(feature = "seccomp", target_os = "linux"))]
+#[cfg(seccomp)]
 fn maybe_with_seccomp<T: Send>(
     name: &str,
     syscalls: Option<&[ExtraAllowedSyscall]>,
@@ -199,7 +199,7 @@ fn maybe_with_seccomp<T: Send>(
     })
 }
 
-#[cfg(not(all(feature = "seccomp", target_os = "linux")))]
+#[cfg(not(seccomp))]
 fn maybe_with_seccomp<T: Send>(
     _name: &str,
     _syscalls: Option<&[ExtraAllowedSyscall]>,

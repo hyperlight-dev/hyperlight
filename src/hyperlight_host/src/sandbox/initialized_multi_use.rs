@@ -625,7 +625,7 @@ mod tests {
 
             let res: Result<u64> = sbox.call("ViolateSeccompFilters", ());
 
-            #[cfg(feature = "seccomp")]
+            #[cfg(seccomp)]
             match res {
                 Ok(_) => panic!("Expected to fail due to seccomp violation"),
                 Err(e) => match e {
@@ -634,7 +634,7 @@ mod tests {
                 },
             }
 
-            #[cfg(not(feature = "seccomp"))]
+            #[cfg(not(seccomp))]
             match res {
                 Ok(_) => (),
                 Err(e) => panic!("Expected to succeed without seccomp: {}", e),
@@ -642,7 +642,7 @@ mod tests {
         }
 
         // Second, run with allowing `SYS_getpid`
-        #[cfg(feature = "seccomp")]
+        #[cfg(seccomp)]
         {
             let mut usbox = UninitializedSandbox::new(
                 GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
@@ -719,7 +719,7 @@ mod tests {
                 )
                 .expect("Expected to call host function that returns i64");
 
-            if cfg!(feature = "seccomp") {
+            if cfg!(seccomp) {
                 // If seccomp is enabled, we expect the syscall to return EACCES, as setup by our seccomp filter
                 assert_eq!(host_func_result, -libc::EACCES as i64);
             } else {
@@ -728,7 +728,7 @@ mod tests {
             }
         }
 
-        #[cfg(feature = "seccomp")]
+        #[cfg(seccomp)]
         {
             // Now let's make sure if we register the `openat` syscall as an extra allowed syscall, it will succeed
             let mut ubox = UninitializedSandbox::new(
