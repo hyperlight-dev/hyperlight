@@ -41,8 +41,6 @@ use {
     crate::HyperlightError,
 };
 
-#[cfg(feature = "trace_guest")]
-use super::TraceRegister;
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
@@ -54,6 +52,8 @@ use super::{
     EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
+#[cfg(feature = "trace_guest")]
+use crate::hypervisor::arch::X86_64Regs;
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::get_memory_access_violation;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
@@ -77,7 +77,8 @@ mod debug {
 
     use super::{HypervWindowsDriver, *};
     use crate::Result;
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::arch::X86_64Regs;
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
     use crate::mem::shared_mem::HostSharedMemory;
     use crate::sandbox::mem_mgr::MemMgrWrapper;
 
@@ -1094,15 +1095,9 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+    fn read_trace_reg(&self) -> Result<X86_64Regs> {
         let regs = self.processor.get_regs()?;
-        match reg {
-            TraceRegister::RAX => Ok(regs.rax),
-            TraceRegister::RCX => Ok(regs.rcx),
-            TraceRegister::RIP => Ok(regs.rip),
-            TraceRegister::RSP => Ok(regs.rsp),
-            TraceRegister::RBP => Ok(regs.rbp),
-        }
+        Ok(X86_64Regs::from(regs))
     }
 
     #[cfg(feature = "trace_guest")]
