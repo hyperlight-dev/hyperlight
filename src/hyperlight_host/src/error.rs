@@ -71,7 +71,7 @@ pub enum HyperlightError {
 
     /// A disallowed syscall was caught
     #[error("Seccomp filter trapped on disallowed syscall (check STDERR for offending syscall)")]
-    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    #[cfg(seccomp)]
     DisallowedSyscall,
 
     /// A generic error with a message
@@ -218,12 +218,12 @@ pub enum HyperlightError {
 
     /// a backend error occurred with seccomp filters
     #[error("Backend Error with Seccomp Filter {0:?}")]
-    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    #[cfg(seccomp)]
     SeccompFilterBackendError(#[from] seccompiler::BackendError),
 
     /// an error occurred with seccomp filters
     #[error("Error with Seccomp Filter {0:?}")]
-    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    #[cfg(seccomp)]
     SeccompFilterError(#[from] seccompiler::Error),
 
     /// Tried to restore snapshot to a sandbox that is not the same as the one the snapshot was taken from

@@ -35,7 +35,7 @@ pub trait Registerable {
     ) -> Result<()>;
     /// Register a primitive host function whose worker thread has
     /// extra permissive seccomp filters installed
-    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    #[cfg(seccomp)]
     fn register_host_function_with_syscalls<Args: ParameterTuple, Output: SupportedReturnType>(
         &mut self,
         name: &str,
@@ -63,7 +63,7 @@ impl Registerable for UninitializedSandbox {
 
         (*hfs).register_host_function(name.to_string(), entry, &mut self.mgr)
     }
-    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    #[cfg(seccomp)]
     fn register_host_function_with_syscalls<Args: ParameterTuple, Output: SupportedReturnType>(
         &mut self,
         name: &str,

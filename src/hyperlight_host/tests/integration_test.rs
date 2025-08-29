@@ -49,10 +49,10 @@ fn interrupt_host_call() {
         Ok(())
     };
 
-    #[cfg(any(target_os = "windows", not(feature = "seccomp")))]
+    #[cfg(any(target_os = "windows", not(seccomp)))]
     usbox.register("Spin", spin).unwrap();
 
-    #[cfg(all(target_os = "linux", feature = "seccomp"))]
+    #[cfg(seccomp)]
     usbox
         .register_with_extra_allowed_syscalls("Spin", spin, vec![libc::SYS_clock_nanosleep])
         .unwrap();
