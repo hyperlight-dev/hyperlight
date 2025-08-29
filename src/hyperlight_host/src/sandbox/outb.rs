@@ -18,9 +18,9 @@ limitations under the License.
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 use fallible_iterator::FallibleIterator;
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 use framehop::Unwinder;
 use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
@@ -156,7 +156,7 @@ fn outb_abort(mem_mgr: &mut MemMgrWrapper<HostSharedMemory>, data: u32) -> Resul
     Ok(())
 }
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 fn unwind(
     hv: &dyn Hypervisor,
     mem: &SandboxMemoryManager<HostSharedMemory>,
@@ -186,7 +186,7 @@ fn unwind(
         .map_err(|e| new_error!("couldn't unwind: {}", e))
 }
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 fn write_stack(out: &mut std::fs::File, stack: &[u64]) {
     let _ = out.write_all(&stack.len().to_ne_bytes());
     for frame in stack {
@@ -194,7 +194,7 @@ fn write_stack(out: &mut std::fs::File, stack: &[u64]) {
     }
 }
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 pub(super) fn record_trace_frame<F: FnOnce(&mut std::fs::File)>(
     trace_info: &TraceInfo,
     frame_id: u64,
@@ -303,7 +303,7 @@ pub(crate) fn handle_outb(
             eprint!("{}", ch);
             Ok(())
         }
-        #[cfg(feature = "unwind_guest")]
+        #[cfg(feature = "mem_profile")]
         OutBAction::TraceRecordStack => {
             let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), _hv.trace_info_as_ref()) else {
                 return Ok(());
