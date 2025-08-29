@@ -149,22 +149,12 @@ static PANIC_BUF: Mutex<String<512>> = Mutex::new(String::new());
 #[inline(always)]
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     let mut panic_buf_guard = PANIC_BUF.lock();
-    let write_res = write!(panic_buf_guard, "{}", info);
+    let write_res = write!(panic_buf_guard, "{}\0", info);
     if write_res.is_err() {
         unsafe {
             abort_with_code_and_message(
                 &[ErrorCode::UnknownError as u8],
                 c"panic: message format failed".as_ptr(),
-            )
-        }
-    }
-
-    let append_res = panic_buf_guard.push('\0');
-    if append_res.is_err() {
-        unsafe {
-            abort_with_code_and_message(
-                &[ErrorCode::UnknownError as u8],
-                c"panic: message too long".as_ptr(),
             )
         }
     }
