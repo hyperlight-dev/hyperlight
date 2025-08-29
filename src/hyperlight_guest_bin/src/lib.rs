@@ -18,7 +18,8 @@ limitations under the License.
 // === Dependencies ===
 extern crate alloc;
 
-use alloc::string::ToString;
+use core::ffi::CStr;
+use core::fmt::Write;
 
 use buddy_system_allocator::LockedHeap;
 #[cfg(target_arch = "x86_64")]
@@ -26,6 +27,7 @@ use exceptions::{gdt::load_gdt, idtr::load_idt};
 use guest_function::call::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
+use heapless::String;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
@@ -139,11 +141,39 @@ pub static mut OS_PAGE_SIZE: u32 = 0;
 // to satisfy the clippy when cfg == test
 #[allow(dead_code)]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    let msg = info.to_string();
-    let c_string = alloc::ffi::CString::new(msg)
-        .unwrap_or_else(|_| alloc::ffi::CString::new("panic (invalid utf8)").unwrap());
+    _panic_handler(info)
+}
 
-    unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], c_string.as_ptr()) }
+#[inline(always)]
+fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
+    // stack allocate a 256-byte message buffer.
+    let mut panic_buf = String::<256>::new();
+    let write_res = write!(panic_buf, "{}\0", info);
+    if write_res.is_err() {
+        unsafe {
+            abort_with_code_and_message(
+                &[ErrorCode::UnknownError as u8],
+                c"panic: message format failed".as_ptr(),
+            )
+        }
+    }
+
+    let c_str_res = CStr::from_bytes_with_nul(panic_buf.as_bytes());
+    if c_str_res.is_err() {
+        unsafe {
+            abort_with_code_and_message(
+                &[ErrorCode::UnknownError as u8],
+                c"panic: failed to convert to CString".as_ptr(),
+            )
+        }
+    }
+
+    unsafe {
+        abort_with_code_and_message(
+            &[ErrorCode::UnknownError as u8],
+            c_str_res.unwrap().as_ptr(),
+        )
+    }
 }
 
 // === Entrypoint ===
