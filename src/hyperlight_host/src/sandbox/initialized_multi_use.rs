@@ -504,7 +504,38 @@ mod tests {
     #[cfg(target_os = "linux")]
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
-    use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+    use crate::{
+        GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
+    };
+
+    /// Make sure input/output buffers are properly reset after guest call (with host call)
+    #[test]
+    fn host_func_error() {
+        let path = simple_guest_as_string().unwrap();
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        sandbox
+            .register("HostError", || -> Result<()> {
+                Err(HyperlightError::Error("hi".to_string()))
+            })
+            .unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        // will exhaust io if leaky
+        for _ in 0..1000 {
+            let result = sandbox
+                .call::<i64>(
+                    "CallGivenParamlessHostFuncThatReturnsI64",
+                    "HostError".to_string(),
+                )
+                .unwrap_err();
+
+            assert!(
+                matches!(result, HyperlightError::Error(ref msg) if msg == "hi"),
+                "Expected HyperlightError::Error('hi'), got {:?}",
+                result
+            );
+        }
+    }
 
     /// Tests that call_guest_function_by_name restores the state correctly
     #[test]
