@@ -37,7 +37,6 @@ use crate::exit::out32;
 
 impl GuestHandle {
     /// Get user memory region as bytes.
-    #[hyperlight_guest_tracing::trace_function]
     pub fn read_n_bytes_from_user_memory(&self, num: u64) -> Result<Vec<u8>> {
         let peb_ptr = self.peb().unwrap();
         let user_memory_region_ptr = unsafe { (*peb_ptr).init_data.ptr as *mut u8 };
@@ -66,7 +65,6 @@ impl GuestHandle {
     ///
     /// When calling `call_host_function<T>`, this function is called
     /// internally to get the return value.
-    #[hyperlight_guest_tracing::trace_function]
     pub fn get_host_return_value<T: TryFrom<ReturnValue>>(&self) -> Result<T> {
         let inner = self
             .try_pop_shared_input_data_into::<FunctionCallResult>()
@@ -93,7 +91,6 @@ impl GuestHandle {
     ///
     /// Note: The function return value must be obtained by calling
     /// `get_host_return_value`.
-    #[hyperlight_guest_tracing::trace_function]
     pub fn call_host_function_without_returning_result(
         &self,
         function_name: &str,
@@ -127,7 +124,6 @@ impl GuestHandle {
     /// sends it to the host, and then retrieves the return value.
     ///
     /// The return value is deserialized into the specified type `T`.
-    #[hyperlight_guest_tracing::trace_function]
     pub fn call_host_function<T: TryFrom<ReturnValue>>(
         &self,
         function_name: &str,
@@ -138,7 +134,6 @@ impl GuestHandle {
         self.get_host_return_value::<T>()
     }
 
-    #[hyperlight_guest_tracing::trace_function]
     pub fn get_host_function_details(&self) -> HostFunctionDetails {
         let peb_ptr = self.peb().unwrap();
         let host_function_details_buffer =
@@ -155,7 +150,6 @@ impl GuestHandle {
     }
 
     /// Log a message with the specified log level, source, caller, source file, and line number.
-    #[hyperlight_guest_tracing::trace_function]
     pub fn log_message(
         &self,
         log_level: LogLevel,

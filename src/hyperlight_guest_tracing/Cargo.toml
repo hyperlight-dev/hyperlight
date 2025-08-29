@@ -10,13 +10,15 @@ readme.workspace = true
 description = """Provides the tracing functionality for the hyperlight guest."""
 
 [dependencies]
+heapless = { version = "0.8.0", features = ["serde"] }
 hyperlight-common = { workspace = true, default-features = false }
-hyperlight-guest-tracing-macro = { workspace = true }
 spin = "0.10.0"
+tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
+tracing-core = { version = "0.1.34", default-features = false }
 
 [lints]
 workspace = true
 
 [features]
 default = []
-trace = [ "hyperlight-guest-tracing-macro/trace", "hyperlight-common/trace_guest" ]
+trace = [ "hyperlight-common/trace_guest" ]
