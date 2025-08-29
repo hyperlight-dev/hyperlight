@@ -13,17 +13,28 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 #![allow(clippy::disallowed_macros)]
+#[cfg(not(target_env = "musl"))]
 use hyperlight_host::sandbox::uninitialized::UninitializedSandbox;
+#[cfg(not(target_env = "musl"))]
 use hyperlight_host::{GuestBinary, Result};
+#[cfg(not(target_env = "musl"))]
 use hyperlight_testing::simple_guest_as_string;
+#[cfg(not(target_env = "musl"))]
 use tracing_subscriber::EnvFilter;
+#[cfg(not(target_env = "musl"))]
 use tracing_subscriber::layer::SubscriberExt;
 
+#[cfg(target_env = "musl")]
+fn main() {
+    println!("Tracy example isn't tested run on musl");
+}
 // An example of how to get tracy tracing working with hyperlight.
 // Run with:
 // TRACY_NO_EXIT=1 RUST_LOG=trace cargo run --package hyperlight-host --example tracing-tracy --profile release-with-debug,
 // and then open the `tracy-profiler` GUI, and there should be an option to load the client created by this example.
+#[cfg(not(target_env = "musl"))]
 fn main() -> Result<()> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
