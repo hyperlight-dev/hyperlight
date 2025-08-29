@@ -234,7 +234,7 @@ check:
     {{ cargo-cmd }} check -p hyperlight-host --features crashdump  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features print_debug  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features gdb  {{ target-triple-flag }}
-    {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,unwind_guest,mem_profile  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,mem_profile  {{ target-triple-flag }}
 
 fmt-check:
     cargo +nightly fmt --all -- --check

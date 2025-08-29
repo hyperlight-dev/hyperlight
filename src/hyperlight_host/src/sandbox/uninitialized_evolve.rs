@@ -166,7 +166,7 @@ pub(crate) fn set_up_hypervisor_partition(
 
     #[cfg(feature = "trace_guest")]
     let trace_info = TraceInfo::new(
-        #[cfg(feature = "unwind_guest")]
+        #[cfg(feature = "mem_profile")]
         _load_info,
     )?;
 
