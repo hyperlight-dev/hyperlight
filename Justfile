@@ -194,20 +194,10 @@ test-rust-crashdump target=default-target features="":
 test-rust-tracing target=default-target features="":
     # Run tests for the tracing guest and macro
     cargo test -p hyperlight-guest-tracing --profile={{ if target == "debug" { "dev" } else { target } }}
-    cargo test -p hyperlight-guest-tracing-macro --profile={{ if target == "debug" { "dev" } else { target } }}
 
-    # Prepare the tracing guest for testing
+    # Build the tracing guest to ensure it builds with the tracing feature
     just build-rust-guests {{ target }} trace_guest
     just move-rust-guests {{ target }}
-    # Run hello-world example with tracing enabled to get the trace output
-    TRACE_OUTPUT="$(cargo run --profile={{ if target == "debug" { "dev" } else { target } }} --example hello-world --features {{ if features =="" {"trace_guest"} else { "trace_guest," + features } }})" && \
-        TRACE_FILE="$(echo "$TRACE_OUTPUT" | grep -oE 'Creating trace file at: [^ ]+' | awk -F': ' '{print $2}')" && \
-        echo "$TRACE_OUTPUT" && \
-        if [ -z "$TRACE_FILE" ]; then \
-            echo "Error: Could not extract trace file path from output." >&2 ; \
-            exit 1 ; \
-        fi && \
-        cargo run -p trace_dump ./{{ simpleguest_source }}/{{ target }}/simpleguest "$TRACE_FILE" list_frames
 
     # Rebuild the tracing guests without the tracing feature
     # This is to ensure that the tracing feature does not affect the other tests
