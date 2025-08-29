@@ -2,9 +2,9 @@ mkdir := if os() == "windows" { "mkdir -f -p" } else { "mkdir -p"}
 
 # Elf options
 # We don't support stack protectors at the moment, but Arch Linux clang auto-enables them for -linux platforms, so explicitly disable them.
-c-compile-options-elf := '-nobuiltininc -H --target=x86_64-unknown-linux-none -fno-stack-protector -fstack-clash-protection -mstack-probe-size=4096 -fPIC'
-c-include-flags-elf := "-I " + root / "src/hyperlight_guest_capi/include/"  + " -I " + root / "src/hyperlight_guest_bin/third_party/musl/include/" + " -I " + root / "src/hyperlight_guest_bin/third_party/musl/arch/x86_64" + " -I " + root / "src/hyperlight_guest_bin/third_party/printf"
-c-linker-options-elf := '--entry "entrypoint" --nostdlib -pie'
+c-compile-options-elf := '-nostdlibinc -H --target=x86_64-unknown-linux-none -fno-stack-protector -fstack-clash-protection -mstack-probe-size=4096 -fPIC'
+c-include-flags-elf := "-I " + root / "src/hyperlight_guest_capi/include/"  + " -I " + root / "src/hyperlight_guest_bin/third_party/picolibc/newlib/libc/include/" + " -I " + root / "src/hyperlight_guest_bin/third_party/picolibc/newlib/libc/tinystdio/"
+c-linker-options-elf := '--entry "entrypoint" --nostdlib -pie --no-dynamic-linker'
 c-flags-debug-elf := '-O0'
 c-flags-release-elf := '-O3'
 

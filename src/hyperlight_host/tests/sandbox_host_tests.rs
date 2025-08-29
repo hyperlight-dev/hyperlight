@@ -16,7 +16,8 @@ limitations under the License.
 #![allow(clippy::disallowed_macros)]
 use core::f64;
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use common::new_uninit;
 use hyperlight_host::sandbox::SandboxConfiguration;
@@ -240,16 +241,15 @@ fn iostack_is_working() {
 }
 
 fn simple_test_helper() -> Result<()> {
-    let messages = Arc::new(Mutex::new(Vec::new()));
-    let messages_clone = messages.clone();
+    let pair = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
+    let pair_clone = pair.clone();
+
     let writer = move |msg: String| {
-        let len = msg.len();
-        let mut lock = messages_clone
-            .try_lock()
-            .map_err(|_| new_error!("Error locking"))
-            .unwrap();
-        lock.push(msg);
-        len as i32
+        let (lock, cvar) = &*pair_clone;
+        let mut vec = lock.lock().unwrap();
+        vec.push(msg);
+        cvar.notify_one();
+        vec.len() as i32
     };
 
     let message = "hello";
@@ -269,23 +269,20 @@ fn simple_test_helper() -> Result<()> {
         assert_eq!(res, buffer);
     }
 
+    let (lock, cvar) = &*pair;
+    let guard = lock.lock().unwrap();
+    let timeout = Duration::from_secs(1);
+    let (guard, result) = cvar
+        .wait_timeout_while(guard, timeout, |vec| vec.is_empty())
+        .unwrap();
+
+    if result.timed_out() {
+        panic!("Timed out waiting for writer callback");
+    }
+
     let expected_calls = 1;
-
-    assert_eq!(
-        messages
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .len(),
-        expected_calls
-    );
-
-    assert!(
-        messages
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .iter()
-            .all(|msg| msg == message)
-    );
+    assert_eq!(guard.len(), expected_calls);
+    assert!(guard.iter().all(|msg| msg == message));
     Ok(())
 }
 
