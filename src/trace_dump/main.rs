@@ -25,19 +25,6 @@ use std::time::Duration;
 
 use piet_common::{Color, RenderContext, Text, TextLayout, TextLayoutBuilder, kurbo};
 
-fn read_u8_vec(inf: &mut File) -> Option<Vec<u8>> {
-    let len = read_u64(inf)?;
-    let mut vec = Vec::with_capacity(len as usize);
-    for _ in 0..len {
-        vec.push(read_u8(inf)?);
-    }
-    Some(vec)
-}
-fn read_u8(inf: &mut File) -> Option<u8> {
-    let mut bytes: [u8; 1] = [0; 1];
-    inf.read_exact(&mut bytes).ok()?;
-    Some(u8::from_ne_bytes(bytes))
-}
 fn read_u128(inf: &mut File) -> Result<u128, std::io::Error> {
     let mut bytes: [u8; 16] = [0; 16];
     inf.read_exact(&mut bytes)?;
@@ -102,51 +89,6 @@ fn dump_free(
 ) -> Option<()> {
     println!("\n[{:9?}] Freed {} bytes at 0x{:x}", now, amt, ptr);
     dump_stack(state, trace);
-    Some(())
-}
-
-fn dump_trace_record(
-    _state: &mut State,
-    _rs: &mut (),
-    indent: &mut u64,
-    now: Duration,
-    msg: Rc<[u8]>,
-) -> Option<()> {
-    let msg = String::from_utf8_lossy(&msg);
-
-    // Pretty-printing of trace records to show indentation based on the trace depth.
-    // Indentation is increased for messages starting with `>`, and decreased for messages starting
-    // with `<`.
-    // With the exception of `> halt`, which decreases the indent (because `> entrypoint` does not
-    // have a corresponding `< entrypoint`)
-    let msg = if msg.starts_with('>') {
-        if msg == "> halt" && *indent > 0 {
-            *indent -= 1;
-        }
-        let indent_str = "  ".repeat(*indent as usize);
-        let msg = format!("{}{}", indent_str, &msg);
-        if msg != "> halt" {
-            // If the message is not `> halt`, increment the indent.
-            // This is to ensure that the next message is indented correctly.
-            *indent += 1;
-        }
-
-        msg
-    } else if msg.starts_with('<') {
-        if *indent > 0 {
-            *indent -= 1;
-        }
-        let indent_str = "  ".repeat(*indent as usize);
-        let msg = format!("{}{}", indent_str, msg);
-
-        msg
-    } else {
-        let indent_str = "  ".repeat(*indent as usize);
-        format!("{}{}", indent_str, msg)
-    };
-
-    println!("\n[{:9?}] {}", now, msg);
-
     Some(())
 }
 
@@ -600,33 +542,20 @@ fn render_free(
     Some(())
 }
 
-fn render_trace_record(
-    _state: &mut State,
-    _rs: &mut RenderState,
-    _indent: &mut u64,
-    _now: Duration,
-    _msg: Rc<[u8]>,
-) -> Option<()> {
-    Some(())
-}
-
-fn read_file<I, U, A, F, T, S>(
+fn read_file<I, U, A, F, S>(
     state: &mut State,
     mut handle_state: S,
     handle_ident: I,
     handle_unwind: U,
     handle_alloc: A,
     handle_free: F,
-    handle_trace_record: T,
 ) -> Option<()>
 where
     I: Fn(&mut State, &mut S, Duration, blake3::Hash) -> Option<()>,
     U: Fn(&mut State, &mut S, Duration, Rc<[u64]>) -> Option<()>,
     A: Fn(&mut State, &mut S, Duration, u64, u64, Rc<[u64]>) -> Option<()>,
     F: Fn(&mut State, &mut S, Duration, u64, u64, Rc<[u64]>) -> Option<()>,
-    T: Fn(&mut State, &mut S, &mut u64, Duration, Rc<[u8]>) -> Option<()>,
 {
-    let mut indent = 0;
     loop {
         let time = match read_u128(&mut state.inf) {
             Ok(t) => t,
@@ -671,9 +600,6 @@ where
             let trace = amt_trace.1.clone();
             state.total -= amt;
             handle_free(state, &mut handle_state, now, ptr, amt, trace)?;
-        } else if frame_id == 4 {
-            let msg = read_u8_vec(&mut state.inf)?.into();
-            handle_trace_record(state, &mut handle_state, &mut indent, now, msg)?;
         } else {
             return None;
         }
@@ -773,7 +699,6 @@ fn spawn_render_thread(
             render_unwind,
             render_alloc,
             render_free,
-            render_trace_record,
         )?;
         bar_ffmpeg.wait().ok()?;
         flame_ffmpeg.wait().ok()?;
@@ -830,7 +755,6 @@ fn dump_trace(mut state: State) {
         dump_unwind,
         dump_alloc,
         dump_free,
-        dump_trace_record,
     );
 }
 
@@ -847,7 +771,6 @@ fn plot_mem(args: Vec<String>, mut state: State) {
         |_, _, _, _| Some(()),
         |_, _, _, _, _, _| Some(()),
         |_, _, _, _, _, _| Some(()),
-        |_, _, _, _, _| Some(()),
     ) {
         Some(()) => (),
         None => {
@@ -886,7 +809,6 @@ fn plot_mem(args: Vec<String>, mut state: State) {
         |_, _, _, _| Some(()),
         count_frame,
         count_frame,
-        |_, _, _, _, _| Some(()),
     );
     if state.num_durations > 0 {
         (*jobs.lock().unwrap()).push((*start_duration.lock().unwrap(), state.max_duration));

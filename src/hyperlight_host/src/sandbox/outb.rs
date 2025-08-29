@@ -192,11 +192,6 @@ pub(crate) fn handle_outb(
             let regs = _hv.regs()?;
             crate::sandbox::trace::handle_trace_memory_free(&regs, mem_mgr, _hv.trace_info_mut())
         }
-        #[cfg(feature = "trace_guest")]
-        OutBAction::TraceRecord => {
-            let regs = _hv.regs()?;
-            crate::sandbox::trace::handle_trace_record(&regs, mem_mgr, _hv.trace_info_mut())
-        }
     }
 }
 #[cfg(test)]

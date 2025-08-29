@@ -297,7 +297,6 @@ pub(crate) struct HypervLinuxDriver {
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
     #[cfg(feature = "trace_guest")]
-    #[allow(dead_code)]
     trace_info: TraceInfo,
 }
 

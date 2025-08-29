@@ -1206,6 +1206,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1220,6 +1229,17 @@ name = "hashbrown"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5419bdc4f6a9207fbeba6d11b604d481addf78ecd10c11ad51e76c2f6482748d"
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "serde",
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "heck"
@@ -1398,18 +1418,11 @@ dependencies = [
 name = "hyperlight-guest-tracing"
 version = "0.10.0"
 dependencies = [
+ "heapless",
  "hyperlight-common",
- "hyperlight-guest-tracing-macro",
  "spin 0.10.0",
-]
-
-[[package]]
-name = "hyperlight-guest-tracing-macro"
-version = "0.10.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
+ "tracing",
+ "tracing-core",
 ]
 
 [[package]]

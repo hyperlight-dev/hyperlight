@@ -45,7 +45,7 @@ jobs:
             VERSION="${VERSION#refs/heads/release/v}"
             echo "VERSION=$VERSION" >> $GITHUB_ENV
           fi
-          ./dev/verify-version.sh "$VERSION" hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing-macro hyperlight-guest-tracing
+          ./dev/verify-version.sh "$VERSION" hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
 
       - name: Determine which crates need publishing
         run: |
@@ -74,7 +74,6 @@ jobs:
           needs_publish hyperlight-component-util
           needs_publish hyperlight-component-macro
           needs_publish hyperlight-host
-          needs_publish hyperlight-guest-tracing-macro
           needs_publish hyperlight-guest-tracing
 
       - name: Publish hyperlight-common
@@ -84,13 +83,6 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
         if: env.PUBLISH_HYPERLIGHT_COMMON != 'false'
       
-      - name: Publish hyperlight-guest-tracing-macro
-        continue-on-error: ${{ inputs.dry_run }}
-        run: cargo publish --manifest-path ./src/hyperlight_guest_tracing_macro/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
-        if: env.PUBLISH_HYPERLIGHT_GUEST_TRACING_MACRO != 'false'
-
       - name: Publish hyperlight-guest-tracing
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_guest_tracing/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}

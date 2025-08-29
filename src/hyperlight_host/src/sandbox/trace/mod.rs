@@ -14,18 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use hyperlight_guest_tracing::TraceRecord;
 #[cfg(feature = "mem_profile")]
-use {fallible_iterator::FallibleIterator, framehop::Unwinder};
-
-use crate::hypervisor::regs::CommonRegisters;
-use crate::mem::layout::SandboxMemoryLayout;
-use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::HostSharedMemory;
-use crate::{Result, new_error};
+use {
+    crate::hypervisor::regs::CommonRegisters,
+    crate::mem::layout::SandboxMemoryLayout,
+    crate::mem::mgr::SandboxMemoryManager,
+    crate::mem::shared_mem::HostSharedMemory,
+    crate::{Result, new_error},
+    fallible_iterator::FallibleIterator,
+    framehop::Unwinder,
+    std::io::Write,
+};
 
 /// The information that trace collection requires in order to write
 /// an accurate trace.
@@ -214,57 +215,6 @@ fn record_trace_frame<F: FnOnce(&mut std::fs::File)>(
     Ok(())
 }
 
-fn record_guest_trace_frame<F: FnOnce(&mut std::fs::File)>(
-    trace_info: &TraceInfo,
-    frame_id: u64,
-    cycles: u64,
-    write_frame: F,
-) -> Result<()> {
-    let Ok(mut out) = trace_info.file.lock() else {
-        return Ok(());
-    };
-    // frame structure:
-    // 16 bytes timestamp
-
-    // The number of cycles spent in the guest relative to the first received trace record
-    let cycles_spent = cycles
-        - trace_info
-            .guest_start_tsc
-            .as_ref()
-            .map_or_else(|| 0, |c| *c);
-
-    // Convert cycles to microseconds based on the TSC frequency
-    let tsc_freq = trace_info
-        .tsc_freq
-        .as_ref()
-        .ok_or_else(|| new_error!("TSC frequency not set in TraceInfo"))?;
-    let micros = cycles_spent as f64 / *tsc_freq as f64 * 1_000_000f64;
-
-    // Convert to a Duration
-    let guest_duration = std::time::Duration::from_micros(micros as u64);
-
-    // Calculate the time when the guest started execution relative to the host epoch
-    // Note: This is relative to the time saved when the `TraceInfo` was created (before the
-    // Hypervisor is created).
-    let guest_start_time = trace_info
-        .guest_start_epoch
-        .as_ref()
-        .unwrap_or(&trace_info.epoch)
-        .saturating_duration_since(trace_info.epoch);
-
-    // Calculate the timestamp when the actual frame was recorded relative to the host epoch
-    let timestamp = guest_start_time
-        .checked_add(guest_duration)
-        .unwrap_or(guest_duration);
-
-    let _ = out.write_all(&timestamp.as_micros().to_ne_bytes());
-    // 8 bytes frame type id
-    let _ = out.write_all(&frame_id.to_ne_bytes());
-    // frame data
-    write_frame(&mut out);
-    Ok(())
-}
-
 #[cfg(feature = "mem_profile")]
 pub(crate) fn handle_trace_memory_alloc(
     regs: &CommonRegisters,
@@ -299,59 +249,4 @@ pub(crate) fn handle_trace_memory_free(
         let _ = f.write_all(&ptr.to_ne_bytes());
         write_stack(f, &stack);
     })
-}
-
-pub(crate) fn handle_trace_record(
-    regs: &CommonRegisters,
-    mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
-    trace_info: &mut TraceInfo,
-) -> Result<()> {
-    let len = regs.rax;
-    let ptr = regs.rcx;
-    let mut buffer = vec![0u8; len as usize * std::mem::size_of::<TraceRecord>()];
-    let buffer = &mut buffer[..];
-
-    // Read the trace records from the guest memory
-    mem_mgr
-        .shared_mem
-        .copy_to_slice(buffer, ptr as usize - SandboxMemoryLayout::BASE_ADDRESS)
-        .map_err(|e| {
-            new_error!(
-                "Failed to copy trace records from guest memory to host: {:?}",
-                e
-            )
-        })?;
-
-    let traces =
-        unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const TraceRecord, len as usize) };
-
-    {
-        // Calculate the TSC frequency based on the current TSC reading
-        // This is done only once, when the first trace record is received
-        // Ideally, we should use a timer or a clock to measure the time elapsed,
-        // but that adds delays.
-        // To avoid that we store the TSC value and a timestamp right
-        // before starting the guest execution and then calculate the TSC frequency when
-        // the first trace record is received, based on the current TSC value and clock.
-        if trace_info.tsc_freq.is_none() {
-            trace_info.calculate_tsc_freq()?;
-
-            // After the TSC frequency is calculated, we no longer need the value of TSC
-            // recorded on the host when the guest started, so we can set the guest_start_tsc field
-            // to store the TSC value recorded on the guest when the guest started executing.
-            // This is used to calculate the records timestamps relative to the first trace record.
-            if !traces.is_empty() {
-                trace_info.guest_start_tsc = Some(traces[0].cycles);
-            }
-        }
-    }
-
-    for record in traces {
-        record_guest_trace_frame(trace_info, 4u64, record.cycles, |f| {
-            let _ = f.write_all(&record.msg_len.to_ne_bytes());
-            let _ = f.write_all(&record.msg[..record.msg_len]);
-        })?
-    }
-
-    Ok(())
 }
