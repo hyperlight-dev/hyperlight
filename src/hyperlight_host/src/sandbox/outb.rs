@@ -304,15 +304,6 @@ pub(crate) fn handle_outb(
             Ok(())
         }
         #[cfg(feature = "mem_profile")]
-        OutBAction::TraceRecordStack => {
-            let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), _hv.trace_info_as_ref()) else {
-                return Ok(());
-            };
-            record_trace_frame(_hv.trace_info_as_ref(), 1u64, |f| {
-                write_stack(f, &stack);
-            })
-        }
-        #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryAlloc => {
             let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), _hv.trace_info_as_ref()) else {
                 return Ok(());
