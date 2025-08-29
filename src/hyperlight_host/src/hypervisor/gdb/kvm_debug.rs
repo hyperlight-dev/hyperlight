@@ -23,7 +23,8 @@ use kvm_bindings::{
 use kvm_ioctls::VcpuFd;
 
 use super::arch::{MAX_NO_OF_HW_BP, SW_BP_SIZE, vcpu_stop_reason};
-use super::{GuestDebug, VcpuStopReason, X86_64Regs};
+use super::{GuestDebug, VcpuStopReason};
+use crate::hypervisor::arch::X86_64Regs;
 use crate::{HyperlightError, Result, new_error};
 
 /// KVM Debug struct
