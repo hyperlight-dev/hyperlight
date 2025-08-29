@@ -40,7 +40,6 @@ impl Idtr {
     }
 }
 
-#[hyperlight_guest_tracing::trace_function]
 pub(crate) unsafe fn load_idt() {
     unsafe {
         init_idt();
