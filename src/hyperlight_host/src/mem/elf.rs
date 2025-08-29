@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 use std::sync::Arc;
 
 #[cfg(target_arch = "aarch64")]
@@ -29,7 +29,7 @@ use goblin::elf64::program_header::PT_LOAD;
 
 use crate::{Result, log_then_return, new_error};
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 struct ResolvedSectionHeader {
     name: String,
     addr: u64,
@@ -40,13 +40,13 @@ struct ResolvedSectionHeader {
 pub(crate) struct ElfInfo {
     payload: Vec<u8>,
     phdrs: ProgramHeaders,
-    #[cfg(feature = "unwind_guest")]
+    #[cfg(feature = "mem_profile")]
     shdrs: Vec<ResolvedSectionHeader>,
     entry: u64,
     relocs: Vec<Reloc>,
 }
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 struct UnwindInfo {
     payload: Vec<u8>,
     load_addr: u64,
@@ -55,7 +55,7 @@ struct UnwindInfo {
     shdrs: Vec<ResolvedSectionHeader>,
 }
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 impl super::exe::UnwindInfo for UnwindInfo {
     fn as_module(&self) -> framehop::Module<Vec<u8>> {
         framehop::Module::new(
@@ -72,7 +72,7 @@ impl super::exe::UnwindInfo for UnwindInfo {
     }
 }
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 impl UnwindInfo {
     fn resolved_section_header(&self, name: &[u8]) -> Option<&ResolvedSectionHeader> {
         self.shdrs
@@ -81,7 +81,7 @@ impl UnwindInfo {
     }
 }
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 impl framehop::ModuleSectionInfo<Vec<u8>> for &UnwindInfo {
     fn base_svma(&self) -> u64 {
         self.base_svma
@@ -122,7 +122,7 @@ impl ElfInfo {
         Ok(ElfInfo {
             payload: bytes.to_vec(),
             phdrs: elf.program_headers,
-            #[cfg(feature = "unwind_guest")]
+            #[cfg(feature = "mem_profile")]
             shdrs: elf
                 .section_headers
                 .iter()
@@ -206,7 +206,7 @@ impl ElfInfo {
             }
         }
         cfg_if::cfg_if! {
-            if #[cfg(feature = "unwind_guest")] {
+            if #[cfg(feature = "mem_profile")] {
                 let va_size = self.get_va_size() as u64;
                 let base_svma = self.get_base_va();
                 Ok(Arc::new(UnwindInfo {

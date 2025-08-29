@@ -1198,7 +1198,7 @@ impl Drop for HypervLinuxDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "unwind_guest")]
+    #[cfg(feature = "mem_profile")]
     use crate::mem::exe::DummyUnwindInfo;
     use crate::mem::memory_region::MemoryRegionVecBuilder;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
@@ -1269,7 +1269,7 @@ mod tests {
             },
             #[cfg(feature = "trace_guest")]
             TraceInfo::new(
-                #[cfg(feature = "unwind_guest")]
+                #[cfg(feature = "mem_profile")]
                 Arc::new(DummyUnwindInfo {}),
             )
             .unwrap(),

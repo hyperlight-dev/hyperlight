@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-common"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-macro"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "env_logger",
  "hyperlight-component-util",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-util"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "itertools",
  "log",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-bin"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "buddy_system_allocator",
  "cc",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "hyperlight-common",
  "hyperlight-guest-tracing-macro",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing-macro"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -614,7 +614,7 @@ checksum = "271414315aff87387382ec3d271b52d7ae78726f5d44ac98b4f4030c91880486"
 
 [[package]]
 name = "witguest"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "hyperlight-common",
  "hyperlight-component-macro",
