@@ -1230,10 +1230,17 @@ mod tests {
         #[test]
         fn guard_page_testing_shim() {
             let tests = vec!["read", "write", "exec"];
-
             for test in tests {
+                let triple = std::env::var("TARGET_TRIPLE").ok();
+                let target_args = if let Some(triple) = triple.filter(|t| !t.is_empty()) {
+                    vec!["--target".to_string(), triple.to_string()]
+                } else {
+                    vec![]
+                };
                 let status = std::process::Command::new("cargo")
-                    .args(["test", "-p", "hyperlight-host", "--", "--ignored", test])
+                    .args(["test", "-p", "hyperlight-host"])
+                    .args(target_args)
+                    .args(["--", "--ignored", test])
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
