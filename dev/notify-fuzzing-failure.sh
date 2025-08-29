@@ -43,7 +43,7 @@ REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
 ISSUE_TITLE="Fuzzing Job Failure - $(date '+%Y-%m-%d')"
 FUZZING_LABEL="area/testing"
 FAILURE_LABEL="kind/bug"
-FUZZING_KIND_LABEL="kind/fuzzing"
+FUZZING_KIND_LABEL="area/fuzzing"
 LIFECYCLE_LABEL="lifecycle/needs-review"
 
 # Search for existing open fuzzing failure issues
@@ -51,7 +51,7 @@ echo "Searching for existing open fuzzing failure issues..."
 EXISTING_ISSUES=$(gh api graphql -f query='
   query($owner: String!, $repo: String!) {
     repository(owner: $owner, name: $repo) {
-      issues(first: 10, states: OPEN, labels: ["kind/fuzzing"]) {
+      issues(first: 10, states: OPEN, labels: ["area/fuzzing"]) {
         totalCount
         nodes {
           number
