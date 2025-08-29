@@ -6,6 +6,20 @@ set dotenv-load := true
 set-env-command := if os() == "windows" { "$env:" } else { "export " }
 bin-suffix := if os() == "windows" { ".bat" } else { ".sh" }
 
+################
+### cross-rs ###
+################
+target-triple := env('TARGET_TRIPLE', "")
+docker := if target-triple != "" { require("docker") } else { "" }
+# this command is only used host side not for guests
+# include the --target-dir for the cross builds.  This ensures that the builds are separated and avoid any conflicts with the guest builds
+cargo-cmd := if target-triple != "" { require("cross") } else { "cargo" } 
+target-triple-flag := if target-triple != "" { "--target " + target-triple + " --target-dir ./target/host"} else { "" }
+# set up cross to use the devices
+kvm-gid := if path_exists("/dev/kvm") == "true" { `getent group kvm | cut -d: -f3` } else { "" }
+export CROSS_CONTAINER_OPTS := if path_exists("/dev/kvm") == "true" { "--device=/dev/kvm" } else if path_exists("/dev/mshv") == "true" { "--device=/dev/mshv" } else { "" }
+export CROSS_CONTAINER_GID := if path_exists("/dev/kvm") == "true" { kvm-gid } else {"1000"} # required to have ownership of the mapped in device on kvm
+
 root := justfile_directory()
 
 default-target := "debug"
@@ -23,12 +37,7 @@ alias cg := build-and-move-c-guests
 
 # build host library
 build target=default-target:
-    cargo build --profile={{ if target == "debug" { "dev" } else { target } }} 
-
-# build host library
-build-with-musl-libc target=default-target:
-    cargo build --profile={{ if target == "debug" { "dev" } else { target } }} --target x86_64-unknown-linux-musl
-
+    {{ cargo-cmd }} build --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
 
 # build testing guest binaries
 guests: build-and-move-rust-guests build-and-move-c-guests
@@ -75,10 +84,7 @@ test-like-ci config=default-target hypervisor="kvm":
     just test {{config}} seccomp,build-metadata,init-paging,{{ if hypervisor == "mshv" {"mshv2"} else if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
 
     @# make sure certain cargo features compile
-    cargo check -p hyperlight-host --features crashdump
-    cargo check -p hyperlight-host --features print_debug
-    cargo check -p hyperlight-host --features gdb
-    cargo check -p hyperlight-host --features trace_guest,unwind_guest,mem_profile
+    just check
 
     @# without any driver (should fail to compile)
     just test-compilation-no-default-features {{config}}
@@ -143,64 +149,65 @@ test target=default-target features="": (test-unit target features) (test-isolat
 
 # runs unit tests
 test-unit target=default-target features="":
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} --lib
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
 
 # runs tests that requires being run separately, for example due to global state
-test-isolated target=default-target features="":
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_trace_trace --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::create_1000_sandboxes --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- mem::shared_mem::tests::test_drop --exact --ignored
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
+test-isolated target=default-target features="" :
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_trace_trace --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::initialized_multi_use::tests::create_1000_sandboxes --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- mem::shared_mem::tests::test_drop --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
     @# metrics tests
-    cargo test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics,init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact 
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics,init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact 
 # runs integration tests. Guest can either be "rust" or "c"
 test-integration guest target=default-target features="":
     @# run execute_on_heap test with feature "executable_heap" on and off
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} cargo test --profile={{ if target == "debug" { "dev" } else { target } }} --test integration_test execute_on_heap {{ if features =="" {" --features executable_heap"} else {"--features executable_heap," + features} }} -- --ignored
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} cargo test --profile={{ if target == "debug" { "dev" } else { target } }} --test integration_test execute_on_heap {{ if features =="" {""} else {"--features " + features} }} -- --ignored
+    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap {{ if features =="" {" --features executable_heap"} else {"--features executable_heap," + features} }} -- --ignored
+    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap {{ if features =="" {""} else {"--features " + features} }} -- --ignored
     
     @# run the rest of the integration tests
-    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} cargo test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} --test '*'
+    {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
 
 # runs seccomp tests
 test-seccomp target=default-target features="":
     @# run seccomp test with feature "seccomp" on and off
-    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --lib {{ if features =="" {''} else { "--features " + features } }} -- --ignored
-    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} -p hyperlight-host test_violate_seccomp_filters --no-default-features {{ if features =~"mshv2" {"--features init-paging,mshv2"} else {"--features mshv3,init-paging,kvm" } }} --lib -- --ignored
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host test_violate_seccomp_filters --lib {{ if features =="" {''} else { "--features " + features } }} -- --ignored
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host test_violate_seccomp_filters --no-default-features {{ if features =~"mshv2" {"--features init-paging,mshv2"} else {"--features mshv3,init-paging,kvm" } }} --lib -- --ignored
 
 # tests compilation with no default features on different platforms
 test-compilation-no-default-features target=default-target:
     @# Linux should fail without a hypervisor feature (kvm, mshv, or mshv3)
-    {{ if os() == "linux" { "! cargo check -p hyperlight-host --no-default-features 2> /dev/null" } else { "" } }}
+    {{ if os() == "linux" { "! " + cargo-cmd + " check -p hyperlight-host --no-default-features "+target-triple-flag+" 2> /dev/null" } else { "" } }}
     @# Windows should succeed even without default features
-    {{ if os() == "windows" { "cargo check -p hyperlight-host --no-default-features" } else { "" } }}
+    {{ if os() == "windows" { cargo-cmd + " check -p hyperlight-host --no-default-features" } else { "" } }}
     @# Linux should succeed with a hypervisor driver but without init-paging
-    {{ if os() == "linux" { "cargo check -p hyperlight-host --no-default-features --features kvm" } else { "" } }}
-    {{ if os() == "linux" { "cargo check -p hyperlight-host --no-default-features --features mshv2" } else { "" } }}
-    {{ if os() == "linux" { "cargo check -p hyperlight-host --no-default-features --features mshv3" } else { "" } }}    
+    {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features kvm" } else { "" } }}  {{ target-triple-flag }}
+    {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features mshv2" } else { "" } }}  {{ target-triple-flag }}
+    {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features mshv3" } else { "" } }}  {{ target-triple-flag }}
 
 # runs tests that exercise gdb debugging
 test-rust-gdb-debugging target=default-target features="":
-    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} --example guest-debugging {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }}
-    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- test_gdb
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example guest-debugging {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }}
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} {{ if features =="" {'--features gdb'} else { "--features gdb," + features } }} -- test_gdb
 
 # rust test for crashdump
 test-rust-crashdump target=default-target features="":
-    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }} -- test_crashdump
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }} -- test_crashdump
 
 # rust test for tracing
 test-rust-tracing target=default-target features="":
     # Run tests for the tracing guest and macro
-    cargo test -p hyperlight-guest-tracing --profile={{ if target == "debug" { "dev" } else { target } }}
-    cargo test -p hyperlight-guest-tracing-macro --profile={{ if target == "debug" { "dev" } else { target } }}
+    {{ cargo-cmd }} test -p hyperlight-guest-tracing --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }}
+    {{ cargo-cmd }} test -p hyperlight-guest-tracing-macro --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }}
 
     # Prepare the tracing guest for testing
     just build-rust-guests {{ target }} trace_guest
     just move-rust-guests {{ target }}
     # Run hello-world example with tracing enabled to get the trace output
-    TRACE_OUTPUT="$(cargo run --profile={{ if target == "debug" { "dev" } else { target } }} --example hello-world --features {{ if features =="" {"trace_guest"} else { "trace_guest," + features } }})" && \
+    # note that trace-dump doesn't run on MUSL target as of now
+    TRACE_OUTPUT="$({{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --example hello-world --features {{ if features =="" {"trace_guest"} else { "trace_guest," + features } }})" && \
         TRACE_FILE="$(echo "$TRACE_OUTPUT" | grep -oE 'Creating trace file at: [^ ]+' | awk -F': ' '{print $2}')" && \
         echo "$TRACE_OUTPUT" && \
         if [ -z "$TRACE_FILE" ]; then \
@@ -215,13 +222,18 @@ test-rust-tracing target=default-target features="":
     just move-rust-guests {{ target }}
 
 test-doc target=default-target features="":
-    cargo test --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {''} else { "--features " + features } }} --doc
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} {{ if features =="" {''} else { "--features " + features } }} --doc
+
 ################
 ### LINTING ####
 ################
 
 check:
-    cargo check
+    {{ cargo-cmd }} check  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features crashdump  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features print_debug  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features gdb  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,unwind_guest,mem_profile  {{ target-triple-flag }}
 
 fmt-check:
     cargo +nightly fmt --all -- --check
@@ -241,7 +253,7 @@ fmt-apply:
     cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
 clippy target=default-target: (witguest-wit)
-    cargo clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    {{ cargo-cmd }} clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings
 
 clippy-guests target=default-target: (witguest-wit)
     cd src/tests/rust_guests/simpleguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
@@ -255,13 +267,13 @@ clippy-apply-fix-windows:
 
 # Run clippy with feature combinations for all packages
 clippy-exhaustive target=default-target: (witguest-wit)
-    ./hack/clippy-package-features.sh hyperlight-host {{ target }}
-    ./hack/clippy-package-features.sh hyperlight-guest {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-host {{ target }} {{ target-triple }}
+    ./hack/clippy-package-features.sh hyperlight-guest {{ target }} 
     ./hack/clippy-package-features.sh hyperlight-guest-bin {{ target }}
-    ./hack/clippy-package-features.sh hyperlight-common {{ target }}
-    ./hack/clippy-package-features.sh hyperlight-testing {{ target }}
-    ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }}
-    ./hack/clippy-package-features.sh hyperlight-component-util {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-common {{ target }} {{ target-triple }}
+    ./hack/clippy-package-features.sh hyperlight-testing {{ target }} {{ target-triple }}
+    ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }} {{ target-triple }}
+    ./hack/clippy-package-features.sh hyperlight-component-util {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-guest-tracing-macro {{ target }}
     ./hack/clippy-package-features.sh hyperlight-guest-tracing {{ target }}
     just clippy-guests {{ target }}
@@ -279,14 +291,14 @@ verify-msrv:
 #####################
 
 run-rust-examples target=default-target features="":
-    cargo run --profile={{ if target == "debug" { "dev" } else { target } }} --example metrics {{ if features =="" {''} else { "--features " + features } }}
-    cargo run --profile={{ if target == "debug" { "dev" } else { target } }} --example metrics {{ if features =="" {"--features function_call_metrics"} else {"--features function_call_metrics," + features} }}
-    cargo run --profile={{ if target == "debug" { "dev" } else { target } }} --example logging {{ if features =="" {''} else { "--features " + features } }}
+    {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example metrics {{ if features =="" {''} else { "--features " + features } }}
+    {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example metrics {{ if features =="" {"--features function_call_metrics"} else {"--features function_call_metrics," + features} }}
+    {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example logging {{ if features =="" {''} else { "--features " + features } }}
 
 # The two tracing examples are flaky on windows so we run them on linux only for now, need to figure out why as they run fine locally on windows
 run-rust-examples-linux target=default-target features="": (run-rust-examples target features)
-    cargo run --profile={{ if target == "debug" { "dev" } else { target } }} --example tracing {{ if features =="" {''} else { "--features " + features } }}
-    cargo run --profile={{ if target == "debug" { "dev" } else { target } }} --example tracing {{ if features =="" {"--features function_call_metrics" } else {"--features function_call_metrics," + features} }}
+    {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}   {{ target-triple-flag }} --example tracing {{ if features =="" {''} else { "--features " + features } }}
+    {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}   {{ target-triple-flag }}  --example tracing {{ if features =="" {"--features function_call_metrics" } else {"--features function_call_metrics," + features} }}
 
 
 #########################
