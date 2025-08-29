@@ -35,7 +35,7 @@ use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::{MultiUseSandbox, Result, new_error};
 
-#[cfg(all(target_os = "linux", feature = "seccomp"))]
+#[cfg(seccomp)]
 const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
     // Fuzzing fails without `mmap` being an allowed syscall on our seccomp filter.
     // All fuzzing does is call `PrintOutput` (which calls `HostPrint` ). Thing is, `println!`
@@ -311,7 +311,7 @@ impl UninitializedSandbox {
     ///
     /// Unlike [`register`](Self::register), this variant allows specifying extra syscalls
     /// that will be permitted when the function handler runs.
-    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    #[cfg(seccomp)]
     pub fn register_with_extra_allowed_syscalls<
         Args: ParameterTuple,
         Output: SupportedReturnType,
@@ -334,10 +334,10 @@ impl UninitializedSandbox {
         &mut self,
         print_func: impl Into<HostFunction<i32, (String,)>>,
     ) -> Result<()> {
-        #[cfg(not(all(target_os = "linux", feature = "seccomp")))]
+        #[cfg(not(seccomp))]
         self.register("HostPrint", print_func)?;
 
-        #[cfg(all(target_os = "linux", feature = "seccomp"))]
+        #[cfg(seccomp)]
         self.register_with_extra_allowed_syscalls(
             "HostPrint",
             print_func,
@@ -351,13 +351,13 @@ impl UninitializedSandbox {
     ///
     /// Like [`register_print`](Self::register_print), but allows specifying extra syscalls
     /// that will be permitted during function execution.
-    #[cfg(all(feature = "seccomp", target_os = "linux"))]
+    #[cfg(seccomp)]
     pub fn register_print_with_extra_allowed_syscalls(
         &mut self,
         print_func: impl Into<HostFunction<i32, (String,)>>,
         extra_allowed_syscalls: impl IntoIterator<Item = crate::sandbox::ExtraAllowedSyscall>,
     ) -> Result<()> {
-        #[cfg(all(target_os = "linux", feature = "seccomp"))]
+        #[cfg(seccomp)]
         self.register_with_extra_allowed_syscalls(
             "HostPrint",
             print_func,
