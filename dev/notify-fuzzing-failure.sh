@@ -41,9 +41,9 @@ REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
 
 # Define the issue title and labels
 ISSUE_TITLE="Fuzzing Job Failure - $(date '+%Y-%m-%d')"
-FUZZING_LABEL="area/testing"
+TESTING_LABEL="area/testing"
 FAILURE_LABEL="kind/bug"
-FUZZING_KIND_LABEL="area/fuzzing"
+FUZZING_LABEL="area/fuzzing"
 LIFECYCLE_LABEL="lifecycle/needs-review"
 
 # Search for existing open fuzzing failure issues
@@ -138,9 +138,9 @@ The fuzzing workflow failed during execution. Please check the workflow logs and
     if ISSUE_URL=$(gh issue create \
         --title "$ISSUE_TITLE" \
         --body "$ISSUE_BODY" \
-        --label "$FUZZING_LABEL" \
+        --label "$TESTING_LABEL" \
         --label "$FAILURE_LABEL" \
-        --label "$FUZZING_KIND_LABEL" \
+        --label "$FUZZING_LABEL" \
         --label "$LIFECYCLE_LABEL" \
         --repo "$REPO"); then
         echo "✅ Created new fuzzing failure issue: $ISSUE_URL"
