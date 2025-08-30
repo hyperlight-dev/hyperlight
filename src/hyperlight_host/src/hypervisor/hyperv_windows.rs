@@ -569,14 +569,6 @@ impl Hypervisor for HypervWindowsDriver {
                 Reserved: Default::default(),
             }
         } else {
-            #[cfg(feature = "trace_guest")]
-            if self.trace_info.guest_start_epoch.is_none() {
-                // Store the guest start epoch and cycles to trace the guest execution time
-                crate::debug!("HyperV - Guest Start Epoch set");
-                self.trace_info.guest_start_tsc =
-                    Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
-                self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
-            }
             self.processor.run()?
         };
         self.interrupt_handle
@@ -940,7 +932,7 @@ impl Hypervisor for HypervWindowsDriver {
         }
     }
 
-    #[cfg(feature = "trace_guest")]
+    #[cfg(feature = "mem_profile")]
     fn trace_info_mut(&mut self) -> &mut TraceInfo {
         &mut self.trace_info
     }

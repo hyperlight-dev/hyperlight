@@ -24,7 +24,7 @@ use crate::hypervisor::regs::{
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
-#[cfg(feature = "trace_guest")]
+#[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::TraceInfo;
 use crate::{HyperlightError, Result, log_then_return};
 
@@ -314,7 +314,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn check_stack_guard(&self) -> Result<bool>;
 
     /// Get a mutable reference of the trace info for the guest
-    #[cfg(feature = "trace_guest")]
+    #[cfg(feature = "mem_profile")]
     fn trace_info_mut(&mut self) -> &mut TraceInfo;
 }
 

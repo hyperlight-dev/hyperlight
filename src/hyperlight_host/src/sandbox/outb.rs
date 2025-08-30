@@ -185,12 +185,14 @@ pub(crate) fn handle_outb(
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryAlloc => {
             let regs = _hv.regs()?;
-            crate::sandbox::trace::handle_trace_memory_alloc(&regs, mem_mgr, _hv.trace_info_mut())
+            let trace_info = _hv.trace_info_mut();
+            trace_info.handle_trace_mem_alloc(&regs, mem_mgr)
         }
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryFree => {
             let regs = _hv.regs()?;
-            crate::sandbox::trace::handle_trace_memory_free(&regs, mem_mgr, _hv.trace_info_mut())
+            let trace_info = _hv.trace_info_mut();
+            trace_info.handle_trace_mem_free(&regs, mem_mgr)
         }
     }
 }
