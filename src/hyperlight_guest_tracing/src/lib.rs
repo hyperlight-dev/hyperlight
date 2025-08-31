@@ -137,16 +137,54 @@ pub struct GuestEvent<const N: usize, const FK: usize, const FV: usize, const F:
 mod trace {
     extern crate alloc;
     use alloc::sync::{Arc, Weak};
-    use core::sync::atomic::AtomicU64;
+    use core::fmt::Debug;
+    use core::sync::atomic::{AtomicU64, Ordering};
+    use tracing_core::field::{Field, Visit};
     use tracing_core::span::{Attributes, Id, Record};
     use tracing_core::subscriber::Subscriber;
     use tracing_core::{Event, Metadata};
     use spin::Mutex;
 
     use super::*;
+    use crate::invariant_tsc;
 
     /// Weak reference to the guest state so we can manually trigger flush to host
     static GUEST_STATE: spin::Once<Weak<Mutex<GuestState>>> = spin::Once::new();
+
+    /// Visitor implementation to collect fields into a vector of key-value pairs
+    struct FieldsVisitor<'a, const FK: usize, const FV: usize, const F: usize> {
+        out: &'a mut hl::Vec<(hl::String<FK>, hl::String<FV>), F>,
+    }
+
+    impl<'a, const FK: usize, const FV: usize, const F: usize> Visit for FieldsVisitor<'a, FK, FV, F> {
+        fn record_bytes(&mut self, field: &Field, value: &[u8]) {
+            let mut k = hl::String::<FK>::new();
+            let mut val = hl::String::<FV>::new();
+            // Shorten key and value if they are bigger than the space allocated
+            let _ = k.push_str(&field.name()[..usize::min(field.name().len(), k.capacity())]);
+            let _ = val
+                .push_str(&alloc::format!("{value:?}")[..usize::min(value.len(), val.capacity())]);
+            let _ = self.out.push((k, val));
+        }
+        fn record_str(&mut self, f: &Field, v: &str) {
+            let mut k = heapless::String::<FK>::new();
+            let mut val = heapless::String::<FV>::new();
+            // Shorten key and value if they are bigger than the space allocated
+            let _ = k.push_str(&f.name()[..usize::min(f.name().len(), k.capacity())]);
+            let _ = val.push_str(&v[..usize::min(v.len(), val.capacity())]);
+            let _ = self.out.push((k, val));
+        }
+        fn record_debug(&mut self, f: &Field, v: &dyn Debug) {
+            use heapless::String;
+            let mut k = String::<FK>::new();
+            let mut val = String::<FV>::new();
+            // Shorten key and value if they are bigger than the space allocated
+            let _ = k.push_str(&f.name()[..usize::min(f.name().len(), k.capacity())]);
+            let v = alloc::format!("{v:?}");
+            let _ = val.push_str(&v[..usize::min(v.len(), val.capacity())]);
+            let _ = self.out.push((k, val));
+        }
+    }
 
     /// Helper type to define the guest state with the configured constants
     pub type GuestState = TraceState<
@@ -198,35 +236,130 @@ mod trace {
             }
         }
 
+        fn alloc_id(&self) -> (u64, Id) {
+            let n = self.next_id.load(Ordering::Relaxed);
+            self.next_id.store(n + 1, Ordering::Relaxed);
+
+            (n, Id::from_u64(n))
+        }
+
+        /// Triggers a VM exit to flush the current spans to the host.
+        /// This also clears the internal state to start fresh.
+        fn send_to_host(&mut self) {
+        }
+
         /// Create a new span and push it on the stack
         pub fn new_span(&mut self, attrs: &Attributes) -> Id {
-            unimplemented!()
+            let (idn, id) = self.alloc_id();
+
+            let md = attrs.metadata();
+            let mut name = hl::String::<N>::new();
+            let mut target = hl::String::<T>::new();
+            // Shorten name and target if they are bigger than the space allocated
+            let _ = name.push_str(&md.name()[..usize::min(md.name().len(), name.capacity())]);
+            let _ =
+                target.push_str(&md.target()[..usize::min(md.target().len(), target.capacity())]);
+
+            // Visit fields to collect them
+            let mut fields = hl::Vec::new();
+            attrs.record(&mut FieldsVisitor::<FK, FV, F> { out: &mut fields });
+
+            // Find parent from current stack top (if any)
+            let parent_id = self.stack.last().copied();
+
+            let span = GuestSpan::<EV, N, T, FK, FV, F> {
+                id: idn,
+                parent_id,
+                level: (*md.level()).into(),
+                name,
+                target,
+                start_tsc: invariant_tsc::read_tsc(),
+                end_tsc: None,
+                fields,
+                events: hl::Vec::new(),
+            };
+
+            let spans = &mut self.spans;
+            // Should never fail because we flush when full
+            let _ = spans.push(span);
+
+            // In case the spans Vec is full, we need to report them to the host
+            if spans.len() == spans.capacity() {
+                self.send_to_host();
+            }
+
+            id
         }
 
         /// Record an event in the current span (top of the stack)
         pub fn event(&mut self, event: &Event<'_>) {
-            unimplemented!()
+            let stack = &mut self.stack;
+            let parent_id = stack.last().copied().unwrap_or(0);
+
+            let md = event.metadata();
+            let mut name = hl::String::<N>::new();
+            // Shorten name and target if they are bigger than the space allocated
+            let _ = name.push_str(&md.name()[..usize::min(md.name().len(), name.capacity())]);
+
+            let mut fields = hl::Vec::new();
+            event.record(&mut FieldsVisitor::<FK, FV, F> { out: &mut fields });
+
+            let ev = GuestEvent {
+                level: (*md.level()).into(),
+                name,
+                tsc: invariant_tsc::read_tsc(),
+                fields,
+            };
+
+            let spans = &mut self.spans;
+            // Maybe panic is not the best option here, but if we have an event
+            // for a span that does not exist, something is very wrong.
+            let span = spans
+                .iter_mut()
+                .find(|s| s.id == parent_id)
+                .expect("There should always be a span");
+
+            // Should never fail because we flush when full
+            let _ = span.events.push(ev);
+
+            // Flush buffer to host if full
+            if span.events.len() >= span.events.capacity() {
+                self.send_to_host();
+            }
         }
 
         /// Record new values for an existing span
         fn record(&mut self, id: &Id, values: &Record<'_>) {
-            unimplemented!()
+            let spans = &mut self.spans;
+            if let Some(s) = spans.iter_mut().find(|s| s.id == id.into_u64()) {
+                let mut v = hl::Vec::new();
+                values.record(&mut FieldsVisitor::<FK, FV, F> { out: &mut v });
+                s.fields.extend(v);
+            }
         }
 
         /// Enter a span (push it on the stack)
         fn enter(&mut self, id: &Id) {
-            unimplemented!()
+            let st = &mut self.stack;
+            let _ = st.push(id.into_u64());
         }
 
         /// Exit a span (pop it from the stack)
         fn exit(&mut self, _id: &Id) {
-            unimplemented!()
+            let st = &mut self.stack;
+            let _ = st.pop();
         }
 
         /// Try to close a span by ID, returning true if successful
         /// Records the end timestamp for the span.
         fn try_close(&mut self, id: Id) -> bool {
-            unimplemented!()
+            let spans = &mut self.spans;
+            if let Some(s) = spans.iter_mut().find(|s| s.id == id.into_u64()) {
+                s.end_tsc = Some(invariant_tsc::read_tsc());
+                true
+            } else {
+                false
+            }
         }
     }
 
