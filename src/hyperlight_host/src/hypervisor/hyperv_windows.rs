@@ -22,6 +22,8 @@ use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
 use tracing::{Span, instrument};
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use windows::Win32::System::Hypervisor::{
     WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT,
     WHV_RUN_VP_EXIT_REASON, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
@@ -292,7 +294,6 @@ pub(crate) struct HypervWindowsDriver {
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
     #[cfg(feature = "mem_profile")]
-    #[allow(dead_code)]
     trace_info: MemTraceInfo,
 }
 /* This does not automatically impl Send because the host
@@ -735,7 +736,10 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(&mut self) -> Result<super::HyperlightExit> {
+    fn run(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
+    ) -> Result<super::HyperlightExit> {
         self.interrupt_handle.running.store(true, Ordering::Relaxed);
 
         #[cfg(not(gdb))]
@@ -760,6 +764,9 @@ impl Hypervisor for HypervWindowsDriver {
                 Reserved: Default::default(),
             }
         } else {
+            #[cfg(feature = "trace_guest")]
+            tc.setup_guest_trace(Span::current().context());
+
             self.processor.run()?
         };
         self.interrupt_handle
@@ -1089,6 +1096,17 @@ impl Hypervisor for HypervWindowsDriver {
     fn read_regs(&self) -> Result<X86_64Regs> {
         let regs = self.processor.get_regs()?;
         Ok(X86_64Regs::from(regs))
+    }
+
+    #[cfg(feature = "trace_guest")]
+    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
+        let regs = self.read_regs()?;
+        tc.handle_trace(
+            &regs,
+            self.mem_mgr.as_ref().ok_or_else(|| {
+                new_error!("Memory manager is not initialized before handling trace")
+            })?,
+        )
     }
 
     #[cfg(feature = "mem_profile")]

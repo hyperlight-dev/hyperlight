@@ -24,6 +24,8 @@ use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::LevelFilter;
 use tracing::{Span, instrument};
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
@@ -305,7 +307,6 @@ pub(crate) struct KVMDriver {
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
     #[cfg(feature = "mem_profile")]
-    #[allow(dead_code)]
     trace_info: MemTraceInfo,
 }
 
@@ -659,7 +660,10 @@ impl Hypervisor for KVMDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(&mut self) -> Result<HyperlightExit> {
+    fn run(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
+    ) -> Result<HyperlightExit> {
         self.interrupt_handle
             .tid
             .store(unsafe { libc::pthread_self() as u64 }, Ordering::Relaxed);
@@ -692,6 +696,9 @@ impl Hypervisor for KVMDriver {
         {
             Err(kvm_ioctls::Error::new(libc::EINTR))
         } else {
+            #[cfg(feature = "trace_guest")]
+            tc.setup_guest_trace(Span::current().context());
+
             // Note: if a `InterruptHandle::kill()` called while this thread is **here**
             // Then the vcpu will run, but we will keep sending signals to this thread
             // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
@@ -1029,6 +1036,17 @@ impl Hypervisor for KVMDriver {
     #[cfg(feature = "trace_guest")]
     fn read_regs(&self) -> Result<X86_64Regs> {
         Ok(X86_64Regs::from(self.vcpu_fd.get_regs()?))
+    }
+
+    #[cfg(feature = "trace_guest")]
+    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
+        let regs = self.read_regs()?;
+        tc.handle_trace(
+            &regs,
+            self.mem_mgr.as_ref().ok_or_else(|| {
+                new_error!("Memory manager is not initialized before handling trace")
+            })?,
+        )
     }
 
     #[cfg(feature = "mem_profile")]
