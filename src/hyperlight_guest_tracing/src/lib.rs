@@ -16,7 +16,9 @@ limitations under the License.
 #![no_std]
 use heapless as hl;
 #[cfg(feature = "trace")]
-pub use trace::{TraceBatchInfo, end_trace, guest_trace_info, init_guest_tracing};
+pub use trace::{
+    TraceBatchInfo, end_trace, guest_trace_info, init_guest_tracing, is_trace_enabled,
+};
 
 /// Module for checking invariant TSC support and reading the timestamp counter
 pub mod invariant_tsc {
@@ -545,5 +547,13 @@ mod trace {
             }
         }
         res
+    }
+
+    /// Returns true if tracing is enabled (the guest tracing state is initialized).
+    pub fn is_trace_enabled() -> bool {
+        GUEST_STATE
+            .get()
+            .and_then(|w| Some(w.upgrade().is_some()))
+            .unwrap_or(false)
     }
 }
