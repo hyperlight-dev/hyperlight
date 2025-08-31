@@ -262,6 +262,7 @@ dependencies = [
  "hyperlight-guest-bin",
  "hyperlight-guest-tracing",
  "log",
+ "tracing",
 ]
 
 [[package]]

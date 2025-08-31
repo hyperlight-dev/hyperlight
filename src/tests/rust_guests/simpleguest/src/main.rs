@@ -53,6 +53,7 @@ use hyperlight_guest_bin::host_comm::{
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{MIN_STACK_ADDRESS, guest_logger};
 use log::{LevelFilter, error};
+use tracing::{Span, instrument};
 
 extern crate hyperlight_guest;
 
@@ -91,6 +92,7 @@ fn echo_float(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+#[instrument(skip_all, parent = Span::current(), level= "Trace")]
 fn print_output(message: &str) -> Result<Vec<u8>> {
     let res = call_host_function::<i32>(
         "HostPrint",
@@ -101,6 +103,7 @@ fn print_output(message: &str) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(res))
 }
 
+#[instrument(skip_all, parent = Span::current(), level= "Trace")]
 fn simple_print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
         print_output(&message)
@@ -919,6 +922,7 @@ fn call_host_expect_error(function_call: &FunctionCall) -> Result<Vec<u8>> {
 }
 
 #[no_mangle]
+#[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub extern "C" fn hyperlight_main() {
     let expect_error_def = GuestFunctionDefinition::new(
         "CallHostExpectError".to_string(),
@@ -1640,6 +1644,7 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
 }
 
 #[no_mangle]
+#[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     // This test checks the stack behavior of the input/output buffer
     // by calling the host before serializing the function call.
