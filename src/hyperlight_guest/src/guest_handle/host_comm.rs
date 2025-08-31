@@ -30,6 +30,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::outb::OutBAction;
+use tracing::instrument;
 
 use super::handle::GuestHandle;
 use crate::error::{HyperlightGuestError, Result};
@@ -37,6 +38,7 @@ use crate::exit::out32;
 
 impl GuestHandle {
     /// Get user memory region as bytes.
+    #[instrument(skip_all, level = "Trace")]
     pub fn read_n_bytes_from_user_memory(&self, num: u64) -> Result<Vec<u8>> {
         let peb_ptr = self.peb().unwrap();
         let user_memory_region_ptr = unsafe { (*peb_ptr).init_data.ptr as *mut u8 };
@@ -124,6 +126,7 @@ impl GuestHandle {
     /// sends it to the host, and then retrieves the return value.
     ///
     /// The return value is deserialized into the specified type `T`.
+    #[instrument(skip_all, level = "Trace")]
     pub fn call_host_function<T: TryFrom<ReturnValue>>(
         &self,
         function_name: &str,
@@ -134,6 +137,7 @@ impl GuestHandle {
         self.get_host_return_value::<T>()
     }
 
+    #[instrument(skip_all, level = "Trace")]
     pub fn get_host_function_details(&self) -> HostFunctionDetails {
         let peb_ptr = self.peb().unwrap();
         let host_function_details_buffer =
@@ -159,24 +163,46 @@ impl GuestHandle {
         source_file: &str,
         line: u32,
     ) {
-        let guest_log_data = GuestLogData::new(
-            message.to_string(),
-            source.to_string(),
-            log_level,
-            caller.to_string(),
-            source_file.to_string(),
-            line,
-        );
+        // Closure to send log message to host
+        let send_to_host = || {
+            let guest_log_data = GuestLogData::new(
+                message.to_string(),
+                source.to_string(),
+                log_level,
+                caller.to_string(),
+                source_file.to_string(),
+                line,
+            );
 
-        let bytes: Vec<u8> = guest_log_data
-            .try_into()
-            .expect("Failed to convert GuestLogData to bytes");
+            let bytes: Vec<u8> = guest_log_data
+                .try_into()
+                .expect("Failed to convert GuestLogData to bytes");
 
-        self.push_shared_output_data(&bytes)
-            .expect("Unable to push log data to shared output data");
+            self.push_shared_output_data(&bytes)
+                .expect("Unable to push log data to shared output data");
 
-        unsafe {
-            out32(OutBAction::Log as u16, 0);
+            unsafe {
+                out32(OutBAction::Log as u16, 0);
+            }
+        };
+
+        #[cfg(feature = "trace_guest")]
+        if hyperlight_guest_tracing::is_trace_enabled() {
+            // If the "trace_guest" feature is enabled and tracing is initialized, log using tracing
+            tracing::trace!(
+                event = message,
+                level = ?log_level,
+                code.filepath = source,
+                caller = caller,
+                source_file = source_file,
+                code.lineno = line,
+            );
+        } else {
+            send_to_host();
+        }
+        #[cfg(not(feature = "trace_guest"))]
+        {
+            send_to_host();
         }
     }
 }

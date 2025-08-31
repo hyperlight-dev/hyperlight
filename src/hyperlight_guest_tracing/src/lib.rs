@@ -38,7 +38,8 @@ mod visitor;
 pub use state::TraceBatchInfo;
 #[cfg(feature = "trace")]
 pub use trace::{
-    clean_trace_state, end_trace, guest_trace_info, init_guest_tracing, set_start_tsc,
+    clean_trace_state, end_trace, guest_trace_info, init_guest_tracing, is_trace_enabled,
+    set_start_tsc,
 };
 
 /// Maximum number of spans that the guest can store
@@ -211,5 +212,13 @@ mod trace {
             res = Some(state.lock().guest_trace_info());
         }
         res
+    }
+
+    /// Returns true if tracing is enabled (the guest tracing state is initialized).
+    pub fn is_trace_enabled() -> bool {
+        GUEST_STATE
+            .get()
+            .map(|w| w.upgrade().is_some())
+            .unwrap_or(false)
     }
 }

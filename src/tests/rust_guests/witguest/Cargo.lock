@@ -248,6 +248,7 @@ dependencies = [
  "hyperlight-common",
  "hyperlight-guest-tracing",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -264,6 +265,7 @@ dependencies = [
  "hyperlight-guest-tracing",
  "log",
  "spin 0.10.0",
+ "tracing",
 ]
 
 [[package]]
