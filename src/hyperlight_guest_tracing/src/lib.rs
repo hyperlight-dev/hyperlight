@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![no_std]
+use heapless as hl;
 #[cfg(feature = "trace")]
 pub use trace::init_guest_tracing;
 
@@ -51,28 +52,181 @@ pub mod invariant_tsc {
     }
 }
 
+const MAX_NO_OF_SPANS: usize = 10;
+const MAX_NO_OF_EVENTS: usize = 10;
+const MAX_NAME_LENGTH: usize = 64;
+const MAX_TARGET_LENGTH: usize = 64;
+const MAX_FIELD_KEY_LENGTH: usize = 32;
+const MAX_FIELD_VALUE_LENGTH: usize = 96;
+const MAX_NO_OF_FIELDS: usize = 8;
+
+pub type Spans = hl::Vec<
+    GuestSpan<
+        MAX_NO_OF_EVENTS,
+        MAX_NAME_LENGTH,
+        MAX_TARGET_LENGTH,
+        MAX_FIELD_KEY_LENGTH,
+        MAX_FIELD_VALUE_LENGTH,
+        MAX_NO_OF_FIELDS,
+    >,
+    MAX_NO_OF_SPANS,
+>;
+
+#[derive(Debug, Copy, Clone)]
+pub enum TraceLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<tracing::Level> for TraceLevel {
+    fn from(value: tracing::Level) -> Self {
+        match value {
+            tracing::Level::ERROR => Self::Error,
+            tracing::Level::WARN => Self::Warn,
+            tracing::Level::INFO => Self::Info,
+            tracing::Level::DEBUG => Self::Debug,
+            tracing::Level::TRACE => Self::Trace,
+        }
+    }
+}
+impl Into<tracing::Level> for TraceLevel {
+    fn into(self) -> tracing::Level {
+        match self {
+            Self::Error => tracing::Level::ERROR,
+            Self::Warn => tracing::Level::WARN,
+            Self::Info => tracing::Level::INFO,
+            Self::Debug => tracing::Level::DEBUG,
+            Self::Trace => tracing::Level::TRACE,
+        }
+    }
+}
+
+pub struct GuestSpan<
+    const EV: usize,
+    const N: usize,
+    const T: usize,
+    const FK: usize,
+    const FV: usize,
+    const F: usize,
+> {
+    pub id: u64,
+    pub parent_id: Option<u64>,
+    pub level: TraceLevel,
+    /// Span name
+    pub name: hl::String<N>,
+    /// Filename
+    pub target: hl::String<T>,
+    pub start_tsc: u64,
+    pub end_tsc: Option<u64>,
+    pub fields: hl::Vec<(hl::String<FK>, hl::String<FV>), F>,
+    pub events: hl::Vec<GuestEvent<N, FK, FV, F>, EV>,
+}
+
+pub struct GuestEvent<const N: usize, const FK: usize, const FV: usize, const F: usize> {
+    pub level: TraceLevel,
+    pub name: hl::String<N>,
+    /// Event name
+    pub tsc: u64,
+    pub fields: hl::Vec<(hl::String<FK>, hl::String<FV>), F>,
+}
+
 #[cfg(feature = "trace")]
 mod trace {
     extern crate alloc;
     use alloc::sync::{Arc, Weak};
+    use core::sync::atomic::AtomicU64;
     use tracing_core::span::{Attributes, Id, Record};
     use tracing_core::subscriber::Subscriber;
     use tracing_core::{Event, Metadata};
     use spin::Mutex;
 
-    /// Weak reference to the guest state so we can manually trigger export to host
+    use super::*;
+
+    /// Weak reference to the guest state so we can manually trigger flush to host
     static GUEST_STATE: spin::Once<Weak<Mutex<GuestState>>> = spin::Once::new();
 
-    pub struct GuestState {
+    /// Helper type to define the guest state with the configured constants
+    pub type GuestState = TraceState<
+        MAX_NO_OF_SPANS,
+        MAX_NO_OF_EVENTS,
+        MAX_NAME_LENGTH,
+        MAX_TARGET_LENGTH,
+        MAX_FIELD_KEY_LENGTH,
+        MAX_FIELD_VALUE_LENGTH,
+        MAX_NO_OF_FIELDS,
+    >;
+
+    /// Internal state of the tracing subscriber
+    pub struct TraceState<
+        const SP: usize,
+        const EV: usize,
+        const N: usize,
+        const T: usize,
+        const FK: usize,
+        const FV: usize,
+        const F: usize,
+    > {
+        /// The timestamp counter at the start of the guest execution.
         guest_start_tsc: u64,
+        /// Next span ID to allocate
+        next_id: AtomicU64,
+        /// All spans and events collected
+        spans: hl::Vec<GuestSpan<EV, N, T, FK, FV, F>, SP>,
+        /// Stack of active spans
+        stack: hl::Vec<u64, SP>,
     }
 
-    impl GuestState
+    impl<
+        const SP: usize,
+        const EV: usize,
+        const N: usize,
+        const T: usize,
+        const FK: usize,
+        const FV: usize,
+        const F: usize,
+    > TraceState<SP, EV, N, T, FK, FV, F>
     {
         fn new(guest_start_tsc: u64) -> Self {
             Self {
                 guest_start_tsc,
+                next_id: AtomicU64::new(1),
+                spans: hl::Vec::new(),
+                stack: hl::Vec::new(),
             }
+        }
+
+        /// Create a new span and push it on the stack
+        pub fn new_span(&mut self, attrs: &Attributes) -> Id {
+            unimplemented!()
+        }
+
+        /// Record an event in the current span (top of the stack)
+        pub fn event(&mut self, event: &Event<'_>) {
+            unimplemented!()
+        }
+
+        /// Record new values for an existing span
+        fn record(&mut self, id: &Id, values: &Record<'_>) {
+            unimplemented!()
+        }
+
+        /// Enter a span (push it on the stack)
+        fn enter(&mut self, id: &Id) {
+            unimplemented!()
+        }
+
+        /// Exit a span (pop it from the stack)
+        fn exit(&mut self, _id: &Id) {
+            unimplemented!()
+        }
+
+        /// Try to close a span by ID, returning true if successful
+        /// Records the end timestamp for the span.
+        fn try_close(&mut self, id: Id) -> bool {
+            unimplemented!()
         }
     }
 
@@ -101,27 +255,27 @@ mod trace {
         }
 
         fn new_span(&self, attrs: &Attributes<'_>) -> Id {
-            unimplemented!()
+            self.state.lock().new_span(attrs)
         }
 
         fn record(&self, id: &Id, values: &Record<'_>) {
-            unimplemented!()
+            self.state.lock().record(id, values)
         }
 
         fn event(&self, event: &Event<'_>) {
-            unimplemented!()
+            self.state.lock().event(event)
         }
 
         fn enter(&self, id: &Id) {
-            unimplemented!()
+            self.state.lock().enter(id)
         }
 
         fn exit(&self, id: &Id) {
-            unimplemented!()
+            self.state.lock().exit(id)
         }
 
         fn try_close(&self, id: Id) -> bool {
-            unimplemented!()
+            self.state.lock().try_close(id)
         }
 
         fn record_follows_from(&self, _span: &Id, _follows: &Id) {
