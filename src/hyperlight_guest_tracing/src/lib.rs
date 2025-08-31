@@ -37,7 +37,9 @@ mod visitor;
 #[cfg(feature = "trace")]
 pub use state::TraceBatchInfo;
 #[cfg(feature = "trace")]
-pub use trace::{init_guest_tracing, set_start_tsc};
+pub use trace::{
+    clean_trace_state, end_trace, guest_trace_info, init_guest_tracing, set_start_tsc,
+};
 
 /// Maximum number of spans that the guest can store
 const MAX_NO_OF_SPANS: usize = 10;
@@ -173,5 +175,41 @@ mod trace {
                 state.lock().set_start_tsc(guest_start_tsc);
             }
         }
+    }
+
+    /// Ends the current trace by ending all active spans in the
+    /// internal state and storing the end timestamps.
+    ///
+    /// This expects an outb call to send the spans to the host.
+    /// After calling this function, the internal state is marked
+    /// for cleaning on the next access.
+    pub fn end_trace() {
+        if let Some(w) = GUEST_STATE.get() {
+            if let Some(state) = w.upgrade() {
+                state.lock().end_trace();
+            }
+        }
+    }
+
+    /// Cleans the internal trace state by removing closed spans and events.
+    /// This ensures that after a VM exit, we keep the spans that
+    /// are still active (in the stack) and remove all other spans and events.
+    pub fn clean_trace_state() {
+        if let Some(w) = GUEST_STATE.get() {
+            if let Some(state) = w.upgrade() {
+                state.lock().clean();
+            }
+        }
+    }
+
+    /// Returns information about the current trace state needed by the host to read the spans.
+    pub fn guest_trace_info() -> Option<TraceBatchInfo> {
+        let mut res = None;
+        if let Some(w) = GUEST_STATE.get() {
+            if let Some(state) = w.upgrade() {
+                res = Some(state.lock().guest_trace_info());
+            }
+        }
+        res
     }
 }
