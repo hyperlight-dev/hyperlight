@@ -171,7 +171,10 @@ pub(crate) trait Hypervisor: Debug + Send {
     ) -> Result<()>;
 
     /// Run the vCPU
-    fn run(&mut self) -> Result<HyperlightExit>;
+    fn run(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
+    ) -> Result<HyperlightExit>;
 
     /// Get InterruptHandle to underlying VM
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
@@ -313,6 +316,9 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Check stack guard to see if the stack is still valid
     fn check_stack_guard(&self) -> Result<bool>;
 
+    #[cfg(feature = "trace_guest")]
+    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()>;
+
     /// Get a mutable reference of the trace info for the guest
     #[cfg(feature = "mem_profile")]
     fn trace_info_mut(&mut self) -> &mut MemTraceInfo;
@@ -351,8 +357,31 @@ impl VirtualCPU {
         hv: &mut dyn Hypervisor,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
+        // Keeps the trace context and open spans
+        #[cfg(feature = "trace_guest")]
+        let mut tc = crate::sandbox::trace::TraceContext::new();
+
         loop {
-            match hv.run() {
+            #[cfg(feature = "trace_guest")]
+            let result = {
+                let result = hv.run(&mut tc);
+                // End current host trace by closing the current span that captures traces
+                // happening when a guest exits and re-enters.
+                tc.end_host_trace();
+
+                // Handle the guest trace data if any
+                if let Err(e) = hv.handle_trace(&mut tc) {
+                    // If no trace data is available, we just log a message and continue
+                    // Is this the right thing to do?
+                    log::debug!("Error handling guest trace: {:?}", e);
+                }
+
+                result
+            };
+            #[cfg(not(feature = "trace_guest"))]
+            let result = hv.run();
+
+            match result {
                 #[cfg(gdb)]
                 Ok(HyperlightExit::Debug(stop_reason)) => {
                     if let Err(e) = hv.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {

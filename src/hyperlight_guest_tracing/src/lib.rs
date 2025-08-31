@@ -170,10 +170,10 @@ mod trace {
 
     /// Sets the guset starting timestamp reported to the host on a VMExit
     pub fn set_start_tsc(guest_start_tsc: u64) {
-        if let Some(w) = GUEST_STATE.get() {
-            if let Some(state) = w.upgrade() {
-                state.lock().set_start_tsc(guest_start_tsc);
-            }
+        if let Some(w) = GUEST_STATE.get()
+            && let Some(state) = w.upgrade()
+        {
+            state.lock().set_start_tsc(guest_start_tsc);
         }
     }
 
@@ -184,10 +184,10 @@ mod trace {
     /// After calling this function, the internal state is marked
     /// for cleaning on the next access.
     pub fn end_trace() {
-        if let Some(w) = GUEST_STATE.get() {
-            if let Some(state) = w.upgrade() {
-                state.lock().end_trace();
-            }
+        if let Some(w) = GUEST_STATE.get()
+            && let Some(state) = w.upgrade()
+        {
+            state.lock().end_trace();
         }
     }
 
@@ -195,20 +195,20 @@ mod trace {
     /// This ensures that after a VM exit, we keep the spans that
     /// are still active (in the stack) and remove all other spans and events.
     pub fn clean_trace_state() {
-        if let Some(w) = GUEST_STATE.get() {
-            if let Some(state) = w.upgrade() {
-                state.lock().clean();
-            }
+        if let Some(w) = GUEST_STATE.get()
+            && let Some(state) = w.upgrade()
+        {
+            state.lock().clean();
         }
     }
 
     /// Returns information about the current trace state needed by the host to read the spans.
     pub fn guest_trace_info() -> Option<TraceBatchInfo> {
         let mut res = None;
-        if let Some(w) = GUEST_STATE.get() {
-            if let Some(state) = w.upgrade() {
-                res = Some(state.lock().guest_trace_info());
-            }
+        if let Some(w) = GUEST_STATE.get()
+            && let Some(state) = w.upgrade()
+        {
+            res = Some(state.lock().guest_trace_info());
         }
         res
     }
