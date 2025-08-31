@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![no_std]
+#[cfg(feature = "trace")]
+pub use trace::init_guest_tracing;
 
 /// Module for checking invariant TSC support and reading the timestamp counter
 pub mod invariant_tsc {
@@ -46,5 +48,99 @@ pub mod invariant_tsc {
     /// However, the resulting timestamp is only meaningful if invariant TSC is supported.
     pub fn read_tsc() -> u64 {
         unsafe { _rdtsc() }
+    }
+}
+
+#[cfg(feature = "trace")]
+mod trace {
+    extern crate alloc;
+    use alloc::sync::{Arc, Weak};
+    use tracing_core::span::{Attributes, Id, Record};
+    use tracing_core::subscriber::Subscriber;
+    use tracing_core::{Event, Metadata};
+    use spin::Mutex;
+
+    /// Weak reference to the guest state so we can manually trigger export to host
+    static GUEST_STATE: spin::Once<Weak<Mutex<GuestState>>> = spin::Once::new();
+
+    pub struct GuestState {
+        guest_start_tsc: u64,
+    }
+
+    impl GuestState
+    {
+        fn new(guest_start_tsc: u64) -> Self {
+            Self {
+                guest_start_tsc,
+            }
+        }
+    }
+
+    /// The subscriber is used to collect spans and events in the guest.
+    struct GuestSubscriber {
+        /// Internal state that holds the spans and events
+        /// Protected by a Mutex for inner mutability
+        /// A reference to this state is stored in a static variable
+        state: Arc<Mutex<GuestState>>,
+    }
+
+    impl GuestSubscriber {
+        fn new(guest_start_tsc: u64) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(GuestState::new(guest_start_tsc))),
+            }
+        }
+        fn state(&self) -> &Arc<Mutex<GuestState>> {
+            &self.state
+        }
+    }
+
+    impl Subscriber for GuestSubscriber {
+        fn enabled(&self, _md: &Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, attrs: &Attributes<'_>) -> Id {
+            unimplemented!()
+        }
+
+        fn record(&self, id: &Id, values: &Record<'_>) {
+            unimplemented!()
+        }
+
+        fn event(&self, event: &Event<'_>) {
+            unimplemented!()
+        }
+
+        fn enter(&self, id: &Id) {
+            unimplemented!()
+        }
+
+        fn exit(&self, id: &Id) {
+            unimplemented!()
+        }
+
+        fn try_close(&self, id: Id) -> bool {
+            unimplemented!()
+        }
+
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {
+            // no-op: we don't track follows-from relationships
+        }
+    }
+
+    /// Initialize the guest tracing subscriber as global default.
+    pub fn init_guest_tracing(guest_start_tsc: u64) {
+        // Set as global default if not already set.
+        if tracing_core::dispatcher::has_been_set() {
+            return;
+        }
+        let sub = GuestSubscriber::new(guest_start_tsc);
+        let state = sub.state();
+        // Store state Weak<GuestState> to use later at runtime
+        GUEST_STATE.call_once(|| Arc::downgrade(state));
+
+        // Set global dispatcher
+        let _ = tracing_core::dispatcher::set_global_default(tracing_core::Dispatch::new(sub));
     }
 }
