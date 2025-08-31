@@ -82,7 +82,7 @@ test-like-ci config=default-target hypervisor="kvm":
     cargo check -p hyperlight-host --features crashdump
     cargo check -p hyperlight-host --features print_debug
     cargo check -p hyperlight-host --features gdb
-    cargo check -p hyperlight-host --features trace_guest,unwind_guest,mem_profile
+    cargo check -p hyperlight-host --features trace_guest,mem_profile
 
     @# without any driver (should fail to compile)
     just test-compilation-no-default-features {{config}}

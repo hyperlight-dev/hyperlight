@@ -41,8 +41,6 @@ use {
     crate::HyperlightError,
 };
 
-#[cfg(feature = "trace_guest")]
-use super::TraceRegister;
 use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
@@ -54,6 +52,8 @@ use super::{
     EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
+#[cfg(feature = "trace_guest")]
+use crate::hypervisor::arch::X86_64Regs;
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::get_memory_access_violation;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
@@ -77,7 +77,8 @@ mod debug {
 
     use super::{HypervWindowsDriver, *};
     use crate::Result;
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::arch::X86_64Regs;
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
     use crate::mem::shared_mem::HostSharedMemory;
     use crate::sandbox::mem_mgr::MemMgrWrapper;
 
@@ -292,7 +293,6 @@ pub(crate) struct HypervWindowsDriver {
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
     #[cfg(feature = "trace_guest")]
-    #[allow(dead_code)]
     trace_info: TraceInfo,
 }
 /* This does not automatically impl Send because the host
@@ -761,13 +761,8 @@ impl Hypervisor for HypervWindowsDriver {
             }
         } else {
             #[cfg(feature = "trace_guest")]
-            if self.trace_info.guest_start_epoch.is_none() {
-                // Store the guest start epoch and cycles to trace the guest execution time
-                crate::debug!("HyperV - Guest Start Epoch set");
-                self.trace_info.guest_start_tsc =
-                    Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
-                self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
-            }
+            self.trace_info.setup_guest_trace();
+
             self.processor.run()?
         };
         self.interrupt_handle
@@ -882,6 +877,20 @@ impl Hypervisor for HypervWindowsDriver {
             }
         };
 
+        // If trace is enabled, process the trace batch
+        #[cfg(feature = "trace_guest")]
+        match result {
+            HyperlightExit::Halt()
+            | HyperlightExit::IoOut(_, _, _, _)
+            | HyperlightExit::Mmio(_) => {
+                // If the result is not a halt, io out, mmio or debug exit, we need to process the trace batch
+                let regs = self.read_regs()?;
+                let _ = self
+                    .trace_info
+                    .handle_trace_batch(&regs, self.mem_mgr.as_mut().unwrap());
+            }
+            _ => {}
+        }
         Ok(result)
     }
 
@@ -1094,23 +1103,13 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
+    fn read_trace_reg(&self) -> Result<X86_64Regs> {
         let regs = self.processor.get_regs()?;
-        match reg {
-            TraceRegister::RAX => Ok(regs.rax),
-            TraceRegister::RCX => Ok(regs.rcx),
-            TraceRegister::RIP => Ok(regs.rip),
-            TraceRegister::RSP => Ok(regs.rsp),
-            TraceRegister::RBP => Ok(regs.rbp),
-        }
+        Ok(X86_64Regs::from(regs))
     }
 
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_ref(&self) -> &TraceInfo {
-        &self.trace_info
-    }
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
+    #[cfg(feature = "mem_profile")]
+    fn trace_info_mut(&mut self) -> &mut TraceInfo {
         &mut self.trace_info
     }
 }
