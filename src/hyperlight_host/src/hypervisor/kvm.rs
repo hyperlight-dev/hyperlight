@@ -306,7 +306,6 @@ pub(crate) struct KVMDriver {
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
     #[cfg(feature = "trace_guest")]
-    #[allow(dead_code)]
     trace_info: TraceInfo,
 }
 
@@ -693,6 +692,9 @@ impl Hypervisor for KVMDriver {
         {
             Err(kvm_ioctls::Error::new(libc::EINTR))
         } else {
+            #[cfg(feature = "trace_guest")]
+            self.trace_info.setup_guest_trace();
+
             // Note: if a `InterruptHandle::kill()` called while this thread is **here**
             // Then the vcpu will run, but we will keep sending signals to this thread
             // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
@@ -809,6 +811,21 @@ impl Hypervisor for KVMDriver {
                 HyperlightExit::Unknown(err_msg)
             }
         };
+
+        // If trace is enabled, process the trace batch
+        #[cfg(feature = "trace_guest")]
+        match result {
+            HyperlightExit::Halt()
+            | HyperlightExit::IoOut(_, _, _, _)
+            | HyperlightExit::Mmio(_) => {
+                // If the result is not a halt, io out, mmio or debug exit, we need to process the trace batch
+                let regs = self.read_regs()?;
+                let _ = self
+                    .trace_info
+                    .handle_trace_batch(&regs, self.mem_mgr.as_mut().unwrap());
+            }
+            _ => {}
+        }
         Ok(result)
     }
 

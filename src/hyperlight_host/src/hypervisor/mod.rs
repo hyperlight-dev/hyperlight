@@ -233,7 +233,6 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn check_stack_guard(&self) -> Result<bool>;
 
     /// Read a register for trace/unwind purposes
-    #[allow(dead_code)]
     #[cfg(feature = "trace_guest")]
     fn read_regs(&self) -> Result<arch::X86_64Regs>;
 
