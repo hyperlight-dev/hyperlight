@@ -18,9 +18,11 @@ use core::arch::asm;
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::outb::OutBAction;
+use tracing::instrument;
 
 /// Halt the execution of the guest and returns control to the host.
 #[inline(never)]
+#[instrument(skip_all, level = "Trace")]
 pub fn halt() {
     #[cfg(feature = "trace_guest")]
     {
@@ -121,6 +123,7 @@ pub(crate) fn outb(port: u16, data: &[u8]) {
 }
 
 /// OUT function for sending a 32-bit value to the host.
+#[instrument(skip_all, level = "Trace")]
 pub(crate) unsafe fn out32(port: u16, val: u32) {
     #[cfg(feature = "trace_guest")]
     {
