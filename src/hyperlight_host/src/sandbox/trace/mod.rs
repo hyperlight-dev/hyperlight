@@ -14,6 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+/// Tracing context support for sandboxes.
+mod context;
+pub(crate) use context::TraceContext;
+
 /// Tracing and profiling support for sandboxes.
 #[cfg(feature = "mem_profile")]
 mod mem_profile;

@@ -50,6 +50,8 @@ use mshv_bindings::{
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
@@ -319,7 +321,6 @@ pub(crate) struct HypervLinuxDriver {
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
-    #[allow(dead_code)]
     #[cfg(feature = "mem_profile")]
     trace_info: MemTraceInfo,
 }
@@ -732,7 +733,10 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(&mut self) -> Result<super::HyperlightExit> {
+    fn run(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
+    ) -> Result<super::HyperlightExit> {
         const HALT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_HALT;
         const IO_PORT_INTERCEPT_MESSAGE: hv_message_type =
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
@@ -774,6 +778,9 @@ impl Hypervisor for HypervLinuxDriver {
         {
             Err(mshv_ioctls::MshvError::from(libc::EINTR))
         } else {
+            #[cfg(feature = "trace_guest")]
+            tc.setup_guest_trace(Span::current().context());
+
             // Note: if a `InterruptHandle::kill()` called while this thread is **here**
             // Then the vcpu will run, but we will keep sending signals to this thread
             // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
@@ -1137,6 +1144,17 @@ impl Hypervisor for HypervLinuxDriver {
     #[cfg(feature = "trace_guest")]
     fn read_regs(&self) -> Result<X86_64Regs> {
         Ok(X86_64Regs::from(self.vcpu_fd.get_regs()?))
+    }
+
+    #[cfg(feature = "trace_guest")]
+    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
+        let regs = self.read_regs()?;
+        tc.handle_trace(
+            &regs,
+            self.mem_mgr.as_ref().ok_or_else(|| {
+                new_error!("Memory manager is not initialized before handling trace")
+            })?,
+        )
     }
 
     #[cfg(feature = "mem_profile")]
