@@ -17,6 +17,8 @@ limitations under the License.
 use alloc::alloc::Layout;
 use core::arch::asm;
 
+use tracing::{Span, instrument};
+
 use crate::OS_PAGE_SIZE;
 
 /// Convert a physical address in main memory to a virtual address
@@ -61,6 +63,7 @@ struct MapResponse {
 ///   as such do not use concurrently with any other page table operations
 /// - TLB invalidation is not performed,
 ///   if previously-unmapped ranges are not being mapped, TLB invalidation may need to be performed afterwards.
+#[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
     let mut pml4_base: u64;
     unsafe {
