@@ -16,7 +16,7 @@ limitations under the License.
 #![no_std]
 use heapless as hl;
 #[cfg(feature = "trace")]
-pub use trace::init_guest_tracing;
+pub use trace::{TraceBatchInfo, end_trace, guest_trace_info, init_guest_tracing};
 
 /// Module for checking invariant TSC support and reading the timestamp counter
 pub mod invariant_tsc {
@@ -139,17 +139,26 @@ mod trace {
     use alloc::sync::{Arc, Weak};
     use core::fmt::Debug;
     use core::sync::atomic::{AtomicU64, Ordering};
+
+    use hyperlight_common::outb::OutBAction;
+    use spin::Mutex;
     use tracing_core::field::{Field, Visit};
     use tracing_core::span::{Attributes, Id, Record};
     use tracing_core::subscriber::Subscriber;
     use tracing_core::{Event, Metadata};
-    use spin::Mutex;
 
     use super::*;
     use crate::invariant_tsc;
 
     /// Weak reference to the guest state so we can manually trigger flush to host
     static GUEST_STATE: spin::Once<Weak<Mutex<GuestState>>> = spin::Once::new();
+
+    pub struct TraceBatchInfo {
+        /// The timestamp counter at the start of the guest execution.
+        pub guest_start_tsc: u64,
+        /// Pointer to the spans in the guest memory.
+        pub spans_ptr: u64,
+    }
 
     /// Visitor implementation to collect fields into a vector of key-value pairs
     struct FieldsVisitor<'a, const FK: usize, const FV: usize, const F: usize> {
@@ -207,6 +216,8 @@ mod trace {
         const FV: usize,
         const F: usize,
     > {
+        /// Whether we need to cleanup the state on next access
+        cleanup_needed: bool,
         /// The timestamp counter at the start of the guest execution.
         guest_start_tsc: u64,
         /// Next span ID to allocate
@@ -229,6 +240,7 @@ mod trace {
     {
         fn new(guest_start_tsc: u64) -> Self {
             Self {
+                cleanup_needed: false,
                 guest_start_tsc,
                 next_id: AtomicU64::new(1),
                 spans: hl::Vec::new(),
@@ -243,13 +255,91 @@ mod trace {
             (n, Id::from_u64(n))
         }
 
+        /// Cleanup internal state by removing closed spans and events
+        /// This ensures that after a VM exit, we keep the spans that
+        /// are still active (in the stack) and remove all other spans and events.
+        fn clean(&mut self) {
+            // used for computing the spans that need to be removed
+            let mut ids: hl::Vec<u64, SP> = self.spans.iter().map(|s| s.id).collect();
+
+            for id in self.stack.iter() {
+                let position = ids.iter().position(|s| *s == *id).unwrap();
+                // remove the span id that is contained in the stack
+                ids.remove(position);
+            }
+
+            // Remove the spans with the remaining ids
+            for id in ids.into_iter() {
+                let spans = &mut self.spans;
+                let position = spans.iter().position(|s| s.id == id).unwrap();
+                spans.remove(position);
+            }
+
+            // Remove the events from the remaining spans
+            for s in self.spans.iter_mut() {
+                s.events.clear();
+            }
+        }
+
+        #[inline(always)]
+        fn verify_and_clean(&mut self) {
+            if self.cleanup_needed {
+                self.clean();
+                self.cleanup_needed = false;
+            }
+        }
+
         /// Triggers a VM exit to flush the current spans to the host.
         /// This also clears the internal state to start fresh.
         fn send_to_host(&mut self) {
+            let guest_start_tsc = self.guest_start_tsc;
+            let spans_ptr = self.spans.as_ptr() as u64;
+
+            unsafe {
+                core::arch::asm!("out dx, al",
+                    // Port value for tracing
+                    in("dx") OutBAction::TraceBatch as u16,
+                    // Additional magic number to identify the action
+                    in("r8") OutBAction::TraceBatch as u64,
+                    in("r9") spans_ptr,
+                    in("r10") guest_start_tsc,
+                );
+            }
+
+            self.clean();
+        }
+
+        /// Closes the trace by ending all spans
+        /// NOTE: This expects an outb call to send the spans to the host.
+        fn end_trace(&mut self) {
+            for span in self.spans.iter_mut() {
+                if span.end_tsc.is_none() {
+                    span.end_tsc = Some(invariant_tsc::read_tsc());
+                }
+            }
+
+            // Empty the stack
+            while self.stack.pop().is_some() {
+                // Pop all remaining spans from the stack
+            }
+
+            // Mark for clearing when re-entering the VM because we might
+            // not enter on the same place as we exited (e.g. halt)
+            self.cleanup_needed = true;
+        }
+
+        /// Returns information about the information needed by the host to read the spans.
+        pub fn guest_trace_info(&mut self) -> TraceBatchInfo {
+            self.cleanup_needed = true;
+            TraceBatchInfo {
+                guest_start_tsc: self.guest_start_tsc,
+                spans_ptr: self.spans.as_ptr() as u64,
+            }
         }
 
         /// Create a new span and push it on the stack
         pub fn new_span(&mut self, attrs: &Attributes) -> Id {
+            self.verify_and_clean();
             let (idn, id) = self.alloc_id();
 
             let md = attrs.metadata();
@@ -293,6 +383,7 @@ mod trace {
 
         /// Record an event in the current span (top of the stack)
         pub fn event(&mut self, event: &Event<'_>) {
+            self.verify_and_clean();
             let stack = &mut self.stack;
             let parent_id = stack.last().copied().unwrap_or(0);
 
@@ -429,5 +520,30 @@ mod trace {
 
         // Set global dispatcher
         let _ = tracing_core::dispatcher::set_global_default(tracing_core::Dispatch::new(sub));
+    }
+
+    /// Ends the current trace by ending all active spans in the
+    /// internal state and storing the end timestamps.
+    ///
+    /// This expects an outb call to send the spans to the host.
+    /// After calling this function, the internal state is marked
+    /// for cleaning on the next access.
+    pub fn end_trace() {
+        if let Some(w) = GUEST_STATE.get() {
+            if let Some(state) = w.upgrade() {
+                state.lock().end_trace();
+            }
+        }
+    }
+
+    /// Returns information about the current trace state needed by the host to read the spans.
+    pub fn guest_trace_info() -> Option<TraceBatchInfo> {
+        let mut res = None;
+        if let Some(w) = GUEST_STATE.get() {
+            if let Some(state) = w.upgrade() {
+                res = Some(state.lock().guest_trace_info());
+            }
+        }
+        res
     }
 }

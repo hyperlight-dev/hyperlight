@@ -181,6 +181,8 @@ pub(crate) fn handle_outb(
             eprint!("{}", ch);
             Ok(())
         }
+        #[cfg(feature = "trace_guest")]
+        OutBAction::TraceBatch => Ok(()),
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryAlloc => {
             let regs = _hv.read_regs()?;
