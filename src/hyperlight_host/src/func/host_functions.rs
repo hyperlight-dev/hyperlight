@@ -17,12 +17,13 @@ limitations under the License.
 use std::sync::{Arc, Mutex};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnValue};
+use hyperlight_common::for_each_tuple;
+use hyperlight_common::func::{Error as FuncError, Function, ResultType};
 
-use super::utils::for_each_tuple;
-use super::{ParameterTuple, ResultType, SupportedReturnType};
+use super::{ParameterTuple, SupportedReturnType};
 use crate::sandbox::UninitializedSandbox;
 use crate::sandbox::host_funcs::FunctionEntry;
-use crate::{Result, new_error};
+use crate::{HyperlightError, Result, new_error};
 
 /// A sandbox on which (primitive) host functions can be registered
 ///
@@ -87,7 +88,7 @@ where
     // Use Arc in here instead of Box because it's useful in tests and
     // presumably in other places to be able to clone a HostFunction and
     // use it across different sandboxes.
-    func: Arc<dyn Fn(Args) -> Result<Output> + Send + Sync + 'static>,
+    func: Arc<dyn Function<Output, Args, HyperlightError> + Send + Sync + 'static>,
 }
 
 pub(crate) struct TypeErasedHostFunction {
@@ -101,13 +102,35 @@ where
 {
     /// Call the host function with the given arguments.
     pub fn call(&self, args: Args) -> Result<Output> {
-        (self.func)(args)
+        self.func.call(args)
     }
 }
 
 impl TypeErasedHostFunction {
     pub(crate) fn call(&self, args: Vec<ParameterValue>) -> Result<ReturnValue> {
         (self.func)(args)
+    }
+}
+
+impl From<FuncError> for HyperlightError {
+    fn from(e: FuncError) -> Self {
+        match e {
+            FuncError::ParameterValueConversionFailure(from, to) => {
+                HyperlightError::ParameterValueConversionFailure(from, to)
+            }
+            FuncError::ReturnValueConversionFailure(from, to) => {
+                HyperlightError::ReturnValueConversionFailure(from, to)
+            }
+            FuncError::UnexpectedNoOfArguments(got, expected) => {
+                HyperlightError::UnexpectedNoOfArguments(got, expected)
+            }
+            FuncError::UnexpectedParameterValueType(got, expected) => {
+                HyperlightError::UnexpectedParameterValueType(got, expected)
+            }
+            FuncError::UnexpectedReturnValueType(got, expected) => {
+                HyperlightError::UnexpectedReturnValueType(got, expected)
+            }
+        }
     }
 }
 
@@ -133,26 +156,22 @@ macro_rules! impl_host_function {
         // like we do in the case of a `FnMut`.
         // However, we can't implement `IntoHostFunction` for `Fn` and `FnMut`
         // because `FnMut` is a supertrait of `Fn`.
-        */
+         */
 
         impl<F, R, $($P),*> From<F> for HostFunction<R::ReturnType, ($($P,)*)>
         where
             F: FnMut($($P),*) -> R + Send + 'static,
             ($($P,)*): ParameterTuple,
-            R: ResultType,
+            R: ResultType<HyperlightError>,
         {
-            fn from(mut func: F) -> HostFunction<R::ReturnType, ($($P,)*)> {
-                let func = move |($($p,)*): ($($P,)*)| -> Result<R::ReturnType> {
-                    func($($p),*).into_result()
-                };
+            fn from(func: F) -> HostFunction<R::ReturnType, ($($P,)*)> {
                 let func = Mutex::new(func);
-                HostFunction {
-                    func: Arc::new(move |args: ($($P,)*)| {
-                        func.try_lock()
-                            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                            (args)
-                    })
-                }
+                let func = move |$($p: $P,)*| {
+                    let mut func = func.lock().map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
+                    (func)($($p),*).into_result()
+                };
+                let func = Arc::new(func);
+                HostFunction { func }
             }
         }
     };

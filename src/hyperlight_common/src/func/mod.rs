@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+/// Error types related to function support
+pub(crate) mod error;
 /// Definitions and functionality to enable guest-to-host function calling,
 /// also called "host functions"
 ///
@@ -25,16 +27,23 @@ limitations under the License.
 /// - Registering host functions to be callable by the guest
 /// - Dynamically dispatching a call from the guest to the appropriate
 ///   host function
-pub(crate) mod host_functions;
+pub(crate) mod functions;
+/// Definitions and functionality for supported parameter types
+pub(crate) mod param_type;
+/// Definitions and functionality for supported return types
+pub(crate) mod ret_type;
 
+pub use error::Error;
 /// Re-export for `HostFunction` trait
-pub use host_functions::{HostFunction, Registerable};
+pub use functions::Function;
+pub use param_type::{ParameterTuple, SupportedParameterType};
+pub use ret_type::{ResultType, SupportedReturnType};
+
 /// Re-export for `ParameterValue` enum
-pub use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
+pub use crate::flatbuffer_wrappers::function_types::ParameterValue;
 /// Re-export for `ReturnType` enum
-pub use hyperlight_common::flatbuffer_wrappers::function_types::ReturnType;
-/// Re-export for `ReturnValue` enum
-pub use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
-pub use hyperlight_common::func::{
-    ParameterTuple, ResultType, SupportedParameterType, SupportedReturnType,
-};
+pub use crate::flatbuffer_wrappers::function_types::ReturnType;
+/// Re-export for `ReturnType` enum
+pub use crate::flatbuffer_wrappers::function_types::ReturnValue;
+
+mod utils;

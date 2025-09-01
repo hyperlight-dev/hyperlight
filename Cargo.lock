@@ -1389,6 +1389,7 @@ dependencies = [
  "flatbuffers",
  "log",
  "spin 0.10.0",
+ "thiserror 2.0.17",
  "tracing",
 ]
 

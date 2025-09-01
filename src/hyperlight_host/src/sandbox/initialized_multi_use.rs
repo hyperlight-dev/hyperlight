@@ -450,7 +450,8 @@ impl MultiUseSandbox {
                 Output::TYPE,
                 args.into_value(),
             );
-            Output::from_value(ret?)
+            let ret = Output::from_value(ret?)?;
+            Ok(ret)
         })
     }
 
