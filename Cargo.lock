@@ -1352,6 +1352,7 @@ dependencies = [
  "hyperlight-testing",
  "log",
  "spin 0.10.0",
+ "thiserror 2.0.16",
  "tracing",
 ]
 

@@ -42,3 +42,6 @@ pub mod outb;
 
 /// cbindgen:ignore
 pub mod resource;
+
+/// cbindgen:ignore
+pub mod func;
