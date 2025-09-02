@@ -37,7 +37,7 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "callbackguest"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "hyperlight-common",
  "hyperlight-guest",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-common"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-bin"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "buddy_system_allocator",
  "cc",
@@ -134,7 +134,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "hyperlight-common",
  "hyperlight-guest-tracing-macro",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing-macro"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "proc-macro2",
  "quote",
