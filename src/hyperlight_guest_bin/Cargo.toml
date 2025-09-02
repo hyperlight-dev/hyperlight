@@ -14,18 +14,21 @@ and third-party code used by our C-API needed to build a native hyperlight-guest
 """
 
 [features]
-default = ["libc", "printf"]
+default = ["libc", "printf", "macros"]
 libc = [] # compile musl libc
 printf = [ "libc" ] # compile printf
 trace_guest = ["hyperlight-common/trace_guest", "hyperlight-guest/trace_guest", "hyperlight-guest-tracing/trace"]
 mem_profile = ["hyperlight-common/mem_profile"]
+macros = ["dep:hyperlight-guest-macro", "dep:linkme"]
 
 [dependencies]
 hyperlight-guest = { workspace = true, default-features = false }
 hyperlight-common = { workspace = true, default-features = false }
 hyperlight-guest-tracing = { workspace = true, default-features = false }
+hyperlight-guest-macro = { workspace = true, default-features = false, optional = true }
 buddy_system_allocator = "0.11.0"
 log = { version = "0.4", default-features = false }
+linkme = { version = "0.3.33", optional = true }
 spin = "0.10.0"
 flatbuffers = { version = "25.2.10", default-features = false }
 tracing = { version = "0.1.43", default-features = false, features = ["attributes"] }

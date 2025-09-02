@@ -93,6 +93,7 @@ where
     }
 
     fn from_result(res: Result<Self::ReturnType, E>) -> Self {
+        #![allow(clippy::unwrap_used)]
         res.unwrap()
     }
 }

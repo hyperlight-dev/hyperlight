@@ -14,6 +14,7 @@ members = [
     "src/hyperlight_testing",
     "fuzz",
     "src/hyperlight_guest_bin",
+    "src/hyperlight_guest_macro",
     "src/hyperlight_component_util",
     "src/hyperlight_component_macro",
     "src/trace_dump",
@@ -28,7 +29,7 @@ exclude = [
 [workspace.package]
 version = "0.11.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "Apache-2.0"
 homepage = "https://github.com/hyperlight-dev/hyperlight"
 repository = "https://github.com/hyperlight-dev/hyperlight"
@@ -39,6 +40,7 @@ hyperlight-common = { path = "src/hyperlight_common", version = "0.11.0", defaul
 hyperlight-host = { path = "src/hyperlight_host", version = "0.11.0", default-features = false }
 hyperlight-guest = { path = "src/hyperlight_guest", version = "0.11.0", default-features = false }
 hyperlight-guest-bin = { path = "src/hyperlight_guest_bin", version = "0.11.0", default-features = false }
+hyperlight-guest-macro = { path = "src/hyperlight_guest_macro", version = "0.11.0", default-features = false }
 hyperlight-testing = { path = "src/hyperlight_testing", default-features = false }
 hyperlight-guest-tracing = { path = "src/hyperlight_guest_tracing", version = "0.11.0", default-features = false }
 hyperlight-component-util = { path = "src/hyperlight_component_util", version = "0.11.0", default-features = false }
