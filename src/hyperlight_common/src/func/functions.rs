@@ -28,7 +28,7 @@ macro_rules! impl_function {
             F: Fn($($P),*) -> R,
             ($($P,)*): ParameterTuple,
             R: ResultType<E>,
-            E: From<Error>,
+            E: From<Error> + core::fmt::Debug,
         {
             fn call(&self, ($($p,)*): ($($P,)*)) -> Result<R::ReturnType, E> {
                 (self)($($p),*).into_result()
