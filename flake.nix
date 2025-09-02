@@ -140,7 +140,7 @@
           RUST_NIGHTLY = "${toolchains.nightly.rust}";
           # Set this through shellHook rather than nativeBuildInputs to be
           # really sure that it overrides the real cargo.
-          shellHook = ''
+          postHook = ''
             export PATH="${fake-rustup}/bin:$PATH"
           '';
         }).overrideAttrs(oA: {
