@@ -70,27 +70,46 @@ macro_rules! impl_supported_return_type {
 }
 
 /// A trait to handle either a [`SupportedReturnType`] or a [`Result<impl SupportedReturnType>`]
-pub trait ResultType<E> {
+pub trait ResultType<E: core::fmt::Debug> {
     /// The return type of the supported return value
     type ReturnType: SupportedReturnType;
 
     /// Convert the return type into a `Result<impl SupportedReturnType>`
     fn into_result(self) -> Result<Self::ReturnType, E>;
+
+    /// Convert a result into this type, panicking if needed
+    fn from_result(res: Result<Self::ReturnType, E>) -> Self;
 }
 
-impl<T: SupportedReturnType, E> ResultType<E> for T {
+impl<T, E> ResultType<E> for T
+where
+    T: SupportedReturnType,
+    E: core::fmt::Debug,
+{
     type ReturnType = T;
 
     fn into_result(self) -> Result<Self::ReturnType, E> {
         Ok(self)
     }
+
+    fn from_result(res: Result<Self::ReturnType, E>) -> Self {
+        res.unwrap()
+    }
 }
 
-impl<T: SupportedReturnType, E> ResultType<E> for Result<T, E> {
+impl<T, E> ResultType<E> for Result<T, E>
+where
+    T: SupportedReturnType,
+    E: core::fmt::Debug,
+{
     type ReturnType = T;
 
     fn into_result(self) -> Result<Self::ReturnType, E> {
         self
+    }
+
+    fn from_result(res: Result<Self::ReturnType, E>) -> Self {
+        res
     }
 }
 
