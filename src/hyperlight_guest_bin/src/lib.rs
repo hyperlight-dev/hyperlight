@@ -146,14 +146,14 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 #[inline(always)]
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
-    // stack allocate a 256-byte message buffer.
-    let mut panic_buf = String::<256>::new();
+    // stack allocate a 512-byte message buffer.
+    let mut panic_buf = String::<512>::new();
     let write_res = write!(panic_buf, "{}\0", info);
     if write_res.is_err() {
         unsafe {
             abort_with_code_and_message(
                 &[ErrorCode::UnknownError as u8],
-                c"panic: message format failed".as_ptr(),
+                c"panic: message format failed (limit: 512 bytes)".as_ptr(),
             )
         }
     }
