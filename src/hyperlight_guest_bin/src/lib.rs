@@ -18,7 +18,6 @@ limitations under the License.
 // === Dependencies ===
 extern crate alloc;
 
-use core::ffi::CStr;
 use core::fmt::Write;
 
 use buddy_system_allocator::LockedHeap;
@@ -27,12 +26,11 @@ use exceptions::{gdt::load_gdt, idtr::load_idt};
 use guest_function::call::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
-use heapless::String;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
-use hyperlight_guest::exit::{abort_with_code_and_message, halt};
+use hyperlight_guest::exit::{halt, write_abort};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
 use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
@@ -144,35 +142,42 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     _panic_handler(info)
 }
 
+/// A writer that sends all output to the hyperlight host
+/// using output ports. This allows us to not impose a 
+/// buffering limit on error message size on the guest end,
+/// though one exists for the host. 
+struct HyperlightAbortWriter;
+impl core::fmt::Write for HyperlightAbortWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        unsafe {
+            write_abort(s.as_bytes());
+        }
+        Ok(())
+    }
+}
+
 #[inline(always)]
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
-    // stack allocate a 512-byte message buffer.
-    let mut panic_buf = String::<512>::new();
-    let write_res = write!(panic_buf, "{}\0", info);
+    let mut w   = HyperlightAbortWriter;
+
+    // begin abort sequence by writing the error code
+    unsafe {
+        write_abort(
+                &[ErrorCode::UnknownError as u8]);
+    }
+
+    let write_res = write!(w, "{}", info);
     if write_res.is_err() {
         unsafe {
-            abort_with_code_and_message(
-                &[ErrorCode::UnknownError as u8],
-                c"panic: message format failed (limit: 512 bytes)".as_ptr(),
-            )
+            write_abort("panic: message format failed".as_bytes());
         }
     }
 
-    let c_str_res = CStr::from_bytes_with_nul(panic_buf.as_bytes());
-    if c_str_res.is_err() {
-        unsafe {
-            abort_with_code_and_message(
-                &[ErrorCode::UnknownError as u8],
-                c"panic: failed to convert to CString".as_ptr(),
-            )
-        }
-    }
-
+    // write abort terminator to finish the abort
+    // and signal to the host that the message can now be read
     unsafe {
-        abort_with_code_and_message(
-            &[ErrorCode::UnknownError as u8],
-            c_str_res.unwrap().as_ptr(),
-        )
+        write_abort(&[0xFF]);
+        unreachable!();
     }
 }
 
