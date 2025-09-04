@@ -149,9 +149,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 struct HyperlightAbortWriter;
 impl core::fmt::Write for HyperlightAbortWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        unsafe {
-            write_abort(s.as_bytes());
-        }
+        write_abort(s.as_bytes());
         Ok(())
     }
 }
@@ -161,23 +159,17 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     let mut w = HyperlightAbortWriter;
 
     // begin abort sequence by writing the error code
-    unsafe {
-        write_abort(&[ErrorCode::UnknownError as u8]);
-    }
+    write_abort(&[ErrorCode::UnknownError as u8]);
 
     let write_res = write!(w, "{}", info);
     if write_res.is_err() {
-        unsafe {
-            write_abort("panic: message format failed".as_bytes());
-        }
+        write_abort("panic: message format failed".as_bytes());
     }
 
     // write abort terminator to finish the abort
     // and signal to the host that the message can now be read
-    unsafe {
-        write_abort(&[0xFF]);
-        unreachable!();
-    }
+    write_abort(&[0xFF]);
+    unreachable!();
 }
 
 // === Entrypoint ===

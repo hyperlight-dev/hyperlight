@@ -71,7 +71,7 @@ pub unsafe fn abort_with_code_and_message(code: &[u8], message_ptr: *const c_cha
 /// over the abort sequence. For example, in the panic handler,
 /// we have a message of unknown length that we want to stream
 /// to the host, which requires sending the message in chunks
-pub unsafe fn write_abort(code: &[u8]) {
+pub fn write_abort(code: &[u8]) {
     outb(OutBAction::Abort as u16, code);
 }
 
