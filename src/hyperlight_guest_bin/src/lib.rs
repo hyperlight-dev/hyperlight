@@ -143,9 +143,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// A writer that sends all output to the hyperlight host
-/// using output ports. This allows us to not impose a 
+/// using output ports. This allows us to not impose a
 /// buffering limit on error message size on the guest end,
-/// though one exists for the host. 
+/// though one exists for the host.
 struct HyperlightAbortWriter;
 impl core::fmt::Write for HyperlightAbortWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -158,12 +158,11 @@ impl core::fmt::Write for HyperlightAbortWriter {
 
 #[inline(always)]
 fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
-    let mut w   = HyperlightAbortWriter;
+    let mut w = HyperlightAbortWriter;
 
     // begin abort sequence by writing the error code
     unsafe {
-        write_abort(
-                &[ErrorCode::UnknownError as u8]);
+        write_abort(&[ErrorCode::UnknownError as u8]);
     }
 
     let write_res = write!(w, "{}", info);
