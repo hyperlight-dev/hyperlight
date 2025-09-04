@@ -80,5 +80,13 @@ interface host-resource {
 }
 
 interface test-host-resource {
-  test: func() -> bool;
+  use host-resource.{testresource};
+
+  test-uses-locally: func() -> bool;
+
+  test-makes: func() -> own<testresource>;
+
+  test-accepts-borrow: func(x: borrow<testresource>);
+  test-accepts-own: func(x: own<testresource>);
+  test-returns: func() -> own<testresource>;
 }

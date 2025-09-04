@@ -4,6 +4,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.9.0] - 2025-08-28
+
+### Fixed
+
+- fix release blocker so it only blocks on release branches by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/777
+- Enforce release builds for benchmarks and simplify command interface by @Copilot in https://github.com/hyperlight-dev/hyperlight/pull/741
+- fix(guest-bin): align user memory allocations by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/753
+- Fix unbounded growth of panic hook after each new sandbox by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/827
+- Update the like-ci recipe by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/837
+- Fixes to Host Call Fuzzing by @adamperlin in https://github.com/hyperlight-dev/hyperlight/pull/840
+
+### Changed
+
+- Optimize function call serializing by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/778
+- Make the component macros support passing host resources to guests by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/839
+- Build c guests as required by benchmarks by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/822
+
+### Removed
+- Remove DbgMemAccessHandlerCaller trait and DbgMemAccessHandlerWrapper abstractions by @Copilot in https://github.com/hyperlight-dev/hyperlight/pull/824
+
 ## [v0.8.0] - 2025-08-08
 
 :warning: `hyperlight_component_macro::host_bindgen` and `hyperlight_component_macro::guest_bindgen` used the `Callable` trait which no longer restores state after each function call and requires an explicit Snapshot Restore using the newly exposed Snapshot API. See https://github.com/hyperlight-dev/hyperlight/pull/697 and https://github.com/hyperlight-dev/hyperlight/pull/761
@@ -168,7 +188,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.4.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.9.0..HEAD>
+[v0.9.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.8.0...v0.9.0>
+[v0.8.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.7.0...v0.8.0>
+[v0.7.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.6.1...v0.7.0>
+[v0.6.1]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.6.0...v0.6.1>
+[v0.6.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.5.1...v0.6.0>
+[v0.5.1]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.5.0...v0.5.1>
+[v0.5.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.4.0...v0.5.0>
 [v0.4.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.3.0...v0.4.0>
 [v0.3.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.2.0...v0.3.0>
 [v0.2.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.1.0...v0.2.0>

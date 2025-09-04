@@ -1,6 +1,6 @@
 [package]
 name = "witguest"
-version = "0.1.0"
+version = "0.9.0"
 edition = "2021"
 
 [dependencies]
@@ -8,6 +8,7 @@ hyperlight-guest = { path = "../../../hyperlight_guest" }
 hyperlight-guest-bin = { path = "../../../hyperlight_guest_bin" }
 hyperlight-common = { path = "../../../hyperlight_common", default-features = false }
 hyperlight-component-macro = { path = "../../../hyperlight_component_macro" }
+spin = "0.10.0"
 
 [features]
 default = []

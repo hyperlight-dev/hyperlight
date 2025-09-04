@@ -140,7 +140,7 @@ like-ci config=default-target hypervisor="kvm":
     {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
     @# Run benchmarks
-    just bench-ci main {{config}} {{ if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }}
+    {{ if config == "release" { "just bench-ci main " + if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
 # runs all tests
 test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-seccomp target features) (test-doc target features)

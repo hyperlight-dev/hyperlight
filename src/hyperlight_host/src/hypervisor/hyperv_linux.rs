@@ -65,8 +65,6 @@ use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 use super::gdb::{
     DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug, VcpuStopReason,
 };
-#[cfg(gdb)]
-use super::handlers::DbgMemAccessHandlerWrapper;
 #[cfg(feature = "init-paging")]
 use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
@@ -96,7 +94,8 @@ mod debug {
     use super::mshv_bindings::hv_x64_exception_intercept_message;
     use super::{HypervLinuxDriver, *};
     use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
-    use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
+    use crate::mem::shared_mem::HostSharedMemory;
+    use crate::sandbox::mem_mgr::MemMgrWrapper;
     use crate::{Result, new_error};
 
     impl HypervLinuxDriver {
@@ -127,7 +126,7 @@ mod debug {
         pub(crate) fn process_dbg_request(
             &mut self,
             req: DebugMsg,
-            dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+            dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
         ) -> Result<DebugResponse> {
             if let Some(debug) = self.debug.as_mut() {
                 match req {
@@ -175,12 +174,9 @@ mod debug {
                             .map_err(|e| {
                                 new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
                             })?
-                            .get_code_offset()
-                            .map_err(|e| {
-                                log::error!("Failed to get code offset: {:?}", e);
-
-                                e
-                            })?;
+                            .unwrap_mgr()
+                            .layout
+                            .get_guest_code_address();
 
                         Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
                     }
@@ -591,7 +587,7 @@ impl Hypervisor for HypervLinuxDriver {
         mem_mgr: MemMgrWrapper<HostSharedMemory>,
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> Result<()> {
         self.mem_mgr = Some(mem_mgr);
         self.host_funcs = Some(host_funcs);
@@ -663,7 +659,7 @@ impl Hypervisor for HypervLinuxDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
         let regs = StandardRegisters {
@@ -1025,9 +1021,7 @@ impl Hypervisor for HypervLinuxDriver {
     #[cfg(gdb)]
     fn handle_debug(
         &mut self,
-        dbg_mem_access_fn: std::sync::Arc<
-            std::sync::Mutex<dyn super::handlers::DbgMemAccessHandlerCaller>,
-        >,
+        dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
         stop_reason: VcpuStopReason,
     ) -> Result<()> {
         if self.debug.is_none() {

@@ -18,8 +18,8 @@ use itertools::Itertools;
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::emit::{State, kebab_to_cons, kebab_to_var};
-use crate::etypes::{self, Defined, Handleable, TypeBound, Tyvar, Value};
+use crate::emit::{ResolvedBoundVar, State, kebab_to_cons, kebab_to_var};
+use crate::etypes::{self, Defined, Handleable, Tyvar, Value};
 use crate::rtypes;
 
 /// Construct a string that can be used "on the wire" to identify a
@@ -151,25 +151,16 @@ pub fn emit_hl_unmarshal_toplevel_value(
     }
 }
 
-/// Find the resource index that the given type variable refers to.
-///
-/// Precondition: this type variable does refer to a resource type
-fn resolve_tyvar_to_resource(s: &mut State, v: u32) -> u32 {
-    match s.bound_vars[v as usize].bound {
-        TypeBound::SubResource => v,
-        TypeBound::Eq(Defined::Handleable(Handleable::Var(Tyvar::Bound(vv)))) => {
-            resolve_tyvar_to_resource(s, v + vv + 1)
-        }
-        _ => panic!("impossible: resource var is not resource"),
-    }
-}
 /// Find the resource index that the given Handleable refers to.
 ///
 /// Precondition: this type variable does refer to a resource type
 pub fn resolve_handleable_to_resource(s: &mut State, ht: &Handleable) -> u32 {
     match ht {
         Handleable::Var(Tyvar::Bound(vi)) => {
-            resolve_tyvar_to_resource(s, s.var_offset as u32 + *vi)
+            let ResolvedBoundVar::Resource { rtidx } = s.resolve_bound_var(*vi) else {
+                panic!("impossible: resource var is not resource");
+            };
+            rtidx
         }
         _ => panic!("impossible handleable in type"),
     }
@@ -338,9 +329,29 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
             log::debug!("resolved ht to r (2) {:?} {:?}", ht, vi);
             if s.is_guest {
                 let rid = format_ident!("HostResource{}", vi);
-                quote! {
-                    let i = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
-                    (::wasmtime::component::Resource::<#rid>::new_borrow(i), 4)
+                if s.is_wasmtime_guest {
+                    quote! {
+                        let i = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+                        (::wasmtime::component::Resource::<#rid>::new_borrow(i), 4)
+                    }
+                } else {
+                    // TODO: When we add the Drop impl (#810), we need
+                    // to make sure it does not get called here
+                    //
+                    // If we tried to actually return a reference
+                    // here, rustc would get mad about the temporary
+                    // constructed here not living long enough, so
+                    // instead we return the temporary and construct
+                    // the reference elsewhere. It might be a bit more
+                    // principled to have a separate
+                    // HostResourceXXBorrow struct that implements
+                    // AsRef<HostResourceXX> or something in the
+                    // future...
+                    quote! {
+                        let i = u32::from_ne_bytes(#id[0..4].try_into().unwrap());
+
+                        (#rid { rep: i }, 4)
+                    }
                 }
             } else {
                 let rid = format_ident!("resource{}", vi);
@@ -358,7 +369,11 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
             let Some(Tyvar::Bound(n)) = tv else {
                 panic!("impossible tyvar")
             };
-            let (n, Some(Defined::Value(vt))) = s.resolve_tv(*n) else {
+            let ResolvedBoundVar::Definite {
+                final_bound_var: n,
+                ty: Defined::Value(vt),
+            } = s.resolve_bound_var(*n)
+            else {
                 panic!("unresolvable tyvar (2)");
             };
             let vt = vt.clone();
@@ -644,7 +659,9 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
                 let rid = format_ident!("resource{}", vi);
                 quote! {
                     let i = rts.#rid.len();
-                    rts.#rid.push_back(::hyperlight_common::resource::ResourceEntry::lend(#id));
+                    let (lrg, re) = ::hyperlight_common::resource::ResourceEntry::lend(#id);
+                    to_cleanup.push(Box::new(lrg));
+                    rts.#rid.push_back(re);
                     alloc::vec::Vec::from(u32::to_ne_bytes(i as u32))
                 }
             }
@@ -653,7 +670,11 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
             let Some(Tyvar::Bound(n)) = tv else {
                 panic!("impossible tyvar")
             };
-            let (n, Some(Defined::Value(vt))) = s.resolve_tv(*n) else {
+            let ResolvedBoundVar::Definite {
+                final_bound_var: n,
+                ty: Defined::Value(vt),
+            } = s.resolve_bound_var(*n)
+            else {
                 panic!("unresolvable tyvar (2)");
             };
             let vt = vt.clone();
@@ -668,7 +689,20 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
 /// [`crate::rtypes`] module) of the given value type.
 pub fn emit_hl_unmarshal_param(s: &mut State, id: Ident, pt: &Value) -> TokenStream {
     let toks = emit_hl_unmarshal_value(s, id, pt);
-    quote! { { #toks }.0 }
+    // Slight hack to avoid rust complaints about deserialised
+    // resource borrow lifetimes.
+    fn is_borrow(vt: &Value) -> bool {
+        match vt {
+            Value::Borrow(_) => true,
+            Value::Var(_, vt) => is_borrow(vt),
+            _ => false,
+        }
+    }
+    if s.is_guest && !s.is_wasmtime_guest && is_borrow(pt) {
+        quote! { &({ #toks }.0) }
+    } else {
+        quote! { { #toks }.0 }
+    }
 }
 
 /// Emit code to unmarshal the result of a function with result type

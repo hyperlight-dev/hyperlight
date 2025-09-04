@@ -46,8 +46,9 @@ use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
 use super::InterruptHandle;
-use crate::hypervisor::handlers::DbgMemAccessHandlerCaller;
 use crate::mem::layout::SandboxMemoryLayout;
+use crate::mem::shared_mem::HostSharedMemory;
+use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::{HyperlightError, new_error};
 
 #[derive(Debug, Error)]
@@ -209,7 +210,7 @@ pub(super) trait GuestDebug {
         &mut self,
         vcpu_fd: &Self::Vcpu,
         addr: u64,
-        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> crate::Result<()> {
         let addr = self.translate_gva(vcpu_fd, addr)?;
 
@@ -234,7 +235,7 @@ pub(super) trait GuestDebug {
         vcpu_fd: &Self::Vcpu,
         mut gva: u64,
         mut data: &mut [u8],
-        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> crate::Result<()> {
         let data_len = data.len();
         log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
@@ -258,7 +259,9 @@ pub(super) trait GuestDebug {
             dbg_mem_access_fn
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .read(offset, &mut data[..read_len])?;
+                .unwrap_mgr_mut()
+                .get_shared_mem_mut()
+                .copy_to_slice(&mut data[..read_len], offset)?;
 
             data = &mut data[read_len..];
             gva += read_len as u64;
@@ -282,7 +285,7 @@ pub(super) trait GuestDebug {
         &mut self,
         vcpu_fd: &Self::Vcpu,
         addr: u64,
-        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> crate::Result<()> {
         let addr = self.translate_gva(vcpu_fd, addr)?;
 
@@ -306,7 +309,7 @@ pub(super) trait GuestDebug {
         vcpu_fd: &Self::Vcpu,
         mut gva: u64,
         mut data: &[u8],
-        dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> crate::Result<()> {
         let data_len = data.len();
         log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
@@ -330,7 +333,9 @@ pub(super) trait GuestDebug {
             dbg_mem_access_fn
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .write(offset, data)?;
+                .unwrap_mgr_mut()
+                .get_shared_mem_mut()
+                .copy_from_slice(&data[..write_len], offset)?;
 
             data = &data[write_len..];
             gva += write_len as u64;

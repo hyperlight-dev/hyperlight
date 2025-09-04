@@ -196,6 +196,28 @@ impl Mod {
     }
 }
 
+/// Unlike [`tv::ResolvedTyvar`], which is mostly concerned with free
+/// variables and leaves bound variables alone, this tells us the most
+/// information that we have at codegen time for a top level bound
+/// variable.
+pub enum ResolvedBoundVar<'a> {
+    Definite {
+        /// The final variable offset (relative to s.var_offset) that
+        /// we followed to get to this definite type, used
+        /// occasionally to name things.
+        final_bound_var: u32,
+        /// The actual definite type that this resolved to
+        ty: Defined<'a>,
+    },
+    Resource {
+        /// A resource-type index. Currently a resource-type index is
+        /// the same as the de Bruijn index of the tyvar that
+        /// introduced the resource type, but is never affected by
+        /// e.g. s.var_offset.
+        rtidx: u32,
+    },
+}
+
 /// A whole grab-bag of useful state to have while emitting Rust
 #[derive(Debug)]
 pub struct State<'a, 'b> {
@@ -260,6 +282,8 @@ pub struct State<'a, 'b> {
     /// wasmtime guest emit. When that is refactored to use the host
     /// guest emit, this can go away.
     pub is_wasmtime_guest: bool,
+    /// Are we working on an export or an import of the component type?
+    pub is_export: bool,
 }
 
 /// Create a State with all of its &mut references pointing to
@@ -311,6 +335,7 @@ impl<'a, 'b> State<'a, 'b> {
             root_component_name: None,
             is_guest,
             is_wasmtime_guest,
+            is_export: false,
         }
     }
     pub fn clone<'c>(&'c mut self) -> State<'c, 'b> {
@@ -331,6 +356,7 @@ impl<'a, 'b> State<'a, 'b> {
             root_component_name: self.root_component_name.clone(),
             is_guest: self.is_guest,
             is_wasmtime_guest: self.is_wasmtime_guest,
+            is_export: self.is_export,
         }
     }
     /// Obtain a reference to the [`Mod`] that we are currently
@@ -508,9 +534,17 @@ impl<'a, 'b> State<'a, 'b> {
     }
     /// Add an import/export to [`State::origin`], reflecting that we are now
     /// looking at code underneath it
-    pub fn push_origin<'c>(&'c mut self, is_export: bool, name: &'b str) -> State<'c, 'b> {
+    ///
+    /// origin_was_export differs from s.is_export in that s.is_export
+    /// keeps track of whether the item overall was imported or exported
+    /// from the root component (taking into account positivity), whereas
+    /// origin_was_export just checks if this particular extern_decl was
+    /// imported or exported from its parent instance (and so e.g. an
+    /// export of an instance that is imported by the root component has
+    /// !s.is_export && origin_was_export)
+    pub fn push_origin<'c>(&'c mut self, origin_was_export: bool, name: &'b str) -> State<'c, 'b> {
         let mut s = self.clone();
-        s.origin.push(if is_export {
+        s.origin.push(if origin_was_export {
             ImportExport::Export(name)
         } else {
             ImportExport::Import(name)
@@ -588,15 +622,24 @@ impl<'a, 'b> State<'a, 'b> {
     /// up with a definition, in which case, let's get that, or it
     /// ends up with a resource type, in which case we return the
     /// resource index
-    pub fn resolve_tv(&self, n: u32) -> (u32, Option<Defined<'b>>) {
-        match &self.bound_vars[self.var_offset + n as usize].bound {
+    ///
+    /// Distinct from [`Ctx::resolve_tv`], which is mostly concerned
+    /// with free variables, because this is concerned entirely with
+    /// bound variables.
+    pub fn resolve_bound_var(&self, n: u32) -> ResolvedBoundVar<'b> {
+        let noff = self.var_offset as u32 + n;
+        match &self.bound_vars[noff as usize].bound {
             TypeBound::Eq(Defined::Handleable(Handleable::Var(Tyvar::Bound(nn)))) => {
-                self.resolve_tv(n + 1 + nn)
+                self.resolve_bound_var(n + 1 + nn)
             }
-            TypeBound::Eq(t) => (n, Some(t.clone())),
-            TypeBound::SubResource => (n, None),
+            TypeBound::Eq(t) => ResolvedBoundVar::Definite {
+                final_bound_var: n,
+                ty: t.clone(),
+            },
+            TypeBound::SubResource => ResolvedBoundVar::Resource { rtidx: noff },
         }
     }
+
     /// Construct a namespace path referring to the resource trait for
     /// a resource with the given name
     pub fn resource_trait_path(&self, r: Ident) -> Vec<Ident> {

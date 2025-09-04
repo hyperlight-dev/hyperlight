@@ -17,6 +17,7 @@ limitations under the License.
 use log::LevelFilter;
 use tracing::{Span, instrument};
 
+use crate::HyperlightError::StackOverflow;
 use crate::error::HyperlightError::ExecutionCanceledByHost;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
@@ -27,9 +28,7 @@ use crate::{HyperlightError, Result, log_then_return};
 /// Util for handling x87 fpu state
 #[cfg(any(kvm, mshv, target_os = "windows"))]
 pub mod fpu;
-/// Handlers for Hypervisor custom logic
-#[cfg(gdb)]
-pub mod handlers;
+
 /// HyperV-on-linux functionality
 #[cfg(mshv)]
 pub mod hyperv_linux;
@@ -71,12 +70,9 @@ use std::time::Duration;
 #[cfg(gdb)]
 use gdb::VcpuStopReason;
 
-#[cfg(gdb)]
-use self::handlers::{DbgMemAccessHandlerCaller, DbgMemAccessHandlerWrapper};
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::mem_access::handle_mem_access;
 use crate::sandbox::mem_mgr::MemMgrWrapper;
 
 cfg_if::cfg_if! {
@@ -148,7 +144,7 @@ pub(crate) trait Hypervisor: Debug + Send {
         mem_mgr: MemMgrWrapper<HostSharedMemory>,
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         guest_max_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> Result<()>;
 
     /// Map a region of host memory into the sandbox.
@@ -175,7 +171,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> Result<()>;
 
     /// Handle an IO exit from the internally stored vCPU.
@@ -240,7 +236,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// handles the cases when the vCPU stops due to a Debug event
     fn handle_debug(
         &mut self,
-        _dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        _dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
         _stop_reason: VcpuStopReason,
     ) -> Result<()> {
         unimplemented!()
@@ -293,7 +289,7 @@ impl VirtualCPU {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn run(
         hv: &mut dyn Hypervisor,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<dyn DbgMemAccessHandlerCaller>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> Result<()> {
         loop {
             match hv.run() {
@@ -314,7 +310,9 @@ impl VirtualCPU {
                     #[cfg(crashdump)]
                     crashdump::generate_crashdump(hv)?;
 
-                    handle_mem_access(hv)?;
+                    if !hv.check_stack_guard()? {
+                        log_then_return!(StackOverflow());
+                    }
 
                     log_then_return!("MMIO access address {:#x}", addr);
                 }
@@ -544,8 +542,6 @@ pub(crate) mod tests {
 
         use crate::mem::ptr::RawPtr;
         use crate::sandbox::host_funcs::FunctionRegistry;
-        #[cfg(gdb)]
-        use crate::sandbox::mem_access::dbg_mem_access_handler_wrapper;
 
         let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
 
@@ -571,7 +567,7 @@ pub(crate) mod tests {
         let guest_max_log_level = Some(log::LevelFilter::Error);
 
         #[cfg(gdb)]
-        let dbg_mem_access_fn = dbg_mem_access_handler_wrapper(mem_mgr.clone());
+        let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr.clone()));
 
         // Test the initialise method
         vm.initialise(

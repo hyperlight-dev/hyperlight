@@ -206,12 +206,21 @@ struct TestResource {
     x: String,
     last: char,
 }
+impl TestResource {
+    fn new(x: String, last: char) -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(TestResource {
+            n_calls: 0,
+            x,
+            last,
+        }))
+    }
+}
 
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-// We only have 1 test that uses this, and it isn't a proptest or
-// anything, so it should only run once. If multiple tests using this
-// could run in parallel, there would be problems.
+// We use some care below in the tests that use HAS_BEEN_DROPPED to
+// synchronise on this mutex to avoid them stepping on each other
+static SERIALIZE_TEST_RESOURCE_TESTS: Mutex<()> = Mutex::new(());
 static HAS_BEEN_DROPPED: AtomicBool = AtomicBool::new(false);
 
 impl Drop for TestResource {
@@ -225,11 +234,7 @@ impl Drop for TestResource {
 impl test::wit::host_resource::Testresource for Host {
     type T = Arc<Mutex<TestResource>>;
     fn new(&mut self, x: String, last: char) -> Self::T {
-        Arc::new(Mutex::new(TestResource {
-            n_calls: 0,
-            x,
-            last,
-        }))
+        TestResource::new(x, last)
     }
     fn append_char(&mut self, self_: BorrowedResourceGuard<'_, Self::T>, c: char) {
         let mut self_ = self_.lock().unwrap();
@@ -393,12 +398,31 @@ mod wit_test {
         sb().roundtrip().roundtrip_no_result(42);
     }
 
+    use std::sync::atomic::Ordering::Relaxed;
+
     #[test]
-    fn test_host_resource() {
+    fn test_host_resource_uses_locally() {
+        let guard = crate::SERIALIZE_TEST_RESOURCE_TESTS.lock();
+        crate::HAS_BEEN_DROPPED.store(false, Relaxed);
         {
-            sb().test_host_resource().test();
+            sb().test_host_resource().test_uses_locally();
         }
-        use std::sync::atomic::Ordering::Relaxed;
         assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
+        drop(guard);
+    }
+    #[test]
+    fn test_host_resource_passed_in_out() {
+        let guard = crate::SERIALIZE_TEST_RESOURCE_TESTS.lock();
+        crate::HAS_BEEN_DROPPED.store(false, Relaxed);
+        {
+            let mut sb = sb();
+            let inst = sb.test_host_resource();
+            let r = inst.test_makes();
+            inst.test_accepts_borrow(&r);
+            inst.test_accepts_own(r);
+            inst.test_returns();
+        }
+        assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
+        drop(guard);
     }
 }

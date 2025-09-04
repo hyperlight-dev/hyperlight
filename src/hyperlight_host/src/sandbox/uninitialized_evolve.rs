@@ -21,8 +21,6 @@ use tracing::{Span, instrument};
 
 use super::SandboxConfiguration;
 use super::hypervisor::{HypervisorType, get_available_hypervisor};
-#[cfg(gdb)]
-use super::mem_access::dbg_mem_access_handler_wrapper;
 #[cfg(any(crashdump, gdb))]
 use super::uninitialized::SandboxRuntimeConfig;
 use crate::HyperlightError::NoHypervisorFound;
@@ -90,7 +88,7 @@ where
     let page_size = u32::try_from(page_size::get())?;
 
     #[cfg(gdb)]
-    let dbg_mem_access_hdl = dbg_mem_access_handler_wrapper(hshm.clone());
+    let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
 
     #[cfg(target_os = "linux")]
     setup_signal_handlers(&u_sbox.config)?;
@@ -123,7 +121,7 @@ where
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
     evolve_impl(u_sbox, |hf, hshm, vm, dispatch_ptr| {
         #[cfg(gdb)]
-        let dbg_mem_wrapper = dbg_mem_access_handler_wrapper(hshm.clone());
+        let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
         Ok(MultiUseSandbox::from_uninit(
             hf,
             hshm,

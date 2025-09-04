@@ -1,12 +1,12 @@
 [package]
 name = "trace_dump"
-version = "0.0.0"
+version = "0.9.0"
 publish = false
 edition = "2021"
 
 [dependencies]
 addr2line = "0.25.0"
-piet-common = { version = "0.7.0", features = [ "png" ] }
+piet-common = { version = "0.8.0", features = [ "png" ] }
 blake3 = { version = "1.5.5" }
 
 [[bin]]
