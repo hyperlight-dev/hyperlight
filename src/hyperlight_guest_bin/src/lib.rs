@@ -45,7 +45,6 @@ pub mod exceptions {
     pub(super) mod idtr;
     mod interrupt_entry;
 }
-pub mod guest_err;
 pub mod guest_function {
     pub(super) mod call;
     pub mod definition;
@@ -121,7 +120,7 @@ pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap<32> =
     ProfiledLockedHeap(LockedHeap::<32>::empty());
 
-pub(crate) static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
+pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();
 
