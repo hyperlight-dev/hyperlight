@@ -434,7 +434,6 @@ pub(crate) const LIBC_FILES: &[&str] = &[
     "ubsan/ubsan_val_to_string.c",
     "ubsan/ubsan_val_to_umax.c",
     "ubsan/ubsan_warning.c",
-    "picolib/picosbrk.c",
     "picolib/dso_handle.c",
     "picolib/getauxval.c",
     "picolib/machine/x86/interrupt.c",

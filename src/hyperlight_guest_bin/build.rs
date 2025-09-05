@@ -209,6 +209,7 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
         .flag("-fno-common")
         .flag("-fno-builtin")
         .flag("-Wno-unused-command-line-argument")
+        .flag("-Wno-unused-parameter")
         .flag("-fdiagnostics-color=always")
         .flag("-Wall")
         .flag("-Winvalid-pch")
@@ -265,6 +266,16 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
     Ok(build)
 }
 
+fn add_mimalloc(build: &mut cc::Build, mimalloc_dir: &Path, _target: &str) -> Result<()> {
+    build.define("MI_MALLOC_OVERRIDE", "1");
+    build.define("__wasi__", "1");
+    build.include(mimalloc_dir.join("include"));
+    build.include(mimalloc_dir.join("src"));
+    build.file(mimalloc_dir.join("src/static.c"));
+
+    Ok(())
+}
+
 fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<()> {
     let base = LIBC_FILES.iter();
     let files = match target {
@@ -277,7 +288,7 @@ fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<
         build.file(&source_path);
     }
 
-    build.file("c/clock.c");
+    build.files(&["c/clock.c", "c/mimalloc.c"]);
     Ok(())
 }
 
@@ -331,9 +342,11 @@ fn cargo_main() -> Result<()> {
         }
 
         let picolibc_dir = PathBuf::from("third_party/picolibc");
+        let mimalloc_dir = PathBuf::from("third_party/mimalloc");
         let mut build = cc_build(&picolibc_dir, &target)?;
 
         add_libc(&mut build, &picolibc_dir, &target)?;
+        add_mimalloc(&mut build, &mimalloc_dir, &target)?;
 
         if want_libm {
             add_libm(&mut build, &picolibc_dir, &target)?;
