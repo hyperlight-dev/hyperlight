@@ -23,9 +23,9 @@ mem_profile = ["hyperlight-common/unwind_guest","hyperlight-common/mem_profile"]
 hyperlight-guest = { workspace = true, default-features = false }
 hyperlight-common = { workspace = true, default-features = false }
 hyperlight-guest-tracing = { workspace = true, default-features = false }
-buddy_system_allocator = "0.11.0"
 log = { version = "0.4", default-features = false }
 spin = "0.10.0"
+libc_alloc = "1.0.7"
 
 [lints]
 workspace = true
