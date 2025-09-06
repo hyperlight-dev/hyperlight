@@ -1413,6 +1413,7 @@ dependencies = [
 name = "hyperlight-guest-bin"
 version = "0.9.0"
 dependencies = [
+ "anyhow",
  "buddy_system_allocator",
  "cc",
  "cfg-if",
