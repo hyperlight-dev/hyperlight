@@ -22,9 +22,9 @@ use core::slice::from_raw_parts;
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
-    ParameterValue, ReturnType, ReturnValue,
+    FunctionCallResult, ParameterValue, ReturnType, ReturnValue,
 };
-use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
@@ -68,18 +68,24 @@ impl GuestHandle {
     /// internally to get the return value.
     #[hyperlight_guest_tracing::trace_function]
     pub fn get_host_return_value<T: TryFrom<ReturnValue>>(&self) -> Result<T> {
-        let return_value = self
-            .try_pop_shared_input_data_into::<ReturnValue>()
-            .expect("Unable to deserialize a return value from host");
-        T::try_from(return_value).map_err(|_| {
-            HyperlightGuestError::new(
-                ErrorCode::GuestError,
-                format!(
-                    "Host return value was not a {} as expected",
-                    core::any::type_name::<T>()
-                ),
-            )
-        })
+        let inner = self
+            .try_pop_shared_input_data_into::<FunctionCallResult>()
+            .expect("Unable to deserialize a return value from host")
+            .into_inner();
+
+        match inner {
+            Ok(ret) => T::try_from(ret).map_err(|_| {
+                let expected = core::any::type_name::<T>();
+                HyperlightGuestError::new(
+                    ErrorCode::UnsupportedParameterType,
+                    format!("Host return value could not be converted to expected {expected}",),
+                )
+            }),
+            Err(e) => Err(HyperlightGuestError {
+                kind: e.code,
+                message: e.message,
+            }),
+        }
     }
 
     /// Call a host function without reading its return value from shared mem.
@@ -146,22 +152,6 @@ impl GuestHandle {
         host_function_details_slice
             .try_into()
             .expect("Failed to convert buffer to HostFunctionDetails")
-    }
-
-    /// Write an error to the shared output data buffer.
-    #[hyperlight_guest_tracing::trace_function]
-    pub fn write_error(&self, error_code: ErrorCode, message: Option<&str>) {
-        let guest_error: GuestError = GuestError::new(
-            error_code,
-            message.map_or("".to_string(), |m| m.to_string()),
-        );
-        let guest_error_buffer: Vec<u8> = (&guest_error)
-            .try_into()
-            .expect("Invalid guest_error_buffer, could not be converted to a Vec<u8>");
-
-        if let Err(e) = self.push_shared_output_data(&guest_error_buffer) {
-            panic!("Unable to push guest error to shared output data: {:#?}", e);
-        }
     }
 
     /// Log a message with the specified log level, source, caller, source file, and line number.

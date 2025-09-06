@@ -14,15 +14,31 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use core::ffi::c_char;
-
+use crate::alloc::borrow::ToOwned;
+use core::ffi::{CStr, c_char};
+use flatbuffers::FlatBufferBuilder;
+use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_guest_bin::guest_err::setError;
+use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
+use hyperlight_guest_bin::GUEST_HANDLE;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_set_error(err: ErrorCode, message: *const c_char) {
+    let cstr = unsafe { CStr::from_ptr(message) };
+    let guest_error = Err(GuestError::new(
+        err.into(),
+        cstr.to_str()
+            .expect("Failed to convert CStr to &str")
+            .to_owned(),
+    ));
+    let fcr = FunctionCallResult::new(guest_error);
+    let mut builder = FlatBufferBuilder::new();
+    let data = fcr.encode(&mut builder);
     unsafe {
-        setError(err.into(), message);
+        #[allow(static_mut_refs)] // we are single threaded
+        GUEST_HANDLE
+            .push_shared_output_data(data)
+            .expect("Failed to set error")
     }
 }
 
