@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::collections::HashMap;
 
+use gdbstub_arch::msp430::reg;
 use kvm_bindings::{
     KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
     kvm_debug_exit_arch, kvm_guest_debug, kvm_regs,
@@ -192,6 +193,31 @@ impl GuestDebug for KvmDebug {
 
         regs.rip = vcpu_regs.rip;
         regs.rflags = vcpu_regs.rflags;
+
+         // Read XMM registers from FPU state
+        // note kvm get_fpu doesn't actually set or read the mxcsr value
+        // https://elixir.bootlin.com/linux/v6.16/source/arch/x86/kvm/x86.c#L12229
+        match vcpu_fd.get_fpu() {
+            Ok(fpu) => {
+                // Convert KVM XMM registers ([u8; 16] x 16) to [u128; 16]
+                regs.xmm = fpu.xmm.map(u128::from_le_bytes);
+            },
+            Err(e) => {
+                log::warn!("Failed to read FPU state for XMM registers: {:?}", e);
+            }
+        }
+
+        // Read MXCSR from XSAVE (MXCSR is at byte offset 24 -> u32 index 6)
+        // Todo maybe I could use xsave to read the registers too instead of a separate call to get_fpu
+        match vcpu_fd.get_xsave() {
+            Ok(xsave) => {
+                regs.mxcsr = xsave.region[6];
+
+            }
+            Err(e) => {
+                log::warn!("Failed to read XSAVE for MXCSR: {:?}", e);
+            }
+        }
 
         Ok(())
     }
