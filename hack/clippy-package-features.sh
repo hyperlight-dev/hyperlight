@@ -19,7 +19,7 @@ PROFILE=$([ "$TARGET" = "debug" ] && echo "dev" || echo "$TARGET")
 if [[ "$PACKAGE" == "hyperlight-host" ]]; then
     REQUIRED_FEATURES=("kvm" "mshv3")
 elif [[ "$PACKAGE" == "hyperlight-guest-bin" ]]; then
-    REQUIRED_FEATURES=("printf")
+    REQUIRED_FEATURES=("libc")
 else 
     REQUIRED_FEATURES=()
 fi
