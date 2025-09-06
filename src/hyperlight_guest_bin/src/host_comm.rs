@@ -26,6 +26,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
+use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 
 const BUFFER_SIZE: usize = 1000;
@@ -43,6 +44,13 @@ where
 {
     let handle = unsafe { GUEST_HANDLE };
     handle.call_host_function::<T>(function_name, parameters, return_type)
+}
+
+pub fn call_host<T>(function_name: impl AsRef<str>, args: impl ParameterTuple) -> Result<T>
+where
+    T: SupportedReturnType + TryFrom<ReturnValue>,
+{
+    call_host_function::<T>(function_name.as_ref(), Some(args.into_value()), T::TYPE)
 }
 
 pub fn call_host_function_without_returning_result(

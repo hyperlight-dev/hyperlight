@@ -15,9 +15,10 @@ limitations under the License.
 */
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString as _};
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::func::Error as FuncError;
 use {anyhow, serde_json};
 
 pub type Result<T> = core::result::Result<T, HyperlightGuestError>;
@@ -48,6 +49,33 @@ impl From<serde_json::Error> for HyperlightGuestError {
         Self {
             kind: ErrorCode::GuestError,
             message: format!("Error: {:?}", error),
+        }
+    }
+}
+
+impl From<FuncError> for HyperlightGuestError {
+    fn from(e: FuncError) -> Self {
+        match e {
+            FuncError::ParameterValueConversionFailure(..) => HyperlightGuestError::new(
+                ErrorCode::GuestFunctionParameterTypeMismatch,
+                e.to_string(),
+            ),
+            FuncError::ReturnValueConversionFailure(..) => HyperlightGuestError::new(
+                ErrorCode::GuestFunctionParameterTypeMismatch,
+                e.to_string(),
+            ),
+            FuncError::UnexpectedNoOfArguments(..) => HyperlightGuestError::new(
+                ErrorCode::GuestFunctionIncorrecNoOfParameters,
+                e.to_string(),
+            ),
+            FuncError::UnexpectedParameterValueType(..) => HyperlightGuestError::new(
+                ErrorCode::GuestFunctionParameterTypeMismatch,
+                e.to_string(),
+            ),
+            FuncError::UnexpectedReturnValueType(..) => HyperlightGuestError::new(
+                ErrorCode::GuestFunctionParameterTypeMismatch,
+                e.to_string(),
+            ),
         }
     }
 }

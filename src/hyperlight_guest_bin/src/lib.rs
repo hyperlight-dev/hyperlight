@@ -206,6 +206,11 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
                 .expect("Invalid log level");
             init_logger(max_log_level);
 
+            #[cfg(feature = "macros")]
+            for registration in __private::GUEST_FUNCTION_INIT {
+                registration();
+            }
+
             trace!("hyperlight_main",
                 hyperlight_main();
             );
@@ -214,3 +219,17 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
 
     halt();
 }
+
+#[cfg(feature = "macros")]
+#[doc(hidden)]
+pub mod __private {
+    pub use hyperlight_common::func::ResultType;
+    pub use hyperlight_guest::error::HyperlightGuestError;
+    pub use linkme;
+
+    #[linkme::distributed_slice]
+    pub static GUEST_FUNCTION_INIT: [fn()];
+}
+
+#[cfg(feature = "macros")]
+pub use hyperlight_guest_macro::{guest_function, host_function};

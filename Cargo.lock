@@ -1359,6 +1359,7 @@ dependencies = [
  "hyperlight-testing",
  "log",
  "spin 0.10.0",
+ "thiserror 2.0.16",
  "tracing",
 ]
 
@@ -1419,9 +1420,21 @@ dependencies = [
  "glob",
  "hyperlight-common",
  "hyperlight-guest",
+ "hyperlight-guest-macro",
  "hyperlight-guest-tracing",
+ "linkme",
  "log",
  "spin 0.10.0",
+]
+
+[[package]]
+name = "hyperlight-guest-macro"
+version = "0.9.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1893,6 +1906,26 @@ dependencies = [
  "libc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "linkme"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1b1703c00b2a6a70738920544aa51652532cacddfec2e162d2e29eae01e665c"
+dependencies = [
+ "linkme-impl",
+]
+
+[[package]]
+name = "linkme-impl"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d55ca5d5a14363da83bf3c33874b8feaa34653e760d5216d7ef9829c88001a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

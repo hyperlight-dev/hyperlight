@@ -1,0 +1,24 @@
+[package]
+name = "hyperlight-guest-macro"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = """
+Macros for registering guest and host functions on hyperlight guests binaries.
+"""
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1.0"
+proc-macro-crate = "3.3.0"
+
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true
