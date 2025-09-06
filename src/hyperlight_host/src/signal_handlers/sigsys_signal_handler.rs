@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(feature = "seccomp")]
+#[cfg(seccomp)]
 pub(super) extern "C" fn handle_sigsys(
     signal: i32,
     info: *mut libc::siginfo_t,
