@@ -1409,6 +1409,7 @@ dependencies = [
  "buddy_system_allocator",
  "cc",
  "cfg-if",
+ "flatbuffers",
  "glob",
  "hyperlight-common",
  "hyperlight-guest",
@@ -1530,6 +1531,7 @@ name = "hyperlight_guest_capi"
 version = "0.9.0"
 dependencies = [
  "cbindgen",
+ "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest",
  "hyperlight-guest-bin",
