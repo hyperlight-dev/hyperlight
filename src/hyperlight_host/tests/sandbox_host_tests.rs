@@ -356,7 +356,10 @@ fn host_function_error() -> Result<()> {
             let res = init_sandbox
                 .call::<i32>("GuestMethod1", msg.to_string())
                 .unwrap_err();
-            assert!(matches!(res, HyperlightError::Error(msg) if msg == "Host function error!"));
+            assert!(
+                matches!(&res, HyperlightError::GuestError(_, msg) if msg == "Host function error!") // rust guest
+            || matches!(&res, HyperlightError::GuestAborted(_, msg) if msg.contains("Host function error!")) // c guest
+            );
         }
     }
     Ok(())
