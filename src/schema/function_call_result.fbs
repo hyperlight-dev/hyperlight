@@ -1,9 +1,21 @@
 include "function_types.fbs";
+include "guest_error.fbs";
 
 namespace Hyperlight.Generated;
 
+// Wrapper so ReturnValue (a union) can be a single union variant
+table ReturnValueBox {
+    value: ReturnValue (required);
+}
+
+// Result-like union
+union FunctionCallResultType {
+    ReturnValueBox,
+    GuestError
+}
+
 table FunctionCallResult {
-    return_value:ReturnValue(required);
+    result: FunctionCallResultType (required);
 }
 
 root_type FunctionCallResult;
