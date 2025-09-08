@@ -502,6 +502,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
+    use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
     use hyperlight_testing::simple_guest_as_string;
 
     #[cfg(target_os = "linux")]
@@ -523,10 +524,14 @@ mod tests {
         sandbox.register("HostAdd", |a: i32, b: i32| a + b).unwrap();
         let mut sandbox = sandbox.evolve().unwrap();
 
-        // will exhaust io if leaky
+        // will exhaust io if leaky. Tests both success and error paths
         for _ in 0..1000 {
             let result = sandbox.call::<i32>("Add", (5i32, 10i32)).unwrap();
             assert_eq!(result, 15);
+            let result = sandbox.call::<i32>("AddToStaticAndFail", ()).unwrap_err();
+            assert!(
+                matches!(result, HyperlightError::GuestError (code, msg ) if code == ErrorCode::GuestError && msg == "Crash on purpose")
+            );
         }
     }
 
