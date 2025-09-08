@@ -17,9 +17,10 @@ limitations under the License.
 use alloc::format;
 use alloc::vec::Vec;
 
+use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
-use hyperlight_common::flatbuffer_wrappers::function_types::ParameterType;
-use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterType};
+use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::halt;
 
@@ -81,10 +82,12 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
 
 // This function is marked as no_mangle/inline to prevent the compiler from inlining it , if its inlined the epilogue will not be called
 // and we will leak memory as the epilogue will not be called as halt() is not going to return.
+//
+// This function may panic, as we have no other ways of dealing with errors at this level
 #[unsafe(no_mangle)]
 #[inline(never)]
 #[hyperlight_guest_tracing::trace_function]
-fn internal_dispatch_function() -> Result<()> {
+fn internal_dispatch_function() {
     let handle = unsafe { GUEST_HANDLE };
 
     #[cfg(debug_assertions)]
@@ -94,11 +97,24 @@ fn internal_dispatch_function() -> Result<()> {
         .try_pop_shared_input_data_into::<FunctionCall>()
         .expect("Function call deserialization failed");
 
-    let result_vec = call_guest_function(function_call).inspect_err(|e| {
-        handle.write_error(e.kind, Some(e.message.as_str()));
-    })?;
+    let res = call_guest_function(function_call);
 
-    handle.push_shared_output_data(&result_vec)
+    match res {
+        Ok(bytes) => {
+            handle
+                .push_shared_output_data(bytes.as_slice())
+                .expect("Failed to serialize function call result");
+        }
+        Err(err) => {
+            let guest_error = Err(GuestError::new(err.kind, err.message));
+            let fcr = FunctionCallResult::new(guest_error);
+            let mut builder = FlatBufferBuilder::new();
+            let data = fcr.encode(&mut builder);
+            handle
+                .push_shared_output_data(data)
+                .expect("Failed to serialize function call result");
+        }
+    }
 }
 
 // This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()
@@ -117,6 +133,6 @@ pub(crate) extern "C" fn dispatch_function() {
     // part of the big identity-mapped region at the base of the
     // guest.
     crate::paging::flush_tlb();
-    let _ = internal_dispatch_function();
+    internal_dispatch_function();
     halt();
 }
