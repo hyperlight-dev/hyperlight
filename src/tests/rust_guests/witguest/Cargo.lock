@@ -231,6 +231,7 @@ dependencies = [
  "buddy_system_allocator",
  "cc",
  "cfg-if",
+ "flatbuffers",
  "glob",
  "hyperlight-common",
  "hyperlight-guest",
