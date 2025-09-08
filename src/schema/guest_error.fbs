@@ -16,7 +16,8 @@ enum  ErrorCode: ulong {
     MallocFailed = 13,                              // this error is set when malloc returns 0 bytes.
     GuestFunctionParameterTypeMismatch =    14,     // The function call parameter type was not the expected type.  
     GuestError  = 15,                               // An error occurred in the guest Guest implementation should use this along with a message when calling setError.
-    ArrayLengthParamIsMissing = 16                  // Expected a int parameter to follow a byte array
+    ArrayLengthParamIsMissing = 16,                 // Expected a int parameter to follow a byte array
+    HostError = 17                                  // Guest called Host Function, which errored.
 }
 
 table GuestError {
