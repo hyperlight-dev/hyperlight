@@ -2,7 +2,6 @@
 // @generated
 pub mod hyperlight {
     use super::*;
-    #[allow(mismatched_lifetime_syntaxes)]
     pub mod generated {
         use super::*;
         mod parameter_value_generated;
