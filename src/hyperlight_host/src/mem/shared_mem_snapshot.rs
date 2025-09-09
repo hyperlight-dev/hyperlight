@@ -50,15 +50,6 @@ impl SharedMemorySnapshot {
         })
     }
 
-    /// Take another snapshot of the internally-stored `SharedMemory`,
-    /// then store it internally.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    #[allow(dead_code)]
-    pub(super) fn replace_snapshot<S: SharedMemory>(&mut self, shared_mem: &mut S) -> Result<()> {
-        self.snapshot = shared_mem.with_exclusivity(|e| e.copy_all_to_vec())??;
-        Ok(())
-    }
-
     /// Copy the memory from the internally-stored memory snapshot
     /// into the internally-stored `SharedMemory`.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
@@ -91,36 +82,58 @@ mod tests {
     use crate::mem::shared_mem::ExclusiveSharedMemory;
 
     #[test]
-    fn restore_replace() {
-        let mut data1 = vec![b'a', b'b', b'c'];
-        data1.resize_with(PAGE_SIZE_USIZE, || 0);
-        let data2 = data1.iter().map(|b| b + 1).collect::<Vec<u8>>();
-        let mut gm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
-        gm.copy_from_slice(data1.as_slice(), 0).unwrap();
-        let mut snap = super::SharedMemorySnapshot::new(&mut gm, 0, Vec::new()).unwrap();
-        {
-            // after the first snapshot is taken, make sure gm has the equivalent
-            // of data1
-            assert_eq!(data1, gm.copy_all_to_vec().unwrap());
-        }
+    fn restore() {
+        // Simplified version of the original test
+        let data1 = vec![b'a'; PAGE_SIZE_USIZE];
+        let data2 = vec![b'b'; PAGE_SIZE_USIZE];
 
-        {
-            // modify gm with data2 rather than data1 and restore from
-            // snapshot. we should have the equivalent of data1 again
-            gm.copy_from_slice(data2.as_slice(), 0).unwrap();
-            assert_eq!(data2, gm.copy_all_to_vec().unwrap());
-            snap.restore_from_snapshot(&mut gm).unwrap();
-            assert_eq!(data1, gm.copy_all_to_vec().unwrap());
-        }
-        {
-            // modify gm with data2, then retake the snapshot and restore
-            // from the new snapshot. we should have the equivalent of data2
-            gm.copy_from_slice(data2.as_slice(), 0).unwrap();
-            assert_eq!(data2, gm.copy_all_to_vec().unwrap());
-            snap.replace_snapshot(&mut gm).unwrap();
-            assert_eq!(data2, gm.copy_all_to_vec().unwrap());
-            snap.restore_from_snapshot(&mut gm).unwrap();
-            assert_eq!(data2, gm.copy_all_to_vec().unwrap());
-        }
+        let mut gm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        gm.copy_from_slice(&data1, 0).unwrap();
+
+        // Take snapshot of data1
+        let snapshot = super::SharedMemorySnapshot::new(&mut gm, 0, Vec::new()).unwrap();
+
+        // Modify memory to data2
+        gm.copy_from_slice(&data2, 0).unwrap();
+        assert_eq!(gm.as_slice(), &data2[..]);
+
+        // Restore should bring back data1
+        snapshot.restore_from_snapshot(&mut gm).unwrap();
+        assert_eq!(gm.as_slice(), &data1[..]);
+    }
+
+    #[test]
+    fn snapshot_mem_size() {
+        let size = PAGE_SIZE_USIZE * 2;
+        let mut gm = ExclusiveSharedMemory::new(size).unwrap();
+
+        let snapshot = super::SharedMemorySnapshot::new(&mut gm, 0, Vec::new()).unwrap();
+        assert_eq!(snapshot.mem_size(), size);
+    }
+
+    #[test]
+    fn multiple_snapshots_independent() {
+        let mut gm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+
+        // Create first snapshot with pattern A
+        let pattern_a = vec![0xAA; PAGE_SIZE_USIZE];
+        gm.copy_from_slice(&pattern_a, 0).unwrap();
+        let snapshot_a = super::SharedMemorySnapshot::new(&mut gm, 1, Vec::new()).unwrap();
+
+        // Create second snapshot with pattern B
+        let pattern_b = vec![0xBB; PAGE_SIZE_USIZE];
+        gm.copy_from_slice(&pattern_b, 0).unwrap();
+        let snapshot_b = super::SharedMemorySnapshot::new(&mut gm, 2, Vec::new()).unwrap();
+
+        // Clear memory
+        gm.copy_from_slice(&[0; PAGE_SIZE_USIZE], 0).unwrap();
+
+        // Restore snapshot A
+        snapshot_a.restore_from_snapshot(&mut gm).unwrap();
+        assert_eq!(gm.as_slice(), &pattern_a[..]);
+
+        // Restore snapshot B
+        snapshot_b.restore_from_snapshot(&mut gm).unwrap();
+        assert_eq!(gm.as_slice(), &pattern_b[..]);
     }
 }
