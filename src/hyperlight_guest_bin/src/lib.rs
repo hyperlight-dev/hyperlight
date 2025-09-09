@@ -57,6 +57,9 @@ pub mod host_comm;
 pub mod memory;
 pub mod paging;
 
+#[cfg(feature = "libc")]
+mod host_bridge;
+
 // Globals
 #[cfg(feature = "mem_profile")]
 struct ProfiledLockedHeap<const ORDER: usize>(LockedHeap<ORDER>);
@@ -150,6 +153,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 unsafe extern "C" {
     fn hyperlight_main();
+
+    #[cfg(feature = "libc")]
     fn srand(seed: u32);
 }
 
@@ -157,7 +162,7 @@ static INIT: Once = Once::new();
 
 #[unsafe(no_mangle)]
 #[trace_function]
-pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
+pub extern "C" fn entrypoint(peb_address: u64, _seed: u64, ops: u64, max_log_level: u64) {
     if peb_address == 0 {
         panic!("PEB address is null");
     }
@@ -168,10 +173,12 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
             #[allow(static_mut_refs)]
             let peb_ptr = GUEST_HANDLE.peb().unwrap();
 
-            let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
-
             // Set the seed for the random number generator for C code using rand;
-            srand(srand_seed);
+            #[cfg(feature = "libc")]
+            {
+                let srand_seed = (((peb_address << 8) ^ (_seed >> 4)) >> 32) as u32;
+                srand(srand_seed);
+            }
 
             // This static is to make it easier to implement the __chkstk function in assembly.
             // It also means that should we change the layout of the struct in the future, we

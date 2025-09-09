@@ -14,9 +14,8 @@ and third-party code used by our C-API needed to build a native hyperlight-guest
 """
 
 [features]
-default = ["libc", "printf"]
-libc = [] # compile musl libc
-printf = [ "libc" ] # compile printf
+default = ["libc"]
+libc = [] # compile libc from picolibc
 trace_guest = ["hyperlight-common/trace_guest", "hyperlight-guest/trace_guest", "hyperlight-guest-tracing/trace"]
 mem_profile = ["hyperlight-common/unwind_guest","hyperlight-common/mem_profile"]
 
@@ -32,6 +31,7 @@ spin = "0.10.0"
 workspace = true
 
 [build-dependencies]
+anyhow = "1"
 cc = "1.2"
 cfg-if = "1.0"
 glob = "0.3.3"
