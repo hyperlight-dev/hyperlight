@@ -30,7 +30,7 @@ use windows::Win32::System::Memory::PAGE_READWRITE;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
     CreateFileMappingA, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
-    PAGE_EXECUTE_READWRITE, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, UnmapViewOfFile, VirtualProtect,
+    PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, UnmapViewOfFile, VirtualProtect,
 };
 #[cfg(target_os = "windows")]
 use windows::core::PCSTR;
