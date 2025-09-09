@@ -81,8 +81,7 @@ pub(crate) mod seccomp;
 /// Signal handling for Linux
 #[cfg(target_os = "linux")]
 pub(crate) mod signal_handlers;
-/// Utilities for testing including interacting with `simpleguest.exe`
-/// and `callbackguest.exe`, our two most basic guest binaries for testing
+/// Utilities for testing including interacting with `simpleguest` testing guest binary
 #[cfg(test)]
 pub(crate) mod testing;
 

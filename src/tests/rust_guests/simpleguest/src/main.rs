@@ -47,7 +47,8 @@ use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
-    call_host_function, call_host_function_without_returning_result, read_n_bytes_from_user_memory,
+    call_host_function, call_host_function_without_returning_result, print_output_with_host_print,
+    read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{MIN_STACK_ADDRESS, guest_logger};
@@ -993,6 +994,90 @@ pub extern "C" fn hyperlight_main() {
     );
     register_function(simple_print_output_def);
 
+    let print_output_def = GuestFunctionDefinition::new(
+        "PrintOutputWithHostPrint".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Int,
+        print_output_with_host_print as usize,
+    );
+    register_function(print_output_def);
+
+    let guest_function_def = GuestFunctionDefinition::new(
+        "GuestMethod".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Int,
+        guest_function as usize,
+    );
+    register_function(guest_function_def);
+
+    let guest_function1_def = GuestFunctionDefinition::new(
+        "GuestMethod1".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Int,
+        guest_function1 as usize,
+    );
+    register_function(guest_function1_def);
+
+    let guest_function2_def = GuestFunctionDefinition::new(
+        "GuestMethod2".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Int,
+        guest_function2 as usize,
+    );
+    register_function(guest_function2_def);
+
+    let guest_function3_def = GuestFunctionDefinition::new(
+        "GuestMethod3".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Int,
+        guest_function3 as usize,
+    );
+    register_function(guest_function3_def);
+
+    let guest_function4_def = GuestFunctionDefinition::new(
+        "GuestMethod4".to_string(),
+        Vec::new(),
+        ReturnType::Int,
+        guest_function4 as usize,
+    );
+    register_function(guest_function4_def);
+
+    let guest_log_message_def = GuestFunctionDefinition::new(
+        "LogMessageWithSource".to_string(),
+        Vec::from(&[
+            ParameterType::String,
+            ParameterType::String,
+            ParameterType::Int,
+        ]),
+        ReturnType::Int,
+        guest_log_message as usize,
+    );
+    register_function(guest_log_message_def);
+
+    let call_error_method_def = GuestFunctionDefinition::new(
+        "CallErrorMethod".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Int,
+        call_error_method as usize,
+    );
+    register_function(call_error_method_def);
+
+    let call_host_spin_def = GuestFunctionDefinition::new(
+        "CallHostSpin".to_string(),
+        Vec::new(),
+        ReturnType::Int,
+        call_host_spin as usize,
+    );
+    register_function(call_host_spin_def);
+
+    let host_call_loop_def = GuestFunctionDefinition::new(
+        "HostCallLoop".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Void,
+        host_call_loop as usize,
+    );
+    register_function(host_call_loop_def);
+
     let print_using_printf_def = GuestFunctionDefinition::new(
         "PrintUsingPrintf".to_string(),
         Vec::from(&[ParameterType::String]),
@@ -1394,6 +1479,179 @@ pub extern "C" fn hyperlight_main() {
     register_function(call_given_hostfunc_def);
 }
 
+#[hyperlight_guest_tracing::trace_function]
+fn send_message_to_host_method(
+    method_name: &str,
+    guest_message: &str,
+    message: &str,
+) -> Result<Vec<u8>> {
+    let message = format!("{}{}", guest_message, message);
+    let res = call_host_function::<i32>(
+        method_name,
+        Some(Vec::from(&[ParameterValue::String(message.to_string())])),
+        ReturnType::Int,
+    )?;
+
+    Ok(get_flatbuffer_result(res))
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn guest_function(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
+        send_message_to_host_method("HostMethod", "Hello from GuestFunction, ", message)
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to guest_function".to_string(),
+        ))
+    }
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn guest_function1(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
+        send_message_to_host_method("HostMethod1", "Hello from GuestFunction1, ", message)
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to guest_function1".to_string(),
+        ))
+    }
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn guest_function2(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
+        send_message_to_host_method("HostMethod1", "Hello from GuestFunction2, ", message)
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to guest_function2".to_string(),
+        ))
+    }
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn guest_function3(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
+        send_message_to_host_method("HostMethod1", "Hello from GuestFunction3, ", message)
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to guest_function3".to_string(),
+        ))
+    }
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn guest_function4(_: &FunctionCall) -> Result<Vec<u8>> {
+    call_host_function::<()>(
+        "HostMethod4",
+        Some(Vec::from(&[ParameterValue::String(
+            "Hello from GuestFunction4".to_string(),
+        )])),
+        ReturnType::Void,
+    )?;
+
+    Ok(get_flatbuffer_result(()))
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn guest_log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let (
+        ParameterValue::String(message),
+        ParameterValue::String(source),
+        ParameterValue::Int(level),
+    ) = (
+        &function_call.parameters.as_ref().unwrap()[0],
+        &function_call.parameters.as_ref().unwrap()[1],
+        &function_call.parameters.as_ref().unwrap()[2],
+    ) {
+        let mut log_level = *level;
+        if !(0..=6).contains(&log_level) {
+            log_level = 0;
+        }
+
+        guest_logger::log_message(
+            LogLevel::from(log_level as u8),
+            message,
+            source,
+            "guest_log_message",
+            file!(),
+            line!(),
+        );
+
+        Ok(get_flatbuffer_result(message.len() as i32))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to guest_log_message".to_string(),
+        ))
+    }
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn call_error_method(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
+        send_message_to_host_method("ErrorMethod", "Error From Host: ", message)
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to call_error_method".to_string(),
+        ))
+    }
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn call_host_spin(_: &FunctionCall) -> Result<Vec<u8>> {
+    call_host_function::<()>("Spin", None, ReturnType::Void)?;
+    Ok(get_flatbuffer_result(()))
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn host_call_loop(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(message) = &function_call.parameters.as_ref().unwrap()[0] {
+        loop {
+            call_host_function::<()>(message, None, ReturnType::Void).unwrap();
+        }
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to host_call_loop".to_string(),
+        ))
+    }
+}
+
+// Interprets the given guest function call as a host function call and dispatches it to the host.
+#[hyperlight_guest_tracing::trace_function]
+fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
+    let mut params = func.parameters.unwrap();
+    // first parameter must be string (the name of the host function to call)
+    let host_func_name = match params.remove(0) {
+        // TODO use `swap_remove` instead of `remove` if performance is an issue, but left out
+        // to avoid confusion for replicating failure cases
+        ParameterValue::String(name) => name,
+        _ => {
+            return Err(HyperlightGuestError::new(
+                ErrorCode::GuestFunctionParameterTypeMismatch,
+                "Invalid parameters passed to fuzz_host_function".to_string(),
+            ));
+        }
+    };
+
+    // Because we do not know at compile time the actual return type of the host function to be called
+    // we cannot use the `call_host_function<T>` generic function.
+    // We need to use the `call_host_function_without_returning_result` function that does not retrieve the return
+    // value
+    call_host_function_without_returning_result(
+        &host_func_name,
+        Some(params),
+        func.expected_return_type,
+    )
+    .expect("failed to call host function");
+    Ok(get_flatbuffer_result(()))
+}
+
 #[no_mangle]
 #[hyperlight_guest_tracing::trace_function]
 pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
@@ -1438,34 +1696,4 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     }
 
     Ok(get_flatbuffer_result(99))
-}
-
-// Interprets the given guest function call as a host function call and dispatches it to the host.
-#[hyperlight_guest_tracing::trace_function]
-fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
-    let mut params = func.parameters.unwrap();
-    // first parameter must be string (the name of the host function to call)
-    let host_func_name = match params.remove(0) {
-        // TODO use `swap_remove` instead of `remove` if performance is an issue, but left out
-        // to avoid confusion for replicating failure cases
-        ParameterValue::String(name) => name,
-        _ => {
-            return Err(HyperlightGuestError::new(
-                ErrorCode::GuestFunctionParameterTypeMismatch,
-                "Invalid parameters passed to fuzz_host_function".to_string(),
-            ));
-        }
-    };
-
-    // Because we do not know at compile time the actual return type of the host function to be called
-    // we cannot use the `call_host_function<T>` generic function.
-    // We need to use the `call_host_function_without_returning_result` function that does not retrieve the return
-    // value
-    call_host_function_without_returning_result(
-        &host_func_name,
-        Some(params),
-        func.expected_return_type,
-    )
-    .expect("failed to call host function");
-    Ok(get_flatbuffer_result(()))
 }

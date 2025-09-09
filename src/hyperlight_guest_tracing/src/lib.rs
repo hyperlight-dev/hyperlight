@@ -326,7 +326,7 @@ mod trace {
             // Flush the buffer
             buffer.flush();
 
-            // After flushing, the entryes should still be intact, we don't clear them
+            // After flushing, the entries should still be intact, we don't clear them
             assert_eq!(buffer.write_index, 0);
             assert_eq!(buffer.entries[0].msg_len, msg.len());
             assert_eq!(&buffer.entries[0].msg[..msg.len()], msg.as_bytes());

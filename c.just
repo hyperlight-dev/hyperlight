@@ -16,14 +16,11 @@ build-rust-capi target=default-target:
 compile-c-guest target=default-target:
     # elf
     cd src/tests/c_guests/c_simpleguest && {{ mkdir }} "./out/{{target}}" && clang -c {{ c-compile-options-elf }} {{ if target == "debug" { c-flags-debug-elf } else { c-flags-release-elf } }} main.c {{c-include-flags-elf}} -o "out/{{ target }}/main.o"
-    cd src/tests/c_guests/c_callbackguest && {{ mkdir }} "./out/{{target}}" && clang -c {{ c-compile-options-elf }} {{ if target == "debug" { c-flags-debug-elf } else { c-flags-release-elf } }} main.c {{c-include-flags-elf}} -o "out/{{ target }}/main.o"
 
 link-c-guest target=default-target:
     # elf
     cd src/tests/c_guests/c_simpleguest && ld.lld -o out/{{target}}/simpleguest {{c-linker-options-elf}} out/{{target}}/main.o -l hyperlight_guest_capi -L "{{justfile_directory()}}/target/x86_64-unknown-none/{{target}}"
-    cd src/tests/c_guests/c_callbackguest && ld.lld -o out/{{target}}/callbackguest {{c-linker-options-elf}} out/{{target}}/main.o -l hyperlight_guest_capi -L "{{justfile_directory()}}/target/x86_64-unknown-none/{{target}}"
 
 move-c-guests target=default-target:
     # elf
     cp src/tests/c_guests/c_simpleguest/out/{{target}}/simpleguest src/tests/c_guests/bin/{{target}}/
-    cp src/tests/c_guests/c_callbackguest/out/{{target}}/callbackguest src/tests/c_guests/bin/{{target}}/

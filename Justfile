@@ -11,7 +11,6 @@ root := justfile_directory()
 default-target := "debug"
 simpleguest_source := "src/tests/rust_guests/simpleguest/target/x86_64-unknown-none"
 dummyguest_source := "src/tests/rust_guests/dummyguest/target/x86_64-unknown-none"
-callbackguest_source := "src/tests/rust_guests/callbackguest/target/x86_64-unknown-none"
 witguest_source := "src/tests/rust_guests/witguest/target/x86_64-unknown-none"
 rust_guests_bin_dir := "src/tests/rust_guests/bin"
 
@@ -39,13 +38,11 @@ witguest-wit:
     cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
 
 build-rust-guests target=default-target features="": (witguest-wit)
-    cd src/tests/rust_guests/callbackguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
     cd src/tests/rust_guests/simpleguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
     cd src/tests/rust_guests/dummyguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
     cd src/tests/rust_guests/witguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
 
 @move-rust-guests target=default-target:
-    cp {{ callbackguest_source }}/{{ target }}/callbackguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ simpleguest_source }}/{{ target }}/simpleguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ dummyguest_source }}/{{ target }}/dummyguest* {{ rust_guests_bin_dir }}/{{ target }}/
     cp {{ witguest_source }}/{{ target }}/witguest* {{ rust_guests_bin_dir }}/{{ target }}/
@@ -59,7 +56,6 @@ clean-rust:
     cargo clean
     cd src/tests/rust_guests/simpleguest && cargo clean
     cd src/tests/rust_guests/dummyguest && cargo clean
-    cd src/tests/rust_guests/callbackguest && cargo clean
     {{ if os() == "windows" { "cd src/tests/rust_guests/witguest -ErrorAction SilentlyContinue; cargo clean" } else { "[ -d src/tests/rust_guests/witguest ] && cd src/tests/rust_guests/witguest && cargo clean || true" } }}
     {{ if os() == "windows" { "Remove-Item src/tests/rust_guests/witguest/interface.wasm -Force -ErrorAction SilentlyContinue" } else { "rm -f src/tests/rust_guests/witguest/interface.wasm" } }}
     git clean -fdx src/tests/c_guests/bin src/tests/rust_guests/bin
@@ -229,7 +225,6 @@ check:
 
 fmt-check:
     cargo +nightly fmt --all -- --check
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/callbackguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml -- --check
@@ -240,7 +235,6 @@ check-license-headers:
 
 fmt-apply:
     cargo +nightly fmt --all
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/callbackguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml
@@ -251,7 +245,6 @@ clippy target=default-target: (witguest-wit)
 
 clippy-guests target=default-target: (witguest-wit)
     cd src/tests/rust_guests/simpleguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
-    cd src/tests/rust_guests/callbackguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
     cd src/tests/rust_guests/witguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
 clippy-apply-fix-unix:

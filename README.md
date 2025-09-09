@@ -198,13 +198,9 @@ After having an environment with a hypervisor setup, running the example has the
         ```sh
         wget https://apt.llvm.org/llvm.sh
         chmod +x ./llvm.sh
-        sudo ./llvm.sh 17 all
-        sudo ln -s /usr/lib/llvm-17/bin/clang-cl /usr/bin/clang-cl
-        sudo ln -s /usr/lib/llvm-17/bin/llvm-lib /usr/bin/llvm-lib
-        sudo ln -s /usr/lib/llvm-17/bin/lld-link /usr/bin/lld-link
-        sudo ln -s /usr/lib/llvm-17/bin/llvm-ml /usr/bin/llvm-ml
-        sudo ln -s /usr/lib/llvm-17/bin/ld.lld /usr/bin/ld.lld
-        sudo ln -s /usr/lib/llvm-17/bin/clang /usr/bin/clang
+        sudo ./llvm.sh 18 clang clang-tools-extra
+        sudo ln -s /usr/lib/llvm-18/bin/ld.lld /usr/bin/ld.lld
+        sudo ln -s /usr/lib/llvm-18/bin/clang /usr/bin/clang
         ```
 
     - On Windows, see [this](https://learn.microsoft.com/en-us/cpp/build/clang-support-msbuild?view=msvc-170).
@@ -212,9 +208,10 @@ After having an environment with a hypervisor setup, running the example has the
     - On Azure Linux, run:
 
         ```sh
-        sudo dnf remove clang -y || true
-        sudo dnf install clang17 -y
-        sudo dnf install clang17-tools-extra -y
+        if ! command -v clang > /dev/null 2>&1; then
+            sudo dnf install clang -y
+            sudo dnf install clang-tools-extra -y
+        fi
         ```
 
 Then, we are ready to build and run the example:

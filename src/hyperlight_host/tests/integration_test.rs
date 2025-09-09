@@ -24,9 +24,7 @@ use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
-use hyperlight_testing::{
-    c_simple_guest_as_string, callback_guest_as_string, simple_guest_as_string,
-};
+use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 use log::LevelFilter;
 
 pub mod common; // pub to disable dead_code warning
@@ -40,7 +38,7 @@ fn interrupt_host_call() {
     let barrier2 = barrier.clone();
 
     let mut usbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(callback_guest_as_string().expect("Guest Binary Missing")),
+        GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
         None,
     )
     .unwrap();
@@ -312,7 +310,7 @@ fn interrupt_custom_signal_no_and_retry_delay() {
 #[test]
 fn interrupt_spamming_host_call() {
     let mut uninit = UninitializedSandbox::new(
-        GuestBinary::FilePath(callback_guest_as_string().unwrap()),
+        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
         None,
     )
     .unwrap();

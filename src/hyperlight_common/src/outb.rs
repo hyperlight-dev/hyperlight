@@ -77,7 +77,7 @@ impl TryFrom<u8> for Exception {
             19 => SIMDFloatingPointException,
             20 => VirtualizationException,
             30 => SecurityException,
-            0x7F => NoException,
+            0xFF => NoException,
             _ => return Err(anyhow!("Unknown exception code: {:#x}", value)),
         };
 

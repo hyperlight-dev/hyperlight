@@ -45,7 +45,6 @@ jobs:
         with:
           name: rust-guest-binaries-${{ matrix.config }}
           path: |
-            src\tests\rust_guests\bin\${{ matrix.config }}\callbackguest
             src\tests\rust_guests\bin\${{ matrix.config }}\dummyguest
             src\tests\rust_guests\bin\${{ matrix.config }}\simpleguest
           if-no-files-found: error
@@ -55,6 +54,5 @@ jobs:
         with:
           name: c-guest-binaries-${{ matrix.config }}
           path: |
-            src\tests\c_guests\bin\${{ matrix.config }}\callbackguest
             src\tests\c_guests\bin\${{ matrix.config }}\simpleguest
           if-no-files-found: error

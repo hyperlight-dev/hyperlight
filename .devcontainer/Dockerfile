@@ -24,16 +24,12 @@ RUN apt-get update \
         sudo \
         wget
 
-ARG LLVM_VERSION=17
+ARG LLVM_VERSION=18
 
 # Install llvm
 RUN wget https://apt.llvm.org/llvm.sh \
     && chmod +x ./llvm.sh         \
-    && sudo ./llvm.sh ${LLVM_VERSION} all      \
-    && sudo ln -s /usr/lib/llvm-${LLVM_VERSION}/bin/clang-cl /usr/bin/clang-cl \
-    && sudo ln -s /usr/lib/llvm-${LLVM_VERSION}/bin/llvm-lib /usr/bin/llvm-lib \
-    && sudo ln -s /usr/lib/llvm-${LLVM_VERSION}/bin/lld-link /usr/bin/lld-link \
-    && sudo ln -s /usr/lib/llvm-${LLVM_VERSION}/bin/llvm-ml /usr/bin/llvm-ml   \
+    && sudo ./llvm.sh ${LLVM_VERSION} clang clang-tools-extra      \
     && sudo ln -s /usr/lib/llvm-${LLVM_VERSION}/bin/ld.lld /usr/bin/ld.lld     \
     && sudo ln -s /usr/lib/llvm-${LLVM_VERSION}/bin/clang /usr/bin/clang
 
