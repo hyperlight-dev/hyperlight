@@ -21,16 +21,6 @@ updates:
       - dependency-name: "mshv-bindings"
         versions: [ ">=0.2.1" ]
     open-pull-requests-limit: 20
-  # Excluded workspace members - guests with custom linker flags
-  - package-ecosystem: "cargo"
-    directory: "/src/tests/rust_guests/callbackguest"
-    schedule:
-      interval: "daily"
-      time: "03:00"
-    labels:
-      - "kind/dependencies"
-      - "area/guest"
-    open-pull-requests-limit: 5
   - package-ecosystem: "cargo"
     directory: "/src/tests/rust_guests/dummyguest"
     schedule:
