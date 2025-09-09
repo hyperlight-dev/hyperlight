@@ -68,7 +68,7 @@ pub unsafe fn abort_with_code_and_message(code: &[u8], message_ptr: *const c_cha
 }
 
 /// This function exists to give the guest more manual control
-/// over the abort sequence. For example, in the panic handler,
+/// over the abort sequence. For example, in `hyperlight_guest_bin`'s panic handler,
 /// we have a message of unknown length that we want to stream
 /// to the host, which requires sending the message in chunks
 pub fn write_abort(code: &[u8]) {
