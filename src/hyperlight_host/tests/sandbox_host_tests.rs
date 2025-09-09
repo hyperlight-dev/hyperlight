@@ -18,7 +18,7 @@ use core::f64;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
-use common::new_uninit;
+use common::{get_uninit_simpleguest_sandboxes, new_uninit};
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{
     GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
@@ -28,7 +28,7 @@ use hyperlight_testing::simple_guest_as_string;
 use serial_test::serial; // using LoadLibrary requires serial tests
 
 pub mod common; // pub to disable dead_code warning
-use crate::common::{get_callbackguest_uninit_sandboxes, get_simpleguest_sandboxes};
+use crate::common::get_simpleguest_sandboxes;
 
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
@@ -312,7 +312,7 @@ fn simple_test_parallel() {
 }
 
 fn callback_test_helper() -> Result<()> {
-    for mut sandbox in get_callbackguest_uninit_sandboxes(None).into_iter() {
+    for mut sandbox in get_uninit_simpleguest_sandboxes(None).into_iter() {
         // create host function
         let (tx, rx) = channel();
         sandbox.register("HostMethod1", move |msg: String| {
@@ -357,7 +357,7 @@ fn callback_test_parallel() {
 #[test]
 #[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn host_function_error() -> Result<()> {
-    for mut sandbox in get_callbackguest_uninit_sandboxes(None).into_iter() {
+    for mut sandbox in get_uninit_simpleguest_sandboxes(None).into_iter() {
         // create host function
         sandbox.register("HostMethod1", |_: String| -> Result<String> {
             Err(new_error!("Host function error!"))

@@ -48,10 +48,8 @@ jobs:
 
       - name: Copy Guest Binaries
         run: |
-          cp ./downloaded-rust-guest-binaries-release/callbackguest ./src/tests/rust_guests/bin/release/callbackguest
           cp ./downloaded-rust-guest-binaries-release/simpleguest ./src/tests/rust_guests/bin/release/simpleguest
           cp ./downloaded-rust-guest-binaries-release/dummyguest ./src/tests/rust_guests/bin/release/dummyguest
-          cp ./downloaded-c-guest-binaries-release/callbackguest ./src/tests/c_guests/bin/release/callbackguest
           cp ./downloaded-c-guest-binaries-release/simpleguest ./src/tests/c_guests/bin/release/simpleguest
 
       ### Benchmarks ###

@@ -21,7 +21,6 @@ members = [
 ]
 # Guests have custom linker flags, so we need to exclude them from the workspace
 exclude = [
-    "src/tests/rust_guests/callbackguest",
     "src/tests/rust_guests/dummyguest",
     "src/tests/rust_guests/simpleguest",
     "src/tests/rust_guests/witguest",

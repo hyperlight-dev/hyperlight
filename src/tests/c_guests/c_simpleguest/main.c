@@ -239,8 +239,26 @@ hl_Vec *twenty_four_k_in_eight_k_out(const hl_FunctionCall* params) {
   return hl_flatbuffer_result_from_Bytes(input.data, 8 * 1024);
 }
 
+int guest_function(const char *from_host) {
+  char guest_message[256] = "Hello from GuestFunction1, ";
+  int len = strlen(from_host);
+  strncat(guest_message, from_host, len);
+
+  hl_Parameter params = {.tag = hl_ParameterType_String,
+                         .value = {.String = guest_message}};
+  const hl_FunctionCall host_call = {.function_name = "HostMethod1",
+                                     .parameters = &params,
+                                     .parameters_len = 1,
+                                     .return_type = hl_ReturnType_Int};
+  hl_call_host_function(&host_call);
+  hl_get_host_return_value_as_Int();
+
+  return 0;
+}
+
 HYPERLIGHT_WRAP_FUNCTION(echo, String, 1, String)
 // HYPERLIGHT_WRAP_FUNCTION(set_byte_array_to_zero, 1, VecBytes) is not valid for functions that return VecBytes
+HYPERLIGHT_WRAP_FUNCTION(guest_function, Int, 1, String)
 HYPERLIGHT_WRAP_FUNCTION(print_output, Int, 1, String)
 HYPERLIGHT_WRAP_FUNCTION(stack_allocate, Int, 1, Int)
 HYPERLIGHT_WRAP_FUNCTION(stack_overflow, Int, 1, Int)
@@ -275,6 +293,7 @@ void hyperlight_main(void)
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
     hl_register_function_definition("SetByteArrayToZero", set_byte_array_to_zero, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
+    HYPERLIGHT_REGISTER_FUNCTION("GuestMethod1", guest_function);
     HYPERLIGHT_REGISTER_FUNCTION("PrintOutput", print_output);
     HYPERLIGHT_REGISTER_FUNCTION("StackAllocate", stack_allocate);
     HYPERLIGHT_REGISTER_FUNCTION("StackOverflow", stack_overflow);

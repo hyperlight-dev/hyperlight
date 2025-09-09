@@ -15,10 +15,7 @@ limitations under the License.
 */
 use hyperlight_host::func::HostFunction;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result, UninitializedSandbox};
-use hyperlight_testing::{
-    c_callback_guest_as_string, c_simple_guest_as_string, callback_guest_as_string,
-    simple_guest_as_string,
-};
+use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 
 /// Returns a rust/c simpleguest depending on environment variable GUEST.
 /// Uses rust guest by default. Run test with environment variable GUEST="c" to use the c version
@@ -59,10 +56,10 @@ pub fn get_simpleguest_sandboxes(
         .collect()
 }
 
-pub fn get_callbackguest_uninit_sandboxes(
+pub fn get_uninit_simpleguest_sandboxes(
     writer: Option<HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
 ) -> Vec<UninitializedSandbox> {
-    let elf_path = get_c_or_rust_callbackguest_path();
+    let elf_path = get_c_or_rust_simpleguest_path();
 
     let sandboxes = [
         // in hypervisor elf
@@ -86,16 +83,6 @@ pub(crate) fn get_c_or_rust_simpleguest_path() -> String {
     match guest_type.as_str() {
         "rust" => simple_guest_as_string().unwrap(),
         "c" => c_simple_guest_as_string().unwrap(),
-        _ => panic!("Unknown guest type '{guest_type}', use either 'rust' or 'c'"),
-    }
-}
-
-// returns the the path of callbackguest binary. Picks rust/ version depending on environment variable GUEST (or rust by default if unset)
-fn get_c_or_rust_callbackguest_path() -> String {
-    let guest_type = std::env::var("GUEST").unwrap_or("rust".to_string());
-    match guest_type.as_str() {
-        "rust" => callback_guest_as_string().unwrap(),
-        "c" => c_callback_guest_as_string().unwrap(),
         _ => panic!("Unknown guest type '{guest_type}', use either 'rust' or 'c'"),
     }
 }
