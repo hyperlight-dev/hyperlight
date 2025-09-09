@@ -422,7 +422,6 @@ mod tests {
 
     use hyperlight_common::mem::PAGE_SIZE_USIZE;
     use rand::{Rng, rng};
-    use serial_test::serial;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32, Process32First, Process32Next, TH32CS_SNAPPROCESS,
@@ -437,7 +436,6 @@ mod tests {
     use super::*;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
     #[test]
-    #[serial]
     fn test_surrogate_process_manager() {
         let mut threads = Vec::new();
         // create more threads than surrogate processes as we want to test that
