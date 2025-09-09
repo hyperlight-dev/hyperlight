@@ -333,7 +333,6 @@ impl MultiUseSandbox {
     /// Map the contents of a file into the guest at a particular address
     ///
     /// Returns the length of the mapping in bytes.
-    #[allow(dead_code)]
     #[instrument(err(Debug), skip(self, _fp, _guest_base), parent = Span::current())]
     pub fn map_file_cow(&mut self, _fp: &Path, _guest_base: u64) -> Result<u64> {
         #[cfg(windows)]
