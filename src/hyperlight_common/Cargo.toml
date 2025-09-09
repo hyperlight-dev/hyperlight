@@ -21,14 +21,16 @@ log = "0.4.28"
 tracing = { version = "0.1.41", optional = true }
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 spin = "0.10.0"
+thiserror = { version = "2.0.16", default-features = false }
 
 [features]
 default = ["tracing"]
+tracing = ["dep:tracing"]
 fuzzing = ["dep:arbitrary"]
 trace_guest = []
 unwind_guest = []
 mem_profile = []
-std = []
+std = ["thiserror/std", "log/std", "tracing/std"]
 
 [dev-dependencies]
 hyperlight-testing = { workspace = true }
