@@ -24,14 +24,11 @@ use hyperlight_host::{
     GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
 };
 use hyperlight_testing::simple_guest_as_string;
-#[cfg(target_os = "windows")]
-use serial_test::serial; // using LoadLibrary requires serial tests
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::get_simpleguest_sandboxes;
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn pass_byte_array() {
     for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
         const LEN: usize = 10;
@@ -49,7 +46,6 @@ fn pass_byte_array() {
 
 #[test]
 #[ignore = "Fails with mismatched float only when c .exe guest?!"]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn float_roundtrip() {
     let doubles = [
         0.0,
@@ -107,7 +103,6 @@ fn float_roundtrip() {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn invalid_guest_function_name() {
     for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
         let fn_name = "FunctionDoesntExist";
@@ -120,7 +115,6 @@ fn invalid_guest_function_name() {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn set_static() {
     for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
         let fn_name = "SetStatic";
@@ -133,7 +127,6 @@ fn set_static() {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn multiple_parameters() {
     let (tx, rx) = channel();
     let writer = move |msg: String| {
@@ -181,7 +174,6 @@ fn multiple_parameters() {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn incorrect_parameter_type() {
     for mut sandbox in get_simpleguest_sandboxes(None) {
         let res = sandbox.call::<i32>(
@@ -199,7 +191,6 @@ fn incorrect_parameter_type() {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn incorrect_parameter_num() {
     for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
         let res = sandbox.call::<i32>("Echo", ("1".to_string(), 2_i32));
@@ -229,7 +220,6 @@ fn max_memory_sandbox() {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn iostack_is_working() {
     for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
         let res: i32 = sandbox
@@ -290,13 +280,11 @@ fn simple_test_helper() -> Result<()> {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn simple_test() {
     simple_test_helper().unwrap();
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn simple_test_parallel() {
     let handles: Vec<_> = (0..50)
         .map(|_| {
@@ -333,13 +321,11 @@ fn callback_test_helper() -> Result<()> {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn callback_test() {
     callback_test_helper().unwrap();
 }
 
 #[test]
-#[cfg(target_os = "linux")] // windows can't run parallel with LoadLibrary
 fn callback_test_parallel() {
     let handles: Vec<_> = (0..100)
         .map(|_| {
@@ -355,7 +341,6 @@ fn callback_test_parallel() {
 }
 
 #[test]
-#[cfg_attr(target_os = "windows", serial)] // using LoadLibrary requires serial tests
 fn host_function_error() -> Result<()> {
     for mut sandbox in get_uninit_simpleguest_sandboxes(None).into_iter() {
         // create host function
