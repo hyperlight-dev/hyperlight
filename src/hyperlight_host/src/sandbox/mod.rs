@@ -23,9 +23,6 @@ pub(crate) mod hypervisor;
 /// Functionality for dealing with initialized sandboxes that can
 /// call 0 or more guest functions
 pub mod initialized_multi_use;
-/// Functionality for dealing with memory access from the VM guest
-/// executable
-pub(crate) mod mem_access;
 /// Functionality for interacting with a sandbox's internally-stored
 /// `SandboxMemoryManager`
 pub(crate) mod mem_mgr;

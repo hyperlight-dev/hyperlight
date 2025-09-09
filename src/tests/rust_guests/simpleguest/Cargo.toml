@@ -1,11 +1,11 @@
 [package]
 name = "simpleguest"
-version = "0.4.0"
+version = "0.9.0"
 edition = "2021"
 
 [dependencies]
 hyperlight-guest = { path = "../../../hyperlight_guest" }
-hyperlight-guest-bin = { path = "../../../hyperlight_guest_bin" }
+hyperlight-guest-bin = { path = "../../../hyperlight_guest_bin", default-features = false }
 hyperlight-common = { path = "../../../hyperlight_common", default-features = false }
 hyperlight-guest-tracing = { path = "../../../hyperlight_guest_tracing" }
 log = {version = "0.4", default-features = false }

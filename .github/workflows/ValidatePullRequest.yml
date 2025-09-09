@@ -32,7 +32,7 @@ jobs:
               - '**/*.txt'
             all:
               - '**/*'
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v8
         id: docs-only
         with:
           script: |
@@ -65,7 +65,7 @@ jobs:
     steps:
     - uses: actions/checkout@v5
     - name: Spell Check Repo
-      uses: crate-ci/typos@v1.35.5
+      uses: crate-ci/typos@v1.36.2
 
   license-headers:
     name: check license headers

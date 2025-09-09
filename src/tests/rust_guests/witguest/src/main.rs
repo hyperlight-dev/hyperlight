@@ -20,12 +20,16 @@ limitations under the License.
 extern crate alloc;
 extern crate hyperlight_guest;
 
-mod bindings;
 use alloc::string::String;
 
+use spin::Mutex;
+
+mod bindings;
 use bindings::*;
 
-struct Guest {}
+struct Guest {
+    host_resource: Option<<Host as Testresource>::T>,
+}
 
 impl test::wit::Roundtrip for Guest {
     fn roundtrip_bool(&mut self, x: bool) -> bool {
@@ -162,11 +166,12 @@ impl test::wit::Roundtrip for Guest {
     }
 }
 
-impl test::wit::TestHostResource for Guest {
-    fn test(&mut self) -> bool {
-        use test::wit::host_resource::Testresource;
+use alloc::string::ToString;
+
+use test::wit::host_resource::Testresource;
+impl test::wit::TestHostResource<<Host as Testresource>::T> for Guest {
+    fn test_uses_locally(&mut self) -> bool {
         let mut host = Host {};
-        use alloc::string::ToString;
         let r = <Host as Testresource>::new(&mut host, "str".to_string(), 'z');
         <Host as Testresource>::append_char(&mut host, &r, 'a');
         <Host as Testresource>::append_char(&mut host, &r, 'b');
@@ -175,6 +180,27 @@ impl test::wit::TestHostResource for Guest {
         <Host as Testresource>::append_char(&mut host, &r, 'c');
         <Host as test::wit::HostResource>::return_own(&mut host, r);
         true
+    }
+    fn test_makes(&mut self) -> <Host as Testresource>::T {
+        let mut host = Host {};
+        <Host as Testresource>::new(&mut host, "str".to_string(), 'z')
+    }
+    fn test_accepts_borrow(&mut self, r: &<Host as Testresource>::T) {
+        let mut host = Host {};
+        <Host as Testresource>::append_char(&mut host, r, 'a');
+    }
+    fn test_accepts_own(&mut self, r: <Host as Testresource>::T) {
+        let mut host = Host {};
+        // TODO: add test about the old contents of this being
+        // dropped, when #810 is fixed.
+        <Host as Testresource>::append_char(&mut host, &r, 'b');
+        self.host_resource = Some(r);
+    }
+    fn test_returns(&mut self) -> <Host as Testresource>::T {
+        let mut host = Host {};
+        let r = self.host_resource.take().unwrap();
+        <Host as Testresource>::append_char(&mut host, &r, 'c');
+        r
     }
 }
 
@@ -190,9 +216,13 @@ impl test::wit::TestExports<Host> for Guest {
     }
 }
 
+static GUEST_STATE: Mutex<Guest> = Mutex::new(Guest {
+    host_resource: None,
+});
+
 impl bindings::Guest for Guest {
     fn with_guest_state<R, F: FnOnce(&mut Self) -> R>(f: F) -> R {
-        let mut g = Guest {};
+        let mut g = GUEST_STATE.lock();
         f(&mut g)
     }
 }

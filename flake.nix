@@ -59,6 +59,11 @@
               channel = "stable";
               sha256 = "sha256-AJ6LX/Q/Er9kS15bn9iflkUwcgYqRQxiOIL2ToVAXaU=";
             };
+            "1.86" = {
+              date = "2025-04-03";
+              channel = "stable";
+              sha256 = "sha256-X/4ZBHO3iW0fOenQ3foEvscgAPJYl2abspaBThDOukI=";
+            };
           };
 
           rust-platform = makeRustPlatform {

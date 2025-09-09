@@ -33,8 +33,8 @@ fallible-iterator = { version = "0.3.0", optional = true }
 blake3 = "1.8.2"
 page_size = "0.6.0"
 termcolor = "1.2.0"
-bitflags = "2.9.3"
-log = "0.4.27"
+bitflags = "2.9.4"
+log = "0.4.28"
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-core = "0.1.34"
@@ -48,10 +48,10 @@ anyhow = "1.0"
 metrics = "0.24.2"
 serde_json = "1.0"
 elfcore = "2.0"
-uuid = { version = "1.18.0", features = ["v4"] }
+uuid = { version = "1.18.1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
@@ -65,8 +65,8 @@ windows = { version = "0.61", features = [
     "Win32_System_JobObjects",
     "Win32_System_SystemServices",
 ] }
-windows-sys = { version = "0.60", features = ["Win32"] }
-windows-result = "0.3"
+windows-sys = { version = "0.61", features = ["Win32"] }
+windows-result = "0.4"
 rust-embed = { version = "8.7.2", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
 sha256 = "1.6.0"
 windows-version = "0.1"
@@ -82,7 +82,7 @@ mshv-bindings3 = { package="mshv-bindings", version = "=0.3.2", optional = true 
 mshv-ioctls3 = { package="mshv-ioctls",  version = "=0.3.2", optional = true}
 
 [dev-dependencies]
-uuid = { version = "1.18.0", features = ["v4"] }
+uuid = { version = "1.18.1", features = ["v4"] }
 signal-hook-registry = "1.4.6"
 envy = { version = "0.4.2" }
 serde = "1.0"
@@ -95,7 +95,7 @@ hyperlight-testing = { workspace = true }
 env_logger = "0.11.8"
 tracing-forest = { version = "0.2.0", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
 tracing = "0.1.41"
-tracing-subscriber = {version = "0.3.19", features = ["std", "env-filter"]}
+tracing-subscriber = {version = "0.3.20", features = ["std", "env-filter"]}
 tracing-opentelemetry = "0.31.0"
 opentelemetry = "0.30.0"
 opentelemetry-otlp = { version = "0.30.0", default-features = false, features = ["http-proto", "reqwest-blocking-client"] }
@@ -111,7 +111,7 @@ serde_json = "1.0"
 hyperlight-component-macro = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_System_Diagnostics_ToolHelp",
 ] }
 

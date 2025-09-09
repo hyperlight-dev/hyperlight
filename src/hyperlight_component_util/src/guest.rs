@@ -18,8 +18,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::emit::{
-    FnName, ResourceItemName, State, WitName, kebab_to_exports_name, kebab_to_fn, kebab_to_getter,
-    kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var, split_wit_name,
+    FnName, ResolvedBoundVar, ResourceItemName, State, WitName, kebab_to_exports_name, kebab_to_fn,
+    kebab_to_getter, kebab_to_imports_name, kebab_to_namespace, kebab_to_type, kebab_to_var,
+    split_wit_name,
 };
 use crate::etypes::{Component, Defined, ExternDecl, ExternDesc, Handleable, Instance, Tyvar};
 use crate::hl::{
@@ -98,10 +99,10 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
         ExternDesc::Type(t) => match t {
             Defined::Handleable(Handleable::Var(Tyvar::Bound(b))) => {
                 // only resources need something emitted
-                let (b, None) = s.resolve_tv(*b) else {
+                let ResolvedBoundVar::Resource { rtidx } = s.resolve_bound_var(*b) else {
                     return quote! {};
                 };
-                let rtid = format_ident!("HostResource{}", s.var_offset + b as usize);
+                let rtid = format_ident!("HostResource{}", rtidx as usize);
                 let path = s.resource_trait_path(kebab_to_type(ed.kebab_name));
                 s.root_mod
                     .r#impl(path, format_ident!("Host"))
@@ -313,6 +314,8 @@ fn emit_component<'a, 'b, 'c>(
         .collect::<Vec<_>>();
 
     s.var_offset = 0;
+
+    s.is_export = true;
 
     let exports = ct
         .instance

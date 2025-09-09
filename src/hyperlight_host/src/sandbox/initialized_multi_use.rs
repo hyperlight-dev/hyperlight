@@ -33,12 +33,10 @@ use tracing::{Span, instrument};
 
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
-use super::{Callable, MemMgrWrapper, WrapperGetter};
+use super::{Callable, WrapperGetter};
 use crate::HyperlightError::SnapshotSandboxMismatch;
 use crate::func::guest_err::check_for_guest_error;
 use crate::func::{ParameterTuple, SupportedReturnType};
-#[cfg(gdb)]
-use crate::hypervisor::handlers::DbgMemAccessHandlerWrapper;
 use crate::hypervisor::{Hypervisor, InterruptHandle};
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
@@ -46,6 +44,7 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
+use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::{Result, log_then_return};
 
 /// Global counter for assigning unique IDs to sandboxes
@@ -64,7 +63,7 @@ pub struct MultiUseSandbox {
     vm: Box<dyn Hypervisor>,
     dispatch_ptr: RawPtr,
     #[cfg(gdb)]
-    dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+    dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     snapshot: Option<Snapshot>,
@@ -82,7 +81,7 @@ impl MultiUseSandbox {
         mgr: MemMgrWrapper<HostSharedMemory>,
         vm: Box<dyn Hypervisor>,
         dispatch_ptr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_fn: DbgMemAccessHandlerWrapper,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
             id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -382,6 +381,8 @@ impl MultiUseSandbox {
         ret_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
+        // Reset snapshot since we are mutating the sandbox state
+        self.snapshot = None;
         maybe_time_and_emit_guest_call(func_name, || {
             self.call_guest_function_by_name_no_reset(func_name, ret_type, args)
         })
@@ -424,9 +425,14 @@ impl MultiUseSandbox {
                 .get_guest_function_call_result()
         })();
 
-        // TODO: Do we want to allow re-entrant guest function calls?
-        self.get_mgr_wrapper_mut().as_mut().clear_io_buffers();
-
+        // In the happy path we do not need to clear io-buffers from the host because:
+        // - the serialized guest function call is zeroed out by the guest during deserialization, see call to `try_pop_shared_input_data_into::<FunctionCall>()`
+        // - the serialized guest function result is zeroed out by us (the host) during deserialization, see `get_guest_function_call_result`
+        // - any serialized host function call are zeroed out by us (the host) during deserialization, see `get_host_function_call`
+        // - any serialized host function result is zeroed out by the guest during deserialization, see `get_host_return_value`
+        if res.is_err() {
+            self.get_mgr_wrapper_mut().as_mut().clear_io_buffers();
+        }
         res
     }
 
@@ -496,6 +502,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
+    use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
     use hyperlight_testing::simple_guest_as_string;
 
     #[cfg(target_os = "linux")]
@@ -504,6 +511,29 @@ mod tests {
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+
+    /// Make sure input/output buffers are properly reset after guest call (with host call)
+    #[test]
+    fn io_buffer_reset() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_input_data_size(4096);
+        cfg.set_output_data_size(4096);
+        let path = simple_guest_as_string().unwrap();
+        let mut sandbox =
+            UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
+        sandbox.register("HostAdd", |a: i32, b: i32| a + b).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        // will exhaust io if leaky. Tests both success and error paths
+        for _ in 0..1000 {
+            let result = sandbox.call::<i32>("Add", (5i32, 10i32)).unwrap();
+            assert_eq!(result, 15);
+            let result = sandbox.call::<i32>("AddToStaticAndFail", ()).unwrap_err();
+            assert!(
+                matches!(result, HyperlightError::GuestError (code, msg ) if code == ErrorCode::GuestError && msg == "Crash on purpose")
+            );
+        }
+    }
 
     /// Tests that call_guest_function_by_name restores the state correctly
     #[test]
