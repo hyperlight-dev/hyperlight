@@ -28,8 +28,112 @@ mod state;
 #[cfg(feature = "trace")]
 mod subscriber;
 
+/// Defines a type to iterate over spans/events fields
+#[cfg(feature = "trace")]
+mod visitor;
+
+/// Type to get the relevant information from the internal state
+/// and expose it to the host
+#[cfg(feature = "trace")]
+pub use state::TraceBatchInfo;
 #[cfg(feature = "trace")]
 pub use trace::{init_guest_tracing, set_start_tsc};
+
+/// Maximum number of spans that the guest can store
+const MAX_NO_OF_SPANS: usize = 10;
+/// Maximum number of events that the guest can store
+const MAX_NO_OF_EVENTS: usize = 10;
+/// Maximum length a name can have in a span/event
+const MAX_NAME_LENGTH: usize = 64;
+/// Maximum length the target can have in a span/event
+const MAX_TARGET_LENGTH: usize = 64;
+/// Maximum length key of a Field can have
+const MAX_FIELD_KEY_LENGTH: usize = 32;
+/// Maximum length value of a Field can have
+const MAX_FIELD_VALUE_LENGTH: usize = 96;
+/// Maximum number of fields a span/event can have
+const MAX_NO_OF_FIELDS: usize = 8;
+
+/// Alias for the complicated heapless::Vec type for Spans
+pub type Spans = hl::Vec<
+    GuestSpan<
+        MAX_NAME_LENGTH,
+        MAX_TARGET_LENGTH,
+        MAX_FIELD_KEY_LENGTH,
+        MAX_FIELD_VALUE_LENGTH,
+        MAX_NO_OF_FIELDS,
+    >,
+    MAX_NO_OF_SPANS,
+>;
+
+/// Alias for the complicated heapless::Vec type for Events
+pub type Events = hl::Vec<
+    GuestEvent<MAX_NAME_LENGTH, MAX_FIELD_KEY_LENGTH, MAX_FIELD_VALUE_LENGTH, MAX_NO_OF_FIELDS>,
+    MAX_NO_OF_EVENTS,
+>;
+
+/// The trace level assigned to a span/event
+#[derive(Debug, Copy, Clone)]
+pub enum TraceLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<tracing::Level> for TraceLevel {
+    fn from(value: tracing::Level) -> Self {
+        match value {
+            tracing::Level::ERROR => Self::Error,
+            tracing::Level::WARN => Self::Warn,
+            tracing::Level::INFO => Self::Info,
+            tracing::Level::DEBUG => Self::Debug,
+            tracing::Level::TRACE => Self::Trace,
+        }
+    }
+}
+impl From<TraceLevel> for tracing::Level {
+    fn from(value: TraceLevel) -> Self {
+        match value {
+            TraceLevel::Error => Self::ERROR,
+            TraceLevel::Warn => Self::WARN,
+            TraceLevel::Info => Self::INFO,
+            TraceLevel::Debug => Self::DEBUG,
+            TraceLevel::Trace => Self::TRACE,
+        }
+    }
+}
+
+/// The structure in which a guest stores Span information
+pub struct GuestSpan<
+    const N: usize,
+    const T: usize,
+    const FK: usize,
+    const FV: usize,
+    const F: usize,
+> {
+    pub id: u64,
+    pub parent_id: Option<u64>,
+    pub level: TraceLevel,
+    /// Span name
+    pub name: hl::String<N>,
+    /// Filename
+    pub target: hl::String<T>,
+    pub start_tsc: u64,
+    pub end_tsc: Option<u64>,
+    pub fields: hl::Vec<(hl::String<FK>, hl::String<FV>), F>,
+}
+
+/// The structure in which a guest stores Event information
+pub struct GuestEvent<const N: usize, const FK: usize, const FV: usize, const F: usize> {
+    pub parent_id: u64,
+    pub level: TraceLevel,
+    pub name: hl::String<N>,
+    /// Event name
+    pub tsc: u64,
+    pub fields: hl::Vec<(hl::String<FK>, hl::String<FV>), F>,
+}
 
 /// This module is gated because some of these types are also used on the host, but we want
 /// only the guest to allocate and allow the functionality intended for the guest.
