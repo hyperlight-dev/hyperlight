@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.6.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
         with:
           rust-toolchain: "1.86"
 
