@@ -36,8 +36,8 @@ use crate::mem::shared_mem::GuestSharedMemory;
 use crate::mem::shared_mem::SharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
-#[cfg(feature = "trace_guest")]
-use crate::sandbox::trace::TraceInfo;
+#[cfg(feature = "mem_profile")]
+use crate::sandbox::trace::MemTraceInfo;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_error};
@@ -164,11 +164,8 @@ pub(crate) fn set_up_hypervisor_partition(
         None
     };
 
-    #[cfg(feature = "trace_guest")]
-    let trace_info = TraceInfo::new(
-        #[cfg(feature = "mem_profile")]
-        _load_info,
-    )?;
+    #[cfg(feature = "mem_profile")]
+    let trace_info = MemTraceInfo::new(_load_info)?;
 
     match *get_available_hypervisor() {
         #[cfg(mshv)]
@@ -183,7 +180,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
-                #[cfg(feature = "trace_guest")]
+                #[cfg(feature = "mem_profile")]
                 trace_info,
             )?;
             Ok(Box::new(hv))
@@ -201,7 +198,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
-                #[cfg(feature = "trace_guest")]
+                #[cfg(feature = "mem_profile")]
                 trace_info,
             )?;
             Ok(Box::new(hv))
@@ -225,7 +222,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 gdb_conn,
                 #[cfg(crashdump)]
                 rt_cfg.clone(),
-                #[cfg(feature = "trace_guest")]
+                #[cfg(feature = "mem_profile")]
                 trace_info,
             )?;
             Ok(Box::new(hv))
