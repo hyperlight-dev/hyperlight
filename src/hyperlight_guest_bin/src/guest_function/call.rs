@@ -128,6 +128,15 @@ pub(crate) extern "C" fn dispatch_function() {
     // part of the big identity-mapped region at the base of the
     // guest.
     crate::paging::flush_tlb();
+
+    // Read the current TSC to report it to the host with the spans/events
+    // This helps calculating the timestamps relative to the guest call
+    #[cfg(feature = "trace_guest")]
+    {
+        let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
+        hyperlight_guest_tracing::set_start_tsc(guest_start_tsc);
+    }
+
     internal_dispatch_function();
     halt();
 }
