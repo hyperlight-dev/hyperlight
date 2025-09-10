@@ -18,7 +18,7 @@ limitations under the License.
 // === Dependencies ===
 extern crate alloc;
 
-use alloc::string::ToString;
+use core::fmt::Write;
 
 use buddy_system_allocator::LockedHeap;
 #[cfg(target_arch = "x86_64")]
@@ -30,7 +30,7 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
-use hyperlight_guest::exit::{abort_with_code_and_message, halt};
+use hyperlight_guest::exit::{halt, write_abort};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
 use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
@@ -139,11 +139,37 @@ pub static mut OS_PAGE_SIZE: u32 = 0;
 // to satisfy the clippy when cfg == test
 #[allow(dead_code)]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    let msg = info.to_string();
-    let c_string = alloc::ffi::CString::new(msg)
-        .unwrap_or_else(|_| alloc::ffi::CString::new("panic (invalid utf8)").unwrap());
+    _panic_handler(info)
+}
 
-    unsafe { abort_with_code_and_message(&[ErrorCode::UnknownError as u8], c_string.as_ptr()) }
+/// A writer that sends all output to the hyperlight host
+/// using output ports. This allows us to not impose a
+/// buffering limit on error message size on the guest end,
+/// though one exists for the host.
+struct HyperlightAbortWriter;
+impl core::fmt::Write for HyperlightAbortWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        write_abort(s.as_bytes());
+        Ok(())
+    }
+}
+
+#[inline(always)]
+fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
+    let mut w = HyperlightAbortWriter;
+
+    // begin abort sequence by writing the error code
+    write_abort(&[ErrorCode::UnknownError as u8]);
+
+    let write_res = write!(w, "{}", info);
+    if write_res.is_err() {
+        write_abort("panic: message format failed".as_bytes());
+    }
+
+    // write abort terminator to finish the abort
+    // and signal to the host that the message can now be read
+    write_abort(&[0xFF]);
+    unreachable!();
 }
 
 // === Entrypoint ===
