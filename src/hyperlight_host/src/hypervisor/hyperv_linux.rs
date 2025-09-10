@@ -70,8 +70,8 @@ use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::handle_outb;
-#[cfg(feature = "trace_guest")]
-use crate::sandbox::trace::TraceInfo;
+#[cfg(feature = "mem_profile")]
+use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
@@ -297,8 +297,8 @@ pub(crate) struct HypervLinuxDriver {
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
     #[allow(dead_code)]
-    #[cfg(feature = "trace_guest")]
-    trace_info: TraceInfo,
+    #[cfg(feature = "mem_profile")]
+    trace_info: MemTraceInfo,
 }
 
 impl HypervLinuxDriver {
@@ -321,7 +321,7 @@ impl HypervLinuxDriver {
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
-        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
+        #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> Result<Self> {
         let mshv = Mshv::new()?;
         let pr = Default::default();
@@ -429,7 +429,7 @@ impl HypervLinuxDriver {
             gdb_conn,
             #[cfg(crashdump)]
             rt_cfg,
-            #[cfg(feature = "trace_guest")]
+            #[cfg(feature = "mem_profile")]
             trace_info,
         };
 
@@ -595,7 +595,7 @@ impl Hypervisor for HypervLinuxDriver {
         padded[..copy_len].copy_from_slice(&data[..copy_len]);
         let val = u32::from_le_bytes(padded);
 
-        #[cfg(feature = "trace_guest")]
+        #[cfg(feature = "mem_profile")]
         {
             // We need to handle the borrow checker issue where we need both:
             // - &mut SandboxMemoryManager (from self.mem_mgr)
@@ -616,7 +616,7 @@ impl Hypervisor for HypervLinuxDriver {
             self.mem_mgr = Some(mem_mgr);
         }
 
-        #[cfg(not(feature = "trace_guest"))]
+        #[cfg(not(feature = "mem_profile"))]
         {
             let mem_mgr = self
                 .mem_mgr
@@ -1087,7 +1087,7 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[cfg(feature = "mem_profile")]
-    fn trace_info_mut(&mut self) -> &mut TraceInfo {
+    fn trace_info_mut(&mut self) -> &mut MemTraceInfo {
         &mut self.trace_info
     }
 }
@@ -1178,12 +1178,8 @@ mod tests {
                 #[cfg(crashdump)]
                 guest_core_dump: true,
             },
-            #[cfg(feature = "trace_guest")]
-            TraceInfo::new(
-                #[cfg(feature = "mem_profile")]
-                Arc::new(DummyUnwindInfo {}),
-            )
-            .unwrap(),
+            #[cfg(feature = "mem_profile")]
+            MemTraceInfo::new(Arc::new(DummyUnwindInfo {})).unwrap(),
         )
         .unwrap();
     }

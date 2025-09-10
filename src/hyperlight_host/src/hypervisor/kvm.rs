@@ -43,8 +43,8 @@ use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::handle_outb;
-#[cfg(feature = "trace_guest")]
-use crate::sandbox::trace::TraceInfo;
+#[cfg(feature = "mem_profile")]
+use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
@@ -284,9 +284,9 @@ pub(crate) struct KVMDriver {
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
-    #[cfg(feature = "trace_guest")]
+    #[cfg(feature = "mem_profile")]
     #[allow(dead_code)]
-    trace_info: TraceInfo,
+    trace_info: MemTraceInfo,
 }
 
 impl KVMDriver {
@@ -304,7 +304,7 @@ impl KVMDriver {
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
-        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
+        #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> Result<Self> {
         let kvm = Kvm::new()?;
 
@@ -375,7 +375,7 @@ impl KVMDriver {
             gdb_conn,
             #[cfg(crashdump)]
             rt_cfg,
-            #[cfg(feature = "trace_guest")]
+            #[cfg(feature = "mem_profile")]
             trace_info,
         };
 
@@ -572,7 +572,7 @@ impl Hypervisor for KVMDriver {
             padded[..copy_len].copy_from_slice(&data[..copy_len]);
             let value = u32::from_le_bytes(padded);
 
-            #[cfg(feature = "trace_guest")]
+            #[cfg(feature = "mem_profile")]
             {
                 // We need to handle the borrow checker issue where we need both:
                 // - &mut SandboxMemoryManager (from self.mem_mgr.as_mut())
@@ -593,7 +593,7 @@ impl Hypervisor for KVMDriver {
                 self.mem_mgr = Some(mem_mgr);
             }
 
-            #[cfg(not(feature = "trace_guest"))]
+            #[cfg(not(feature = "mem_profile"))]
             {
                 let mem_mgr = self
                     .mem_mgr
@@ -1022,7 +1022,7 @@ impl Hypervisor for KVMDriver {
     }
 
     #[cfg(feature = "mem_profile")]
-    fn trace_info_mut(&mut self) -> &mut TraceInfo {
+    fn trace_info_mut(&mut self) -> &mut MemTraceInfo {
         &mut self.trace_info
     }
 }

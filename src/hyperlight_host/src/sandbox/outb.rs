@@ -25,7 +25,7 @@ use tracing::{Span, instrument};
 use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
-#[cfg(feature = "trace_guest")]
+#[cfg(feature = "mem_profile")]
 use crate::hypervisor::Hypervisor;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -148,7 +148,7 @@ fn outb_abort(mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>, data: u32) -
 pub(crate) fn handle_outb(
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     host_funcs: Arc<Mutex<FunctionRegistry>>,
-    #[cfg(feature = "trace_guest")] _hv: &mut dyn Hypervisor,
+    #[cfg(feature = "mem_profile")] _hv: &mut dyn Hypervisor,
     port: u16,
     data: u32,
 ) -> Result<()> {
