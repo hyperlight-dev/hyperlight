@@ -21,7 +21,8 @@ use flatbuffers::FlatBufferBuilder;
 use crate::flatbuffer_wrappers::function_types::ParameterValue;
 use crate::flatbuffers::hyperlight::generated::{
     FunctionCallResult as FbFunctionCallResult, FunctionCallResultArgs as FbFunctionCallResultArgs,
-    ReturnValue as FbReturnValue, hlbool as Fbhlbool, hlboolArgs as FbhlboolArgs,
+    FunctionCallResultType as FbFunctionCallResultType, ReturnValue as FbReturnValue,
+    ReturnValueBox, ReturnValueBoxArgs, hlbool as Fbhlbool, hlboolArgs as FbhlboolArgs,
     hldouble as Fbhldouble, hldoubleArgs as FbhldoubleArgs, hlfloat as Fbhlfloat,
     hlfloatArgs as FbhlfloatArgs, hlint as Fbhlint, hlintArgs as FbhlintArgs, hllong as Fbhllong,
     hllongArgs as FbhllongArgs, hlsizeprefixedbuffer as Fbhlsizeprefixedbuffer,
@@ -34,8 +35,8 @@ use crate::flatbuffers::hyperlight::generated::{
 /// Flatbuffer-encodes the given value
 pub fn get_flatbuffer_result<T: FlatbufferSerializable>(val: T) -> Vec<u8> {
     let mut builder = FlatBufferBuilder::new();
-    let res = &T::serialize(&val, &mut builder);
-    let result_offset = FbFunctionCallResult::create(&mut builder, res);
+    let res = T::serialize(&val, &mut builder);
+    let result_offset = FbFunctionCallResult::create(&mut builder, &res);
 
     builder.finish_size_prefixed(result_offset, None);
 
@@ -50,9 +51,17 @@ pub trait FlatbufferSerializable {
 
 impl FlatbufferSerializable for () {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
+        let void_off = Fbhlvoid::create(builder, &FbhlvoidArgs {});
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hlvoid,
+                value: Some(void_off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(Fbhlvoid::create(builder, &FbhlvoidArgs {}).as_union_value()),
-            return_value_type: FbReturnValue::hlvoid,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
@@ -60,113 +69,165 @@ impl FlatbufferSerializable for () {
 impl FlatbufferSerializable for &str {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
         let string_offset = builder.create_string(self);
+        let str_off = Fbhlstring::create(
+            builder,
+            &FbhlstringArgs {
+                value: Some(string_offset),
+            },
+        );
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hlstring,
+                value: Some(str_off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(
-                Fbhlstring::create(
-                    builder,
-                    &FbhlstringArgs {
-                        value: Some(string_offset),
-                    },
-                )
-                .as_union_value(),
-            ),
-            return_value_type: FbReturnValue::hlstring,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
 
 impl FlatbufferSerializable for &[u8] {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let vec_offset = builder.create_vector(self);
+        let vec_off = builder.create_vector(self);
+        let buf_off = Fbhlsizeprefixedbuffer::create(
+            builder,
+            &FbhlsizeprefixedbufferArgs {
+                size: self.len() as i32,
+                value: Some(vec_off),
+            },
+        );
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hlsizeprefixedbuffer,
+                value: Some(buf_off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(
-                Fbhlsizeprefixedbuffer::create(
-                    builder,
-                    &FbhlsizeprefixedbufferArgs {
-                        size: self.len() as i32,
-                        value: Some(vec_offset),
-                    },
-                )
-                .as_union_value(),
-            ),
-            return_value_type: FbReturnValue::hlsizeprefixedbuffer,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
 
 impl FlatbufferSerializable for f32 {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
+        let off = Fbhlfloat::create(builder, &FbhlfloatArgs { value: *self });
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hlfloat,
+                value: Some(off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(
-                Fbhlfloat::create(builder, &FbhlfloatArgs { value: *self }).as_union_value(),
-            ),
-            return_value_type: FbReturnValue::hlfloat,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
 
 impl FlatbufferSerializable for f64 {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
+        let off = Fbhldouble::create(builder, &FbhldoubleArgs { value: *self });
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hldouble,
+                value: Some(off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(
-                Fbhldouble::create(builder, &FbhldoubleArgs { value: *self }).as_union_value(),
-            ),
-            return_value_type: FbReturnValue::hldouble,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
 
 impl FlatbufferSerializable for i32 {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
+        let off = Fbhlint::create(builder, &FbhlintArgs { value: *self });
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hlint,
+                value: Some(off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(
-                Fbhlint::create(builder, &FbhlintArgs { value: *self }).as_union_value(),
-            ),
-            return_value_type: FbReturnValue::hlint,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
 
 impl FlatbufferSerializable for i64 {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
+        let off = Fbhllong::create(builder, &FbhllongArgs { value: *self });
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hllong,
+                value: Some(off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(
-                Fbhllong::create(builder, &FbhllongArgs { value: *self }).as_union_value(),
-            ),
-            return_value_type: FbReturnValue::hllong,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
 
 impl FlatbufferSerializable for u32 {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
+        let off = Fbhluint::create(builder, &FbhluintArgs { value: *self });
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hluint,
+                value: Some(off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(
-                Fbhluint::create(builder, &FbhluintArgs { value: *self }).as_union_value(),
-            ),
-            return_value_type: FbReturnValue::hluint,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
 
 impl FlatbufferSerializable for u64 {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
+        let off = Fbhlulong::create(builder, &FbhlulongArgs { value: *self });
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hlulong,
+                value: Some(off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(
-                Fbhlulong::create(builder, &FbhlulongArgs { value: *self }).as_union_value(),
-            ),
-            return_value_type: FbReturnValue::hlulong,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
 
 impl FlatbufferSerializable for bool {
     fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
+        let off = Fbhlbool::create(builder, &FbhlboolArgs { value: *self });
+        let rv_box = ReturnValueBox::create(
+            builder,
+            &ReturnValueBoxArgs {
+                value_type: FbReturnValue::hlbool,
+                value: Some(off.as_union_value()),
+            },
+        );
         FbFunctionCallResultArgs {
-            return_value: Some(
-                Fbhlbool::create(builder, &FbhlboolArgs { value: *self }).as_union_value(),
-            ),
-            return_value_type: FbReturnValue::hlbool,
+            result_type: FbFunctionCallResultType::ReturnValueBox,
+            result: Some(rv_box.as_union_value()),
         }
     }
 }
