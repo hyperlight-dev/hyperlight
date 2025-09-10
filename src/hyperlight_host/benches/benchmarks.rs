@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::sync::Mutex;
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
@@ -71,6 +73,47 @@ fn guest_call_benchmark(c: &mut Criterion) {
             multiuse_sandbox
                 .call::<i32>("Add", (1_i32, 41_i32))
                 .unwrap()
+        });
+    });
+
+    // same as guest_call, but the call will be made on different thread
+    group.bench_function("guest_call_on_different_thread", |b| {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Instant;
+
+        b.iter_custom(|iters| {
+            let mut total_duration = std::time::Duration::ZERO;
+            let sbox = Arc::new(Mutex::new(create_multiuse_sandbox()));
+
+            for _ in 0..iters {
+                // Ensure vcpu is "bound" on this main thread
+                {
+                    let mut sbox = sbox.lock().unwrap();
+                    sbox.call::<String>("Echo", "warmup\n".to_string()).unwrap();
+                }
+
+                let barrier = Arc::new(Barrier::new(2));
+                let barrier_clone = Arc::clone(&barrier);
+                let sbox_clone = Arc::clone(&sbox);
+
+                let handle = thread::spawn(move || {
+                    barrier_clone.wait();
+
+                    let mut sbox = sbox_clone.lock().unwrap();
+                    let start = Instant::now();
+                    // Measure the first call after thread switch
+                    // According to KVM docs, this should show performance impact
+                    sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                    start.elapsed()
+                });
+
+                barrier.wait();
+
+                total_duration += handle.join().unwrap();
+            }
+
+            total_duration
         });
     });
 
