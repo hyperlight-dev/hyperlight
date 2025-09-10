@@ -209,6 +209,7 @@ test-rust-tracing target=default-target features="":
     # note that trace-dump doesn't run on MUSL target as of now
     TRACE_OUTPUT="$({{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --example hello-world --features {{ if features =="" {"trace_guest"} else { "trace_guest," + features } }})" && \
         TRACE_FILE="$(echo "$TRACE_OUTPUT" | grep -oE 'Creating trace file at: [^ ]+' | awk -F': ' '{print $2}')" && \
+        TRACE_FILE="$(echo "$TRACE_OUTPUT" | grep -oE 'Creating trace file at: [^ ]+' | awk -F': ' '{print $2}' | sed -E 's|^(trace/[^ ]+\.trace)$|./\1|; s|.*/(trace/[^ ]+\.trace)$|./\1|')" && \
         echo "$TRACE_OUTPUT" && \
         if [ -z "$TRACE_FILE" ]; then \
             echo "Error: Could not extract trace file path from output." >&2 ; \
