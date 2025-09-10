@@ -181,6 +181,10 @@ static INIT: Once = Once::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
+    // Save the guest start TSC for tracing
+    #[cfg(feature = "trace_guest")]
+    let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
+
     if peb_address == 0 {
         panic!("PEB address is null");
     }
@@ -228,6 +232,12 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
                 .nth(max_log_level as usize)
                 .expect("Invalid log level");
             init_logger(max_log_level);
+
+            // It is important that all the tracing events are produced after the tracing is initialized.
+            #[cfg(feature = "trace_guest")]
+            if max_log_level != LevelFilter::Off {
+                hyperlight_guest_tracing::init_guest_tracing(guest_start_tsc);
+            }
 
             hyperlight_main();
         }
