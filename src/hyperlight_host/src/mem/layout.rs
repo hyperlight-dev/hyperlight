@@ -402,9 +402,6 @@ impl SandboxMemoryLayout {
     }
 
     /// Get the offset in guest memory to the start of output data.
-    ///
-    /// This function exists to accommodate the macro that generates C API
-    /// compatible functions.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     #[cfg(test)]
     pub(crate) fn get_output_data_offset(&self) -> usize {
