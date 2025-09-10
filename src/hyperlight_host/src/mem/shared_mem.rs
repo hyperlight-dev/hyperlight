@@ -30,7 +30,7 @@ use windows::Win32::System::Memory::PAGE_READWRITE;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
     CreateFileMappingA, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
-    PAGE_EXECUTE_READWRITE, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, UnmapViewOfFile, VirtualProtect,
+    PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, UnmapViewOfFile, VirtualProtect,
 };
 #[cfg(target_os = "windows")]
 use windows::core::PCSTR;
@@ -502,46 +502,6 @@ impl ExclusiveSharedMemory {
         })
     }
 
-    #[allow(dead_code)]
-    pub(super) fn make_memory_executable(&self) -> Result<()> {
-        #[cfg(target_os = "windows")]
-        {
-            let mut _old_flags = PAGE_PROTECTION_FLAGS::default();
-            if let Err(e) = unsafe {
-                VirtualProtect(
-                    self.region.ptr as *const c_void,
-                    self.region.size,
-                    PAGE_EXECUTE_READWRITE,
-                    &mut _old_flags as *mut PAGE_PROTECTION_FLAGS,
-                )
-            } {
-                log_then_return!(WindowsAPIError(e.clone()));
-            }
-        }
-
-        // make the memory executable on Linux
-        #[cfg(target_os = "linux")]
-        {
-            use libc::{PROT_EXEC, PROT_READ, PROT_WRITE, mprotect};
-
-            let res = unsafe {
-                mprotect(
-                    self.region.ptr as *mut c_void,
-                    self.region.size,
-                    PROT_READ | PROT_WRITE | PROT_EXEC,
-                )
-            };
-
-            if res != 0 {
-                return Err(new_error!(
-                    "Failed to make memory executable: {:#?}",
-                    Error::last_os_error().raw_os_error()
-                ));
-            }
-        }
-        Ok(())
-    }
-
     /// Internal helper method to get the backing memory as a mutable slice.
     ///
     /// # Safety
@@ -612,15 +572,6 @@ impl ExclusiveSharedMemory {
         bounds_check!(offset, src.len(), data.len());
         data[offset..offset + src.len()].copy_from_slice(src);
         Ok(())
-    }
-
-    /// Return the address of memory at an offset to this `SharedMemory` checking
-    /// that the memory is within the bounds of the `SharedMemory`.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    #[allow(dead_code)]
-    pub(crate) fn calculate_address(&self, offset: usize) -> Result<usize> {
-        bounds_check!(offset, 0, self.mem_size());
-        Ok(self.base_addr() + offset)
     }
 
     generate_reader!(read_u8, u8);

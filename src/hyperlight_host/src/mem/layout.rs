@@ -385,24 +385,6 @@ impl SandboxMemoryLayout {
         self.stack_size
     }
 
-    /// Get the offset in guest memory to the OutB pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[allow(dead_code)]
-    pub(super) fn get_outb_pointer_offset(&self) -> usize {
-        // The outb pointer is immediately after the code pointer
-        // in the `CodeAndOutBPointers` struct which is a u64
-        self.peb_code_pointer_offset + size_of::<u64>()
-    }
-
-    /// Get the offset in guest memory to the OutB context.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[allow(dead_code)]
-    pub(super) fn get_outb_context_offset(&self) -> usize {
-        // The outb context is immediately after the outb pointer
-        // in the `CodeAndOutBPointers` struct which is a u64
-        self.get_outb_pointer_offset() + size_of::<u64>()
-    }
-
     /// Get the offset in guest memory to the output data pointer.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_output_data_pointer_offset(&self) -> usize {
@@ -420,11 +402,8 @@ impl SandboxMemoryLayout {
     }
 
     /// Get the offset in guest memory to the start of output data.
-    ///
-    /// This function exists to accommodate the macro that generates C API
-    /// compatible functions.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn get_output_data_offset(&self) -> usize {
         self.output_data_buffer_offset
     }
@@ -459,13 +438,6 @@ impl SandboxMemoryLayout {
         self.peb_guest_dispatch_function_ptr_offset
     }
 
-    /// Get the offset in guest memory to the PEB address
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[allow(dead_code)]
-    pub(super) fn get_in_process_peb_offset(&self) -> usize {
-        self.peb_offset
-    }
-
     /// Get the offset in guest memory to the heap size
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_heap_size_offset(&self) -> usize {
@@ -492,13 +464,6 @@ impl SandboxMemoryLayout {
         // The userStackAddress is immediately after the
         // minUserStackAddress (top of user stack) field in the `GuestStackData` struct which is a `u64`.
         self.get_min_guest_stack_address_offset() + size_of::<u64>()
-    }
-
-    /// Get the offset to the guest guard page
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[allow(dead_code)]
-    pub fn get_guard_page_offset(&self) -> usize {
-        self.guard_page_offset
     }
 
     /// Get the total size of guest memory in `self`'s memory
