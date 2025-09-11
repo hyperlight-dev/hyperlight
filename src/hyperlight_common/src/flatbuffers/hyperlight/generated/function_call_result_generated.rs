@@ -22,7 +22,7 @@ impl<'a> flatbuffers::Follow<'a> for FunctionCallResult<'a> {
     #[inline]
     unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
         Self {
-            _tab: flatbuffers::Table::new(buf, loc),
+            _tab: unsafe { flatbuffers::Table::new(buf, loc) },
         }
     }
 }
@@ -513,7 +513,7 @@ pub fn size_prefixed_root_as_function_call_result_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `FunctionCallResult`.
 pub unsafe fn root_as_function_call_result_unchecked(buf: &[u8]) -> FunctionCallResult {
-    flatbuffers::root_unchecked::<FunctionCallResult>(buf)
+    unsafe { flatbuffers::root_unchecked::<FunctionCallResult>(buf) }
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed FunctionCallResult and returns it.
@@ -522,7 +522,7 @@ pub unsafe fn root_as_function_call_result_unchecked(buf: &[u8]) -> FunctionCall
 pub unsafe fn size_prefixed_root_as_function_call_result_unchecked(
     buf: &[u8],
 ) -> FunctionCallResult {
-    flatbuffers::size_prefixed_root_unchecked::<FunctionCallResult>(buf)
+    unsafe { flatbuffers::size_prefixed_root_unchecked::<FunctionCallResult>(buf) }
 }
 #[inline]
 pub fn finish_function_call_result_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

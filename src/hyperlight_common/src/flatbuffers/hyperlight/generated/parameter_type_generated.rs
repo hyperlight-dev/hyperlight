@@ -94,7 +94,7 @@ impl<'a> flatbuffers::Follow<'a> for ParameterType {
     type Inner = Self;
     #[inline]
     unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
-        let b = flatbuffers::read_scalar_at::<u8>(buf, loc);
+        let b = unsafe { flatbuffers::read_scalar_at::<u8>(buf, loc) };
         Self(b)
     }
 }
@@ -103,7 +103,9 @@ impl flatbuffers::Push for ParameterType {
     type Output = ParameterType;
     #[inline]
     unsafe fn push(&self, dst: &mut [u8], _written_len: usize) {
-        flatbuffers::emplace_scalar::<u8>(dst, self.0);
+        unsafe {
+            flatbuffers::emplace_scalar::<u8>(dst, self.0);
+        }
     }
 }
 

@@ -22,7 +22,7 @@ impl<'a> flatbuffers::Follow<'a> for GuestError<'a> {
     #[inline]
     unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
         Self {
-            _tab: flatbuffers::Table::new(buf, loc),
+            _tab: unsafe { flatbuffers::Table::new(buf, loc) },
         }
     }
 }
@@ -192,14 +192,14 @@ pub fn size_prefixed_root_as_guest_error_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `GuestError`.
 pub unsafe fn root_as_guest_error_unchecked(buf: &[u8]) -> GuestError {
-    flatbuffers::root_unchecked::<GuestError>(buf)
+    unsafe { flatbuffers::root_unchecked::<GuestError>(buf) }
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed GuestError and returns it.
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid size prefixed `GuestError`.
 pub unsafe fn size_prefixed_root_as_guest_error_unchecked(buf: &[u8]) -> GuestError {
-    flatbuffers::size_prefixed_root_unchecked::<GuestError>(buf)
+    unsafe { flatbuffers::size_prefixed_root_unchecked::<GuestError>(buf) }
 }
 #[inline]
 pub fn finish_guest_error_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
