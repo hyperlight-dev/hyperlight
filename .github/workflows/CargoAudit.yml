@@ -19,8 +19,8 @@ jobs:
       # TODO: Once the runner image is updated to include the necessary tools (without downloading), we can switch to the common workflow.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.86"
-                 
+          toolchain: "1.89"
+
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

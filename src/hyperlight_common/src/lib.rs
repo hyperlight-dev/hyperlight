@@ -25,14 +25,7 @@ extern crate alloc;
 pub mod flatbuffer_wrappers;
 /// cbindgen:ignore
 /// FlatBuffers-related utilities and (mostly) generated code
-#[allow(
-    dead_code,
-    unused_imports,
-    clippy::all,
-    clippy::unwrap_used,
-    unsafe_op_in_unsafe_fn,
-    non_camel_case_types
-)]
+#[allow(clippy::all, warnings)]
 mod flatbuffers;
 /// cbindgen:ignore
 pub mod mem;
