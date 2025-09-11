@@ -531,11 +531,11 @@ mod tests {
             while result {
                 if let Ok(process_name) =
                     unsafe { CStr::from_ptr(process_entry.szExeFile.as_ptr()).to_str() }
+                    && process_name == SURROGATE_PROCESS_BINARY_NAME
                 {
-                    if process_name == SURROGATE_PROCESS_BINARY_NAME {
-                        count += 1;
-                    }
+                    count += 1;
                 }
+
                 unsafe {
                     result = Process32Next(snapshot_handle, &mut process_entry).is_ok();
                 }
