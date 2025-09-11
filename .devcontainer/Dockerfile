@@ -48,13 +48,15 @@ RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhisto
 
 USER $USER
 
-ARG RUST_TOOLCHAIN=1.86
+ARG RUST_TOOLCHAIN=1.89
 
 # Install rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && rustup default ${RUST_TOOLCHAIN} \
     && rustup target add x86_64-unknown-linux-gnu \
+    && rustup target add x86_64-unknown-linux-musl \
     && rustup target add x86_64-unknown-none      \
     && rustup toolchain add nightly-x86_64-unknown-linux-gnu \
+    && rustup toolchain add nightly-x86_64-unknown-linux-musl \
     && cargo install just
 

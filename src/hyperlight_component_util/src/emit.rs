@@ -680,7 +680,7 @@ impl<'a> WitName<'a> {
     }
 }
 /// Parse a kebab-name as a WIT name
-pub fn split_wit_name(n: &str) -> WitName {
+pub fn split_wit_name(n: &str) -> WitName<'_> {
     let mut namespaces = Vec::new();
     let mut colon_components = n.split(':').rev();
     let last = colon_components.next().unwrap();

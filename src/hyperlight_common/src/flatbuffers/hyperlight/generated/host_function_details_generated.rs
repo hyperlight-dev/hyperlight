@@ -22,7 +22,7 @@ impl<'a> flatbuffers::Follow<'a> for HostFunctionDetails<'a> {
     #[inline]
     unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
         Self {
-            _tab: flatbuffers::Table::new(buf, loc),
+            _tab: unsafe { flatbuffers::Table::new(buf, loc) },
         }
     }
 }
@@ -187,7 +187,7 @@ pub fn size_prefixed_root_as_host_function_details_with_opts<'b, 'o>(
 /// # Safety
 /// Callers must trust the given bytes do indeed contain a valid `HostFunctionDetails`.
 pub unsafe fn root_as_host_function_details_unchecked(buf: &[u8]) -> HostFunctionDetails {
-    flatbuffers::root_unchecked::<HostFunctionDetails>(buf)
+    unsafe { flatbuffers::root_unchecked::<HostFunctionDetails>(buf) }
 }
 #[inline]
 /// Assumes, without verification, that a buffer of bytes contains a size prefixed HostFunctionDetails and returns it.
@@ -196,7 +196,7 @@ pub unsafe fn root_as_host_function_details_unchecked(buf: &[u8]) -> HostFunctio
 pub unsafe fn size_prefixed_root_as_host_function_details_unchecked(
     buf: &[u8],
 ) -> HostFunctionDetails {
-    flatbuffers::size_prefixed_root_unchecked::<HostFunctionDetails>(buf)
+    unsafe { flatbuffers::size_prefixed_root_unchecked::<HostFunctionDetails>(buf) }
 }
 #[inline]
 pub fn finish_host_function_details_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(

@@ -213,7 +213,7 @@ impl VMPartition {
 // with an error about a missing entrypoint
 // This function should always succeed since before we get here we have already checked that the hypervisor is present and
 // that we are on a supported version of windows.
-type WHvMapGpaRange2Func = unsafe extern "cdecl" fn(
+type WHvMapGpaRange2Func = unsafe extern "system" fn(
     WHV_PARTITION_HANDLE,
     HANDLE,
     *const c_void,
@@ -523,10 +523,10 @@ impl VMProcessor {
             );
 
             // If it failed for reasons other than insufficient buffer, return error
-            if let Err(e) = result {
-                if e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER {
-                    return Err(HyperlightError::WindowsAPIError(e));
-                }
+            if let Err(e) = result
+                && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
+            {
+                return Err(HyperlightError::WindowsAPIError(e));
             }
         }
 

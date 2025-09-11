@@ -230,7 +230,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor;
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>>;
+    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext<'_>>>;
 
     #[cfg(gdb)]
     /// handles the cases when the vCPU stops due to a Debug event
@@ -267,16 +267,15 @@ pub(crate) fn get_memory_access_violation<'a>(
     // find the region containing the given gpa
     let region = mem_regions.find(|region| region.guest_region.contains(&gpa));
 
-    if let Some(region) = region {
-        if !region.flags.contains(access_info)
-            || region.flags.contains(MemoryRegionFlags::STACK_GUARD)
-        {
-            return Some(HyperlightExit::AccessViolation(
-                gpa as u64,
-                access_info,
-                region.flags,
-            ));
-        }
+    if let Some(region) = region
+        && (!region.flags.contains(access_info)
+            || region.flags.contains(MemoryRegionFlags::STACK_GUARD))
+    {
+        return Some(HyperlightExit::AccessViolation(
+            gpa as u64,
+            access_info,
+            region.flags,
+        ));
     }
     None
 }

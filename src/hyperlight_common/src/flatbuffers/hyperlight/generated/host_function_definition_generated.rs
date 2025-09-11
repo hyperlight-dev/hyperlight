@@ -22,7 +22,7 @@ impl<'a> flatbuffers::Follow<'a> for HostFunctionDefinition<'a> {
     #[inline]
     unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
         Self {
-            _tab: flatbuffers::Table::new(buf, loc),
+            _tab: unsafe { flatbuffers::Table::new(buf, loc) },
         }
     }
 }
@@ -201,4 +201,89 @@ impl core::fmt::Debug for HostFunctionDefinition<'_> {
         ds.field("return_type", &self.return_type());
         ds.finish()
     }
+}
+#[inline]
+/// Verifies that a buffer of bytes contains a `HostFunctionDefinition`
+/// and returns it.
+/// Note that verification is still experimental and may not
+/// catch every error, or be maximally performant. For the
+/// previous, unchecked, behavior use
+/// `root_as_host_function_definition_unchecked`.
+pub fn root_as_host_function_definition(
+    buf: &[u8],
+) -> Result<HostFunctionDefinition, flatbuffers::InvalidFlatbuffer> {
+    flatbuffers::root::<HostFunctionDefinition>(buf)
+}
+#[inline]
+/// Verifies that a buffer of bytes contains a size prefixed
+/// `HostFunctionDefinition` and returns it.
+/// Note that verification is still experimental and may not
+/// catch every error, or be maximally performant. For the
+/// previous, unchecked, behavior use
+/// `size_prefixed_root_as_host_function_definition_unchecked`.
+pub fn size_prefixed_root_as_host_function_definition(
+    buf: &[u8],
+) -> Result<HostFunctionDefinition, flatbuffers::InvalidFlatbuffer> {
+    flatbuffers::size_prefixed_root::<HostFunctionDefinition>(buf)
+}
+#[inline]
+/// Verifies, with the given options, that a buffer of bytes
+/// contains a `HostFunctionDefinition` and returns it.
+/// Note that verification is still experimental and may not
+/// catch every error, or be maximally performant. For the
+/// previous, unchecked, behavior use
+/// `root_as_host_function_definition_unchecked`.
+pub fn root_as_host_function_definition_with_opts<'b, 'o>(
+    opts: &'o flatbuffers::VerifierOptions,
+    buf: &'b [u8],
+) -> Result<HostFunctionDefinition<'b>, flatbuffers::InvalidFlatbuffer> {
+    flatbuffers::root_with_opts::<HostFunctionDefinition<'b>>(opts, buf)
+}
+#[inline]
+/// Verifies, with the given verifier options, that a buffer of
+/// bytes contains a size prefixed `HostFunctionDefinition` and returns
+/// it. Note that verification is still experimental and may not
+/// catch every error, or be maximally performant. For the
+/// previous, unchecked, behavior use
+/// `root_as_host_function_definition_unchecked`.
+pub fn size_prefixed_root_as_host_function_definition_with_opts<'b, 'o>(
+    opts: &'o flatbuffers::VerifierOptions,
+    buf: &'b [u8],
+) -> Result<HostFunctionDefinition<'b>, flatbuffers::InvalidFlatbuffer> {
+    flatbuffers::size_prefixed_root_with_opts::<HostFunctionDefinition<'b>>(opts, buf)
+}
+#[inline]
+/// Assumes, without verification, that a buffer of bytes contains a HostFunctionDefinition and returns it.
+/// # Safety
+/// Callers must trust the given bytes do indeed contain a valid `HostFunctionDefinition`.
+pub unsafe fn root_as_host_function_definition_unchecked(buf: &[u8]) -> HostFunctionDefinition {
+    unsafe { flatbuffers::root_unchecked::<HostFunctionDefinition>(buf) }
+}
+#[inline]
+/// Assumes, without verification, that a buffer of bytes contains a size prefixed HostFunctionDefinition and returns it.
+/// # Safety
+/// Callers must trust the given bytes do indeed contain a valid size prefixed `HostFunctionDefinition`.
+pub unsafe fn size_prefixed_root_as_host_function_definition_unchecked(
+    buf: &[u8],
+) -> HostFunctionDefinition {
+    unsafe { flatbuffers::size_prefixed_root_unchecked::<HostFunctionDefinition>(buf) }
+}
+#[inline]
+pub fn finish_host_function_definition_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
+    fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
+    root: flatbuffers::WIPOffset<HostFunctionDefinition<'a>>,
+) {
+    fbb.finish(root, None);
+}
+
+#[inline]
+pub fn finish_size_prefixed_host_function_definition_buffer<
+    'a,
+    'b,
+    A: flatbuffers::Allocator + 'a,
+>(
+    fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
+    root: flatbuffers::WIPOffset<HostFunctionDefinition<'a>>,
+) {
+    fbb.finish_size_prefixed(root, None);
 }

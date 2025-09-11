@@ -133,18 +133,18 @@ impl Target for HyperlightSandboxTarget {
     type Arch = GdbTargetArch;
     type Error = GdbTargetError;
 
-    fn support_breakpoints(&mut self) -> Option<BreakpointsOps<Self>> {
+    fn support_breakpoints(&mut self) -> Option<BreakpointsOps<'_, Self>> {
         Some(self)
     }
 
     #[inline(always)]
-    fn base_ops(&mut self) -> BaseOps<Self::Arch, Self::Error> {
+    fn base_ops(&mut self) -> BaseOps<'_, Self::Arch, Self::Error> {
         BaseOps::SingleThread(self)
     }
 
     fn support_section_offsets(
         &mut self,
-    ) -> Option<gdbstub::target::ext::section_offsets::SectionOffsetsOps<Self>> {
+    ) -> Option<gdbstub::target::ext::section_offsets::SectionOffsetsOps<'_, Self>> {
         Some(self)
     }
 }
@@ -288,7 +288,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         }
     }
 
-    fn support_resume(&mut self) -> Option<SingleThreadResumeOps<Self>> {
+    fn support_resume(&mut self) -> Option<SingleThreadResumeOps<'_, Self>> {
         Some(self)
     }
 }
@@ -315,7 +315,7 @@ impl SectionOffsets for HyperlightSandboxTarget {
 }
 
 impl Breakpoints for HyperlightSandboxTarget {
-    fn support_hw_breakpoint(&mut self) -> Option<HwBreakpointOps<Self>> {
+    fn support_hw_breakpoint(&mut self) -> Option<HwBreakpointOps<'_, Self>> {
         Some(self)
     }
     fn support_sw_breakpoint(&mut self) -> Option<SwBreakpointOps<'_, Self>> {
@@ -438,7 +438,7 @@ impl SingleThreadResume for HyperlightSandboxTarget {
         log::debug!("Resume");
         self.resume_vcpu()
     }
-    fn support_single_step(&mut self) -> Option<SingleThreadSingleStepOps<Self>> {
+    fn support_single_step(&mut self) -> Option<SingleThreadSingleStepOps<'_, Self>> {
         Some(self)
     }
 }

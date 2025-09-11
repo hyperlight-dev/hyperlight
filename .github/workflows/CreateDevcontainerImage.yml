@@ -15,8 +15,8 @@ env:
   IMAGE_NAME: ${{ github.repository }}-devcontainer
   USER: vscode
   GROUP: vscode
-  LLVM_VERSION: 17
-  RUST_TOOLCHAIN_DEFAULT: 1.86
+  LLVM_VERSION: 18
+  RUST_TOOLCHAIN_DEFAULT: 1.89
   RUST_TOOLCHAIN_FILE: rust-toolchain.toml
 
 # There is a single job in this workflow. It's configured to run on the latest available version of Ubuntu.
