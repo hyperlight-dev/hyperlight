@@ -11,6 +11,26 @@ on:
         required: false
         type: string
         default: "false"
+      target_triple:
+        description: Target triple for cross-compilation
+        required: false
+        type: string
+        default: ""
+      hypervisor:
+        description: Hypervisor for this run (passed from caller matrix)
+        required: false
+        type: string
+        default: "kvm"
+      config:
+        description: Build configuration for this run (passed from caller matrix)
+        required: false
+        type: string
+        default: "debug"
+      cpu:
+        description: CPU architecture for the build (passed from caller matrix)
+        required: false
+        type: string
+        default: "amd"
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,17 +52,12 @@ defaults:
 
 jobs:
   code-checks:
-    if: ${{ inputs.docs_only == 'false' }}
+    if: ${{ inputs.docs_only == 'false' && (inputs.hypervisor == 'hyperv-ws2025' || inputs.hypervisor == 'kvm') }}
     timeout-minutes: 60
-    strategy:
-      fail-fast: true
-      matrix:
-        hypervisor: ['hyperv-ws2025', kvm]
-        config: [debug, release]
     runs-on: ${{ fromJson(
       format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-amd"]', 
-        (matrix.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
-        matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || 'kvm')) }}
+        (inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
+        inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || 'kvm')) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -63,13 +78,17 @@ jobs:
       - name: clippy
         if: ${{ (runner.os == 'Windows' )}}
         run: |
-          just clippy ${{ matrix.config }}
-          just clippy-guests ${{ matrix.config }}
+          just clippy ${{ inputs.config }} 
+          just clippy-guests ${{ inputs.config }}
+        env: 
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
 
       - name: clippy exhaustive check
         if: ${{ (runner.os == 'Linux' )}}
         run: |
-          just clippy-exhaustive ${{ matrix.config }}
+          just clippy-exhaustive ${{ inputs.config }}
+        env: 
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
 
       - name: Verify MSRV
         run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
@@ -77,18 +96,11 @@ jobs:
   build:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 60
-    strategy:
-      fail-fast: true
-      matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv, mshv3, kvm] # hyperv is windows, mshv and kvm are linux
-        cpu: [amd, intel]
-        config: [debug, release]
-
     runs-on: ${{ fromJson(
         format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
-          (matrix.hypervisor == 'hyperv' || matrix.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
-          matrix.hypervisor == 'hyperv' && 'win2022' || matrix.hypervisor == 'hyperv-ws2025' && 'win2025' || matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, 
-          matrix.cpu)) }} 
+          (inputs.hypervisor == 'hyperv' || inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
+          inputs.hypervisor == 'hyperv' && 'win2022' || inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
+          inputs.cpu)) }} 
     steps:
       - uses: actions/checkout@v5
 
@@ -112,35 +124,36 @@ jobs:
       - name: Build and move Rust guests
         run: |
           # use these commands in favor of build-and-move-rust-guests to avoid building both configs
-          just build-rust-guests ${{ matrix.config }}
-          just move-rust-guests ${{ matrix.config }}
+          just build-rust-guests ${{ inputs.config }}
+          just move-rust-guests ${{ inputs.config }}
 
       - name: Build c guests
         run: |
           # use these commands in favor of build-and-move-c-guests to avoid building both configs
-          just build-c-guests ${{ matrix.config }}
-          just move-c-guests ${{ matrix.config }}
+          just build-c-guests ${{ inputs.config }}
+          just move-c-guests ${{ inputs.config }}
+          
       - name: Build
-        run: just build ${{ matrix.config }}
+        run: just build ${{ inputs.config }}
+        env: 
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
 
       - name: Run Rust tests
         env:
           CARGO_TERM_COLOR: always
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
         run: |
           # with default features
-          just test ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
+          just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
 
           # with only one driver enabled (driver mshv/kvm feature is ignored on windows) + seccomp 
-          just test ${{ matrix.config }} seccomp,${{ matrix.hypervisor == 'mshv' && 'mshv2' || matrix.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }} 
+          just test ${{ inputs.config }} seccomp,${{ inputs.hypervisor == 'mshv' && 'mshv2' || inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
 
           # make sure certain cargo features compile
-          cargo check -p hyperlight-host --features crashdump
-          cargo check -p hyperlight-host --features print_debug
-          cargo check -p hyperlight-host --features gdb
-          cargo check -p hyperlight-host --features trace_guest,unwind_guest,mem_profile
+          just check
 
           # without any features
-          just test-compilation-no-default-features ${{ matrix.config }}
+          just test-compilation-no-default-features ${{ inputs.config }}
 
         # One of the examples is flaky on Windows GH runners, so this allows us to disable it for now
       - name: Run Rust examples - windows
@@ -148,42 +161,48 @@ jobs:
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
-        run: just run-rust-examples ${{ matrix.config }}
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
+        run: just run-rust-examples ${{ inputs.config }}
+
 
       - name: Run Rust examples - linux
         if: ${{ (runner.os != 'Windows') }}
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
-        run: just run-rust-examples-linux ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
+        run: just run-rust-examples-linux ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
 
       - name: Run Rust Gdb tests
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
-        run: just test-rust-gdb-debugging ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
+        run: just test-rust-gdb-debugging ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
 
       - name: Run Rust Crashdump tests
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
-        run: just test-rust-crashdump ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
+        run: just test-rust-crashdump ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
 
       - name: Run Rust Tracing tests - linux
         if: runner.os == 'Linux'
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
-        run: just test-rust-tracing ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
+        run: just test-rust-tracing ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
 
       - name: Download benchmarks from "latest"
-        run: just bench-download ${{ runner.os }} ${{ matrix.hypervisor }} ${{ matrix.cpu}} dev-latest # compare to prerelease
+        run: just bench-download ${{ runner.os }} ${{ inputs.hypervisor }} ${{ inputs.cpu}} dev-latest # compare to prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
-        if: ${{ matrix.config == 'release' }}
+        if: ${{ inputs.config == 'release' &&  inputs.target_triple == '' }}
 
       - name: Run benchmarks
         run: |
-          just bench-ci main ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
-        if: ${{ matrix.config == 'release' }}
+          just bench-ci main ${{ inputs.hypervisor == 'mshv' && 'mshv2' || ''}}
+        if: ${{ inputs.config == 'release' &&  inputs.target_triple == '' }}
