@@ -960,7 +960,7 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<super::crashdump::CrashDumpContext>> {
+    fn crashdump_context(&self) -> Result<Option<super::crashdump::CrashDumpContext<'_>>> {
         if self.rt_cfg.guest_core_dump {
             let mut regs = [0; 27];
 

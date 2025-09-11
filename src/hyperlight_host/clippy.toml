@@ -2,6 +2,4 @@ disallowed-macros = [
     { path = "std::assert", reason = "no asserts in release builds" },
     { path = "std::assert_eq", reason = "no asserts in release builds" },
     { path = "std::assert_ne", reason = "no asserts in release builds" },
-    { path = "std::assert_true", reason = "no asserts in release builds" },
-    { path = "std::assert_false", reason = "no asserts in release builds" },
 ]

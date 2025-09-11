@@ -242,10 +242,11 @@ where
         let addr = (p << 21) + (i << 12);
 
         // First check if we're still in the cached region
-        if let Some(cached_idx) = *cached_region_idx {
-            if cached_idx < regions.len() && regions[cached_idx].guest_region.contains(&addr) {
-                return Ok(regions[cached_idx].region_type);
-            }
+        if let Some(cached_idx) = *cached_region_idx
+            && cached_idx < regions.len()
+            && regions[cached_idx].guest_region.contains(&addr)
+        {
+            return Ok(regions[cached_idx].region_type);
         }
 
         // If not in cached region, try adjacent regions first (common for sequential access)

@@ -831,7 +831,7 @@ impl Hypervisor for KVMDriver {
     }
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>> {
+    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext<'_>>> {
         if self.rt_cfg.guest_core_dump {
             let mut regs = [0; 27];
 

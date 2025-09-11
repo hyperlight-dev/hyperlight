@@ -946,14 +946,13 @@ mod tests {
                     (metadata_values_map, "module_path"),
                     (metadata_values_map, "target"),
                 ]);
-                if let Ok(err_vals) = err_vals_res {
-                    if err_vals[0] == "ERROR"
-                        && err_vals[1].starts_with(expected_error_start)
-                        && err_vals[2] == "hyperlight_host::sandbox::uninitialized"
-                        && err_vals[3] == "hyperlight_host::sandbox::uninitialized"
-                    {
-                        count_matching_events += 1;
-                    }
+                if let Ok(err_vals) = err_vals_res
+                    && err_vals[0] == "ERROR"
+                    && err_vals[1].starts_with(expected_error_start)
+                    && err_vals[2] == "hyperlight_host::sandbox::uninitialized"
+                    && err_vals[3] == "hyperlight_host::sandbox::uninitialized"
+                {
+                    count_matching_events += 1;
                 }
             }
             assert!(
