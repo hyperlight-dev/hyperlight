@@ -199,7 +199,7 @@ fn maybe_with_seccomp<T: Send>(
     })
 }
 
-#[cfg(not(all(seccomp)))]
+#[cfg(not(seccomp))]
 fn maybe_with_seccomp<T: Send>(
     _name: &str,
     _syscalls: Option<&[ExtraAllowedSyscall]>,
