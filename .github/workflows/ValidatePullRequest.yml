@@ -44,10 +44,19 @@ jobs:
   rust:
     needs:
       - docs-pr
+    strategy:
+      fail-fast: true
+      matrix:
+        hypervisor: [hyperv, 'hyperv-ws2025', mshv, mshv3, kvm]
+        cpu: [amd, intel]
+        config: [debug, release]
     uses: ./.github/workflows/dep_rust.yml
     secrets: inherit
     with: 
       docs_only: ${{needs.docs-pr.outputs.docs-only}}
+      hypervisor: ${{ matrix.hypervisor }}
+      cpu: ${{ matrix.cpu }}
+      config: ${{ matrix.config }}
 
   fuzzing:
     needs:
