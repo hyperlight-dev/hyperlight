@@ -788,6 +788,15 @@ fn call_given_paramless_hostfunc_that_returns_i64(function_call: &FunctionCall) 
 }
 
 #[hyperlight_guest_tracing::trace_function]
+fn use_sse2_registers(_: &FunctionCall) -> Result<Vec<u8>> {
+    unsafe {
+        let val: f32 = 1.2f32;
+        core::arch::asm!("movss xmm1, DWORD PTR [{0}]", in(reg) &val);
+    } 
+    Ok(get_flatbuffer_result(()))
+}
+
+#[hyperlight_guest_tracing::trace_function]
 fn add(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::Int(a), ParameterValue::Int(b)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -947,7 +956,6 @@ pub extern "C" fn hyperlight_main() {
         ReturnType::VecBytes,
         read_from_user_memory as usize,
     );
-
     register_function(read_from_user_memory_def);
 
     let read_mapped_buffer_def = GuestFunctionDefinition::new(
@@ -956,7 +964,6 @@ pub extern "C" fn hyperlight_main() {
         ReturnType::VecBytes,
         read_mapped_buffer as usize,
     );
-
     register_function(read_mapped_buffer_def);
 
     let write_mapped_buffer_def = GuestFunctionDefinition::new(
@@ -965,7 +972,6 @@ pub extern "C" fn hyperlight_main() {
         ReturnType::Bool,
         write_mapped_buffer as usize,
     );
-
     register_function(write_mapped_buffer_def);
 
     let exec_mapped_buffer_def = GuestFunctionDefinition::new(
@@ -974,7 +980,6 @@ pub extern "C" fn hyperlight_main() {
         ReturnType::Bool,
         exec_mapped_buffer as usize,
     );
-
     register_function(exec_mapped_buffer_def);
 
     let set_static_def = GuestFunctionDefinition::new(
@@ -983,7 +988,6 @@ pub extern "C" fn hyperlight_main() {
         ReturnType::Int,
         set_static as usize,
     );
-
     register_function(set_static_def);
 
     let simple_print_output_def = GuestFunctionDefinition::new(
@@ -1477,7 +1481,17 @@ pub extern "C" fn hyperlight_main() {
         call_given_paramless_hostfunc_that_returns_i64 as usize,
     );
     register_function(call_given_hostfunc_def);
+
+    let use_sse2_registers = GuestFunctionDefinition::new(
+        "UseSSE2Registers".to_string(),
+        Vec::new(),
+        ReturnType::Void,
+        use_sse2_registers as usize,
+    );
+    register_function(use_sse2_registers);
 }
+
+
 
 #[hyperlight_guest_tracing::trace_function]
 fn send_message_to_host_method(
