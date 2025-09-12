@@ -1127,51 +1127,112 @@ mod tests {
         assert_eq!(data, ret_vec);
     }
 
-    /// A test to ensure that, if a `SharedMem` instance is cloned
-    /// and _all_ clones are dropped, the memory region will no longer
-    /// be valid.
-    ///
-    /// This test is ignored because it is incompatible with other tests as
-    /// they may be allocating memory at the same time.
-    ///
-    /// Marking this test as ignored means that running `cargo test` will not
-    /// run it. This feature will allow a developer who runs that command
-    /// from their workstation to be successful without needing to know about
-    /// test interdependencies. This test will, however, be run explicitly as a
-    /// part of the CI pipeline.
+    /// Makes sure drop actually frees the underlying memory
     #[test]
-    #[ignore]
-    #[cfg(target_os = "linux")]
     fn test_drop() {
-        use proc_maps::maps_contain_addr;
-
-        let pid = std::process::id();
-
-        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        let eshm = ExclusiveSharedMemory::new(128 * 1024 * 1024).unwrap(); // large number to prevent race condition from other tests
         let (hshm1, gshm) = eshm.build();
         let hshm2 = hshm1.clone();
-        let addr = hshm1.raw_ptr() as usize;
+        let addr = hshm1.raw_ptr();
+        let _size = hshm1.raw_mem_size();
 
-        // ensure the address is in the process's virtual memory
-        let maps_before_drop = proc_maps::get_process_maps(pid.try_into().unwrap()).unwrap();
-        assert!(
-            maps_contain_addr(addr, &maps_before_drop),
-            "shared memory address {:#x} was not found in process map, but should be",
-            addr,
-        );
-        // drop both shared memory instances, which should result
+        // Verify memory is initially accessible
+        #[cfg(target_os = "linux")]
+        {
+            let result =
+                unsafe { libc::madvise(addr as *mut libc::c_void, _size, libc::MADV_NORMAL) };
+            assert_eq!(
+                result,
+                0,
+                "Memory should be accessible before drop - madvise failed with errno: {}",
+                std::io::Error::last_os_error().raw_os_error().unwrap()
+            );
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use core::ffi::c_void;
+
+            use windows::Win32::System::Memory::{
+                MEM_FREE, MEMORY_BASIC_INFORMATION, VirtualQuery,
+            };
+
+            let mut mbi = MEMORY_BASIC_INFORMATION::default();
+            let result = unsafe {
+                VirtualQuery(
+                    Some(addr as *const c_void),
+                    &mut mbi,
+                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+                )
+            };
+            assert_ne!(
+                result, 0,
+                "VirtualQuery should succeed on mapped memory at address {:#x}",
+                addr as usize
+            );
+            assert_ne!(
+                mbi.State, MEM_FREE,
+                "Memory should not be in MEM_FREE state before drop at address {:#x}",
+                addr as usize
+            );
+        }
+
+        // Drop both shared memory instances, which should result
         // in freeing the memory region
         drop(hshm1);
         drop(hshm2);
         drop(gshm);
 
-        let maps_after_drop = proc_maps::get_process_maps(pid.try_into().unwrap()).unwrap();
-        // now, ensure the address is not in the process's virtual memory
-        assert!(
-            !maps_contain_addr(addr, &maps_after_drop),
-            "shared memory address {:#x} was found in the process map, but shouldn't be",
-            addr
-        );
+        // Verify memory is no longer accessible
+        #[cfg(target_os = "linux")]
+        {
+            // Try madvise on the unmapped memory - should fail with ENOMEM
+            let result =
+                unsafe { libc::madvise(addr as *mut libc::c_void, _size, libc::MADV_NORMAL) };
+            assert_eq!(
+                result, -1,
+                "madvise should return -1 on unmapped memory at address {:#x}",
+                addr as usize
+            );
+
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+            assert_eq!(
+                errno,
+                libc::ENOMEM,
+                "Expected ENOMEM for unmapped memory, but got errno: {} at address {:#x}",
+                errno,
+                addr as usize
+            );
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use core::ffi::c_void;
+
+            use windows::Win32::System::Memory::{
+                MEM_FREE, MEMORY_BASIC_INFORMATION, VirtualQuery,
+            };
+
+            // Try VirtualQuery on the unmapped memory - should show MEM_FREE state
+            let mut mbi_after = MEMORY_BASIC_INFORMATION::default();
+            let result = unsafe {
+                VirtualQuery(
+                    Some(addr as *const c_void),
+                    &mut mbi_after,
+                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+                )
+            };
+            assert_ne!(
+                result, 0,
+                "VirtualQuery should succeed even on unmapped memory at address {:#x}",
+                addr as usize
+            );
+            assert_eq!(
+                mbi_after.State, MEM_FREE,
+                "Memory should be in MEM_FREE state after drop at address {:#x}",
+                addr as usize
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]

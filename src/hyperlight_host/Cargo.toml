@@ -114,9 +114,6 @@ windows = { version = "0.62", features = [
     "Win32_System_Diagnostics_ToolHelp",
 ] }
 
-[target.'cfg(unix)'.dev-dependencies]
-proc-maps = "0.4.0"
-
 [build-dependencies]
 anyhow = { version = "1.0.99" }
 cfg_aliases = "0.2.1"
