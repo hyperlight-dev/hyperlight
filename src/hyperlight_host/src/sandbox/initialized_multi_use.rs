@@ -31,9 +31,9 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use tracing::{Span, instrument};
 
+use super::Callable;
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
-use super::{Callable, WrapperGetter};
 use crate::HyperlightError::SnapshotSandboxMismatch;
 use crate::func::guest_err::check_for_guest_error;
 use crate::func::{ParameterTuple, SupportedReturnType};
@@ -41,10 +41,10 @@ use crate::hypervisor::{Hypervisor, InterruptHandle};
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
-use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::{Result, log_then_return};
 
 /// Global counter for assigning unique IDs to sandboxes
@@ -59,11 +59,11 @@ pub struct MultiUseSandbox {
     id: u64,
     // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
     pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
-    pub(crate) mem_mgr: MemMgrWrapper<HostSharedMemory>,
+    pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
     vm: Box<dyn Hypervisor>,
     dispatch_ptr: RawPtr,
     #[cfg(gdb)]
-    dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+    dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
     snapshot: Option<Snapshot>,
@@ -78,10 +78,10 @@ impl MultiUseSandbox {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(super) fn from_uninit(
         host_funcs: Arc<Mutex<FunctionRegistry>>,
-        mgr: MemMgrWrapper<HostSharedMemory>,
+        mgr: SandboxMemoryManager<HostSharedMemory>,
         vm: Box<dyn Hypervisor>,
         dispatch_ptr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
             id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -125,10 +125,7 @@ impl MultiUseSandbox {
         }
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
-        let memory_snapshot = self
-            .mem_mgr
-            .unwrap_mgr_mut()
-            .snapshot(self.id, mapped_regions_vec)?;
+        let memory_snapshot = self.mem_mgr.snapshot(self.id, mapped_regions_vec)?;
         let inner = Arc::new(memory_snapshot);
         let snapshot = Snapshot { inner };
         self.snapshot = Some(snapshot.clone());
@@ -179,9 +176,7 @@ impl MultiUseSandbox {
             return Err(SnapshotSandboxMismatch);
         }
 
-        self.mem_mgr
-            .unwrap_mgr_mut()
-            .restore_snapshot(&snapshot.inner)?;
+        self.mem_mgr.restore_snapshot(&snapshot.inner)?;
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
         let snapshot_regions: HashSet<_> = snapshot.inner.regions().iter().cloned().collect();
@@ -326,7 +321,7 @@ impl MultiUseSandbox {
         // Reset snapshot since we are mutating the sandbox state
         self.snapshot = None;
         unsafe { self.vm.map_region(rgn) }?;
-        self.mem_mgr.unwrap_mgr_mut().mapped_rgns += 1;
+        self.mem_mgr.mapped_rgns += 1;
         Ok(())
     }
 
@@ -406,9 +401,7 @@ impl MultiUseSandbox {
             let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
             let buffer = fc.encode(&mut builder);
 
-            self.get_mgr_wrapper_mut()
-                .as_mut()
-                .write_guest_function_call(buffer)?;
+            self.mem_mgr.write_guest_function_call(buffer)?;
 
             self.vm.dispatch_call_from_host(
                 self.dispatch_ptr.clone(),
@@ -417,11 +410,9 @@ impl MultiUseSandbox {
             )?;
 
             self.mem_mgr.check_stack_guard()?;
-            check_for_guest_error(self.get_mgr_wrapper_mut())?;
+            check_for_guest_error(&mut self.mem_mgr)?;
 
-            self.get_mgr_wrapper_mut()
-                .as_mut()
-                .get_guest_function_call_result()
+            self.mem_mgr.get_guest_function_call_result()
         })();
 
         // In the happy path we do not need to clear io-buffers from the host because:
@@ -430,7 +421,7 @@ impl MultiUseSandbox {
         // - any serialized host function call are zeroed out by us (the host) during deserialization, see `get_host_function_call`
         // - any serialized host function result is zeroed out by the guest during deserialization, see `get_host_return_value`
         if res.is_err() {
-            self.get_mgr_wrapper_mut().as_mut().clear_io_buffers();
+            self.mem_mgr.clear_io_buffers();
         }
         res
     }
@@ -476,15 +467,6 @@ impl Callable for MultiUseSandbox {
         args: impl ParameterTuple,
     ) -> Result<Output> {
         self.call(func_name, args)
-    }
-}
-
-impl WrapperGetter for MultiUseSandbox {
-    fn get_mgr_wrapper(&self) -> &MemMgrWrapper<HostSharedMemory> {
-        &self.mem_mgr
-    }
-    fn get_mgr_wrapper_mut(&mut self) -> &mut MemMgrWrapper<HostSharedMemory> {
-        &mut self.mem_mgr
     }
 }
 

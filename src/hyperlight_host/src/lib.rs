@@ -87,8 +87,6 @@ pub(crate) mod testing;
 
 /// The re-export for the `HyperlightError` type
 pub use error::HyperlightError;
-/// Re-export for `HypervisorWrapper` trait
-/// Re-export for `MemMgrWrapper` type
 /// A sandbox that can call be used to make multiple calls to guest functions,
 /// and otherwise reused multiple times
 pub use sandbox::MultiUseSandbox;

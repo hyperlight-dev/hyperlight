@@ -74,6 +74,10 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) entrypoint_offset: Offset,
     /// How many memory regions were mapped after sandbox creation
     pub(crate) mapped_rgns: u64,
+    /// Stack cookie for stack guard verification
+    pub(crate) stack_cookie: [u8; STACK_COOKIE_LEN],
+    /// Buffer for accumulating guest abort messages
+    pub(crate) abort_buffer: Vec<u8>,
 }
 
 impl<S> SandboxMemoryManager<S>
@@ -82,11 +86,12 @@ where
 {
     /// Create a new `SandboxMemoryManager` with the given parameters
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn new(
+    pub(crate) fn new(
         layout: SandboxMemoryLayout,
         shared_mem: S,
         load_addr: RawPtr,
         entrypoint_offset: Offset,
+        stack_cookie: [u8; STACK_COOKIE_LEN],
     ) -> Self {
         Self {
             layout,
@@ -94,10 +99,24 @@ where
             load_addr,
             entrypoint_offset,
             mapped_rgns: 0,
+            stack_cookie,
+            abort_buffer: Vec::new(),
         }
     }
 
+    /// Get the stack cookie
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_stack_cookie(&self) -> &[u8; STACK_COOKIE_LEN] {
+        &self.stack_cookie
+    }
+
+    /// Get mutable access to the abort buffer
+    pub(crate) fn get_abort_buffer_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.abort_buffer
+    }
+
     /// Get `SharedMemory` in `self` as a mutable reference
+    #[cfg(any(gdb, test))]
     pub(crate) fn get_shared_mem_mut(&mut self) -> &mut S {
         &mut self.shared_mem
     }
@@ -334,8 +353,18 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             &mut shared_mem.as_mut_slice()[layout.get_guest_code_offset()..],
         )?;
 
+        let stack_cookie = rand::random::<[u8; STACK_COOKIE_LEN]>();
+        let stack_offset = layout.get_top_of_user_stack_offset();
+        shared_mem.copy_from_slice(&stack_cookie, stack_offset)?;
+
         Ok((
-            Self::new(layout, shared_mem, load_addr, entrypoint_offset),
+            Self::new(
+                layout,
+                shared_mem,
+                load_addr,
+                entrypoint_offset,
+                stack_cookie,
+            ),
             load_info,
         ))
     }
@@ -376,12 +405,23 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         Ok(())
     }
 
-    /// Set the stack guard to `cookie` using `layout` to calculate
-    /// its location and `shared_mem` to write it.
+    /// Write memory layout
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn set_stack_guard(&mut self, cookie: &[u8; STACK_COOKIE_LEN]) -> Result<()> {
-        let stack_offset = self.layout.get_top_of_user_stack_offset();
-        self.shared_mem.copy_from_slice(cookie, stack_offset)
+    pub(crate) fn write_memory_layout(&mut self) -> Result<()> {
+        let mem_size = self.shared_mem.mem_size();
+        self.layout.write(
+            &mut self.shared_mem,
+            SandboxMemoryLayout::BASE_ADDRESS,
+            mem_size,
+        )
+    }
+
+    /// Write init data
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn write_init_data(&mut self, user_memory: &[u8]) -> Result<()> {
+        self.layout
+            .write_init_data(&mut self.shared_mem, user_memory)?;
+        Ok(())
     }
 
     /// Wraps ExclusiveSharedMemory::build
@@ -398,14 +438,18 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
                 layout: self.layout,
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
-                mapped_rgns: 0,
+                mapped_rgns: self.mapped_rgns,
+                stack_cookie: self.stack_cookie,
+                abort_buffer: self.abort_buffer,
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
                 layout: self.layout,
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
-                mapped_rgns: 0,
+                mapped_rgns: self.mapped_rgns,
+                stack_cookie: self.stack_cookie,
+                abort_buffer: Vec::new(), // Guest doesn't need abort buffer
             },
         )
     }
@@ -425,10 +469,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// documentation at the bottom `set_stack_guard` for description
     /// of why it isn't.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn check_stack_guard(&self, cookie: [u8; STACK_COOKIE_LEN]) -> Result<bool> {
+    pub(crate) fn check_stack_guard(&self) -> Result<bool> {
+        let expected = self.stack_cookie;
         let offset = self.layout.get_top_of_user_stack_offset();
-        let test_cookie: [u8; STACK_COOKIE_LEN] = self.shared_mem.read(offset)?;
-        let cmp_res = cookie.iter().cmp(test_cookie.iter());
+        let actual: [u8; STACK_COOKIE_LEN] = self.shared_mem.read(offset)?;
+        let cmp_res = expected.iter().cmp(actual.iter());
         Ok(cmp_res == Ordering::Equal)
     }
 

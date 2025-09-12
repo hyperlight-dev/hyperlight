@@ -23,9 +23,6 @@ pub(crate) mod hypervisor;
 /// Functionality for dealing with initialized sandboxes that can
 /// call 0 or more guest functions
 pub mod initialized_multi_use;
-/// Functionality for interacting with a sandbox's internally-stored
-/// `SandboxMemoryManager`
-pub(crate) mod mem_mgr;
 pub(crate) mod outb;
 /// Functionality for creating uninitialized sandboxes, manipulating them,
 /// and converting them to initialized sandboxes.
@@ -59,7 +56,6 @@ pub use uninitialized::GuestBinary;
 /// Re-export for `UninitializedSandbox` type
 pub use uninitialized::UninitializedSandbox;
 
-use self::mem_mgr::MemMgrWrapper;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::windows_hypervisor_platform;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -225,12 +221,6 @@ impl TraceInfo {
 
         Ok(())
     }
-}
-
-pub(crate) trait WrapperGetter {
-    #[allow(dead_code)]
-    fn get_mgr_wrapper(&self) -> &MemMgrWrapper<HostSharedMemory>;
-    fn get_mgr_wrapper_mut(&mut self) -> &mut MemMgrWrapper<HostSharedMemory>;
 }
 
 #[cfg(test)]

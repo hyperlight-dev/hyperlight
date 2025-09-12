@@ -17,15 +17,17 @@ limitations under the License.
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 
 use crate::error::HyperlightError::{GuestError, StackOverflow};
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::{METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE};
-use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::{Result, log_then_return};
 
 /// Check for a guest error and return an `Err` if one was found,
 /// and `Ok` if one was not found.
-pub(crate) fn check_for_guest_error(mgr: &mut MemMgrWrapper<HostSharedMemory>) -> Result<()> {
-    let guest_err = mgr.as_mut().get_guest_error().ok();
+pub(crate) fn check_for_guest_error(
+    mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+) -> Result<()> {
+    let guest_err = mgr.get_guest_error().ok();
     let Some(guest_err) = guest_err else {
         return Ok(());
     };

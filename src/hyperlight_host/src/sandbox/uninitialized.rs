@@ -23,7 +23,6 @@ use log::LevelFilter;
 use tracing::{Span, instrument};
 
 use super::host_funcs::{FunctionRegistry, default_writer_func};
-use super::mem_mgr::MemMgrWrapper;
 use super::uninitialized_evolve::evolve_impl_multi_use;
 use crate::func::host_functions::{HostFunction, register_host_function};
 use crate::func::{ParameterTuple, SupportedReturnType};
@@ -31,7 +30,7 @@ use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::log_build_details;
 use crate::mem::exe::ExeInfo;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
-use crate::mem::mgr::{STACK_COOKIE_LEN, SandboxMemoryManager};
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::{MultiUseSandbox, Result, new_error};
@@ -77,7 +76,7 @@ pub struct UninitializedSandbox {
     /// Registered host functions
     pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
     /// The memory manager for the sandbox.
-    pub(crate) mgr: MemMgrWrapper<ExclusiveSharedMemory>,
+    pub(crate) mgr: SandboxMemoryManager<ExclusiveSharedMemory>,
     pub(crate) max_guest_log_level: Option<LevelFilter>,
     pub(crate) config: SandboxConfiguration,
     #[cfg(any(crashdump, gdb))]
@@ -88,7 +87,7 @@ pub struct UninitializedSandbox {
 impl Debug for UninitializedSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UninitializedSandbox")
-            .field("memory_layout", &self.mgr.unwrap_mgr().layout)
+            .field("memory_layout", &self.mgr.layout)
             .finish()
     }
 }
@@ -233,17 +232,11 @@ impl UninitializedSandbox {
             }
         };
 
-        let (mut mem_mgr_wrapper, load_info) = {
-            let (mut mgr, load_info) = UninitializedSandbox::load_guest_binary(
-                sandbox_cfg,
-                &guest_binary,
-                guest_blob.as_ref(),
-            )?;
-
-            let stack_guard = Self::create_stack_guard();
-            mgr.set_stack_guard(&stack_guard)?;
-            (MemMgrWrapper::new(mgr, stack_guard), load_info)
-        };
+        let (mut mem_mgr_wrapper, load_info) = UninitializedSandbox::load_guest_binary(
+            sandbox_cfg,
+            &guest_binary,
+            guest_blob.as_ref(),
+        )?;
 
         mem_mgr_wrapper.write_memory_layout()?;
 
@@ -270,11 +263,6 @@ impl UninitializedSandbox {
         crate::debug!("Sandbox created:  {:#?}", sandbox);
 
         Ok(sandbox)
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn create_stack_guard() -> [u8; STACK_COOKIE_LEN] {
-        rand::random::<[u8; STACK_COOKIE_LEN]>()
     }
 
     /// Load the file at `bin_path_str` into a PE file, then attempt to
