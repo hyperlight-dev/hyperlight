@@ -207,7 +207,6 @@ impl GuestDebug for KvmDebug {
         }
 
         // Read MXCSR from XSAVE (MXCSR is at byte offset 24 -> u32 index 6)
-        // Todo maybe I could use xsave to read the registers too instead of a separate call to get_fpu
         match vcpu_fd.get_xsave() {
             Ok(xsave) => {
                 regs.mxcsr = xsave.region[6];
@@ -262,6 +261,36 @@ impl GuestDebug for KvmDebug {
 
         vcpu_fd
             .set_regs(&new_regs)
-            .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
+            .map_err(|e| new_error!("Could not write guest registers: {:?}", e))?;
+
+        // load existing values and replace the xmm registers
+        let mut fpu =  match vcpu_fd.get_fpu() {
+            Ok(fpu) => {
+                fpu
+            },
+            Err(e) => {
+                return Err(new_error!("Could not write guest registers: {:?}", e));
+            }
+        };
+
+        // Convert XMM registers from [u128; 16] (our internal representation)
+        // to [[u8; 16]; 16] (KVM FPU representation) using little-endian byte order.
+        fpu.xmm = regs.xmm.map(u128::to_le_bytes);
+        vcpu_fd.set_fpu(&fpu).map_err(|e| new_error!("Could not write guest registers: {:?}", e))?;
+
+        // Update MXCSR using XSAVE region entry 6 (MXCSR) if available.
+        let mut xsave = match vcpu_fd.get_xsave() {
+            Ok(xsave) => {
+               xsave
+            }
+            Err(e) => {
+                return Err(new_error!("Could not write guest registers: {:?}", e));
+            }
+        };
+
+        xsave.region[6] = regs.mxcsr;
+        unsafe { vcpu_fd.set_xsave(&xsave).map_err(|e| new_error!("Could not write guest registers: {:?}", e))? };
+
+        Ok(())
     }
 }
