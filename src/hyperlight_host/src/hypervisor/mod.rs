@@ -70,10 +70,10 @@ use std::time::Duration;
 #[cfg(gdb)]
 use gdb::VcpuStopReason;
 
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::mem_mgr::MemMgrWrapper;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "init-paging")] {
@@ -141,10 +141,10 @@ pub(crate) trait Hypervisor: Debug + Send {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        mem_mgr: MemMgrWrapper<HostSharedMemory>,
+        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         guest_max_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()>;
 
     /// Map a region of host memory into the sandbox.
@@ -171,7 +171,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()>;
 
     /// Handle an IO exit from the internally stored vCPU.
@@ -236,7 +236,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// handles the cases when the vCPU stops due to a Debug event
     fn handle_debug(
         &mut self,
-        _dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+        _dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
         _stop_reason: VcpuStopReason,
     ) -> Result<()> {
         unimplemented!()
@@ -289,7 +289,7 @@ impl VirtualCPU {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn run(
         hv: &mut dyn Hypervisor,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         loop {
             match hv.run() {

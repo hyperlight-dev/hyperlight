@@ -33,12 +33,12 @@ use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(any(feature = "init-paging", target_os = "windows"))]
 use crate::mem::shared_mem::SharedMemory;
+use crate::sandbox::HostSharedMemory;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::{HostSharedMemory, MemMgrWrapper};
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_error};
@@ -62,7 +62,7 @@ fn evolve_impl<TransformFunc, ResSandbox>(
 where
     TransformFunc: Fn(
         Arc<Mutex<FunctionRegistry>>,
-        MemMgrWrapper<HostSharedMemory>,
+        SandboxMemoryManager<HostSharedMemory>,
         Box<dyn Hypervisor>,
         RawPtr,
     ) -> Result<ResSandbox>,
@@ -104,7 +104,7 @@ where
         dbg_mem_access_hdl,
     )?;
 
-    let dispatch_function_addr = hshm.as_ref().get_pointer_to_dispatch_function()?;
+    let dispatch_function_addr = hshm.get_pointer_to_dispatch_function()?;
     if dispatch_function_addr == 0 {
         return Err(new_error!("Dispatch function address is null"));
     }

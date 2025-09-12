@@ -42,13 +42,13 @@ use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, V
 use crate::HyperlightError;
 use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::sandbox::outb::handle_outb;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
@@ -86,8 +86,8 @@ mod debug {
     use crate::hypervisor::gdb::{
         DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason, X86_64Regs,
     };
+    use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::HostSharedMemory;
-    use crate::sandbox::mem_mgr::MemMgrWrapper;
     use crate::{Result, new_error};
 
     impl KVMDriver {
@@ -118,7 +118,7 @@ mod debug {
         pub(crate) fn process_dbg_request(
             &mut self,
             req: DebugMsg,
-            dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+            dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
         ) -> Result<DebugResponse> {
             if let Some(debug) = self.debug.as_mut() {
                 match req {
@@ -166,7 +166,6 @@ mod debug {
                             .map_err(|e| {
                                 new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
                             })?
-                            .unwrap_mgr()
                             .layout
                             .get_guest_code_address();
 
@@ -292,7 +291,7 @@ pub(crate) struct KVMDriver {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<LinuxInterruptHandle>,
-    mem_mgr: Option<MemMgrWrapper<HostSharedMemory>>,
+    mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
 
     sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
@@ -472,10 +471,10 @@ impl Hypervisor for KVMDriver {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        mem_mgr: MemMgrWrapper<HostSharedMemory>,
+        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         self.mem_mgr = Some(mem_mgr);
         self.host_funcs = Some(host_funcs);
@@ -570,7 +569,7 @@ impl Hypervisor for KVMDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
         let regs = kvm_regs {
@@ -623,7 +622,7 @@ impl Hypervisor for KVMDriver {
             #[cfg(feature = "trace_guest")]
             {
                 // We need to handle the borrow checker issue where we need both:
-                // - &mut MemMgrWrapper (from self.mem_mgr.as_mut())
+                // - &mut SandboxMemoryManager (from self.mem_mgr.as_mut())
                 // - &mut dyn Hypervisor (from self)
                 // We'll use a temporary approach to extract the mem_mgr temporarily
                 let mem_mgr_option = self.mem_mgr.take();
@@ -898,7 +897,7 @@ impl Hypervisor for KVMDriver {
     #[cfg(gdb)]
     fn handle_debug(
         &mut self,
-        dbg_mem_access_fn: Arc<Mutex<MemMgrWrapper<HostSharedMemory>>>,
+        dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
         stop_reason: VcpuStopReason,
     ) -> Result<()> {
         if self.debug.is_none() {

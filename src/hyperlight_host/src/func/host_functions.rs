@@ -61,7 +61,7 @@ impl Registerable for UninitializedSandbox {
             return_type: Output::TYPE,
         };
 
-        (*hfs).register_host_function(name.to_string(), entry, self.mgr.unwrap_mgr_mut())
+        (*hfs).register_host_function(name.to_string(), entry, &mut self.mgr)
     }
     #[cfg(all(feature = "seccomp", target_os = "linux"))]
     fn register_host_function_with_syscalls<Args: ParameterTuple, Output: SupportedReturnType>(
@@ -82,7 +82,7 @@ impl Registerable for UninitializedSandbox {
             return_type: Output::TYPE,
         };
 
-        (*hfs).register_host_function(name.to_string(), entry, self.mgr.unwrap_mgr_mut())
+        (*hfs).register_host_function(name.to_string(), entry, &mut self.mgr)
     }
 }
 
@@ -210,7 +210,7 @@ pub(crate) fn register_host_function<Args: ParameterTuple, Output: SupportedRetu
         .host_funcs
         .try_lock()
         .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-        .register_host_function(name.to_string(), entry, sandbox.mgr.unwrap_mgr_mut())?;
+        .register_host_function(name.to_string(), entry, &mut sandbox.mgr)?;
 
     Ok(())
 }
