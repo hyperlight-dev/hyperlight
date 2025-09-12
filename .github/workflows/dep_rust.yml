@@ -137,7 +137,7 @@ jobs:
           cargo check -p hyperlight-host --features crashdump
           cargo check -p hyperlight-host --features print_debug
           cargo check -p hyperlight-host --features gdb
-          cargo check -p hyperlight-host --features trace_guest,unwind_guest,mem_profile
+          cargo check -p hyperlight-host --features trace_guest,mem_profile
 
           # without any features
           just test-compilation-no-default-features ${{ matrix.config }}

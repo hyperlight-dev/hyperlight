@@ -46,6 +46,7 @@ use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
 use super::InterruptHandle;
+use crate::hypervisor::arch::X86_64Regs;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::mem_mgr::MemMgrWrapper;
@@ -86,29 +87,6 @@ impl From<GdbTargetError> for TargetError<GdbTargetError> {
     fn from(value: GdbTargetError) -> TargetError<GdbTargetError> {
         TargetError::Io(std::io::Error::other(value))
     }
-}
-
-/// Struct that contains the x86_64 core registers
-#[derive(Debug, Default)]
-pub(crate) struct X86_64Regs {
-    pub(crate) rax: u64,
-    pub(crate) rbx: u64,
-    pub(crate) rcx: u64,
-    pub(crate) rdx: u64,
-    pub(crate) rsi: u64,
-    pub(crate) rdi: u64,
-    pub(crate) rbp: u64,
-    pub(crate) rsp: u64,
-    pub(crate) r8: u64,
-    pub(crate) r9: u64,
-    pub(crate) r10: u64,
-    pub(crate) r11: u64,
-    pub(crate) r12: u64,
-    pub(crate) r13: u64,
-    pub(crate) r14: u64,
-    pub(crate) r15: u64,
-    pub(crate) rip: u64,
-    pub(crate) rflags: u64,
 }
 
 /// Defines the possible reasons for which a vCPU can be stopped when debugging

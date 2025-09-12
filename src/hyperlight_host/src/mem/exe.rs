@@ -16,7 +16,7 @@ limitations under the License.
 
 use std::fs::File;
 use std::io::Read;
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 use std::sync::Arc;
 use std::vec::Vec;
 
@@ -39,15 +39,15 @@ pub enum ExeInfo {
 const DEFAULT_ELF_STACK_RESERVE: u64 = 65536;
 const DEFAULT_ELF_HEAP_RESERVE: u64 = 131072;
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 pub(crate) trait UnwindInfo: Send + Sync {
     fn as_module(&self) -> framehop::Module<Vec<u8>>;
     fn hash(&self) -> blake3::Hash;
 }
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 pub(crate) struct DummyUnwindInfo {}
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 impl UnwindInfo for DummyUnwindInfo {
     fn as_module(&self) -> framehop::Module<Vec<u8>> {
         framehop::Module::new("unsupported".to_string(), 0..0, 0, self)
@@ -56,7 +56,7 @@ impl UnwindInfo for DummyUnwindInfo {
         blake3::Hash::from_bytes([0; 32])
     }
 }
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 impl<A> framehop::ModuleSectionInfo<A> for &DummyUnwindInfo {
     fn base_svma(&self) -> u64 {
         0
@@ -69,9 +69,9 @@ impl<A> framehop::ModuleSectionInfo<A> for &DummyUnwindInfo {
     }
 }
 
-#[cfg(feature = "unwind_guest")]
+#[cfg(feature = "mem_profile")]
 pub(crate) type LoadInfo = Arc<dyn UnwindInfo>;
-#[cfg(not(feature = "unwind_guest"))]
+#[cfg(not(feature = "mem_profile"))]
 pub(crate) type LoadInfo = ();
 
 impl ExeInfo {
