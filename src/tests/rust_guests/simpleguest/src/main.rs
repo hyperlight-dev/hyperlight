@@ -792,7 +792,7 @@ fn use_sse2_registers(_: &FunctionCall) -> Result<Vec<u8>> {
     unsafe {
         let val: f32 = 1.2f32;
         core::arch::asm!("movss xmm1, DWORD PTR [{0}]", in(reg) &val);
-    } 
+    }
     Ok(get_flatbuffer_result(()))
 }
 
@@ -1490,8 +1490,6 @@ pub extern "C" fn hyperlight_main() {
     );
     register_function(use_sse2_registers);
 }
-
-
 
 #[hyperlight_guest_tracing::trace_function]
 fn send_message_to_host_method(
