@@ -274,6 +274,21 @@ impl GuestDebug for MshvDebug {
 
         vcpu_fd
             .set_regs(&new_regs)
+            .map_err(|e| new_error!("Could not write guest registers: {:?}", e))?;
+
+        // Load existing FPU state, replace XMM and MXCSR, and write it back.
+        let mut fpu = match vcpu_fd.get_fpu() {
+            Ok(f) => f,
+            Err(e) => {
+                return Err(new_error!("Could not write guest registers: {:?}", e));
+            }
+        };
+
+        fpu.xmm = regs.xmm.map(u128::to_le_bytes);
+        fpu.mxcsr = regs.mxcsr;
+
+        vcpu_fd
+            .set_fpu(&fpu)
             .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
     }
 }
