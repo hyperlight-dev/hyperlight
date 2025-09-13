@@ -57,21 +57,18 @@ fuzz_target!(
         sandbox.restore(&snapshot).unwrap();
 
         host_func_params.insert(0, ParameterValue::String(host_func_name));
-        match sandbox.call_type_erased_guest_function_by_name("FuzzHostFunc", host_func_return, host_func_params) {
-            Err(e) => {
-                match e {
-                    // the following are expected errors and occur frequently since
-                    // we are randomly generating the function name and parameters
-                    // to call with.
-                    HyperlightError::HostFunctionNotFound(_) => {}
-                    HyperlightError::UnexpectedNoOfArguments(_, _) => {},
-                    HyperlightError::ParameterValueConversionFailure(_, _) => {},
+        if let Err(e) = sandbox.call_type_erased_guest_function_by_name("FuzzHostFunc", host_func_return, host_func_params) {
+            match e {
+                // the following are expected errors and occur frequently since
+                // we are randomly generating the function name and parameters
+                // to call with.
+                HyperlightError::HostFunctionNotFound(_) => {}
+                HyperlightError::UnexpectedNoOfArguments(_, _) => {},
+                HyperlightError::ParameterValueConversionFailure(_, _) => {},
 
-                    // any other error should be reported
-                    _ => panic!("Guest Aborted with Unexpected Error: {:?}", e),
-                }
+                // any other error should be reported
+                _ => panic!("Guest Aborted with Unexpected Error: {:?}", e),
             }
-            _ => {}
         }
     }
 );
