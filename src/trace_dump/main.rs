@@ -120,10 +120,8 @@ fn dump_trace_record(
     // With the exception of `> halt`, which decreases the indent (because `> entrypoint` does not
     // have a corresponding `< entrypoint`)
     let msg = if msg.starts_with('>') {
-        if msg == "> halt" {
-            if *indent > 0 {
-                *indent -= 1;
-            }
+        if msg == "> halt" && *indent > 0 {
+            *indent -= 1;
         }
         let indent_str = "  ".repeat(*indent as usize);
         let msg = format!("{}{}", indent_str, &msg);
@@ -174,7 +172,7 @@ impl<T: Default> TraceTrie<T> {
         let mut node = self;
         for frame in trace {
             f(&mut node.value);
-            node = (*node).children.entry(*frame).or_insert(Self::new())
+            node = node.children.entry(*frame).or_insert(Self::new())
         }
         f(&mut node.value);
     }
@@ -185,7 +183,7 @@ struct SymbolCache {
     symbol_cache: HashMap<u64, Option<(String, Option<u32>)>>,
 }
 impl SymbolCache {
-    fn resolve_symbol<'c>(&'c mut self, addr: u64) -> &'c Option<(String, Option<u32>)> {
+    fn resolve_symbol(&mut self, addr: u64) -> &Option<(String, Option<u32>)> {
         self.symbol_cache.entry(addr).or_insert_with(|| {
             let frame = &self.loader.find_frames(addr).ok()?.next().ok()??;
             let function = frame.function.as_ref()?;
@@ -382,7 +380,7 @@ impl<R: RenderContext> ViewParams<R> {
             bar_start: width / 4.0,
             bar_height: 12.0,
             bar_leading: 4.0,
-            bar_brush: bar_brush,
+            bar_brush,
         }
     }
 }
@@ -391,7 +389,7 @@ struct BarRenderer<'r> {
     state: &'r mut State,
     now: Duration,
 }
-impl<'r, 'a, 's> RenderWrapper for BarRenderer<'r> {
+impl<'a, 's> RenderWrapper for BarRenderer<'_> {
     fn render<R: RenderContext>(&mut self, ctx: &mut R, wd: u64, ht: u64) -> Option<()> {
         let v = ViewParams::new(ctx, ht, wd);
         draw_bg(ctx, &v);
@@ -422,7 +420,7 @@ impl<'r, 'a, 's> RenderWrapper for BarRenderer<'r> {
                 &v,
                 false,
                 (3 + i) as u64,
-                (&mut self.state.symbol_cache).format_symbol(**site),
+                self.state.symbol_cache.format_symbol(**site),
                 **size,
                 self.state.total,
             )?;
@@ -488,7 +486,7 @@ fn draw_flame<R: RenderContext>(
     }
     Some(())
 }
-impl<'r, 'a, 's> RenderWrapper for FlameRenderer<'r> {
+impl<'a, 's> RenderWrapper for FlameRenderer<'_> {
     fn render<R: RenderContext>(&mut self, ctx: &mut R, wd: u64, ht: u64) -> Option<()> {
         let mut v = ViewParams::new(ctx, ht, wd);
         v.bar_start = v.width / 8.0;
@@ -745,7 +743,7 @@ fn spawn_render_thread(
         let mut bar_ffmpeg = ffmpeg_for(&out_dir, Visualisation::Bar, interval.0)?;
         let mut flame_ffmpeg = ffmpeg_for(&out_dir, Visualisation::Flame, interval.0)?;
         let mut job_state = State {
-            inf: inf,
+            inf,
             symbol_cache: SymbolCache {
                 loader,
                 symbol_cache: HashMap::new(),
@@ -801,9 +799,9 @@ fn main() {
     };
     let inf = File::open(args[2].clone()).expect("could not open trace file");
     let state = State {
-        inf: inf,
+        inf,
         symbol_cache: SymbolCache {
-            loader: loader,
+            loader,
             symbol_cache: HashMap::new(),
         },
         start_time: None,
@@ -854,7 +852,6 @@ fn plot_mem(args: Vec<String>, mut state: State) {
         Some(()) => (),
         None => {
             eprintln!("i/o error encountered");
-            ()
         }
     }
     eprintln!("max total memory used is {}", state.max_total);

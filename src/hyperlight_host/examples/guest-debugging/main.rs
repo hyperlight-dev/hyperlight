@@ -20,7 +20,6 @@ use hyperlight_host::sandbox::SandboxConfiguration;
 #[cfg(gdb)]
 use hyperlight_host::sandbox::config::DebugInfo;
 use hyperlight_host::{MultiUseSandbox, UninitializedSandbox};
-use serial_test::serial;
 
 /// Build a sandbox configuration that enables GDB debugging when the `gdb` feature is enabled.
 fn get_sandbox_cfg() -> Option<SandboxConfiguration> {
@@ -74,10 +73,7 @@ fn main() -> hyperlight_host::Result<()> {
 
     // Call guest function
     multi_use_sandbox_dbg
-        .call::<()>(
-            "UseSSE2Registers",
-             (),
-        )
+        .call::<()>("UseSSE2Registers", ())
         .unwrap();
 
     let message =
@@ -115,23 +111,24 @@ mod tests {
     use super::*;
 
     fn write_cmds_file(cmd_file_path: &str, cmd: &str) -> io::Result<()> {
-
         let file = File::create(cmd_file_path)?;
         let mut writer = BufWriter::new(file);
 
         // write from string to file
-        writer.write_all(
-            cmd.as_bytes(),
-        )?;
+        writer.write_all(cmd.as_bytes())?;
 
         writer.flush()
     }
 
-    fn run_guest_and_gdb(cmd_file_path: &str, out_file_path: &str, cmd: &str, checker: fn(String) -> bool) -> Result<()> {
+    fn run_guest_and_gdb(
+        cmd_file_path: &str,
+        out_file_path: &str,
+        cmd: &str,
+        checker: fn(String) -> bool,
+    ) -> Result<()> {
         // write gdb commands to file
 
-        write_cmds_file(&cmd_file_path, cmd)
-            .expect("Failed to write gdb commands to file");
+        write_cmds_file(&cmd_file_path, cmd).expect("Failed to write gdb commands to file");
 
         #[cfg(mshv2)] // mshv3 is a default feature is mutually exclusive with the mshv2 feature
         let features = "gdb,mshv2";
@@ -242,7 +239,7 @@ mod tests {
         let cmd_file_path = format!("{out_dir}/gdb-commands.txt");
 
         let cmd = format!(
-                "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
+            "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
                 target remote :8080
 
                 set pagination off
@@ -262,9 +259,9 @@ mod tests {
                 set logging off
                 quit
             "
-            );
+        );
 
-        let checker = |contents: String| {contents.contains("Stopped at hyperlight_main breakpoint")};
+        let checker = |contents: String| contents.contains("Stopped at hyperlight_main breakpoint");
 
         let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
 
@@ -284,7 +281,7 @@ mod tests {
         let cmd_file_path = format!("{out_dir}/gdb-sse--commands.txt");
 
         let cmd = format!(
-                "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
+            "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
                 target remote :8080
 
                 set pagination off
@@ -308,9 +305,9 @@ mod tests {
                 set logging off
                 quit
             "
-            );
+        );
 
-        let checker = |contents: String| {contents.contains("$2 = [1.20000005, 0, 0, 0]")};
+        let checker = |contents: String| contents.contains("$2 = [1.20000005, 0, 0, 0]");
         let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
 
         // cleanup
