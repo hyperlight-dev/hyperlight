@@ -3,5 +3,10 @@
         "Cargo.toml", 
         // guest crates for testing, not part of the workspace
         "src/tests/rust_guests/simpleguest/Cargo.toml",
-    ]
+    ],
+    // Enable features in rust analyzer here
+    "rust-analyzer.cargo.features": [
+        // "gdb",
+        // "kvm"
+    ],
 }
