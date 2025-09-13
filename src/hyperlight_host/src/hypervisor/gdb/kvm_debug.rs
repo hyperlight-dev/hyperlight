@@ -207,6 +207,7 @@ impl GuestDebug for KvmDebug {
         }
 
         // Read MXCSR from XSAVE (MXCSR is at byte offset 24 -> u32 index 6)
+        // 11.5.10 Mode-Specific XSAVE/XRSTOR State Management
         match vcpu_fd.get_xsave() {
             Ok(xsave) => {
                 regs.mxcsr = xsave.region[6];
