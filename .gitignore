@@ -472,3 +472,4 @@ hyperlight_guest.h
 # gdb
 .gdbinit
 trace/*
+.gdbguest
