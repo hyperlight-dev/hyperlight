@@ -33,7 +33,6 @@ use tracing::{Span, instrument};
 use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
-use super::mem_mgr::MemMgrWrapper;
 #[cfg(feature = "trace_guest")]
 use crate::hypervisor::Hypervisor;
 #[cfg(feature = "trace_guest")]
@@ -109,7 +108,7 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
 const ABORT_TERMINATOR: u8 = 0xFF;
 const MAX_ABORT_BUFFER_LEN: usize = 1024;
 
-fn outb_abort(mem_mgr: &mut MemMgrWrapper<HostSharedMemory>, data: u32) -> Result<()> {
+fn outb_abort(mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>, data: u32) -> Result<()> {
     let buffer = mem_mgr.get_abort_buffer_mut();
 
     let bytes = data.to_le_bytes(); // [len, b1, b2, b3]
@@ -269,25 +268,23 @@ pub(super) fn record_guest_trace_frame<F: FnOnce(&mut std::fs::File)>(
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn handle_outb(
-    mem_mgr: &mut MemMgrWrapper<HostSharedMemory>,
+    mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     host_funcs: Arc<Mutex<FunctionRegistry>>,
     #[cfg(feature = "trace_guest")] _hv: &mut dyn Hypervisor,
     port: u16,
     data: u32,
 ) -> Result<()> {
     match port.try_into()? {
-        OutBAction::Log => outb_log(mem_mgr.as_mut()),
+        OutBAction::Log => outb_log(mem_mgr),
         OutBAction::CallFunction => {
-            let call = mem_mgr.as_mut().get_host_function_call()?; // pop output buffer
+            let call = mem_mgr.get_host_function_call()?; // pop output buffer
             let name = call.function_name.clone();
             let args: Vec<ParameterValue> = call.parameters.unwrap_or(vec![]);
             let res = host_funcs
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
                 .call_host_function(&name, args)?;
-            mem_mgr
-                .as_mut()
-                .write_response_from_host_method_call(&res)?; // push input buffers
+            mem_mgr.write_response_from_host_method_call(&res)?; // push input buffers
 
             Ok(())
         }
@@ -305,7 +302,7 @@ pub(crate) fn handle_outb(
         }
         #[cfg(feature = "unwind_guest")]
         OutBAction::TraceRecordStack => {
-            let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), _hv.trace_info_as_ref()) else {
+            let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info_as_ref()) else {
                 return Ok(());
             };
             record_trace_frame(_hv.trace_info_as_ref(), 1u64, |f| {
@@ -314,7 +311,7 @@ pub(crate) fn handle_outb(
         }
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryAlloc => {
-            let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), _hv.trace_info_as_ref()) else {
+            let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info_as_ref()) else {
                 return Ok(());
             };
             let Ok(amt) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RAX) else {
@@ -331,7 +328,7 @@ pub(crate) fn handle_outb(
         }
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryFree => {
-            let Ok(stack) = unwind(_hv, mem_mgr.as_ref(), _hv.trace_info_as_ref()) else {
+            let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info_as_ref()) else {
                 return Ok(());
             };
             let Ok(ptr) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RCX) else {
@@ -355,7 +352,6 @@ pub(crate) fn handle_outb(
 
             // Read the trace records from the guest memory
             mem_mgr
-                .as_ref()
                 .shared_mem
                 .copy_to_slice(buffer, ptr as usize - SandboxMemoryLayout::BASE_ADDRESS)
                 .map_err(|e| {
