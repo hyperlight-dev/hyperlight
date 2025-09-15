@@ -260,6 +260,10 @@ clippy-exhaustive target=default-target: (witguest-wit)
     ./hack/clippy-package-features.sh hyperlight-guest-bin {{ target }}
     ./hack/clippy-package-features.sh hyperlight-common {{ target }}
     ./hack/clippy-package-features.sh hyperlight-testing {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-component-util {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-guest-tracing-macro {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-guest-tracing {{ target }}
     just clippy-guests {{ target }}
 
 # Test a specific package with all feature combinations
@@ -268,7 +272,7 @@ clippy-package package target=default-target: (witguest-wit)
 
 # Verify Minimum Supported Rust Version
 verify-msrv:
-    ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-lib hyperlight-common
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing-macro hyperlight-guest-tracing
 
 #####################
 ### RUST EXAMPLES ###

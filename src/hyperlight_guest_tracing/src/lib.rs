@@ -355,7 +355,7 @@ mod trace {
         #[test]
         fn test_trace_record_creation_valid() {
             let msg = "Valid message";
-            let entry = TraceRecord::try_from(msg).expect("Failed to create TraceRecord");
+            let entry = TraceRecord::from(msg);
             assert_eq!(entry.msg_len, msg.len());
             assert_eq!(&entry.msg[..msg.len()], msg.as_bytes());
             assert!(entry.cycles > 0); // Ensure cycles is set
