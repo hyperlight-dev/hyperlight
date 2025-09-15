@@ -13,9 +13,9 @@ dependencies = [
 
 [[package]]
 name = "addr2line"
-version = "0.25.0"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9acbfca36652500c911ddb767ed433e3ed99b032b5d935be73c6923662db1d43"
+checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
 dependencies = [
  "cpp_demangle",
  "fallible-iterator",
@@ -3518,7 +3518,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 name = "trace_dump"
 version = "0.9.0"
 dependencies = [
- "addr2line 0.25.0",
+ "addr2line 0.25.1",
  "blake3",
  "piet-common",
 ]
