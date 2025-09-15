@@ -28,14 +28,14 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, Functi
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use tracing::{Span, instrument};
 
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
 use super::{Callable, WrapperGetter};
-use crate::HyperlightError::SnapshotSandboxMismatch;
-use crate::func::guest_err::check_for_guest_error;
+use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::{Hypervisor, InterruptHandle};
 #[cfg(unix)]
@@ -43,7 +43,9 @@ use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
-use crate::metrics::maybe_time_and_emit_guest_call;
+use crate::metrics::{
+    METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
+};
 use crate::sandbox::mem_mgr::MemMgrWrapper;
 use crate::{Result, log_then_return};
 
@@ -417,11 +419,28 @@ impl MultiUseSandbox {
             )?;
 
             self.mem_mgr.check_stack_guard()?;
-            check_for_guest_error(self.get_mgr_wrapper_mut())?;
 
-            self.get_mgr_wrapper_mut()
+            let guest_result = self
+                .get_mgr_wrapper_mut()
                 .as_mut()
-                .get_guest_function_call_result()
+                .get_guest_function_call_result()?
+                .into_inner();
+
+            match guest_result {
+                Ok(val) => Ok(val),
+                Err(guest_error) => {
+                    metrics::counter!(
+                        METRIC_GUEST_ERROR,
+                        METRIC_GUEST_ERROR_LABEL_CODE => (guest_error.code as u64).to_string()
+                    )
+                    .increment(1);
+
+                    Err(match guest_error.code {
+                        ErrorCode::StackOverflow => HyperlightError::StackOverflow(),
+                        _ => HyperlightError::GuestError(guest_error.code, guest_error.message),
+                    })
+                }
+            }
         })();
 
         // In the happy path we do not need to clear io-buffers from the host because:
@@ -510,6 +529,36 @@ mod tests {
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+
+    /// Make sure input/output buffers are properly reset after guest call (with host call)
+    #[test]
+    #[ignore = "added this test before fixing bug"]
+    fn host_func_error() {
+        let path = simple_guest_as_string().unwrap();
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        sandbox
+            .register("HostError", || -> Result<()> {
+                Err(HyperlightError::Error("hi".to_string()))
+            })
+            .unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        // will exhaust io if leaky
+        for _ in 0..1000 {
+            let result = sandbox
+                .call::<i64>(
+                    "CallGivenParamlessHostFuncThatReturnsI64",
+                    "HostError".to_string(),
+                )
+                .unwrap_err();
+
+            assert!(
+                matches!(result, HyperlightError::Error(ref msg) if msg == "hi"),
+                "Expected HyperlightError::Error('hi'), got {:?}",
+                result
+            );
+        }
+    }
 
     /// Make sure input/output buffers are properly reset after guest call (with host call)
     #[test]
@@ -624,6 +673,9 @@ mod tests {
     #[ignore]
     #[cfg(target_os = "linux")]
     fn test_violate_seccomp_filters() -> Result<()> {
+        #[cfg(feature = "seccomp")]
+        use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+
         fn make_get_pid_syscall() -> Result<u64> {
             let pid = unsafe { libc::syscall(libc::SYS_getpid) };
             Ok(pid as u64)
@@ -647,7 +699,9 @@ mod tests {
             match res {
                 Ok(_) => panic!("Expected to fail due to seccomp violation"),
                 Err(e) => match e {
-                    HyperlightError::DisallowedSyscall => {}
+                    HyperlightError::GuestError(t, msg)
+                        if t == ErrorCode::HostFunctionError
+                            && msg.contains("Seccomp filter trapped on disallowed syscall") => {}
                     _ => panic!("Expected DisallowedSyscall error: {}", e),
                 },
             }
