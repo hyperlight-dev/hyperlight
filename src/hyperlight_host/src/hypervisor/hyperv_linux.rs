@@ -363,7 +363,7 @@ impl HypervLinuxDriver {
 
             let vm_fd = mshv.create_vm_with_args(&pr)?;
             let features: hv_partition_synthetic_processor_features = Default::default();
-            vm_fd.hvcall_set_partition_property(
+            vm_fd.set_partition_property(
                 hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
                 unsafe { features.as_uint64[0] },
             )?;

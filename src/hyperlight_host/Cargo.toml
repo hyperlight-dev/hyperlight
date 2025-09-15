@@ -78,8 +78,8 @@ kvm-bindings = { version = "0.14", features = ["fam-wrappers"], optional = true 
 kvm-ioctls = { version = "0.24", optional = true }
 mshv-bindings2 = { package="mshv-bindings", version = "=0.2.1", optional = true }
 mshv-ioctls2 = { package="mshv-ioctls",  version = "=0.2.1", optional = true}
-mshv-bindings3 = { package="mshv-bindings", version = "=0.3.2", optional = true }
-mshv-ioctls3 = { package="mshv-ioctls",  version = "=0.3.2", optional = true}
+mshv-bindings3 = { package="mshv-bindings", version = "0.6.1", optional = true }
+mshv-ioctls3 = { package="mshv-ioctls",  version = "0.6.1", optional = true}
 
 [dev-dependencies]
 uuid = { version = "1.18.1", features = ["v4"] }
