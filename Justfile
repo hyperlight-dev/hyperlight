@@ -104,7 +104,7 @@ like-ci config=default-target hypervisor="kvm":
     {{ if os() == "linux" { "just clippy-exhaustive " + config } else { "" } }}
 
     @# Verify MSRV
-    ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing-macro hyperlight-guest-tracing
 
     @# Build and move Rust guests
     just build-rust-guests {{config}}
