@@ -14,6 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#![expect(
+    clippy::disallowed_macros,
+    reason = "This is a benchmark file, so using disallowed macros is fine here."
+)]
+
 use std::sync::Mutex;
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -114,6 +119,54 @@ fn guest_call_benchmark(c: &mut Criterion) {
             }
 
             total_duration
+        });
+    });
+
+    // Measure the time between calling interrupt_handle.kill() and the guest function returning.
+    group.bench_function("guest_call_time_to_interrupt", |b| {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Instant;
+
+        b.iter_custom(|iters| {
+            let mut total_interrupt_latency = std::time::Duration::ZERO;
+
+            for _ in 0..iters {
+                let mut sbox = create_multiuse_sandbox();
+                let interrupt_handle = sbox.interrupt_handle();
+
+                let start_barrier = Arc::new(Barrier::new(2));
+                let start_barrier_clone = Arc::clone(&start_barrier);
+
+                let observer_thread = thread::spawn(move || {
+                    start_barrier_clone.wait();
+
+                    // Small delay to ensure the guest function is running in VM before interrupting
+                    thread::sleep(std::time::Duration::from_millis(1));
+                    let kill_start = Instant::now();
+                    interrupt_handle.kill();
+                    kill_start
+                });
+
+                start_barrier.wait();
+
+                let result = sbox.call::<i32>("Spin", ());
+
+                let call_end = Instant::now();
+                let kill_start = observer_thread.join().unwrap();
+
+                assert!(
+                    matches!(
+                        result,
+                        Err(hyperlight_host::HyperlightError::ExecutionCanceledByHost())
+                    ),
+                    "Guest function should be interrupted"
+                );
+
+                total_interrupt_latency += call_end.duration_since(kill_start);
+            }
+
+            total_interrupt_latency
         });
     });
 
@@ -228,7 +281,6 @@ fn function_call_serialization_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-#[allow(clippy::disallowed_macros)]
 fn sample_workloads_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sample_workloads");
 
