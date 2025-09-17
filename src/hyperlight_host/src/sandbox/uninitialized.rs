@@ -92,18 +92,6 @@ impl Debug for UninitializedSandbox {
     }
 }
 
-impl UninitializedSandbox {
-    /// Creates and initializes the virtual machine, transforming this into a ready-to-use sandbox.
-    ///
-    /// This method consumes the `UninitializedSandbox` and performs the final initialization
-    /// steps to create the underlying virtual machine. Once evolved, the resulting
-    /// [`MultiUseSandbox`] can execute guest code and handle function calls.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub fn evolve(self) -> Result<MultiUseSandbox> {
-        evolve_impl_multi_use(self)
-    }
-}
-
 /// A `GuestBinary` is either a buffer or the file path to some data (e.g., a guest binary).
 #[derive(Debug)]
 pub enum GuestBinary<'a> {
@@ -263,6 +251,16 @@ impl UninitializedSandbox {
         crate::debug!("Sandbox created:  {:#?}", sandbox);
 
         Ok(sandbox)
+    }
+
+    /// Creates and initializes the virtual machine, transforming this into a ready-to-use sandbox.
+    ///
+    /// This method consumes the `UninitializedSandbox` and performs the final initialization
+    /// steps to create the underlying virtual machine. Once evolved, the resulting
+    /// [`MultiUseSandbox`] can execute guest code and handle function calls.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    pub fn evolve(self) -> Result<MultiUseSandbox> {
+        evolve_impl_multi_use(self)
     }
 
     /// Load the file at `bin_path_str` into a PE file, then attempt to

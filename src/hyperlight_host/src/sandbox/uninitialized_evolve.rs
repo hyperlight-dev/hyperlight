@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#[cfg(gdb)]
 use std::sync::{Arc, Mutex};
 
 use rand::Rng;
@@ -33,40 +34,16 @@ use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(any(feature = "init-paging", target_os = "windows"))]
 use crate::mem::shared_mem::SharedMemory;
-use crate::sandbox::HostSharedMemory;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
-use crate::sandbox::host_funcs::FunctionRegistry;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_error};
 
-/// The implementation for evolving `UninitializedSandbox`es to
-/// `Sandbox`es.
-///
-/// Note that `cb_opt`'s type has been carefully considered.
-/// Particularly, it's not using a constrained generic to define
-/// the type of the callback because if it did, you'd have to provide
-/// type hints to the compiler if you want to pass `None` to the function.
-/// With this type signature, you can pass `None` without having to do that.
-///
-/// If this doesn't make sense, and you want to change this type,
-/// please reach out to a Hyperlight developer before making the change.
-#[instrument(err(Debug), skip_all, , parent = Span::current(), level = "Trace")]
-fn evolve_impl<TransformFunc, ResSandbox>(
-    u_sbox: UninitializedSandbox,
-    transform: TransformFunc,
-) -> Result<ResSandbox>
-where
-    TransformFunc: Fn(
-        Arc<Mutex<FunctionRegistry>>,
-        SandboxMemoryManager<HostSharedMemory>,
-        Box<dyn Hypervisor>,
-        RawPtr,
-    ) -> Result<ResSandbox>,
-{
+#[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
     let (hshm, mut gshm) = u_sbox.mgr.build();
     let mut vm = set_up_hypervisor_partition(
         &mut gshm,
@@ -109,28 +86,19 @@ where
         return Err(new_error!("Dispatch function address is null"));
     }
 
-    transform(
+    let dispatch_ptr = RawPtr::from(dispatch_function_addr);
+
+    #[cfg(gdb)]
+    let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
+
+    Ok(MultiUseSandbox::from_uninit(
         u_sbox.host_funcs,
         hshm,
         vm,
-        RawPtr::from(dispatch_function_addr),
-    )
-}
-
-#[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    evolve_impl(u_sbox, |hf, hshm, vm, dispatch_ptr| {
+        dispatch_ptr,
         #[cfg(gdb)]
-        let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
-        Ok(MultiUseSandbox::from_uninit(
-            hf,
-            hshm,
-            vm,
-            dispatch_ptr,
-            #[cfg(gdb)]
-            dbg_mem_wrapper,
-        ))
-    })
+        dbg_mem_wrapper,
+    ))
 }
 
 pub(crate) fn set_up_hypervisor_partition(
