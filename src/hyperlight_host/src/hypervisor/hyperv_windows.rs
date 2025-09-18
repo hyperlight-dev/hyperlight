@@ -185,7 +185,7 @@ mod debug {
 
                                 e
                             })
-                            .map(|_| DebugResponse::ReadRegisters(regs))
+                            .map(|_| DebugResponse::ReadRegisters(Box::new(regs)))
                     }
                     DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
                         debug
