@@ -107,6 +107,7 @@ mod tests {
 
     use hyperlight_host::{Result, new_error};
     use io::{BufReader, BufWriter, Read, Write};
+    use serial_test::serial;
 
     use super::*;
 
