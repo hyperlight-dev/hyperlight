@@ -78,7 +78,7 @@ test-like-ci config=default-target hypervisor="kvm":
     cargo check -p hyperlight-host --features crashdump
     cargo check -p hyperlight-host --features print_debug
     cargo check -p hyperlight-host --features gdb
-    cargo check -p hyperlight-host --features trace_guest,unwind_guest,mem_profile
+    cargo check -p hyperlight-host --features trace_guest,mem_profile
 
     @# without any driver (should fail to compile)
     just test-compilation-no-default-features {{config}}
@@ -104,7 +104,7 @@ like-ci config=default-target hypervisor="kvm":
     {{ if os() == "linux" { "just clippy-exhaustive " + config } else { "" } }}
 
     @# Verify MSRV
-    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing-macro hyperlight-guest-tracing
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
 
     @# Build and move Rust guests
     just build-rust-guests {{config}}
@@ -194,20 +194,10 @@ test-rust-crashdump target=default-target features="":
 test-rust-tracing target=default-target features="":
     # Run tests for the tracing guest and macro
     cargo test -p hyperlight-guest-tracing --profile={{ if target == "debug" { "dev" } else { target } }}
-    cargo test -p hyperlight-guest-tracing-macro --profile={{ if target == "debug" { "dev" } else { target } }}
 
-    # Prepare the tracing guest for testing
+    # Build the tracing guest to ensure it builds with the tracing feature
     just build-rust-guests {{ target }} trace_guest
     just move-rust-guests {{ target }}
-    # Run hello-world example with tracing enabled to get the trace output
-    TRACE_OUTPUT="$(cargo run --profile={{ if target == "debug" { "dev" } else { target } }} --example hello-world --features {{ if features =="" {"trace_guest"} else { "trace_guest," + features } }})" && \
-        TRACE_FILE="$(echo "$TRACE_OUTPUT" | grep -oE 'Creating trace file at: [^ ]+' | awk -F': ' '{print $2}')" && \
-        echo "$TRACE_OUTPUT" && \
-        if [ -z "$TRACE_FILE" ]; then \
-            echo "Error: Could not extract trace file path from output." >&2 ; \
-            exit 1 ; \
-        fi && \
-        cargo run -p trace_dump ./{{ simpleguest_source }}/{{ target }}/simpleguest "$TRACE_FILE" list_frames
 
     # Rebuild the tracing guests without the tracing feature
     # This is to ensure that the tracing feature does not affect the other tests
@@ -262,7 +252,6 @@ clippy-exhaustive target=default-target: (witguest-wit)
     ./hack/clippy-package-features.sh hyperlight-testing {{ target }}
     ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }}
     ./hack/clippy-package-features.sh hyperlight-component-util {{ target }}
-    ./hack/clippy-package-features.sh hyperlight-guest-tracing-macro {{ target }}
     ./hack/clippy-package-features.sh hyperlight-guest-tracing {{ target }}
     just clippy-guests {{ target }}
 
@@ -272,7 +261,7 @@ clippy-package package target=default-target: (witguest-wit)
 
 # Verify Minimum Supported Rust Version
 verify-msrv:
-    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing-macro hyperlight-guest-tracing
+    ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
 
 #####################
 ### RUST EXAMPLES ###
