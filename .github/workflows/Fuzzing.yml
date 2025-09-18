@@ -28,6 +28,6 @@ jobs:
         uses: actions/checkout@v5
         
       - name: Notify Fuzzing Failure
-        run: ./dev/notify-fuzzing-failure.sh "fuzz_host_print,fuzz_guest_call,fuzz_host_call"
+        run: ./dev/notify-ci-failure.sh --labels="area/fuzzing,kind/bug,area/testing,lifecycle/needs-review"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

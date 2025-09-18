@@ -18,7 +18,7 @@ use libc::c_int;
 
 use crate::sandbox::SandboxConfiguration;
 
-#[cfg(feature = "seccomp")]
+#[cfg(seccomp)]
 pub mod sigsys_signal_handler;
 
 pub(crate) fn setup_signal_handlers(config: &SandboxConfiguration) -> crate::Result<()> {
@@ -27,7 +27,7 @@ pub(crate) fn setup_signal_handlers(config: &SandboxConfiguration) -> crate::Res
     // Anything that performs memory allocations, locks, and others are non-async-signal-safe.
     // Hyperlight signal handlers are all designed to be async-signal-safe, so this function
     // should be safe to call.
-    #[cfg(feature = "seccomp")]
+    #[cfg(seccomp)]
     {
         use std::sync::Once;
 
