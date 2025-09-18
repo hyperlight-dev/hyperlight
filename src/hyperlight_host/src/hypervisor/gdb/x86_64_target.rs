@@ -273,7 +273,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
             mxcsr: regs.mxcsr,
         };
 
-        match self.send_command(DebugMsg::WriteRegisters(regs))? {
+        match self.send_command(DebugMsg::WriteRegisters(Box::new(regs)))? {
             DebugResponse::WriteRegisters => Ok(()),
             DebugResponse::NotAllowed => {
                 log::error!("Action not allowed at this time, crash might have occurred");
@@ -486,7 +486,7 @@ mod tests {
 
         // Check response to read registers - send the response first to not be blocked
         // by the recv call in the target
-        let msg = DebugResponse::ReadRegisters(X86_64Regs::default());
+        let msg = DebugResponse::ReadRegisters(Box::default());
         let res = gdb_conn.send(msg);
         assert!(res.is_ok());
 
