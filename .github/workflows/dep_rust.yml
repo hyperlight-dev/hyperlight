@@ -157,8 +157,7 @@ jobs:
           RUST_LOG: debug
         run: just run-rust-examples-linux ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
 
-      - name: Run Rust Gdb tests - linux
-        if: runner.os == 'Linux'
+      - name: Run Rust Gdb tests
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug

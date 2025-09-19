@@ -111,6 +111,11 @@ mod tests {
 
     use super::*;
 
+    #[cfg(not(windows))]
+    const GDB_COMMAND: &str = "rust-gdb";
+    #[cfg(windows)]
+    const GDB_COMMAND: &str = "gdb";
+
     fn write_cmds_file(cmd_file_path: &str, cmd: &str) -> io::Result<()> {
         let file = File::create(cmd_file_path)?;
         let mut writer = BufWriter::new(file);
@@ -150,7 +155,7 @@ mod tests {
         // wait 3 seconds for the gdb to connect
         thread::sleep(Duration::from_secs(3));
 
-        let mut gdb = Command::new("rust-gdb")
+        let mut gdb = Command::new(GDB_COMMAND)
             .arg("--nw")
             .arg("--batch")
             .arg("-x")
@@ -235,7 +240,9 @@ mod tests {
     #[serial]
     fn test_gdb_end_to_end() {
         let out_dir = std::env::var("OUT_DIR").expect("Failed to get out dir");
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("Failed to get manifest dir");
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("Failed to get manifest dir")
+            .replace('\\', "/");
         let out_file_path = format!("{out_dir}/gdb.output");
         let cmd_file_path = format!("{out_dir}/gdb-commands.txt");
 
@@ -262,6 +269,9 @@ mod tests {
             "
         );
 
+        #[cfg(windows)]
+        let cmd = format!("set osabi none\n{}", cmd);
+
         let checker = |contents: String| contents.contains("Stopped at hyperlight_main breakpoint");
 
         let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
@@ -277,7 +287,10 @@ mod tests {
     #[serial]
     fn test_gdb_sse_check() {
         let out_dir = std::env::var("OUT_DIR").expect("Failed to get out dir");
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("Failed to get manifest dir");
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("Failed to get manifest dir")
+            .replace('\\', "/");
+        println!("manifest dir {manifest_dir}");
         let out_file_path = format!("{out_dir}/gdb-sse.output");
         let cmd_file_path = format!("{out_dir}/gdb-sse--commands.txt");
 
@@ -307,6 +320,9 @@ mod tests {
                 quit
             "
         );
+
+        #[cfg(windows)]
+        let cmd = format!("set osabi none\n{}", cmd);
 
         let checker = |contents: String| contents.contains("$2 = [1.20000005, 0, 0, 0]");
         let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
