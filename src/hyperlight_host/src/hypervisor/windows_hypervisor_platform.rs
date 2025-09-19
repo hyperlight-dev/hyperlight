@@ -696,6 +696,125 @@ impl VMProcessor {
         Ok(())
     }
 
+    #[cfg(gdb)]
+    pub(super) fn get_fpu(&self) -> Result<WHvFPURegisters> {
+        use windows::Win32::System::Hypervisor::*;
+
+        const LEN: usize = 26;
+        let names: [WHV_REGISTER_NAME; LEN] = [
+            WHvX64RegisterXmm0,
+            WHvX64RegisterXmm1,
+            WHvX64RegisterXmm2,
+            WHvX64RegisterXmm3,
+            WHvX64RegisterXmm4,
+            WHvX64RegisterXmm5,
+            WHvX64RegisterXmm6,
+            WHvX64RegisterXmm7,
+            WHvX64RegisterXmm8,
+            WHvX64RegisterXmm9,
+            WHvX64RegisterXmm10,
+            WHvX64RegisterXmm11,
+            WHvX64RegisterXmm12,
+            WHvX64RegisterXmm13,
+            WHvX64RegisterXmm14,
+            WHvX64RegisterXmm15,
+            WHvX64RegisterFpMmx0,
+            WHvX64RegisterFpMmx1,
+            WHvX64RegisterFpMmx2,
+            WHvX64RegisterFpMmx3,
+            WHvX64RegisterFpMmx4,
+            WHvX64RegisterFpMmx5,
+            WHvX64RegisterFpMmx6,
+            WHvX64RegisterFpMmx7,
+            WHvX64RegisterFpControlStatus,
+            WHvX64RegisterXmmControlStatus,
+        ];
+
+        let mut out: [WHV_REGISTER_VALUE; LEN] = unsafe { std::mem::zeroed() };
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.get_partition_hdl(),
+                0,
+                names.as_ptr(),
+                LEN as u32,
+                out.as_mut_ptr(),
+            )?;
+
+            // Helper to read a WHV_UINT128 -> u128
+            fn u128_from_whv(fp: WHV_REGISTER_VALUE) -> u128 {
+                unsafe {
+                    let low = fp.Fp.AsUINT128.Anonymous.Low64 as u128;
+                    let high = fp.Fp.AsUINT128.Anonymous.High64 as u128;
+                    (high << 64) | low
+                }
+            }
+
+            let xmm = [
+                u128_from_whv(out[0]),
+                u128_from_whv(out[1]),
+                u128_from_whv(out[2]),
+                u128_from_whv(out[3]),
+                u128_from_whv(out[4]),
+                u128_from_whv(out[5]),
+                u128_from_whv(out[6]),
+                u128_from_whv(out[7]),
+                u128_from_whv(out[8]),
+                u128_from_whv(out[9]),
+                u128_from_whv(out[10]),
+                u128_from_whv(out[11]),
+                u128_from_whv(out[12]),
+                u128_from_whv(out[13]),
+                u128_from_whv(out[14]),
+                u128_from_whv(out[15]),
+            ];
+
+            let mmx = [
+                out[16].Reg64,
+                out[17].Reg64,
+                out[18].Reg64,
+                out[19].Reg64,
+                out[20].Reg64,
+                out[21].Reg64,
+                out[22].Reg64,
+                out[23].Reg64,
+            ];
+
+            let fp_control_word = out[24].FpControlStatus.Anonymous.FpControl;
+            let fp_tag_word = out[24].FpControlStatus.Anonymous.FpTag;
+            let mxcsr = out[25].XmmControlStatus.Anonymous.XmmStatusControl;
+
+            Ok(WHvFPURegisters {
+                xmm0: xmm[0],
+                xmm1: xmm[1],
+                xmm2: xmm[2],
+                xmm3: xmm[3],
+                xmm4: xmm[4],
+                xmm5: xmm[5],
+                xmm6: xmm[6],
+                xmm7: xmm[7],
+                xmm8: xmm[8],
+                xmm9: xmm[9],
+                xmm10: xmm[10],
+                xmm11: xmm[11],
+                xmm12: xmm[12],
+                xmm13: xmm[13],
+                xmm14: xmm[14],
+                xmm15: xmm[15],
+                mmx0: mmx[0],
+                mmx1: mmx[1],
+                mmx2: mmx[2],
+                mmx3: mmx[3],
+                mmx4: mmx[4],
+                mmx5: mmx[5],
+                mmx6: mmx[6],
+                mmx7: mmx[7],
+                fp_control_word,
+                fp_tag_word,
+                mxcsr,
+            })
+        }
+    }
+
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn run(&mut self) -> Result<WHV_RUN_VP_EXIT_CONTEXT> {
         let partition_handle = self.get_partition_hdl();
