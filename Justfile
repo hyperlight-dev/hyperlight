@@ -126,8 +126,8 @@ like-ci config=default-target hypervisor="kvm":
     @# Run Rust examples - linux
     {{ if os() == "linux" { "just run-rust-examples-linux " + config + " " + if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
-    @# Run Rust Gdb tests - linux
-    {{ if os() == "linux" { "just test-rust-gdb-debugging " + config + " " + if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    @# Run Rust Gdb tests
+    just test-rust-gdb-debugging {{ config }} {{ if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} 
 
     @# Run Rust Crashdump tests
     just test-rust-crashdump {{config}} {{ if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }}
