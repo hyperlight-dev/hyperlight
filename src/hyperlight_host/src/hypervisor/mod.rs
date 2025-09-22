@@ -21,10 +21,12 @@ use crate::HyperlightError::StackOverflow;
 use crate::error::HyperlightError::ExecutionCanceledByHost;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
-#[cfg(feature = "trace_guest")]
-use crate::sandbox::TraceInfo;
+#[cfg(feature = "mem_profile")]
+use crate::sandbox::trace::MemTraceInfo;
 use crate::{HyperlightError, Result, log_then_return};
 
+/// Architecture-specific code for the hypervisor.
+pub(crate) mod arch;
 /// Util for handling x87 fpu state
 #[cfg(any(kvm, mshv, target_os = "windows"))]
 pub mod fpu;
@@ -116,21 +118,6 @@ pub enum HyperlightExit {
     Retry(),
 }
 
-/// Registers which may be useful for tracing/stack unwinding
-#[cfg(feature = "trace_guest")]
-pub enum TraceRegister {
-    /// RAX
-    RAX,
-    /// RCX
-    RCX,
-    /// RIP
-    RIP,
-    /// RSP
-    RSP,
-    /// RBP
-    RBP,
-}
-
 /// A common set of hypervisor functionality
 pub(crate) trait Hypervisor: Debug + Send {
     /// Initialise the internally stored vCPU with the given PEB address and
@@ -184,7 +171,10 @@ pub(crate) trait Hypervisor: Debug + Send {
     ) -> Result<()>;
 
     /// Run the vCPU
-    fn run(&mut self) -> Result<HyperlightExit>;
+    fn run(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
+    ) -> Result<HyperlightExit>;
 
     /// Get InterruptHandle to underlying VM
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
@@ -246,15 +236,16 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn check_stack_guard(&self) -> Result<bool>;
 
     /// Read a register for trace/unwind purposes
+    #[allow(dead_code)]
     #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64>;
+    fn read_regs(&self) -> Result<arch::X86_64Regs>;
 
-    /// Get a reference of the trace info for the guest
     #[cfg(feature = "trace_guest")]
-    fn trace_info_as_ref(&self) -> &TraceInfo;
+    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()>;
+
     /// Get a mutable reference of the trace info for the guest
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_mut(&mut self) -> &mut TraceInfo;
+    #[cfg(feature = "mem_profile")]
+    fn trace_info_mut(&mut self) -> &mut MemTraceInfo;
 }
 
 /// Returns a Some(HyperlightExit::AccessViolation(..)) if the given gpa doesn't have
@@ -290,8 +281,31 @@ impl VirtualCPU {
         hv: &mut dyn Hypervisor,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
+        // Keeps the trace context and open spans
+        #[cfg(feature = "trace_guest")]
+        let mut tc = crate::sandbox::trace::TraceContext::new();
+
         loop {
-            match hv.run() {
+            #[cfg(feature = "trace_guest")]
+            let result = {
+                let result = hv.run(&mut tc);
+                // End current host trace by closing the current span that captures traces
+                // happening when a guest exits and re-enters.
+                tc.end_host_trace();
+
+                // Handle the guest trace data if any
+                if let Err(e) = hv.handle_trace(&mut tc) {
+                    // If no trace data is available, we just log a message and continue
+                    // Is this the right thing to do?
+                    log::debug!("Error handling guest trace: {:?}", e);
+                }
+
+                result
+            };
+            #[cfg(not(feature = "trace_guest"))]
+            let result = hv.run();
+
+            match result {
                 #[cfg(gdb)]
                 Ok(HyperlightExit::Debug(stop_reason)) => {
                     if let Err(e) = hv.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {

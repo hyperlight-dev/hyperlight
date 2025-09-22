@@ -24,11 +24,11 @@ use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::LevelFilter;
 use tracing::{Span, instrument};
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
-#[cfg(feature = "trace_guest")]
-use super::TraceRegister;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
@@ -40,16 +40,18 @@ use super::{
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
+#[cfg(feature = "trace_guest")]
+use crate::hypervisor::arch::X86_64Regs;
 use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
-#[cfg(feature = "trace_guest")]
-use crate::sandbox::TraceInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::handle_outb;
+#[cfg(feature = "mem_profile")]
+use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
@@ -83,9 +85,8 @@ mod debug {
     use kvm_bindings::kvm_debug_exit_arch;
 
     use super::KVMDriver;
-    use crate::hypervisor::gdb::{
-        DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason, X86_64Regs,
-    };
+    use crate::hypervisor::arch::X86_64Regs;
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
     use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::HostSharedMemory;
     use crate::{Result, new_error};
@@ -305,9 +306,8 @@ pub(crate) struct KVMDriver {
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
-    #[cfg(feature = "trace_guest")]
-    #[allow(dead_code)]
-    trace_info: TraceInfo,
+    #[cfg(feature = "mem_profile")]
+    trace_info: MemTraceInfo,
 }
 
 impl KVMDriver {
@@ -325,7 +325,7 @@ impl KVMDriver {
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
-        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
+        #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> Result<Self> {
         let kvm = Kvm::new()?;
 
@@ -398,7 +398,7 @@ impl KVMDriver {
             gdb_conn,
             #[cfg(crashdump)]
             rt_cfg,
-            #[cfg(feature = "trace_guest")]
+            #[cfg(feature = "mem_profile")]
             trace_info,
         };
 
@@ -619,7 +619,7 @@ impl Hypervisor for KVMDriver {
             padded[..copy_len].copy_from_slice(&data[..copy_len]);
             let value = u32::from_le_bytes(padded);
 
-            #[cfg(feature = "trace_guest")]
+            #[cfg(feature = "mem_profile")]
             {
                 // We need to handle the borrow checker issue where we need both:
                 // - &mut SandboxMemoryManager (from self.mem_mgr.as_mut())
@@ -640,7 +640,7 @@ impl Hypervisor for KVMDriver {
                 self.mem_mgr = Some(mem_mgr);
             }
 
-            #[cfg(not(feature = "trace_guest"))]
+            #[cfg(not(feature = "mem_profile"))]
             {
                 let mem_mgr = self
                     .mem_mgr
@@ -660,7 +660,10 @@ impl Hypervisor for KVMDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(&mut self) -> Result<HyperlightExit> {
+    fn run(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
+    ) -> Result<HyperlightExit> {
         self.interrupt_handle
             .tid
             .store(unsafe { libc::pthread_self() as u64 }, Ordering::Relaxed);
@@ -694,13 +697,7 @@ impl Hypervisor for KVMDriver {
             Err(kvm_ioctls::Error::new(libc::EINTR))
         } else {
             #[cfg(feature = "trace_guest")]
-            if self.trace_info.guest_start_epoch.is_none() {
-                // Store the guest start epoch and cycles to trace the guest execution time
-                crate::debug!("KVM - Guest Start Epoch set");
-                self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
-                self.trace_info.guest_start_tsc =
-                    Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
-            }
+            tc.setup_guest_trace(Span::current().context());
 
             // Note: if a `InterruptHandle::kill()` called while this thread is **here**
             // Then the vcpu will run, but we will keep sending signals to this thread
@@ -1037,23 +1034,23 @@ impl Hypervisor for KVMDriver {
     }
 
     #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
-        let regs = self.vcpu_fd.get_regs()?;
-        Ok(match reg {
-            TraceRegister::RAX => regs.rax,
-            TraceRegister::RCX => regs.rcx,
-            TraceRegister::RIP => regs.rip,
-            TraceRegister::RSP => regs.rsp,
-            TraceRegister::RBP => regs.rbp,
-        })
+    fn read_regs(&self) -> Result<X86_64Regs> {
+        Ok(X86_64Regs::from(self.vcpu_fd.get_regs()?))
     }
 
     #[cfg(feature = "trace_guest")]
-    fn trace_info_as_ref(&self) -> &TraceInfo {
-        &self.trace_info
+    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
+        let regs = self.read_regs()?;
+        tc.handle_trace(
+            &regs,
+            self.mem_mgr.as_ref().ok_or_else(|| {
+                new_error!("Memory manager is not initialized before handling trace")
+            })?,
+        )
     }
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
+
+    #[cfg(feature = "mem_profile")]
+    fn trace_info_mut(&mut self) -> &mut MemTraceInfo {
         &mut self.trace_info
     }
 }
