@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "anyhow"
-version = "1.0.100"
+version = "1.0.99"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+checksum = "b0674a1ddeecb70197781e945de4b3b8ffb61fa939a5597bcf48503737663100"
 
 [[package]]
 name = "autocfg"
@@ -27,6 +27,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1a0108968a3a2dab95b089c0fc3f1afa7759aa5ebe6f1d86d206d6f7ba726eb"
 dependencies = [
  "spin 0.9.8",
+]
+
+[[package]]
+name = "callbackguest"
+version = "0.9.0"
+dependencies = [
+ "hyperlight-common",
+ "hyperlight-guest",
+ "hyperlight-guest-bin",
+ "hyperlight-guest-tracing",
 ]
 
 [[package]]
@@ -224,17 +234,6 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
-
-[[package]]
-name = "simpleguest"
-version = "0.9.0"
-dependencies = [
- "hyperlight-common",
- "hyperlight-guest",
- "hyperlight-guest-bin",
- "hyperlight-guest-tracing",
- "log",
-]
 
 [[package]]
 name = "spin"
