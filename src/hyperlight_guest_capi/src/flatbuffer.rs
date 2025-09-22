@@ -115,4 +115,34 @@ pub extern "C" fn hl_get_host_return_value_as_ULong() -> u64 {
     get_host_return_value().expect("Unable to get host return value as ulong")
 }
 
-// TODO add bool, float, double, string, vecbytes
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_host_return_value_as_Bool() -> bool {
+    get_host_return_value().expect("Unable to get host return value as bool")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_host_return_value_as_float() -> f32 {
+    get_host_return_value().expect("Unable to get host return value as f32")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_host_return_value_as_double() -> f64 {
+    get_host_return_value().expect("Unable to get host return value as f32")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_flatbuffer_result_from_String() -> *const c_char {
+    let string_value: String = get_host_return_value()
+                                .expect("Unable to get host return value as string");
+
+    let c_string = CString::new(string_value).expect("Failes to create CString");
+    c_string.into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_flatbuffer_result_from_VecBytes() -> Box<FfiVec> {
+    let vec_value: Vec<u8> = get_host_return_value()
+                            .expect("Unable to get host return value as vec bytes");
+
+    Box::new(unsafe { FfiVec::from_vec(vec_value) })
+}
