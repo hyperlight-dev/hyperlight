@@ -941,7 +941,20 @@ fn modify_fpu_mxcsr(_function_call: &FunctionCall) -> Result<Vec<u8>> {
             "fldcw [{fcw_ptr}]",
             fcw_ptr = in(reg) &new_fcw,
         );
-        
+
+        // Load some FPU registers to change the tag word from default 0xFF
+        // This will mark some registers as valid, changing the tag word
+        // Sets up FPR with: 00 01 00 01 00 01 00 11 which is 0x1113;
+        core::arch::asm!(
+            "fld1", // ST(6)
+            "fldz", // ST(5)
+            "fld1", // ST(4)
+            "fldz", // ST(3)
+            "fld1", // ST(2)
+            "fldz", // ST(1)
+            "fld1", // ST(0)
+        );
+
         // Set MXCSR to a non-default value (default is usually 0x1F80)
         // We'll set it to 0x1F00 (disable some exception masks)
         let new_mxcsr: u32 = 0x1F00;
@@ -951,49 +964,73 @@ fn modify_fpu_mxcsr(_function_call: &FunctionCall) -> Result<Vec<u8>> {
         );
     }
 
-    // now read them and return those values
     let mut fcw: u16 = 0;
+    let ftw: u16;
     let mut mxcsr: u32 = 0;
-    
+
     unsafe {
         // Read FPU control word
         core::arch::asm!(
             "fnstcw [{fcw_ptr}]",
             fcw_ptr = in(reg) &mut fcw,
         );
-        
+
+        // Read FPU status word and tag word using fnstenv
+        // fnstenv stores the complete FPU environment (28 bytes)
+        // The format is the the FTW format where 11 == empty
+        // This is different from the FXSAVE format
+        // https://github.com/hyperlight-dev/hyperlight/issues/904
+        let mut fpu_env: [u8; 28] = [0; 28];
+        core::arch::asm!(
+            "fnstenv [{env_ptr}]",
+            env_ptr = in(reg) &mut fpu_env,
+        );
+        ftw = u16::from_le_bytes([fpu_env[8], fpu_env[9]]);
+
         // Read MXCSR
         core::arch::asm!(
             "stmxcsr [{mxcsr_ptr}]",
             mxcsr_ptr = in(reg) &mut mxcsr,
         );
     }
-    
-    let result = format!("fcw:{:04X},mxcsr:{:08X}", fcw, mxcsr);
+
+    let result = format!("fcw:{:04X},ftw:{:02X},mxcsr:{:08X}", fcw, ftw, mxcsr);
     Ok(get_flatbuffer_result(result.as_str()))
 }
 
-/// Simple function to read current FPU control word and MXCSR values
 #[hyperlight_guest_tracing::trace_function]
 fn read_fpu_mxcsr(_function_call: &FunctionCall) -> Result<Vec<u8>> {
     let mut fcw: u16 = 0;
+    let ftw: u16;
     let mut mxcsr: u32 = 0;
-    
+
     unsafe {
         // Read FPU control word
         core::arch::asm!(
             "fnstcw [{fcw_ptr}]",
             fcw_ptr = in(reg) &mut fcw,
         );
-        
+
+        // Read FPU status word and tag word using fnstenv
+        // fnstenv stores the complete FPU environment (28 bytes)
+        // The format is the the FTW format where 11 == empty
+        // This is different from the FXSAVE format
+        // https://github.com/hyperlight-dev/hyperlight/issues/904
+        let mut fpu_env: [u8; 28] = [0; 28];
+        core::arch::asm!(
+            "fnstenv [{env_ptr}]",
+            env_ptr = in(reg) &mut fpu_env,
+        );
+        ftw = u16::from_le_bytes([fpu_env[8], fpu_env[9]]);
+
         // Read MXCSR
         core::arch::asm!(
             "stmxcsr [{mxcsr_ptr}]",
             mxcsr_ptr = in(reg) &mut mxcsr,
         );
     }
-    
-    let result = format!("fcw:{:04X},mxcsr:{:08X}", fcw, mxcsr);
+
+    let result = format!("fcw:{:04X},ftw:{:02X},mxcsr:{:08X}", fcw, ftw, mxcsr);
     Ok(get_flatbuffer_result(result.as_str()))
 }
 

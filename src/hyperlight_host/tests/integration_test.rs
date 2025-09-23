@@ -748,6 +748,39 @@ fn log_message() {
     assert_eq!(1, LOGGER.num_log_calls());
 }
 
+#[test]
+fn test_fpu_mxcsr_snapshot_restore() {
+    let mut sandbox = new_uninit_rust().unwrap().evolve().unwrap();
+
+    // The x87 Tag Word Register (FTW) all ones means empty state but we are setting it with xsave
+    // where the value should be all 00's for empty state
+    // https://github.com/hyperlight-dev/hyperlight/issues/904
+    let expected = format!("fcw:{:04X},ftw:{:02X},mxcsr:{:08X}", 0x37F, 0xFFFF, 0x1F80);
+
+    let initial_state: String = sandbox.call("ReadFpuMxcsr", ()).unwrap();
+    assert_eq!(
+        initial_state, expected,
+        "Initial FPU/tag word/MXCSR state does not match expected defaults"
+    );
+
+    let snapshot = sandbox.snapshot().unwrap();
+
+    let modify_result: String = sandbox.call("ModifyFpuMxcsr", ()).unwrap();
+    let modified_expected = format!("fcw:{:04X},ftw:{:02X},mxcsr:{:08X}", 0x027F, 0x1113, 0x1F00);
+    assert_eq!(
+        modify_result, modified_expected,
+        "Modified state does not match expected values"
+    );
+
+    sandbox.restore(&snapshot).unwrap();
+
+    let restored_state: String = sandbox.call("ReadFpuMxcsr", ()).unwrap();
+    assert_eq!(
+        restored_state, expected,
+        "FPU/tag word/MXCSR registers should be restored to defaults after snapshot restore"
+    );
+}
+
 fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
     LOGGER.clear_log_calls();
     assert_eq!(0, LOGGER.num_log_calls());

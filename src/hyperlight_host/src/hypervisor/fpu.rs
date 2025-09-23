@@ -15,5 +15,5 @@ limitations under the License.
 */
 
 pub(crate) const FP_CONTROL_WORD_DEFAULT: u16 = 0x37f; // mask all fp-exception, set rounding to nearest, set precision to 64-bit
-pub(crate) const FP_TAG_WORD_DEFAULT: u8 = 0xff; // each 8 of x87 fpu registers is empty
+pub(crate) const FP_TAG_WORD_DEFAULT: u8 = 0x00; // 11.5.10.1  FXSAVE Format for x87 Tag Word: A two-bit value of 11 is encoded as a 0, indicating the corresponding x87 FPRn is empty.
 pub(crate) const MXCSR_DEFAULT: u32 = 0x1f80; // mask simd fp-exceptions, clear exception flags, set rounding to nearest, disable flush-to-zero mode, disable denormals-are-zero mode

@@ -1023,29 +1023,43 @@ mod tests {
         assert_ne!(sandbox3.id, sandbox_id);
     }
 
-    /// Test that FPU control word and MXCSR register are properly reset between guest calls
     #[test]
     fn test_fpu_mxcsr_register_reset() {
         let path = simple_guest_as_string().unwrap();
         let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
         let mut sandbox = u_sbox.evolve().unwrap();
 
-        // First, read the initial state of FPU and MXCSR registers
+        // The x87 Tag Word Register (FTW) all ones means empty state but we are setting it with xsave
+        // where the value should be all 00's for empty state
+        // https://github.com/hyperlight-dev/hyperlight/issues/904
+        let expected = format!(
+            "fcw:{:04X},ftw:{:02X},mxcsr:{:08X}",
+            fpu::FP_CONTROL_WORD_DEFAULT,
+            0xFFFF,
+            fpu::MXCSR_DEFAULT
+        );
+
+        // First, read the initial state of FPU control word, tag word, and MXCSR registers
         let initial_state: String = sandbox.call("ReadFpuMxcsr", ()).unwrap();
-        // Verify the initial state matches expected default values
-        let expected = format!("fcw:{:04X},mxcsr:{:08X}", fpu::FP_CONTROL_WORD_DEFAULT, fpu::MXCSR_DEFAULT);
-        assert_eq!(initial_state, expected,
-                  "Initial FPU/MXCSR state does not match expected defaults");
-        
+        assert_eq!(
+            initial_state, expected,
+            "Initial FPU/tag word/MXCSR state does not match expected defaults"
+        );
+
         // Modify the FPU and MXCSR registers to non-default values
         let modify_result: String = sandbox.call("ModifyFpuMxcsr", ()).unwrap();
-        let expected = format!("fcw:{:04X},mxcsr:{:08X}", 0x027F, 0x1F00);
-        assert_eq!(modify_result, expected,
-                  "Modified state does not match");
-        
+        let modified_expected =
+            format!("fcw:{:04X},ftw:{:02X},mxcsr:{:08X}", 0x027F, 0x1113, 0x1F00);
+        assert_eq!(
+            modify_result, modified_expected,
+            "Modified state does not match"
+        );
+
         // A new call should reset these
         let reset_state: String = sandbox.call("ReadFpuMxcsr", ()).unwrap();
-        assert_eq!(initial_state, reset_state,
-                  "FPU/MXCSR registers were not properly reset between calls");
+        assert_eq!(
+            reset_state, expected,
+            "FPU/tag word/MXCSR registers were not properly reset between calls"
+        );
     }
 }
