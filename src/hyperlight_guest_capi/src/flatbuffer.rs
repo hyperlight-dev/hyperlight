@@ -14,7 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use alloc::boxed::Box;
+use alloc::{
+        boxed::Box,
+        string::String,
+        vec::Vec,
+        ffi::CString
+    };
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
@@ -141,8 +146,8 @@ pub extern "C" fn hl_flatbuffer_result_from_String() -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_flatbuffer_result_from_VecBytes() -> Box<FfiVec> {
-    let vec_value: Vec<u8> = get_host_return_value()
+    let vec_value: Vec<u8>  = get_host_return_value()
                             .expect("Unable to get host return value as vec bytes");
-
+ 
     Box::new(unsafe { FfiVec::from_vec(vec_value) })
 }
