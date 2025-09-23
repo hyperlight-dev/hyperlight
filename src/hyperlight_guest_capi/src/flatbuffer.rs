@@ -136,7 +136,7 @@ pub extern "C" fn hl_get_host_return_value_as_double() -> f64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_String() -> *const c_char {
+pub extern "C" fn hl_get_host_return_value_as_String() -> *const c_char {
     let string_value: String = get_host_return_value()
                                 .expect("Unable to get host return value as string");
 
@@ -145,7 +145,7 @@ pub extern "C" fn hl_flatbuffer_result_from_String() -> *const c_char {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_flatbuffer_result_from_VecBytes() -> Box<FfiVec> {
+pub extern "C" fn hl_get_host_return_value_as_VecBytes() -> Box<FfiVec> {
     let vec_value: Vec<u8>  = get_host_return_value()
                             .expect("Unable to get host return value as vec bytes");
  
