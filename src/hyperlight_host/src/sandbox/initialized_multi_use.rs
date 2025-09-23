@@ -486,6 +486,7 @@ mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
     use hyperlight_testing::simple_guest_as_string;
 
+    use crate::hypervisor::fpu;
     #[cfg(target_os = "linux")]
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
     #[cfg(target_os = "linux")]
@@ -1020,5 +1021,31 @@ mod tests {
             u_sbox.evolve().unwrap()
         };
         assert_ne!(sandbox3.id, sandbox_id);
+    }
+
+    /// Test that FPU control word and MXCSR register are properly reset between guest calls
+    #[test]
+    fn test_fpu_mxcsr_register_reset() {
+        let path = simple_guest_as_string().unwrap();
+        let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        let mut sandbox = u_sbox.evolve().unwrap();
+
+        // First, read the initial state of FPU and MXCSR registers
+        let initial_state: String = sandbox.call("ReadFpuMxcsr", ()).unwrap();
+        // Verify the initial state matches expected default values
+        let expected = format!("fcw:{:04X},mxcsr:{:08X}", fpu::FP_CONTROL_WORD_DEFAULT, fpu::MXCSR_DEFAULT);
+        assert_eq!(initial_state, expected,
+                  "Initial FPU/MXCSR state does not match expected defaults");
+        
+        // Modify the FPU and MXCSR registers to non-default values
+        let modify_result: String = sandbox.call("ModifyFpuMxcsr", ()).unwrap();
+        let expected = format!("fcw:{:04X},mxcsr:{:08X}", 0x027F, 0x1F00);
+        assert_eq!(modify_result, expected,
+                  "Modified state does not match");
+        
+        // A new call should reset these
+        let reset_state: String = sandbox.call("ReadFpuMxcsr", ()).unwrap();
+        assert_eq!(initial_state, reset_state,
+                  "FPU/MXCSR registers were not properly reset between calls");
     }
 }

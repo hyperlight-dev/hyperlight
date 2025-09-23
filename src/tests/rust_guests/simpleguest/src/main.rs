@@ -930,6 +930,73 @@ fn exec_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+/// Simple function to modify FPU control word and MXCSR register
+#[hyperlight_guest_tracing::trace_function]
+fn modify_fpu_mxcsr(_function_call: &FunctionCall) -> Result<Vec<u8>> {
+    unsafe {
+        // Set FPU control word to a non-default value (default is usually 0x037F)
+        // We'll set it to 0x027F (change precision control and rounding)
+        let new_fcw: u16 = 0x027F;
+        core::arch::asm!(
+            "fldcw [{fcw_ptr}]",
+            fcw_ptr = in(reg) &new_fcw,
+        );
+        
+        // Set MXCSR to a non-default value (default is usually 0x1F80)
+        // We'll set it to 0x1F00 (disable some exception masks)
+        let new_mxcsr: u32 = 0x1F00;
+        core::arch::asm!(
+            "ldmxcsr [{mxcsr_ptr}]",
+            mxcsr_ptr = in(reg) &new_mxcsr,
+        );
+    }
+
+    // now read them and return those values
+    let mut fcw: u16 = 0;
+    let mut mxcsr: u32 = 0;
+    
+    unsafe {
+        // Read FPU control word
+        core::arch::asm!(
+            "fnstcw [{fcw_ptr}]",
+            fcw_ptr = in(reg) &mut fcw,
+        );
+        
+        // Read MXCSR
+        core::arch::asm!(
+            "stmxcsr [{mxcsr_ptr}]",
+            mxcsr_ptr = in(reg) &mut mxcsr,
+        );
+    }
+    
+    let result = format!("fcw:{:04X},mxcsr:{:08X}", fcw, mxcsr);
+    Ok(get_flatbuffer_result(result.as_str()))
+}
+
+/// Simple function to read current FPU control word and MXCSR values
+#[hyperlight_guest_tracing::trace_function]
+fn read_fpu_mxcsr(_function_call: &FunctionCall) -> Result<Vec<u8>> {
+    let mut fcw: u16 = 0;
+    let mut mxcsr: u32 = 0;
+    
+    unsafe {
+        // Read FPU control word
+        core::arch::asm!(
+            "fnstcw [{fcw_ptr}]",
+            fcw_ptr = in(reg) &mut fcw,
+        );
+        
+        // Read MXCSR
+        core::arch::asm!(
+            "stmxcsr [{mxcsr_ptr}]",
+            mxcsr_ptr = in(reg) &mut mxcsr,
+        );
+    }
+    
+    let result = format!("fcw:{:04X},mxcsr:{:08X}", fcw, mxcsr);
+    Ok(get_flatbuffer_result(result.as_str()))
+}
+
 #[no_mangle]
 #[hyperlight_guest_tracing::trace_function]
 pub extern "C" fn hyperlight_main() {
@@ -1477,6 +1544,23 @@ pub extern "C" fn hyperlight_main() {
         call_given_paramless_hostfunc_that_returns_i64 as usize,
     );
     register_function(call_given_hostfunc_def);
+
+    // Register FPU and MXCSR test functions
+    let modify_fpu_mxcsr_def = GuestFunctionDefinition::new(
+        "ModifyFpuMxcsr".to_string(),
+        Vec::new(),
+        ReturnType::String,
+        modify_fpu_mxcsr as usize,
+    );
+    register_function(modify_fpu_mxcsr_def);
+
+    let read_fpu_mxcsr_def = GuestFunctionDefinition::new(
+        "ReadFpuMxcsr".to_string(),
+        Vec::new(),
+        ReturnType::String,
+        read_fpu_mxcsr as usize,
+    );
+    register_function(read_fpu_mxcsr_def);
 }
 
 #[hyperlight_guest_tracing::trace_function]
