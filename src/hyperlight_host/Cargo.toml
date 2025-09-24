@@ -87,7 +87,7 @@ signal-hook-registry = "1.4.6"
 envy = { version = "0.4.2" }
 serde = "1.0"
 proptest = "1.8.0"
-tempfile = "3.22.0"
+tempfile = "3.23.0"
 crossbeam-queue = "0.3.12"
 tracing-serde = "0.2.0"
 hyperlight-testing = { workspace = true }
