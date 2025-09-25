@@ -27,7 +27,7 @@ goblin = { version = "0.10", default-features = false, features = ["std", "elf32
 rand = { version = "0.9" }
 cfg-if = { version = "1.0.3" }
 libc = { version = "0.2.176" }
-flatbuffers = "25.2.10"
+flatbuffers = "25.9.23"
 framehop = { version = "0.15.0", optional = true }
 fallible-iterator = { version = "0.3.0", optional = true }
 blake3 = "1.8.2"
