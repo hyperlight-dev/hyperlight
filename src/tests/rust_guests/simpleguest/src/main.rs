@@ -930,6 +930,110 @@ fn exec_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+/// Simple function to modify FPU control word and MXCSR register
+#[hyperlight_guest_tracing::trace_function]
+fn modify_fpu_mxcsr(_function_call: &FunctionCall) -> Result<Vec<u8>> {
+    unsafe {
+        // Set FPU control word to a non-default value (default is usually 0x037F)
+        // We'll set it to 0x027F (change precision control and rounding)
+        let new_fcw: u16 = 0x027F;
+        core::arch::asm!(
+            "fldcw [{fcw_ptr}]",
+            fcw_ptr = in(reg) &new_fcw,
+        );
+
+        // Load some FPU registers to change the tag word from default 0xFF
+        // This will mark some registers as valid, changing the tag word
+        // Sets up FPR with: 00 01 00 01 00 01 00 11 which is 0x1113;
+        core::arch::asm!(
+            "fld1", // ST(6)
+            "fldz", // ST(5)
+            "fld1", // ST(4)
+            "fldz", // ST(3)
+            "fld1", // ST(2)
+            "fldz", // ST(1)
+            "fld1", // ST(0)
+        );
+
+        // Set MXCSR to a non-default value (default is usually 0x1F80)
+        // We'll set it to 0x1F00 (disable some exception masks)
+        let new_mxcsr: u32 = 0x1F00;
+        core::arch::asm!(
+            "ldmxcsr [{mxcsr_ptr}]",
+            mxcsr_ptr = in(reg) &new_mxcsr,
+        );
+    }
+
+    let mut fcw: u16 = 0;
+    let ftw: u16;
+    let mut mxcsr: u32 = 0;
+
+    unsafe {
+        // Read FPU control word
+        core::arch::asm!(
+            "fnstcw [{fcw_ptr}]",
+            fcw_ptr = in(reg) &mut fcw,
+        );
+
+        // Read FPU status word and tag word using fnstenv
+        // fnstenv stores the complete FPU environment (28 bytes)
+        // The format is the the FTW format where 11 == empty
+        // This is different from the FXSAVE format
+        // https://github.com/hyperlight-dev/hyperlight/issues/904
+        let mut fpu_env: [u8; 28] = [0; 28];
+        core::arch::asm!(
+            "fnstenv [{env_ptr}]",
+            env_ptr = in(reg) &mut fpu_env,
+        );
+        ftw = u16::from_le_bytes([fpu_env[8], fpu_env[9]]);
+
+        // Read MXCSR
+        core::arch::asm!(
+            "stmxcsr [{mxcsr_ptr}]",
+            mxcsr_ptr = in(reg) &mut mxcsr,
+        );
+    }
+
+    let result = format!("fcw:{:04X},ftw:{:02X},mxcsr:{:08X}", fcw, ftw, mxcsr);
+    Ok(get_flatbuffer_result(result.as_str()))
+}
+
+#[hyperlight_guest_tracing::trace_function]
+fn read_fpu_mxcsr(_function_call: &FunctionCall) -> Result<Vec<u8>> {
+    let mut fcw: u16 = 0;
+    let ftw: u16;
+    let mut mxcsr: u32 = 0;
+
+    unsafe {
+        // Read FPU control word
+        core::arch::asm!(
+            "fnstcw [{fcw_ptr}]",
+            fcw_ptr = in(reg) &mut fcw,
+        );
+
+        // Read FPU status word and tag word using fnstenv
+        // fnstenv stores the complete FPU environment (28 bytes)
+        // The format is the the FTW format where 11 == empty
+        // This is different from the FXSAVE format
+        // https://github.com/hyperlight-dev/hyperlight/issues/904
+        let mut fpu_env: [u8; 28] = [0; 28];
+        core::arch::asm!(
+            "fnstenv [{env_ptr}]",
+            env_ptr = in(reg) &mut fpu_env,
+        );
+        ftw = u16::from_le_bytes([fpu_env[8], fpu_env[9]]);
+
+        // Read MXCSR
+        core::arch::asm!(
+            "stmxcsr [{mxcsr_ptr}]",
+            mxcsr_ptr = in(reg) &mut mxcsr,
+        );
+    }
+
+    let result = format!("fcw:{:04X},ftw:{:02X},mxcsr:{:08X}", fcw, ftw, mxcsr);
+    Ok(get_flatbuffer_result(result.as_str()))
+}
+
 #[no_mangle]
 #[hyperlight_guest_tracing::trace_function]
 pub extern "C" fn hyperlight_main() {
@@ -1477,6 +1581,23 @@ pub extern "C" fn hyperlight_main() {
         call_given_paramless_hostfunc_that_returns_i64 as usize,
     );
     register_function(call_given_hostfunc_def);
+
+    // Register FPU and MXCSR test functions
+    let modify_fpu_mxcsr_def = GuestFunctionDefinition::new(
+        "ModifyFpuMxcsr".to_string(),
+        Vec::new(),
+        ReturnType::String,
+        modify_fpu_mxcsr as usize,
+    );
+    register_function(modify_fpu_mxcsr_def);
+
+    let read_fpu_mxcsr_def = GuestFunctionDefinition::new(
+        "ReadFpuMxcsr".to_string(),
+        Vec::new(),
+        ReturnType::String,
+        read_fpu_mxcsr as usize,
+    );
+    register_function(read_fpu_mxcsr_def);
 }
 
 #[hyperlight_guest_tracing::trace_function]

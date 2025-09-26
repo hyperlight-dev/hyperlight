@@ -579,7 +579,9 @@ impl Hypervisor for KVMDriver {
         };
         self.vcpu_fd.set_regs(&regs)?;
 
-        // reset fpu state
+        // Note kvm set_fpu doesn't actually set or read the mxcsr value
+        // We reset it in a call below
+        // https://elixir.bootlin.com/linux/v6.16/source/arch/x86/kvm/x86.c#L12229
         let fpu = kvm_fpu {
             fcw: FP_CONTROL_WORD_DEFAULT,
             ftwx: FP_TAG_WORD_DEFAULT,
@@ -587,6 +589,25 @@ impl Hypervisor for KVMDriver {
             ..Default::default() // zero out the rest
         };
         self.vcpu_fd.set_fpu(&fpu)?;
+
+        // Set MXCSR from XSAVE
+        // Locations are from
+        // AMD64 Architecture Programmer's Manual, Volume 2
+        // 11.5.10 Mode-Specific XSAVE/XRSTOR State Management
+        // MXCSR is at byte offset 24 -> u32 index 6
+        let mut xsave = match self.vcpu_fd.get_xsave() {
+            Ok(xsave) => xsave,
+            Err(e) => {
+                return Err(new_error!("Could not write guest registers: {:?}", e));
+            }
+        };
+
+        xsave.region[6] = MXCSR_DEFAULT;
+        unsafe {
+            self.vcpu_fd
+                .set_xsave(&xsave)
+                .map_err(|e| new_error!("Could not write guest registers: {:?}", e))?
+        };
 
         // run
         VirtualCPU::run(
