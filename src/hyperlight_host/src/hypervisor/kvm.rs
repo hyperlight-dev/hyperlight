@@ -14,12 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region};
+use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::LevelFilter;
@@ -27,20 +26,13 @@ use tracing::{Span, instrument};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
-#[cfg(feature = "trace_guest")]
-use super::TraceRegister;
-use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
-#[cfg(feature = "init-paging")]
-use super::{
-    CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
-    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
-};
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::hypervisor::get_memory_access_violation;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -83,9 +75,7 @@ mod debug {
     use kvm_bindings::kvm_debug_exit_arch;
 
     use super::KVMDriver;
-    use crate::hypervisor::gdb::{
-        DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason, X86_64Regs,
-    };
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason};
     use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::HostSharedMemory;
     use crate::{Result, new_error};
@@ -184,18 +174,14 @@ mod debug {
 
                         Ok(DebugResponse::ReadAddr(data))
                     }
-                    DebugMsg::ReadRegisters => {
-                        let mut regs = X86_64Regs::default();
+                    DebugMsg::ReadRegisters => debug
+                        .read_regs(&self.vcpu_fd)
+                        .map_err(|e| {
+                            log::error!("Failed to read registers: {:?}", e);
 
-                        debug
-                            .read_regs(&self.vcpu_fd, &mut regs)
-                            .map_err(|e| {
-                                log::error!("Failed to read registers: {:?}", e);
-
-                                e
-                            })
-                            .map(|_| DebugResponse::ReadRegisters(Box::new(regs)))
-                    }
+                            e
+                        })
+                        .map(|(regs, fpu)| DebugResponse::ReadRegisters(Box::new((regs, fpu)))),
                     DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
                         debug
                             .remove_hw_breakpoint(&self.vcpu_fd, addr)
@@ -236,14 +222,17 @@ mod debug {
 
                         Ok(DebugResponse::WriteAddr)
                     }
-                    DebugMsg::WriteRegisters(regs) => debug
-                        .write_regs(&self.vcpu_fd, &regs)
-                        .map_err(|e| {
-                            log::error!("Failed to write registers: {:?}", e);
+                    DebugMsg::WriteRegisters(boxed_regs) => {
+                        let (regs, fpu) = boxed_regs.as_ref();
+                        debug
+                            .write_regs(&self.vcpu_fd, regs, fpu)
+                            .map_err(|e| {
+                                log::error!("Failed to write registers: {:?}", e);
 
-                            e
-                        })
-                        .map(|_| DebugResponse::WriteRegisters),
+                                e
+                            })
+                            .map(|_| DebugResponse::WriteRegisters)
+                    }
                 }
             } else {
                 Err(new_error!("Debugging is not enabled"))
@@ -337,8 +326,7 @@ impl KVMDriver {
             unsafe { vm_fd.set_user_memory_region(kvm_region) }
         })?;
 
-        let mut vcpu_fd = vm_fd.create_vcpu(0)?;
-        Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
+        let vcpu_fd = vm_fd.create_vcpu(0)?;
 
         #[cfg(gdb)]
         let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
@@ -377,8 +365,7 @@ impl KVMDriver {
             sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
         });
 
-        #[allow(unused_mut)]
-        let mut hv = Self {
+        let mut kvm = Self {
             _kvm: kvm,
             vm_fd,
             page_size: 0,
@@ -402,34 +389,16 @@ impl KVMDriver {
             trace_info,
         };
 
+        kvm.setup_initial_sregs(pml4_addr)?;
+
         // Send the interrupt handle to the GDB thread if debugging is enabled
         // This is used to allow the GDB thread to stop the vCPU
         #[cfg(gdb)]
-        if hv.debug.is_some() {
-            hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
+        if kvm.debug.is_some() {
+            kvm.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
         }
 
-        Ok(hv)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn setup_initial_sregs(vcpu_fd: &mut VcpuFd, _pml4_addr: u64) -> Result<()> {
-        // setup paging and IA-32e (64-bit) mode
-        let mut sregs = vcpu_fd.get_sregs()?;
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "init-paging")] {
-                sregs.cr3 = _pml4_addr;
-                sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT;
-                sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP;
-                sregs.efer = EFER_LME | EFER_LMA | EFER_SCE | EFER_NX;
-                sregs.cs.l = 1; // required for 64-bit mode
-            } else {
-                sregs.cs.base = 0;
-                sregs.cs.selector = 0;
-            }
-        }
-        vcpu_fd.set_sregs(&sregs)?;
-        Ok(())
+        Ok(kvm)
     }
 }
 
@@ -485,7 +454,7 @@ impl Hypervisor for KVMDriver {
             None => self.get_max_log_level().into(),
         };
 
-        let regs = kvm_regs {
+        let regs = CommonRegisters {
             rip: self.entrypoint,
             rsp: self.orig_rsp.absolute()?,
 
@@ -497,7 +466,7 @@ impl Hypervisor for KVMDriver {
 
             ..Default::default()
         };
-        self.vcpu_fd.set_regs(&regs)?;
+        self.set_regs(&regs)?;
 
         VirtualCPU::run(
             self.as_mut_hypervisor(),
@@ -572,24 +541,15 @@ impl Hypervisor for KVMDriver {
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
-        let regs = kvm_regs {
+        let regs = CommonRegisters {
             rip: dispatch_func_addr.into(),
             rsp: self.orig_rsp.absolute()?,
             ..Default::default()
         };
-        self.vcpu_fd.set_regs(&regs)?;
+        self.set_regs(&regs)?;
 
         // reset fpu state
-        let fpu = kvm_fpu {
-            fcw: FP_CONTROL_WORD_DEFAULT,
-            ftwx: FP_TAG_WORD_DEFAULT,
-            mxcsr: MXCSR_DEFAULT,
-            ..Default::default() // zero out the rest
-        };
-
-        // note kvm set_fpu doesn't actually set or read the mxcsr value
-        // https://elixir.bootlin.com/linux/v6.16/source/arch/x86/kvm/x86.c#L12229
-        self.vcpu_fd.set_fpu(&fpu)?;
+        self.set_fpu(&CommonFpu::default())?;
 
         // run
         VirtualCPU::run(
@@ -824,6 +784,39 @@ impl Hypervisor for KVMDriver {
         Ok(result)
     }
 
+    fn regs(&self) -> Result<super::regs::CommonRegisters> {
+        let kvm_regs = self.vcpu_fd.get_regs()?;
+        Ok((&kvm_regs).into())
+    }
+
+    fn set_regs(&mut self, regs: &super::regs::CommonRegisters) -> Result<()> {
+        let kvm_regs: kvm_regs = regs.into();
+        self.vcpu_fd.set_regs(&kvm_regs)?;
+        Ok(())
+    }
+
+    fn fpu(&self) -> Result<super::regs::CommonFpu> {
+        let kvm_fpu = self.vcpu_fd.get_fpu()?;
+        Ok((&kvm_fpu).into())
+    }
+
+    fn set_fpu(&mut self, fpu: &super::regs::CommonFpu) -> Result<()> {
+        let kvm_fpu: kvm_fpu = fpu.into();
+        self.vcpu_fd.set_fpu(&kvm_fpu)?;
+        Ok(())
+    }
+
+    fn sregs(&self) -> Result<super::regs::CommonSpecialRegisters> {
+        let kvm_sregs = self.vcpu_fd.get_sregs()?;
+        Ok((&kvm_sregs).into())
+    }
+
+    fn set_sregs(&mut self, sregs: &super::regs::CommonSpecialRegisters) -> Result<()> {
+        let kvm_sregs: kvm_sregs = sregs.into();
+        self.vcpu_fd.set_sregs(&kvm_sregs)?;
+        Ok(())
+    }
+
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
         self as &mut dyn Hypervisor
@@ -1037,18 +1030,6 @@ impl Hypervisor for KVMDriver {
         } else {
             Err(new_error!("Memory manager is not initialized"))
         }
-    }
-
-    #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
-        let regs = self.vcpu_fd.get_regs()?;
-        Ok(match reg {
-            TraceRegister::RAX => regs.rax,
-            TraceRegister::RCX => regs.rcx,
-            TraceRegister::RIP => regs.rip,
-            TraceRegister::RSP => regs.rsp,
-            TraceRegister::RBP => regs.rbp,
-        })
     }
 
     #[cfg(feature = "trace_guest")]

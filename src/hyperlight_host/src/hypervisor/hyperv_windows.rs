@@ -23,13 +23,8 @@ use std::sync::{Arc, Mutex};
 use log::LevelFilter;
 use tracing::{Span, instrument};
 use windows::Win32::System::Hypervisor::{
-    WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT,
-    WHV_RUN_VP_EXIT_REASON, WHV_X64_SEGMENT_REGISTER, WHV_X64_SEGMENT_REGISTER_0,
-    WHvCancelRunVirtualProcessor, WHvX64RegisterCs,
-};
-#[cfg(feature = "init-paging")]
-use windows::Win32::System::Hypervisor::{
-    WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4, WHvX64RegisterEfer,
+    WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_RUN_VP_EXIT_CONTEXT, WHV_RUN_VP_EXIT_REASON,
+    WHvCancelRunVirtualProcessor,
 };
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
@@ -41,22 +36,14 @@ use {
     crate::HyperlightError,
 };
 
-#[cfg(feature = "trace_guest")]
-use super::TraceRegister;
-use super::fpu::{FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
+use super::regs::CommonSpecialRegisters;
 use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
-use super::wrappers::{HandleWrapper, WHvFPURegisters};
-#[cfg(feature = "init-paging")]
-use super::{
-    CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
-    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
-};
+use super::wrappers::HandleWrapper;
 use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
-use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
 use crate::hypervisor::get_memory_access_violation;
-use crate::hypervisor::wrappers::WHvGeneralRegisters;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -77,7 +64,7 @@ mod debug {
 
     use super::{HypervWindowsDriver, *};
     use crate::Result;
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
     use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::HostSharedMemory;
 
@@ -175,18 +162,14 @@ mod debug {
 
                         Ok(DebugResponse::ReadAddr(data))
                     }
-                    DebugMsg::ReadRegisters => {
-                        let mut regs = X86_64Regs::default();
+                    DebugMsg::ReadRegisters => debug
+                        .read_regs(&self.processor)
+                        .map_err(|e| {
+                            log::error!("Failed to read registers: {:?}", e);
 
-                        debug
-                            .read_regs(&self.processor, &mut regs)
-                            .map_err(|e| {
-                                log::error!("Failed to read registers: {:?}", e);
-
-                                e
-                            })
-                            .map(|_| DebugResponse::ReadRegisters(Box::new(regs)))
-                    }
+                            e
+                        })
+                        .map(|(regs, fpu)| DebugResponse::ReadRegisters(Box::new((regs, fpu)))),
                     DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
                         debug
                             .remove_hw_breakpoint(&self.processor, addr)
@@ -227,14 +210,17 @@ mod debug {
 
                         Ok(DebugResponse::WriteAddr)
                     }
-                    DebugMsg::WriteRegisters(regs) => debug
-                        .write_regs(&self.processor, &regs)
-                        .map_err(|e| {
-                            log::error!("Failed to write registers: {:?}", e);
+                    DebugMsg::WriteRegisters(boxed_regs) => {
+                        let (regs, fpu) = boxed_regs.as_ref();
+                        debug
+                            .write_regs(&self.processor, regs, fpu)
+                            .map_err(|e| {
+                                log::error!("Failed to write registers: {:?}", e);
 
-                            e
-                        })
-                        .map(|_| DebugResponse::WriteRegisters),
+                                e
+                            })
+                            .map(|_| DebugResponse::WriteRegisters)
+                    }
                 }
             } else {
                 Err(new_error!("Debugging is not enabled"))
@@ -328,8 +314,7 @@ impl HypervWindowsDriver {
 
         partition.map_gpa_range(&mem_regions, &surrogate_process)?;
 
-        let mut proc = VMProcessor::new(partition)?;
-        Self::setup_initial_sregs(&mut proc, pml4_address)?;
+        let proc = VMProcessor::new(partition)?;
         let partition_handle = proc.get_partition_hdl();
 
         #[cfg(gdb)]
@@ -351,17 +336,16 @@ impl HypervWindowsDriver {
             dropped: AtomicBool::new(false),
         });
 
-        #[allow(unused_mut)]
         let mut hv = Self {
             processor: proc,
             _surrogate_process: surrogate_process,
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
-            sandbox_regions: mem_regions,
-            mmap_regions: Vec::new(),
             interrupt_handle: interrupt_handle.clone(),
             mem_mgr: None,
             host_funcs: None,
+            sandbox_regions: mem_regions,
+            mmap_regions: Vec::new(),
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
@@ -371,6 +355,8 @@ impl HypervWindowsDriver {
             #[cfg(feature = "trace_guest")]
             trace_info,
         };
+
+        hv.setup_initial_sregs(pml4_address)?;
 
         // Send the interrupt handle to the GDB thread if debugging is enabled
         // This is used to allow the GDB thread to stop the vCPU
@@ -382,62 +368,6 @@ impl HypervWindowsDriver {
         Ok(hv)
     }
 
-    fn setup_initial_sregs(proc: &mut VMProcessor, _pml4_addr: u64) -> Result<()> {
-        #[cfg(feature = "init-paging")]
-        proc.set_registers(&[
-            (WHvX64RegisterCr3, WHV_REGISTER_VALUE { Reg64: _pml4_addr }),
-            (
-                WHvX64RegisterCr4,
-                WHV_REGISTER_VALUE {
-                    Reg64: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
-                },
-            ),
-            (
-                WHvX64RegisterCr0,
-                WHV_REGISTER_VALUE {
-                    Reg64: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
-                },
-            ),
-            (
-                WHvX64RegisterEfer,
-                WHV_REGISTER_VALUE {
-                    Reg64: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
-                },
-            ),
-            (
-                WHvX64RegisterCs,
-                WHV_REGISTER_VALUE {
-                    Segment: WHV_X64_SEGMENT_REGISTER {
-                        Anonymous: WHV_X64_SEGMENT_REGISTER_0 {
-                            Attributes: 0b1011 | (1 << 4) | (1 << 7) | (1 << 13), // Type (11: Execute/Read, accessed) | L (64-bit mode) | P (present) | S (code segment)
-                        },
-                        ..Default::default() // zero out the rest
-                    },
-                },
-            ),
-        ])?;
-
-        #[cfg(not(feature = "init-paging"))]
-        {
-            proc.set_registers(&[(
-                WHvX64RegisterCs,
-                WHV_REGISTER_VALUE {
-                    Segment: WHV_X64_SEGMENT_REGISTER {
-                        Base: 0,
-                        Selector: 0,
-                        Limit: 0xFFFF,
-                        Anonymous: WHV_X64_SEGMENT_REGISTER_0 {
-                            Attributes: 0b1011 | (1 << 4) | (1 << 7), // Type (11: Execute/Read, accessed) | S (code segment) | P (present)
-                        },
-                        ..Default::default()
-                    },
-                },
-            )])?;
-        }
-
-        Ok(())
-    }
-
     #[inline]
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn get_exit_details(&self, exit_reason: WHV_RUN_VP_EXIT_REASON) -> Result<String> {
@@ -445,7 +375,7 @@ impl HypervWindowsDriver {
         error.push_str(&format!(
             "Did not receive a halt from Hypervisor as expected - Received {exit_reason:?}!\n"
         ));
-        error.push_str(&format!("Registers: \n{:#?}", self.processor.get_regs()?));
+        error.push_str(&format!("Registers: \n{:#?}", self.processor.regs()?));
         Ok(error)
     }
 }
@@ -465,127 +395,14 @@ impl Debug for HypervWindowsDriver {
         }
 
         // Get the registers
-
-        let regs = self.processor.get_regs();
-
-        if let Ok(regs) = regs {
-            {
-                fs.field("Registers", &regs);
-            }
+        if let Ok(regs) = self.processor.regs() {
+            fs.field("Registers", &regs);
         }
 
         // Get the special registers
-
-        let special_regs = self.processor.get_sregs();
-        if let Ok(special_regs) = special_regs {
-            fs.field("CR0", unsafe { &special_regs.cr0.Reg64 });
-            fs.field("CR2", unsafe { &special_regs.cr2.Reg64 });
-            fs.field("CR3", unsafe { &special_regs.cr3.Reg64 });
-            fs.field("CR4", unsafe { &special_regs.cr4.Reg64 });
-            fs.field("CR8", unsafe { &special_regs.cr8.Reg64 });
-            fs.field("EFER", unsafe { &special_regs.efer.Reg64 });
-            fs.field("APIC_BASE", unsafe { &special_regs.apic_base.Reg64 });
-
-            // Segment registers
-            fs.field(
-                "CS",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Selector: {:?}, Attributes: {:?} }}",
-                    unsafe { &special_regs.cs.Segment.Base },
-                    unsafe { &special_regs.cs.Segment.Limit },
-                    unsafe { &special_regs.cs.Segment.Selector },
-                    unsafe { &special_regs.cs.Segment.Anonymous.Attributes }
-                ),
-            );
-            fs.field(
-                "DS",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Selector: {:?}, Attributes: {:?} }}",
-                    unsafe { &special_regs.ds.Segment.Base },
-                    unsafe { &special_regs.ds.Segment.Limit },
-                    unsafe { &special_regs.ds.Segment.Selector },
-                    unsafe { &special_regs.ds.Segment.Anonymous.Attributes }
-                ),
-            );
-            fs.field(
-                "ES",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Selector: {:?}, Attributes: {:?} }}",
-                    unsafe { &special_regs.es.Segment.Base },
-                    unsafe { &special_regs.es.Segment.Limit },
-                    unsafe { &special_regs.es.Segment.Selector },
-                    unsafe { &special_regs.es.Segment.Anonymous.Attributes }
-                ),
-            );
-            fs.field(
-                "FS",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Selector: {:?}, Attributes: {:?} }}",
-                    unsafe { &special_regs.fs.Segment.Base },
-                    unsafe { &special_regs.fs.Segment.Limit },
-                    unsafe { &special_regs.fs.Segment.Selector },
-                    unsafe { &special_regs.fs.Segment.Anonymous.Attributes }
-                ),
-            );
-            fs.field(
-                "GS",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Selector: {:?}, Attributes: {:?} }}",
-                    unsafe { &special_regs.gs.Segment.Base },
-                    unsafe { &special_regs.gs.Segment.Limit },
-                    unsafe { &special_regs.gs.Segment.Selector },
-                    unsafe { &special_regs.gs.Segment.Anonymous.Attributes }
-                ),
-            );
-            fs.field(
-                "SS",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Selector: {:?}, Attributes: {:?} }}",
-                    unsafe { &special_regs.ss.Segment.Base },
-                    unsafe { &special_regs.ss.Segment.Limit },
-                    unsafe { &special_regs.ss.Segment.Selector },
-                    unsafe { &special_regs.ss.Segment.Anonymous.Attributes }
-                ),
-            );
-            fs.field(
-                "TR",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Selector: {:?}, Attributes: {:?} }}",
-                    unsafe { &special_regs.tr.Segment.Base },
-                    unsafe { &special_regs.tr.Segment.Limit },
-                    unsafe { &special_regs.tr.Segment.Selector },
-                    unsafe { &special_regs.tr.Segment.Anonymous.Attributes }
-                ),
-            );
-            fs.field(
-                "LDTR",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Selector: {:?}, Attributes: {:?} }}",
-                    unsafe { &special_regs.ldtr.Segment.Base },
-                    unsafe { &special_regs.ldtr.Segment.Limit },
-                    unsafe { &special_regs.ldtr.Segment.Selector },
-                    unsafe { &special_regs.ldtr.Segment.Anonymous.Attributes }
-                ),
-            );
-            fs.field(
-                "GDTR",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Pad: {:?} }}",
-                    unsafe { &special_regs.gdtr.Table.Base },
-                    unsafe { &special_regs.gdtr.Table.Limit },
-                    unsafe { &special_regs.gdtr.Table.Pad }
-                ),
-            );
-            fs.field(
-                "IDTR",
-                &format_args!(
-                    "{{ Base: {:?}, Limit: {:?}, Pad: {:?} }}",
-                    unsafe { &special_regs.idtr.Table.Base },
-                    unsafe { &special_regs.idtr.Table.Limit },
-                    unsafe { &special_regs.idtr.Table.Pad }
-                ),
-            );
-        };
+        if let Ok(special_regs) = self.processor.sregs() {
+            fs.field("SpecialRegisters", &special_regs);
+        }
 
         fs.finish()
     }
@@ -611,7 +428,7 @@ impl Hypervisor for HypervWindowsDriver {
             None => self.get_max_log_level().into(),
         };
 
-        let regs = WHvGeneralRegisters {
+        let regs = CommonRegisters {
             rip: self.entrypoint,
             rsp: self.orig_rsp.absolute()?,
 
@@ -624,7 +441,7 @@ impl Hypervisor for HypervWindowsDriver {
 
             ..Default::default()
         };
-        self.processor.set_general_purpose_registers(&regs)?;
+        self.set_regs(&regs)?;
 
         VirtualCPU::run(
             self.as_mut_hypervisor(),
@@ -654,21 +471,16 @@ impl Hypervisor for HypervWindowsDriver {
         #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
-        let regs = WHvGeneralRegisters {
+        let regs = CommonRegisters {
             rip: dispatch_func_addr.into(),
             rsp: self.orig_rsp.absolute()?,
             rflags: 1 << 1, // eflags bit index 1 is reserved and always needs to be 1
             ..Default::default()
         };
-        self.processor.set_general_purpose_registers(&regs)?;
+        self.processor.set_regs(&regs)?;
 
         // reset fpu state
-        self.processor.set_fpu(&WHvFPURegisters {
-            fp_control_word: FP_CONTROL_WORD_DEFAULT,
-            fp_tag_word: FP_TAG_WORD_DEFAULT,
-            mxcsr: MXCSR_DEFAULT,
-            ..Default::default() // zero out the rest
-        })?;
+        self.processor.set_fpu(&CommonFpu::default())?;
 
         VirtualCPU::run(
             self.as_mut_hypervisor(),
@@ -728,9 +540,9 @@ impl Hypervisor for HypervWindowsDriver {
             handle_outb(mem_mgr, host_funcs, port, val)?;
         }
 
-        let mut regs = self.processor.get_regs()?;
+        let mut regs = self.regs()?;
         regs.rip = rip + instruction_length;
-        self.processor.set_general_purpose_registers(&regs)
+        self.set_regs(&regs)
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -884,6 +696,35 @@ impl Hypervisor for HypervWindowsDriver {
         Ok(result)
     }
 
+    /// Get regs
+    #[allow(dead_code)]
+    fn regs(&self) -> Result<CommonRegisters> {
+        self.processor.regs()
+    }
+    /// Set regs
+    fn set_regs(&mut self, regs: &CommonRegisters) -> Result<()> {
+        self.processor.set_regs(regs)
+    }
+    /// Get fpu regs
+    #[allow(dead_code)]
+    fn fpu(&self) -> Result<CommonFpu> {
+        self.processor.fpu()
+    }
+    /// Set fpu regs
+    fn set_fpu(&mut self, fpu: &CommonFpu) -> Result<()> {
+        self.processor.set_fpu(fpu)
+    }
+    /// Get special regs
+    #[allow(dead_code)]
+    fn sregs(&self) -> Result<CommonSpecialRegisters> {
+        self.processor.sregs()
+    }
+    /// Set special regs
+    #[allow(dead_code)]
+    fn set_sregs(&mut self, sregs: &CommonSpecialRegisters) -> Result<()> {
+        self.processor.set_sregs(sregs)
+    }
+
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
     }
@@ -898,8 +739,8 @@ impl Hypervisor for HypervWindowsDriver {
         if self.rt_cfg.guest_core_dump {
             let mut regs = [0; 27];
 
-            let vcpu_regs = self.processor.get_regs()?;
-            let sregs = self.processor.get_sregs()?;
+            let vcpu_regs = self.processor.regs()?;
+            let sregs = self.processor.sregs()?;
             let xsave = self.processor.get_xsave()?;
 
             // Set the registers in the order expected by the crashdump context
@@ -920,16 +761,16 @@ impl Hypervisor for HypervWindowsDriver {
             regs[14] = vcpu_regs.rdi; // rdi
             regs[15] = 0; // orig rax
             regs[16] = vcpu_regs.rip; // rip
-            regs[17] = unsafe { sregs.cs.Segment.Selector } as u64; // cs
+            regs[17] = sregs.cs.selector as u64; // cs
             regs[18] = vcpu_regs.rflags; // eflags
             regs[19] = vcpu_regs.rsp; // rsp
-            regs[20] = unsafe { sregs.ss.Segment.Selector } as u64; // ss
-            regs[21] = unsafe { sregs.fs.Segment.Base }; // fs_base
-            regs[22] = unsafe { sregs.gs.Segment.Base }; // gs_base
-            regs[23] = unsafe { sregs.ds.Segment.Selector } as u64; // ds
-            regs[24] = unsafe { sregs.es.Segment.Selector } as u64; // es
-            regs[25] = unsafe { sregs.fs.Segment.Selector } as u64; // fs
-            regs[26] = unsafe { sregs.gs.Segment.Selector } as u64; // gs
+            regs[20] = sregs.ss.selector as u64; // ss
+            regs[21] = sregs.fs.base; // fs_base
+            regs[22] = sregs.gs.base; // gs_base
+            regs[23] = sregs.ds.selector as u64; // ds
+            regs[24] = sregs.es.selector as u64; // es
+            regs[25] = sregs.fs.selector as u64; // fs
+            regs[26] = sregs.gs.selector as u64; // gs
 
             // Get the filename from the config
             let filename = self.rt_cfg.binary_path.clone().and_then(|path| {
@@ -1089,18 +930,6 @@ impl Hypervisor for HypervWindowsDriver {
             mgr.check_stack_guard()
         } else {
             Err(new_error!("Memory manager is not initialized"))
-        }
-    }
-
-    #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
-        let regs = self.processor.get_regs()?;
-        match reg {
-            TraceRegister::RAX => Ok(regs.rax),
-            TraceRegister::RCX => Ok(regs.rcx),
-            TraceRegister::RIP => Ok(regs.rip),
-            TraceRegister::RSP => Ok(regs.rsp),
-            TraceRegister::RBP => Ok(regs.rbp),
         }
     }
 

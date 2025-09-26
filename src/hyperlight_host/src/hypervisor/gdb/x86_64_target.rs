@@ -31,8 +31,9 @@ use gdbstub::target::ext::section_offsets::{Offsets, SectionOffsets};
 use gdbstub::target::{Target, TargetError, TargetResult};
 use gdbstub_arch::x86::X86_64_SSE as GdbTargetArch;
 
-use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError, X86_64Regs};
+use super::{DebugCommChannel, DebugMsg, DebugResponse, GdbTargetError};
 use crate::hypervisor::InterruptHandle;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
 
 /// Gdbstub target used by the gdbstub crate to provide GDB protocol implementation
 pub(crate) struct HyperlightSandboxTarget {
@@ -208,7 +209,8 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         log::debug!("Read regs");
 
         match self.send_command(DebugMsg::ReadRegisters)? {
-            DebugResponse::ReadRegisters(read_regs) => {
+            DebugResponse::ReadRegisters(boxed_regs) => {
+                let (read_regs, read_fpu) = boxed_regs.as_ref();
                 regs.regs[0] = read_regs.rax;
                 regs.regs[1] = read_regs.rbp;
                 regs.regs[2] = read_regs.rcx;
@@ -227,8 +229,9 @@ impl SingleThreadBase for HyperlightSandboxTarget {
                 regs.regs[15] = read_regs.r15;
                 regs.rip = read_regs.rip;
                 regs.eflags = read_regs.rflags as u32;
-                regs.xmm = read_regs.xmm;
-                regs.mxcsr = read_regs.mxcsr;
+
+                regs.xmm = read_fpu.xmm.map(u128::from_le_bytes);
+                regs.mxcsr = read_fpu.mxcsr;
 
                 Ok(())
             }
@@ -250,7 +253,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
     ) -> TargetResult<(), Self> {
         log::debug!("Write regs");
 
-        let regs = X86_64Regs {
+        let common_regs = CommonRegisters {
             rax: regs.regs[0],
             rbx: regs.regs[1],
             rcx: regs.regs[2],
@@ -269,11 +272,23 @@ impl SingleThreadBase for HyperlightSandboxTarget {
             r15: regs.regs[15],
             rip: regs.rip,
             rflags: u64::from(regs.eflags),
-            xmm: regs.xmm,
-            mxcsr: regs.mxcsr,
         };
 
-        match self.send_command(DebugMsg::WriteRegisters(Box::new(regs)))? {
+        let mut xmm = [[0u8; 16]; 16];
+        for (i, &reg) in regs.xmm.iter().enumerate() {
+            xmm[i] = reg.to_le_bytes();
+        }
+
+        let common_fpu = CommonFpu {
+            xmm,
+            mxcsr: regs.mxcsr,
+            ..Default::default()
+        };
+
+        match self.send_command(DebugMsg::WriteRegisters(Box::new((
+            common_regs,
+            common_fpu,
+        ))))? {
             DebugResponse::WriteRegisters => Ok(()),
             DebugResponse::NotAllowed => {
                 log::error!("Action not allowed at this time, crash might have occurred");
