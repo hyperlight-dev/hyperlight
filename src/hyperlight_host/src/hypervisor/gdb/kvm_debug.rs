@@ -18,12 +18,13 @@ use std::collections::HashMap;
 
 use kvm_bindings::{
     KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
-    kvm_debug_exit_arch, kvm_guest_debug, kvm_regs,
+    kvm_debug_exit_arch, kvm_guest_debug,
 };
 use kvm_ioctls::VcpuFd;
 
 use super::arch::{MAX_NO_OF_HW_BP, SW_BP_SIZE, vcpu_stop_reason};
-use super::{GuestDebug, VcpuStopReason, X86_64Regs};
+use super::{GuestDebug, VcpuStopReason};
+use crate::hypervisor::regs::CommonRegisters;
 use crate::{HyperlightError, Result, new_error};
 
 /// KVM Debug struct
@@ -167,7 +168,7 @@ impl GuestDebug for KvmDebug {
         self.sw_breakpoints.remove(addr)
     }
 
-    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> Result<()> {
+    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut CommonRegisters) -> Result<()> {
         log::debug!("Read registers");
         let vcpu_regs = vcpu_fd
             .get_regs()
@@ -212,29 +213,9 @@ impl GuestDebug for KvmDebug {
         }
     }
 
-    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> Result<()> {
+    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &CommonRegisters) -> Result<()> {
         log::debug!("Write registers");
-        let new_regs = kvm_regs {
-            rax: regs.rax,
-            rbx: regs.rbx,
-            rcx: regs.rcx,
-            rdx: regs.rdx,
-            rsi: regs.rsi,
-            rdi: regs.rdi,
-            rbp: regs.rbp,
-            rsp: regs.rsp,
-            r8: regs.r8,
-            r9: regs.r9,
-            r10: regs.r10,
-            r11: regs.r11,
-            r12: regs.r12,
-            r13: regs.r13,
-            r14: regs.r14,
-            r15: regs.r15,
-
-            rip: regs.rip,
-            rflags: regs.rflags,
-        };
+        let new_regs = regs.into();
 
         vcpu_fd
             .set_regs(&new_regs)
