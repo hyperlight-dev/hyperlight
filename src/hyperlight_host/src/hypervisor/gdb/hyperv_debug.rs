@@ -19,9 +19,10 @@ use std::collections::HashMap;
 use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
 
 use super::arch::{MAX_NO_OF_HW_BP, vcpu_stop_reason};
-use super::{GuestDebug, SW_BP_SIZE, VcpuStopReason, X86_64Regs};
+use super::{GuestDebug, SW_BP_SIZE, VcpuStopReason};
+use crate::hypervisor::regs::CommonRegisters;
 use crate::hypervisor::windows_hypervisor_platform::VMProcessor;
-use crate::hypervisor::wrappers::{WHvDebugRegisters, WHvGeneralRegisters};
+use crate::hypervisor::wrappers::WHvDebugRegisters;
 use crate::{HyperlightError, Result, new_error};
 
 /// KVM Debug struct
@@ -54,7 +55,7 @@ impl HypervDebug {
     /// Returns the instruction pointer from the stopped vCPU
     fn get_instruction_pointer(&self, vcpu_fd: &VMProcessor) -> Result<u64> {
         let regs = vcpu_fd
-            .get_regs()
+            .regs()
             .map_err(|e| new_error!("Could not retrieve registers from vCPU: {:?}", e))?;
 
         Ok(regs.rip)
@@ -103,7 +104,7 @@ impl HypervDebug {
         self.single_step = step;
 
         let mut regs = vcpu_fd
-            .get_regs()
+            .regs()
             .map_err(|e| new_error!("Could not get registers: {:?}", e))?;
 
         // Set TF Flag to enable Traps
@@ -114,7 +115,7 @@ impl HypervDebug {
         }
 
         vcpu_fd
-            .set_general_purpose_registers(&regs)
+            .set_regs(&regs)
             .map_err(|e| new_error!("Could not set guest registers: {:?}", e))?;
 
         Ok(())
@@ -185,10 +186,10 @@ impl GuestDebug for HypervDebug {
         self.sw_breakpoints.remove(addr)
     }
 
-    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> Result<()> {
+    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut CommonRegisters) -> Result<()> {
         log::debug!("Read registers");
         let vcpu_regs = vcpu_fd
-            .get_regs()
+            .regs()
             .map_err(|e| new_error!("Could not read guest registers: {:?}", e))?;
 
         regs.rax = vcpu_regs.rax;
@@ -224,32 +225,11 @@ impl GuestDebug for HypervDebug {
             .map_err(|_| HyperlightError::TranslateGuestAddress(gva))
     }
 
-    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> Result<()> {
+    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &CommonRegisters) -> Result<()> {
         log::debug!("Write registers");
-        let regs = WHvGeneralRegisters {
-            rax: regs.rax,
-            rbx: regs.rbx,
-            rcx: regs.rcx,
-            rdx: regs.rdx,
-            rsi: regs.rsi,
-            rdi: regs.rdi,
-            rbp: regs.rbp,
-            rsp: regs.rsp,
-            r8: regs.r8,
-            r9: regs.r9,
-            r10: regs.r10,
-            r11: regs.r11,
-            r12: regs.r12,
-            r13: regs.r13,
-            r14: regs.r14,
-            r15: regs.r15,
-
-            rip: regs.rip,
-            rflags: regs.rflags,
-        };
 
         vcpu_fd
-            .set_general_purpose_registers(&regs)
+            .set_regs(regs)
             .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
     }
 }
