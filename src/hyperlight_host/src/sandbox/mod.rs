@@ -58,7 +58,6 @@ pub use uninitialized::UninitializedSandbox;
 
 #[cfg(target_os = "windows")]
 use crate::hypervisor::windows_hypervisor_platform;
-use crate::mem::shared_mem::HostSharedMemory;
 
 // In case its not obvious why there are separate is_supported_platform and is_hypervisor_present functions its because
 // Hyperlight is designed to be able to run on a host that doesn't have a hypervisor.
