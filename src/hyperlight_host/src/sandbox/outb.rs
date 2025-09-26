@@ -170,13 +170,10 @@ fn unwind(
         .unwind_cache
         .try_lock()
         .map_err(|e| new_error!("could not lock unwinder cache {}\n", e))?;
+    let regs = hv.regs()?;
     let iter = trace_info.unwinder.iter_frames(
-        hv.read_trace_reg(crate::hypervisor::TraceRegister::RIP)?,
-        framehop::x86_64::UnwindRegsX86_64::new(
-            hv.read_trace_reg(crate::hypervisor::TraceRegister::RIP)?,
-            hv.read_trace_reg(crate::hypervisor::TraceRegister::RSP)?,
-            hv.read_trace_reg(crate::hypervisor::TraceRegister::RBP)?,
-        ),
+        regs.rip,
+        framehop::x86_64::UnwindRegsX86_64::new(regs.rip, regs.rsp, regs.rbp),
         &mut *cache,
         &mut read_stack,
     );
@@ -315,13 +312,15 @@ pub(crate) fn handle_outb(
         }
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryAlloc => {
+            use crate::hypervisor::regs::CommonRegisters;
+
             let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info_as_ref()) else {
                 return Ok(());
             };
-            let Ok(amt) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RAX) else {
-                return Ok(());
-            };
-            let Ok(ptr) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RCX) else {
+            let Ok(CommonRegisters {
+                rax: amt, rcx: ptr, ..
+            }) = _hv.regs()
+            else {
                 return Ok(());
             };
             record_trace_frame(_hv.trace_info_as_ref(), 2u64, |f| {
@@ -332,23 +331,27 @@ pub(crate) fn handle_outb(
         }
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryFree => {
+            use crate::hypervisor::regs::CommonRegisters;
+
             let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info_as_ref()) else {
                 return Ok(());
             };
-            let Ok(ptr) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RCX) else {
+            let Ok(CommonRegisters { rcx, .. }) = _hv.regs() else {
                 return Ok(());
             };
             record_trace_frame(_hv.trace_info_as_ref(), 3u64, |f| {
-                let _ = f.write_all(&ptr.to_ne_bytes());
+                let _ = f.write_all(&rcx.to_ne_bytes());
                 write_stack(f, &stack);
             })
         }
         #[cfg(feature = "trace_guest")]
         OutBAction::TraceRecord => {
-            let Ok(len) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RAX) else {
-                return Ok(());
-            };
-            let Ok(ptr) = _hv.read_trace_reg(crate::hypervisor::TraceRegister::RCX) else {
+            use crate::hypervisor::regs::CommonRegisters;
+
+            let Ok(CommonRegisters {
+                rax: len, rcx: ptr, ..
+            }) = _hv.regs()
+            else {
                 return Ok(());
             };
             let mut buffer = vec![0u8; len as usize * std::mem::size_of::<TraceRecord>()];
