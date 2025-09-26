@@ -72,6 +72,10 @@ fn main() -> hyperlight_host::Result<()> {
     let mut multi_use_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
 
     // Call guest function
+    multi_use_sandbox_dbg
+        .call::<()>("UseSSE2Registers", ())
+        .unwrap();
+
     let message =
         "Hello, World! I am executing inside of a VM with debugger attached :)\n".to_string();
     multi_use_sandbox_dbg
@@ -103,48 +107,34 @@ mod tests {
 
     use hyperlight_host::{Result, new_error};
     use io::{BufReader, BufWriter, Read, Write};
+    use serial_test::serial;
 
     use super::*;
 
-    fn write_cmds_file(cmd_file_path: &str, out_file_path: &str) -> io::Result<()> {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("Failed to get manifest dir");
+    #[cfg(not(windows))]
+    const GDB_COMMAND: &str = "rust-gdb";
+    #[cfg(windows)]
+    const GDB_COMMAND: &str = "gdb";
+
+    fn write_cmds_file(cmd_file_path: &str, cmd: &str) -> io::Result<()> {
         let file = File::create(cmd_file_path)?;
         let mut writer = BufWriter::new(file);
 
         // write from string to file
-        writer.write_all(
-            format!(
-                "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
-                target remote :8080
-
-                set pagination off
-                set logging file {out_file_path}
-                set logging on
-
-                break hyperlight_main
-                    commands
-                    echo \"Stopped at hyperlight_main breakpoint\\n\"
-                    backtrace
-                    continue
-                end
-
-                continue
-
-                set logging off
-                quit
-            "
-            )
-            .as_bytes(),
-        )?;
+        writer.write_all(cmd.as_bytes())?;
 
         writer.flush()
     }
 
-    fn run_guest_and_gdb(cmd_file_path: &str, out_file_path: &str) -> Result<()> {
+    fn run_guest_and_gdb(
+        cmd_file_path: &str,
+        out_file_path: &str,
+        cmd: &str,
+        checker: fn(String) -> bool,
+    ) -> Result<()> {
         // write gdb commands to file
 
-        write_cmds_file(&cmd_file_path, &out_file_path)
-            .expect("Failed to write gdb commands to file");
+        write_cmds_file(&cmd_file_path, cmd).expect("Failed to write gdb commands to file");
 
         #[cfg(mshv2)] // mshv3 is a default feature is mutually exclusive with the mshv2 feature
         let features = "gdb,mshv2";
@@ -165,7 +155,7 @@ mod tests {
         // wait 3 seconds for the gdb to connect
         thread::sleep(Duration::from_secs(3));
 
-        let mut gdb = Command::new("rust-gdb")
+        let mut gdb = Command::new(GDB_COMMAND)
             .arg("--nw")
             .arg("--batch")
             .arg("-x")
@@ -215,17 +205,17 @@ mod tests {
             }
         }
 
-        check_output(&out_file_path)
+        check_output(&out_file_path, checker)
     }
 
-    fn check_output(out_file_path: &str) -> Result<()> {
+    fn check_output(out_file_path: &str, checker: fn(contents: String) -> bool) -> Result<()> {
         let results = File::open(out_file_path)
             .map_err(|e| new_error!("Failed to open gdb.output file: {}", e))?;
         let mut reader = BufReader::new(results);
         let mut contents = String::new();
         reader.read_to_string(&mut contents).unwrap();
 
-        if contents.contains("Stopped at hyperlight_main breakpoint") {
+        if checker(contents) {
             Ok(())
         } else {
             Err(new_error!(
@@ -247,12 +237,95 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_gdb_end_to_end() {
         let out_dir = std::env::var("OUT_DIR").expect("Failed to get out dir");
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("Failed to get manifest dir")
+            .replace('\\', "/");
         let out_file_path = format!("{out_dir}/gdb.output");
         let cmd_file_path = format!("{out_dir}/gdb-commands.txt");
 
-        let result = run_guest_and_gdb(&cmd_file_path, &out_file_path);
+        let cmd = format!(
+            "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
+                target remote :8080
+
+                set pagination off
+                set logging file {out_file_path}
+                set logging on
+
+                break hyperlight_main
+                    commands
+                    echo \"Stopped at hyperlight_main breakpoint\\n\"
+                    backtrace
+
+                    continue
+                end
+
+                continue
+
+                set logging off
+                quit
+            "
+        );
+
+        #[cfg(windows)]
+        let cmd = format!("set osabi none\n{}", cmd);
+
+        let checker = |contents: String| contents.contains("Stopped at hyperlight_main breakpoint");
+
+        let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
+
+        // cleanup
+        let cleanup_result = cleanup(&out_file_path, &cmd_file_path);
+        assert!(cleanup_result.is_ok(), "{}", cleanup_result.unwrap_err());
+        // check if the test passed - done at the end to ensure cleanup is done
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_gdb_sse_check() {
+        let out_dir = std::env::var("OUT_DIR").expect("Failed to get out dir");
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("Failed to get manifest dir")
+            .replace('\\', "/");
+        println!("manifest dir {manifest_dir}");
+        let out_file_path = format!("{out_dir}/gdb-sse.output");
+        let cmd_file_path = format!("{out_dir}/gdb-sse--commands.txt");
+
+        let cmd = format!(
+            "file {manifest_dir}/../tests/rust_guests/bin/debug/simpleguest
+                target remote :8080
+
+                set pagination off
+                set logging file {out_file_path}
+                set logging on
+
+                break main.rs:simpleguest::use_sse2_registers
+                commands 1
+                    print $xmm1.v4_float
+                    break +2
+                    commands 2
+                        print $xmm1.v4_float
+                        continue
+                    end
+                    continue
+                end
+                
+
+                continue
+
+                set logging off
+                quit
+            "
+        );
+
+        #[cfg(windows)]
+        let cmd = format!("set osabi none\n{}", cmd);
+
+        let checker = |contents: String| contents.contains("$2 = [1.20000005, 0, 0, 0]");
+        let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
 
         // cleanup
         let cleanup_result = cleanup(&out_file_path, &cmd_file_path);

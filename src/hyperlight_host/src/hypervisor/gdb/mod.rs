@@ -109,6 +109,8 @@ pub(crate) struct X86_64Regs {
     pub(crate) r15: u64,
     pub(crate) rip: u64,
     pub(crate) rflags: u64,
+    pub(crate) xmm: [u128; 16],
+    pub(crate) mxcsr: u32,
 }
 
 /// Defines the possible reasons for which a vCPU can be stopped when debugging
@@ -140,7 +142,7 @@ pub(crate) enum DebugMsg {
     RemoveSwBreakpoint(u64),
     Step,
     WriteAddr(u64, Vec<u8>),
-    WriteRegisters(X86_64Regs),
+    WriteRegisters(Box<X86_64Regs>),
 }
 
 /// Enumerates the possible responses that a hypervisor can provide to a debugger
@@ -155,7 +157,7 @@ pub(crate) enum DebugResponse {
     NotAllowed,
     InterruptHandle(Arc<dyn InterruptHandle>),
     ReadAddr(Vec<u8>),
-    ReadRegisters(X86_64Regs),
+    ReadRegisters(Box<X86_64Regs>),
     RemoveHwBreakpoint(bool),
     RemoveSwBreakpoint(bool),
     Step,
@@ -449,7 +451,7 @@ mod tests {
         let res = gdb_conn.try_recv();
         assert!(res.is_err());
 
-        let res = hyp_conn.send(DebugResponse::ReadRegisters(X86_64Regs::default()));
+        let res = hyp_conn.send(DebugResponse::ReadRegisters(Box::default()));
         assert!(res.is_ok());
 
         let res = gdb_conn.recv();

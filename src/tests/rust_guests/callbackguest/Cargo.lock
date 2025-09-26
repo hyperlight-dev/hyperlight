@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "anyhow"
-version = "1.0.100"
+version = "1.0.99"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+checksum = "b0674a1ddeecb70197781e945de4b3b8ffb61fa939a5597bcf48503737663100"
 
 [[package]]
 name = "autocfg"
@@ -16,9 +16,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "bitflags"
-version = "2.9.3"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34efbcccd345379ca2868b2b2c9d3782e9cc58ba87bc7d79d5b53d9c9ae6f25d"
+checksum = "1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967"
 
 [[package]]
 name = "buddy_system_allocator"
@@ -30,19 +30,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "callbackguest"
+version = "0.1.0"
+dependencies = [
+ "hyperlight-common",
+ "hyperlight-guest",
+ "hyperlight-guest-bin",
+ "hyperlight-guest-tracing",
+]
+
+[[package]]
 name = "cc"
-version = "1.2.34"
+version = "1.2.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42bc4aea80032b7bf409b0bc7ccad88853858911b7713a8062fdc0623867bedc"
+checksum = "deec109607ca693028562ed836a5f1c4b8bd77755c4e132fc5ce11b0b6211ae7"
 dependencies = [
  "shlex",
 ]
 
 [[package]]
 name = "cfg-if"
-version = "1.0.3"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
+checksum = "9555578bc9e57714c812a1f84e4fc5b4d21fcb063490c624de019f7464c91268"
 
 [[package]]
 name = "flatbuffers"
@@ -62,7 +72,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "hyperlight-common"
-version = "0.9.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -72,10 +82,9 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.9.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
- "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest-tracing",
  "serde_json",
@@ -83,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-bin"
-version = "0.9.0"
+version = "0.8.0"
 dependencies = [
  "buddy_system_allocator",
  "cc",
@@ -98,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing"
-version = "0.9.0"
+version = "0.8.0"
 dependencies = [
  "hyperlight-common",
  "hyperlight-guest-tracing-macro",
@@ -107,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing-macro"
-version = "0.9.0"
+version = "0.8.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -132,9 +141,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.28"
+version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
+checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 
 [[package]]
 name = "memchr"
@@ -144,9 +153,9 @@ checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.101"
+version = "1.0.95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89ae43fd86e4158d6db51ad8e2b80f313af9cc74f5c0e03ccb87de09998732de"
+checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
 dependencies = [
  "unicode-ident",
 ]
@@ -209,9 +218,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.143"
+version = "1.0.141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d401abef1d108fbd9cbaebc3e46611f4b1021f714a0597a71f41ee463f5f4a5a"
+checksum = "30b9eff21ebe718216c6ec64e1d9ac57087aad11efc64e32002bce4a0d4c03d3"
 dependencies = [
  "itoa",
  "memchr",
@@ -224,17 +233,6 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
-
-[[package]]
-name = "simpleguest"
-version = "0.9.0"
-dependencies = [
- "hyperlight-common",
- "hyperlight-guest",
- "hyperlight-guest-bin",
- "hyperlight-guest-tracing",
- "log",
-]
 
 [[package]]
 name = "spin"
