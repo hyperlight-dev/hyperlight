@@ -101,6 +101,7 @@ fn main() -> Result<()> {
         // the other features they want.
         mshv2: { all(feature = "mshv2", target_os = "linux") },
         mshv3: { all(feature = "mshv3", not(feature="mshv2"), target_os = "linux") },
+        seccomp: { all(feature = "seccomp", target_os = "linux", not(target_env = "musl")) },
     }
 
     #[cfg(feature = "build-metadata")]

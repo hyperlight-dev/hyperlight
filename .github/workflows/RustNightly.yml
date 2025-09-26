@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 12:00 AM, every 2 days
+    - cron: '0 0 */2 * *'
+
+jobs:
+  musl:
+    strategy:
+      fail-fast: true
+      matrix:
+        hypervisor: [kvm, mshv3]
+        cpu: [amd, intel]
+        config: [debug, release]
+    uses: ./.github/workflows/dep_rust.yml
+    secrets: inherit
+    with: 
+      hypervisor: ${{ matrix.hypervisor }}
+      cpu: ${{ matrix.cpu }}
+      config: ${{ matrix.config }}
+      target_triple: x86_64-unknown-linux-musl
+
+  notify-failure:
+    runs-on: ubuntu-latest
+    needs: musl
+    if: always() && needs.musl.result == 'failure'
+    permissions:
+      issues: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Notify Nightly Failure
+        run: ./dev/notify-ci-failure.sh --title="Nightly musl Failure - ${{ github.run_number }}" --labels="area/ci-periodics,area/testing,kind/bug,lifecycle/needs-review"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
