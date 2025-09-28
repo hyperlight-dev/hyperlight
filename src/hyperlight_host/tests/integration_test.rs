@@ -765,3 +765,14 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
             .unwrap();
     }
 }
+
+// cargo test --test integration_test log_message -- --ignored
+#[test]
+fn test_if_guest_is_able_to_get_return_values_from_host() {
+    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
+
+
+    let res = sbox1.call::<()>("HostReturnsBoolValue", iterations).unwrap_err();
+    println!("{:?}", res);
+    assert!(matches!(res, HyperlightError::StackOverflow()));
+}

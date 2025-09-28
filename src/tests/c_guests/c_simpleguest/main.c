@@ -256,6 +256,24 @@ int guest_function(const char *from_host) {
   return 0;
 }
 
+
+bool host_returns_bool_value(const char *from_host) {
+  char guest_message[256] = "Hello from host_returns_bool_value, ";
+  int len = strlen(from_host);
+  strncat(guest_message, from_host, len);
+
+  hl_Parameter params = {.tag = hl_ParameterType_Bool,
+                         .value = {.Bool = true}};
+  const hl_FunctionCall host_call = {.function_name = "HostMethod1",
+                                     .parameters = &params,
+                                     .parameters_len = 1,
+                                     .return_type = hl_ReturnType_Bool
+                                    };
+  hl_call_host_function(&host_call);                                 
+  return hl_get_host_return_value_as_Bool();
+}
+
+HYPERLIGHT_WRAP_FUNCTION(host_returns_bool_value, Bool, 1, String)
 HYPERLIGHT_WRAP_FUNCTION(echo, String, 1, String)
 // HYPERLIGHT_WRAP_FUNCTION(set_byte_array_to_zero, 1, VecBytes) is not valid for functions that return VecBytes
 HYPERLIGHT_WRAP_FUNCTION(guest_function, Int, 1, String)
@@ -289,6 +307,7 @@ HYPERLIGHT_WRAP_FUNCTION(log_message, Int, 2, String, Long)
 
 void hyperlight_main(void)
 {
+    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsBoolValue", host_returns_bool_value);
     HYPERLIGHT_REGISTER_FUNCTION("Echo", echo);
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
@@ -322,6 +341,9 @@ void hyperlight_main(void)
     HYPERLIGHT_REGISTER_FUNCTION("GuestAbortWithMessage", guest_abort_with_msg);
     HYPERLIGHT_REGISTER_FUNCTION("ExecuteOnStack", execute_on_stack);
     HYPERLIGHT_REGISTER_FUNCTION("LogMessage", log_message);
+    // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
+    // so we use hl_register_function_definition directly
+    hl_register_function_definition("24K_in_8K_out", twenty_four_k_in_eight_k_out, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
     hl_register_function_definition("24K_in_8K_out", twenty_four_k_in_eight_k_out, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
