@@ -349,9 +349,6 @@ void hyperlight_main(void)
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
     hl_register_function_definition("24K_in_8K_out", twenty_four_k_in_eight_k_out, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
-    // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
-    // so we use hl_register_function_definition directly
-    hl_register_function_definition("24K_in_8K_out", twenty_four_k_in_eight_k_out, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);
 }
 
 // This dispatch function is only used when the host dispatches a guest function
