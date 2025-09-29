@@ -28,6 +28,6 @@ jobs:
         uses: actions/checkout@v5
         
       - name: Notify Fuzzing Failure
-        run: ./dev/notify-ci-failure.sh --labels="area/fuzzing,area/testing,lifecycle/needs-review,release-blocker"
+        run: ./dev/notify-ci-failure.sh --labels="area/fuzzing,kind/bug,area/testing,lifecycle/needs-review,release-blocker"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
