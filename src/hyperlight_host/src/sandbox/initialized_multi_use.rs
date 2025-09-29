@@ -540,6 +540,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn call_host_func_expect_error() {
+        let path = simple_guest_as_string().unwrap();
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+        sandbox
+            .call::<()>("CallHostExpectError", "SomeUnknownHostFunc".to_string())
+            .unwrap();
+    }
+
     /// Make sure input/output buffers are properly reset after guest call (with host call)
     #[test]
     fn io_buffer_reset() {

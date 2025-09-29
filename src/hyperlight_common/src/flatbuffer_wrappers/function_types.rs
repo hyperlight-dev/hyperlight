@@ -738,16 +738,6 @@ impl TryFrom<ReturnValueBox<'_>> for ReturnValue {
     }
 }
 
-// impl TryFrom<&[u8]> for ReturnValue {
-//     type Error = Error;
-//     #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-//     fn try_from(value: &[u8]) -> Result<Self> {
-//         let function_call_result_fb = size_prefixed_root::<FbFunctionCallResult>(value)
-//             .map_err(|e| anyhow!("Failed to get ReturnValue from bytes: {:?}", e))?;
-//         function_call_result_fb.try_into()
-//     }
-// }
-
 impl TryFrom<&ReturnValue> for Vec<u8> {
     type Error = Error;
     #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
@@ -959,5 +949,38 @@ impl TryFrom<&ReturnValue> for Vec<u8> {
         };
 
         Ok(result_bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use flatbuffers::FlatBufferBuilder;
+
+    use super::super::guest_error::ErrorCode;
+    use super::*;
+
+    #[test]
+    fn encode_success_result() {
+        let mut builder = FlatBufferBuilder::new();
+        let test_data = FunctionCallResult::new(Ok(ReturnValue::Int(42))).encode(&mut builder);
+
+        let function_call_result = FunctionCallResult::try_from(test_data).unwrap();
+        let result = function_call_result.into_inner().unwrap();
+        assert_eq!(result, ReturnValue::Int(42));
+    }
+
+    #[test]
+    fn encode_error_result() {
+        let mut builder = FlatBufferBuilder::new();
+        let test_error = GuestError::new(
+            ErrorCode::GuestFunctionNotFound,
+            "Function not found".to_string(),
+        );
+        let test_data = FunctionCallResult::new(Err(test_error.clone())).encode(&mut builder);
+
+        let function_call_result = FunctionCallResult::try_from(test_data).unwrap();
+        let error = function_call_result.into_inner().unwrap_err();
+        assert_eq!(error.code, test_error.code);
+        assert_eq!(error.message, test_error.message);
     }
 }
