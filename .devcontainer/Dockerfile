@@ -1,6 +1,6 @@
 ## Dockerfile for devcontainer
 
-FROM mcr.microsoft.com/devcontainers/base:debian AS base
+FROM mcr.microsoft.com/devcontainers/base:bookworm AS base
 
 ARG USER=vscode
 ARG GROUP=vscode
