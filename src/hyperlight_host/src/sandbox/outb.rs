@@ -34,7 +34,7 @@ use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
 #[cfg(feature = "trace_guest")]
-use crate::hypervisor::Hypervisor;
+use crate::hypervisor::hyperlight_vm::HyperlightVm;
 #[cfg(feature = "trace_guest")]
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
@@ -157,7 +157,7 @@ fn outb_abort(mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>, data: u32) -
 
 #[cfg(feature = "unwind_guest")]
 fn unwind(
-    hv: &dyn Hypervisor,
+    hv: &HyperlightVm,
     mem: &SandboxMemoryManager<HostSharedMemory>,
     trace_info: &TraceInfo,
 ) -> Result<Vec<u64>> {
@@ -170,7 +170,7 @@ fn unwind(
         .unwind_cache
         .try_lock()
         .map_err(|e| new_error!("could not lock unwinder cache {}\n", e))?;
-    let regs = hv.regs()?;
+    let regs = hv.vm_regs()?;
     let iter = trace_info.unwinder.iter_frames(
         regs.rip,
         framehop::x86_64::UnwindRegsX86_64::new(regs.rip, regs.rsp, regs.rbp),
@@ -267,7 +267,7 @@ pub(super) fn record_guest_trace_frame<F: FnOnce(&mut std::fs::File)>(
 pub(crate) fn handle_outb(
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     host_funcs: Arc<Mutex<FunctionRegistry>>,
-    #[cfg(feature = "trace_guest")] _hv: &mut dyn Hypervisor,
+    #[cfg(feature = "trace_guest")] _hv: &mut HyperlightVm,
     port: u16,
     data: u32,
 ) -> Result<()> {
@@ -299,27 +299,22 @@ pub(crate) fn handle_outb(
         }
         #[cfg(feature = "unwind_guest")]
         OutBAction::TraceRecordStack => {
-            let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info_as_ref()) else {
+            let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info()) else {
                 return Ok(());
             };
-            record_trace_frame(_hv.trace_info_as_ref(), 1u64, |f| {
+            record_trace_frame(_hv.trace_info(), 1u64, |f| {
                 write_stack(f, &stack);
             })
         }
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryAlloc => {
-            use crate::hypervisor::regs::CommonRegisters;
-
-            let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info_as_ref()) else {
+            let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info()) else {
                 return Ok(());
             };
-            let Ok(CommonRegisters {
-                rax: amt, rcx: ptr, ..
-            }) = _hv.regs()
-            else {
-                return Ok(());
-            };
-            record_trace_frame(_hv.trace_info_as_ref(), 2u64, |f| {
+            let regs = _hv.vm_regs()?;
+            let amt = regs.rax;
+            let ptr = regs.rcx;
+            record_trace_frame(_hv.trace_info(), 2u64, |f| {
                 let _ = f.write_all(&ptr.to_ne_bytes());
                 let _ = f.write_all(&amt.to_ne_bytes());
                 write_stack(f, &stack);
@@ -327,29 +322,21 @@ pub(crate) fn handle_outb(
         }
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryFree => {
-            use crate::hypervisor::regs::CommonRegisters;
-
-            let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info_as_ref()) else {
+            let Ok(stack) = unwind(_hv, mem_mgr, _hv.trace_info()) else {
                 return Ok(());
             };
-            let Ok(CommonRegisters { rcx, .. }) = _hv.regs() else {
-                return Ok(());
-            };
-            record_trace_frame(_hv.trace_info_as_ref(), 3u64, |f| {
-                let _ = f.write_all(&rcx.to_ne_bytes());
+            let regs = _hv.vm_regs()?;
+            let ptr = regs.rcx;
+            record_trace_frame(_hv.trace_info(), 3u64, |f| {
+                let _ = f.write_all(&ptr.to_ne_bytes());
                 write_stack(f, &stack);
             })
         }
         #[cfg(feature = "trace_guest")]
         OutBAction::TraceRecord => {
-            use crate::hypervisor::regs::CommonRegisters;
-
-            let Ok(CommonRegisters {
-                rax: len, rcx: ptr, ..
-            }) = _hv.regs()
-            else {
-                return Ok(());
-            };
+            let regs = _hv.vm_regs()?;
+            let len = regs.rax;
+            let ptr = regs.rcx;
             let mut buffer = vec![0u8; len as usize * std::mem::size_of::<TraceRecord>()];
             let buffer = &mut buffer[..];
 
@@ -392,10 +379,10 @@ pub(crate) fn handle_outb(
             }
 
             for record in traces {
-                record_guest_trace_frame(_hv.trace_info_as_ref(), 4u64, record.cycles, |f| {
+                record_guest_trace_frame(_hv.trace_info(), 4u64, record.cycles, |f| {
                     let _ = f.write_all(&record.msg_len.to_ne_bytes());
                     let _ = f.write_all(&record.msg[..record.msg_len]);
-                })?
+                })?;
             }
 
             Ok(())

@@ -1,5 +1,5 @@
 /*
-Copyright 2025  The Hyperlight Authors.
+Copyright 2024 The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,618 +14,336 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::string::String;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::os::raw::c_void;
 
-use log::LevelFilter;
-use tracing::{Span, instrument};
-use windows::Win32::System::Hypervisor::{
-    WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_RUN_VP_EXIT_CONTEXT, WHV_RUN_VP_EXIT_REASON,
-    WHvCancelRunVirtualProcessor,
-};
-#[cfg(crashdump)]
-use {super::crashdump, std::path::Path};
+use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use windows::Win32::Foundation::{FreeLibrary, HANDLE};
+use windows::Win32::System::Hypervisor::*;
+use windows::Win32::System::LibraryLoader::*;
+use windows::core::s;
+use windows_result::HRESULT;
+
 #[cfg(gdb)]
-use {
-    super::gdb::{
-        DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, HypervDebug, VcpuStopReason,
-    },
-    crate::HyperlightError,
+use super::handlers::DbgMemAccessHandlerWrapper;
+use super::regs::{
+    AlignedRegisterValues, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN,
+    WHP_SREGS_NAMES, WHP_SREGS_NAMES_LEN,
 };
-
-use super::regs::CommonSpecialRegisters;
-use super::surrogate_process::SurrogateProcess;
-use super::surrogate_process_manager::*;
-use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
+use super::vm::HyperlightExit;
 use super::wrappers::HandleWrapper;
-use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
-use crate::hypervisor::get_memory_access_violation;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::surrogate_process::SurrogateProcess;
+use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
+use crate::hypervisor::vm::Vm;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::shared_mem::HostSharedMemory;
-#[cfg(feature = "trace_guest")]
-use crate::sandbox::TraceInfo;
-use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::outb::handle_outb;
-#[cfg(crashdump)]
-use crate::sandbox::uninitialized::SandboxRuntimeConfig;
-use crate::{Result, debug, log_then_return, new_error};
+use crate::{Result, new_error};
 
-#[cfg(gdb)]
-mod debug {
-    use std::sync::{Arc, Mutex};
+pub(crate) fn is_hypervisor_present() -> bool {
+    let mut capability: WHV_CAPABILITY = Default::default();
+    let written_size: Option<*mut u32> = None;
 
-    use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
-
-    use super::{HypervWindowsDriver, *};
-    use crate::Result;
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
-    use crate::mem::mgr::SandboxMemoryManager;
-    use crate::mem::shared_mem::HostSharedMemory;
-
-    impl HypervWindowsDriver {
-        /// Resets the debug information to disable debugging
-        fn disable_debug(&mut self) -> Result<()> {
-            let mut debug = HypervDebug::default();
-
-            debug.set_single_step(&self.processor, false)?;
-
-            self.debug = Some(debug);
-
-            Ok(())
-        }
-
-        /// Get the reason the vCPU has stopped
-        pub(crate) fn get_stop_reason(
-            &mut self,
-            exception: WHV_VP_EXCEPTION_CONTEXT,
-        ) -> Result<VcpuStopReason> {
-            let debug = self
-                .debug
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            debug.get_stop_reason(&self.processor, exception, self.entrypoint)
-        }
-
-        pub(crate) fn process_dbg_request(
-            &mut self,
-            req: DebugMsg,
-            dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-        ) -> Result<DebugResponse> {
-            if let Some(debug) = self.debug.as_mut() {
-                match req {
-                    DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
-                        debug
-                            .add_hw_breakpoint(&self.processor, addr)
-                            .map_err(|e| {
-                                log::error!("Failed to add hw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
-                        debug
-                            .add_sw_breakpoint(&self.processor, addr, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to add sw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::Continue => {
-                        debug.set_single_step(&self.processor, false).map_err(|e| {
-                            log::error!("Failed to continue execution: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::Continue)
-                    }
-                    DebugMsg::DisableDebug => {
-                        self.disable_debug().map_err(|e| {
-                            log::error!("Failed to disable debugging: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::DisableDebug)
-                    }
-                    DebugMsg::GetCodeSectionOffset => {
-                        let offset = dbg_mem_access_fn
-                            .try_lock()
-                            .map_err(|e| {
-                                new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
-                            })?
-                            .layout
-                            .get_guest_code_address();
-
-                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
-                    }
-                    DebugMsg::ReadAddr(addr, len) => {
-                        let mut data = vec![0u8; len];
-
-                        debug
-                            .read_addrs(&self.processor, addr, &mut data, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to read from address: {:?}", e);
-
-                                e
-                            })?;
-
-                        Ok(DebugResponse::ReadAddr(data))
-                    }
-                    DebugMsg::ReadRegisters => {
-                        let mut regs = Default::default();
-
-                        debug
-                            .read_regs(&self.processor, &mut regs)
-                            .map_err(|e| {
-                                log::error!("Failed to read registers: {:?}", e);
-
-                                e
-                            })
-                            .map(|_| DebugResponse::ReadRegisters(regs))
-                    }
-                    DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
-                        debug
-                            .remove_hw_breakpoint(&self.processor, addr)
-                            .map_err(|e| {
-                                log::error!("Failed to remove hw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
-                        debug
-                            .remove_sw_breakpoint(&self.processor, addr, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to remove sw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::Step => {
-                        debug.set_single_step(&self.processor, true).map_err(|e| {
-                            log::error!("Failed to enable step instruction: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::Step)
-                    }
-                    DebugMsg::WriteAddr(addr, data) => {
-                        debug
-                            .write_addrs(&self.processor, addr, &data, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to write to address: {:?}", e);
-
-                                e
-                            })?;
-
-                        Ok(DebugResponse::WriteAddr)
-                    }
-                    DebugMsg::WriteRegisters(regs) => debug
-                        .write_regs(&self.processor, &regs)
-                        .map_err(|e| {
-                            log::error!("Failed to write registers: {:?}", e);
-
-                            e
-                        })
-                        .map(|_| DebugResponse::WriteRegisters),
-                }
-            } else {
-                Err(new_error!("Debugging is not enabled"))
-            }
-        }
-
-        pub(crate) fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
-            let gdb_conn = self
-                .gdb_conn
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            gdb_conn.recv().map_err(|e| {
-                new_error!(
-                    "Got an error while waiting to receive a
-                    message: {:?}",
-                    e
-                )
-            })
-        }
-
-        pub(crate) fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
-            log::debug!("Sending {:?}", cmd);
-
-            let gdb_conn = self
-                .gdb_conn
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            gdb_conn
-                .send(cmd)
-                .map_err(|e| new_error!("Got an error while sending a response message {:?}", e))
+    match unsafe {
+        WHvGetCapability(
+            WHvCapabilityCodeHypervisorPresent,
+            &mut capability as *mut _ as *mut c_void,
+            std::mem::size_of::<WHV_CAPABILITY>() as u32,
+            written_size,
+        )
+    } {
+        Ok(_) => unsafe { capability.HypervisorPresent.as_bool() },
+        Err(_) => {
+            log::info!("Windows Hypervisor Platform is not available on this system");
+            false
         }
     }
 }
 
+// This function dynamically loads the WHvMapGpaRange2 function from the winhvplatform.dll
+// WHvMapGpaRange2 only available on Windows 11 or Windows Server 2022 and later
+// we do things this way to allow a user trying to load hyperlight on an older version of windows to
+// get an error message saying that hyperlight requires a newer version of windows, rather than just failing
+// with an error about a missing entrypoint
+// This function should always succeed since before we get here we have already checked that the hypervisor is present and
+// that we are on a supported version of windows.
+type WHvMapGpaRange2Func = unsafe extern "cdecl" fn(
+    WHV_PARTITION_HANDLE,
+    HANDLE,
+    *const c_void,
+    u64,
+    u64,
+    WHV_MAP_GPA_RANGE_FLAGS,
+) -> HRESULT;
+
 /// A Hypervisor driver for HyperV-on-Windows.
-pub(crate) struct HypervWindowsDriver {
-    processor: VMProcessor,
-    _surrogate_process: SurrogateProcess, // we need to keep a reference to the SurrogateProcess for the duration of the driver since otherwise it will dropped and the memory mapping will be unmapped and the surrogate process will be returned to the pool
-    entrypoint: u64,
-    orig_rsp: GuestPtr,
-    interrupt_handle: Arc<WindowsInterruptHandle>,
-    mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
-    host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
-
-    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
-    mmap_regions: Vec<MemoryRegion>,    // Later mapped regions
-
-    #[cfg(gdb)]
-    debug: Option<HypervDebug>,
-    #[cfg(gdb)]
-    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-    #[cfg(crashdump)]
-    rt_cfg: SandboxRuntimeConfig,
-    #[cfg(feature = "trace_guest")]
-    #[allow(dead_code)]
-    trace_info: TraceInfo,
+#[derive(Debug)]
+pub(crate) struct WhpVm {
+    partition: WHV_PARTITION_HANDLE,
+    // Lazily create the surrogate process when we need to map memory
+    surrogate_process: Option<SurrogateProcess>,
+    mmap_file_handle: HandleWrapper,
 }
-/* This does not automatically impl Send because the host
- * address of the shared memory region is a raw pointer, which are
- * marked as !Send (and !Sync). However, the access patterns used
- * here are safe.
- */
-unsafe impl Send for HypervWindowsDriver {}
 
-impl HypervWindowsDriver {
-    #[allow(clippy::too_many_arguments)]
-    // TODO: refactor this function to take fewer arguments. Add trace_info to rt_cfg
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn new(
-        mem_regions: Vec<MemoryRegion>,
-        raw_size: usize,
-        pml4_address: u64,
-        entrypoint: u64,
-        rsp: u64,
-        mmap_file_handle: HandleWrapper,
-        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-        #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
-        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
-    ) -> Result<Self> {
-        // create and setup hypervisor partition
-        let mut partition = VMPartition::new(1)?;
+unsafe impl Send for WhpVm {}
+unsafe impl Sync for WhpVm {}
+
+/// WHV_REGISTER_VALUE must be 16-byte aligned, but the rust struct is incorrectly generated
+/// as 8-byte aligned. This is a workaround to ensure that the struct is 16-byte aligned.
+#[repr(C, align(16))]
+struct Align16<T>(T);
+#[allow(clippy::disallowed_macros)] // compile time
+const _: () = {
+    assert!(
+        std::mem::size_of::<Align16<WHV_REGISTER_VALUE>>()
+            == std::mem::size_of::<WHV_REGISTER_VALUE>()
+    );
+};
+
+impl WhpVm {
+    pub(crate) fn new(mmap_file_handle: HandleWrapper) -> Result<Self> {
+        const NUM_CPU: u32 = 1;
+        let partition = unsafe {
+            let partition = WHvCreatePartition()?;
+            WHvSetPartitionProperty(
+                partition,
+                WHvPartitionPropertyCodeProcessorCount,
+                &NUM_CPU as *const _ as *const _,
+                std::mem::size_of_val(&NUM_CPU) as _,
+            )?;
+            WHvSetupPartition(partition)?;
+            WHvCreateVirtualProcessor(partition, 0, 0)?;
+            partition
+        };
+
+        Ok(WhpVm {
+            partition,
+            surrogate_process: None,
+            mmap_file_handle,
+        })
+    }
+
+    /// Helper for setting arbitrary registers.
+    fn set_registers(&self, registers: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]) -> Result<()> {
+        let register_count = registers.len();
+
+        // Prepare register names (no special alignment needed)
+        let mut register_names = Vec::with_capacity(register_count);
+        let mut register_values = Vec::with_capacity(register_count);
+
+        for (key, value) in registers.iter() {
+            register_names.push(*key);
+            register_values.push(Align16(*value));
+        }
+
+        unsafe {
+            WHvSetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                register_names.as_ptr(),
+                register_count as u32,
+                register_values.as_ptr() as *const WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Vm for WhpVm {
+    fn get_regs(&self) -> Result<CommonRegisters> {
+        let mut whv_regs_values =
+            AlignedRegisterValues::<WHP_REGS_NAMES_LEN>(unsafe { std::mem::zeroed() });
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_REGS_NAMES.as_ptr(),
+                whv_regs_values.0.len() as u32,
+                whv_regs_values.0.as_mut_ptr(),
+            )?;
+        }
+
+        WHP_REGS_NAMES
+            .into_iter()
+            .zip(whv_regs_values.0)
+            .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonRegisters: {:?}",
+                    e
+                )
+            })
+    }
+
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_REGS_NAMES_LEN] = regs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
+    }
+
+    fn get_sregs(&self) -> Result<CommonSpecialRegisters> {
+        let mut whp_sregs_values =
+            AlignedRegisterValues::<WHP_SREGS_NAMES_LEN>(unsafe { std::mem::zeroed() });
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_SREGS_NAMES.as_ptr(),
+                whp_sregs_values.0.len() as u32,
+                whp_sregs_values.0.as_mut_ptr(),
+            )?;
+        }
+
+        WHP_SREGS_NAMES
+            .into_iter()
+            .zip(whp_sregs_values.0)
+            .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonSpecialRegisters: {:?}",
+                    e
+                )
+            })
+    }
+
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_SREGS_NAMES_LEN] = sregs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
+    }
+
+    fn get_fpu(&self) -> Result<CommonFpu> {
+        let mut whp_fpu_values =
+            AlignedRegisterValues::<WHP_FPU_NAMES_LEN>(unsafe { std::mem::zeroed() });
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_FPU_NAMES.as_ptr(),
+                whp_fpu_values.0.len() as u32,
+                whp_fpu_values.0.as_mut_ptr(),
+            )?;
+        }
+
+        WHP_FPU_NAMES
+            .into_iter()
+            .zip(whp_fpu_values.0)
+            .collect::<Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| new_error!("Failed to convert WHP registers to CommonFpu: {:?}", e))
+    }
+
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
+        let whp_fpu: [(WHV_REGISTER_NAME, WHV_REGISTER_VALUE); WHP_FPU_NAMES_LEN] = fpu.into();
+        self.set_registers(&whp_fpu)?;
+        Ok(())
+    }
+
+    unsafe fn map_memory(&mut self, regions: &[MemoryRegion]) -> Result<()> {
+        if regions.is_empty() {
+            return Err(new_error!("No memory regions to map"));
+        }
+        if self.surrogate_process.is_some() {
+            return Err(new_error!("Memory has already been mapped"));
+        }
+
+        let size: usize = regions.iter().map(|r| r.host_region.len()).sum();
+        let raw_size = size + 2 * PAGE_SIZE_USIZE;
+        let raw_source_address = regions[0].host_region.start - PAGE_SIZE_USIZE;
 
         // get a surrogate process with preallocated memory of size SharedMemory::raw_mem_size()
         // with guard pages setup
         let surrogate_process = {
             let mgr = get_surrogate_process_manager()?;
-            mgr.get_surrogate_process(raw_size, mmap_file_handle)
+            mgr.get_surrogate_process(
+                raw_size,
+                raw_source_address as *const c_void,
+                self.mmap_file_handle,
+            )
         }?;
 
-        partition.map_gpa_range(&mem_regions, &surrogate_process)?;
-
-        let proc = VMProcessor::new(partition)?;
-        let partition_handle = proc.get_partition_hdl();
-
-        #[cfg(gdb)]
-        let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
-            let mut debug = HypervDebug::new();
-            debug.add_hw_breakpoint(&proc, entrypoint)?;
-
-            (Some(debug), Some(gdb_conn))
-        } else {
-            (None, None)
+        let process_handle: HANDLE = surrogate_process.process_handle.into();
+        // The function pointer to WHvMapGpaRange2 is resolved dynamically to allow us to detect
+        // when we are running on older versions of windows that do not support this API and
+        // return a more informative error message, rather than failing with an error about a missing entrypoint
+        let whvmapgparange2_func = unsafe {
+            match try_load_whv_map_gpa_range2() {
+                Ok(func) => func,
+                Err(e) => return Err(new_error!("Can't find API: {}", e)),
+            }
         };
 
-        let interrupt_handle = Arc::new(WindowsInterruptHandle {
-            running: AtomicBool::new(false),
-            cancel_requested: AtomicBool::new(false),
-            #[cfg(gdb)]
-            debug_interrupt: AtomicBool::new(false),
-            partition_handle,
-            dropped: AtomicBool::new(false),
-        });
+        regions.iter().try_for_each(|region| unsafe {
+            let flags = region
+                .flags
+                .iter()
+                .map(|flag| match flag {
+                    MemoryRegionFlags::NONE => Ok(WHvMapGpaRangeFlagNone),
+                    MemoryRegionFlags::READ => Ok(WHvMapGpaRangeFlagRead),
+                    MemoryRegionFlags::WRITE => Ok(WHvMapGpaRangeFlagWrite),
+                    MemoryRegionFlags::EXECUTE => Ok(WHvMapGpaRangeFlagExecute),
+                    _ => Err(new_error!("Invalid Memory Region Flag")),
+                })
+                .collect::<Result<Vec<WHV_MAP_GPA_RANGE_FLAGS>>>()?
+                .iter()
+                .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag); // collect using bitwise OR
 
-        let mut hv = Self {
-            processor: proc,
-            _surrogate_process: surrogate_process,
-            entrypoint,
-            orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
-            interrupt_handle: interrupt_handle.clone(),
-            mem_mgr: None,
-            host_funcs: None,
-            sandbox_regions: mem_regions,
-            mmap_regions: Vec::new(),
-            #[cfg(gdb)]
-            debug,
-            #[cfg(gdb)]
-            gdb_conn,
-            #[cfg(crashdump)]
-            rt_cfg,
-            #[cfg(feature = "trace_guest")]
-            trace_info,
-        };
+            let res = whvmapgparange2_func(
+                self.partition,
+                process_handle,
+                region.host_region.start as *const c_void,
+                region.guest_region.start as u64,
+                region.guest_region.len() as u64,
+                flags,
+            );
+            if res.is_err() {
+                return Err(new_error!("Call to WHvMapGpaRange2 failed"));
+            }
+            Ok(())
+        })?;
 
-        hv.setup_initial_sregs(pml4_address)?;
-
-        // Send the interrupt handle to the GDB thread if debugging is enabled
-        // This is used to allow the GDB thread to stop the vCPU
-        #[cfg(gdb)]
-        if hv.debug.is_some() {
-            hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
-        }
-
-        Ok(hv)
-    }
-
-    #[inline]
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn get_exit_details(&self, exit_reason: WHV_RUN_VP_EXIT_REASON) -> Result<String> {
-        let mut error = String::new();
-        error.push_str(&format!(
-            "Did not receive a halt from Hypervisor as expected - Received {exit_reason:?}!\n"
-        ));
-        error.push_str(&format!("Registers: \n{:#?}", self.processor.regs()?));
-        Ok(error)
-    }
-}
-
-impl Debug for HypervWindowsDriver {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut fs = f.debug_struct("HyperV Driver");
-
-        fs.field("Entrypoint", &self.entrypoint)
-            .field("Original RSP", &self.orig_rsp);
-
-        for region in &self.sandbox_regions {
-            fs.field("Sandbox Memory Region", &region);
-        }
-        for region in &self.mmap_regions {
-            fs.field("Mapped Memory Region", &region);
-        }
-
-        // Get the registers
-        if let Ok(regs) = self.processor.regs() {
-            fs.field("Registers", &regs);
-        }
-
-        // Get the special registers
-        if let Ok(special_regs) = self.processor.sregs() {
-            fs.field("SpecialRegisters", &special_regs);
-        }
-
-        fs.finish()
-    }
-}
-
-impl Hypervisor for HypervWindowsDriver {
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn initialise(
-        &mut self,
-        peb_address: RawPtr,
-        seed: u64,
-        page_size: u32,
-        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: Arc<Mutex<FunctionRegistry>>,
-        max_guest_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()> {
-        self.mem_mgr = Some(mem_mgr);
-        self.host_funcs = Some(host_funcs);
-
-        let max_guest_log_level: u64 = match max_guest_log_level {
-            Some(level) => level as u64,
-            None => self.get_max_log_level().into(),
-        };
-
-        let regs = CommonRegisters {
-            rip: self.entrypoint,
-            rsp: self.orig_rsp.absolute()?,
-
-            // function args
-            rdi: peb_address.into(),
-            rsi: seed,
-            rdx: page_size.into(),
-            rcx: max_guest_log_level,
-            rflags: 1 << 1, // eflags bit index 1 is reserved and always needs to be 1
-
-            ..Default::default()
-        };
-        self.set_regs(&regs)?;
-
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            #[cfg(gdb)]
-            dbg_mem_access_hdl,
-        )
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn map_region(&mut self, _region: &MemoryRegion) -> Result<()> {
-        log_then_return!("Mapping host memory into the guest not yet supported on this platform");
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn unmap_region(&mut self, _region: &MemoryRegion) -> Result<()> {
-        log_then_return!("Mapping host memory into the guest not yet supported on this platform");
-    }
-
-    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
-        Box::new(self.mmap_regions.iter())
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn dispatch_call_from_host(
-        &mut self,
-        dispatch_func_addr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()> {
-        // Reset general purpose registers, then set RIP and RSP
-        let regs = CommonRegisters {
-            rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
-            rflags: 1 << 1, // eflags bit index 1 is reserved and always needs to be 1
-            ..Default::default()
-        };
-        self.processor.set_regs(&regs)?;
-
-        // reset fpu state
-        self.processor.set_fpu(&CommonFpu::default())?;
-
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            #[cfg(gdb)]
-            dbg_mem_access_hdl,
-        )?;
+        self.surrogate_process = Some(surrogate_process);
 
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        rip: u64,
-        instruction_length: u64,
-    ) -> Result<()> {
-        let mut padded = [0u8; 4];
-        let copy_len = data.len().min(4);
-        padded[..copy_len].copy_from_slice(&data[..copy_len]);
-        let val = u32::from_le_bytes(padded);
+    #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
+    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
+        let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
 
-        #[cfg(feature = "trace_guest")]
-        {
-            // We need to handle the borrow checker issue where we need both:
-            // - &mut SandboxMemoryManager (from self.mem_mgr.as_mut())
-            // - &mut dyn Hypervisor (from self)
-            // We'll use a temporary approach to extract the mem_mgr temporarily
-            let mem_mgr_option = self.mem_mgr.take();
-            let mut mem_mgr = mem_mgr_option
-                .ok_or_else(|| new_error!("mem_mgr should be initialized before handling IO"))?;
-            let host_funcs = self
-                .host_funcs
-                .as_ref()
-                .ok_or_else(|| new_error!("host_funcs should be initialized before handling IO"))?
-                .clone();
-
-            handle_outb(&mut mem_mgr, host_funcs, self, port, val)?;
-
-            // Put the mem_mgr back
-            self.mem_mgr = Some(mem_mgr);
+        unsafe {
+            WHvRunVirtualProcessor(
+                self.partition,
+                0,
+                &mut exit_context as *mut _ as *mut c_void,
+                std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
+            )?;
         }
-
-        #[cfg(not(feature = "trace_guest"))]
-        {
-            let mem_mgr = self
-                .mem_mgr
-                .as_mut()
-                .ok_or_else(|| new_error!("mem_mgr should be initialized before handling IO"))?;
-            let host_funcs = self
-                .host_funcs
-                .as_ref()
-                .ok_or_else(|| new_error!("host_funcs should be initialized before handling IO"))?
-                .clone();
-
-            handle_outb(mem_mgr, host_funcs, port, val)?;
-        }
-
-        let mut regs = self.regs()?;
-        regs.rip = rip + instruction_length;
-        self.set_regs(&regs)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(&mut self) -> Result<super::HyperlightExit> {
-        self.interrupt_handle.running.store(true, Ordering::Relaxed);
-
-        #[cfg(not(gdb))]
-        let debug_interrupt = false;
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
-
-        // Don't run the vcpu if `cancel_requested` is true
-        let exit_context = if self
-            .interrupt_handle
-            .cancel_requested
-            .load(Ordering::Relaxed)
-            || debug_interrupt
-        {
-            WHV_RUN_VP_EXIT_CONTEXT {
-                ExitReason: WHV_RUN_VP_EXIT_REASON(8193i32), // WHvRunVpExitReasonCanceled
-                VpContext: Default::default(),
-                Anonymous: Default::default(),
-                Reserved: Default::default(),
-            }
-        } else {
-            #[cfg(feature = "trace_guest")]
-            if self.trace_info.guest_start_epoch.is_none() {
-                // Store the guest start epoch and cycles to trace the guest execution time
-                crate::debug!("HyperV - Guest Start Epoch set");
-                self.trace_info.guest_start_tsc =
-                    Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
-                self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
-            }
-            self.processor.run()?
-        };
-        self.interrupt_handle
-            .cancel_requested
-            .store(false, Ordering::Relaxed);
-        self.interrupt_handle
-            .running
-            .store(false, Ordering::Relaxed);
-
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
 
         let result = match exit_context.ExitReason {
-            // WHvRunVpExitReasonX64IoPortAccess
-            WHV_RUN_VP_EXIT_REASON(2i32) => {
-                // size of current instruction is in lower byte of _bitfield
-                // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvexitcontextdatatypes)
+            WHvRunVpExitReasonX64IoPortAccess => unsafe {
                 let instruction_length = exit_context.VpContext._bitfield & 0xF;
-                unsafe {
-                    debug!(
-                        "HyperV IO Details :\n Port: {:#x} \n {:#?}",
-                        exit_context.Anonymous.IoPortAccess.PortNumber, &self
-                    );
-                    HyperlightExit::IoOut(
-                        exit_context.Anonymous.IoPortAccess.PortNumber,
-                        exit_context
-                            .Anonymous
-                            .IoPortAccess
-                            .Rax
-                            .to_le_bytes()
-                            .to_vec(),
-                        exit_context.VpContext.Rip,
-                        instruction_length as u64,
-                    )
-                }
-            }
-            // HvRunVpExitReasonX64Halt
-            WHV_RUN_VP_EXIT_REASON(8i32) => {
-                debug!("HyperV Halt Details :\n {:#?}", &self);
-                HyperlightExit::Halt()
-            }
-            // WHvRunVpExitReasonMemoryAccess
-            WHV_RUN_VP_EXIT_REASON(1i32) => {
+                let rip = exit_context.VpContext.Rip + instruction_length as u64;
+                self.set_registers(&[(WHvX64RegisterRip, WHV_REGISTER_VALUE { Reg64: rip })])?;
+                HyperlightExit::IoOut(
+                    exit_context.Anonymous.IoPortAccess.PortNumber,
+                    exit_context
+                        .Anonymous
+                        .IoPortAccess
+                        .Rax
+                        .to_le_bytes()
+                        .to_vec(),
+                )
+            },
+            WHvRunVpExitReasonX64Halt => HyperlightExit::Halt(),
+            WHvRunVpExitReasonMemoryAccess => {
                 let gpa = unsafe { exit_context.Anonymous.MemoryAccess.Gpa };
                 let access_info = unsafe {
                     WHV_MEMORY_ACCESS_TYPE(
@@ -634,348 +352,61 @@ impl Hypervisor for HypervWindowsDriver {
                     )
                 };
                 let access_info = MemoryRegionFlags::try_from(access_info)?;
-                debug!(
-                    "HyperV Memory Access Details :\n GPA: {:#?}\n Access Info :{:#?}\n {:#?} ",
-                    gpa, access_info, &self
-                );
-
-                match get_memory_access_violation(
-                    gpa as usize,
-                    self.sandbox_regions.iter().chain(self.mmap_regions.iter()),
-                    access_info,
-                ) {
-                    Some(access_info) => access_info,
-                    None => HyperlightExit::Mmio(gpa),
+                match access_info {
+                    MemoryRegionFlags::READ => HyperlightExit::MmioRead(gpa),
+                    MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(gpa),
+                    _ => HyperlightExit::Unknown("Unknown memory access type".to_string()),
                 }
             }
-            //  WHvRunVpExitReasonCanceled
             //  Execution was cancelled by the host.
             //  This will happen when guest code runs for too long
-            WHV_RUN_VP_EXIT_REASON(8193i32) => {
-                debug!("HyperV Cancelled Details :\n {:#?}", &self);
-                #[cfg(gdb)]
-                if debug_interrupt {
-                    self.interrupt_handle
-                        .debug_interrupt
-                        .store(false, Ordering::Relaxed);
-
-                    // If the vCPU was stopped because of an interrupt, we need to
-                    // return a special exit reason so that the gdb thread can handle it
-                    // and resume execution
-                    HyperlightExit::Debug(VcpuStopReason::Interrupt)
-                } else {
-                    HyperlightExit::Cancelled()
-                }
-
-                #[cfg(not(gdb))]
-                HyperlightExit::Cancelled()
-            }
-            #[cfg(gdb)]
-            WHV_RUN_VP_EXIT_REASON(4098i32) => {
-                // Get information about the exception that triggered the exit
-                let exception = unsafe { exit_context.Anonymous.VpException };
-
-                match self.get_stop_reason(exception) {
-                    Ok(reason) => HyperlightExit::Debug(reason),
-                    Err(e) => {
-                        log_then_return!("Error getting stop reason: {}", e);
-                    }
-                }
-            }
-            WHV_RUN_VP_EXIT_REASON(_) => {
-                debug!(
-                    "HyperV Unexpected Exit Details :#nReason {:#?}\n {:#?}",
-                    exit_context.ExitReason, &self
-                );
-                match self.get_exit_details(exit_context.ExitReason) {
-                    Ok(error) => HyperlightExit::Unknown(error),
-                    Err(e) => HyperlightExit::Unknown(format!("Error getting exit details: {}", e)),
-                }
-            }
+            WHvRunVpExitReasonCanceled => HyperlightExit::Cancelled(),
+            WHV_RUN_VP_EXIT_REASON(_) => HyperlightExit::Unknown(format!(
+                "Unknown exit reason '{}'",
+                exit_context.ExitReason.0
+            )),
         };
-
         Ok(result)
     }
 
-    /// Get regs
-    #[allow(dead_code)]
-    fn regs(&self) -> Result<CommonRegisters> {
-        self.processor.regs()
-    }
-    /// Set regs
-    fn set_regs(&mut self, regs: &CommonRegisters) -> Result<()> {
-        self.processor.set_regs(regs)
-    }
-    /// Get fpu regs
-    #[allow(dead_code)]
-    fn fpu(&self) -> Result<CommonFpu> {
-        self.processor.fpu()
-    }
-    /// Set fpu regs
-    fn set_fpu(&mut self, fpu: &CommonFpu) -> Result<()> {
-        self.processor.set_fpu(fpu)
-    }
-    /// Get special regs
-    #[allow(dead_code)]
-    fn sregs(&self) -> Result<CommonSpecialRegisters> {
-        self.processor.sregs()
-    }
-    /// Set special regs
-    #[allow(dead_code)]
-    fn set_sregs(&mut self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        self.processor.set_sregs(sregs)
-    }
-
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
-        self.interrupt_handle.clone()
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
-    }
-
-    #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext<'_>>> {
-        if self.rt_cfg.guest_core_dump {
-            let mut regs = [0; 27];
-
-            let vcpu_regs = self.processor.regs()?;
-            let sregs = self.processor.sregs()?;
-            let xsave = self.processor.get_xsave()?;
-
-            // Set the registers in the order expected by the crashdump context
-            regs[0] = vcpu_regs.r15; // r15
-            regs[1] = vcpu_regs.r14; // r14
-            regs[2] = vcpu_regs.r13; // r13
-            regs[3] = vcpu_regs.r12; // r12
-            regs[4] = vcpu_regs.rbp; // rbp
-            regs[5] = vcpu_regs.rbx; // rbx
-            regs[6] = vcpu_regs.r11; // r11
-            regs[7] = vcpu_regs.r10; // r10
-            regs[8] = vcpu_regs.r9; // r9
-            regs[9] = vcpu_regs.r8; // r8
-            regs[10] = vcpu_regs.rax; // rax
-            regs[11] = vcpu_regs.rcx; // rcx
-            regs[12] = vcpu_regs.rdx; // rdx
-            regs[13] = vcpu_regs.rsi; // rsi
-            regs[14] = vcpu_regs.rdi; // rdi
-            regs[15] = 0; // orig rax
-            regs[16] = vcpu_regs.rip; // rip
-            regs[17] = sregs.cs.selector as u64; // cs
-            regs[18] = vcpu_regs.rflags; // eflags
-            regs[19] = vcpu_regs.rsp; // rsp
-            regs[20] = sregs.ss.selector as u64; // ss
-            regs[21] = sregs.fs.base; // fs_base
-            regs[22] = sregs.gs.base; // gs_base
-            regs[23] = sregs.ds.selector as u64; // ds
-            regs[24] = sregs.es.selector as u64; // es
-            regs[25] = sregs.fs.selector as u64; // fs
-            regs[26] = sregs.gs.selector as u64; // gs
-
-            // Get the filename from the config
-            let filename = self.rt_cfg.binary_path.clone().and_then(|path| {
-                Path::new(&path)
-                    .file_name()
-                    .and_then(|name| name.to_os_string().into_string().ok())
-            });
-
-            Ok(Some(crashdump::CrashDumpContext::new(
-                &self.sandbox_regions,
-                regs,
-                xsave,
-                self.entrypoint,
-                self.rt_cfg.binary_path.clone(),
-                filename,
-            )))
-        } else {
-            Ok(None)
-        }
-    }
-
-    #[cfg(gdb)]
-    fn handle_debug(
-        &mut self,
-        dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-        stop_reason: super::gdb::VcpuStopReason,
-    ) -> Result<()> {
-        if self.debug.is_none() {
-            return Err(new_error!("Debugging is not enabled"));
-        }
-        match stop_reason {
-            // If the vCPU stopped because of a crash, we need to handle it differently
-            // We do not want to allow resuming execution or placing breakpoints
-            // because the guest has crashed.
-            // We only allow reading registers and memory
-            VcpuStopReason::Crash => {
-                self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
-                    .map_err(|e| {
-                        new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
-                    })?;
-
-                loop {
-                    log::debug!("Debug wait for event to resume vCPU");
-                    // Wait for a message from gdb
-                    let req = self.recv_dbg_msg()?;
-
-                    // Flag to store if we should deny continue or step requests
-                    let mut deny_continue = false;
-                    // Flag to store if we should detach from the gdb session
-                    let mut detach = false;
-
-                    let response = match req {
-                        // Allow the detach request to disable debugging by continuing resuming
-                        // hypervisor crash error reporting
-                        DebugMsg::DisableDebug => {
-                            detach = true;
-                            DebugResponse::DisableDebug
-                        }
-                        // Do not allow continue or step requests
-                        DebugMsg::Continue | DebugMsg::Step => {
-                            deny_continue = true;
-                            DebugResponse::NotAllowed
-                        }
-                        // Do not allow adding/removing breakpoints and writing to memory or registers
-                        DebugMsg::AddHwBreakpoint(_)
-                        | DebugMsg::AddSwBreakpoint(_)
-                        | DebugMsg::RemoveHwBreakpoint(_)
-                        | DebugMsg::RemoveSwBreakpoint(_)
-                        | DebugMsg::WriteAddr(_, _)
-                        | DebugMsg::WriteRegisters(_) => DebugResponse::NotAllowed,
-
-                        // For all other requests, we will process them normally
-                        _ => {
-                            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
-                            match result {
-                                Ok(response) => response,
-                                Err(HyperlightError::TranslateGuestAddress(_)) => {
-                                    // Treat non fatal errors separately so the guest doesn't fail
-                                    DebugResponse::ErrorOccurred
-                                }
-                                Err(e) => {
-                                    log::error!("Error processing debug request: {:?}", e);
-                                    return Err(e);
-                                }
-                            }
-                        }
-                    };
-
-                    // Send the response to the request back to gdb
-                    self.send_dbg_msg(response)
-                        .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
-
-                    // If we are denying continue or step requests, the debugger assumes the
-                    // execution started so we need to report a stop reason as a crash and let
-                    // it request to read registers/memory to figure out what happened
-                    if deny_continue {
-                        self.send_dbg_msg(DebugResponse::VcpuStopped(VcpuStopReason::Crash))
-                            .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
-                    }
-
-                    // If we are detaching, we will break the loop and the Hypervisor will continue
-                    // to handle the Crash reason
-                    if detach {
-                        break;
-                    }
-                }
-            }
-
-            // If the vCPU stopped because of any other reason except a crash, we can handle it
-            // normally
-            _ => {
-                self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
-                    .map_err(|e| {
-                        new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
-                    })?;
-
-                loop {
-                    log::debug!("Debug wait for event to resume vCPU");
-
-                    // Wait for a message from gdb
-                    let req = self.recv_dbg_msg()?;
-
-                    let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
-
-                    let response = match result {
-                        Ok(response) => response,
-                        // Treat non fatal errors separately so the guest doesn't fail
-                        Err(HyperlightError::TranslateGuestAddress(_)) => {
-                            DebugResponse::ErrorOccurred
-                        }
-                        Err(e) => {
-                            return Err(e);
-                        }
-                    };
-
-                    // If the command was either step or continue, we need to run the vcpu
-                    let cont = matches!(
-                        response,
-                        DebugResponse::Step | DebugResponse::Continue | DebugResponse::DisableDebug
-                    );
-
-                    self.send_dbg_msg(response)
-                        .map_err(|e| new_error!("Couldn't send response to gdb: {:?}", e))?;
-
-                    if cont {
-                        break;
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn check_stack_guard(&self) -> Result<bool> {
-        if let Some(mgr) = self.mem_mgr.as_ref() {
-            mgr.check_stack_guard()
-        } else {
-            Err(new_error!("Memory manager is not initialized"))
-        }
-    }
-
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_ref(&self) -> &TraceInfo {
-        &self.trace_info
-    }
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
-        &mut self.trace_info
+    fn get_partition_handle(&self) -> WHV_PARTITION_HANDLE {
+        self.partition
     }
 }
 
-impl Drop for HypervWindowsDriver {
+impl Drop for WhpVm {
     fn drop(&mut self) {
-        self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
+        if let Err(e) = unsafe { WHvDeletePartition(self.partition) } {
+            log::error!("Failed to delete partition: {}", e);
+        }
     }
 }
 
-#[derive(Debug)]
-pub struct WindowsInterruptHandle {
-    // `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running, which is the reason we need this flag.
-    running: AtomicBool,
-    cancel_requested: AtomicBool,
-    // This is used to signal the GDB thread to stop the vCPU
-    #[cfg(gdb)]
-    debug_interrupt: AtomicBool,
-    partition_handle: WHV_PARTITION_HANDLE,
-    dropped: AtomicBool,
-}
+unsafe fn try_load_whv_map_gpa_range2() -> Result<WHvMapGpaRange2Func> {
+    let library = unsafe {
+        LoadLibraryExA(
+            s!("winhvplatform.dll"),
+            None,
+            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+        )
+    };
 
-impl InterruptHandle for WindowsInterruptHandle {
-    fn kill(&self) -> bool {
-        self.cancel_requested.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
-            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
-    }
-    #[cfg(gdb)]
-    fn kill_from_debugger(&self) -> bool {
-        self.debug_interrupt.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
-            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+    if let Err(e) = library {
+        return Err(new_error!("{}", e));
     }
 
-    fn dropped(&self) -> bool {
-        self.dropped.load(Ordering::Relaxed)
+    #[allow(clippy::unwrap_used)]
+    // We know this will succeed because we just checked for an error above
+    let library = library.unwrap();
+
+    let address = unsafe { GetProcAddress(library, s!("WHvMapGpaRange2")) };
+
+    if address.is_none() {
+        unsafe { FreeLibrary(library)? };
+        return Err(new_error!(
+            "Failed to find WHvMapGpaRange2 in winhvplatform.dll"
+        ));
     }
+
+    unsafe { Ok(std::mem::transmute_copy(&address)) }
 }

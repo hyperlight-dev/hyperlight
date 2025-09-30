@@ -20,16 +20,13 @@ use rand::Rng;
 use tracing::{Span, instrument};
 
 use super::SandboxConfiguration;
-use super::hypervisor::{HypervisorType, get_available_hypervisor};
 #[cfg(any(crashdump, gdb))]
 use super::uninitialized::SandboxRuntimeConfig;
-use crate::HyperlightError::NoHypervisorFound;
-use crate::hypervisor::Hypervisor;
+use crate::hypervisor::hyperlight_vm::HyperlightVm;
 use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(any(feature = "init-paging", target_os = "windows"))]
 use crate::mem::shared_mem::SharedMemory;
@@ -41,7 +38,7 @@ use crate::sandbox::config::DebugInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
-use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_error};
+use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
 /// The implementation for evolving `UninitializedSandbox`es to
 /// `Sandbox`es.
@@ -63,7 +60,7 @@ where
     TransformFunc: Fn(
         Arc<Mutex<FunctionRegistry>>,
         SandboxMemoryManager<HostSharedMemory>,
-        Box<dyn Hypervisor>,
+        HyperlightVm,
         RawPtr,
     ) -> Result<ResSandbox>,
 {
@@ -138,42 +135,23 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
-) -> Result<Box<dyn Hypervisor>> {
+) -> Result<HyperlightVm> {
     #[cfg(feature = "init-paging")]
-    let rsp_ptr = {
+    let rsp = {
         let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
         let mem_size = u64::try_from(mgr.shared_mem.mem_size())?;
-        let rsp_u64 = mgr.set_up_shared_memory(mem_size, &mut regions)?;
-        let rsp_raw = RawPtr::from(rsp_u64);
-        GuestPtr::try_from(rsp_raw)
-    }?;
-    #[cfg(not(feature = "init-paging"))]
-    let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let pml4_ptr = {
-        let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
-        base_ptr + Offset::from(pml4_offset_u64)
+        mgr.set_up_shared_memory(mem_size, &mut regions)?
     };
+    #[cfg(not(feature = "init-paging"))]
+    let rsp = 0;
+    let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
+    let pml4 = SandboxMemoryLayout::PML4_OFFSET;
+
     let entrypoint_ptr = {
         let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;
         GuestPtr::try_from(entrypoint_total_offset)
-    }?;
-
-    if base_ptr != pml4_ptr {
-        log_then_return!(
-            "Error: base_ptr ({:#?}) does not equal pml4_ptr ({:#?})",
-            base_ptr,
-            pml4_ptr
-        );
-    }
-    if entrypoint_ptr <= pml4_ptr {
-        log_then_return!(
-            "Error: entrypoint_ptr ({:#?}) is not greater than pml4_ptr ({:#?})",
-            entrypoint_ptr,
-            pml4_ptr
-        );
-    }
+    }?
+    .absolute()?;
 
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
@@ -202,71 +180,19 @@ pub(crate) fn set_up_hypervisor_partition(
         _load_info,
     )?;
 
-    match *get_available_hypervisor() {
-        #[cfg(mshv)]
-        Some(HypervisorType::Mshv) => {
-            let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
-                regions,
-                entrypoint_ptr,
-                rsp_ptr,
-                pml4_ptr,
-                config,
-                #[cfg(gdb)]
-                gdb_conn,
-                #[cfg(crashdump)]
-                rt_cfg.clone(),
-                #[cfg(feature = "trace_guest")]
-                trace_info,
-            )?;
-            Ok(Box::new(hv))
-        }
-
-        #[cfg(kvm)]
-        Some(HypervisorType::Kvm) => {
-            let hv = crate::hypervisor::kvm::KVMDriver::new(
-                regions,
-                pml4_ptr.absolute()?,
-                entrypoint_ptr.absolute()?,
-                rsp_ptr.absolute()?,
-                config,
-                #[cfg(gdb)]
-                gdb_conn,
-                #[cfg(crashdump)]
-                rt_cfg.clone(),
-                #[cfg(feature = "trace_guest")]
-                trace_info,
-            )?;
-            Ok(Box::new(hv))
-        }
-
-        #[cfg(target_os = "windows")]
-        Some(HypervisorType::Whp) => {
-            use crate::hypervisor::wrappers::HandleWrapper;
-
-            let mmap_file_handle = mgr
-                .shared_mem
-                .with_exclusivity(|e| e.get_mmap_file_handle())?;
-            let hv = crate::hypervisor::hyperv_windows::HypervWindowsDriver::new(
-                regions,
-                mgr.shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
-                pml4_ptr.absolute()?,
-                entrypoint_ptr.absolute()?,
-                rsp_ptr.absolute()?,
-                HandleWrapper::from(mmap_file_handle),
-                #[cfg(gdb)]
-                gdb_conn,
-                #[cfg(crashdump)]
-                rt_cfg.clone(),
-                #[cfg(feature = "trace_guest")]
-                trace_info,
-            )?;
-            Ok(Box::new(hv))
-        }
-
-        _ => {
-            log_then_return!(NoHypervisorFound());
-        }
-    }
+    HyperlightVm::new(
+        regions,
+        pml4 as u64,
+        entrypoint_ptr,
+        rsp,
+        config,
+        #[cfg(gdb)]
+        gdb_conn,
+        #[cfg(crashdump)]
+        rt_cfg.clone(),
+        #[cfg(feature = "trace_guest")]
+        trace_info,
+    )
 }
 
 #[cfg(test)]

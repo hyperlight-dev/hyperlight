@@ -23,7 +23,7 @@ use elfcore::{
     ReadProcessMemory, ThreadView, VaProtection, VaRegion,
 };
 
-use super::Hypervisor;
+use crate::hypervisor::hyperlight_vm::HyperlightVm;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
 
@@ -262,7 +262,7 @@ impl ReadProcessMemory for GuestMemReader {
 ///
 /// # Returns
 /// * `Result<()>`: Success or error
-pub(crate) fn generate_crashdump(hv: &dyn Hypervisor) -> Result<()> {
+pub(crate) fn generate_crashdump(hv: &HyperlightVm) -> Result<()> {
     // Get crash context from hypervisor
     let ctx = hv
         .crashdump_context()
@@ -349,28 +349,23 @@ fn core_dump_file_path(dump_dir: Option<String>) -> String {
 /// Returns:
 /// * `Result<usize>`: The number of bytes written to the core dump file.
 fn checked_core_dump(
-    ctx: Option<CrashDumpContext>,
+    ctx: CrashDumpContext,
     get_writer: impl FnOnce() -> Result<Box<dyn Write>>,
 ) -> Result<usize> {
-    let mut nbytes = 0;
-    // If the HV returned a context it means we can create a core dump
-    // This is the case when the sandbox has been configured at runtime to allow core dumps
-    if let Some(ctx) = ctx {
-        log::info!("Creating core dump file...");
+    log::info!("Creating core dump file...");
 
-        // Set up data sources for the core dump
-        let guest_view = GuestView::new(&ctx);
-        let memory_reader = GuestMemReader::new(&ctx);
+    // Set up data sources for the core dump
+    let guest_view = GuestView::new(&ctx);
+    let memory_reader = GuestMemReader::new(&ctx);
 
-        // Create and write core dump
-        let core_builder = CoreDumpBuilder::from_source(guest_view, memory_reader);
+    // Create and write core dump
+    let core_builder = CoreDumpBuilder::from_source(guest_view, memory_reader);
 
-        let writer = get_writer()?;
-        // Write the core dump directly to the file
-        nbytes = core_builder
-            .write(writer)
-            .map_err(|e| new_error!("Failed to write core dump: {:?}", e))?;
-    }
+    let writer = get_writer()?;
+    // Write the core dump directly to the file
+    let nbytes = core_builder
+        .write(writer)
+        .map_err(|e| new_error!("Failed to write core dump: {:?}", e))?;
 
     Ok(nbytes)
 }
@@ -424,17 +419,6 @@ mod test {
         assert!(path.starts_with(&temp_dir));
     }
 
-    /// Test core is not created when the context is None
-    #[test]
-    fn test_crashdump_not_created_when_context_is_none() {
-        // Call the function with None context
-        let result = checked_core_dump(None, || Ok(Box::new(std::io::empty())));
-
-        // Check if the result is ok and the number of bytes is 0
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
-    }
-
     /// Test the core dump creation with no regions fails
     #[test]
     fn test_crashdump_write_fails_when_no_regions() {
@@ -451,7 +435,7 @@ mod test {
         let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);
 
         // Call the function
-        let result = checked_core_dump(Some(ctx), get_writer);
+        let result = checked_core_dump(ctx, get_writer);
 
         // Check if the result is an error
         // This should fail because there are no regions
@@ -482,7 +466,7 @@ mod test {
         let get_writer = || Ok(Box::new(std::io::empty()) as Box<dyn Write>);
 
         // Call the function
-        let result = checked_core_dump(Some(ctx), get_writer);
+        let result = checked_core_dump(ctx, get_writer);
 
         // Check if the result is ok and the number of bytes is 0
         assert!(result.is_ok());

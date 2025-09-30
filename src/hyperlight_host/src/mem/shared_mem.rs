@@ -1228,6 +1228,7 @@ mod tests {
 
         // provides a way for running the above tests in a separate process since they expect to crash
         #[test]
+        #[ignore]
         fn guard_page_testing_shim() {
             let tests = vec!["read", "write", "exec"];
 

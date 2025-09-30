@@ -37,7 +37,8 @@ use super::snapshot::Snapshot;
 use crate::HyperlightError::SnapshotSandboxMismatch;
 use crate::func::guest_err::check_for_guest_error;
 use crate::func::{ParameterTuple, SupportedReturnType};
-use crate::hypervisor::{Hypervisor, InterruptHandle};
+use crate::hypervisor::InterruptHandle;
+use crate::hypervisor::hyperlight_vm::HyperlightVm;
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -60,7 +61,7 @@ pub struct MultiUseSandbox {
     // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
     pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
-    vm: Box<dyn Hypervisor>,
+    vm: HyperlightVm,
     dispatch_ptr: RawPtr,
     #[cfg(gdb)]
     dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
@@ -79,7 +80,7 @@ impl MultiUseSandbox {
     pub(super) fn from_uninit(
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
-        vm: Box<dyn Hypervisor>,
+        vm: HyperlightVm,
         dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
@@ -123,13 +124,17 @@ impl MultiUseSandbox {
         if let Some(snapshot) = &self.snapshot {
             return Ok(snapshot.clone());
         }
-        let mapped_regions_iter = self.vm.get_mapped_regions();
-        let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
-        let memory_snapshot = self.mem_mgr.snapshot(self.id, mapped_regions_vec)?;
-        let inner = Arc::new(memory_snapshot);
-        let snapshot = Snapshot { inner };
-        self.snapshot = Some(snapshot.clone());
-        Ok(snapshot)
+        let mapped_regions: Vec<MemoryRegion> = self
+            .vm
+            .get_mapped_regions()
+            .iter()
+            .map(|(_, region)| region)
+            .cloned()
+            .collect();
+        let memory_snapshot = self.mem_mgr.snapshot(self.id, mapped_regions)?;
+        Ok(Snapshot {
+            inner: Arc::new(memory_snapshot),
+        })
     }
 
     /// Restores the sandbox's memory to a previously captured snapshot state.
@@ -178,18 +183,32 @@ impl MultiUseSandbox {
 
         self.mem_mgr.restore_snapshot(&snapshot.inner)?;
 
-        let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
+        let current_regions: HashSet<_> = self
+            .vm
+            .get_mapped_regions()
+            .iter()
+            .map(|(_, region)| region)
+            .cloned()
+            .collect();
         let snapshot_regions: HashSet<_> = snapshot.inner.regions().iter().cloned().collect();
 
-        let regions_to_unmap = current_regions.difference(&snapshot_regions);
-        let regions_to_map = snapshot_regions.difference(&current_regions);
+        let regions_to_unmap: Vec<_> = current_regions
+            .difference(&snapshot_regions)
+            .cloned()
+            .collect();
+        let regions_to_map: Vec<_> = snapshot_regions
+            .difference(&current_regions)
+            .cloned()
+            .collect();
 
         for region in regions_to_unmap {
-            unsafe { self.vm.unmap_region(region)? };
+            self.vm.unmap_region(&region)?;
         }
 
         for region in regions_to_map {
-            unsafe { self.vm.map_region(region)? };
+            // Safety: The region has been mapped before, and at that point the caller promised that the memory region is valid
+            // in their call to `MultiUseSandbox::map_region`
+            unsafe { self.vm.map_region(&region)? };
         }
 
         // The restored snapshot is now our most current snapshot
@@ -976,8 +995,8 @@ mod tests {
         assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
 
         // Verify the region is the same
-        let mut restored_regions = sbox.vm.get_mapped_regions();
-        assert_eq!(*restored_regions.next().unwrap(), region);
+        let mut restored_regions = sbox.vm.get_mapped_regions().iter();
+        assert_eq!(restored_regions.next().unwrap().1, region);
         assert!(restored_regions.next().is_none());
         drop(restored_regions);
 
