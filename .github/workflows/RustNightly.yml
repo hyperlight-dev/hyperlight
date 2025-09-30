@@ -8,6 +8,10 @@ on:
     # 12:00 AM, every 2 days
     - cron: '0 0 */2 * *'
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   musl:
     strategy:
