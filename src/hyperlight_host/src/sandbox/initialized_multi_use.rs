@@ -512,7 +512,6 @@ mod tests {
 
     /// Make sure input/output buffers are properly reset after guest call (with host call)
     #[test]
-    #[ignore = "added this test before fixing bug"]
     fn host_func_error() {
         let path = simple_guest_as_string().unwrap();
         let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
@@ -533,9 +532,7 @@ mod tests {
                 .unwrap_err();
 
             assert!(
-                matches!(result, HyperlightError::Error(ref msg) if msg == "hi"),
-                "Expected HyperlightError::Error('hi'), got {:?}",
-                result
+                matches!(result, HyperlightError::GuestError(code, msg) if code == ErrorCode::HostFunctionError && msg == "hi"),
             );
         }
     }
