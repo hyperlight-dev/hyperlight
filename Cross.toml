@@ -1,6 +1,11 @@
 [build]
 pre-build = [                                 
-    "apt-get update && apt-get -y install gdb"
+    "apt-get update && apt-get -y install wget build-essential libgmp-dev libmpfr-dev",
+    "cd /tmp && curl https://sourceware.org/pub/gdb/releases/gdb-16.3.tar.gz -o /tmp/gdb-16.3.tar.gz",
+    "cd /tmp && tar -xf gdb-16.3.tar.gz",
+    "cd /tmp/gdb-16.3 && ./configure --prefix=/usr/local",
+    "cd /tmp/gdb-16.3 && make -j$(nproc)",
+    "cd /tmp/gdb-16.3 && make install",
 ]                 
 
 [build.env]
