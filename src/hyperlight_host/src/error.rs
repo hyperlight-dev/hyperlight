@@ -78,6 +78,8 @@ pub enum HyperlightError {
     ExecutionAccessViolation(u64),
 
     /// Guest execution was cancelled by the host
+    ///
+    /// **This error poisons the sandbox.** See [`crate::MultiUseSandbox::clear_poison()`] for recovery options.
     #[error("Execution was cancelled by the host.")]
     ExecutionCanceledByHost(),
 
@@ -90,6 +92,8 @@ pub enum HyperlightError {
     FieldIsMissingInGuestLogData(String),
 
     /// Guest aborted during outb
+    ///
+    /// **This error poisons the sandbox.** See [`crate::MultiUseSandbox::clear_poison()`] for recovery options.
     #[error("Guest aborted: {0} {1}")]
     GuestAborted(u8, String),
 
@@ -190,6 +194,36 @@ pub enum HyperlightError {
     /// a failure occurred processing a PE file
     #[error("Failure processing PE File {0:?}")]
     PEFileProcessingFailure(#[from] goblin::error::Error),
+
+    /// The sandbox is poisoned due to an inconsistent internal state that could lead to
+    /// undefined behavior, memory corruption, or security vulnerabilities.
+    ///
+    /// ## What causes poisoning?
+    ///
+    /// Sandbox poisoning occurs when operations leave the sandbox in an inconsistent state:
+    ///
+    /// ### Guest Function Panics/Aborts
+    /// - **Heap Memory Leaks**: When a guest function panics or aborts, the call stack is not
+    ///   properly unwound, leaving heap allocations permanently leaked
+    /// - **Resource Leaks**: File handles, network connections, or other resources may remain
+    ///   open and unreachable
+    /// - **Partial State Updates**: Data structures may be left in an inconsistent state
+    ///   (e.g., half-updated linked lists, corrupted hash tables)
+    ///
+    /// ### Interrupted Function Calls
+    /// When you interrupt an in-progress guest function with [`InterruptHandle::kill()`]:
+    /// - **Memory Allocations**: Heap memory allocated during the call remains leaked
+    /// - **Mutex/Lock State**: Guest-side mutexes may remain locked, causing deadlocks
+    /// - **I/O Buffers**: Partially written buffers may contain corrupted data
+    /// - **Global State**: Static variables may be left in an inconsistent state
+    ///
+    /// ## Recovery
+    ///
+    /// - **Safe**: Restore from a non-poisoned snapshot using [`MultiUseSandbox::restore()`]
+    /// - **Unsafe**: Clear poison manually with [`MultiUseSandbox::clear_poison()`] (only if you
+    ///   understand the inconsistent state and have manually resolved it)
+    #[error("The sandbox was poisoned")]
+    PoisonedSandbox,
 
     /// Raw pointer is less than base address
     #[error("Raw pointer ({0:?}) was less than the base address ({1})")]

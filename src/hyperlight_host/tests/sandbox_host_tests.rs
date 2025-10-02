@@ -351,6 +351,7 @@ fn host_function_error() -> Result<()> {
         // call guest function that calls host function
         let mut init_sandbox: MultiUseSandbox = sandbox.evolve()?;
         let msg = "Hello world";
+        let snapshot = init_sandbox.snapshot()?;
 
         for _ in 0..1000 {
             let res = init_sandbox
@@ -358,9 +359,14 @@ fn host_function_error() -> Result<()> {
                 .unwrap_err();
             assert!(
                 matches!(&res, HyperlightError::GuestError(_, msg) if msg == "Host function error!") // rust guest
-            || matches!(&res, HyperlightError::GuestAborted(_, msg) if msg.contains("Host function error!")) // c guest
-            || matches!(&res, HyperlightError::StackOverflow()) // c guest. TODO fix this. C guest leaks when host func returns error guest panics.
+            || matches!(&res, HyperlightError::GuestAborted(_, msg) if msg.contains("Host function error!")), // c guest
+                "expected something but got {}",
+                res
             );
+            // C guest panics in rust guest lib when host function returns error, which will poison the sandbox
+            if init_sandbox.poisoned() {
+                init_sandbox.restore(&snapshot)?;
+            }
         }
     }
     Ok(())

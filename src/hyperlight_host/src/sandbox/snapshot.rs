@@ -19,7 +19,7 @@ use std::sync::Arc;
 use crate::mem::shared_mem_snapshot::SharedMemorySnapshot;
 
 /// A snapshot capturing the state of the memory in a `MultiUseSandbox`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     pub(crate) inner: Arc<SharedMemorySnapshot>,
 }
