@@ -1,6 +1,6 @@
 # How to use FlatBuffers
 
-> Note: the last generation of the flatbuffer code was with done with flatc version 25.2.10 (i.e., the last version as of May 1st, 2025).
+> Note: the last generation of the flatbuffer code was with done with flatc version 25.9.23 (i.e., the last version as of Oct 2nd, 2025).
 
 Flatbuffers is used to serialize and deserialize some data structures.
 
