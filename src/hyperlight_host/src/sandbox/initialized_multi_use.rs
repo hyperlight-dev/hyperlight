@@ -34,7 +34,7 @@ use tracing::{Span, instrument};
 use super::Callable;
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
-use crate::HyperlightError::SnapshotSandboxMismatch;
+use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::guest_err::check_for_guest_error;
 use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::{Hypervisor, InterruptHandle};
@@ -54,9 +54,59 @@ static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// Guest functions can be called repeatedly while maintaining state between calls.
 /// The sandbox supports creating snapshots and restoring to previous states.
+///
+/// ## Sandbox Poisoning and Inconsistent State
+///
+/// The sandbox becomes **poisoned** when operations leave it in an inconsistent state that
+/// could compromise memory safety, data integrity, or security. Poisoned sandboxes will
+/// reject all further operations until the inconsistent state is resolved.
+///
+/// ### Operations That Poison the Sandbox:
+///
+/// **Guest Function Aborts/Panics** ([`HyperlightError::GuestAborted`](crate::HyperlightError::GuestAborted)):
+/// - Guest functions that panic, abort, or crash unexpectedly
+/// - Call stack unwinding interrupted, leaving heap allocations leaked
+///
+/// **Host-Initiated Execution Cancellation** ([`HyperlightError::ExecutionCanceledByHost`](crate::HyperlightError::ExecutionCanceledByHost)):
+/// - Guest execution interrupted by host via interrupt handle
+/// - Operations terminated mid-execution, leaving partial state updates
+/// - Example: `interrupt_handle.kill()` during guest function → sandbox poisoned
+///
+/// ### Common Inconsistent States:
+///
+/// **Memory Corruption**:
+/// - Heap allocations that are leaked due to unwound call stacks
+/// - Dangling pointers to freed memory that may be reallocated
+/// - Corrupted memory allocator metadata (free lists, heap headers)
+///
+/// **Resource Leaks**:
+/// - File descriptors opened but never closed due to interrupted I/O operations
+/// - Network sockets left in half-open states
+/// - Guest-side mutex locks that are never released, causing future deadlocks
+///
+/// **Data Structure Corruption**:
+/// - Hash tables with inconsistent bucket counts vs. actual entries
+/// - Linked lists with broken next/prev pointers
+/// - Reference-counted objects with incorrect ref counts
+///
+/// **Global State Inconsistency**:
+/// - Static variables left partially updated (e.g., counters, flags, caches)
+/// - Thread-local storage in undefined states
+/// - Interrupt handlers or signal masks in incorrect configurations
+///
+/// ### Recovery from Poisoned State:
+///
+/// 1. **Recommended**: Use [`restore()`](Self::restore) with a non-poisoned snapshot
+/// 2. **Unsafe**: Use [`clear_poison()`](Self::clear_poison) only after manually
+///    verifying that all inconsistent state has been resolved
+///
+/// Poisoned sandboxes will reject further operations until the poison is cleared manually
+/// using [`MultiUseSandbox::clear_poison()`].
 pub struct MultiUseSandbox {
     /// Unique identifier for this sandbox instance
     id: u64,
+    /// Whether this sandbox is poisoned
+    poisoned: bool,
     // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
     pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
@@ -85,6 +135,7 @@ impl MultiUseSandbox {
     ) -> MultiUseSandbox {
         Self {
             id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            poisoned: false,
             _host_funcs: host_funcs,
             mem_mgr: mgr,
             vm,
@@ -120,6 +171,10 @@ impl MultiUseSandbox {
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn snapshot(&mut self) -> Result<Snapshot> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
+
         if let Some(snapshot) = &self.snapshot {
             return Ok(snapshot.clone());
         }
@@ -195,6 +250,17 @@ impl MultiUseSandbox {
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
 
+        // Clear poison state when successfully restoring from snapshot.
+        //
+        // # Safety:
+        // This is safe because:
+        // 1. Snapshots can only be taken from non-poisoned sandboxes (verified at snapshot creation)
+        // 2. Restoration completely replaces all memory state, eliminating:
+        //    - All leaked heap allocations (memory is restored to snapshot state)
+        //    - All corrupted data structures (overwritten with consistent snapshot data)
+        //    - All inconsistent global state (reset to snapshot values)
+        unsafe { self.clear_poison() };
+
         Ok(())
     }
 
@@ -240,6 +306,9 @@ impl MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> Result<Output> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         let snapshot = self.snapshot()?;
         let res = self.call(func_name, args);
         self.restore(&snapshot)?;
@@ -283,6 +352,9 @@ impl MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> Result<Output> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         // Reset snapshot since we are mutating the sandbox state
         self.snapshot = None;
         maybe_time_and_emit_guest_call(func_name, || {
@@ -307,6 +379,9 @@ impl MultiUseSandbox {
     /// for the lifetime of `self`.
     #[instrument(err(Debug), skip(self, rgn), parent = Span::current())]
     pub unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         if rgn.flags.contains(MemoryRegionFlags::STACK_GUARD) {
             // Stack guard pages are an internal implementation detail
             // (which really should be moved into the guest)
@@ -330,6 +405,9 @@ impl MultiUseSandbox {
     /// Returns the length of the mapping in bytes.
     #[instrument(err(Debug), skip(self, _fp, _guest_base), parent = Span::current())]
     pub fn map_file_cow(&mut self, _fp: &Path, _guest_base: u64) -> Result<u64> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         #[cfg(windows)]
         log_then_return!("mmap'ing a file into the guest is not yet supported on Windows");
         #[cfg(unix)]
@@ -375,6 +453,9 @@ impl MultiUseSandbox {
         ret_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         // Reset snapshot since we are mutating the sandbox state
         self.snapshot = None;
         maybe_time_and_emit_guest_call(func_name, || {
@@ -388,6 +469,9 @@ impl MultiUseSandbox {
         return_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         let res = (|| {
             let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
 
@@ -420,8 +504,12 @@ impl MultiUseSandbox {
         // - the serialized guest function result is zeroed out by us (the host) during deserialization, see `get_guest_function_call_result`
         // - any serialized host function call are zeroed out by us (the host) during deserialization, see `get_host_function_call`
         // - any serialized host function result is zeroed out by the guest during deserialization, see `get_host_return_value`
-        if res.is_err() {
+        if let Err(e) = &res {
             self.mem_mgr.clear_io_buffers();
+
+            // Determine if we should poison the sandbox.
+            // We should poison the sandbox if the error is GuestAborted, ExecutionCancelledByHost,
+            self.poisoned |= Self::is_poison_error(e);
         }
         res
     }
@@ -458,6 +546,195 @@ impl MultiUseSandbox {
     pub fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.vm.interrupt_handle()
     }
+
+    /// Returns whether the sandbox is currently poisoned.
+    ///
+    /// A poisoned sandbox is in an inconsistent state and will reject all operations
+    /// until the sandbox is restored to a non-poisoned snapshot or the poison is cleared manually.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// // Check if sandbox is poisoned
+    /// if sandbox.poisoned() {
+    ///     println!("Sandbox is poisoned and needs attention");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Clears the poisoned state of the sandbox.
+    ///
+    /// This is a no-op if the sandbox is not currently poisoned.
+    ///
+    /// # Safety
+    ///
+    /// This method is **extremely unsafe** because clearing poison without properly resolving
+    /// the underlying inconsistent state can lead to:
+    ///
+    /// ## Memory Safety Violations
+    /// - **Use-after-free**: Accessing leaked heap memory that may have been reallocated
+    /// - **Double-free**: Attempting to free already-leaked memory
+    /// - **Buffer overflows**: Corrupted allocator metadata causing wrong allocation sizes
+    /// - **Null pointer dereferences**: Dangling pointers in guest data structures
+    ///
+    /// ## Resource Exhaustion
+    /// - **File descriptor leaks**: Accumulating leaked FDs until system limits are hit
+    /// - **Memory exhaustion**: Leaked heap allocations consuming all available memory
+    /// - **Deadlocks**: Guest-side mutexes remaining locked permanently
+    ///
+    /// ## Data Corruption
+    /// - **Inconsistent data structures**: Corrupted hash tables, linked lists, trees
+    /// - **Race conditions**: Partially updated global state accessed by subsequent calls
+    ///
+    /// ## Security Vulnerabilities
+    /// - **Information disclosure**: Leaked memory containing sensitive data
+    /// - **Privilege escalation**: Corrupted security contexts or permission flags
+    /// - **Code injection**: Corrupted function pointers or return addresses
+    ///
+    /// ## Requirements for Safe Usage
+    ///
+    /// The caller must **guarantee** that ALL of the following have been verified:
+    ///
+    /// 1. **Memory state**: All heap allocations are accounted for and no memory is leaked
+    /// 2. **Resource cleanup**: All file handles, network connections, mutexes are released
+    /// 3. **Data integrity**: All data structures are in consistent, valid states
+    /// 4. **Global state**: All static/global variables are in expected states
+    /// 5. **No side effects**: The inconsistent state cannot affect future operations
+    ///
+    /// ## Recommended Alternative
+    ///
+    /// **Use [`restore()`](Self::restore) with a non-poisoned snapshot instead**.
+    /// This is always safe and properly handles all inconsistent state.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// if sandbox.poisoned() {
+    ///     // ONLY after extensive analysis and manual resolution of ALL inconsistent state:
+    ///     // - Verified no memory leaks exist
+    ///     // - Confirmed all resources are properly released  
+    ///     // - Validated all data structures are consistent
+    ///     // - Checked all global state is correct
+    ///     unsafe {
+    ///         sandbox.clear_poison();
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub unsafe fn clear_poison(&mut self) {
+        self.poisoned = false;
+    }
+
+    /// Determines if the given error should poison the sandbox.
+    ///
+    /// Errors that poison the sandbox are those that can leave the sandbox in an inconsistent
+    /// state where memory, resources, or data structures may be corrupted or leaked.
+    fn is_poison_error(err: &HyperlightError) -> bool {
+        match err {
+            // These errors poison the sandbox because they leave it in an inconsistent state:
+            //
+            // GuestAborted: Guest function panicked/aborted, leaving:
+            // - Heap memory allocations leaked (call stack not properly unwound)
+            // - Data structures partially updated (e.g., hash table with inconsistent entry count)
+            // - Resources unreleased (file handles, mutexes, network connections)
+            // - Global/static variables in undefined state
+            //
+            // ExecutionCanceledByHost: Guest execution was interrupted mid-operation, potentially leaving:
+            // - Memory allocations that were in progress of being allocated/freed
+            // - I/O operations in inconsistent state (partial writes, half-open connections)
+            // - Critical sections or mutexes that were being acquired/released
+            // - Memory allocator metadata in corrupted state
+            HyperlightError::GuestAborted(_, _) | HyperlightError::ExecutionCanceledByHost() => {
+                true
+            }
+
+            // All other errors do not poison the sandbox
+            HyperlightError::AnyhowError(_)
+            | HyperlightError::BoundsCheckFailed(_, _)
+            | HyperlightError::CheckedAddOverflow(_, _)
+            | HyperlightError::CStringConversionError(_)
+            | HyperlightError::Error(_)
+            | HyperlightError::ExecutionAccessViolation(_)
+            | HyperlightError::FailedToGetValueFromParameter()
+            | HyperlightError::FieldIsMissingInGuestLogData(_)
+            | HyperlightError::GuestError(_, _)
+            | HyperlightError::GuestExecutionHungOnHostFunctionCall()
+            | HyperlightError::GuestFunctionCallAlreadyInProgress()
+            | HyperlightError::GuestInterfaceUnsupportedType(_)
+            | HyperlightError::GuestOffsetIsInvalid(_)
+            | HyperlightError::HostFunctionNotFound(_)
+            | HyperlightError::IOError(_)
+            | HyperlightError::IntConversionFailure(_)
+            | HyperlightError::InvalidFlatBuffer(_)
+            | HyperlightError::JsonConversionFailure(_)
+            | HyperlightError::LockAttemptFailed(_)
+            | HyperlightError::MemoryAccessViolation(_, _, _)
+            | HyperlightError::MemoryAllocationFailed(_)
+            | HyperlightError::MemoryProtectionFailed(_)
+            | HyperlightError::MemoryRequestTooBig(_, _)
+            | HyperlightError::MetricNotFound(_)
+            | HyperlightError::MmapFailed(_)
+            | HyperlightError::MprotectFailed(_)
+            | HyperlightError::NoHypervisorFound()
+            | HyperlightError::NoMemorySnapshot
+            | HyperlightError::ParameterValueConversionFailure(_, _)
+            | HyperlightError::PEFileProcessingFailure(_)
+            | HyperlightError::PoisonedSandbox
+            | HyperlightError::RawPointerLessThanBaseAddress(_, _)
+            | HyperlightError::RefCellBorrowFailed(_)
+            | HyperlightError::RefCellMutBorrowFailed(_)
+            | HyperlightError::ReturnValueConversionFailure(_, _)
+            | HyperlightError::StackOverflow()
+            | HyperlightError::SnapshotSandboxMismatch
+            | HyperlightError::SystemTimeError(_)
+            | HyperlightError::TryFromSliceError(_)
+            | HyperlightError::UnexpectedNoOfArguments(_, _)
+            | HyperlightError::UnexpectedParameterValueType(_, _)
+            | HyperlightError::UnexpectedReturnValueType(_, _)
+            | HyperlightError::UTF8StringConversionFailure(_)
+            | HyperlightError::VectorCapacityIncorrect(_, _, _) => false,
+
+            #[cfg(target_os = "windows")]
+            HyperlightError::CrossBeamReceiveError(_) => false,
+            #[cfg(target_os = "windows")]
+            HyperlightError::CrossBeamSendError(_) => false,
+            #[cfg(target_os = "windows")]
+            HyperlightError::WindowsAPIError(_) => false,
+            #[cfg(target_os = "linux")]
+            HyperlightError::VmmSysError(_) => false,
+            #[cfg(all(feature = "seccomp", target_os = "linux"))]
+            HyperlightError::DisallowedSyscall => false,
+            #[cfg(all(feature = "seccomp", target_os = "linux"))]
+            HyperlightError::SeccompFilterBackendError(_) => false,
+            #[cfg(all(feature = "seccomp", target_os = "linux"))]
+            HyperlightError::SeccompFilterError(_) => false,
+            #[cfg(kvm)]
+            HyperlightError::KVMError(_) => false,
+            #[cfg(mshv)]
+            HyperlightError::MSHVError(_) => false,
+            #[cfg(gdb)]
+            HyperlightError::TranslateGuestAddress(_) => false,
+        }
+    }
 }
 
 impl Callable for MultiUseSandbox {
@@ -466,6 +743,9 @@ impl Callable for MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> Result<Output> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         self.call(func_name, args)
     }
 }
@@ -492,6 +772,88 @@ mod tests {
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+
+    #[test]
+    fn poison() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+
+        // poison on purpose
+        let res = sbox
+            .call::<()>("guest_panic", "hello".to_string())
+            .unwrap_err();
+        assert!(
+            matches!(res, HyperlightError::GuestAborted(code, context) if code == ErrorCode::UnknownError as u8 && context.contains("hello"))
+        );
+        assert!(sbox.poisoned());
+
+        // guest calls should fail when poisoned
+        let res = sbox
+            .call::<()>("guest_panic", "hello2".to_string())
+            .unwrap_err();
+        assert!(matches!(res, HyperlightError::PoisonedSandbox));
+
+        // snapshot should fail when poisoned
+        let res = sbox.snapshot().unwrap_err();
+        assert!(matches!(res, HyperlightError::PoisonedSandbox));
+
+        // map_region should fail when poisoned
+        #[cfg(target_os = "linux")]
+        {
+            let map_mem = allocate_guest_memory();
+            let guest_base = 0x0;
+            let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
+            let res = unsafe { sbox.map_region(&region) }.unwrap_err();
+            assert!(matches!(res, HyperlightError::PoisonedSandbox));
+        }
+
+        // map_file_cow should fail when poisoned
+        #[cfg(target_os = "linux")]
+        {
+            let temp_file = std::env::temp_dir().join("test_poison_map_file.bin");
+            let res = sbox.map_file_cow(&temp_file, 0x0).unwrap_err();
+            assert!(matches!(res, HyperlightError::PoisonedSandbox));
+            std::fs::remove_file(&temp_file).ok(); // Clean up
+        }
+
+        // call_guest_function_by_name (deprecated) should fail when poisoned
+        #[allow(deprecated)]
+        let res = sbox
+            .call_guest_function_by_name::<String>("Echo", "test".to_string())
+            .unwrap_err();
+        assert!(matches!(res, HyperlightError::PoisonedSandbox));
+
+        unsafe {
+            sbox.clear_poison();
+        }
+        assert!(!sbox.poisoned());
+
+        // re-poison on purpose
+        let res = sbox
+            .call::<()>("guest_panic", "hello".to_string())
+            .unwrap_err();
+        assert!(
+            matches!(res, HyperlightError::GuestAborted(code, context) if code == ErrorCode::UnknownError as u8 && context.contains("hello"))
+        );
+        assert!(sbox.poisoned());
+
+        // restore to non-poisoned snapshot should work
+        sbox.restore(&snapshot).unwrap();
+        assert!(!sbox.poisoned());
+
+        // guest calls should work again
+        let res = sbox.call::<String>("Echo", "hello3".to_string()).unwrap();
+        assert_eq!(res, "hello3".to_string());
+        assert!(!sbox.poisoned());
+
+        // snapshot should work again
+        let _ = sbox.snapshot().unwrap();
+    }
 
     /// Make sure input/output buffers are properly reset after guest call (with host call)
     #[test]
