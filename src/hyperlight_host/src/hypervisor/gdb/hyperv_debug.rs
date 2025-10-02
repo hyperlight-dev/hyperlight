@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
 
 use super::arch::{MAX_NO_OF_HW_BP, vcpu_stop_reason};
-use super::{GuestDebug, SW_BP_SIZE, VcpuStopReason, X86_64Regs};
+use super::{GuestDebug, SW_BP_SIZE, VcpuStopReason};
+use crate::hypervisor::arch::X86_64Regs;
 use crate::hypervisor::windows_hypervisor_platform::VMProcessor;
 use crate::hypervisor::wrappers::{WHvDebugRegisters, WHvGeneralRegisters};
 use crate::{HyperlightError, Result, new_error};

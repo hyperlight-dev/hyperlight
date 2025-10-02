@@ -71,7 +71,6 @@ impl IdtEntry {
 // Architectures Software Developer's Manual).
 pub(crate) static mut IDT: [IdtEntry; 256] = unsafe { core::mem::zeroed() };
 
-#[hyperlight_guest_tracing::trace_function]
 pub(crate) fn init_idt() {
     set_idt_entry(Exception::DivideByZero as usize, _do_excp0); // Divide by zero
     set_idt_entry(Exception::Debug as usize, _do_excp1); // Debug
