@@ -4,6 +4,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.10.0] - 2025-10-02
+
+### Fixed
+
+- Fix error code conversion for Exception enum TryFrom implementation by @vshailesh in https://github.com/hyperlight-dev/hyperlight/pull/869
+- Remove Allocations from Panic Handler by @adamperlin in https://github.com/hyperlight-dev/hyperlight/pull/818
+
+### Changed
+
+- Update rust to 1.89 by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/883
+- Update mshv crates for Azure Linux to v0.6.1 (from v0.3.2) by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/891
+- Only clear io buffer after unsuccessful guest call by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/811
+
 ## [v0.9.0] - 2025-08-28
 
 ### Fixed
@@ -188,7 +201,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.9.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0..HEAD>
+[v0.10.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.9.0...v0.10.0>
 [v0.9.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.8.0...v0.9.0>
 [v0.8.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.7.0...v0.8.0>
 [v0.7.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.6.1...v0.7.0>
