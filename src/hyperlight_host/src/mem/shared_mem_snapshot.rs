@@ -22,7 +22,7 @@ use crate::Result;
 
 /// A wrapper around a `SharedMemory` reference and a snapshot
 /// of the memory therein
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct SharedMemorySnapshot {
     // Unique ID of the sandbox this snapshot was taken from
     sandbox_id: u64,
