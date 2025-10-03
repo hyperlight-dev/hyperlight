@@ -32,7 +32,7 @@ use log::{LevelFilter, error};
 #[cfg(mshv2)]
 use mshv_bindings::hv_message;
 use mshv_bindings::{
-    FloatingPointUnit, SegmentRegister, SpecialRegisters, StandardRegisters, hv_message_type,
+    FloatingPointUnit, SpecialRegisters, StandardRegisters, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
     hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
@@ -48,32 +48,20 @@ use mshv_bindings::{
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features,
 };
-#[cfg(feature = "trace_guest")]
-use mshv_bindings::{
-    hv_register_name, hv_register_name_HV_X64_REGISTER_RAX, hv_register_name_HV_X64_REGISTER_RBP,
-    hv_register_name_HV_X64_REGISTER_RCX, hv_register_name_HV_X64_REGISTER_RSP,
-};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
-#[cfg(feature = "trace_guest")]
-use super::TraceRegister;
-use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{
     DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug, VcpuStopReason,
-};
-#[cfg(feature = "init-paging")]
-use super::{
-    CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
-    EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::hypervisor::get_memory_access_violation;
+use crate::hypervisor::regs::CommonFpu;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -93,7 +81,7 @@ mod debug {
 
     use super::mshv_bindings::hv_x64_exception_intercept_message;
     use super::{HypervLinuxDriver, *};
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
     use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::HostSharedMemory;
     use crate::{Result, new_error};
@@ -192,18 +180,14 @@ mod debug {
 
                         Ok(DebugResponse::ReadAddr(data))
                     }
-                    DebugMsg::ReadRegisters => {
-                        let mut regs = X86_64Regs::default();
+                    DebugMsg::ReadRegisters => debug
+                        .read_regs(&self.vcpu_fd)
+                        .map_err(|e| {
+                            log::error!("Failed to read registers: {:?}", e);
 
-                        debug
-                            .read_regs(&self.vcpu_fd, &mut regs)
-                            .map_err(|e| {
-                                log::error!("Failed to read registers: {:?}", e);
-
-                                e
-                            })
-                            .map(|_| DebugResponse::ReadRegisters(Box::new(regs)))
-                    }
+                            e
+                        })
+                        .map(|(regs, fpu)| DebugResponse::ReadRegisters(Box::new((regs, fpu)))),
                     DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
                         debug
                             .remove_hw_breakpoint(&self.vcpu_fd, addr)
@@ -244,14 +228,17 @@ mod debug {
 
                         Ok(DebugResponse::WriteAddr)
                     }
-                    DebugMsg::WriteRegisters(regs) => debug
-                        .write_regs(&self.vcpu_fd, &regs)
-                        .map_err(|e| {
-                            log::error!("Failed to write registers: {:?}", e);
+                    DebugMsg::WriteRegisters(boxed_regs) => {
+                        let (regs, fpu) = boxed_regs.as_ref();
+                        debug
+                            .write_regs(&self.vcpu_fd, regs, fpu)
+                            .map_err(|e| {
+                                log::error!("Failed to write registers: {:?}", e);
 
-                            e
-                        })
-                        .map(|_| DebugResponse::WriteRegisters),
+                                e
+                            })
+                            .map(|_| DebugResponse::WriteRegisters)
+                    }
                 }
             } else {
                 Err(new_error!("Debugging is not enabled"))
@@ -370,7 +357,7 @@ impl HypervLinuxDriver {
             vm_fd
         };
 
-        let mut vcpu_fd = vm_fd.create_vcpu(0)?;
+        let vcpu_fd = vm_fd.create_vcpu(0)?;
 
         #[cfg(gdb)]
         let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
@@ -414,8 +401,6 @@ impl HypervLinuxDriver {
             vm_fd.map_user_memory(mshv_region)
         })?;
 
-        Self::setup_initial_sregs(&mut vcpu_fd, pml4_ptr.absolute()?)?;
-
         let interrupt_handle = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
             cancel_requested: AtomicBool::new(false),
@@ -440,7 +425,6 @@ impl HypervLinuxDriver {
             dropped: AtomicBool::new(false),
         });
 
-        #[allow(unused_mut)]
         let mut hv = Self {
             _mshv: mshv,
             page_size: 0,
@@ -463,6 +447,8 @@ impl HypervLinuxDriver {
             trace_info,
         };
 
+        hv.setup_initial_sregs(pml4_ptr.absolute()?)?;
+
         // Send the interrupt handle to the GDB thread if debugging is enabled
         // This is used to allow the GDB thread to stop the vCPU
         #[cfg(gdb)]
@@ -471,65 +457,6 @@ impl HypervLinuxDriver {
         }
 
         Ok(hv)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn setup_initial_sregs(vcpu: &mut VcpuFd, _pml4_addr: u64) -> Result<()> {
-        #[cfg(feature = "init-paging")]
-        let sregs = SpecialRegisters {
-            cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
-            cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
-            cr3: _pml4_addr,
-            efer: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
-            cs: SegmentRegister {
-                type_: 11,
-                present: 1,
-                s: 1,
-                l: 1,
-                ..Default::default()
-            },
-            tr: SegmentRegister {
-                limit: 65535,
-                type_: 11,
-                present: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        #[cfg(not(feature = "init-paging"))]
-        let sregs = SpecialRegisters {
-            cs: SegmentRegister {
-                base: 0,
-                selector: 0,
-                limit: 0xFFFF,
-                type_: 11,
-                present: 1,
-                s: 1,
-                ..Default::default()
-            },
-            ds: SegmentRegister {
-                base: 0,
-                selector: 0,
-                limit: 0xFFFF,
-                type_: 3,
-                present: 1,
-                s: 1,
-                ..Default::default()
-            },
-            tr: SegmentRegister {
-                base: 0,
-                selector: 0,
-                limit: 0xFFFF,
-                type_: 11,
-                present: 1,
-                s: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        vcpu.set_sregs(&sregs)?;
-        Ok(())
     }
 }
 
@@ -560,19 +487,6 @@ impl Debug for HypervLinuxDriver {
         }
 
         f.finish()
-    }
-}
-
-#[cfg(feature = "trace_guest")]
-impl From<TraceRegister> for hv_register_name {
-    fn from(r: TraceRegister) -> Self {
-        match r {
-            TraceRegister::RAX => hv_register_name_HV_X64_REGISTER_RAX,
-            TraceRegister::RCX => hv_register_name_HV_X64_REGISTER_RCX,
-            TraceRegister::RIP => hv_register_name_HV_X64_REGISTER_RIP,
-            TraceRegister::RSP => hv_register_name_HV_X64_REGISTER_RSP,
-            TraceRegister::RBP => hv_register_name_HV_X64_REGISTER_RBP,
-        }
     }
 }
 
@@ -670,13 +584,7 @@ impl Hypervisor for HypervLinuxDriver {
         self.vcpu_fd.set_regs(&regs)?;
 
         // reset fpu state
-        let fpu = FloatingPointUnit {
-            fcw: FP_CONTROL_WORD_DEFAULT,
-            ftwx: FP_TAG_WORD_DEFAULT,
-            mxcsr: MXCSR_DEFAULT,
-            ..Default::default() // zero out the rest
-        };
-        self.vcpu_fd.set_fpu(&fpu)?;
+        self.set_fpu(&CommonFpu::default())?;
 
         // run
         VirtualCPU::run(
@@ -950,6 +858,39 @@ impl Hypervisor for HypervLinuxDriver {
         Ok(result)
     }
 
+    fn regs(&self) -> Result<super::regs::CommonRegisters> {
+        let mshv_regs = self.vcpu_fd.get_regs()?;
+        Ok((&mshv_regs).into())
+    }
+
+    fn set_regs(&mut self, regs: &super::regs::CommonRegisters) -> Result<()> {
+        let mshv_regs: StandardRegisters = regs.into();
+        self.vcpu_fd.set_regs(&mshv_regs)?;
+        Ok(())
+    }
+
+    fn fpu(&self) -> Result<super::regs::CommonFpu> {
+        let mshv_fpu = self.vcpu_fd.get_fpu()?;
+        Ok((&mshv_fpu).into())
+    }
+
+    fn set_fpu(&mut self, fpu: &super::regs::CommonFpu) -> Result<()> {
+        let mshv_fpu: FloatingPointUnit = fpu.into();
+        self.vcpu_fd.set_fpu(&mshv_fpu)?;
+        Ok(())
+    }
+
+    fn sregs(&self) -> Result<super::regs::CommonSpecialRegisters> {
+        let mshv_sregs = self.vcpu_fd.get_sregs()?;
+        Ok((&mshv_sregs).into())
+    }
+
+    fn set_sregs(&mut self, sregs: &super::regs::CommonSpecialRegisters) -> Result<()> {
+        let mshv_sregs: SpecialRegisters = sregs.into();
+        self.vcpu_fd.set_sregs(&mshv_sregs)?;
+        Ok(())
+    }
+
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
         self as &mut dyn Hypervisor
@@ -1157,17 +1098,6 @@ impl Hypervisor for HypervLinuxDriver {
         } else {
             Err(new_error!("Memory manager is not initialized"))
         }
-    }
-
-    #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
-        let mut assoc = [hv_register_assoc {
-            name: reg.into(),
-            ..Default::default()
-        }];
-        self.vcpu_fd.get_reg(&mut assoc)?;
-        // safety: all registers that we currently support are 64-bit
-        unsafe { Ok(assoc[0].value.reg64) }
     }
 
     #[cfg(feature = "trace_guest")]
