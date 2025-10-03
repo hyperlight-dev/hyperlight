@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex};
 use fallible_iterator::FallibleIterator;
 #[cfg(feature = "unwind_guest")]
 use framehop::Unwinder;
-use hyperlight_common::flatbuffer_wrappers::function_types::ParameterValue;
-use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterValue};
+use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::outb::{Exception, OutBAction};
 #[cfg(feature = "trace_guest")]
@@ -283,8 +283,12 @@ pub(crate) fn handle_outb(
             let res = host_funcs
                 .try_lock()
                 .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-                .call_host_function(&name, args)?;
-            mem_mgr.write_response_from_host_method_call(&res)?; // push input buffers
+                .call_host_function(&name, args)
+                .map_err(|e| GuestError::new(ErrorCode::HostFunctionError, e.to_string()));
+
+            let func_result = FunctionCallResult::new(res);
+
+            mem_mgr.write_response_from_host_function_call(&func_result)?;
 
             Ok(())
         }

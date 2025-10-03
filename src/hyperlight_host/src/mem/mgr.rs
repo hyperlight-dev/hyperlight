@@ -16,11 +16,11 @@ limitations under the License.
 
 use std::cmp::Ordering;
 
+use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
 };
-use hyperlight_common::flatbuffer_wrappers::function_types::ReturnValue;
-use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
+use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use tracing::{Span, instrument};
@@ -501,18 +501,19 @@ impl SandboxMemoryManager<HostSharedMemory> {
         )
     }
 
-    /// Writes a function call result to memory
+    /// Writes a host function call result to memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_response_from_host_method_call(&mut self, res: &ReturnValue) -> Result<()> {
-        let function_call_ret_val_buffer = Vec::<u8>::try_from(res).map_err(|_| {
-            new_error!(
-                "write_response_from_host_method_call: failed to convert ReturnValue to Vec<u8>"
-            )
-        })?;
+    pub(crate) fn write_response_from_host_function_call(
+        &mut self,
+        res: &FunctionCallResult,
+    ) -> Result<()> {
+        let mut builder = FlatBufferBuilder::new();
+        let data = res.encode(&mut builder);
+
         self.shared_mem.push_buffer(
             self.layout.input_data_buffer_offset,
             self.layout.sandbox_memory_config.get_input_data_size(),
-            function_call_ret_val_buffer.as_slice(),
+            data,
         )
     }
 
@@ -533,10 +534,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
         )
     }
 
-    /// Reads a function call result from memory
+    /// Reads a function call result from memory.
+    /// A function call result can be either an error or a successful return value.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_guest_function_call_result(&mut self) -> Result<ReturnValue> {
-        self.shared_mem.try_pop_buffer_into::<ReturnValue>(
+    pub(crate) fn get_guest_function_call_result(&mut self) -> Result<FunctionCallResult> {
+        self.shared_mem.try_pop_buffer_into::<FunctionCallResult>(
             self.layout.output_data_buffer_offset,
             self.layout.sandbox_memory_config.get_output_data_size(),
         )
@@ -546,14 +548,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
         self.shared_mem.try_pop_buffer_into::<GuestLogData>(
-            self.layout.output_data_buffer_offset,
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
-    }
-
-    /// Get the guest error data
-    pub(crate) fn get_guest_error(&mut self) -> Result<GuestError> {
-        self.shared_mem.try_pop_buffer_into::<GuestError>(
             self.layout.output_data_buffer_offset,
             self.layout.sandbox_memory_config.get_output_data_size(),
         )

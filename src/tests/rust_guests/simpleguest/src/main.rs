@@ -939,9 +939,45 @@ fn exec_mapped_buffer(function_call: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
+fn call_host_expect_error(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(hostfuncname) =
+        function_call.parameters.clone().unwrap()[0].clone()
+    {
+        let res = call_host_function::<i32>(&hostfuncname, None, ReturnType::Int);
+
+        match res {
+            Ok(_) => Err(HyperlightGuestError::new(
+                ErrorCode::GuestError,
+                "Expected host function to fail, but it succeeded".to_string(),
+            )),
+            Err(e) => {
+                assert_eq!(e.kind, ErrorCode::HostFunctionError);
+                assert_eq!(
+                    e.message,
+                    format!("HostFunction {} was not found", hostfuncname)
+                );
+                Ok(get_flatbuffer_result(()))
+            }
+        }
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to call_host_expect_error".to_string(),
+        ))
+    }
+}
+
 #[no_mangle]
 #[hyperlight_guest_tracing::trace_function]
 pub extern "C" fn hyperlight_main() {
+    let expect_error_def = GuestFunctionDefinition::new(
+        "CallHostExpectError".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Void,
+        call_host_expect_error as usize,
+    );
+    register_function(expect_error_def);
+
     let twenty_four_k_in_def = GuestFunctionDefinition::new(
         "24K_in_8K_out".to_string(),
         Vec::from(&[ParameterType::VecBytes]),

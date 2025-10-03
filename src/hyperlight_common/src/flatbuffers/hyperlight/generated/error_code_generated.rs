@@ -19,13 +19,13 @@ pub const ENUM_MIN_ERROR_CODE: u64 = 0;
     since = "2.0.0",
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
-pub const ENUM_MAX_ERROR_CODE: u64 = 16;
+pub const ENUM_MAX_ERROR_CODE: u64 = 17;
 #[deprecated(
     since = "2.0.0",
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
 #[allow(non_camel_case_types)]
-pub const ENUM_VALUES_ERROR_CODE: [ErrorCode; 16] = [
+pub const ENUM_VALUES_ERROR_CODE: [ErrorCode; 17] = [
     ErrorCode::NoError,
     ErrorCode::UnsupportedParameterType,
     ErrorCode::GuestFunctionNameNotProvided,
@@ -42,6 +42,7 @@ pub const ENUM_VALUES_ERROR_CODE: [ErrorCode; 16] = [
     ErrorCode::GuestFunctionParameterTypeMismatch,
     ErrorCode::GuestError,
     ErrorCode::ArrayLengthParamIsMissing,
+    ErrorCode::HostError,
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -65,9 +66,10 @@ impl ErrorCode {
     pub const GuestFunctionParameterTypeMismatch: Self = Self(14);
     pub const GuestError: Self = Self(15);
     pub const ArrayLengthParamIsMissing: Self = Self(16);
+    pub const HostError: Self = Self(17);
 
     pub const ENUM_MIN: u64 = 0;
-    pub const ENUM_MAX: u64 = 16;
+    pub const ENUM_MAX: u64 = 17;
     pub const ENUM_VALUES: &'static [Self] = &[
         Self::NoError,
         Self::UnsupportedParameterType,
@@ -85,6 +87,7 @@ impl ErrorCode {
         Self::GuestFunctionParameterTypeMismatch,
         Self::GuestError,
         Self::ArrayLengthParamIsMissing,
+        Self::HostError,
     ];
     /// Returns the variant's name or "" if unknown.
     pub fn variant_name(self) -> Option<&'static str> {
@@ -107,6 +110,7 @@ impl ErrorCode {
             Self::GuestFunctionParameterTypeMismatch => Some("GuestFunctionParameterTypeMismatch"),
             Self::GuestError => Some("GuestError"),
             Self::ArrayLengthParamIsMissing => Some("ArrayLengthParamIsMissing"),
+            Self::HostError => Some("HostError"),
             _ => None,
         }
     }

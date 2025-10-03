@@ -17,16 +17,11 @@ limitations under the License.
 extern crate flatbuffers;
 
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
-use anyhow::{Error, Result};
-use flatbuffers::size_prefixed_root;
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
-use crate::flatbuffers::hyperlight::generated::{
-    ErrorCode as FbErrorCode, GuestError as FbGuestError, GuestErrorArgs,
-};
+use crate::flatbuffers::hyperlight::generated::ErrorCode as FbErrorCode;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(C)]
@@ -48,6 +43,7 @@ pub enum ErrorCode {
     GuestFunctionParameterTypeMismatch = 14,
     GuestError = 15,
     ArrayLengthParamIsMissing = 16,
+    HostFunctionError = 17,
 }
 
 impl From<ErrorCode> for FbErrorCode {
@@ -73,6 +69,7 @@ impl From<ErrorCode> for FbErrorCode {
             }
             ErrorCode::GuestError => Self::GuestError,
             ErrorCode::ArrayLengthParamIsMissing => Self::ArrayLengthParamIsMissing,
+            ErrorCode::HostFunctionError => Self::HostError,
         }
     }
 }
@@ -99,6 +96,7 @@ impl From<FbErrorCode> for ErrorCode {
             }
             FbErrorCode::GuestError => Self::GuestError,
             FbErrorCode::ArrayLengthParamIsMissing => Self::ArrayLengthParamIsMissing,
+            FbErrorCode::HostError => Self::HostFunctionError,
             _ => Self::UnknownError,
         }
     }
@@ -123,6 +121,7 @@ impl From<u64> for ErrorCode {
             14 => Self::GuestFunctionParameterTypeMismatch,
             15 => Self::GuestError,
             16 => Self::ArrayLengthParamIsMissing,
+            17 => Self::HostFunctionError,
             _ => Self::UnknownError,
         }
     }
@@ -147,6 +146,7 @@ impl From<ErrorCode> for u64 {
             ErrorCode::GuestFunctionParameterTypeMismatch => 14,
             ErrorCode::GuestError => 15,
             ErrorCode::ArrayLengthParamIsMissing => 16,
+            ErrorCode::HostFunctionError => 17,
         }
     }
 }
@@ -174,6 +174,7 @@ impl From<ErrorCode> for String {
             }
             ErrorCode::GuestError => "GuestError".to_string(),
             ErrorCode::ArrayLengthParamIsMissing => "ArrayLengthParamIsMissing".to_string(),
+            ErrorCode::HostFunctionError => "HostFunctionError".to_string(),
         }
     }
 }
@@ -191,44 +192,6 @@ impl GuestError {
     #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
     pub fn new(code: ErrorCode, message: String) -> Self {
         Self { code, message }
-    }
-}
-
-impl TryFrom<&[u8]> for GuestError {
-    type Error = Error;
-    fn try_from(value: &[u8]) -> Result<Self> {
-        let guest_error_fb = size_prefixed_root::<FbGuestError>(value)
-            .map_err(|e| anyhow::anyhow!("Error while reading GuestError: {:?}", e))?;
-        let code = guest_error_fb.code();
-        let message = match guest_error_fb.message() {
-            Some(message) => message.to_string(),
-            None => String::new(),
-        };
-        Ok(Self {
-            code: code.into(),
-            message,
-        })
-    }
-}
-
-impl TryFrom<&GuestError> for Vec<u8> {
-    type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-    fn try_from(value: &GuestError) -> Result<Vec<u8>> {
-        let mut builder = flatbuffers::FlatBufferBuilder::new();
-        let message = builder.create_string(&value.message);
-
-        let guest_error_fb = FbGuestError::create(
-            &mut builder,
-            &GuestErrorArgs {
-                code: value.code.into(),
-                message: Some(message),
-            },
-        );
-        builder.finish_size_prefixed(guest_error_fb, None);
-        let res = builder.finished_data().to_vec();
-
-        Ok(res)
     }
 }
 
