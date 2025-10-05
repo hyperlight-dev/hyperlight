@@ -99,7 +99,7 @@
           pname = "hyperlight";
           version = "0.0.0";
           src = lib.cleanSource ./.;
-          cargoHash = "sha256-hoeJEBdxaoyLlhQQ4X4Wk5X1QVtQ7RRQYaxkiGg8rWA=";
+          cargoLock.lockFile = ./Cargo.lock;
 
           nativeBuildInputs = [
             azure-cli
