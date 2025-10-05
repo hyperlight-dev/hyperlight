@@ -257,23 +257,28 @@ int guest_function(const char *from_host) {
 }
 
 
-bool host_returns_bool_value(const char *from_host) {
+bool guest_fn_checks_if_host_returns_bool_value(int32_t a, int32_t b) {
   char guest_message[256] = "Hello from host_returns_bool_value, ";
-  int len = strlen(from_host);
-  strncat(guest_message, from_host, len);
+  int len = strlen(guest_message);
 
-  hl_Parameter params = {.tag = hl_ParameterType_Bool,
-                         .value = {.Bool = true}};
-  const hl_FunctionCall host_call = {.function_name = "HostMethod1",
+  hl_Parameter params[2];
+
+  params[0].tag = hl_ParameterType_Int;
+  params[0].value.Int = a;
+
+  params[1].tag = hl_ParameterType_Int;
+  params[1].value.Int = b;
+
+  const hl_FunctionCall host_call = {.function_name = "HostBool",
                                      .parameters = &params,
-                                     .parameters_len = 1,
+                                     .parameters_len = 2,
                                      .return_type = hl_ReturnType_Bool
                                     };
   hl_call_host_function(&host_call);                                 
   return hl_get_host_return_value_as_Bool();
 }
 
-HYPERLIGHT_WRAP_FUNCTION(host_returns_bool_value, Bool, 1, String)
+HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_bool_value, Bool, 2, Int, Int)
 HYPERLIGHT_WRAP_FUNCTION(echo, String, 1, String)
 // HYPERLIGHT_WRAP_FUNCTION(set_byte_array_to_zero, 1, VecBytes) is not valid for functions that return VecBytes
 HYPERLIGHT_WRAP_FUNCTION(guest_function, Int, 1, String)
@@ -307,7 +312,7 @@ HYPERLIGHT_WRAP_FUNCTION(log_message, Int, 2, String, Long)
 
 void hyperlight_main(void)
 {
-    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsBoolValue", host_returns_bool_value);
+    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsBoolValue", guest_fn_checks_if_host_returns_bool_value);
     HYPERLIGHT_REGISTER_FUNCTION("Echo", echo);
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
