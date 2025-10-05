@@ -42,27 +42,19 @@
           # for rustfmt and old toolchains to verify MSRV
           toolchains = lib.mapAttrs (_: customisedRustChannelOf) {
             stable = {
-              # Stay on 1.87 for development due to the
-              # quickly-reversed default enablement of
-              # #[warn(clippy::uninlined_format_args)]
-              date = "2025-05-15";
+              date = "2025-09-18";
               channel = "stable";
-              sha256 = "sha256-KUm16pHj+cRedf8vxs/Hd2YWxpOrWZ7UOrwhILdSJBU=";
+              sha256 = "sha256-SJwZ8g0zF2WrKDVmHrVG3pD2RGoQeo24MEXnNx5FyuI=";
             };
             nightly = {
               date = "2025-07-29";
               channel = "nightly";
               sha256 = "sha256-6D2b7glWC3jpbIGCq6Ta59lGCKN9sTexhgixH4Y7Nng=";
             };
-            "1.85" = {
-              date = "2025-02-20";
+            "1.88" = {
+              date = "2025-06-26";
               channel = "stable";
-              sha256 = "sha256-AJ6LX/Q/Er9kS15bn9iflkUwcgYqRQxiOIL2ToVAXaU=";
-            };
-            "1.86" = {
-              date = "2025-04-03";
-              channel = "stable";
-              sha256 = "sha256-X/4ZBHO3iW0fOenQ3foEvscgAPJYl2abspaBThDOukI=";
+              sha256 = "sha256-Qxt8XAuaUR2OMdKbN4u8dBJOhSHxS+uS06Wl9+flVEk=";
             };
           };
 
