@@ -793,6 +793,7 @@ fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
 
 /// Tests whether host is able to return Float/f32 as return type
 /// or not
+#[test]
 fn test_if_guest_is_able_to_get_float_return_values_from_host() {
     let mut sbox1 = new_uninit().unwrap();
 
@@ -809,6 +810,7 @@ fn test_if_guest_is_able_to_get_float_return_values_from_host() {
 
 /// Tests whether host is able to return Double/f64 as return type
 /// or not
+#[test]
 fn test_if_guest_is_able_to_get_double_return_values_from_host() {
     let mut sbox1 = new_uninit().unwrap();
 
@@ -825,6 +827,7 @@ fn test_if_guest_is_able_to_get_double_return_values_from_host() {
 
 /// Tests whether host is able to return String as return type
 /// or not
+#[test]
 fn test_if_guest_is_able_to_get_string_return_values_from_host() {
     let mut sbox1 = new_uninit().unwrap();
 
@@ -834,5 +837,5 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
     let mut sbox3 = sbox1.evolve().unwrap();
     let res = sbox3.call::<String>("HostReturnsDoubleValue", ()).unwrap();
     println!("{:?}", res);
-    assert!(matches!(res, "Guest Function, string added by Host Function".to_string()));
+    assert_eq!(res, "Guest Function, string added by Host Function".to_string());
 }
