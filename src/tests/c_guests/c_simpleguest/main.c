@@ -310,7 +310,7 @@ double guest_fn_checks_if_host_returns_double_value(double a, double b) {
   return hl_get_host_return_value_as_Double();
 }
 
-char* guest_fn_checks_if_host_returns_string_value() {
+const char* guest_fn_checks_if_host_returns_string_value() {
   char guest_message[256] = "Guest String";
   hl_Parameter params;
 

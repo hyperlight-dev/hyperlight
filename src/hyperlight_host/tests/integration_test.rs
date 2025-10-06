@@ -801,7 +801,7 @@ fn test_if_guest_is_able_to_get_float_return_values_from_host() {
         .unwrap();
     let mut sbox3 = sbox1.evolve().unwrap();
     let res = sbox3
-        .call::<bool>("HostReturnsFloatValue", (1.34_f32, 1.34_f32))
+        .call::<f32>("HostReturnsFloatValue", (1.34_f32, 1.34_f32))
         .unwrap();
     println!("{:?}", res);
     assert!(matches!(res, 2.68_f32));
@@ -817,7 +817,7 @@ fn test_if_guest_is_able_to_get_double_return_values_from_host() {
         .unwrap();
     let mut sbox3 = sbox1.evolve().unwrap();
     let res = sbox3
-        .call::<bool>("HostReturnsDoubleValue", (1.34_f64, 1.34_f64))
+        .call::<f64>("HostReturnsDoubleValue", (1.34_f64, 1.34_f64))
         .unwrap();
     println!("{:?}", res);
     assert!(matches!(res, 2.68_f64));
@@ -832,7 +832,7 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
         .register("HostAddStrings", |a: String| a + ", Host String".to_string())
         .unwrap();
     let mut sbox3 = sbox1.evolve().unwrap();
-    let res = sbox3.call::<bool>("HostReturnsDoubleValue", ()).unwrap();
+    let res = sbox3.call::<String>("HostReturnsDoubleValue", ()).unwrap();
     println!("{:?}", res);
     assert!(matches!(res, "Guest String, Host String"));
 }
