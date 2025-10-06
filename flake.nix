@@ -15,10 +15,43 @@
           rustChannelOf = args: let
             orig = pkgs.rustChannelOf args;
             patchRustPkg = pkg: (pkg.overrideAttrs (oA: {
-              buildCommand = builtins.replaceStrings
+              buildCommand = (builtins.replaceStrings
                 [ "rustc,rustdoc" ]
                 [ "rustc,rustdoc,clippy-driver,cargo-clippy" ]
-                oA.buildCommand;
+                oA.buildCommand) + (let
+                  wrapperPath = pkgs.path + "/pkgs/build-support/bintools-wrapper/ld-wrapper.sh";
+                  baseOut = pkgs.clangStdenv.cc.bintools.out;
+                  getStdenvAttrs = drv: (drv.overrideAttrs (oA: {
+                    passthru.origAttrs = oA;
+                  })).origAttrs;
+                  baseEnv = (getStdenvAttrs pkgs.clangStdenv.cc.bintools).env;
+                  baseSubstitutedWrapper = pkgs.replaceVars wrapperPath
+                    {
+                      inherit (baseEnv)
+                        shell coreutils_bin suffixSalt mktemp rm;
+                      use_response_file_by_default = "0";
+                      prog = null;
+                      out = null;
+                    };
+                in ''
+                  # work around a bug in the overlay
+                  ${oA.postInstall}
+
+                  # copy over helper scripts that the wrapper needs
+                  (cd "${baseOut}"; find . -type f \( -name '*.sh' -or -name '*.bash' \) -print0) | while read -d $'\0' script; do
+                    mkdir -p "$out/$(dirname "$script")"
+                    substitute "${baseOut}/$script" "$out/$script" --replace-quiet "${baseOut}" "$out"
+                  done
+
+                  # TODO: Work out how to make this work with cross builds
+                  ldlld="$out/lib/rustlib/${pkgs.clangStdenv.targetPlatform.config}/bin/gcc-ld/ld.lld";
+                  if [ -e "$ldlld" ]; then
+                    export prog="$(readlink -f "$ldlld")"
+                    rm "$ldlld"
+                    substitute ${baseSubstitutedWrapper} "$ldlld" --subst-var "out" --subst-var "prog"
+                    chmod +x "$ldlld"
+                  fi
+                '');
             })) // {
               targetPlatforms = [ "x86_64-linux" ];
               badTargetPlatforms = [ ];
@@ -116,6 +149,7 @@
             jq
             jaq
             gdb
+            zlib
           ];
           buildInputs = [
             pango
