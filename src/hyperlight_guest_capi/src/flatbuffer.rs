@@ -15,6 +15,9 @@ limitations under the License.
 */
 
 use alloc::boxed::Box;
+use alloc::ffi::CString;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
@@ -92,6 +95,13 @@ pub extern "C" fn hl_flatbuffer_result_from_Bytes(data: *const u8, len: usize) -
     Box::new(unsafe { FfiVec::from_vec(vec) })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_flatbuffer_result_from_Bool(value: bool) -> Box<FfiVec> {
+    let vec = get_flatbuffer_result(value);
+
+    Box::new(unsafe { FfiVec::from_vec(vec) })
+}
+
 //--- Functions for getting values returned by host functions calls
 
 #[unsafe(no_mangle)]
@@ -115,4 +125,34 @@ pub extern "C" fn hl_get_host_return_value_as_ULong() -> u64 {
     get_host_return_value().expect("Unable to get host return value as ulong")
 }
 
-// TODO add bool, float, double, string, vecbytes
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_host_return_value_as_Bool() -> bool {
+    get_host_return_value().expect("Unable to get host return value as bool")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_host_return_value_as_Float() -> f32 {
+    get_host_return_value().expect("Unable to get host return value as f32")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_host_return_value_as_Double() -> f64 {
+    get_host_return_value().expect("Unable to get host return value as f64")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_host_return_value_as_String() -> *const c_char {
+    let string_value: String =
+        get_host_return_value().expect("Unable to get host return value as string");
+
+    let c_string = CString::new(string_value).expect("Failed to create CString");
+    c_string.into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_get_host_return_value_as_VecBytes() -> Box<FfiVec> {
+    let vec_value: Vec<u8> =
+        get_host_return_value().expect("Unable to get host return value as vec bytes");
+
+    Box::new(unsafe { FfiVec::from_vec(vec_value) })
+}
