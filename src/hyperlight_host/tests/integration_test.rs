@@ -829,10 +829,10 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
     let mut sbox1 = new_uninit().unwrap();
 
     sbox1
-        .register("HostAddStrings", |a: String| a + ", Host String".to_string())
+        .register("HostAddStrings", |a: String| a + ", string added by Host Function")
         .unwrap();
     let mut sbox3 = sbox1.evolve().unwrap();
     let res = sbox3.call::<String>("HostReturnsDoubleValue", ()).unwrap();
     println!("{:?}", res);
-    assert!(matches!(res, "Guest String, Host String"));
+    assert!(matches!(res, "Guest Function, string added by Host Function"));
 }

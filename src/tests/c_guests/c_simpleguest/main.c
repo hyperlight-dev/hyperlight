@@ -311,7 +311,7 @@ double guest_fn_checks_if_host_returns_double_value(double a, double b) {
 }
 
 const char* guest_fn_checks_if_host_returns_string_value() {
-  char guest_message[256] = "Guest String";
+  char guest_message[256] = "Guest Function";
   hl_Parameter params;
 
   params.tag = hl_ParameterType_String;
