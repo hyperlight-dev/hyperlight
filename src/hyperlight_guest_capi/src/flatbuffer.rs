@@ -131,13 +131,13 @@ pub extern "C" fn hl_get_host_return_value_as_Bool() -> bool {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_get_host_return_value_as_float() -> f32 {
+pub extern "C" fn hl_get_host_return_value_as_Float() -> f32 {
     get_host_return_value().expect("Unable to get host return value as f32")
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_get_host_return_value_as_double() -> f64 {
-    get_host_return_value().expect("Unable to get host return value as f32")
+pub extern "C" fn hl_get_host_return_value_as_Double() -> f64 {
+    get_host_return_value().expect("Unable to get host return value as f64")
 }
 
 #[unsafe(no_mangle)]
@@ -145,7 +145,7 @@ pub extern "C" fn hl_get_host_return_value_as_String() -> *const c_char {
     let string_value: String =
         get_host_return_value().expect("Unable to get host return value as string");
 
-    let c_string = CString::new(string_value).expect("Failes to create CString");
+    let c_string = CString::new(string_value).expect("Failed to create CString");
     c_string.into_raw()
 }
 

@@ -257,9 +257,6 @@ int guest_function(const char *from_host) {
 }
 
 bool guest_fn_checks_if_host_returns_bool_value(int32_t a, int32_t b) {
-  char guest_message[256] = "Hello from host_returns_bool_value, ";
-  int len = strlen(guest_message);
-
   hl_Parameter params[2];
 
   params[0].tag = hl_ParameterType_Int;
@@ -277,6 +274,61 @@ bool guest_fn_checks_if_host_returns_bool_value(int32_t a, int32_t b) {
   return hl_get_host_return_value_as_Bool();
 }
 
+float guest_fn_checks_if_host_returns_float_value(float a, float b) {
+  hl_Parameter params[2];
+
+  params[0].tag = hl_ParameterType_Float;
+  params[0].value.Float = a;
+
+  params[1].tag = hl_ParameterType_Float;
+  params[1].value.Float = b;
+
+  const hl_FunctionCall host_call = {.function_name = "HostAddFloat",
+                                     .parameters = params,
+                                     .parameters_len = 2,
+                                     .return_type = hl_ReturnType_Float
+                                    };
+  hl_call_host_function(&host_call); 
+  return hl_get_host_return_value_as_Float();
+}
+
+double guest_fn_checks_if_host_returns_double_value(double a, double b) {
+  hl_Parameter params[2];
+
+  params[0].tag = hl_ParameterType_Double;
+  params[0].value.Double = a;
+
+  params[1].tag = hl_ParameterType_Double;
+  params[1].value.Double = b;
+
+  const hl_FunctionCall host_call = {.function_name = "HostAddDouble",
+                                     .parameters = params,
+                                     .parameters_len = 2,
+                                     .return_type = hl_ReturnType_Double
+                                    };
+  hl_call_host_function(&host_call); 
+  return hl_get_host_return_value_as_Double();
+}
+
+char* guest_fn_checks_if_host_returns_string_value() {
+  char guest_message[256] = "Guest String";
+  hl_Parameter params;
+
+  params.tag = hl_ParameterType_String;
+  params.value.String = guest_message;
+
+  const hl_FunctionCall host_call = {.function_name = "HostAddStrings",
+                                     .parameters = &params,
+                                     .parameters_len = 1,
+                                     .return_type = hl_ReturnType_String
+                                    };
+  hl_call_host_function(&host_call); 
+  return hl_get_host_return_value_as_String();
+}
+
+HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_float_value, Float, 2, Float, Float)
+HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_double_value, Double, 2, Double, Double)
+HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_string_value, String, 1, String)
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_bool_value, Bool, 2, Int, Int)
 HYPERLIGHT_WRAP_FUNCTION(echo, String, 1, String)
 // HYPERLIGHT_WRAP_FUNCTION(set_byte_array_to_zero, 1, VecBytes) is not valid for functions that return VecBytes
@@ -311,6 +363,9 @@ HYPERLIGHT_WRAP_FUNCTION(log_message, Int, 2, String, Long)
 
 void hyperlight_main(void)
 {
+    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsFloatValue", guest_fn_checks_if_host_returns_float_value);
+    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsDoubleValue", guest_fn_checks_if_host_returns_double_value);
+    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsStringValue", guest_fn_checks_if_host_returns_string_value);
     HYPERLIGHT_REGISTER_FUNCTION("HostReturnsBoolValue", guest_fn_checks_if_host_returns_bool_value);
     HYPERLIGHT_REGISTER_FUNCTION("Echo", echo);
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,

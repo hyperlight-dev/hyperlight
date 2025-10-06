@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
+use hyperlight_host::func::ReturnValue;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
@@ -769,7 +770,7 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
 /// Tests whether host is able to return Bool as return type
 /// or not
 #[test]
-fn test_if_guest_is_able_to_get_return_values_from_host() {
+fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
     let mut sbox1 = new_uninit().unwrap();
 
     sbox1
@@ -788,4 +789,50 @@ fn test_if_guest_is_able_to_get_return_values_from_host() {
             assert!(matches!(res, true));
         }
     }
+}
+
+/// Tests whether host is able to return Float/f32 as return type
+/// or not
+fn test_if_guest_is_able_to_get_float_return_values_from_host() {
+    let mut sbox1 = new_uninit().unwrap();
+
+    sbox1
+        .register("HostAddFloat", |a: f32, b: f32| a + b)
+        .unwrap();
+    let mut sbox3 = sbox1.evolve().unwrap();
+    let res = sbox3
+        .call::<bool>("HostReturnsFloatValue", (1.34_f32, 1.34_f32))
+        .unwrap();
+    println!("{:?}", res);
+    assert!(matches!(res, 2.68_f32));
+}
+
+/// Tests whether host is able to return Double/f64 as return type
+/// or not
+fn test_if_guest_is_able_to_get_double_return_values_from_host() {
+    let mut sbox1 = new_uninit().unwrap();
+
+    sbox1
+        .register("HostAddDouble", |a: f64, b: f64| a + b)
+        .unwrap();
+    let mut sbox3 = sbox1.evolve().unwrap();
+    let res = sbox3
+        .call::<bool>("HostReturnsDoubleValue", (1.34_f64, 1.34_f64))
+        .unwrap();
+    println!("{:?}", res);
+    assert!(matches!(res, 2.68_f64));
+}
+
+/// Tests whether host is able to return String as return type
+/// or not
+fn test_if_guest_is_able_to_get_string_return_values_from_host() {
+    let mut sbox1 = new_uninit().unwrap();
+
+    sbox1
+        .register("HostAddStrings", |a: String| a + ", Host String".to_string())
+        .unwrap();
+    let mut sbox3 = sbox1.evolve().unwrap();
+    let res = sbox3.call::<bool>("HostReturnsDoubleValue", ()).unwrap();
+    println!("{:?}", res);
+    assert!(matches!(res, "Guest String, Host String"));
 }
