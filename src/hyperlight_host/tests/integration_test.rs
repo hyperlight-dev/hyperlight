@@ -765,3 +765,27 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
             .unwrap();
     }
 }
+
+/// Tests whether host is able to return Bool as return type
+/// or not
+#[test]
+fn test_if_guest_is_able_to_get_return_values_from_host() {
+    let mut sbox1 = new_uninit().unwrap();
+
+    sbox1
+        .register("HostBool", |a: i32, b: i32| a + b > 10)
+        .unwrap();
+    let mut sbox3 = sbox1.evolve().unwrap();
+
+    for i in 1..10 {
+        if i < 6 {
+            let res = sbox3.call::<bool>("HostReturnsBoolValue", (i, i)).unwrap();
+            println!("{:?}", res);
+            assert!(matches!(res, false));
+        } else {
+            let res = sbox3.call::<bool>("HostReturnsBoolValue", (i, i)).unwrap();
+            println!("{:?}", res);
+            assert!(matches!(res, true));
+        }
+    }
+}
