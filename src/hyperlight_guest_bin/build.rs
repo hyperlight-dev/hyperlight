@@ -264,7 +264,7 @@ fn main() -> std::process::ExitCode {
                 .args(args)
                 .status()
                 .ok()
-                .and_then(|x| (x.code()))
+                .and_then(|x| x.code())
                 .map(|x| (x as u8).into())
                 .unwrap_or(std::process::ExitCode::FAILURE)
         }
