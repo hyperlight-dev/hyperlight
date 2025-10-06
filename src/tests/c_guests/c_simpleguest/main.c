@@ -363,10 +363,10 @@ HYPERLIGHT_WRAP_FUNCTION(log_message, Int, 2, String, Long)
 
 void hyperlight_main(void)
 {
-    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsFloatValue", guest_fn_checks_if_host_returns_float_value);
-    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsDoubleValue", guest_fn_checks_if_host_returns_double_value);
-    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsStringValue", guest_fn_checks_if_host_returns_string_value);
-    HYPERLIGHT_REGISTER_FUNCTION("HostReturnsBoolValue", guest_fn_checks_if_host_returns_bool_value);
+    HYPERLIGHT_REGISTER_FUNCTION("GuestRetrievesFloatValue", guest_fn_checks_if_host_returns_float_value);
+    HYPERLIGHT_REGISTER_FUNCTION("GuestRetrievesDoubleValue", guest_fn_checks_if_host_returns_double_value);
+    HYPERLIGHT_REGISTER_FUNCTION("GuestRetrievesStringValue", guest_fn_checks_if_host_returns_string_value);
+    HYPERLIGHT_REGISTER_FUNCTION("GuestRetrievesBoolValue", guest_fn_checks_if_host_returns_bool_value);
     HYPERLIGHT_REGISTER_FUNCTION("Echo", echo);
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
