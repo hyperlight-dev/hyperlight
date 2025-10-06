@@ -834,5 +834,5 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
     let mut sbox3 = sbox1.evolve().unwrap();
     let res = sbox3.call::<String>("HostReturnsDoubleValue", ()).unwrap();
     println!("{:?}", res);
-    assert!(matches!(res, "Guest Function, string added by Host Function"));
+    assert!(matches!(res, "Guest Function, string added by Host Function".to_string()));
 }
