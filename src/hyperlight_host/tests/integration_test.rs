@@ -780,11 +780,15 @@ fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
 
     for i in 1..10 {
         if i < 6 {
-            let res = sbox3.call::<bool>("GuestRetrievesBoolValue", (i, i)).unwrap();
+            let res = sbox3
+                .call::<bool>("GuestRetrievesBoolValue", (i, i))
+                .unwrap();
             println!("{:?}", res);
             assert!(matches!(res, false));
         } else {
-            let res = sbox3.call::<bool>("GuestRetrievesBoolValue", (i, i)).unwrap();
+            let res = sbox3
+                .call::<bool>("GuestRetrievesBoolValue", (i, i))
+                .unwrap();
             println!("{:?}", res);
             assert!(matches!(res, true));
         }
@@ -832,10 +836,17 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
     let mut sbox1 = new_uninit().unwrap();
 
     sbox1
-        .register("HostAddStrings", |a: String| a + ", string added by Host Function")
+        .register("HostAddStrings", |a: String| {
+            a + ", string added by Host Function"
+        })
         .unwrap();
     let mut sbox3 = sbox1.evolve().unwrap();
-    let res = sbox3.call::<String>("GuestRetrievesStringValue", ()).unwrap();
+    let res = sbox3
+        .call::<String>("GuestRetrievesStringValue", ())
+        .unwrap();
     println!("{:?}", res);
-    assert_eq!(res, "Guest Function, string added by Host Function".to_string());
+    assert_eq!(
+        res,
+        "Guest Function, string added by Host Function".to_string()
+    );
 }
