@@ -328,7 +328,7 @@ char* guest_fn_checks_if_host_returns_string_value() {
 
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_float_value, Float, 2, Float, Float)
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_double_value, Double, 2, Double, Double)
-HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_string_value, String, 1, String)
+HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_string_value, String, 0)
 HYPERLIGHT_WRAP_FUNCTION(guest_fn_checks_if_host_returns_bool_value, Bool, 2, Int, Int)
 HYPERLIGHT_WRAP_FUNCTION(echo, String, 1, String)
 // HYPERLIGHT_WRAP_FUNCTION(set_byte_array_to_zero, 1, VecBytes) is not valid for functions that return VecBytes
