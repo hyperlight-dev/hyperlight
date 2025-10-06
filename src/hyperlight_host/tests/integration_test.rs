@@ -21,7 +21,6 @@ use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::PAGE_SIZE;
-use hyperlight_host::func::ReturnValue;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
