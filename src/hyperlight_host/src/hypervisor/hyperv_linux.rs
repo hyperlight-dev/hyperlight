@@ -887,7 +887,7 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<super::crashdump::CrashDumpContext<'_>>> {
+    fn crashdump_context(&self) -> Result<Option<super::crashdump::CrashDumpContext>> {
         if self.rt_cfg.guest_core_dump {
             let mut regs = [0; 27];
 
@@ -931,8 +931,11 @@ impl Hypervisor for HypervLinuxDriver {
                     .and_then(|name| name.to_os_string().into_string().ok())
             });
 
+            // Include both initial sandbox regions and dynamically mapped regions
+            let mut regions: Vec<MemoryRegion> = self.sandbox_regions.clone();
+            regions.extend(self.mmap_regions.iter().cloned());
             Ok(Some(crashdump::CrashDumpContext::new(
-                &self.sandbox_regions,
+                regions,
                 regs,
                 xsave.buffer.to_vec(),
                 self.entrypoint,

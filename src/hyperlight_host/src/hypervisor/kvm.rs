@@ -817,7 +817,7 @@ impl Hypervisor for KVMDriver {
     }
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext<'_>>> {
+    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>> {
         if self.rt_cfg.guest_core_dump {
             let mut regs = [0; 27];
 
@@ -863,8 +863,11 @@ impl Hypervisor for KVMDriver {
 
             // The [`CrashDumpContext`] accepts xsave as a vector of u8, so we need to convert the
             // xsave region to a vector of u8
+            // Also include mapped regions in addition to the initial sandbox regions
+            let mut regions: Vec<MemoryRegion> = self.sandbox_regions.clone();
+            regions.extend(self.mmap_regions.iter().map(|(r, _)| r.clone()));
             Ok(Some(crashdump::CrashDumpContext::new(
-                &self.sandbox_regions,
+                regions,
                 regs,
                 xsave
                     .region
