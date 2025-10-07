@@ -63,7 +63,8 @@ use super::TraceRegister;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{
-    DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, MshvDebug, VcpuStopReason,
+    DebugCommChannel, DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, MshvDebug,
+    VcpuStopReason,
 };
 #[cfg(feature = "init-paging")]
 use super::{
@@ -89,13 +90,11 @@ use crate::{Result, log_then_return, new_error};
 
 #[cfg(gdb)]
 mod debug {
-    use std::sync::{Arc, Mutex};
-
     use super::mshv_bindings::hv_x64_exception_intercept_message;
     use super::{HypervLinuxDriver, *};
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
-    use crate::mem::mgr::SandboxMemoryManager;
-    use crate::mem::shared_mem::HostSharedMemory;
+    use crate::hypervisor::gdb::{
+        DebugMemoryAccess, DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs,
+    };
     use crate::{Result, new_error};
 
     impl HypervLinuxDriver {
@@ -126,7 +125,7 @@ mod debug {
         pub(crate) fn process_dbg_request(
             &mut self,
             req: DebugMsg,
-            dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
+            mem_access: &DebugMemoryAccess,
         ) -> Result<DebugResponse> {
             if let Some(debug) = self.debug.as_mut() {
                 match req {
@@ -142,7 +141,7 @@ mod debug {
                     )),
                     DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
                         debug
-                            .add_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                            .add_sw_breakpoint(&self.vcpu_fd, addr, mem_access)
                             .map_err(|e| {
                                 log::error!("Failed to add sw breakpoint: {:?}", e);
 
@@ -169,7 +168,8 @@ mod debug {
                         Ok(DebugResponse::DisableDebug)
                     }
                     DebugMsg::GetCodeSectionOffset => {
-                        let offset = dbg_mem_access_fn
+                        let offset = mem_access
+                            .dbg_mem_access_fn
                             .try_lock()
                             .map_err(|e| {
                                 new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
@@ -182,13 +182,7 @@ mod debug {
                     DebugMsg::ReadAddr(addr, len) => {
                         let mut data = vec![0u8; len];
 
-                        debug
-                            .read_addrs(&self.vcpu_fd, addr, &mut data, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to read from address: {:?}", e);
-
-                                e
-                            })?;
+                        debug.read_addrs(&self.vcpu_fd, addr, &mut data, mem_access)?;
 
                         Ok(DebugResponse::ReadAddr(data))
                     }
@@ -216,7 +210,7 @@ mod debug {
                     )),
                     DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
                         debug
-                            .remove_sw_breakpoint(&self.vcpu_fd, addr, dbg_mem_access_fn)
+                            .remove_sw_breakpoint(&self.vcpu_fd, addr, mem_access)
                             .map_err(|e| {
                                 log::error!("Failed to remove sw breakpoint: {:?}", e);
 
@@ -234,13 +228,7 @@ mod debug {
                         Ok(DebugResponse::Step)
                     }
                     DebugMsg::WriteAddr(addr, data) => {
-                        debug
-                            .write_addrs(&self.vcpu_fd, addr, &data, dbg_mem_access_fn)
-                            .map_err(|e| {
-                                log::error!("Failed to write to address: {:?}", e);
-
-                                e
-                            })?;
+                        debug.write_addrs(&self.vcpu_fd, addr, &data, mem_access)?;
 
                         Ok(DebugResponse::WriteAddr)
                     }
@@ -1027,6 +1015,11 @@ impl Hypervisor for HypervLinuxDriver {
             return Err(new_error!("Debugging is not enabled"));
         }
 
+        let mem_access = DebugMemoryAccess {
+            dbg_mem_access_fn,
+            guest_mmap_regions: self.mmap_regions.to_vec(),
+        };
+
         match stop_reason {
             // If the vCPU stopped because of a crash, we need to handle it differently
             // We do not want to allow resuming execution or placing breakpoints
@@ -1070,7 +1063,7 @@ impl Hypervisor for HypervLinuxDriver {
 
                         // For all other requests, we will process them normally
                         _ => {
-                            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+                            let result = self.process_dbg_request(req, &mem_access);
                             match result {
                                 Ok(response) => response,
                                 Err(HyperlightError::TranslateGuestAddress(_)) => {
@@ -1118,7 +1111,7 @@ impl Hypervisor for HypervLinuxDriver {
                     // Wait for a message from gdb
                     let req = self.recv_dbg_msg()?;
 
-                    let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+                    let result = self.process_dbg_request(req, &mem_access);
 
                     let response = match result {
                         Ok(response) => response,
