@@ -783,19 +783,22 @@ fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
                 .call::<bool>("GuestRetrievesBoolValue", (i, i))
                 .unwrap();
             println!("{:?}", res);
-            assert!(matches!(res, false));
+            assert!(!res);
         } else {
             let res = sbox3
                 .call::<bool>("GuestRetrievesBoolValue", (i, i))
                 .unwrap();
             println!("{:?}", res);
-            assert!(matches!(res, true));
+            assert!(res);
         }
     }
 }
 
 /// Tests whether host is able to return Float/f32 as return type
 /// or not
+/// Adding Ignore attribute, due known issues with float and double
+/// calculations - see Github issue #179. Once it is fixed we can
+/// remove ignore attribute
 #[ignore]
 #[test]
 fn test_if_guest_is_able_to_get_float_return_values_from_host() {
@@ -814,6 +817,9 @@ fn test_if_guest_is_able_to_get_float_return_values_from_host() {
 
 /// Tests whether host is able to return Double/f64 as return type
 /// or not
+/// Adding Ignore attribute, due known issues with float and double
+/// calculations - see Github issue #179. Once it is fixed we can
+/// remove ignore attribute
 #[ignore]
 #[test]
 fn test_if_guest_is_able_to_get_double_return_values_from_host() {
