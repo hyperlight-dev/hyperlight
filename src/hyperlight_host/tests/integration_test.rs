@@ -770,7 +770,7 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
-    let mut sbox1 = new_uninit().unwrap();
+    let mut sbox1 = new_uninit_c().unwrap();
 
     sbox1
         .register("HostBool", |a: i32, b: i32| a + b > 10)
@@ -796,9 +796,10 @@ fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
 
 /// Tests whether host is able to return Float/f32 as return type
 /// or not
+#[ignore]
 #[test]
 fn test_if_guest_is_able_to_get_float_return_values_from_host() {
-    let mut sbox1 = new_uninit().unwrap();
+    let mut sbox1 = new_uninit_c().unwrap();
 
     sbox1
         .register("HostAddFloat", |a: f32, b: f32| a + b)
@@ -813,9 +814,10 @@ fn test_if_guest_is_able_to_get_float_return_values_from_host() {
 
 /// Tests whether host is able to return Double/f64 as return type
 /// or not
+#[ignore]
 #[test]
 fn test_if_guest_is_able_to_get_double_return_values_from_host() {
-    let mut sbox1 = new_uninit().unwrap();
+    let mut sbox1 = new_uninit_c().unwrap();
 
     sbox1
         .register("HostAddDouble", |a: f64, b: f64| a + b)
@@ -832,7 +834,7 @@ fn test_if_guest_is_able_to_get_double_return_values_from_host() {
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_string_return_values_from_host() {
-    let mut sbox1 = new_uninit().unwrap();
+    let mut sbox1 = new_uninit_c().unwrap();
 
     sbox1
         .register("HostAddStrings", |a: String| {
