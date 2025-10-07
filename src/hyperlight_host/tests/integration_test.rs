@@ -28,7 +28,7 @@ use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 use log::LevelFilter;
 
 pub mod common; // pub to disable dead_code warning
-use crate::common::{new_uninit, new_uninit_rust};
+use crate::common::{new_uninit, new_uninit_c, new_uninit_rust};
 
 // A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
 // we don't re-enter the guest again once the host call is done
