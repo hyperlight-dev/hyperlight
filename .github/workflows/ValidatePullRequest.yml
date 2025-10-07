@@ -98,9 +98,8 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-    - name: Previous jobs succeeded
-      if: ${{ !(contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
-      run: exit 0
-    - name: Previous jobs failed
-      if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
-      run: exit 1
+      # Calculate the exit status of the whole CI workflow.
+      # If all dependent jobs were successful, this exits with 0 (and the outcome job continues successfully).
+      # If a some dependent job has failed, this exits with 1.
+      - name: calculate the correct exit status
+        run: jq --exit-status 'all(.result == "success" or .result == "skipped")' <<< '${{ toJson(needs) }}'
