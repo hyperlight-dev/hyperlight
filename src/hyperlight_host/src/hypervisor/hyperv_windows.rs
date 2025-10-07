@@ -31,7 +31,8 @@ use {super::crashdump, std::path::Path};
 #[cfg(gdb)]
 use {
     super::gdb::{
-        DebugCommChannel, DebugMsg, DebugResponse, GuestDebug, HypervDebug, VcpuStopReason,
+        DebugCommChannel, DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, HypervDebug,
+        VcpuStopReason,
     },
     crate::HyperlightError,
 };
@@ -58,15 +59,11 @@ use crate::{Result, debug, log_then_return, new_error};
 
 #[cfg(gdb)]
 mod debug {
-    use std::sync::{Arc, Mutex};
-
     use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
 
     use super::{HypervWindowsDriver, *};
     use crate::Result;
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
-    use crate::mem::mgr::SandboxMemoryManager;
-    use crate::mem::shared_mem::HostSharedMemory;
+    use crate::hypervisor::gdb::{DebugMemoryAccess, DebugMsg, DebugResponse, VcpuStopReason};
 
     impl HypervWindowsDriver {
         /// Resets the debug information to disable debugging
@@ -96,7 +93,7 @@ mod debug {
         pub(crate) fn process_dbg_request(
             &mut self,
             req: DebugMsg,
-            dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
+            mem_access: &DebugMemoryAccess,
         ) -> Result<DebugResponse> {
             if let Some(debug) = self.debug.as_mut() {
                 match req {
@@ -112,7 +109,7 @@ mod debug {
                     )),
                     DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
                         debug
-                            .add_sw_breakpoint(&self.processor, addr, dbg_mem_access_fn)
+                            .add_sw_breakpoint(&self.processor, addr, mem_access)
                             .map_err(|e| {
                                 log::error!("Failed to add sw breakpoint: {:?}", e);
 
@@ -139,7 +136,8 @@ mod debug {
                         Ok(DebugResponse::DisableDebug)
                     }
                     DebugMsg::GetCodeSectionOffset => {
-                        let offset = dbg_mem_access_fn
+                        let offset = mem_access
+                            .dbg_mem_access_fn
                             .try_lock()
                             .map_err(|e| {
                                 new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
@@ -153,7 +151,7 @@ mod debug {
                         let mut data = vec![0u8; len];
 
                         debug
-                            .read_addrs(&self.processor, addr, &mut data, dbg_mem_access_fn)
+                            .read_addrs(&self.processor, addr, &mut data, mem_access)
                             .map_err(|e| {
                                 log::error!("Failed to read from address: {:?}", e);
 
@@ -182,7 +180,7 @@ mod debug {
                     )),
                     DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
                         debug
-                            .remove_sw_breakpoint(&self.processor, addr, dbg_mem_access_fn)
+                            .remove_sw_breakpoint(&self.processor, addr, mem_access)
                             .map_err(|e| {
                                 log::error!("Failed to remove sw breakpoint: {:?}", e);
 
@@ -201,7 +199,7 @@ mod debug {
                     }
                     DebugMsg::WriteAddr(addr, data) => {
                         debug
-                            .write_addrs(&self.processor, addr, &data, dbg_mem_access_fn)
+                            .write_addrs(&self.processor, addr, &data, mem_access)
                             .map_err(|e| {
                                 log::error!("Failed to write to address: {:?}", e);
 
@@ -801,6 +799,12 @@ impl Hypervisor for HypervWindowsDriver {
         if self.debug.is_none() {
             return Err(new_error!("Debugging is not enabled"));
         }
+
+        let mem_access = DebugMemoryAccess {
+            dbg_mem_access_fn,
+            guest_mmap_regions: self.mmap_regions.to_vec(),
+        };
+
         match stop_reason {
             // If the vCPU stopped because of a crash, we need to handle it differently
             // We do not want to allow resuming execution or placing breakpoints
@@ -844,7 +848,7 @@ impl Hypervisor for HypervWindowsDriver {
 
                         // For all other requests, we will process them normally
                         _ => {
-                            let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+                            let result = self.process_dbg_request(req, &mem_access);
                             match result {
                                 Ok(response) => response,
                                 Err(HyperlightError::TranslateGuestAddress(_)) => {
@@ -893,7 +897,7 @@ impl Hypervisor for HypervWindowsDriver {
                     // Wait for a message from gdb
                     let req = self.recv_dbg_msg()?;
 
-                    let result = self.process_dbg_request(req, dbg_mem_access_fn.clone());
+                    let result = self.process_dbg_request(req, &mem_access);
 
                     let response = match result {
                         Ok(response) => response,
