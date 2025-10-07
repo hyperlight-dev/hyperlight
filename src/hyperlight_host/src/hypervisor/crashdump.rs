@@ -43,8 +43,8 @@ const CORE_DUMP_PAGE_SIZE: usize = 0x1000;
 /// Structure to hold the crash dump context
 /// This structure contains the information needed to create a core dump
 #[derive(Debug)]
-pub(crate) struct CrashDumpContext<'a> {
-    regions: &'a [MemoryRegion],
+pub(crate) struct CrashDumpContext {
+    regions: Vec<MemoryRegion>,
     regs: [u64; 27],
     xsave: Vec<u8>,
     entry: u64,
@@ -52,9 +52,9 @@ pub(crate) struct CrashDumpContext<'a> {
     filename: Option<String>,
 }
 
-impl<'a> CrashDumpContext<'a> {
+impl CrashDumpContext {
     pub(crate) fn new(
-        regions: &'a [MemoryRegion],
+        regions: Vec<MemoryRegion>,
         regs: [u64; 27],
         xsave: Vec<u8>,
         entry: u64,
@@ -208,7 +208,7 @@ struct GuestMemReader {
 impl GuestMemReader {
     fn new(ctx: &CrashDumpContext) -> Self {
         Self {
-            regions: ctx.regions.to_vec(),
+            regions: ctx.regions.clone(),
         }
     }
 }
@@ -440,7 +440,7 @@ mod test {
     fn test_crashdump_write_fails_when_no_regions() {
         // Create a dummy context
         let ctx = CrashDumpContext::new(
-            &[],
+            vec![],
             [0; 27],
             vec![],
             0,
@@ -471,7 +471,7 @@ mod test {
         }];
         // Create a dummy context
         let ctx = CrashDumpContext::new(
-            &regions,
+            regions,
             [0; 27],
             vec![],
             0x1000,
