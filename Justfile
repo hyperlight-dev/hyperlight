@@ -372,7 +372,7 @@ build-fuzzer fuzz-target:
 ###################
 
 gen-all-fbs-rust-code:
-    for fbs in `find src -name "*.fbs"`; do flatc -r --rust-module-root-file --gen-all -o ./src/hyperlight_common/src/flatbuffers/ $fbs; done
+    flatc --rust --rust-module-root-file --gen-all -o ./src/hyperlight_common/src/flatbuffers/ ./src/schema/all.fbs
     just fmt-apply
 
 install-vcpkg:

@@ -14,8 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-/// Functionality to check for errors after a guest call
-pub(crate) mod guest_err;
 /// Definitions and functionality to enable guest-to-host function calling,
 /// also called "host functions"
 ///
