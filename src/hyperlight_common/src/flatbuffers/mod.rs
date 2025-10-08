@@ -2,7 +2,6 @@
 // @generated
 pub mod hyperlight {
     use super::*;
-    #[allow(mismatched_lifetime_syntaxes)]
     pub mod generated {
         use super::*;
         mod parameter_value_generated;
@@ -13,6 +12,14 @@ pub mod hyperlight {
         pub use self::return_type_generated::*;
         mod return_value_generated;
         pub use self::return_value_generated::*;
+        mod error_code_generated;
+        pub use self::error_code_generated::*;
+        mod function_call_result_type_generated;
+        pub use self::function_call_result_type_generated::*;
+        mod function_call_type_generated;
+        pub use self::function_call_type_generated::*;
+        mod log_level_generated;
+        pub use self::log_level_generated::*;
         mod hlint_generated;
         pub use self::hlint_generated::*;
         mod hluint_generated;
@@ -31,29 +38,25 @@ pub mod hyperlight {
         pub use self::hlbool_generated::*;
         mod hlvecbytes_generated;
         pub use self::hlvecbytes_generated::*;
+        mod hlsizeprefixedbuffer_generated;
+        pub use self::hlsizeprefixedbuffer_generated::*;
         mod hlvoid_generated;
         pub use self::hlvoid_generated::*;
+        mod guest_error_generated;
+        pub use self::guest_error_generated::*;
+        mod return_value_box_generated;
+        pub use self::return_value_box_generated::*;
         mod function_call_result_generated;
         pub use self::function_call_result_generated::*;
         mod parameter_generated;
         pub use self::parameter_generated::*;
         mod function_call_generated;
         pub use self::function_call_generated::*;
-        mod function_call_type_generated;
-        pub use self::function_call_type_generated::*;
-        mod error_code_generated;
-        pub use self::error_code_generated::*;
-        mod guest_error_generated;
-        pub use self::guest_error_generated::*;
+        mod guest_log_data_generated;
+        pub use self::guest_log_data_generated::*;
         mod host_function_definition_generated;
         pub use self::host_function_definition_generated::*;
         mod host_function_details_generated;
         pub use self::host_function_details_generated::*;
-        mod hlsizeprefixedbuffer_generated;
-        pub use self::hlsizeprefixedbuffer_generated::*;
-        mod log_level_generated;
-        pub use self::log_level_generated::*;
-        mod guest_log_data_generated;
-        pub use self::guest_log_data_generated::*;
-    }
-}
+    } // generated
+} // hyperlight
