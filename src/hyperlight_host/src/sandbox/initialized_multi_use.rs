@@ -660,9 +660,6 @@ mod tests {
     #[ignore]
     #[cfg(target_os = "linux")]
     fn test_violate_seccomp_filters() -> Result<()> {
-        #[cfg(feature = "seccomp")]
-        use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-
         fn make_get_pid_syscall() -> Result<u64> {
             let pid = unsafe { libc::syscall(libc::SYS_getpid) };
             Ok(pid as u64)
