@@ -28,7 +28,7 @@ use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 use log::LevelFilter;
 
 pub mod common; // pub to disable dead_code warning
-use crate::common::{new_uninit, new_uninit_rust};
+use crate::common::{new_uninit, new_uninit_c, new_uninit_rust};
 
 // A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
 // we don't re-enter the guest again once the host call is done
@@ -764,4 +764,96 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
             .call::<()>("LogMessage", (message.to_string(), level as i32))
             .unwrap();
     }
+}
+
+/// Tests whether host is able to return Bool as return type
+/// or not
+#[test]
+fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
+    let mut sbox1 = new_uninit_c().unwrap();
+
+    sbox1
+        .register("HostBool", |a: i32, b: i32| a + b > 10)
+        .unwrap();
+    let mut sbox3 = sbox1.evolve().unwrap();
+
+    for i in 1..10 {
+        if i < 6 {
+            let res = sbox3
+                .call::<bool>("GuestRetrievesBoolValue", (i, i))
+                .unwrap();
+            println!("{:?}", res);
+            assert!(!res);
+        } else {
+            let res = sbox3
+                .call::<bool>("GuestRetrievesBoolValue", (i, i))
+                .unwrap();
+            println!("{:?}", res);
+            assert!(res);
+        }
+    }
+}
+
+/// Tests whether host is able to return Float/f32 as return type
+/// or not
+/// Adding Ignore attribute, due known issues with float and double
+/// calculations - see Github issue #179. Once it is fixed we can
+/// remove ignore attribute
+#[ignore]
+#[test]
+fn test_if_guest_is_able_to_get_float_return_values_from_host() {
+    let mut sbox1 = new_uninit_c().unwrap();
+
+    sbox1
+        .register("HostAddFloat", |a: f32, b: f32| a + b)
+        .unwrap();
+    let mut sbox3 = sbox1.evolve().unwrap();
+    let res = sbox3
+        .call::<f32>("GuestRetrievesFloatValue", (1.34_f32, 1.34_f32))
+        .unwrap();
+    println!("{:?}", res);
+    assert_eq!(res, 2.68_f32);
+}
+
+/// Tests whether host is able to return Double/f64 as return type
+/// or not
+/// Adding Ignore attribute, due known issues with float and double
+/// calculations - see Github issue #179. Once it is fixed we can
+/// remove ignore attribute
+#[ignore]
+#[test]
+fn test_if_guest_is_able_to_get_double_return_values_from_host() {
+    let mut sbox1 = new_uninit_c().unwrap();
+
+    sbox1
+        .register("HostAddDouble", |a: f64, b: f64| a + b)
+        .unwrap();
+    let mut sbox3 = sbox1.evolve().unwrap();
+    let res = sbox3
+        .call::<f64>("GuestRetrievesDoubleValue", (1.34_f64, 1.34_f64))
+        .unwrap();
+    println!("{:?}", res);
+    assert_eq!(res, 2.68_f64);
+}
+
+/// Tests whether host is able to return String as return type
+/// or not
+#[test]
+fn test_if_guest_is_able_to_get_string_return_values_from_host() {
+    let mut sbox1 = new_uninit_c().unwrap();
+
+    sbox1
+        .register("HostAddStrings", |a: String| {
+            a + ", string added by Host Function"
+        })
+        .unwrap();
+    let mut sbox3 = sbox1.evolve().unwrap();
+    let res = sbox3
+        .call::<String>("GuestRetrievesStringValue", ())
+        .unwrap();
+    println!("{:?}", res);
+    assert_eq!(
+        res,
+        "Guest Function, string added by Host Function".to_string()
+    );
 }

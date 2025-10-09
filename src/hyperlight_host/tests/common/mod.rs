@@ -35,6 +35,14 @@ pub fn new_uninit_rust() -> Result<UninitializedSandbox> {
     )
 }
 
+/// Returns a c-language simpleguest.
+pub fn new_uninit_c() -> Result<UninitializedSandbox> {
+    UninitializedSandbox::new(
+        GuestBinary::FilePath(c_simple_guest_as_string().unwrap()),
+        None,
+    )
+}
+
 pub fn get_simpleguest_sandboxes(
     writer: Option<HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
 ) -> Vec<MultiUseSandbox> {
