@@ -19,15 +19,14 @@ use tracing::{Span, instrument};
 
 use crate::HyperlightError::StackOverflow;
 use crate::error::HyperlightError::ExecutionCanceledByHost;
+use crate::hypervisor::regs::{
+    CommonFpu, CommonRegisters, CommonSegmentRegister, CommonSpecialRegisters,
+};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
 use crate::{HyperlightError, Result, log_then_return};
-
-/// Util for handling x87 fpu state
-#[cfg(any(kvm, mshv, target_os = "windows"))]
-pub mod fpu;
 
 /// HyperV-on-linux functionality
 #[cfg(mshv)]
@@ -39,6 +38,9 @@ pub(crate) mod hyperv_windows;
 /// GDB debugging support
 #[cfg(gdb)]
 pub(crate) mod gdb;
+
+/// Abstracts over different hypervisor register representations
+pub(crate) mod regs;
 
 #[cfg(kvm)]
 /// Functionality to manipulate KVM-based virtual machines
@@ -116,21 +118,6 @@ pub enum HyperlightExit {
     Retry(),
 }
 
-/// Registers which may be useful for tracing/stack unwinding
-#[cfg(feature = "trace_guest")]
-pub enum TraceRegister {
-    /// RAX
-    RAX,
-    /// RCX
-    RCX,
-    /// RIP
-    RIP,
-    /// RSP
-    RSP,
-    /// RBP
-    RBP,
-}
-
 /// A common set of hypervisor functionality
 pub(crate) trait Hypervisor: Debug + Send {
     /// Initialise the internally stored vCPU with the given PEB address and
@@ -189,6 +176,87 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Get InterruptHandle to underlying VM
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
 
+    /// Get regs
+    #[allow(dead_code)]
+    fn regs(&self) -> Result<CommonRegisters>;
+    /// Set regs
+    #[allow(dead_code)]
+    fn set_regs(&mut self, regs: &CommonRegisters) -> Result<()>;
+    /// Get fpu regs
+    #[allow(dead_code)]
+    fn fpu(&self) -> Result<CommonFpu>;
+    /// Set fpu regs
+    #[allow(dead_code)]
+    fn set_fpu(&mut self, fpu: &CommonFpu) -> Result<()>;
+    /// Get special regs
+    #[allow(dead_code)]
+    fn sregs(&self) -> Result<CommonSpecialRegisters>;
+    /// Set special regs
+    #[allow(dead_code)]
+    fn set_sregs(&mut self, sregs: &CommonSpecialRegisters) -> Result<()>;
+
+    /// Setup initial special registers for the hypervisor
+    /// This is a default implementation that works for all hypervisors
+    fn setup_initial_sregs(&mut self, _pml4_addr: u64) -> Result<()> {
+        #[cfg(feature = "init-paging")]
+        let sregs = CommonSpecialRegisters {
+            cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
+            cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
+            cr3: _pml4_addr,
+            efer: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
+            cs: CommonSegmentRegister {
+                type_: 11,
+                present: 1,
+                s: 1,
+                l: 1,
+                ..Default::default()
+            },
+            tr: CommonSegmentRegister {
+                limit: 65535,
+                type_: 11,
+                present: 1,
+                s: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        #[cfg(not(feature = "init-paging"))]
+        let sregs = CommonSpecialRegisters {
+            cs: CommonSegmentRegister {
+                base: 0,
+                selector: 0,
+                limit: 0xFFFF,
+                type_: 11,
+                present: 1,
+                s: 1,
+                ..Default::default()
+            },
+            ds: CommonSegmentRegister {
+                base: 0,
+                selector: 0,
+                limit: 0xFFFF,
+                type_: 3,
+                present: 1,
+                s: 1,
+                ..Default::default()
+            },
+            tr: CommonSegmentRegister {
+                base: 0,
+                selector: 0,
+                limit: 0xFFFF,
+                type_: 11,
+                present: 1,
+                s: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        self.set_sregs(&sregs)?;
+        Ok(())
+    }
+
     /// Get the logging level to pass to the guest entrypoint
     fn get_max_log_level(&self) -> u32 {
         // Check to see if the RUST_LOG environment variable is set
@@ -244,10 +312,6 @@ pub(crate) trait Hypervisor: Debug + Send {
 
     /// Check stack guard to see if the stack is still valid
     fn check_stack_guard(&self) -> Result<bool>;
-
-    /// Read a register for trace/unwind purposes
-    #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64>;
 
     /// Get a reference of the trace info for the guest
     #[cfg(feature = "trace_guest")]

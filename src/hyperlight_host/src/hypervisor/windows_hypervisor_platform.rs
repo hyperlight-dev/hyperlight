@@ -24,12 +24,16 @@ use windows::Win32::System::LibraryLoader::*;
 use windows::core::s;
 use windows_result::HRESULT;
 
+use super::regs::{
+    Align16, CommonFpu, CommonRegisters, CommonSpecialRegisters, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES,
+    WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES, WHP_SREGS_NAMES_LEN,
+};
 use super::surrogate_process::SurrogateProcess;
 #[cfg(crashdump)]
 use crate::HyperlightError;
+use crate::hypervisor::regs::WHP_FPU_NAMES;
 #[cfg(gdb)]
 use crate::hypervisor::wrappers::WHvDebugRegisters;
-use crate::hypervisor::wrappers::{WHvFPURegisters, WHvGeneralRegisters, WHvSpecialRegisters};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
 
@@ -303,15 +307,16 @@ impl VMProcessor {
         part.0
     }
 
+    /// Helper for setting arbitrary registers.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn set_registers(
         &self,
-        registers: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)],
+        registers: &[(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)],
     ) -> Result<()> {
-        let partition_handle = self.get_partition_hdl();
         let register_count = registers.len();
-        let mut register_names: Vec<WHV_REGISTER_NAME> = vec![];
-        let mut register_values: Vec<WHV_REGISTER_VALUE> = vec![];
+
+        let mut register_names = Vec::with_capacity(register_count);
+        let mut register_values = Vec::with_capacity(register_count);
 
         for (key, value) in registers.iter() {
             register_names.push(*key);
@@ -320,188 +325,115 @@ impl VMProcessor {
 
         unsafe {
             WHvSetVirtualProcessorRegisters(
-                partition_handle,
+                self.get_partition_hdl(),
                 0,
                 register_names.as_ptr(),
                 register_count as u32,
-                register_values.as_ptr(),
+                register_values.as_ptr() as *const WHV_REGISTER_VALUE,
             )?;
         }
 
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_sregs(&self) -> Result<WHvSpecialRegisters> {
-        const LEN: usize = 17;
+    pub(super) fn regs(&self) -> Result<CommonRegisters> {
+        let mut whv_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_REGS_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
 
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterCr0,
-            WHvX64RegisterCr2,
-            WHvX64RegisterCr3,
-            WHvX64RegisterCr4,
-            WHvX64RegisterCr8,
-            WHvX64RegisterEfer,
-            WHvX64RegisterApicBase,
-            WHvX64RegisterCs,
-            WHvX64RegisterDs,
-            WHvX64RegisterEs,
-            WHvX64RegisterFs,
-            WHvX64RegisterGs,
-            WHvX64RegisterSs,
-            WHvX64RegisterTr,
-            WHvX64RegisterLdtr,
-            WHvX64RegisterGdtr,
-            WHvX64RegisterIdtr,
-        ];
-
-        let mut out: [WHV_REGISTER_VALUE; LEN] = unsafe { std::mem::zeroed() };
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.get_partition_hdl(),
                 0,
-                names.as_ptr(),
-                LEN as u32,
-                out.as_mut_ptr(),
+                WHP_REGS_NAMES.as_ptr(),
+                whv_regs_values.len() as u32,
+                whv_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
             )?;
         }
 
-        let res: WHvSpecialRegisters = WHvSpecialRegisters {
-            cr0: out[0],
-            cr2: out[1],
-            cr3: out[2],
-            cr4: out[3],
-            cr8: out[4],
-            efer: out[5],
-            apic_base: out[6],
-            cs: out[7],
-            ds: out[8],
-            es: out[9],
-            fs: out[10],
-            gs: out[11],
-            ss: out[12],
-            tr: out[13],
-            ldtr: out[14],
-            gdtr: out[15],
-            idtr: out[16],
-        };
-
-        Ok(res)
-    }
-
-    // Sets the registers for the VMProcessor to the given general purpose registers.
-    // If you want to set other registers, use `set_registers` instead.
-    pub(super) fn set_general_purpose_registers(&self, regs: &WHvGeneralRegisters) -> Result<()> {
-        const LEN: usize = 18;
-
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterRax,
-            WHvX64RegisterRbx,
-            WHvX64RegisterRcx,
-            WHvX64RegisterRdx,
-            WHvX64RegisterRsi,
-            WHvX64RegisterRdi,
-            WHvX64RegisterRsp,
-            WHvX64RegisterRbp,
-            WHvX64RegisterR8,
-            WHvX64RegisterR9,
-            WHvX64RegisterR10,
-            WHvX64RegisterR11,
-            WHvX64RegisterR12,
-            WHvX64RegisterR13,
-            WHvX64RegisterR14,
-            WHvX64RegisterR15,
-            WHvX64RegisterRip,
-            WHvX64RegisterRflags,
-        ];
-
-        let values: [WHV_REGISTER_VALUE; LEN] = [
-            WHV_REGISTER_VALUE { Reg64: regs.rax },
-            WHV_REGISTER_VALUE { Reg64: regs.rbx },
-            WHV_REGISTER_VALUE { Reg64: regs.rcx },
-            WHV_REGISTER_VALUE { Reg64: regs.rdx },
-            WHV_REGISTER_VALUE { Reg64: regs.rsi },
-            WHV_REGISTER_VALUE { Reg64: regs.rdi },
-            WHV_REGISTER_VALUE { Reg64: regs.rsp },
-            WHV_REGISTER_VALUE { Reg64: regs.rbp },
-            WHV_REGISTER_VALUE { Reg64: regs.r8 },
-            WHV_REGISTER_VALUE { Reg64: regs.r9 },
-            WHV_REGISTER_VALUE { Reg64: regs.r10 },
-            WHV_REGISTER_VALUE { Reg64: regs.r11 },
-            WHV_REGISTER_VALUE { Reg64: regs.r12 },
-            WHV_REGISTER_VALUE { Reg64: regs.r13 },
-            WHV_REGISTER_VALUE { Reg64: regs.r14 },
-            WHV_REGISTER_VALUE { Reg64: regs.r15 },
-            WHV_REGISTER_VALUE { Reg64: regs.rip },
-            WHV_REGISTER_VALUE { Reg64: regs.rflags },
-        ];
-
-        unsafe {
-            WHvSetVirtualProcessorRegisters(
-                self.get_partition_hdl(),
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                values.as_ptr(),
-            )?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn get_regs(&self) -> Result<WHvGeneralRegisters> {
-        const LEN: usize = 18;
-
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterRax,
-            WHvX64RegisterRbx,
-            WHvX64RegisterRcx,
-            WHvX64RegisterRdx,
-            WHvX64RegisterRsi,
-            WHvX64RegisterRdi,
-            WHvX64RegisterRsp,
-            WHvX64RegisterRbp,
-            WHvX64RegisterR8,
-            WHvX64RegisterR9,
-            WHvX64RegisterR10,
-            WHvX64RegisterR11,
-            WHvX64RegisterR12,
-            WHvX64RegisterR13,
-            WHvX64RegisterR14,
-            WHvX64RegisterR15,
-            WHvX64RegisterRip,
-            WHvX64RegisterRflags,
-        ];
-
-        let mut out: [WHV_REGISTER_VALUE; LEN] = unsafe { std::mem::zeroed() };
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.get_partition_hdl(),
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                out.as_mut_ptr(),
-            )?;
-            Ok(WHvGeneralRegisters {
-                rax: out[0].Reg64,
-                rbx: out[1].Reg64,
-                rcx: out[2].Reg64,
-                rdx: out[3].Reg64,
-                rsi: out[4].Reg64,
-                rdi: out[5].Reg64,
-                rsp: out[6].Reg64,
-                rbp: out[7].Reg64,
-                r8: out[8].Reg64,
-                r9: out[9].Reg64,
-                r10: out[10].Reg64,
-                r11: out[11].Reg64,
-                r12: out[12].Reg64,
-                r13: out[13].Reg64,
-                r14: out[14].Reg64,
-                r15: out[15].Reg64,
-                rip: out[16].Reg64,
-                rflags: out[17].Reg64,
+        WHP_REGS_NAMES
+            .into_iter()
+            .zip(whv_regs_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonRegisters: {:?}",
+                    e
+                )
             })
+    }
+
+    pub(super) fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_REGS_NAMES_LEN] =
+            regs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
+    }
+
+    pub(super) fn sregs(&self) -> Result<CommonSpecialRegisters> {
+        let mut whp_sregs_values: [Align16<WHV_REGISTER_VALUE>; WHP_SREGS_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.get_partition_hdl(),
+                0,
+                WHP_SREGS_NAMES.as_ptr(),
+                whp_sregs_values.len() as u32,
+                whp_sregs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
         }
+
+        WHP_SREGS_NAMES
+            .into_iter()
+            .zip(whp_sregs_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonSpecialRegisters: {:?}",
+                    e
+                )
+            })
+    }
+
+    pub(super) fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
+            sregs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
+    }
+
+    pub(super) fn fpu(&self) -> Result<CommonFpu> {
+        let mut whp_fpu_values: [Align16<WHV_REGISTER_VALUE>; WHP_FPU_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.get_partition_hdl(),
+                0,
+                WHP_FPU_NAMES.as_ptr(),
+                whp_fpu_values.len() as u32,
+                whp_fpu_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        WHP_FPU_NAMES
+            .into_iter()
+            .zip(whp_fpu_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| new_error!("Failed to convert WHP registers to CommonFpu: {:?}", e))
+    }
+
+    pub(super) fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
+        let whp_fpu: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_FPU_NAMES_LEN] =
+            fpu.into();
+        self.set_registers(&whp_fpu)?;
+        Ok(())
     }
 
     #[cfg(crashdump)]
@@ -560,12 +492,30 @@ impl VMProcessor {
     #[cfg(gdb)]
     pub(super) fn set_debug_regs(&self, regs: &WHvDebugRegisters) -> Result<()> {
         let registers = vec![
-            (WHvX64RegisterDr0, WHV_REGISTER_VALUE { Reg64: regs.dr0 }),
-            (WHvX64RegisterDr1, WHV_REGISTER_VALUE { Reg64: regs.dr1 }),
-            (WHvX64RegisterDr2, WHV_REGISTER_VALUE { Reg64: regs.dr2 }),
-            (WHvX64RegisterDr3, WHV_REGISTER_VALUE { Reg64: regs.dr3 }),
-            (WHvX64RegisterDr6, WHV_REGISTER_VALUE { Reg64: regs.dr6 }),
-            (WHvX64RegisterDr7, WHV_REGISTER_VALUE { Reg64: regs.dr7 }),
+            (
+                WHvX64RegisterDr0,
+                Align16(WHV_REGISTER_VALUE { Reg64: regs.dr0 }),
+            ),
+            (
+                WHvX64RegisterDr1,
+                Align16(WHV_REGISTER_VALUE { Reg64: regs.dr1 }),
+            ),
+            (
+                WHvX64RegisterDr2,
+                Align16(WHV_REGISTER_VALUE { Reg64: regs.dr2 }),
+            ),
+            (
+                WHvX64RegisterDr3,
+                Align16(WHV_REGISTER_VALUE { Reg64: regs.dr3 }),
+            ),
+            (
+                WHvX64RegisterDr6,
+                Align16(WHV_REGISTER_VALUE { Reg64: regs.dr6 }),
+            ),
+            (
+                WHvX64RegisterDr7,
+                Align16(WHV_REGISTER_VALUE { Reg64: regs.dr7 }),
+            ),
         ];
 
         self.set_registers(&registers)
@@ -584,233 +534,22 @@ impl VMProcessor {
             WHvX64RegisterDr7,
         ];
 
-        let mut out: [WHV_REGISTER_VALUE; LEN] = unsafe { std::mem::zeroed() };
+        let mut out: [Align16<WHV_REGISTER_VALUE>; LEN] = unsafe { std::mem::zeroed() };
         unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.get_partition_hdl(),
                 0,
                 names.as_ptr(),
                 LEN as u32,
-                out.as_mut_ptr(),
+                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
             )?;
             Ok(WHvDebugRegisters {
-                dr0: out[0].Reg64,
-                dr1: out[1].Reg64,
-                dr2: out[2].Reg64,
-                dr3: out[3].Reg64,
-                dr6: out[4].Reg64,
-                dr7: out[5].Reg64,
-            })
-        }
-    }
-
-    pub(super) fn set_fpu(&self, regs: &WHvFPURegisters) -> Result<()> {
-        const LEN: usize = 26;
-
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterXmm0,
-            WHvX64RegisterXmm1,
-            WHvX64RegisterXmm2,
-            WHvX64RegisterXmm3,
-            WHvX64RegisterXmm4,
-            WHvX64RegisterXmm5,
-            WHvX64RegisterXmm6,
-            WHvX64RegisterXmm7,
-            WHvX64RegisterXmm8,
-            WHvX64RegisterXmm9,
-            WHvX64RegisterXmm10,
-            WHvX64RegisterXmm11,
-            WHvX64RegisterXmm12,
-            WHvX64RegisterXmm13,
-            WHvX64RegisterXmm14,
-            WHvX64RegisterXmm15,
-            WHvX64RegisterFpMmx0,
-            WHvX64RegisterFpMmx1,
-            WHvX64RegisterFpMmx2,
-            WHvX64RegisterFpMmx3,
-            WHvX64RegisterFpMmx4,
-            WHvX64RegisterFpMmx5,
-            WHvX64RegisterFpMmx6,
-            WHvX64RegisterFpMmx7,
-            WHvX64RegisterFpControlStatus,
-            WHvX64RegisterXmmControlStatus,
-        ];
-
-        let xmm_regs = [
-            regs.xmm0, regs.xmm1, regs.xmm2, regs.xmm3, regs.xmm4, regs.xmm5, regs.xmm6, regs.xmm7,
-            regs.xmm8, regs.xmm9, regs.xmm10, regs.xmm11, regs.xmm12, regs.xmm13, regs.xmm14,
-            regs.xmm15,
-        ];
-
-        let mut values: Vec<WHV_REGISTER_VALUE> = xmm_regs
-            .iter()
-            .map(|&reg| WHV_REGISTER_VALUE {
-                Fp: WHV_X64_FP_REGISTER {
-                    AsUINT128: WHV_UINT128 {
-                        Anonymous: WHV_UINT128_0 {
-                            Low64: reg as u64,
-                            High64: (reg >> 64) as u64,
-                        },
-                    },
-                },
-            })
-            .collect();
-
-        values.extend_from_slice(&[
-            WHV_REGISTER_VALUE { Reg64: regs.mmx0 },
-            WHV_REGISTER_VALUE { Reg64: regs.mmx1 },
-            WHV_REGISTER_VALUE { Reg64: regs.mmx2 },
-            WHV_REGISTER_VALUE { Reg64: regs.mmx3 },
-            WHV_REGISTER_VALUE { Reg64: regs.mmx4 },
-            WHV_REGISTER_VALUE { Reg64: regs.mmx5 },
-            WHV_REGISTER_VALUE { Reg64: regs.mmx6 },
-            WHV_REGISTER_VALUE { Reg64: regs.mmx7 },
-            WHV_REGISTER_VALUE {
-                FpControlStatus: WHV_X64_FP_CONTROL_STATUS_REGISTER {
-                    Anonymous: WHV_X64_FP_CONTROL_STATUS_REGISTER_0 {
-                        FpControl: regs.fp_control_word,
-                        FpTag: regs.fp_tag_word,
-                        ..Default::default()
-                    },
-                },
-            },
-            WHV_REGISTER_VALUE {
-                XmmControlStatus: WHV_X64_XMM_CONTROL_STATUS_REGISTER {
-                    Anonymous: WHV_X64_XMM_CONTROL_STATUS_REGISTER_0 {
-                        XmmStatusControl: regs.mxcsr,
-                        ..Default::default()
-                    },
-                },
-            },
-        ]);
-
-        unsafe {
-            WHvSetVirtualProcessorRegisters(
-                self.get_partition_hdl(),
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                values.as_ptr(),
-            )?;
-        }
-        Ok(())
-    }
-
-    #[cfg(gdb)]
-    pub(super) fn get_fpu(&self) -> Result<WHvFPURegisters> {
-        use windows::Win32::System::Hypervisor::*;
-
-        const LEN: usize = 26;
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterXmm0,
-            WHvX64RegisterXmm1,
-            WHvX64RegisterXmm2,
-            WHvX64RegisterXmm3,
-            WHvX64RegisterXmm4,
-            WHvX64RegisterXmm5,
-            WHvX64RegisterXmm6,
-            WHvX64RegisterXmm7,
-            WHvX64RegisterXmm8,
-            WHvX64RegisterXmm9,
-            WHvX64RegisterXmm10,
-            WHvX64RegisterXmm11,
-            WHvX64RegisterXmm12,
-            WHvX64RegisterXmm13,
-            WHvX64RegisterXmm14,
-            WHvX64RegisterXmm15,
-            WHvX64RegisterFpMmx0,
-            WHvX64RegisterFpMmx1,
-            WHvX64RegisterFpMmx2,
-            WHvX64RegisterFpMmx3,
-            WHvX64RegisterFpMmx4,
-            WHvX64RegisterFpMmx5,
-            WHvX64RegisterFpMmx6,
-            WHvX64RegisterFpMmx7,
-            WHvX64RegisterFpControlStatus,
-            WHvX64RegisterXmmControlStatus,
-        ];
-
-        let mut out: [WHV_REGISTER_VALUE; LEN] = unsafe { std::mem::zeroed() };
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.get_partition_hdl(),
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                out.as_mut_ptr(),
-            )?;
-
-            // Helper to read a WHV_UINT128 -> u128
-            fn u128_from_whv(fp: WHV_REGISTER_VALUE) -> u128 {
-                unsafe {
-                    let low = fp.Fp.AsUINT128.Anonymous.Low64 as u128;
-                    let high = fp.Fp.AsUINT128.Anonymous.High64 as u128;
-                    (high << 64) | low
-                }
-            }
-
-            let xmm = [
-                u128_from_whv(out[0]),
-                u128_from_whv(out[1]),
-                u128_from_whv(out[2]),
-                u128_from_whv(out[3]),
-                u128_from_whv(out[4]),
-                u128_from_whv(out[5]),
-                u128_from_whv(out[6]),
-                u128_from_whv(out[7]),
-                u128_from_whv(out[8]),
-                u128_from_whv(out[9]),
-                u128_from_whv(out[10]),
-                u128_from_whv(out[11]),
-                u128_from_whv(out[12]),
-                u128_from_whv(out[13]),
-                u128_from_whv(out[14]),
-                u128_from_whv(out[15]),
-            ];
-
-            let mmx = [
-                out[16].Reg64,
-                out[17].Reg64,
-                out[18].Reg64,
-                out[19].Reg64,
-                out[20].Reg64,
-                out[21].Reg64,
-                out[22].Reg64,
-                out[23].Reg64,
-            ];
-
-            let fp_control_word = out[24].FpControlStatus.Anonymous.FpControl;
-            let fp_tag_word = out[24].FpControlStatus.Anonymous.FpTag;
-            let mxcsr = out[25].XmmControlStatus.Anonymous.XmmStatusControl;
-
-            Ok(WHvFPURegisters {
-                xmm0: xmm[0],
-                xmm1: xmm[1],
-                xmm2: xmm[2],
-                xmm3: xmm[3],
-                xmm4: xmm[4],
-                xmm5: xmm[5],
-                xmm6: xmm[6],
-                xmm7: xmm[7],
-                xmm8: xmm[8],
-                xmm9: xmm[9],
-                xmm10: xmm[10],
-                xmm11: xmm[11],
-                xmm12: xmm[12],
-                xmm13: xmm[13],
-                xmm14: xmm[14],
-                xmm15: xmm[15],
-                mmx0: mmx[0],
-                mmx1: mmx[1],
-                mmx2: mmx[2],
-                mmx3: mmx[3],
-                mmx4: mmx[4],
-                mmx5: mmx[5],
-                mmx6: mmx[6],
-                mmx7: mmx[7],
-                fp_control_word,
-                fp_tag_word,
-                mxcsr,
+                dr0: out[0].0.Reg64,
+                dr1: out[1].0.Reg64,
+                dr2: out[2].0.Reg64,
+                dr3: out[3].0.Reg64,
+                dr6: out[4].0.Reg64,
+                dr7: out[5].0.Reg64,
             })
         }
     }
