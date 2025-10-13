@@ -166,7 +166,7 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(feature = "trace_guest")]
     let trace_info = TraceInfo::new(
         #[cfg(feature = "unwind_guest")]
-        _load_info,
+        _load_info.info,
     )?;
 
     match *get_available_hypervisor() {

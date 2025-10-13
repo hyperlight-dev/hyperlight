@@ -27,6 +27,7 @@ use goblin::elf32::program_header::PT_LOAD;
 #[cfg(feature = "init-paging")]
 use goblin::elf64::program_header::PT_LOAD;
 
+use super::exe::LoadInfo;
 use crate::{Result, log_then_return, new_error};
 
 #[cfg(feature = "unwind_guest")]
@@ -161,11 +162,7 @@ impl ElfInfo {
             .unwrap();
         (max_phdr.p_vaddr + max_phdr.p_memsz - self.get_base_va()) as usize
     }
-    pub(crate) fn load_at(
-        self,
-        load_addr: usize,
-        target: &mut [u8],
-    ) -> Result<super::exe::LoadInfo> {
+    pub(crate) fn load_at(self, load_addr: usize, target: &mut [u8]) -> Result<LoadInfo> {
         let base_va = self.get_base_va();
         for phdr in self.phdrs.iter().filter(|phdr| phdr.p_type == PT_LOAD) {
             let start_va = (phdr.p_vaddr - base_va) as usize;
@@ -209,15 +206,17 @@ impl ElfInfo {
             if #[cfg(feature = "unwind_guest")] {
                 let va_size = self.get_va_size() as u64;
                 let base_svma = self.get_base_va();
-                Ok(Arc::new(UnwindInfo {
-                    payload: self.payload,
-                    load_addr: load_addr as u64,
-                    va_size,
-                    base_svma,
-                    shdrs: self.shdrs,
-                }))
+                Ok(LoadInfo {
+                    info: Arc::new(UnwindInfo {
+                        payload: self.payload,
+                        load_addr: load_addr as u64,
+                        va_size,
+                        base_svma,
+                        shdrs: self.shdrs,
+                    })
+                })
             } else {
-                Ok(())
+                Ok(LoadInfo {})
             }
         }
     }

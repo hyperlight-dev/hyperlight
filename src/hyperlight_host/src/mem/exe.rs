@@ -58,10 +58,11 @@ impl<A> framehop::ModuleSectionInfo<A> for &DummyUnwindInfo {
     }
 }
 
-#[cfg(feature = "unwind_guest")]
-pub(crate) type LoadInfo = Arc<dyn UnwindInfo>;
-#[cfg(not(feature = "unwind_guest"))]
-pub(crate) type LoadInfo = ();
+#[derive(Clone)]
+pub(crate) struct LoadInfo {
+    #[cfg(feature = "unwind_guest")]
+    pub(crate) info: Arc<dyn UnwindInfo>,
+}
 
 impl ExeInfo {
     pub fn from_file(path: &str) -> Result<Self> {
