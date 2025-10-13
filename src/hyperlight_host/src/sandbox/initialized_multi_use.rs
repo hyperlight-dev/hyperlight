@@ -165,7 +165,7 @@ impl MultiUseSandbox {
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
         if let Some(snap) = &self.snapshot
-            && Arc::ptr_eq(&snap.inner, &snapshot.inner)
+            && snap.as_ref() == snapshot.as_ref()
         {
             // If the snapshot is already the current one, no need to restore
             return Ok(());

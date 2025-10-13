@@ -29,6 +29,29 @@ pub struct Snapshot {
     memory: Vec<u8>,
     /// The memory regions that were mapped when this snapshot was taken (excluding initial sandbox regions)
     regions: Vec<MemoryRegion>,
+    /// The hash of the other portions of the snapshot. Morally, this
+    /// is just a memoization cache for [`hash`], below, but it is not
+    /// a [`std::sync::OnceLock`] because it may be persisted to disk
+    /// without being recomputed on load.
+    ///
+    /// It is not a [`blake3::Hash`] because we do not presently
+    /// require constant-time equality checking
+    hash: [u8; 32],
+}
+
+fn hash(memory: &[u8], regions: &[MemoryRegion]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(memory);
+    for rgn in regions {
+        hasher.update(&usize::to_le_bytes(rgn.guest_region.start));
+        let guest_len = rgn.guest_region.end - rgn.guest_region.start;
+        hasher.update(&usize::to_le_bytes(rgn.guest_region.start));
+        let host_len = rgn.host_region.end - rgn.host_region.start;
+        assert!(guest_len == host_len);
+        hasher.update(&usize::to_le_bytes(guest_len));
+        hasher.update(&u32::to_le_bytes(rgn.flags.bits()));
+    }
+    hasher.finalize().into()
 }
 
 impl Snapshot {
@@ -42,10 +65,12 @@ impl Snapshot {
     ) -> Result<Self> {
         // TODO: Track dirty pages instead of copying entire memory
         let memory = shared_mem.with_exclusivity(|e| e.copy_all_to_vec())??;
+        let hash = hash(&memory, &regions);
         Ok(Self {
             sandbox_id,
             memory,
             regions,
+            hash,
         })
     }
 
@@ -69,6 +94,12 @@ impl Snapshot {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn memory(&self) -> &[u8] {
         &self.memory
+    }
+}
+
+impl PartialEq for Snapshot {
+    fn eq(&self, other: &Snapshot) -> bool {
+        self.hash == other.hash
     }
 }
 
