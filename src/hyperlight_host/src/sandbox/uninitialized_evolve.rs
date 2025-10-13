@@ -163,7 +163,7 @@ pub(crate) fn set_up_hypervisor_partition(
     };
 
     #[cfg(feature = "mem_profile")]
-    let trace_info = MemTraceInfo::new(_load_info)?;
+    let trace_info = MemTraceInfo::new(_load_info.info)?;
 
     HyperlightVm::new(
         regions,
