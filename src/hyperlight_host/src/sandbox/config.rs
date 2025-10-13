@@ -21,8 +21,6 @@ use std::time::Duration;
 use libc::c_int;
 use tracing::{Span, instrument};
 
-use crate::mem::exe::ExeInfo;
-
 /// Used for passing debug configuration to a sandbox
 #[cfg(gdb)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -105,6 +103,10 @@ impl SandboxConfiguration {
     pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration = Duration::from_micros(500);
     /// The default signal offset from `SIGRTMIN` used to determine the signal number for interrupting
     pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
+    /// The default heap size of a hyperlight sandbox
+    pub const DEFAULT_HEAP_SIZE: u64 = 131072;
+    /// The default stack size of a hyperlight sandbox
+    pub const DEFAULT_STACK_SIZE: u64 = 65536;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -267,17 +269,17 @@ impl SandboxConfiguration {
     /// If self.stack_size is non-zero, return it. Otherwise,
     /// return exe_info.stack_reserve()
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_stack_size(&self, exe_info: &ExeInfo) -> u64 {
+    pub(crate) fn get_stack_size(&self) -> u64 {
         self.stack_size_override_opt()
-            .unwrap_or_else(|| exe_info.stack_reserve())
+            .unwrap_or(Self::DEFAULT_STACK_SIZE)
     }
 
     /// If self.heap_size_override is non-zero, return it. Otherwise,
     /// return exe_info.heap_reserve()
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_heap_size(&self, exe_info: &ExeInfo) -> u64 {
+    pub(crate) fn get_heap_size(&self) -> u64 {
         self.heap_size_override_opt()
-            .unwrap_or_else(|| exe_info.heap_reserve())
+            .unwrap_or(Self::DEFAULT_HEAP_SIZE)
     }
 }
 
@@ -303,7 +305,6 @@ impl Default for SandboxConfiguration {
 #[cfg(test)]
 mod tests {
     use super::SandboxConfiguration;
-    use crate::testing::simple_guest_exe_info;
 
     #[test]
     fn overrides() {
@@ -325,10 +326,9 @@ mod tests {
             #[cfg(crashdump)]
             true,
         );
-        let exe_info = simple_guest_exe_info().unwrap();
 
-        let stack_size = cfg.get_stack_size(&exe_info);
-        let heap_size = cfg.get_heap_size(&exe_info);
+        let stack_size = cfg.get_stack_size();
+        let heap_size = cfg.get_heap_size();
         assert_eq!(STACK_SIZE_OVERRIDE, stack_size);
         assert_eq!(HEAP_SIZE_OVERRIDE, heap_size);
 
