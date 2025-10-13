@@ -14,12 +14,123 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::sync::Arc;
+use tracing::{Span, instrument};
 
-use crate::mem::shared_mem_snapshot::SharedMemorySnapshot;
+use crate::Result;
+use crate::mem::memory_region::MemoryRegion;
+use crate::mem::shared_mem::SharedMemory;
 
-/// A snapshot capturing the state of the memory in a `MultiUseSandbox`.
-#[derive(Clone)]
+/// A wrapper around a `SharedMemory` reference and a snapshot
+/// of the memory therein
 pub struct Snapshot {
-    pub(crate) inner: Arc<SharedMemorySnapshot>,
+    // Unique ID of the sandbox this snapshot was taken from
+    sandbox_id: u64,
+    // Memory of the sandbox at the time this snapshot was taken
+    memory: Vec<u8>,
+    /// The memory regions that were mapped when this snapshot was taken (excluding initial sandbox regions)
+    regions: Vec<MemoryRegion>,
+}
+
+impl Snapshot {
+    /// Take a snapshot of the memory in `shared_mem`, then create a new
+    /// instance of `Self` with the snapshot stored therein.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn new<S: SharedMemory>(
+        shared_mem: &mut S,
+        sandbox_id: u64,
+        regions: Vec<MemoryRegion>,
+    ) -> Result<Self> {
+        // TODO: Track dirty pages instead of copying entire memory
+        let memory = shared_mem.with_exclusivity(|e| e.copy_all_to_vec())??;
+        Ok(Self {
+            sandbox_id,
+            memory,
+            regions,
+        })
+    }
+
+    /// The id of the sandbox this snapshot was taken from.
+    pub(crate) fn sandbox_id(&self) -> u64 {
+        self.sandbox_id
+    }
+
+    /// Get the mapped regions from this snapshot
+    pub(crate) fn regions(&self) -> &[MemoryRegion] {
+        &self.regions
+    }
+
+    /// Return the size of the snapshot in bytes.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn mem_size(&self) -> usize {
+        self.memory.len()
+    }
+
+    /// Return the main memory contents of the snapshot
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn memory(&self) -> &[u8] {
+        &self.memory
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperlight_common::mem::PAGE_SIZE_USIZE;
+
+    use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+
+    #[test]
+    fn restore() {
+        // Simplified version of the original test
+        let data1 = vec![b'a'; PAGE_SIZE_USIZE];
+        let data2 = vec![b'b'; PAGE_SIZE_USIZE];
+
+        let mut gm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        gm.copy_from_slice(&data1, 0).unwrap();
+
+        // Take snapshot of data1
+        let snapshot = super::Snapshot::new(&mut gm, 0, Vec::new()).unwrap();
+
+        // Modify memory to data2
+        gm.copy_from_slice(&data2, 0).unwrap();
+        assert_eq!(gm.as_slice(), &data2[..]);
+
+        // Restore should bring back data1
+        gm.restore_from_snapshot(&snapshot).unwrap();
+        assert_eq!(gm.as_slice(), &data1[..]);
+    }
+
+    #[test]
+    fn snapshot_mem_size() {
+        let size = PAGE_SIZE_USIZE * 2;
+        let mut gm = ExclusiveSharedMemory::new(size).unwrap();
+
+        let snapshot = super::Snapshot::new(&mut gm, 0, Vec::new()).unwrap();
+        assert_eq!(snapshot.mem_size(), size);
+    }
+
+    #[test]
+    fn multiple_snapshots_independent() {
+        let mut gm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+
+        // Create first snapshot with pattern A
+        let pattern_a = vec![0xAA; PAGE_SIZE_USIZE];
+        gm.copy_from_slice(&pattern_a, 0).unwrap();
+        let snapshot_a = super::Snapshot::new(&mut gm, 1, Vec::new()).unwrap();
+
+        // Create second snapshot with pattern B
+        let pattern_b = vec![0xBB; PAGE_SIZE_USIZE];
+        gm.copy_from_slice(&pattern_b, 0).unwrap();
+        let snapshot_b = super::Snapshot::new(&mut gm, 2, Vec::new()).unwrap();
+
+        // Clear memory
+        gm.copy_from_slice(&[0; PAGE_SIZE_USIZE], 0).unwrap();
+
+        // Restore snapshot A
+        gm.restore_from_snapshot(&snapshot_a).unwrap();
+        assert_eq!(gm.as_slice(), &pattern_a[..]);
+
+        // Restore snapshot B
+        gm.restore_from_snapshot(&snapshot_b).unwrap();
+        assert_eq!(gm.as_slice(), &pattern_b[..]);
+    }
 }

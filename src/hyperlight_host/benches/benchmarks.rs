@@ -172,7 +172,7 @@ fn bench_guest_call_with_restore(b: &mut criterion::Bencher, size: SandboxSize) 
 
     b.iter(|| {
         sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
-        sbox.restore(&snapshot).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
     });
 }
 
@@ -340,7 +340,7 @@ fn bench_snapshot_restore(b: &mut criterion::Bencher, size: SandboxSize) {
 
             // Measure only the restore time
             let start = Instant::now();
-            sbox.restore(&snapshot).unwrap();
+            sbox.restore(snapshot.clone()).unwrap();
             total_duration += start.elapsed();
         }
 

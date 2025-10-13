@@ -33,8 +33,8 @@ use super::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionType};
 use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
-use super::shared_mem_snapshot::SharedMemorySnapshot;
 use crate::sandbox::SandboxConfiguration;
+use crate::sandbox::snapshot::Snapshot;
 use crate::sandbox::uninitialized::GuestBlob;
 use crate::{Result, log_then_return, new_error};
 
@@ -285,12 +285,12 @@ where
         &mut self,
         sandbox_id: u64,
         mapped_regions: Vec<MemoryRegion>,
-    ) -> Result<SharedMemorySnapshot> {
-        SharedMemorySnapshot::new(&mut self.shared_mem, sandbox_id, mapped_regions)
+    ) -> Result<Snapshot> {
+        Snapshot::new(&mut self.shared_mem, sandbox_id, mapped_regions)
     }
 
     /// This function restores a memory snapshot from a given snapshot.
-    pub(crate) fn restore_snapshot(&mut self, snapshot: &SharedMemorySnapshot) -> Result<()> {
+    pub(crate) fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
         if self.shared_mem.mem_size() != snapshot.mem_size() {
             return Err(new_error!(
                 "Snapshot size does not match current memory size: {} != {}",
@@ -298,7 +298,7 @@ where
                 snapshot.mem_size()
             ));
         }
-        snapshot.restore_from_snapshot(&mut self.shared_mem)?;
+        self.shared_mem.restore_from_snapshot(snapshot)?;
         Ok(())
     }
 }
