@@ -35,9 +35,6 @@ pub mod ptr_offset;
 /// A wrapper around unsafe functionality to create and initialize
 /// a memory region for a guest running in a sandbox.
 pub mod shared_mem;
-/// A wrapper around a `SharedMemory` and a snapshot in time
-/// of the memory therein
-pub mod shared_mem_snapshot;
 /// Utilities for writing shared memory tests
 #[cfg(test)]
 pub(crate) mod shared_mem_tests;

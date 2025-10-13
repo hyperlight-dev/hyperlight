@@ -58,7 +58,7 @@ fn guest_call_benchmark(c: &mut Criterion) {
 
         b.iter(|| {
             sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
-            sbox.restore(&snapshot).unwrap();
+            sbox.restore(snapshot.clone()).unwrap();
         });
     });
 

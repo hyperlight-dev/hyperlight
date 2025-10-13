@@ -66,7 +66,7 @@ pub struct MultiUseSandbox {
     dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     /// If the current state of the sandbox has been captured in a snapshot,
     /// that snapshot is stored here.
-    snapshot: Option<Snapshot>,
+    snapshot: Option<Arc<Snapshot>>,
 }
 
 impl MultiUseSandbox {
@@ -119,15 +119,14 @@ impl MultiUseSandbox {
     /// # }
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
-    pub fn snapshot(&mut self) -> Result<Snapshot> {
+    pub fn snapshot(&mut self) -> Result<Arc<Snapshot>> {
         if let Some(snapshot) = &self.snapshot {
             return Ok(snapshot.clone());
         }
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
         let memory_snapshot = self.mem_mgr.snapshot(self.id, mapped_regions_vec)?;
-        let inner = Arc::new(memory_snapshot);
-        let snapshot = Snapshot { inner };
+        let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
     }
@@ -157,14 +156,14 @@ impl MultiUseSandbox {
     /// assert_eq!(value, 100);
     ///
     /// // Restore to previous state (same sandbox)
-    /// sandbox.restore(&snapshot)?;
+    /// sandbox.restore(snapshot)?;
     /// let restored_value: i32 = sandbox.call_guest_function_by_name("GetValue", ())?;
     /// assert_eq!(restored_value, 0); // Back to initial state
     /// # Ok(())
     /// # }
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
-    pub fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
+    pub fn restore(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
         if let Some(snap) = &self.snapshot
             && Arc::ptr_eq(&snap.inner, &snapshot.inner)
         {
@@ -172,14 +171,14 @@ impl MultiUseSandbox {
             return Ok(());
         }
 
-        if self.id != snapshot.inner.sandbox_id() {
+        if self.id != snapshot.sandbox_id() {
             return Err(SnapshotSandboxMismatch);
         }
 
-        self.mem_mgr.restore_snapshot(&snapshot.inner)?;
+        self.mem_mgr.restore_snapshot(&snapshot)?;
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
-        let snapshot_regions: HashSet<_> = snapshot.inner.regions().iter().cloned().collect();
+        let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();
 
         let regions_to_unmap = current_regions.difference(&snapshot_regions);
         let regions_to_map = snapshot_regions.difference(&current_regions);
@@ -242,7 +241,7 @@ impl MultiUseSandbox {
     ) -> Result<Output> {
         let snapshot = self.snapshot()?;
         let res = self.call(func_name, args);
-        self.restore(&snapshot)?;
+        self.restore(snapshot)?;
         res
     }
 
@@ -532,7 +531,7 @@ mod tests {
         let res: i32 = sbox.call("GetStatic", ()).unwrap();
         assert_eq!(res, 5);
 
-        sbox.restore(&snapshot).unwrap();
+        sbox.restore(snapshot).unwrap();
         #[allow(deprecated)]
         let _ = sbox
             .call_guest_function_by_name::<i32>("AddToStatic", 5i32)
@@ -596,7 +595,7 @@ mod tests {
         let res: i32 = sbox.call("GetStatic", ()).unwrap();
         assert_eq!(res, 5);
 
-        sbox.restore(&snapshot).unwrap();
+        sbox.restore(snapshot).unwrap();
         let res: i32 = sbox.call("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
     }
@@ -968,11 +967,11 @@ mod tests {
         assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
 
         // 4. Restore to snapshot 1 (should unmap the region)
-        sbox.restore(&snapshot1).unwrap();
+        sbox.restore(snapshot1).unwrap();
         assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
 
         // 5. Restore forward to snapshot 2 (should remap the region)
-        sbox.restore(&snapshot2).unwrap();
+        sbox.restore(snapshot2).unwrap();
         assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
 
         // Verify the region is the same
@@ -1006,7 +1005,7 @@ mod tests {
         assert_ne!(sandbox.id, sandbox2.id);
 
         let snapshot = sandbox.snapshot().unwrap();
-        let err = sandbox2.restore(&snapshot);
+        let err = sandbox2.restore(snapshot.clone());
         assert!(matches!(err, Err(HyperlightError::SnapshotSandboxMismatch)));
 
         let sandbox_id = sandbox.id;

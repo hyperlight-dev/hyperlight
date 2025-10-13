@@ -39,6 +39,7 @@ use windows::core::PCSTR;
 use crate::HyperlightError::MemoryAllocationFailed;
 #[cfg(target_os = "windows")]
 use crate::HyperlightError::{MemoryRequestTooBig, WindowsAPIError};
+use crate::sandbox::snapshot::Snapshot;
 use crate::{Result, log_then_return, new_error};
 
 /// Makes sure that the given `offset` and `size` are within the bounds of the memory with size `mem_size`.
@@ -675,6 +676,12 @@ pub trait SharedMemory {
         &mut self,
         f: F,
     ) -> Result<T>;
+
+    /// Restore a SharedMemory from a snapshot with matching size
+    fn restore_from_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
+        assert!(self.mem_size() == snapshot.mem_size());
+        self.with_exclusivity(|e| e.copy_from_slice(snapshot.memory(), 0))?
+    }
 }
 
 impl SharedMemory for ExclusiveSharedMemory {
