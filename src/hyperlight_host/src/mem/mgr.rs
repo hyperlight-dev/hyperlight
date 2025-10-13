@@ -278,14 +278,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 
         let entrypoint_offset = exe_info.entrypoint();
 
-        let offset = layout.get_code_pointer_offset();
-
-        {
-            // write the code pointer to shared memory
-            let load_addr_u64: u64 = load_addr.clone().into();
-            shared_mem.write_u64(offset, load_addr_u64)?;
-        }
-
         // The load method returns a LoadInfo which can also be a different type once the
         // `unwind_guest` feature is enabled.
         #[allow(clippy::let_unit_value)]

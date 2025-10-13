@@ -43,7 +43,6 @@ pub struct GuestStack {
 pub struct HyperlightPEB {
     pub security_cookie_seed: u64,
     pub guest_function_dispatch_ptr: u64,
-    pub code_ptr: u64,
     pub input_stack: GuestMemoryRegion,
     pub output_stack: GuestMemoryRegion,
     pub init_data: GuestMemoryRegion,
