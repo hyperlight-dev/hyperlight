@@ -98,7 +98,6 @@ pub(crate) struct SandboxMemoryLayout {
     peb_offset: usize,
     peb_security_cookie_seed_offset: usize,
     peb_guest_dispatch_function_ptr_offset: usize, // set by guest in guest entrypoint
-    peb_code_pointer_offset: usize,
     pub(super) peb_host_function_definitions_offset: usize,
     peb_input_data_offset: usize,
     peb_output_data_offset: usize,
@@ -153,10 +152,6 @@ impl Debug for SandboxMemoryLayout {
             .field(
                 "Host Function Definitions Offset",
                 &format_args!("{:#x}", self.peb_host_function_definitions_offset),
-            )
-            .field(
-                "Code Pointer Offset",
-                &format_args!("{:#x}", self.peb_code_pointer_offset),
             )
             .field(
                 "Input Data Offset",
@@ -276,7 +271,6 @@ impl SandboxMemoryLayout {
             peb_offset + offset_of!(HyperlightPEB, security_cookie_seed);
         let peb_guest_dispatch_function_ptr_offset =
             peb_offset + offset_of!(HyperlightPEB, guest_function_dispatch_ptr);
-        let peb_code_pointer_offset = peb_offset + offset_of!(HyperlightPEB, code_ptr);
         let peb_input_data_offset = peb_offset + offset_of!(HyperlightPEB, input_stack);
         let peb_output_data_offset = peb_offset + offset_of!(HyperlightPEB, output_stack);
         let peb_init_data_offset = peb_offset + offset_of!(HyperlightPEB, init_data);
@@ -319,7 +313,6 @@ impl SandboxMemoryLayout {
             heap_size,
             peb_security_cookie_seed_offset,
             peb_guest_dispatch_function_ptr_offset,
-            peb_code_pointer_offset,
             peb_host_function_definitions_offset,
             peb_input_data_offset,
             peb_output_data_offset,
@@ -421,14 +414,6 @@ impl SandboxMemoryLayout {
         // The input data pointer is immediately after the input
         // data size field in the input data `GuestMemoryRegion` struct which is a `u64`.
         self.get_input_data_size_offset() + size_of::<u64>()
-    }
-
-    /// Get the offset in guest memory to the code pointer
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_code_pointer_offset(&self) -> usize {
-        // The code pointer is the first field
-        // in the `CodeAndOutBPointers` struct which is a u64
-        self.peb_code_pointer_offset
     }
 
     /// Get the offset in guest memory to where the guest dispatch function
