@@ -28,13 +28,6 @@ pub enum ExeInfo {
     Elf(ElfInfo),
 }
 
-// There isn't a commonly-used standard convention for heap and stack
-// limits to be included in ELF files as they are in
-// PEs. Consequently, we use these static defaults as the default
-// limits, unless overwritten when setting up the sandbox.
-const DEFAULT_ELF_STACK_RESERVE: u64 = 65536;
-const DEFAULT_ELF_HEAP_RESERVE: u64 = 131072;
-
 #[cfg(feature = "unwind_guest")]
 pub(crate) trait UnwindInfo: Send + Sync {
     fn as_module(&self) -> framehop::Module<Vec<u8>>;
@@ -79,16 +72,6 @@ impl ExeInfo {
     }
     pub fn from_buf(buf: &[u8]) -> Result<Self> {
         ElfInfo::new(buf).map(ExeInfo::Elf)
-    }
-    pub fn stack_reserve(&self) -> u64 {
-        match self {
-            ExeInfo::Elf(_) => DEFAULT_ELF_STACK_RESERVE,
-        }
-    }
-    pub fn heap_reserve(&self) -> u64 {
-        match self {
-            ExeInfo::Elf(_) => DEFAULT_ELF_HEAP_RESERVE,
-        }
     }
     pub fn entrypoint(&self) -> Offset {
         match self {
