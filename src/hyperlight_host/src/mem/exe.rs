@@ -24,10 +24,6 @@ use super::elf::ElfInfo;
 use super::ptr_offset::Offset;
 use crate::Result;
 
-// This is used extremely infrequently, so being unusually large for PE
-// files _really_ doesn't matter, and probably isn't really worth the
-// cost of an indirection.
-#[allow(clippy::large_enum_variant)]
 pub enum ExeInfo {
     Elf(ElfInfo),
 }
