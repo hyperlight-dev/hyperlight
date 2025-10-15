@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use log::LevelFilter;
+use log::{LevelFilter, info};
 use tracing::{Span, instrument};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
@@ -356,6 +356,7 @@ impl KVMDriver {
         let interrupt_handle = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
             cancel_requested: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
             #[cfg(all(
@@ -685,7 +686,6 @@ impl Hypervisor for KVMDriver {
             .debug_interrupt
             .load(Ordering::Relaxed);
         // Don't run the vcpu if `cancel_requested` is true
-        //
         // Note: if a `InterruptHandle::kill()` called while this thread is **here**
         // Then this is fine since `cancel_requested` is set to true, so we will skip the `VcpuFd::run()` call
         let exit_reason = if self
@@ -724,11 +724,42 @@ impl Hypervisor for KVMDriver {
             .interrupt_handle
             .debug_interrupt
             .load(Ordering::Relaxed);
+
         // Note: if a `InterruptHandle::kill()` called while this thread is **here**
-        // Then `cancel_requested` will be set to true again, which will cancel the **next vcpu run**.
+        // Then `cancel_requested` will be set to true again
         // Additionally signals will be sent to this thread until `running` is set to false.
-        // This is fine since the signal handler is a no-op.
+        // This is fine since the signal handler is a no-op. However we need to stop the cancel_requested flag being acted on the next time this vCPU is run
+        // So we check to see if we really cancelled the vCPU or if it was just a normal exit and set the `cancelled` flag accordingly
+        // The order of setting the flags is important here, we need to set `cancelled` before clearing `running` as the `InterruptHandle::send_signal()` checks `running` to know when to stop sending signals
+        // and then checks to see if the vCPU was cancelled or not and clears the `cancel_requested` flag if it was.
+        // This prevents the case where we receive a cancel request after the vCPU has as below we only return cancelled if the vCPU was actually cancelled
+
+        if let Err(e) = &exit_reason
+            && e.errno() == libc::EINTR
+            && cancel_requested
+        {
+            log::debug!("VCPU run() was interrupted with EINTR because it was cancelled.");
+            self.interrupt_handle
+                .cancelled
+                .store(true, Ordering::Relaxed);
+        }
+
+        // This wont catch every single case as the cancel_requested flag could be set between this statement and the clearing of running (which will reset the flag) or the reset of the flag below
+        if let Ok(_) = &exit_reason
+            && cancel_requested
+        {
+            log::warn!(
+                "VCPU was requested to cancel, but run() returned Ok. This can happen if the vCPU was already exiting when the cancel was requested."
+            );
+        }
+
         self.interrupt_handle.clear_running_bit();
+
+        // Reset the cancel_requested flag if it was set for this run as we no longer need to know if the cancellation was requested or not since we set the cancelled flag above if it was
+
+        self.interrupt_handle
+            .cancel_requested
+            .store(false, Ordering::Relaxed);
         // At this point, `running` is false so no more signals will be sent to this thread,
         // but we may still receive async signals that were sent before this point.
         // To prevent those signals from interrupting subsequent calls to `run()` (on other vms!),
@@ -783,11 +814,13 @@ impl Hypervisor for KVMDriver {
             Err(e) => match e.errno() {
                 // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
                 libc::EINTR => {
-                    // If cancellation was not requested for this specific vm, the vcpu was interrupted because of debug interrupt or
+                    // If this specific VM was not cancelled, the vcpu was interrupted because of debug interrupt or
                     // a stale signal that meant to be delivered to a previous/other vcpu on this same thread, so let's ignore it
-                    if cancel_requested {
+                    let cancelled = self.interrupt_handle.cancelled.load(Ordering::Relaxed);
+                    if cancelled {
+                        info!("VCPU run() was interrupted with EINTR because it was cancelled.");
                         self.interrupt_handle
-                            .cancel_requested
+                            .cancelled
                             .store(false, Ordering::Relaxed);
                         HyperlightExit::Cancelled()
                     } else {

@@ -420,13 +420,17 @@ pub(super) struct LinuxInterruptHandle {
     /// Note: multiple vms may have the same `tid`, but at most one vm will have `running` set to true.
     tid: AtomicU64,
     /// True when an "interruptor" has requested the VM to be cancelled. Set immediately when
-    /// `kill()` is called, and cleared when the vcpu is no longer running.
+    /// `kill()` is called, and cleared when the vcpu is no longer running  or if the vcpu run returned OK (as we tried to cancel it but it exited cleanly in the meantime).
     /// This is used to
     /// 1. make sure stale signals do not interrupt the
     ///    the wrong vcpu (a vcpu may only be interrupted iff `cancel_requested` is true),
     /// 2. ensure that if a vm is killed while a host call is running,
     ///    the vm will not re-enter the guest after the host call returns.
     cancel_requested: AtomicBool,
+    /// True when the vcpu has been cancelled. Set after the VM has exited and a cancellation was requested.
+    /// Cleared when the cancellation is processed (i.e. before the cancelled error is returned to the user).
+    /// This is used to make sure that if a vm is killed but completes its run before the signal is delivered, we dont kill the next run.
+    cancelled: AtomicBool,
     /// True when the debugger has requested the VM to be interrupted. Set immediately when
     /// `kill_from_debugger()` is called, and cleared when the vcpu is no longer running.
     /// This is used to make sure stale signals do not interrupt the the wrong vcpu
@@ -481,6 +485,10 @@ impl LinuxInterruptHandle {
             let (running, generation) = self.get_running_and_generation();
 
             if !running {
+                if self.cancelled.load(Ordering::Relaxed) {
+                    log::debug!("VCPU run() was interrupted with EINTR because it was cancelled.");
+                    self.cancel_requested.store(false, Ordering::Relaxed);
+                }
                 break;
             }
 
