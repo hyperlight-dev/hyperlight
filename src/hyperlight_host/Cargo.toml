@@ -98,7 +98,7 @@ tracing = "0.1.41"
 tracing-subscriber = {version = "0.3.20", features = ["std", "env-filter"]}
 tracing-opentelemetry = "0.31.0"
 opentelemetry = "0.30.0"
-opentelemetry-otlp = { version = "0.30.0", default-features = false, features = ["http-proto", "reqwest-blocking-client"] }
+opentelemetry-otlp = { version = "0.31.0", default-features = false, features = ["http-proto", "reqwest-blocking-client"] }
 opentelemetry-semantic-conventions = "0.31"
 opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio"] }
 tokio = { version = "1.48.0", features = ["full"] }
