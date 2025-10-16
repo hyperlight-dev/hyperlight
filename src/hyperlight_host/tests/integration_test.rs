@@ -62,7 +62,9 @@ fn interrupt_host_call() {
         }
     });
 
-    let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
+    let result = sandbox.call::<i32>("CallHostSpin", ());
+    println!("Result: {:?}", result);
+    let result = result.unwrap_err();
     assert!(matches!(result, HyperlightError::ExecutionCanceledByHost()));
 
     thread.join().unwrap();
@@ -99,7 +101,8 @@ fn interrupt_in_progress_guest_call() {
     thread.join().expect("Thread should finish");
 }
 
-/// Makes sure interrupting a vm before the guest call has started also prevents the guest call from being executed
+/// Makes sure interrupting a vm before the guest call has started has no effect,
+/// but a second kill after the call starts will interrupt it
 #[test]
 fn interrupt_guest_call_in_advance() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
@@ -108,15 +111,20 @@ fn interrupt_guest_call_in_advance() {
     let interrupt_handle = sbox1.interrupt_handle();
     assert!(!interrupt_handle.dropped()); // not yet dropped
 
-    // kill vm before the guest call has started
+    // First kill before the guest call has started - should have no effect
+    // Then kill again after a delay to interrupt the actual call
     let thread = thread::spawn(move || {
-        assert!(!interrupt_handle.kill()); // should return false since vcpu is not running yet
+        assert!(!interrupt_handle.kill()); // should return false since no call is active
         barrier2.wait();
+        // Wait a bit for the Spin call to actually start
+        thread::sleep(Duration::from_millis(100));
+        assert!(interrupt_handle.kill()); // this should succeed and interrupt the Spin call
         barrier2.wait(); // wait here until main thread has dropped the sandbox
         assert!(interrupt_handle.dropped());
     });
 
-    barrier.wait(); // wait until `kill()` is called before starting the guest call
+    barrier.wait(); // wait until first `kill()` is called before starting the guest call
+    // The Spin call should be interrupted by the second kill()
     let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
     assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
 
@@ -849,5 +857,367 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
     assert_eq!(
         res,
         "Guest Function, string added by Host Function".to_string()
+    );
+}
+
+/// Test that monitors CPU time usage and can interrupt a guest based on CPU time limits
+/// Uses a pool of 100 sandboxes, 100 threads, and 500 iterations per thread
+/// Some sandboxes are expected to complete normally, some are expected to be killed
+/// This test makes sure that a reused sandbox is not killed in the case where the previous
+/// execution was killed due to CPU time limit but the invocation completed normally before the cancel was processed.
+#[test]
+fn test_cpu_time_interrupt() {
+    use std::collections::VecDeque;
+    use std::mem::MaybeUninit;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc::channel;
+
+    const POOL_SIZE: usize = 100;
+    const NUM_THREADS: usize = 100;
+    const ITERATIONS_PER_THREAD: usize = 500;
+
+    // Create a pool of 100 sandboxes
+    println!("Creating pool of {} sandboxes...", POOL_SIZE);
+    let mut sandbox_pool: Vec<MultiUseSandbox> = Vec::with_capacity(POOL_SIZE);
+    for i in 0..POOL_SIZE {
+        let sandbox = new_uninit_rust().unwrap().evolve().unwrap();
+        if (i + 1) % 10 == 0 {
+            println!("Created {}/{} sandboxes", i + 1, POOL_SIZE);
+        }
+        sandbox_pool.push(sandbox);
+    }
+
+    // Wrap the pool in Arc<Mutex<VecDeque>> for thread-safe access
+    let pool = Arc::new(Mutex::new(VecDeque::from(sandbox_pool)));
+
+    // Counters for statistics
+    let total_iterations = Arc::new(AtomicUsize::new(0));
+    let killed_count = Arc::new(AtomicUsize::new(0));
+    let completed_count = Arc::new(AtomicUsize::new(0));
+    let errors_count = Arc::new(AtomicUsize::new(0));
+
+    println!(
+        "Starting {} threads with {} iterations each...",
+        NUM_THREADS, ITERATIONS_PER_THREAD
+    );
+
+    // Spawn worker threads
+    let mut thread_handles = vec![];
+    for thread_id in 0..NUM_THREADS {
+        let pool_clone = Arc::clone(&pool);
+        let total_iterations_clone = Arc::clone(&total_iterations);
+        let killed_count_clone = Arc::clone(&killed_count);
+        let completed_count_clone = Arc::clone(&completed_count);
+        let errors_count_clone = Arc::clone(&errors_count);
+
+        let handle = thread::spawn(move || {
+            for iteration in 0..ITERATIONS_PER_THREAD {
+                // === START OF ITERATION ===
+                // Get a fresh sandbox from the pool for this iteration
+                let mut sandbox = {
+                    let mut pool_guard = pool_clone.lock().unwrap();
+                    // Wait if pool is empty (shouldn't happen with proper design)
+                    while pool_guard.is_empty() {
+                        drop(pool_guard);
+                        thread::sleep(Duration::from_micros(100));
+                        pool_guard = pool_clone.lock().unwrap();
+                    }
+                    pool_guard.pop_front().unwrap()
+                };
+
+                // Vary CPU time between 3ms and 7ms to ensure some get killed and some complete
+                // The CPU limit is 5ms, so:
+                // - 3-4ms should complete normally
+                // - 6-7ms should be killed
+                // - 5ms is borderline and could go either way
+                let cpu_time_ms =
+                    3 + (((thread_id * ITERATIONS_PER_THREAD + iteration) % 5) as u32);
+
+                let interrupt_handle = sandbox.interrupt_handle();
+
+                // Channel to send the thread ID
+                let (tx, rx) = channel();
+
+                // Flag to signal monitoring start
+                let should_monitor = Arc::new(AtomicBool::new(false));
+                let should_monitor_clone = should_monitor.clone();
+
+                // Flag to signal monitoring stop (when guest execution completes)
+                let stop_monitoring = Arc::new(AtomicBool::new(false));
+                let stop_monitoring_clone = stop_monitoring.clone();
+
+                // Flag to track if we actually sent a kill signal
+                let was_killed = Arc::new(AtomicBool::new(false));
+                let was_killed_clone = was_killed.clone();
+
+                // Spawn CPU time monitor thread
+                let monitor_thread = thread::spawn(move || {
+                    let main_thread_id = match rx.recv() {
+                        Ok(tid) => tid,
+                        Err(_) => return,
+                    };
+
+                    while !should_monitor_clone.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_micros(50));
+                    }
+
+                    #[cfg(target_os = "linux")]
+                    unsafe {
+                        let mut clock_id: libc::clockid_t = 0;
+                        if libc::pthread_getcpuclockid(main_thread_id, &mut clock_id) != 0 {
+                            return;
+                        }
+
+                        let cpu_limit_ns = 5_000_000; // 5ms CPU time limit
+                        let mut start_time = MaybeUninit::<libc::timespec>::uninit();
+
+                        if libc::clock_gettime(clock_id, start_time.as_mut_ptr()) != 0 {
+                            return;
+                        }
+                        let start_time = start_time.assume_init();
+
+                        loop {
+                            // Check if we should stop monitoring (guest completed)
+                            if stop_monitoring_clone.load(Ordering::Acquire) {
+                                break;
+                            }
+
+                            let mut current_time = MaybeUninit::<libc::timespec>::uninit();
+                            if libc::clock_gettime(clock_id, current_time.as_mut_ptr()) != 0 {
+                                break;
+                            }
+                            let current_time = current_time.assume_init();
+
+                            let elapsed_ns = (current_time.tv_sec - start_time.tv_sec)
+                                * 1_000_000_000
+                                + (current_time.tv_nsec - start_time.tv_nsec);
+
+                            if elapsed_ns > cpu_limit_ns {
+                                // Double-check that monitoring should still continue before killing
+                                // The guest might have completed between our last check and now
+                                if stop_monitoring_clone.load(Ordering::Acquire) {
+                                    break;
+                                }
+
+                                // Mark that we sent a kill signal BEFORE calling kill
+                                // to avoid race conditions
+                                was_killed_clone.store(true, Ordering::Release);
+                                interrupt_handle.kill();
+                                break;
+                            }
+
+                            thread::sleep(Duration::from_micros(50));
+                        }
+                    }
+
+                    #[cfg(target_os = "windows")]
+                    unsafe {
+                        use std::ffi::c_void;
+
+                        // On Windows, we use GetThreadTimes to get CPU time
+                        // main_thread_id is a HANDLE on Windows
+                        let thread_handle = main_thread_id as *mut c_void;
+
+                        let cpu_limit_ns: i64 = 5_000_000; // 5ms CPU time limit (in nanoseconds)
+
+                        let mut creation_time =
+                            MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
+                        let mut exit_time =
+                            MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
+                        let mut kernel_time_start =
+                            MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
+                        let mut user_time_start =
+                            MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
+
+                        // Get initial CPU times
+                        if windows_sys::Win32::System::Threading::GetThreadTimes(
+                            thread_handle,
+                            creation_time.as_mut_ptr(),
+                            exit_time.as_mut_ptr(),
+                            kernel_time_start.as_mut_ptr(),
+                            user_time_start.as_mut_ptr(),
+                        ) == 0
+                        {
+                            return;
+                        }
+
+                        let kernel_time_start = kernel_time_start.assume_init();
+                        let user_time_start = user_time_start.assume_init();
+
+                        // Convert FILETIME to u64 (100-nanosecond intervals)
+                        let start_cpu_time = ((kernel_time_start.dwHighDateTime as u64) << 32
+                            | kernel_time_start.dwLowDateTime as u64)
+                            + ((user_time_start.dwHighDateTime as u64) << 32
+                                | user_time_start.dwLowDateTime as u64);
+
+                        loop {
+                            // Check if we should stop monitoring (guest completed)
+                            if stop_monitoring_clone.load(Ordering::Acquire) {
+                                break;
+                            }
+
+                            let mut kernel_time_current =
+                                MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
+                            let mut user_time_current =
+                                MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
+
+                            if windows_sys::Win32::System::Threading::GetThreadTimes(
+                                thread_handle,
+                                creation_time.as_mut_ptr(),
+                                exit_time.as_mut_ptr(),
+                                kernel_time_current.as_mut_ptr(),
+                                user_time_current.as_mut_ptr(),
+                            ) == 0
+                            {
+                                break;
+                            }
+
+                            let kernel_time_current = kernel_time_current.assume_init();
+                            let user_time_current = user_time_current.assume_init();
+
+                            // Convert FILETIME to u64
+                            let current_cpu_time = ((kernel_time_current.dwHighDateTime as u64)
+                                << 32
+                                | kernel_time_current.dwLowDateTime as u64)
+                                + ((user_time_current.dwHighDateTime as u64) << 32
+                                    | user_time_current.dwLowDateTime as u64);
+
+                            // FILETIME is in 100-nanosecond intervals, convert to nanoseconds
+                            let elapsed_ns = ((current_cpu_time - start_cpu_time) * 100) as i64;
+
+                            if elapsed_ns > cpu_limit_ns {
+                                // Double-check that monitoring should still continue before killing
+                                // The guest might have completed between our last check and now
+                                if stop_monitoring_clone.load(Ordering::Acquire) {
+                                    break;
+                                }
+
+                                // Mark that we sent a kill signal BEFORE calling kill
+                                // to avoid race conditions
+                                was_killed_clone.store(true, Ordering::Release);
+                                interrupt_handle.kill();
+                                break;
+                            }
+
+                            thread::sleep(Duration::from_micros(50));
+                        }
+                    }
+                });
+
+                // Send thread ID and start monitoring
+                #[cfg(target_os = "linux")]
+                unsafe {
+                    let thread_id = libc::pthread_self();
+                    let _ = tx.send(thread_id);
+                }
+
+                #[cfg(target_os = "windows")]
+                unsafe {
+                    // On Windows, get the current thread's pseudo-handle
+                    let thread_handle = windows_sys::Win32::System::Threading::GetCurrentThread();
+                    let _ = tx.send(thread_handle as usize);
+                }
+
+                should_monitor.store(true, Ordering::Release);
+
+                // Call the guest function
+                let result = sandbox.call::<u64>("SpinForMs", cpu_time_ms);
+
+                // Signal the monitor to stop
+                stop_monitoring.store(true, Ordering::Release);
+
+                // Wait for monitor thread to complete to ensure was_killed flag is set
+                let _ = monitor_thread.join();
+
+                // NOW check if we sent a kill signal (after monitor thread has completed)
+                let kill_was_sent = was_killed.load(Ordering::Acquire);
+
+                // Process the result and validate correctness
+                match result {
+                    Err(HyperlightError::ExecutionCanceledByHost()) => {
+                        // We received a cancellation error
+                        if !kill_was_sent {
+                            // ERROR: We got a cancellation but never sent a kill!
+                            panic!(
+                                "Thread {} iteration {}: Got ExecutionCanceledByHost but no kill signal was sent!",
+                                thread_id, iteration
+                            );
+                        }
+                        // This is correct - we sent kill and got the error
+                        killed_count_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(_) => {
+                        // Execution completed normally
+                        // This is OK whether or not we sent a kill - the guest might have
+                        // finished just before the kill signal arrived
+                        completed_count_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        // Unexpected error
+                        eprintln!(
+                            "Thread {} iteration {}: Unexpected error: {:?}, kill_sent: {}",
+                            thread_id, iteration, e, kill_was_sent
+                        );
+                        errors_count_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+
+                total_iterations_clone.fetch_add(1, Ordering::Relaxed);
+
+                // Progress reporting
+                let current_total = total_iterations_clone.load(Ordering::Relaxed);
+                if current_total % 500 == 0 {
+                    println!(
+                        "Progress: {}/{} iterations completed",
+                        current_total,
+                        NUM_THREADS * ITERATIONS_PER_THREAD
+                    );
+                }
+
+                // === END OF ITERATION ===
+                // Return sandbox to pool for reuse by other threads/iterations
+                {
+                    let mut pool_guard = pool_clone.lock().unwrap();
+                    pool_guard.push_back(sandbox);
+                }
+            }
+        });
+
+        thread_handles.push(handle);
+    }
+
+    // Wait for all threads to complete
+    for handle in thread_handles {
+        handle.join().unwrap();
+    }
+
+    // Print statistics
+    let total = total_iterations.load(Ordering::Relaxed);
+    let killed = killed_count.load(Ordering::Relaxed);
+    let completed = completed_count.load(Ordering::Relaxed);
+    let errors = errors_count.load(Ordering::Relaxed);
+
+    println!("\n=== Test Statistics ===");
+    println!("Total iterations: {}", total);
+    println!("Killed (CPU limit exceeded): {}", killed);
+    println!("Completed normally: {}", completed);
+    println!("Errors: {}", errors);
+    println!("Kill rate: {:.1}%", (killed as f64 / total as f64) * 100.0);
+
+    // Verify we had both kills and completions
+    assert!(
+        killed > 0,
+        "Expected some executions to be killed, but none were"
+    );
+    assert!(
+        completed > 0,
+        "Expected some executions to complete, but none did"
+    );
+    assert_eq!(errors, 0, "Expected no errors, but got {}", errors);
+    assert_eq!(
+        total,
+        NUM_THREADS * ITERATIONS_PER_THREAD,
+        "Not all iterations completed"
     );
 }
