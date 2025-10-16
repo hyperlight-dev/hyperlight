@@ -48,18 +48,13 @@ use mshv_bindings::{
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features,
 };
-#[cfg(feature = "trace_guest")]
-use mshv_bindings::{
-    hv_register_name, hv_register_name_HV_X64_REGISTER_RAX, hv_register_name_HV_X64_REGISTER_RBP,
-    hv_register_name_HV_X64_REGISTER_RCX, hv_register_name_HV_X64_REGISTER_RSP,
-};
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
-#[cfg(feature = "trace_guest")]
-use super::TraceRegister;
 use super::fpu::{FP_CONTROL_WORD_DEFAULT, FP_TAG_WORD_DEFAULT, MXCSR_DEFAULT};
 #[cfg(gdb)]
 use super::gdb::{
@@ -73,16 +68,18 @@ use super::{
 use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
+#[cfg(feature = "trace_guest")]
+use crate::hypervisor::arch::X86_64Regs;
 use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
-#[cfg(feature = "trace_guest")]
-use crate::sandbox::TraceInfo;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::handle_outb;
+#[cfg(feature = "mem_profile")]
+use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, log_then_return, new_error};
@@ -93,7 +90,8 @@ mod debug {
 
     use super::mshv_bindings::hv_x64_exception_intercept_message;
     use super::{HypervLinuxDriver, *};
-    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason, X86_64Regs};
+    use crate::hypervisor::arch::X86_64Regs;
+    use crate::hypervisor::gdb::{DebugMsg, DebugResponse, VcpuStopReason};
     use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::HostSharedMemory;
     use crate::{Result, new_error};
@@ -323,9 +321,8 @@ pub(crate) struct HypervLinuxDriver {
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
-    #[cfg(feature = "trace_guest")]
-    #[allow(dead_code)]
-    trace_info: TraceInfo,
+    #[cfg(feature = "mem_profile")]
+    trace_info: MemTraceInfo,
 }
 
 impl HypervLinuxDriver {
@@ -348,7 +345,7 @@ impl HypervLinuxDriver {
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
-        #[cfg(feature = "trace_guest")] trace_info: TraceInfo,
+        #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> Result<Self> {
         let mshv = Mshv::new()?;
         let pr = Default::default();
@@ -459,7 +456,7 @@ impl HypervLinuxDriver {
             gdb_conn,
             #[cfg(crashdump)]
             rt_cfg,
-            #[cfg(feature = "trace_guest")]
+            #[cfg(feature = "mem_profile")]
             trace_info,
         };
 
@@ -560,19 +557,6 @@ impl Debug for HypervLinuxDriver {
         }
 
         f.finish()
-    }
-}
-
-#[cfg(feature = "trace_guest")]
-impl From<TraceRegister> for hv_register_name {
-    fn from(r: TraceRegister) -> Self {
-        match r {
-            TraceRegister::RAX => hv_register_name_HV_X64_REGISTER_RAX,
-            TraceRegister::RCX => hv_register_name_HV_X64_REGISTER_RCX,
-            TraceRegister::RIP => hv_register_name_HV_X64_REGISTER_RIP,
-            TraceRegister::RSP => hv_register_name_HV_X64_REGISTER_RSP,
-            TraceRegister::RBP => hv_register_name_HV_X64_REGISTER_RBP,
-        }
     }
 }
 
@@ -701,7 +685,7 @@ impl Hypervisor for HypervLinuxDriver {
         padded[..copy_len].copy_from_slice(&data[..copy_len]);
         let val = u32::from_le_bytes(padded);
 
-        #[cfg(feature = "trace_guest")]
+        #[cfg(feature = "mem_profile")]
         {
             // We need to handle the borrow checker issue where we need both:
             // - &mut SandboxMemoryManager (from self.mem_mgr)
@@ -722,7 +706,7 @@ impl Hypervisor for HypervLinuxDriver {
             self.mem_mgr = Some(mem_mgr);
         }
 
-        #[cfg(not(feature = "trace_guest"))]
+        #[cfg(not(feature = "mem_profile"))]
         {
             let mem_mgr = self
                 .mem_mgr
@@ -749,7 +733,10 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(&mut self) -> Result<super::HyperlightExit> {
+    fn run(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
+    ) -> Result<super::HyperlightExit> {
         const HALT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_HALT;
         const IO_PORT_INTERCEPT_MESSAGE: hv_message_type =
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
@@ -792,13 +779,8 @@ impl Hypervisor for HypervLinuxDriver {
             Err(mshv_ioctls::MshvError::from(libc::EINTR))
         } else {
             #[cfg(feature = "trace_guest")]
-            if self.trace_info.guest_start_epoch.is_none() {
-                // Store the guest start epoch and cycles to trace the guest execution time
-                crate::debug!("MSHV - Guest Start Epoch set");
-                self.trace_info.guest_start_tsc =
-                    Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
-                self.trace_info.guest_start_epoch = Some(std::time::Instant::now());
-            }
+            tc.setup_guest_trace(Span::current().context());
+
             // Note: if a `InterruptHandle::kill()` called while this thread is **here**
             // Then the vcpu will run, but we will keep sending signals to this thread
             // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
@@ -1160,22 +1142,23 @@ impl Hypervisor for HypervLinuxDriver {
     }
 
     #[cfg(feature = "trace_guest")]
-    fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
-        let mut assoc = [hv_register_assoc {
-            name: reg.into(),
-            ..Default::default()
-        }];
-        self.vcpu_fd.get_reg(&mut assoc)?;
-        // safety: all registers that we currently support are 64-bit
-        unsafe { Ok(assoc[0].value.reg64) }
+    fn read_regs(&self) -> Result<X86_64Regs> {
+        Ok(X86_64Regs::from(self.vcpu_fd.get_regs()?))
     }
 
     #[cfg(feature = "trace_guest")]
-    fn trace_info_as_ref(&self) -> &TraceInfo {
-        &self.trace_info
+    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
+        let regs = self.read_regs()?;
+        tc.handle_trace(
+            &regs,
+            self.mem_mgr.as_ref().ok_or_else(|| {
+                new_error!("Memory manager is not initialized before handling trace")
+            })?,
+        )
     }
-    #[cfg(feature = "trace_guest")]
-    fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
+
+    #[cfg(feature = "mem_profile")]
+    fn trace_info_mut(&mut self) -> &mut MemTraceInfo {
         &mut self.trace_info
     }
 }
@@ -1197,7 +1180,7 @@ impl Drop for HypervLinuxDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "unwind_guest")]
+    #[cfg(feature = "mem_profile")]
     use crate::mem::exe::DummyUnwindInfo;
     use crate::mem::memory_region::MemoryRegionVecBuilder;
     use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
@@ -1266,12 +1249,8 @@ mod tests {
                 #[cfg(crashdump)]
                 guest_core_dump: true,
             },
-            #[cfg(feature = "trace_guest")]
-            TraceInfo::new(
-                #[cfg(feature = "unwind_guest")]
-                Arc::new(DummyUnwindInfo {}),
-            )
-            .unwrap(),
+            #[cfg(feature = "mem_profile")]
+            MemTraceInfo::new(Arc::new(DummyUnwindInfo {})).unwrap(),
         )
         .unwrap();
     }

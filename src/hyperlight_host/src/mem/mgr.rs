@@ -347,7 +347,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         }
 
         // The load method returns a LoadInfo which can also be a different type once the
-        // `unwind_guest` feature is enabled.
+        // `mem_profile` feature is enabled.
         #[allow(clippy::let_unit_value)]
         let load_info = exe_info.load(
             load_addr.clone().try_into()?,
