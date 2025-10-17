@@ -581,6 +581,8 @@ impl Hypervisor for HypervWindowsDriver {
             }
             self.processor.run()?
         };
+        let cancel_was_requested_manually = self.interrupt_handle
+            .cancel_requested.load(Ordering::Relaxed);
         self.interrupt_handle
             .cancel_requested
             .store(false, Ordering::Relaxed);
@@ -663,11 +665,31 @@ impl Hypervisor for HypervWindowsDriver {
                     // and resume execution
                     HyperlightExit::Debug(VcpuStopReason::Interrupt)
                 } else {
-                    HyperlightExit::Cancelled()
+                    if !cancel_was_requested_manually {
+                        // This was an internal cancellation
+                        // The virtualization stack can use this function to return the control
+                        // of a virtual processor back to the virtualization stack in case it 
+                        // needs to change the state of a VM or to inject an event into the processor
+                        debug!("Internal cancellation detected, returning Retry error");
+                        HyperlightExit::Retry()
+                    } else {
+                        HyperlightExit::Cancelled()
+                    }
                 }
 
                 #[cfg(not(gdb))]
-                HyperlightExit::Cancelled()
+                {
+                    if !cancel_was_requested_manually {
+                        // This was an internal cancellation
+                        // The virtualization stack can use this function to return the control
+                        // of a virtual processor back to the virtualization stack in case it 
+                        // needs to change the state of a VM or to inject an event into the processor
+                        debug!("Internal cancellation detected, returning Retry error");
+                        HyperlightExit::Retry()
+                    } else {
+                        HyperlightExit::Cancelled()
+                    }
+                }
             }
             #[cfg(gdb)]
             WHV_RUN_VP_EXIT_REASON(4098i32) => {
