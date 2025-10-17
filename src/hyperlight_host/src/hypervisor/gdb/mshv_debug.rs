@@ -28,12 +28,12 @@ use std::collections::HashMap;
 
 use mshv_bindings::{
     DebugRegisters, HV_TRANSLATE_GVA_VALIDATE_READ, HV_TRANSLATE_GVA_VALIDATE_WRITE,
-    StandardRegisters,
 };
 use mshv_ioctls::VcpuFd;
 
 use super::arch::{MAX_NO_OF_HW_BP, SW_BP_SIZE, vcpu_stop_reason};
-use super::{GuestDebug, VcpuStopReason, X86_64Regs};
+use super::{GuestDebug, VcpuStopReason};
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
 use crate::{HyperlightError, Result, new_error};
 
 #[derive(Debug, Default)]
@@ -194,45 +194,20 @@ impl GuestDebug for MshvDebug {
         self.sw_breakpoints.remove(addr)
     }
 
-    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> Result<()> {
+    fn read_regs(&self, vcpu_fd: &Self::Vcpu) -> Result<(CommonRegisters, CommonFpu)> {
         log::debug!("Read registers");
-        let vcpu_regs = vcpu_fd
+
+        let regs = vcpu_fd
             .get_regs()
             .map_err(|e| new_error!("Could not read guest registers: {:?}", e))?;
+        let regs = CommonRegisters::from(&regs);
 
-        regs.rax = vcpu_regs.rax;
-        regs.rbx = vcpu_regs.rbx;
-        regs.rcx = vcpu_regs.rcx;
-        regs.rdx = vcpu_regs.rdx;
-        regs.rsi = vcpu_regs.rsi;
-        regs.rdi = vcpu_regs.rdi;
-        regs.rbp = vcpu_regs.rbp;
-        regs.rsp = vcpu_regs.rsp;
-        regs.r8 = vcpu_regs.r8;
-        regs.r9 = vcpu_regs.r9;
-        regs.r10 = vcpu_regs.r10;
-        regs.r11 = vcpu_regs.r11;
-        regs.r12 = vcpu_regs.r12;
-        regs.r13 = vcpu_regs.r13;
-        regs.r14 = vcpu_regs.r14;
-        regs.r15 = vcpu_regs.r15;
+        let fpu_data = vcpu_fd
+            .get_fpu()
+            .map_err(|e| new_error!("Could not read guest FPU registers: {:?}", e))?;
+        let fpu = CommonFpu::from(&fpu_data);
 
-        regs.rip = vcpu_regs.rip;
-        regs.rflags = vcpu_regs.rflags;
-
-        // Try to read XMM from the FPU state
-        match vcpu_fd.get_fpu() {
-            Ok(fpu) => {
-                // MSHV exposes XMM as [[u8; 16]; 16]. Convert to [u128; 16]
-                regs.xmm = fpu.xmm.map(u128::from_le_bytes);
-                regs.mxcsr = fpu.mxcsr;
-            }
-            Err(e) => {
-                log::warn!("Failed to read FPU state for XMM registers (MSHV): {:?}", e);
-            }
-        }
-
-        Ok(())
+        Ok((regs, fpu))
     }
 
     fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> Result<()> {
@@ -248,47 +223,25 @@ impl GuestDebug for MshvDebug {
         Ok(addr)
     }
 
-    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> Result<()> {
+    fn write_regs(
+        &self,
+        vcpu_fd: &Self::Vcpu,
+        regs: &CommonRegisters,
+        fpu: &CommonFpu,
+    ) -> Result<()> {
         log::debug!("Write registers");
-        let new_regs = StandardRegisters {
-            rax: regs.rax,
-            rbx: regs.rbx,
-            rcx: regs.rcx,
-            rdx: regs.rdx,
-            rsi: regs.rsi,
-            rdi: regs.rdi,
-            rbp: regs.rbp,
-            rsp: regs.rsp,
-            r8: regs.r8,
-            r9: regs.r9,
-            r10: regs.r10,
-            r11: regs.r11,
-            r12: regs.r12,
-            r13: regs.r13,
-            r14: regs.r14,
-            r15: regs.r15,
-
-            rip: regs.rip,
-            rflags: regs.rflags,
-        };
 
         vcpu_fd
-            .set_regs(&new_regs)
+            .set_regs(&regs.into())
             .map_err(|e| new_error!("Could not write guest registers: {:?}", e))?;
 
-        // Load existing FPU state, replace XMM and MXCSR, and write it back.
-        let mut fpu = match vcpu_fd.get_fpu() {
-            Ok(f) => f,
-            Err(e) => {
-                return Err(new_error!("Could not write guest registers: {:?}", e));
-            }
-        };
-
-        fpu.xmm = regs.xmm.map(u128::to_le_bytes);
-        fpu.mxcsr = regs.mxcsr;
+        // Only xmm and mxcsr is piped though in the given fpu, so only set those
+        let mut current_fpu: CommonFpu = (&vcpu_fd.get_fpu()?).into();
+        current_fpu.mxcsr = fpu.mxcsr;
+        current_fpu.xmm = fpu.xmm;
 
         vcpu_fd
-            .set_fpu(&fpu)
+            .set_fpu(&(&current_fpu).into())
             .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
     }
 }

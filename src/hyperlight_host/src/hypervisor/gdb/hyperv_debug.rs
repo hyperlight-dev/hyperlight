@@ -19,9 +19,10 @@ use std::collections::HashMap;
 use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
 
 use super::arch::{MAX_NO_OF_HW_BP, vcpu_stop_reason};
-use super::{GuestDebug, SW_BP_SIZE, VcpuStopReason, X86_64Regs};
+use super::{GuestDebug, SW_BP_SIZE, VcpuStopReason};
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
 use crate::hypervisor::windows_hypervisor_platform::VMProcessor;
-use crate::hypervisor::wrappers::{WHvDebugRegisters, WHvGeneralRegisters};
+use crate::hypervisor::wrappers::WHvDebugRegisters;
 use crate::{HyperlightError, Result, new_error};
 
 /// KVM Debug struct
@@ -54,7 +55,7 @@ impl HypervDebug {
     /// Returns the instruction pointer from the stopped vCPU
     fn get_instruction_pointer(&self, vcpu_fd: &VMProcessor) -> Result<u64> {
         let regs = vcpu_fd
-            .get_regs()
+            .regs()
             .map_err(|e| new_error!("Could not retrieve registers from vCPU: {:?}", e))?;
 
         Ok(regs.rip)
@@ -103,7 +104,7 @@ impl HypervDebug {
         self.single_step = step;
 
         let mut regs = vcpu_fd
-            .get_regs()
+            .regs()
             .map_err(|e| new_error!("Could not get registers: {:?}", e))?;
 
         // Set TF Flag to enable Traps
@@ -114,7 +115,7 @@ impl HypervDebug {
         }
 
         vcpu_fd
-            .set_general_purpose_registers(&regs)
+            .set_regs(&regs)
             .map_err(|e| new_error!("Could not set guest registers: {:?}", e))?;
 
         Ok(())
@@ -185,45 +186,17 @@ impl GuestDebug for HypervDebug {
         self.sw_breakpoints.remove(addr)
     }
 
-    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> Result<()> {
+    fn read_regs(&self, vcpu_fd: &Self::Vcpu) -> Result<(CommonRegisters, CommonFpu)> {
         log::debug!("Read registers");
-        let vcpu_regs = vcpu_fd
-            .get_regs()
+        let regs = vcpu_fd
+            .regs()
             .map_err(|e| new_error!("Could not read guest registers: {:?}", e))?;
 
-        regs.rax = vcpu_regs.rax;
-        regs.rbx = vcpu_regs.rbx;
-        regs.rcx = vcpu_regs.rcx;
-        regs.rdx = vcpu_regs.rdx;
-        regs.rsi = vcpu_regs.rsi;
-        regs.rdi = vcpu_regs.rdi;
-        regs.rbp = vcpu_regs.rbp;
-        regs.rsp = vcpu_regs.rsp;
-        regs.r8 = vcpu_regs.r8;
-        regs.r9 = vcpu_regs.r9;
-        regs.r10 = vcpu_regs.r10;
-        regs.r11 = vcpu_regs.r11;
-        regs.r12 = vcpu_regs.r12;
-        regs.r13 = vcpu_regs.r13;
-        regs.r14 = vcpu_regs.r14;
-        regs.r15 = vcpu_regs.r15;
+        let fpu = vcpu_fd
+            .fpu()
+            .map_err(|e| new_error!("Could not read guest FPU registers: {:?}", e))?;
 
-        regs.rip = vcpu_regs.rip;
-        regs.rflags = vcpu_regs.rflags;
-
-        // Fetch XMM from WHVP
-        if let Ok(fpu) = vcpu_fd.get_fpu() {
-            regs.xmm = [
-                fpu.xmm0, fpu.xmm1, fpu.xmm2, fpu.xmm3, fpu.xmm4, fpu.xmm5, fpu.xmm6, fpu.xmm7,
-                fpu.xmm8, fpu.xmm9, fpu.xmm10, fpu.xmm11, fpu.xmm12, fpu.xmm13, fpu.xmm14,
-                fpu.xmm15,
-            ];
-            regs.mxcsr = fpu.mxcsr;
-        } else {
-            log::warn!("Failed to read FPU/XMM via WHVP for debug registers");
-        }
-
-        Ok(())
+        Ok((regs, fpu))
     }
 
     fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> Result<()> {
@@ -236,62 +209,28 @@ impl GuestDebug for HypervDebug {
             .map_err(|_| HyperlightError::TranslateGuestAddress(gva))
     }
 
-    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> Result<()> {
+    fn write_regs(
+        &self,
+        vcpu_fd: &Self::Vcpu,
+        regs: &CommonRegisters,
+        fpu: &CommonFpu,
+    ) -> Result<()> {
         log::debug!("Write registers");
-        let gprs = WHvGeneralRegisters {
-            rax: regs.rax,
-            rbx: regs.rbx,
-            rcx: regs.rcx,
-            rdx: regs.rdx,
-            rsi: regs.rsi,
-            rdi: regs.rdi,
-            rbp: regs.rbp,
-            rsp: regs.rsp,
-            r8: regs.r8,
-            r9: regs.r9,
-            r10: regs.r10,
-            r11: regs.r11,
-            r12: regs.r12,
-            r13: regs.r13,
-            r14: regs.r14,
-            r15: regs.r15,
-
-            rip: regs.rip,
-            rflags: regs.rflags,
-        };
 
         vcpu_fd
-            .set_general_purpose_registers(&gprs)
+            .set_regs(regs)
             .map_err(|e| new_error!("Could not write guest registers: {:?}", e))?;
 
-        // Load existing FPU state, replace XMM and MXCSR, and write it back.
-        let mut fpu = match vcpu_fd.get_fpu() {
-            Ok(f) => f,
-            Err(e) => {
-                return Err(new_error!("Could not write guest registers: {:?}", e));
-            }
-        };
-
-        fpu.xmm0 = regs.xmm[0];
-        fpu.xmm1 = regs.xmm[1];
-        fpu.xmm2 = regs.xmm[2];
-        fpu.xmm3 = regs.xmm[3];
-        fpu.xmm4 = regs.xmm[4];
-        fpu.xmm5 = regs.xmm[5];
-        fpu.xmm6 = regs.xmm[6];
-        fpu.xmm7 = regs.xmm[7];
-        fpu.xmm8 = regs.xmm[8];
-        fpu.xmm9 = regs.xmm[9];
-        fpu.xmm10 = regs.xmm[10];
-        fpu.xmm11 = regs.xmm[11];
-        fpu.xmm12 = regs.xmm[12];
-        fpu.xmm13 = regs.xmm[13];
-        fpu.xmm14 = regs.xmm[14];
-        fpu.xmm15 = regs.xmm[15];
-        fpu.mxcsr = regs.mxcsr;
+        // Only xmm and mxcsr is piped though in the given fpu, so only set those
+        let mut current_fpu: CommonFpu = vcpu_fd
+            .fpu()
+            .map_err(|e| new_error!("Could not read guest FPU registers: {:?}", e))?;
+        current_fpu.mxcsr = fpu.mxcsr;
+        current_fpu.xmm = fpu.xmm;
 
         vcpu_fd
-            .set_fpu(&fpu)
-            .map_err(|e| new_error!("Could not write guest registers: {:?}", e))
+            .set_fpu(&current_fpu)
+            .map_err(|e| new_error!("Could not write guest FPU registers: {:?}", e))?;
+        Ok(())
     }
 }

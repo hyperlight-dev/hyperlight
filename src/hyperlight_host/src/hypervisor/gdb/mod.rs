@@ -46,6 +46,7 @@ use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
 use super::InterruptHandle;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -88,31 +89,6 @@ impl From<GdbTargetError> for TargetError<GdbTargetError> {
     }
 }
 
-/// Struct that contains the x86_64 core registers
-#[derive(Debug, Default)]
-pub(crate) struct X86_64Regs {
-    pub(crate) rax: u64,
-    pub(crate) rbx: u64,
-    pub(crate) rcx: u64,
-    pub(crate) rdx: u64,
-    pub(crate) rsi: u64,
-    pub(crate) rdi: u64,
-    pub(crate) rbp: u64,
-    pub(crate) rsp: u64,
-    pub(crate) r8: u64,
-    pub(crate) r9: u64,
-    pub(crate) r10: u64,
-    pub(crate) r11: u64,
-    pub(crate) r12: u64,
-    pub(crate) r13: u64,
-    pub(crate) r14: u64,
-    pub(crate) r15: u64,
-    pub(crate) rip: u64,
-    pub(crate) rflags: u64,
-    pub(crate) xmm: [u128; 16],
-    pub(crate) mxcsr: u32,
-}
-
 /// Defines the possible reasons for which a vCPU can be stopped when debugging
 #[derive(Debug)]
 pub enum VcpuStopReason {
@@ -142,7 +118,7 @@ pub(crate) enum DebugMsg {
     RemoveSwBreakpoint(u64),
     Step,
     WriteAddr(u64, Vec<u8>),
-    WriteRegisters(Box<X86_64Regs>),
+    WriteRegisters(Box<(CommonRegisters, CommonFpu)>),
 }
 
 /// Enumerates the possible responses that a hypervisor can provide to a debugger
@@ -157,7 +133,7 @@ pub(crate) enum DebugResponse {
     NotAllowed,
     InterruptHandle(Arc<dyn InterruptHandle>),
     ReadAddr(Vec<u8>),
-    ReadRegisters(Box<X86_64Regs>),
+    ReadRegisters(Box<(CommonRegisters, CommonFpu)>),
     RemoveHwBreakpoint(bool),
     RemoveSwBreakpoint(bool),
     Step,
@@ -185,13 +161,18 @@ pub(super) trait GuestDebug {
     fn delete_sw_breakpoint_data(&mut self, addr: &u64) -> Option<[u8; 1]>;
 
     /// Read registers
-    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> crate::Result<()>;
+    fn read_regs(&self, vcpu_fd: &Self::Vcpu) -> crate::Result<(CommonRegisters, CommonFpu)>;
     /// Enables or disables stepping and sets the vCPU debug configuration
     fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> crate::Result<()>;
     /// Translates the guest address to physical address
     fn translate_gva(&self, vcpu_fd: &Self::Vcpu, gva: u64) -> crate::Result<u64>;
     /// Write registers
-    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> crate::Result<()>;
+    fn write_regs(
+        &self,
+        vcpu_fd: &Self::Vcpu,
+        regs: &CommonRegisters,
+        fpu: &CommonFpu,
+    ) -> crate::Result<()>;
 
     /// Adds hardware breakpoint
     fn add_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<()> {
@@ -451,7 +432,10 @@ mod tests {
         let res = gdb_conn.try_recv();
         assert!(res.is_err());
 
-        let res = hyp_conn.send(DebugResponse::ReadRegisters(Box::default()));
+        let res = hyp_conn.send(DebugResponse::ReadRegisters(Box::new((
+            Default::default(),
+            Default::default(),
+        ))));
         assert!(res.is_ok());
 
         let res = gdb_conn.recv();

@@ -18,12 +18,13 @@ use std::collections::HashMap;
 
 use kvm_bindings::{
     KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
-    kvm_debug_exit_arch, kvm_guest_debug, kvm_regs,
+    kvm_debug_exit_arch, kvm_guest_debug,
 };
 use kvm_ioctls::VcpuFd;
 
 use super::arch::{MAX_NO_OF_HW_BP, SW_BP_SIZE, vcpu_stop_reason};
-use super::{GuestDebug, VcpuStopReason, X86_64Regs};
+use super::{GuestDebug, VcpuStopReason};
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
 use crate::{HyperlightError, Result, new_error};
 
 /// KVM Debug struct
@@ -167,57 +168,29 @@ impl GuestDebug for KvmDebug {
         self.sw_breakpoints.remove(addr)
     }
 
-    fn read_regs(&self, vcpu_fd: &Self::Vcpu, regs: &mut X86_64Regs) -> Result<()> {
+    fn read_regs(&self, vcpu_fd: &Self::Vcpu) -> Result<(CommonRegisters, CommonFpu)> {
         log::debug!("Read registers");
-        let vcpu_regs = vcpu_fd
+        let regs = vcpu_fd
             .get_regs()
             .map_err(|e| new_error!("Could not read guest registers: {:?}", e))?;
 
-        regs.rax = vcpu_regs.rax;
-        regs.rbx = vcpu_regs.rbx;
-        regs.rcx = vcpu_regs.rcx;
-        regs.rdx = vcpu_regs.rdx;
-        regs.rsi = vcpu_regs.rsi;
-        regs.rdi = vcpu_regs.rdi;
-        regs.rbp = vcpu_regs.rbp;
-        regs.rsp = vcpu_regs.rsp;
-        regs.r8 = vcpu_regs.r8;
-        regs.r9 = vcpu_regs.r9;
-        regs.r10 = vcpu_regs.r10;
-        regs.r11 = vcpu_regs.r11;
-        regs.r12 = vcpu_regs.r12;
-        regs.r13 = vcpu_regs.r13;
-        regs.r14 = vcpu_regs.r14;
-        regs.r15 = vcpu_regs.r15;
-
-        regs.rip = vcpu_regs.rip;
-        regs.rflags = vcpu_regs.rflags;
-
-        // Read XMM registers from FPU state
-        // note kvm get_fpu doesn't actually set or read the mxcsr value
-        // https://elixir.bootlin.com/linux/v6.16/source/arch/x86/kvm/x86.c#L12229
-        match vcpu_fd.get_fpu() {
-            Ok(fpu) => {
-                // Convert KVM XMM registers ([u8; 16] x 16) to [u128; 16]
-                regs.xmm = fpu.xmm.map(u128::from_le_bytes);
-            }
-            Err(e) => {
-                log::warn!("Failed to read FPU state for XMM registers: {:?}", e);
-            }
-        }
+        let fpu_data = vcpu_fd
+            .get_fpu()
+            .map_err(|e| new_error!("Could not read guest FPU registers: {:?}", e))?;
+        let mut fpu: CommonFpu = CommonFpu::from(&fpu_data);
 
         // Read MXCSR from XSAVE (MXCSR is at byte offset 24 -> u32 index 6)
         // 11.5.10 Mode-Specific XSAVE/XRSTOR State Management
         match vcpu_fd.get_xsave() {
             Ok(xsave) => {
-                regs.mxcsr = xsave.region[6];
+                fpu.mxcsr = xsave.region[6];
             }
             Err(e) => {
                 log::warn!("Failed to read XSAVE for MXCSR: {:?}", e);
             }
         }
 
-        Ok(())
+        Ok((CommonRegisters::from(&regs), fpu))
     }
 
     fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> Result<()> {
@@ -236,49 +209,30 @@ impl GuestDebug for KvmDebug {
         }
     }
 
-    fn write_regs(&self, vcpu_fd: &Self::Vcpu, regs: &X86_64Regs) -> Result<()> {
+    fn write_regs(
+        &self,
+        vcpu_fd: &Self::Vcpu,
+        regs: &CommonRegisters,
+        fpu: &CommonFpu,
+    ) -> Result<()> {
         log::debug!("Write registers");
-        let new_regs = kvm_regs {
-            rax: regs.rax,
-            rbx: regs.rbx,
-            rcx: regs.rcx,
-            rdx: regs.rdx,
-            rsi: regs.rsi,
-            rdi: regs.rdi,
-            rbp: regs.rbp,
-            rsp: regs.rsp,
-            r8: regs.r8,
-            r9: regs.r9,
-            r10: regs.r10,
-            r11: regs.r11,
-            r12: regs.r12,
-            r13: regs.r13,
-            r14: regs.r14,
-            r15: regs.r15,
-
-            rip: regs.rip,
-            rflags: regs.rflags,
-        };
+        let new_regs = regs.into();
 
         vcpu_fd
             .set_regs(&new_regs)
             .map_err(|e| new_error!("Could not write guest registers: {:?}", e))?;
 
-        // load existing values and replace the xmm registers
-        let mut fpu = match vcpu_fd.get_fpu() {
-            Ok(fpu) => fpu,
-            Err(e) => {
-                return Err(new_error!("Could not write guest registers: {:?}", e));
-            }
-        };
-
-        // Convert XMM registers from [u128; 16] (our internal representation)
-        // to [[u8; 16]; 16] (KVM FPU representation) using little-endian byte order.
-        fpu.xmm = regs.xmm.map(u128::to_le_bytes);
+        // Only xmm and mxcsr is piped though in the given fpu, so only set those
+        let mut current_fpu: CommonFpu = (&vcpu_fd.get_fpu()?).into();
+        current_fpu.mxcsr = fpu.mxcsr;
+        current_fpu.xmm = fpu.xmm;
         vcpu_fd
-            .set_fpu(&fpu)
+            .set_fpu(&(&current_fpu).into())
             .map_err(|e| new_error!("Could not write guest registers: {:?}", e))?;
 
+        // Read XMM registers from FPU state
+        // note kvm get_fpu doesn't actually set or read the mxcsr value
+        // https://elixir.bootlin.com/linux/v6.16/source/arch/x86/kvm/x86.c#L12229
         // Update MXCSR using XSAVE region entry 6 (MXCSR) if available.
         let mut xsave = match vcpu_fd.get_xsave() {
             Ok(xsave) => xsave,
@@ -287,7 +241,7 @@ impl GuestDebug for KvmDebug {
             }
         };
 
-        xsave.region[6] = regs.mxcsr;
+        xsave.region[6] = fpu.mxcsr;
         unsafe {
             vcpu_fd
                 .set_xsave(&xsave)
