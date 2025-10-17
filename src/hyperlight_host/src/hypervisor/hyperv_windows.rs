@@ -976,9 +976,15 @@ pub struct WindowsInterruptHandle {
 
 impl InterruptHandle for WindowsInterruptHandle {
     fn kill(&self) -> bool {
+        // don't send the signal if the the vm isn't running
+        // In the case this is called before the vm is running the cancel_requested would be set
+        // and stay set while the vm is running.
+        let running = self.running.load(Ordering::Relaxed);
+        if !running {
+            return false;
+        }
         self.cancel_requested.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
-            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+        unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
