@@ -611,7 +611,9 @@ fn spin_for_ms(fc: &FunctionCall) -> Result<Vec<u8>> {
         core::hint::black_box(counter);
     }
 
-    Ok(get_flatbuffer_result(counter))
+    // Calculate the actual number of milliseconds spun for, based on the counter and iterations per ms
+    let ms_spun = (counter / iterations_per_ms as u64) as u64;
+    Ok(get_flatbuffer_result(ms_spun))
 }
 
 #[hyperlight_guest_tracing::trace_function]
