@@ -664,17 +664,15 @@ impl Hypervisor for HypervWindowsDriver {
                     // return a special exit reason so that the gdb thread can handle it
                     // and resume execution
                     HyperlightExit::Debug(VcpuStopReason::Interrupt)
+                } else if !cancel_was_requested_manually {
+                    // This was an internal cancellation
+                    // The virtualization stack can use this function to return the control
+                    // of a virtual processor back to the virtualization stack in case it
+                    // needs to change the state of a VM or to inject an event into the processor
+                    debug!("Internal cancellation detected, returning Retry error");
+                    HyperlightExit::Retry()
                 } else {
-                    if !cancel_was_requested_manually {
-                        // This was an internal cancellation
-                        // The virtualization stack can use this function to return the control
-                        // of a virtual processor back to the virtualization stack in case it
-                        // needs to change the state of a VM or to inject an event into the processor
-                        debug!("Internal cancellation detected, returning Retry error");
-                        HyperlightExit::Retry()
-                    } else {
-                        HyperlightExit::Cancelled()
-                    }
+                    HyperlightExit::Cancelled()
                 }
 
                 #[cfg(not(gdb))]
