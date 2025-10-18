@@ -390,6 +390,13 @@ impl MultiUseSandbox {
         return_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
+        // Increment generation for this guest function call (Linux only)
+        #[cfg(any(kvm, mshv))]
+        let _generation = self.vm.interrupt_handle().increment_call_generation();
+
+        // Mark that a guest function call is now active
+        self.vm.interrupt_handle().set_call_active();
+
         let res = (|| {
             let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
 
@@ -404,6 +411,10 @@ impl MultiUseSandbox {
             let buffer = fc.encode(&mut builder);
 
             self.mem_mgr.write_guest_function_call(buffer)?;
+
+            // Increment generation for this guest function call (Linux only)
+            #[cfg(any(kvm, mshv))]
+            self.vm.interrupt_handle().increment_call_generation();
 
             self.vm.dispatch_call_from_host(
                 self.dispatch_ptr.clone(),
@@ -440,6 +451,10 @@ impl MultiUseSandbox {
         if res.is_err() {
             self.mem_mgr.clear_io_buffers();
         }
+
+        // Mark that the guest function call has completed
+        self.vm.interrupt_handle().clear_call_active();
+
         res
     }
 

@@ -332,6 +332,7 @@ impl HypervWindowsDriver {
             cancel_requested: AtomicBool::new(false),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
+            call_active: AtomicBool::new(false),
             partition_handle,
             dropped: AtomicBool::new(false),
         });
@@ -564,6 +565,7 @@ impl Hypervisor for HypervWindowsDriver {
             .load(Ordering::Relaxed)
             || debug_interrupt
         {
+            println!("already cancelled");
             WHV_RUN_VP_EXIT_CONTEXT {
                 ExitReason: WHV_RUN_VP_EXIT_REASON(8193i32), // WHvRunVpExitReasonCanceled
                 VpContext: Default::default(),
@@ -581,6 +583,10 @@ impl Hypervisor for HypervWindowsDriver {
             }
             self.processor.run()?
         };
+        let cancel_was_requested_manually = self
+            .interrupt_handle
+            .cancel_requested
+            .load(Ordering::Relaxed);
         self.interrupt_handle
             .cancel_requested
             .store(false, Ordering::Relaxed);
@@ -662,12 +668,30 @@ impl Hypervisor for HypervWindowsDriver {
                     // return a special exit reason so that the gdb thread can handle it
                     // and resume execution
                     HyperlightExit::Debug(VcpuStopReason::Interrupt)
+                } else if !cancel_was_requested_manually {
+                    // This was an internal cancellation
+                    // The virtualization stack can use this function to return the control
+                    // of a virtual processor back to the virtualization stack in case it
+                    // needs to change the state of a VM or to inject an event into the processor
+                    debug!("Internal cancellation detected, returning Retry error");
+                    HyperlightExit::Retry()
                 } else {
                     HyperlightExit::Cancelled()
                 }
 
                 #[cfg(not(gdb))]
-                HyperlightExit::Cancelled()
+                {
+                    if !cancel_was_requested_manually {
+                        // This was an internal cancellation
+                        // The virtualization stack can use this function to return the control
+                        // of a virtual processor back to the virtualization stack in case it
+                        // needs to change the state of a VM or to inject an event into the processor
+                        println!("Internal cancellation detected, returning Retry error");
+                        HyperlightExit::Retry()
+                    } else {
+                        HyperlightExit::Cancelled()
+                    }
+                }
             }
             #[cfg(gdb)]
             WHV_RUN_VP_EXIT_REASON(4098i32) => {
@@ -957,15 +981,31 @@ pub struct WindowsInterruptHandle {
     // This is used to signal the GDB thread to stop the vCPU
     #[cfg(gdb)]
     debug_interrupt: AtomicBool,
+    /// Flag indicating whether a guest function call is currently in progress.
+    ///
+    /// **true**: A guest function call is active (between call start and completion)
+    /// **false**: No guest function call is active
+    ///
+    /// # Purpose
+    ///
+    /// This flag prevents kill() from having any effect when called outside of a
+    /// guest function call. This solves the "kill-in-advance" problem where kill()
+    /// could be called before a guest function starts and would incorrectly cancel it.
+    call_active: AtomicBool,
     partition_handle: WHV_PARTITION_HANDLE,
     dropped: AtomicBool,
 }
 
 impl InterruptHandle for WindowsInterruptHandle {
     fn kill(&self) -> bool {
+        // Check if a call is actually active first
+        if !self.call_active.load(Ordering::Acquire) {
+            return false;
+        }
+
+        let running = self.running.load(Ordering::Relaxed);
         self.cancel_requested.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
-            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+        running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
@@ -976,5 +1016,13 @@ impl InterruptHandle for WindowsInterruptHandle {
 
     fn dropped(&self) -> bool {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    fn set_call_active(&self) {
+        self.call_active.store(true, Ordering::Release);
+    }
+
+    fn clear_call_active(&self) {
+        self.call_active.store(false, Ordering::Release);
     }
 }

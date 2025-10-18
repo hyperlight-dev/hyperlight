@@ -583,6 +583,39 @@ fn spin(_: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
+/// Spins the CPU for approximately the specified number of milliseconds
+fn spin_for_ms(fc: &FunctionCall) -> Result<Vec<u8>> {
+    let milliseconds = if let ParameterValue::UInt(ms) = fc.parameters.clone().unwrap()[0].clone() {
+        ms
+    } else {
+        return Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Expected UInt parameter".to_string(),
+        ));
+    };
+
+    // Simple busy-wait loop - not precise but good enough for testing
+    // Different iteration counts for debug vs release mode to ensure reasonable CPU usage
+    #[cfg(debug_assertions)]
+    let iterations_per_ms = 120_000; // Debug mode - less optimized, tuned for ~50% kill rate
+
+    #[cfg(not(debug_assertions))]
+    let iterations_per_ms = 1_000_000; // Release mode - highly optimized
+
+    let total_iterations = milliseconds * iterations_per_ms;
+
+    let mut counter: u64 = 0;
+    for _ in 0..total_iterations {
+        // Prevent the compiler from optimizing away the loop
+        counter = counter.wrapping_add(1);
+        core::hint::black_box(counter);
+    }
+
+    // Calculate the actual number of milliseconds spun for, based on the counter and iterations per ms
+    let ms_spun = counter / iterations_per_ms as u64;
+    Ok(get_flatbuffer_result(ms_spun))
+}
+
 #[hyperlight_guest_tracing::trace_function]
 fn test_abort(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(code) = function_call.parameters.clone().unwrap()[0].clone() {
@@ -1365,6 +1398,14 @@ pub extern "C" fn hyperlight_main() {
         spin as usize,
     );
     register_function(spin_def);
+
+    let spin_for_ms_def = GuestFunctionDefinition::new(
+        "SpinForMs".to_string(),
+        Vec::from(&[ParameterType::UInt]),
+        ReturnType::ULong,
+        spin_for_ms as usize,
+    );
+    register_function(spin_for_ms_def);
 
     let abort_def = GuestFunctionDefinition::new(
         "GuestAbortWithCode".to_string(),
