@@ -443,7 +443,7 @@ impl VirtualCPU {
                 }
                 Ok(HyperlightExit::Retry()) => {
                     println!("retrying vm run");
-                    continue
+                    continue;
                 }
                 Err(e) => {
                     #[cfg(crashdump)]

@@ -567,6 +567,7 @@ impl Hypervisor for HypervWindowsDriver {
             .load(Ordering::Relaxed)
             || debug_interrupt
         {
+            println!("already cancelled");
             WHV_RUN_VP_EXIT_CONTEXT {
                 ExitReason: WHV_RUN_VP_EXIT_REASON(8193i32), // WHvRunVpExitReasonCanceled
                 VpContext: Default::default(),
@@ -1015,13 +1016,9 @@ impl InterruptHandle for WindowsInterruptHandle {
             return false;
         }
 
-        // don't send the signal if the the vm isn't running
-        // In the case this is called before the vm is running the cancel_requested would be set
-        // and stay set while the vm is running.
-
+        let running = self.running.load(Ordering::Relaxed);
         self.cancel_requested.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
-            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+        running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {

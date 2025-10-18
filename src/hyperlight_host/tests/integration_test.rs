@@ -1019,7 +1019,7 @@ fn test_cpu_time_interrupt() {
                         // main_thread_id is a HANDLE on Windows
                         let thread_handle = main_thread_id as *mut c_void;
 
-                        let cpu_limit_ns: i64 = 5_000_000; // 5ms CPU time limit (in nanoseconds)
+                        let cpu_limit_ns: i64 = 1_000_000; // 5ms CPU time limit (in nanoseconds)
 
                         let mut creation_time =
                             MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
@@ -1095,7 +1095,10 @@ fn test_cpu_time_interrupt() {
 
                                 // Mark that we sent a kill signal BEFORE calling kill
                                 // to avoid race conditions
-                                println!("Thread {} iteration {}: CPU time exceeded, sending kill signal", thread_id, iteration);
+                                println!(
+                                    "Thread {} iteration {}: CPU time exceeded, sending kill signal",
+                                    thread_id, iteration
+                                );
                                 was_killed_clone.store(true, Ordering::Release);
                                 interrupt_handle.kill();
                                 break;
