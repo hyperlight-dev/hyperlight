@@ -394,8 +394,7 @@ impl MultiUseSandbox {
         #[cfg(any(kvm, mshv))]
         let _generation = self.vm.interrupt_handle().increment_call_generation();
 
-        // Mark that a guest function call is now active (Linux only)
-        #[cfg(any(kvm, mshv))]
+        // Mark that a guest function call is now active
         self.vm.interrupt_handle().set_call_active();
 
         let res = (|| {
@@ -453,8 +452,7 @@ impl MultiUseSandbox {
             self.mem_mgr.clear_io_buffers();
         }
 
-        // Mark that the guest function call has completed (Linux only)
-        #[cfg(any(kvm, mshv))]
+        // Mark that the guest function call has completed
         self.vm.interrupt_handle().clear_call_active();
 
         res

@@ -439,7 +439,10 @@ impl VirtualCPU {
 
                     log_then_return!("Unexpected VM Exit {:?}", reason);
                 }
-                Ok(HyperlightExit::Retry()) => continue,
+                Ok(HyperlightExit::Retry()) => {
+                    debug!("retring vm run");
+                    continue;
+                }
                 Err(e) => {
                     #[cfg(crashdump)]
                     crashdump::generate_crashdump(hv)?;
@@ -462,7 +465,7 @@ pub trait InterruptHandle: Debug + Send + Sync {
     /// Interrupt the corresponding sandbox from running.
     ///
     /// This method attempts to cancel a currently executing guest function call by sending
-    /// a signal to the VCPU thread. It uses generation tracking and call_active flag to
+    /// a signal to the VCPU thread. It uses generation tracking (linux only) and call_active flag to
     /// ensure the interruption is safe and precise.
     ///
     /// # Behavior
@@ -480,7 +483,7 @@ pub trait InterruptHandle: Debug + Send + Sync {
     ///   host function returns and attempts to re-enter the guest, the cancellation will
     ///   be detected and the call will abort. Returns `true`.
     ///
-    /// # Generation Tracking
+    /// # Generation Tracking (linux only)
     ///
     /// The method stamps the current generation number along with the cancellation request.
     /// This ensures that:
@@ -494,7 +497,6 @@ pub trait InterruptHandle: Debug + Send + Sync {
     /// retrying until either:
     /// - The signal is successfully delivered (VCPU transitions from running to not running)
     /// - The VCPU stops running for another reason (e.g., call completes normally)
-    /// - No call is active (call_active=false)
     ///
     /// # Returns
     ///
@@ -540,32 +542,22 @@ pub trait InterruptHandle: Debug + Send + Sync {
     #[cfg(any(kvm, mshv))]
     fn increment_call_generation(&self) -> u64;
 
-    /// Mark that a guest function call is starting (Linux only).
+    /// Mark that a guest function call is starting.
     ///
     /// Sets the call_active flag to true, indicating that a guest function call
     /// is now in progress. This allows kill() to stamp cancel_requested.
     ///
     /// Must be called immediately after increment_call_generation() and before
     /// any VCPU execution begins.
-    ///
-    /// # Note
-    ///
-    /// This is only called on Linux (KVM/MSHV). Windows uses a different interrupt mechanism.
-    #[cfg(any(kvm, mshv))]
     fn set_call_active(&self);
 
-    /// Mark that a guest function call has completed (Linux only).
+    /// Mark that a guest function call has completed.
     ///
     /// Clears the call_active flag, indicating that no guest function call is
     /// in progress. After this, kill() will have no effect and will return false.
     ///
     /// Must be called at the end of call_guest_function_by_name_no_reset(),
     /// after the guest call has fully completed (whether successfully or with error).
-    ///
-    /// # Note
-    ///
-    /// This is only called on Linux (KVM/MSHV). Windows uses a different interrupt mechanism.
-    #[cfg(any(kvm, mshv))]
     fn clear_call_active(&self);
 }
 
