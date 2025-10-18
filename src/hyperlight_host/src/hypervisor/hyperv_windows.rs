@@ -673,7 +673,7 @@ impl Hypervisor for HypervWindowsDriver {
                         // The virtualization stack can use this function to return the control
                         // of a virtual processor back to the virtualization stack in case it
                         // needs to change the state of a VM or to inject an event into the processor
-                        println!("Internal cancellation detected, returning Retry error");
+                        debug!("Internal cancellation detected, returning Retry error");
                         HyperlightExit::Retry()
                     } else {
                         HyperlightExit::Cancelled()
@@ -687,7 +687,7 @@ impl Hypervisor for HypervWindowsDriver {
                         // The virtualization stack can use this function to return the control
                         // of a virtual processor back to the virtualization stack in case it
                         // needs to change the state of a VM or to inject an event into the processor
-                        println!("Internal cancellation detected, returning Retry error");
+                        debug!("Internal cancellation detected, returning Retry error");
                         HyperlightExit::Retry()
                     } else {
                         HyperlightExit::Cancelled()
