@@ -442,8 +442,8 @@ impl VirtualCPU {
                     log_then_return!("Unexpected VM Exit {:?}", reason);
                 }
                 Ok(HyperlightExit::Retry()) => {
-                    debug!("retrying vm run");
-                    continue;
+                    println!("retrying vm run");
+                    continue
                 }
                 Err(e) => {
                     #[cfg(crashdump)]
