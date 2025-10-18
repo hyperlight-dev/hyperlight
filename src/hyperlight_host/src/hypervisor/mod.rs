@@ -114,7 +114,9 @@ pub enum HyperlightExit {
     Cancelled(),
     /// The vCPU has exited for a reason that is not handled by Hyperlight
     Unknown(String),
-    /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
+    /// The operation should be retried
+    /// On Linux this can happen where a call to run the CPU can return EAGAIN
+    /// On Windows the platform could cause a cancelation of the VM run
     Retry(),
 }
 
@@ -440,7 +442,7 @@ impl VirtualCPU {
                     log_then_return!("Unexpected VM Exit {:?}", reason);
                 }
                 Ok(HyperlightExit::Retry()) => {
-                    debug!("retring vm run");
+                    debug!("retrying vm run");
                     continue;
                 }
                 Err(e) => {
