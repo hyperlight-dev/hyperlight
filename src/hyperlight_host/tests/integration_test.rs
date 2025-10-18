@@ -1101,6 +1101,7 @@ fn test_cpu_time_interrupt() {
 
                                 // Mark that we sent a kill signal BEFORE calling kill
                                 // to avoid race conditions
+                                println!("Thread {} iteration {}: CPU time exceeded, sending kill signal", thread_id, iteration);
                                 was_killed_clone.store(true, Ordering::Release);
                                 interrupt_handle.kill();
                                 break;
