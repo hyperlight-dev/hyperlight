@@ -1115,7 +1115,7 @@ fn test_cpu_time_interrupt() {
 
                             thread::sleep(Duration::from_micros(50));
                         }
-                        
+
                         // Clean up the duplicated thread handle
                         windows_sys::Win32::Foundation::CloseHandle(thread_handle);
                     }
