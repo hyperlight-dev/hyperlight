@@ -760,6 +760,12 @@ impl LinuxInterruptHandle {
         let mut target_generation: Option<u64> = None;
 
         loop {
+
+            if (!self.call_active.load(Ordering::Acquire)) {
+                // No active call, so no need to send signal
+                break;
+            }
+
             let (running, generation) = self.get_running_and_generation();
 
             // Stamp generation into cancel_requested if requested and this is the first iteration
@@ -802,6 +808,13 @@ impl LinuxInterruptHandle {
 #[cfg(any(kvm, mshv))]
 impl InterruptHandle for LinuxInterruptHandle {
     fn kill(&self) -> bool {
+
+        if !(self.call_active.load(Ordering::Acquire))
+        {
+            // No active call, so no effect
+            return false;
+        }
+
         // send_signal will stamp the generation into cancel_requested
         // right before sending each signal, ensuring they're always in sync
         self.send_signal(true)
