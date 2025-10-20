@@ -910,6 +910,9 @@ fn test_cpu_time_interrupt() {
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc::channel;
 
+    #[cfg(target_os = "linux")]
+    use std::mem::MaybeUninit;
+
     const POOL_SIZE: usize = 100;
     const NUM_THREADS: usize = 100;
     const ITERATIONS_PER_THREAD: usize = 500;
@@ -1001,6 +1004,7 @@ fn test_cpu_time_interrupt() {
 
                     #[cfg(target_os = "linux")]
                     unsafe {
+
                         let mut clock_id: libc::clockid_t = 0;
                         if libc::pthread_getcpuclockid(main_thread_id, &mut clock_id) != 0 {
                             return;
