@@ -546,11 +546,12 @@ pub trait InterruptHandle: Debug + Send + Sync {
 
     /// Mark that a guest function call is starting.
     ///
-    /// Sets the call_active flag to true, indicating that a guest function call
-    /// is now in progress. This allows kill() to stamp cancel_requested.
+    /// Increments the generation counter and sets the call_active flag to true,
+    /// indicating that a guest function call is now in progress. This allows
+    /// kill() to stamp cancel_requested with the correct generation.
     ///
-    /// Must be called immediately after increment_call_generation() and before
-    /// any VCPU execution begins.
+    /// Must be called at the start of call_guest_function_by_name_no_reset(),
+    /// before any VCPU execution begins.
     fn set_call_active(&self);
 
     /// Mark that a guest function call has completed.
@@ -561,6 +562,54 @@ pub trait InterruptHandle: Debug + Send + Sync {
     /// Must be called at the end of call_guest_function_by_name_no_reset(),
     /// after the guest call has fully completed (whether successfully or with error).
     fn clear_call_active(&self);
+
+    /// Returns the call_active atomic bool reference for default implementations.
+    ///
+    /// This is used by default trait methods to access the common call_active field.
+    fn get_call_active(&self) -> &std::sync::atomic::AtomicBool;
+
+    /// Returns the dropped atomic bool reference for default implementations.
+    ///
+    /// This is used by default trait methods to access the common dropped field.
+    fn get_dropped(&self) -> &std::sync::atomic::AtomicBool;
+
+    /// Internal method to increment the generation counter.
+    ///
+    /// Returns the new generation value after incrementing.
+    #[cfg(any(kvm, mshv, target_os = "windows"))]
+    fn increment_generation_internal(&self) -> u64;
+}
+
+// Default implementations for common methods
+impl dyn InterruptHandle {
+    /// Default implementation of dropped() - checks the dropped atomic flag.
+    ///
+    /// Both Windows and Linux implementations are identical, so this is provided
+    /// as a trait default to reduce code duplication.
+    pub fn dropped_impl(&self) -> bool {
+        self.get_dropped()
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Default implementation of clear_call_active() - clears the call_active flag.
+    ///
+    /// Both Windows and Linux implementations are identical, so this is provided
+    /// as a trait default to reduce code duplication.
+    pub fn clear_call_active_impl(&self) {
+        self.get_call_active()
+            .store(false, std::sync::atomic::Ordering::Release)
+    }
+
+    /// Default implementation of set_call_active() - increments generation and sets flag.
+    ///
+    /// Both Windows and Linux implementations are identical, so this is provided
+    /// as a trait default to reduce code duplication.
+    #[cfg(any(kvm, mshv, target_os = "windows"))]
+    pub fn set_call_active_impl(&self) {
+        self.increment_generation_internal();
+        self.get_call_active()
+            .store(true, std::sync::atomic::Ordering::Release)
+    }
 }
 
 #[cfg(any(kvm, mshv))]
@@ -760,8 +809,7 @@ impl LinuxInterruptHandle {
         let mut target_generation: Option<u64> = None;
 
         loop {
-
-            if (!self.call_active.load(Ordering::Acquire)) {
+            if !self.call_active.load(Ordering::Acquire) {
                 // No active call, so no need to send signal
                 break;
             }
@@ -808,9 +856,7 @@ impl LinuxInterruptHandle {
 #[cfg(any(kvm, mshv))]
 impl InterruptHandle for LinuxInterruptHandle {
     fn kill(&self) -> bool {
-
-        if !(self.call_active.load(Ordering::Acquire))
-        {
+        if !(self.call_active.load(Ordering::Acquire)) {
             // No active call, so no effect
             return false;
         }
@@ -824,8 +870,9 @@ impl InterruptHandle for LinuxInterruptHandle {
         self.debug_interrupt.store(true, Ordering::Relaxed);
         self.send_signal(false)
     }
+
     fn dropped(&self) -> bool {
-        self.dropped.load(Ordering::Relaxed)
+        (self as &dyn InterruptHandle).dropped_impl()
     }
 
     #[cfg(any(kvm, mshv))]
@@ -835,12 +882,25 @@ impl InterruptHandle for LinuxInterruptHandle {
 
     #[cfg(any(kvm, mshv))]
     fn set_call_active(&self) {
-        self.call_active.store(true, Ordering::Release);
+        (self as &dyn InterruptHandle).set_call_active_impl()
     }
 
     #[cfg(any(kvm, mshv))]
     fn clear_call_active(&self) {
-        self.call_active.store(false, Ordering::Release);
+        (self as &dyn InterruptHandle).clear_call_active_impl()
+    }
+
+    fn get_call_active(&self) -> &AtomicBool {
+        &self.call_active
+    }
+
+    fn get_dropped(&self) -> &AtomicBool {
+        &self.dropped
+    }
+
+    #[cfg(any(kvm, mshv))]
+    fn increment_generation_internal(&self) -> u64 {
+        self.increment_generation()
     }
 }
 

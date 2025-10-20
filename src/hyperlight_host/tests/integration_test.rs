@@ -160,29 +160,47 @@ fn interrupt_same_thread() {
 
     const NUM_ITERS: usize = 500;
 
-    // kill vm after 1 second
+    // Spawn killer thread that attempts to interrupt sbox2
     let thread = thread::spawn(move || {
         for _ in 0..NUM_ITERS {
-            barrier2.wait();
             interrupt_handle.kill();
+            // Sync at END of iteration to ensure main thread completes its work
+            barrier2.wait();
         }
     });
 
-    for _ in 0..NUM_ITERS {
-        barrier.wait();
+    for i in 0..NUM_ITERS {
+        // Call sbox1 - should never be interrupted
         sbox1
             .call::<String>("Echo", "hello".to_string())
-            .expect("Only sandbox 2 is allowed to be interrupted");
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Iteration {}: sbox1 should not be interrupted, got: {:?}",
+                    i, e
+                )
+            });
+
+        // Call sbox2 - may be interrupted
         match sbox2.call::<String>("Echo", "hello".to_string()) {
             Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {
                 // Only allow successful calls or interrupted.
-                // The call can be successful in case the call is finished before kill() is called.
+                // The call can be successful if it completes before kill() is called.
             }
-            _ => panic!("Unexpected return"),
+            Err(e) => panic!("Iteration {}: sbox2 unexpected error: {:?}", i, e),
         };
+
+        // Call sbox3 - should never be interrupted
         sbox3
             .call::<String>("Echo", "hello".to_string())
-            .expect("Only sandbox 2 is allowed to be interrupted");
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Iteration {}: sbox3 should not be interrupted, got: {:?}",
+                    i, e
+                )
+            });
+
+        // Sync at END of iteration to ensure killer thread waits for work to complete
+        barrier.wait();
     }
     thread.join().expect("Thread should finish");
 }
@@ -204,31 +222,51 @@ fn interrupt_same_thread_no_barrier() {
 
     const NUM_ITERS: usize = 500;
 
-    // kill vm after 1 second
+    // Spawn killer thread that continuously attempts to interrupt sbox2
     let thread = thread::spawn(move || {
         barrier2.wait();
-        while !workload_done2.load(Ordering::Relaxed) {
+        // Use Acquire ordering to ensure we see the updated workload_done flag
+        while !workload_done2.load(Ordering::Acquire) {
             interrupt_handle.kill();
+            // Small yield to prevent tight spinning
+            thread::yield_now();
         }
     });
 
     barrier.wait();
-    for _ in 0..NUM_ITERS {
+    for i in 0..NUM_ITERS {
+        // Call sbox1 - should never be interrupted
         sbox1
             .call::<String>("Echo", "hello".to_string())
-            .expect("Only sandbox 2 is allowed to be interrupted");
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Iteration {}: sbox1 should not be interrupted, got: {:?}",
+                    i, e
+                )
+            });
+
+        // Call sbox2 - may be interrupted
         match sbox2.call::<String>("Echo", "hello".to_string()) {
             Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {
                 // Only allow successful calls or interrupted.
-                // The call can be successful in case the call is finished before kill() is called.
+                // The call can be successful if it completes before kill() is called.
             }
-            _ => panic!("Unexpected return"),
+            Err(e) => panic!("Iteration {}: sbox2 unexpected error: {:?}", i, e),
         };
+
+        // Call sbox3 - should never be interrupted
         sbox3
             .call::<String>("Echo", "hello".to_string())
-            .expect("Only sandbox 2 is allowed to be interrupted");
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Iteration {}: sbox3 should not be interrupted, got: {:?}",
+                    i, e
+                )
+            });
     }
-    workload_done.store(true, Ordering::Relaxed);
+
+    // Use Release ordering to ensure killer thread sees the update
+    workload_done.store(true, Ordering::Release);
     thread.join().expect("Thread should finish");
 }
 
@@ -868,7 +906,6 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
 #[test]
 fn test_cpu_time_interrupt() {
     use std::collections::VecDeque;
-    use std::mem::MaybeUninit;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc::channel;
@@ -1015,41 +1052,35 @@ fn test_cpu_time_interrupt() {
                     unsafe {
                         use std::ffi::c_void;
 
-                        // On Windows, we use GetThreadTimes to get CPU time
-                        // main_thread_id is a HANDLE on Windows
+                        // On Windows, use QueryThreadCycleTime for high-resolution CPU time measurement
+                        // This measures actual CPU cycles consumed by the thread, similar to Linux's
+                        // pthread_getcpuclockid, and is much more accurate than GetThreadTimes (~15ms resolution)
+
                         let thread_handle = main_thread_id as *mut c_void;
 
-                        let cpu_limit_ns: i64 = 1_000_000; // 5ms CPU time limit (in nanoseconds)
-
-                        let mut creation_time =
-                            MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
-                        let mut exit_time =
-                            MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
-                        let mut kernel_time_start =
-                            MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
-                        let mut user_time_start =
-                            MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
-
-                        // Get initial CPU times
-                        if windows_sys::Win32::System::Threading::GetThreadTimes(
-                            thread_handle,
-                            creation_time.as_mut_ptr(),
-                            exit_time.as_mut_ptr(),
-                            kernel_time_start.as_mut_ptr(),
-                            user_time_start.as_mut_ptr(),
+                        // Get the CPU frequency to convert cycles to time
+                        let mut frequency: i64 = 0;
+                        if windows_sys::Win32::System::Performance::QueryPerformanceFrequency(
+                            &mut frequency,
                         ) == 0
                         {
                             return;
                         }
 
-                        let kernel_time_start = kernel_time_start.assume_init();
-                        let user_time_start = user_time_start.assume_init();
+                        // Get starting CPU cycles for this thread
+                        let mut start_cycles: u64 = 0;
+                        if windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime(
+                            thread_handle,
+                            &mut start_cycles,
+                        ) == 0
+                        {
+                            return;
+                        }
 
-                        // Convert FILETIME to u64 (100-nanosecond intervals)
-                        let start_cpu_time = ((kernel_time_start.dwHighDateTime as u64) << 32
-                            | kernel_time_start.dwLowDateTime as u64)
-                            + ((user_time_start.dwHighDateTime as u64) << 32
-                                | user_time_start.dwLowDateTime as u64);
+                        // Convert 5ms CPU limit to approximate cycle count
+                        // This is approximate because CPU frequency can vary with power management,
+                        // but gives us a baseline that's much more accurate than GetThreadTimes
+                        let cpu_limit_cycles = (5_000_000u64 * frequency as u64) / 1_000_000_000;
 
                         loop {
                             // Check if we should stop monitoring (guest completed)
@@ -1057,48 +1088,24 @@ fn test_cpu_time_interrupt() {
                                 break;
                             }
 
-                            let mut kernel_time_current =
-                                MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
-                            let mut user_time_current =
-                                MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
-
-                            if windows_sys::Win32::System::Threading::GetThreadTimes(
+                            let mut current_cycles: u64 = 0;
+                            if windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime(
                                 thread_handle,
-                                creation_time.as_mut_ptr(),
-                                exit_time.as_mut_ptr(),
-                                kernel_time_current.as_mut_ptr(),
-                                user_time_current.as_mut_ptr(),
+                                &mut current_cycles,
                             ) == 0
                             {
                                 break;
                             }
 
-                            let kernel_time_current = kernel_time_current.assume_init();
-                            let user_time_current = user_time_current.assume_init();
+                            let elapsed_cycles = current_cycles - start_cycles;
 
-                            // Convert FILETIME to u64
-                            let current_cpu_time = ((kernel_time_current.dwHighDateTime as u64)
-                                << 32
-                                | kernel_time_current.dwLowDateTime as u64)
-                                + ((user_time_current.dwHighDateTime as u64) << 32
-                                    | user_time_current.dwLowDateTime as u64);
-
-                            // FILETIME is in 100-nanosecond intervals, convert to nanoseconds
-                            let elapsed_ns = ((current_cpu_time - start_cpu_time) * 100) as i64;
-
-                            if elapsed_ns > cpu_limit_ns {
+                            if elapsed_cycles > cpu_limit_cycles {
                                 // Double-check that monitoring should still continue before killing
-                                // The guest might have completed between our last check and now
                                 if stop_monitoring_clone.load(Ordering::Acquire) {
                                     break;
                                 }
 
                                 // Mark that we sent a kill signal BEFORE calling kill
-                                // to avoid race conditions
-                                println!(
-                                    "Thread {} iteration {}: CPU time exceeded, sending kill signal",
-                                    thread_id, iteration
-                                );
                                 was_killed_clone.store(true, Ordering::Release);
                                 interrupt_handle.kill();
                                 break;

@@ -17,7 +17,7 @@ limitations under the License.
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
@@ -327,8 +327,8 @@ impl HypervWindowsDriver {
         };
 
         let interrupt_handle = Arc::new(WindowsInterruptHandle {
-            running: AtomicBool::new(false),
-            cancel_requested: AtomicBool::new(false),
+            running: AtomicU64::new(0),
+            cancel_requested: AtomicU64::new(0),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
             call_active: AtomicBool::new(false),
@@ -550,7 +550,8 @@ impl Hypervisor for HypervWindowsDriver {
         &mut self,
         #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
     ) -> Result<super::HyperlightExit> {
-        self.interrupt_handle.running.store(true, Ordering::Relaxed);
+        // Get current generation and set running bit
+        let generation = self.interrupt_handle.set_running_bit();
 
         #[cfg(not(gdb))]
         let debug_interrupt = false;
@@ -560,14 +561,12 @@ impl Hypervisor for HypervWindowsDriver {
             .debug_interrupt
             .load(Ordering::Relaxed);
 
-        // Don't run the vcpu if `cancel_requested` is true
+        // Check if cancellation was requested for THIS generation
         let exit_context = if self
             .interrupt_handle
-            .cancel_requested
-            .load(Ordering::Relaxed)
+            .is_cancel_requested_for_generation(generation)
             || debug_interrupt
         {
-            println!("already cancelled");
             WHV_RUN_VP_EXIT_CONTEXT {
                 ExitReason: WHV_RUN_VP_EXIT_REASON(8193i32), // WHvRunVpExitReasonCanceled
                 VpContext: Default::default(),
@@ -580,16 +579,22 @@ impl Hypervisor for HypervWindowsDriver {
 
             self.processor.run()?
         };
+
+        // Clear running bit
+        self.interrupt_handle.clear_running_bit();
+
+        let exit_reason = exit_context.ExitReason;
+        let is_canceled = exit_reason.0 == 8193; // WHvRunVpExitReasonCanceled
+
+        // Check if this was a manual cancellation (vs internal Windows cancellation)
         let cancel_was_requested_manually = self
             .interrupt_handle
-            .cancel_requested
-            .load(Ordering::Relaxed);
-        self.interrupt_handle
-            .cancel_requested
-            .store(false, Ordering::Relaxed);
-        self.interrupt_handle
-            .running
-            .store(false, Ordering::Relaxed);
+            .is_cancel_requested_for_generation(generation);
+
+        // Only clear cancel_requested if we're actually processing a cancellation for this generation
+        if is_canceled && cancel_was_requested_manually {
+            self.interrupt_handle.clear_cancel_requested();
+        }
 
         #[cfg(gdb)]
         let debug_interrupt = self
@@ -988,9 +993,23 @@ impl Drop for HypervWindowsDriver {
 
 #[derive(Debug)]
 pub struct WindowsInterruptHandle {
-    // `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running, which is the reason we need this flag.
-    running: AtomicBool,
-    cancel_requested: AtomicBool,
+    /// Combined running flag (bit 63) and generation counter (bits 0-62).
+    ///
+    /// The generation increments with each guest function call to prevent
+    /// stale cancellations from affecting new calls (ABA problem).
+    ///
+    /// Layout: `[running:1 bit][generation:63 bits]`
+    running: AtomicU64,
+
+    /// Combined cancel_requested flag (bit 63) and generation counter (bits 0-62).
+    ///
+    /// When kill() is called, this stores the current generation along with
+    /// the cancellation flag. The VCPU only honors the cancellation if the
+    /// generation matches its current generation.
+    ///
+    /// Layout: `[cancel_requested:1 bit][generation:63 bits]`
+    cancel_requested: AtomicU64,
+
     // This is used to signal the GDB thread to stop the vCPU
     #[cfg(gdb)]
     debug_interrupt: AtomicBool,
@@ -1009,6 +1028,78 @@ pub struct WindowsInterruptHandle {
     dropped: AtomicBool,
 }
 
+impl WindowsInterruptHandle {
+    const RUNNING_BIT: u64 = 1 << 63;
+    const MAX_GENERATION: u64 = Self::RUNNING_BIT - 1;
+    const CANCEL_REQUESTED_BIT: u64 = 1 << 63;
+
+    /// Set cancel_requested to true with the given generation
+    fn set_cancel_requested(&self, generation: u64) {
+        let value = Self::CANCEL_REQUESTED_BIT | (generation & Self::MAX_GENERATION);
+        self.cancel_requested.store(value, Ordering::Release);
+    }
+
+    /// Clear cancel_requested (reset to no cancellation)
+    pub(crate) fn clear_cancel_requested(&self) {
+        self.cancel_requested.store(0, Ordering::Release);
+    }
+
+    /// Check if cancel_requested is set for the given generation
+    fn is_cancel_requested_for_generation(&self, generation: u64) -> bool {
+        let raw = self.cancel_requested.load(Ordering::Acquire);
+        let is_set = raw & Self::CANCEL_REQUESTED_BIT != 0;
+        let stored_generation = raw & Self::MAX_GENERATION;
+        is_set && stored_generation == generation
+    }
+
+    /// Increment the generation for a new guest function call
+    pub(crate) fn increment_generation(&self) -> u64 {
+        self.running
+            .fetch_update(Ordering::Release, Ordering::Acquire, |raw| {
+                let current_generation = raw & !Self::RUNNING_BIT;
+                let running_bit = raw & Self::RUNNING_BIT;
+                if current_generation == Self::MAX_GENERATION {
+                    // Wrap around to 0
+                    return Some(running_bit);
+                }
+                Some((current_generation + 1) | running_bit)
+            })
+            .map(|raw| {
+                let old_gen = raw & !Self::RUNNING_BIT;
+                if old_gen == Self::MAX_GENERATION {
+                    0
+                } else {
+                    old_gen + 1
+                }
+            })
+            .unwrap_or(0)
+    }
+
+    /// Set running bit to true, return current generation
+    fn set_running_bit(&self) -> u64 {
+        self.running
+            .fetch_update(Ordering::Release, Ordering::Acquire, |raw| {
+                Some(raw | Self::RUNNING_BIT)
+            })
+            .map(|raw| raw & !Self::RUNNING_BIT)
+            .unwrap_or(0)
+    }
+
+    /// Clear running bit, return current generation
+    fn clear_running_bit(&self) -> u64 {
+        self.running
+            .fetch_and(!Self::RUNNING_BIT, Ordering::Relaxed)
+            & !Self::RUNNING_BIT
+    }
+
+    fn get_running_and_generation(&self) -> (bool, u64) {
+        let raw = self.running.load(Ordering::Relaxed);
+        let running = raw & Self::RUNNING_BIT != 0;
+        let generation = raw & !Self::RUNNING_BIT;
+        (running, generation)
+    }
+}
+
 impl InterruptHandle for WindowsInterruptHandle {
     fn kill(&self) -> bool {
         // Check if a call is actually active first
@@ -1016,26 +1107,43 @@ impl InterruptHandle for WindowsInterruptHandle {
             return false;
         }
 
-        let running = self.running.load(Ordering::Relaxed);
-        self.cancel_requested.store(true, Ordering::Relaxed);
+        // Get the current running state and generation
+        let (running, generation) = self.get_running_and_generation();
+
+        // Set cancel_requested with the current generation
+        self.set_cancel_requested(generation);
+
+        // Only call WHvCancelRunVirtualProcessor if VCPU is actually running in guest mode
         running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
         self.debug_interrupt.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
-            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+        let (running, _) = self.get_running_and_generation();
+        running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
 
     fn dropped(&self) -> bool {
-        self.dropped.load(Ordering::Relaxed)
+        (self as &dyn InterruptHandle).dropped_impl()
     }
 
     fn set_call_active(&self) {
-        self.call_active.store(true, Ordering::Release);
+        (self as &dyn InterruptHandle).set_call_active_impl()
     }
 
     fn clear_call_active(&self) {
-        self.call_active.store(false, Ordering::Release);
+        (self as &dyn InterruptHandle).clear_call_active_impl()
+    }
+
+    fn get_call_active(&self) -> &AtomicBool {
+        &self.call_active
+    }
+
+    fn get_dropped(&self) -> &AtomicBool {
+        &self.dropped
+    }
+
+    fn increment_generation_internal(&self) -> u64 {
+        self.increment_generation()
     }
 }
