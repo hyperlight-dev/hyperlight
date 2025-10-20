@@ -298,7 +298,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor;
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext<'_>>>;
+    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>>;
 
     #[cfg(gdb)]
     /// handles the cases when the vCPU stops due to a Debug event
