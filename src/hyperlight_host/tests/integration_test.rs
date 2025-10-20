@@ -1115,6 +1115,9 @@ fn test_cpu_time_interrupt() {
 
                             thread::sleep(Duration::from_micros(50));
                         }
+                        
+                        // Clean up the duplicated thread handle
+                        windows_sys::Win32::Foundation::CloseHandle(thread_handle);
                     }
                 });
 
@@ -1127,9 +1130,29 @@ fn test_cpu_time_interrupt() {
 
                 #[cfg(target_os = "windows")]
                 unsafe {
-                    // On Windows, get the current thread's pseudo-handle
-                    let thread_handle = windows_sys::Win32::System::Threading::GetCurrentThread();
-                    let _ = tx.send(thread_handle as usize);
+                    use std::ffi::c_void;
+                    // On Windows, we need a REAL thread handle, not the pseudo-handle from GetCurrentThread()
+                    // GetCurrentThread() returns a constant (-2) that only works in the current thread's context
+                    // We must duplicate it to get a real handle that can be used from another thread
+                    let pseudo_handle = windows_sys::Win32::System::Threading::GetCurrentThread();
+                    let current_process =
+                        windows_sys::Win32::System::Threading::GetCurrentProcess();
+                    let mut real_handle: *mut c_void = std::ptr::null_mut();
+
+                    if windows_sys::Win32::Foundation::DuplicateHandle(
+                        current_process,
+                        pseudo_handle,
+                        current_process,
+                        &mut real_handle,
+                        0,
+                        0, // bInheritHandle = FALSE
+                        windows_sys::Win32::Foundation::DUPLICATE_SAME_ACCESS,
+                    ) == 0
+                    {
+                        panic!("Failed to duplicate thread handle");
+                    }
+
+                    let _ = tx.send(real_handle as usize);
                 }
 
                 should_monitor.store(true, Ordering::Release);
