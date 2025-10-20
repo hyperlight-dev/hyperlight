@@ -1240,7 +1240,11 @@ mod tests {
                 let status = std::process::Command::new("cargo")
                     .args(["test", "-p", "hyperlight-host", "--lib"])
                     .args(target_args)
-                    .args(["--", "--ignored", &format!("guard_page_crash_test::{}", test)])
+                    .args([
+                        "--",
+                        "--ignored",
+                        &format!("guard_page_crash_test::{}", test),
+                    ])
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())

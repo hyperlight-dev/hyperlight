@@ -906,12 +906,11 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
 #[test]
 fn test_cpu_time_interrupt() {
     use std::collections::VecDeque;
+    #[cfg(target_os = "linux")]
+    use std::mem::MaybeUninit;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc::channel;
-
-    #[cfg(target_os = "linux")]
-    use std::mem::MaybeUninit;
 
     const POOL_SIZE: usize = 100;
     const NUM_THREADS: usize = 100;
@@ -1004,7 +1003,6 @@ fn test_cpu_time_interrupt() {
 
                     #[cfg(target_os = "linux")]
                     unsafe {
-
                         let mut clock_id: libc::clockid_t = 0;
                         if libc::pthread_getcpuclockid(main_thread_id, &mut clock_id) != 0 {
                             return;
