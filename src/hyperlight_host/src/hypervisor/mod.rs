@@ -584,8 +584,6 @@ pub trait InterruptHandle: Debug + Send + Sync {
 impl dyn InterruptHandle {
     /// Default implementation of dropped() - checks the dropped atomic flag.
     ///
-    /// Both Windows and Linux implementations are identical, so this is provided
-    /// as a trait default to reduce code duplication.
     pub fn dropped_impl(&self) -> bool {
         self.get_dropped()
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -593,8 +591,6 @@ impl dyn InterruptHandle {
 
     /// Default implementation of clear_call_active() - clears the call_active flag.
     ///
-    /// Both Windows and Linux implementations are identical, so this is provided
-    /// as a trait default to reduce code duplication.
     pub fn clear_call_active_impl(&self) {
         self.get_call_active()
             .store(false, std::sync::atomic::Ordering::Release)
@@ -602,9 +598,6 @@ impl dyn InterruptHandle {
 
     /// Default implementation of set_call_active() - increments generation and sets flag.
     ///
-    /// Both Windows and Linux implementations are identical, so this is provided
-    /// as a trait default to reduce code duplication.
-    #[cfg(any(kvm, mshv, target_os = "windows"))]
     pub fn set_call_active_impl(&self) {
         self.increment_generation_internal();
         self.get_call_active()
