@@ -179,13 +179,16 @@ fn interrupt_same_thread() {
 
     for i in 0..NUM_ITERS {
         eprintln!("[MAIN] Iteration {}/{}: starting", i, NUM_ITERS);
-        
+
         // Call sbox1 - should never be interrupted
         eprintln!("[MAIN] Iteration {}: calling sbox1", i);
         sbox1
             .call::<String>("Echo", "hello".to_string())
             .unwrap_or_else(|e| {
-                eprintln!("[MAIN] ERROR: sbox1 interrupted at iteration {}: {:?}", i, e);
+                eprintln!(
+                    "[MAIN] ERROR: sbox1 interrupted at iteration {}: {:?}",
+                    i, e
+                );
                 panic!(
                     "Iteration {}: sbox1 should not be interrupted, got: {:?}",
                     i, e
@@ -203,7 +206,10 @@ fn interrupt_same_thread() {
                 eprintln!("[MAIN] Iteration {}: sbox2 was cancelled", i);
             }
             Err(e) => {
-                eprintln!("[MAIN] ERROR: sbox2 unexpected error at iteration {}: {:?}", i, e);
+                eprintln!(
+                    "[MAIN] ERROR: sbox2 unexpected error at iteration {}: {:?}",
+                    i, e
+                );
                 panic!("Iteration {}: sbox2 unexpected error: {:?}", i, e);
             }
         };
@@ -213,7 +219,10 @@ fn interrupt_same_thread() {
         sbox3
             .call::<String>("Echo", "hello".to_string())
             .unwrap_or_else(|e| {
-                eprintln!("[MAIN] ERROR: sbox3 interrupted at iteration {}: {:?}", i, e);
+                eprintln!(
+                    "[MAIN] ERROR: sbox3 interrupted at iteration {}: {:?}",
+                    i, e
+                );
                 panic!(
                     "Iteration {}: sbox3 should not be interrupted, got: {:?}",
                     i, e
@@ -226,7 +235,10 @@ fn interrupt_same_thread() {
         barrier.wait();
         eprintln!("[MAIN] Iteration {}: passed barrier", i);
     }
-    eprintln!("[MAIN] All {} iterations complete, joining killer thread", NUM_ITERS);
+    eprintln!(
+        "[MAIN] All {} iterations complete, joining killer thread",
+        NUM_ITERS
+    );
     thread.join().expect("Thread should finish");
     eprintln!("[TEST] interrupt_same_thread completed successfully");
 }
@@ -1133,7 +1145,10 @@ fn test_cpu_time_interrupt() {
                         loop {
                             // Check if we should stop monitoring (guest completed)
                             if stop_monitoring_clone.load(Ordering::Acquire) {
-                                eprintln!("[MONITOR] Stop monitoring flag set, exiting after {} loops", loop_count);
+                                eprintln!(
+                                    "[MONITOR] Stop monitoring flag set, exiting after {} loops",
+                                    loop_count
+                                );
                                 break;
                             }
 
@@ -1143,18 +1158,27 @@ fn test_cpu_time_interrupt() {
                                 &mut current_cycles,
                             ) == 0
                             {
-                                eprintln!("[MONITOR] ERROR: QueryThreadCycleTime (current) failed at loop {}", loop_count);
+                                eprintln!(
+                                    "[MONITOR] ERROR: QueryThreadCycleTime (current) failed at loop {}",
+                                    loop_count
+                                );
                                 break;
                             }
 
                             let elapsed_cycles = current_cycles - start_cycles;
 
                             if loop_count < 3 || loop_count % 100 == 0 {
-                                eprintln!("[MONITOR] Loop {}: elapsed_cycles={}, limit={}", loop_count, elapsed_cycles, cpu_limit_cycles);
+                                eprintln!(
+                                    "[MONITOR] Loop {}: elapsed_cycles={}, limit={}",
+                                    loop_count, elapsed_cycles, cpu_limit_cycles
+                                );
                             }
 
                             if elapsed_cycles > cpu_limit_cycles {
-                                eprintln!("[MONITOR] CPU limit exceeded at loop {}: {} > {}", loop_count, elapsed_cycles, cpu_limit_cycles);
+                                eprintln!(
+                                    "[MONITOR] CPU limit exceeded at loop {}: {} > {}",
+                                    loop_count, elapsed_cycles, cpu_limit_cycles
+                                );
                                 // Double-check that monitoring should still continue before killing
                                 if stop_monitoring_clone.load(Ordering::Acquire) {
                                     eprintln!("[MONITOR] Stop flag already set, not killing");
@@ -1172,7 +1196,10 @@ fn test_cpu_time_interrupt() {
                             loop_count += 1;
                             thread::sleep(Duration::from_micros(50));
                         }
-                        eprintln!("[MONITOR] Exited monitoring loop after {} iterations", loop_count);
+                        eprintln!(
+                            "[MONITOR] Exited monitoring loop after {} iterations",
+                            loop_count
+                        );
 
                         // Clean up the duplicated thread handle
                         eprintln!("[MONITOR] Closing thread handle");
@@ -1224,21 +1251,30 @@ fn test_cpu_time_interrupt() {
                 }
 
                 if iteration < 3 || iteration % 50 == 0 {
-                    eprintln!("[THREAD-{}] Iteration {}: calling SpinForMs({}ms)", thread_id, iteration, cpu_time_ms);
+                    eprintln!(
+                        "[THREAD-{}] Iteration {}: calling SpinForMs({}ms)",
+                        thread_id, iteration, cpu_time_ms
+                    );
                 }
 
                 // Call the guest function
                 let result = sandbox.call::<u64>("SpinForMs", cpu_time_ms);
 
                 if iteration < 3 {
-                    eprintln!("[THREAD-{}] Iteration {}: SpinForMs returned {:?}", thread_id, iteration, result);
+                    eprintln!(
+                        "[THREAD-{}] Iteration {}: SpinForMs returned {:?}",
+                        thread_id, iteration, result
+                    );
                 }
 
                 // Signal the monitor to stop
                 stop_monitoring.store(true, Ordering::Release);
-                
+
                 if iteration < 3 {
-                    eprintln!("[THREAD-{}] Iteration {}: waiting for monitor thread", thread_id, iteration);
+                    eprintln!(
+                        "[THREAD-{}] Iteration {}: waiting for monitor thread",
+                        thread_id, iteration
+                    );
                 }
 
                 // Wait for monitor thread to complete to ensure was_killed flag is set
