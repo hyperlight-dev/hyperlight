@@ -253,8 +253,8 @@ impl MemoryRegionVecBuilder {
 }
 
 #[cfg(mshv3)]
-impl From<MemoryRegion> for mshv_user_mem_region {
-    fn from(region: MemoryRegion) -> Self {
+impl From<&MemoryRegion> for mshv_user_mem_region {
+    fn from(region: &MemoryRegion) -> Self {
         let size = (region.guest_region.end - region.guest_region.start) as u64;
         let guest_pfn = region.guest_region.start as u64 >> PAGE_SHIFT;
         let userspace_addr = region.host_region.start as u64;
@@ -281,8 +281,8 @@ impl From<MemoryRegion> for mshv_user_mem_region {
 }
 
 #[cfg(kvm)]
-impl From<MemoryRegion> for kvm_bindings::kvm_userspace_memory_region {
-    fn from(region: MemoryRegion) -> Self {
+impl From<&MemoryRegion> for kvm_bindings::kvm_userspace_memory_region {
+    fn from(region: &MemoryRegion) -> Self {
         let perm_flags =
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
 
