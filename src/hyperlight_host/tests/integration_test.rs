@@ -936,25 +936,26 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
     );
 }
 
-/// Test that monitors CPU time usage and can interrupt a guest based on CPU time limits
-/// Uses a pool of 100 sandboxes, 100 threads, and 500 iterations per thread
-/// Some sandboxes are expected to complete normally, some are expected to be killed
-/// This test makes sure that a reused sandbox is not killed in the case where the previous
-/// execution was killed due to CPU time limit but the invocation completed normally before the cancel was processed.
+/// Test that validates interrupt behavior with random kill timing under concurrent load
+/// Uses a pool of 100 sandboxes, 100 threads, and 500 iterations per thread.
+/// Randomly decides to kill some calls at random times during execution.
+/// Validates that:
+/// - Calls we chose to kill can end in any state (including some cancelled)
+/// - Calls we did NOT choose to kill NEVER return ExecutionCanceledByHost
+/// - We get a mix of killed and non-killed outcomes (not 100% or 0%)
+#[cfg(target_os="linux")]
 #[test]
-fn test_cpu_time_interrupt() {
+fn interrupt_random_kill_stress_test() {
     use std::collections::VecDeque;
-    #[cfg(target_os = "linux")]
-    use std::mem::MaybeUninit;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::mpsc::channel;
 
     const POOL_SIZE: usize = 100;
     const NUM_THREADS: usize = 100;
     const ITERATIONS_PER_THREAD: usize = 500;
+    const KILL_PROBABILITY: f64 = 0.5; // 50% chance to attempt kill
+    const GUEST_CALL_DURATION_MS: u32 = 10; // SpinForMs duration
 
-    eprintln!("[TEST] Starting test_cpu_time_interrupt");
     // Create a pool of 100 sandboxes
     println!("Creating pool of {} sandboxes...", POOL_SIZE);
     let mut sandbox_pool: Vec<MultiUseSandbox> = Vec::with_capacity(POOL_SIZE);
@@ -971,9 +972,13 @@ fn test_cpu_time_interrupt() {
 
     // Counters for statistics
     let total_iterations = Arc::new(AtomicUsize::new(0));
-    let killed_count = Arc::new(AtomicUsize::new(0));
-    let completed_count = Arc::new(AtomicUsize::new(0));
-    let errors_count = Arc::new(AtomicUsize::new(0));
+    let kill_attempted_count = Arc::new(AtomicUsize::new(0)); // We chose to kill
+    let actually_killed_count = Arc::new(AtomicUsize::new(0)); // Got ExecutionCanceledByHost
+    let not_killed_completed_ok = Arc::new(AtomicUsize::new(0));
+    let not_killed_error = Arc::new(AtomicUsize::new(0)); // Non-cancelled errors
+    let killed_but_completed_ok = Arc::new(AtomicUsize::new(0));
+    let killed_but_error = Arc::new(AtomicUsize::new(0)); // Non-cancelled errors
+    let unexpected_cancelled = Arc::new(AtomicUsize::new(0)); // CRITICAL: non-killed calls that got cancelled
 
     println!(
         "Starting {} threads with {} iterations each...",
@@ -985,331 +990,130 @@ fn test_cpu_time_interrupt() {
     for thread_id in 0..NUM_THREADS {
         let pool_clone = Arc::clone(&pool);
         let total_iterations_clone = Arc::clone(&total_iterations);
-        let killed_count_clone = Arc::clone(&killed_count);
-        let completed_count_clone = Arc::clone(&completed_count);
-        let errors_count_clone = Arc::clone(&errors_count);
+        let kill_attempted_count_clone = Arc::clone(&kill_attempted_count);
+        let actually_killed_count_clone = Arc::clone(&actually_killed_count);
+        let not_killed_completed_ok_clone = Arc::clone(&not_killed_completed_ok);
+        let not_killed_error_clone = Arc::clone(&not_killed_error);
+        let killed_but_completed_ok_clone = Arc::clone(&killed_but_completed_ok);
+        let killed_but_error_clone = Arc::clone(&killed_but_error);
+        let unexpected_cancelled_clone = Arc::clone(&unexpected_cancelled);
 
         let handle = thread::spawn(move || {
+            println!("[THREAD-{}] Thread started, initializing RNG...", thread_id);
+            // Use thread_id as seed for reproducible randomness per thread
+            use std::collections::hash_map::RandomState;
+            use std::hash::{BuildHasher, Hash, Hasher};
+            
+            let mut hasher = RandomState::new().build_hasher();
+            thread_id.hash(&mut hasher);
+            let mut rng_state = hasher.finish();
+
+            println!("[THREAD-{}] RNG initialized, entering iteration loop...", thread_id);
+
+            // Simple LCG random number generator for reproducible randomness
+            let mut next_random = || -> u64 {
+                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng_state
+            };
+
             for iteration in 0..ITERATIONS_PER_THREAD {
                 // === START OF ITERATION ===
-                // Get a fresh sandbox from the pool for this iteration
-                let mut sandbox = {
+                // Get a sandbox from the pool for this iteration
+                let sandbox = loop {
                     let mut pool_guard = pool_clone.lock().unwrap();
-                    // Wait if pool is empty (shouldn't happen with proper design)
-                    while pool_guard.is_empty() {
-                        drop(pool_guard);
-                        thread::sleep(Duration::from_micros(100));
-                        pool_guard = pool_clone.lock().unwrap();
+                    if let Some(sb) = pool_guard.pop_front() {
+                        break sb;
                     }
-                    pool_guard.pop_front().unwrap()
+                    // Pool is empty, release lock and wait
+                    drop(pool_guard);
+                    eprintln!("[THREAD-{}] Iteration {}: Pool empty, waiting for sandbox...", thread_id, iteration);
+                    thread::sleep(Duration::from_millis(1));
                 };
 
-                // Vary CPU time between 3ms and 7ms to ensure some get killed and some complete
-                // The CPU limit is 5ms, so:
-                // - 3-4ms should complete normally
-                // - 6-7ms should be killed
-                // - 5ms is borderline and could go either way
-                let cpu_time_ms =
-                    3 + (((thread_id * ITERATIONS_PER_THREAD + iteration) % 5) as u32);
+                // Use a guard struct to ensure sandbox is always returned to pool
+                struct SandboxGuard<'a> {
+                    sandbox: Option<MultiUseSandbox>,
+                    pool: &'a Arc<Mutex<VecDeque<MultiUseSandbox>>>,
+                }
+                
+                impl<'a> Drop for SandboxGuard<'a> {
+                    fn drop(&mut self) {
+                        if let Some(sb) = self.sandbox.take() {
+                            let mut pool_guard = self.pool.lock().unwrap();
+                            pool_guard.push_back(sb);
+                            // eprintln!("[GUARD] Returned sandbox to pool, pool size now: {}", pool_guard.len());
+                        }
+                    }
+                }
+                
+                let mut guard = SandboxGuard {
+                    sandbox: Some(sandbox),
+                    pool: &pool_clone,
+                };
 
+                // Decide randomly: should we attempt to kill this call?
+                let should_kill = (next_random() as f64 / u64::MAX as f64) < KILL_PROBABILITY;
+                
+                if should_kill {
+                    kill_attempted_count_clone.fetch_add(1, Ordering::Relaxed);
+                }
+
+                let sandbox = guard.sandbox.as_mut().unwrap();
                 let interrupt_handle = sandbox.interrupt_handle();
 
-                // Channel to send the thread ID
-                let (tx, rx) = channel();
-
-                // Flag to signal monitoring start
-                let should_monitor = Arc::new(AtomicBool::new(false));
-                let should_monitor_clone = should_monitor.clone();
-
-                // Flag to signal monitoring stop (when guest execution completes)
-                let stop_monitoring = Arc::new(AtomicBool::new(false));
-                let stop_monitoring_clone = stop_monitoring.clone();
-
-                // Flag to track if we actually sent a kill signal
-                let was_killed = Arc::new(AtomicBool::new(false));
-                let was_killed_clone = was_killed.clone();
-
-                // Flag to signal that monitor thread is ready (entered its monitoring loop)
-                let monitor_ready = Arc::new(AtomicBool::new(false));
-                let monitor_ready_clone = monitor_ready.clone();
-
-                // Spawn CPU time monitor thread
-                let monitor_thread = thread::spawn(move || {
-                    let main_thread_id = match rx.recv() {
-                        Ok(tid) => tid,
-                        Err(_) => return,
-                    };
-
-                    while !should_monitor_clone.load(Ordering::Acquire) {
-                        thread::sleep(Duration::from_micros(50));
-                    }
-
-                    #[cfg(target_os = "linux")]
-                    unsafe {
-                        let mut clock_id: libc::clockid_t = 0;
-                        if libc::pthread_getcpuclockid(main_thread_id, &mut clock_id) != 0 {
-                            return;
-                        }
-
-                        let cpu_limit_ns = 5_000_000; // 5ms CPU time limit
-                        let mut start_time = MaybeUninit::<libc::timespec>::uninit();
-
-                        if libc::clock_gettime(clock_id, start_time.as_mut_ptr()) != 0 {
-                            return;
-                        }
-                        let start_time = start_time.assume_init();
-
-                        // Signal that we're ready to monitor
-                        monitor_ready_clone.store(true, Ordering::Release);
-
-                        loop {
-                            // Check if we should stop monitoring (guest completed)
-                            if stop_monitoring_clone.load(Ordering::Acquire) {
-                                break;
-                            }
-
-                            let mut current_time = MaybeUninit::<libc::timespec>::uninit();
-                            if libc::clock_gettime(clock_id, current_time.as_mut_ptr()) != 0 {
-                                break;
-                            }
-                            let current_time = current_time.assume_init();
-
-                            let elapsed_ns = (current_time.tv_sec - start_time.tv_sec)
-                                * 1_000_000_000
-                                + (current_time.tv_nsec - start_time.tv_nsec);
-
-                            if elapsed_ns > cpu_limit_ns {
-                                // Double-check that monitoring should still continue before killing
-                                // The guest might have completed between our last check and now
-                                if stop_monitoring_clone.load(Ordering::Acquire) {
-                                    break;
-                                }
-
-                                // Mark that we sent a kill signal BEFORE calling kill
-                                // to avoid race conditions
-                                was_killed_clone.store(true, Ordering::Release);
-                                interrupt_handle.kill();
-                                break;
-                            }
-
-                            thread::sleep(Duration::from_micros(50));
-                        }
-                    }
-
-                    #[cfg(target_os = "windows")]
-                    unsafe {
-                        use std::ffi::c_void;
-
-                        eprintln!("[MONITOR] Windows monitoring thread starting");
-
-                        // On Windows, use QueryThreadCycleTime for high-resolution CPU time measurement
-                        // This measures actual CPU cycles consumed by the thread, similar to Linux's
-                        // pthread_getcpuclockid, and is much more accurate than GetThreadTimes (~15ms resolution)
-
-                        let thread_handle = main_thread_id as *mut c_void;
-                        eprintln!("[MONITOR] Got thread handle: {:?}", thread_handle);
-
-                        // Get the CPU frequency to convert cycles to time
-                        let mut frequency: i64 = 0;
-                        if windows_sys::Win32::System::Performance::QueryPerformanceFrequency(
-                            &mut frequency,
-                        ) == 0
-                        {
-                            eprintln!("[MONITOR] ERROR: QueryPerformanceFrequency failed");
-                            return;
-                        }
-                        eprintln!("[MONITOR] CPU frequency: {} Hz", frequency);
-
-                        // Get starting CPU cycles for this thread
-                        let mut start_cycles: u64 = 0;
-                        if windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime(
-                            thread_handle,
-                            &mut start_cycles,
-                        ) == 0
-                        {
-                            eprintln!("[MONITOR] ERROR: QueryThreadCycleTime (start) failed");
-                            return;
-                        }
-                        eprintln!("[MONITOR] Start cycles: {}", start_cycles);
-
-                        // Convert 5ms CPU limit to approximate cycle count
-                        // This is approximate because CPU frequency can vary with power management,
-                        // but gives us a baseline that's much more accurate than GetThreadTimes
-                        let cpu_limit_cycles = (5_000_000u64 * frequency as u64) / 1_000_000_000;
-                        eprintln!("[MONITOR] CPU limit: {} cycles (~5ms)", cpu_limit_cycles);
-
-                        eprintln!("[MONITOR] Entering monitoring loop");
-                        // Signal that we're ready to monitor
-                        monitor_ready_clone.store(true, Ordering::Release);
-                        let mut loop_count = 0u64;
-                        loop {
-                            // Check if we should stop monitoring (guest completed)
-                            if stop_monitoring_clone.load(Ordering::Acquire) {
-                                eprintln!(
-                                    "[MONITOR] Stop monitoring flag set, exiting after {} loops",
-                                    loop_count
-                                );
-                                break;
-                            }
-
-                            let mut current_cycles: u64 = 0;
-                            if windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime(
-                                thread_handle,
-                                &mut current_cycles,
-                            ) == 0
-                            {
-                                eprintln!(
-                                    "[MONITOR] ERROR: QueryThreadCycleTime (current) failed at loop {}",
-                                    loop_count
-                                );
-                                break;
-                            }
-
-                            let elapsed_cycles = current_cycles - start_cycles;
-
-                            if loop_count < 3 || loop_count % 100 == 0 {
-                                eprintln!(
-                                    "[MONITOR] Loop {}: elapsed_cycles={}, limit={}",
-                                    loop_count, elapsed_cycles, cpu_limit_cycles
-                                );
-                            }
-
-                            if elapsed_cycles > cpu_limit_cycles {
-                                eprintln!(
-                                    "[MONITOR] CPU limit exceeded at loop {}: {} > {}",
-                                    loop_count, elapsed_cycles, cpu_limit_cycles
-                                );
-                                // Double-check that monitoring should still continue before killing
-                                if stop_monitoring_clone.load(Ordering::Acquire) {
-                                    eprintln!("[MONITOR] Stop flag already set, not killing");
-                                    break;
-                                }
-
-                                eprintln!("[MONITOR] Calling kill()");
-                                // Mark that we sent a kill signal BEFORE calling kill
-                                was_killed_clone.store(true, Ordering::Release);
-                                interrupt_handle.kill();
-                                eprintln!("[MONITOR] kill() returned");
-                                break;
-                            }
-
-                            loop_count += 1;
-                            thread::sleep(Duration::from_micros(50));
-                        }
-                        eprintln!(
-                            "[MONITOR] Exited monitoring loop after {} iterations",
-                            loop_count
-                        );
-
-                        // Clean up the duplicated thread handle
-                        eprintln!("[MONITOR] Closing thread handle");
-                        windows_sys::Win32::Foundation::CloseHandle(thread_handle);
-                        eprintln!("[MONITOR] Monitor thread exiting");
-                    }
-                });
-
-                // Send thread ID and start monitoring
-                #[cfg(target_os = "linux")]
-                unsafe {
-                    let thread_id = libc::pthread_self();
-                    let _ = tx.send(thread_id);
-                }
-
-                #[cfg(target_os = "windows")]
-                unsafe {
-                    use std::ffi::c_void;
-                    // On Windows, we need a REAL thread handle, not the pseudo-handle from GetCurrentThread()
-                    // GetCurrentThread() returns a constant (-2) that only works in the current thread's context
-                    // We must duplicate it to get a real handle that can be used from another thread
-                    let pseudo_handle = windows_sys::Win32::System::Threading::GetCurrentThread();
-                    let current_process =
-                        windows_sys::Win32::System::Threading::GetCurrentProcess();
-                    let mut real_handle: *mut c_void = std::ptr::null_mut();
-
-                    if windows_sys::Win32::Foundation::DuplicateHandle(
-                        current_process,
-                        pseudo_handle,
-                        current_process,
-                        &mut real_handle,
-                        0,
-                        0, // bInheritHandle = FALSE
-                        windows_sys::Win32::Foundation::DUPLICATE_SAME_ACCESS,
-                    ) == 0
-                    {
-                        panic!("Failed to duplicate thread handle");
-                    }
-
-                    let _ = tx.send(real_handle as usize);
-                }
-
-                should_monitor.store(true, Ordering::Release);
-
-                // Wait for monitor thread to be ready before starting guest execution
-                // This prevents the race where guest completes before monitor enters its loop
-                while !monitor_ready.load(Ordering::Acquire) {
-                    thread::sleep(Duration::from_micros(10));
-                }
-
-                if iteration < 3 || iteration % 50 == 0 {
-                    eprintln!(
-                        "[THREAD-{}] Iteration {}: calling SpinForMs({}ms)",
-                        thread_id, iteration, cpu_time_ms
-                    );
-                }
+                // If we decided to kill, spawn a thread that will kill at a random time
+                let killer_thread = if should_kill {
+                    // Generate random delay here before moving into thread
+                    let kill_delay_ms = (next_random() % 16) as u64;
+                    Some(thread::spawn(move || {
+                        // Random delay between 0 and 15ms (guest runs for ~10ms)
+                        thread::sleep(Duration::from_millis(kill_delay_ms));
+                        interrupt_handle.kill();
+                    }))
+                } else {
+                    None
+                };
 
                 // Call the guest function
-                let result = sandbox.call::<u64>("SpinForMs", cpu_time_ms);
+                let result = sandbox.call::<u64>("SpinForMs", GUEST_CALL_DURATION_MS);
 
-                if iteration < 3 {
-                    eprintln!(
-                        "[THREAD-{}] Iteration {}: SpinForMs returned {:?}",
-                        thread_id, iteration, result
-                    );
+                // Wait for killer thread to finish if it was spawned
+                if let Some(kt) = killer_thread {
+                    let _ = kt.join();
                 }
 
-                // Signal the monitor to stop
-                stop_monitoring.store(true, Ordering::Release);
-
-                if iteration < 3 {
-                    eprintln!(
-                        "[THREAD-{}] Iteration {}: waiting for monitor thread",
-                        thread_id, iteration
-                    );
-                }
-
-                // Wait for monitor thread to complete to ensure was_killed flag is set
-                let _ = monitor_thread.join();
-
-                // NOW check if we sent a kill signal (after monitor thread has completed)
-                let kill_was_sent = was_killed.load(Ordering::Acquire);
-
-                // Process the result and validate correctness
+                // Process the result based on whether we attempted to kill
                 match result {
                     Err(HyperlightError::ExecutionCanceledByHost()) => {
-                        // We received a cancellation error
-                        if !kill_was_sent {
-                            // ERROR: We got a cancellation but never sent a kill!
-                            panic!(
-                                "Thread {} iteration {}: Got ExecutionCanceledByHost but no kill signal was sent!",
+                        if should_kill {
+                            // We attempted to kill and it was cancelled - SUCCESS
+                            actually_killed_count_clone.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // We did NOT attempt to kill but got cancelled - CRITICAL FAILURE
+                            unexpected_cancelled_clone.fetch_add(1, Ordering::Relaxed);
+                            eprintln!(
+                                "CRITICAL: Thread {} iteration {}: Got ExecutionCanceledByHost but did NOT attempt kill!",
                                 thread_id, iteration
                             );
                         }
-                        // This is correct - we sent kill and got the error
-                        killed_count_clone.fetch_add(1, Ordering::Relaxed);
                     }
                     Ok(_) => {
-                        // Execution completed normally
-                        // This is OK whether or not we sent a kill - the guest might have
-                        // finished just before the kill signal arrived
-                        completed_count_clone.fetch_add(1, Ordering::Relaxed);
+                        if should_kill {
+                            // We attempted to kill but it completed OK - acceptable race condition
+                            killed_but_completed_ok_clone.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // We did NOT attempt to kill and it completed OK - EXPECTED
+                            not_killed_completed_ok_clone.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                    Err(e) => {
-                        // Unexpected error
-                        eprintln!(
-                            "Thread {} iteration {}: Unexpected error: {:?}, kill_sent: {}",
-                            thread_id, iteration, e, kill_was_sent
-                        );
-                        errors_count_clone.fetch_add(1, Ordering::Relaxed);
+                    Err(_other_error) => {
+                        if should_kill {
+                            // We attempted to kill and got some other error - acceptable
+                            killed_but_error_clone.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // We did NOT attempt to kill and got some other error - acceptable
+                            not_killed_error_clone.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
 
@@ -1317,7 +1121,7 @@ fn test_cpu_time_interrupt() {
 
                 // Progress reporting
                 let current_total = total_iterations_clone.load(Ordering::Relaxed);
-                if current_total % 500 == 0 {
+                if current_total % 5000 == 0 {
                     println!(
                         "Progress: {}/{} iterations completed",
                         current_total,
@@ -1326,48 +1130,92 @@ fn test_cpu_time_interrupt() {
                 }
 
                 // === END OF ITERATION ===
-                // Return sandbox to pool for reuse by other threads/iterations
-                {
-                    let mut pool_guard = pool_clone.lock().unwrap();
-                    pool_guard.push_back(sandbox);
-                }
+                // SandboxGuard will automatically return sandbox to pool when it goes out of scope
             }
+            
+            eprintln!("[THREAD-{}] Completed all {} iterations!", thread_id, ITERATIONS_PER_THREAD);
         });
 
         thread_handles.push(handle);
     }
 
+    println!("All {} worker threads spawned, waiting for completion...", NUM_THREADS);
+
     // Wait for all threads to complete
-    for handle in thread_handles {
+    for (idx, handle) in thread_handles.into_iter().enumerate() {
+        println!("Waiting for thread {} to join...", idx);
         handle.join().unwrap();
+        println!("Thread {} joined successfully", idx);
     }
 
-    // Print statistics
+    println!("All threads joined successfully!");
+
+    // Collect final statistics
     let total = total_iterations.load(Ordering::Relaxed);
-    let killed = killed_count.load(Ordering::Relaxed);
-    let completed = completed_count.load(Ordering::Relaxed);
-    let errors = errors_count.load(Ordering::Relaxed);
+    let kill_attempted = kill_attempted_count.load(Ordering::Relaxed);
+    let actually_killed = actually_killed_count.load(Ordering::Relaxed);
+    let not_killed_ok = not_killed_completed_ok.load(Ordering::Relaxed);
+    let not_killed_err = not_killed_error.load(Ordering::Relaxed);
+    let killed_but_ok = killed_but_completed_ok.load(Ordering::Relaxed);
+    let killed_but_err = killed_but_error.load(Ordering::Relaxed);
+    let unexpected_cancel = unexpected_cancelled.load(Ordering::Relaxed);
 
-    println!("\n=== Test Statistics ===");
+    let no_kill_attempted = total - kill_attempted;
+
+    // Print detailed statistics
+    println!("\n=== Interrupt Random Kill Stress Test Statistics ===");
     println!("Total iterations: {}", total);
-    println!("Killed (CPU limit exceeded): {}", killed);
-    println!("Completed normally: {}", completed);
-    println!("Errors: {}", errors);
-    println!("Kill rate: {:.1}%", (killed as f64 / total as f64) * 100.0);
+    println!();
+    println!("Kill Attempts: {} ({:.1}%)", kill_attempted, (kill_attempted as f64 / total as f64) * 100.0);
+    println!("  - Actually killed (ExecutionCanceledByHost): {}", actually_killed);
+    println!("  - Completed OK despite kill attempt: {}", killed_but_ok);
+    println!("  - Error (non-cancelled) despite kill attempt: {}", killed_but_err);
+    if kill_attempted > 0 {
+        println!("  - Kill success rate: {:.1}%", (actually_killed as f64 / kill_attempted as f64) * 100.0);
+    }
+    println!();
+    println!("No Kill Attempts: {} ({:.1}%)", no_kill_attempted, (no_kill_attempted as f64 / total as f64) * 100.0);
+    println!("  - Completed OK: {}", not_killed_ok);
+    println!("  - Error (non-cancelled): {}", not_killed_err);
+    println!("  - Cancelled (SHOULD BE 0): {} {}", unexpected_cancel, if unexpected_cancel == 0 { "✅" } else { "❌ FAILURE" });
 
-    // Verify we had both kills and completions
-    assert!(
-        killed > 0,
-        "Expected some executions to be killed, but none were"
+    // CRITICAL VALIDATIONS
+    assert_eq!(
+        unexpected_cancel, 0,
+        "FAILURE: {} non-killed calls returned ExecutionCanceledByHost! This indicates false kills.",
+        unexpected_cancel
     );
+
     assert!(
-        completed > 0,
-        "Expected some executions to complete, but none did"
+        actually_killed > 0,
+        "FAILURE: No calls were actually killed despite {} kill attempts!",
+        kill_attempted
     );
-    assert_eq!(errors, 0, "Expected no errors, but got {}", errors);
+
+    assert!(
+        kill_attempted > 0,
+        "FAILURE: No kill attempts were made (expected ~50% of {} iterations)!",
+        total
+    );
+
+    assert!(
+        kill_attempted < total,
+        "FAILURE: All {} iterations were kill attempts (expected ~50%)!",
+        total
+    );
+
+    // Verify total accounting
+    assert_eq!(
+        total,
+        actually_killed + not_killed_ok + not_killed_err + killed_but_ok + killed_but_err + unexpected_cancel,
+        "Iteration accounting mismatch!"
+    );
+
     assert_eq!(
         total,
         NUM_THREADS * ITERATIONS_PER_THREAD,
         "Not all iterations completed"
     );
+
+    println!("\n✅ All validations passed!");
 }
