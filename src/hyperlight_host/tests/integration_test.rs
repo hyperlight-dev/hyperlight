@@ -943,7 +943,7 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
 /// - Calls we chose to kill can end in any state (including some cancelled)
 /// - Calls we did NOT choose to kill NEVER return ExecutionCanceledByHost
 /// - We get a mix of killed and non-killed outcomes (not 100% or 0%)
-#[cfg(target_os="linux")]
+#[cfg(target_os = "linux")]
 #[test]
 fn interrupt_random_kill_stress_test() {
     use std::collections::VecDeque;
@@ -1003,12 +1003,15 @@ fn interrupt_random_kill_stress_test() {
             // Use thread_id as seed for reproducible randomness per thread
             use std::collections::hash_map::RandomState;
             use std::hash::{BuildHasher, Hash, Hasher};
-            
+
             let mut hasher = RandomState::new().build_hasher();
             thread_id.hash(&mut hasher);
             let mut rng_state = hasher.finish();
 
-            println!("[THREAD-{}] RNG initialized, entering iteration loop...", thread_id);
+            println!(
+                "[THREAD-{}] RNG initialized, entering iteration loop...",
+                thread_id
+            );
 
             // Simple LCG random number generator for reproducible randomness
             let mut next_random = || -> u64 {
@@ -1026,7 +1029,10 @@ fn interrupt_random_kill_stress_test() {
                     }
                     // Pool is empty, release lock and wait
                     drop(pool_guard);
-                    eprintln!("[THREAD-{}] Iteration {}: Pool empty, waiting for sandbox...", thread_id, iteration);
+                    eprintln!(
+                        "[THREAD-{}] Iteration {}: Pool empty, waiting for sandbox...",
+                        thread_id, iteration
+                    );
                     thread::sleep(Duration::from_millis(1));
                 };
 
@@ -1035,7 +1041,7 @@ fn interrupt_random_kill_stress_test() {
                     sandbox: Option<MultiUseSandbox>,
                     pool: &'a Arc<Mutex<VecDeque<MultiUseSandbox>>>,
                 }
-                
+
                 impl<'a> Drop for SandboxGuard<'a> {
                     fn drop(&mut self) {
                         if let Some(sb) = self.sandbox.take() {
@@ -1045,7 +1051,7 @@ fn interrupt_random_kill_stress_test() {
                         }
                     }
                 }
-                
+
                 let mut guard = SandboxGuard {
                     sandbox: Some(sandbox),
                     pool: &pool_clone,
@@ -1053,7 +1059,7 @@ fn interrupt_random_kill_stress_test() {
 
                 // Decide randomly: should we attempt to kill this call?
                 let should_kill = (next_random() as f64 / u64::MAX as f64) < KILL_PROBABILITY;
-                
+
                 if should_kill {
                     kill_attempted_count_clone.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1132,14 +1138,20 @@ fn interrupt_random_kill_stress_test() {
                 // === END OF ITERATION ===
                 // SandboxGuard will automatically return sandbox to pool when it goes out of scope
             }
-            
-            eprintln!("[THREAD-{}] Completed all {} iterations!", thread_id, ITERATIONS_PER_THREAD);
+
+            eprintln!(
+                "[THREAD-{}] Completed all {} iterations!",
+                thread_id, ITERATIONS_PER_THREAD
+            );
         });
 
         thread_handles.push(handle);
     }
 
-    println!("All {} worker threads spawned, waiting for completion...", NUM_THREADS);
+    println!(
+        "All {} worker threads spawned, waiting for completion...",
+        NUM_THREADS
+    );
 
     // Wait for all threads to complete
     for (idx, handle) in thread_handles.into_iter().enumerate() {
@@ -1166,18 +1178,43 @@ fn interrupt_random_kill_stress_test() {
     println!("\n=== Interrupt Random Kill Stress Test Statistics ===");
     println!("Total iterations: {}", total);
     println!();
-    println!("Kill Attempts: {} ({:.1}%)", kill_attempted, (kill_attempted as f64 / total as f64) * 100.0);
-    println!("  - Actually killed (ExecutionCanceledByHost): {}", actually_killed);
+    println!(
+        "Kill Attempts: {} ({:.1}%)",
+        kill_attempted,
+        (kill_attempted as f64 / total as f64) * 100.0
+    );
+    println!(
+        "  - Actually killed (ExecutionCanceledByHost): {}",
+        actually_killed
+    );
     println!("  - Completed OK despite kill attempt: {}", killed_but_ok);
-    println!("  - Error (non-cancelled) despite kill attempt: {}", killed_but_err);
+    println!(
+        "  - Error (non-cancelled) despite kill attempt: {}",
+        killed_but_err
+    );
     if kill_attempted > 0 {
-        println!("  - Kill success rate: {:.1}%", (actually_killed as f64 / kill_attempted as f64) * 100.0);
+        println!(
+            "  - Kill success rate: {:.1}%",
+            (actually_killed as f64 / kill_attempted as f64) * 100.0
+        );
     }
     println!();
-    println!("No Kill Attempts: {} ({:.1}%)", no_kill_attempted, (no_kill_attempted as f64 / total as f64) * 100.0);
+    println!(
+        "No Kill Attempts: {} ({:.1}%)",
+        no_kill_attempted,
+        (no_kill_attempted as f64 / total as f64) * 100.0
+    );
     println!("  - Completed OK: {}", not_killed_ok);
     println!("  - Error (non-cancelled): {}", not_killed_err);
-    println!("  - Cancelled (SHOULD BE 0): {} {}", unexpected_cancel, if unexpected_cancel == 0 { "✅" } else { "❌ FAILURE" });
+    println!(
+        "  - Cancelled (SHOULD BE 0): {} {}",
+        unexpected_cancel,
+        if unexpected_cancel == 0 {
+            "✅"
+        } else {
+            "❌ FAILURE"
+        }
+    );
 
     // CRITICAL VALIDATIONS
     assert_eq!(
@@ -1207,7 +1244,12 @@ fn interrupt_random_kill_stress_test() {
     // Verify total accounting
     assert_eq!(
         total,
-        actually_killed + not_killed_ok + not_killed_err + killed_but_ok + killed_but_err + unexpected_cancel,
+        actually_killed
+            + not_killed_ok
+            + not_killed_err
+            + killed_but_ok
+            + killed_but_err
+            + unexpected_cancel,
         "Iteration accounting mismatch!"
     );
 
