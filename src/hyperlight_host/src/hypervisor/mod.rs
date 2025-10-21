@@ -463,6 +463,126 @@ fn get_max_log_level() -> u32 {
     LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
 }
 
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+pub(super) struct WindowsInterruptHandle {
+    // `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running, which is the reason we need this flag.
+    running: AtomicBool,
+    cancel_requested: AtomicBool,
+    // This is used to signal the GDB thread to stop the vCPU
+    #[cfg(gdb)]
+    debug_interrupt: AtomicBool,
+    partition_handle: windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE,
+    dropped: AtomicBool,
+}
+
+#[cfg(target_os = "windows")]
+impl InterruptHandleImpl for WindowsInterruptHandle {
+    fn set_tid(&self) {
+        // No-op on Windows - we don't need to track thread ID
+    }
+
+    fn set_running(&self) {
+        self.running.store(true, Ordering::Relaxed);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel_requested.load(Ordering::Relaxed)
+    }
+
+    fn clear_cancel(&self) {
+        self.cancel_requested.store(false, Ordering::Relaxed);
+    }
+
+    fn clear_running(&self) {
+        // On Windows, clear running, cancel_requested, and debug_interrupt together
+        self.running.store(false, Ordering::Relaxed);
+        #[cfg(gdb)]
+        self.debug_interrupt.store(false, Ordering::Relaxed);
+    }
+
+    fn is_debug_interrupted(&self) -> bool {
+        #[cfg(gdb)]
+        {
+            self.debug_interrupt.load(Ordering::Relaxed)
+        }
+        #[cfg(not(gdb))]
+        {
+            false
+        }
+    }
+
+    #[cfg(gdb)]
+    fn clear_debug_interrupt(&self) {
+        #[cfg(gdb)]
+        self.debug_interrupt.store(false, Ordering::Relaxed);
+    }
+
+    fn set_dropped(&self) {
+        self.dropped.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl InterruptHandle for WindowsInterruptHandle {
+    fn kill(&self) -> bool {
+        use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
+
+        self.cancel_requested.store(true, Ordering::Relaxed);
+        self.running.load(Ordering::Relaxed)
+            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+    }
+    #[cfg(gdb)]
+    fn kill_from_debugger(&self) -> bool {
+        use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
+
+        self.debug_interrupt.store(true, Ordering::Relaxed);
+        self.running.load(Ordering::Relaxed)
+            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+    }
+
+    fn dropped(&self) -> bool {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
+/// Get the logging level to pass to the guest entrypoint
+fn get_max_log_level() -> u32 {
+    // Check to see if the RUST_LOG environment variable is set
+    // and if so, parse it to get the log_level for hyperlight_guest
+    // if that is not set get the log level for the hyperlight_host
+
+    // This is done as the guest will produce logs based on the log level returned here
+    // producing those logs is expensive and we don't want to do it if the host is not
+    // going to process them
+
+    let val = std::env::var("RUST_LOG").unwrap_or_default();
+
+    let level = if val.contains("hyperlight_guest") {
+        val.split(',')
+            .find(|s| s.contains("hyperlight_guest"))
+            .unwrap_or("")
+            .split('=')
+            .nth(1)
+            .unwrap_or("")
+    } else if val.contains("hyperlight_host") {
+        val.split(',')
+            .find(|s| s.contains("hyperlight_host"))
+            .unwrap_or("")
+            .split('=')
+            .nth(1)
+            .unwrap_or("")
+    } else {
+        // look for a value string that does not contain "="
+        val.split(',').find(|s| !s.contains("=")).unwrap_or("")
+    };
+
+    log::info!("Determined guest log level: {}", level);
+    // Convert the log level string to a LevelFilter
+    // If no value is found, default to Error
+    LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
+}
+
 #[cfg(all(test, any(target_os = "windows", kvm)))]
 pub(crate) mod tests {
     use std::sync::{Arc, Mutex};

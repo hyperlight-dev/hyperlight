@@ -365,7 +365,11 @@ fn interrupt_spamming_host_call() {
         .call::<i32>("HostCallLoop", "HostFunc1".to_string())
         .unwrap_err();
 
-    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    assert!(
+        matches!(res, HyperlightError::ExecutionCanceledByHost()),
+        "Expected ExecutionCanceledByHost error but got: {:?}",
+        res
+    );
 
     thread.join().expect("Thread should finish");
 }

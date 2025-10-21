@@ -617,6 +617,7 @@ impl ExclusiveSharedMemory {
     }
 
     /// Gets the file handle of the shared memory region for this Sandbox
+    /// Only available on Windows
     #[cfg(target_os = "windows")]
     pub fn get_mmap_file_handle(&self) -> HANDLE {
         self.region.handle
