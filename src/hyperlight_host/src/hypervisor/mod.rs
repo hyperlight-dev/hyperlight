@@ -442,7 +442,7 @@ impl VirtualCPU {
                     log_then_return!("Unexpected VM Exit {:?}", reason);
                 }
                 Ok(HyperlightExit::Retry()) => {
-                    println!("retrying vm run");
+                    eprintln!("[VCPU] Retry - continuing VM run loop");
                     continue;
                 }
                 Err(e) => {

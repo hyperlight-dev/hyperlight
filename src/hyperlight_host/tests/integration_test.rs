@@ -148,9 +148,11 @@ fn interrupt_guest_call_in_advance() {
 /// all possible interleavings, but can hopefully increases confidence somewhat.
 #[test]
 fn interrupt_same_thread() {
+    eprintln!("[TEST] interrupt_same_thread starting");
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    eprintln!("[TEST] Created 3 sandboxes");
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -162,47 +164,71 @@ fn interrupt_same_thread() {
 
     // Spawn killer thread that attempts to interrupt sbox2
     let thread = thread::spawn(move || {
-        for _ in 0..NUM_ITERS {
-            interrupt_handle.kill();
+        eprintln!("[KILLER] Thread starting");
+        for i in 0..NUM_ITERS {
+            eprintln!("[KILLER] Iteration {}/{}: calling kill()", i, NUM_ITERS);
+            let killed = interrupt_handle.kill();
+            eprintln!("[KILLER] Iteration {}: kill() returned {}", i, killed);
             // Sync at END of iteration to ensure main thread completes its work
+            eprintln!("[KILLER] Iteration {}: waiting at barrier", i);
             barrier2.wait();
+            eprintln!("[KILLER] Iteration {}: passed barrier", i);
         }
+        eprintln!("[KILLER] Thread exiting after {} iterations", NUM_ITERS);
     });
 
     for i in 0..NUM_ITERS {
+        eprintln!("[MAIN] Iteration {}/{}: starting", i, NUM_ITERS);
+        
         // Call sbox1 - should never be interrupted
+        eprintln!("[MAIN] Iteration {}: calling sbox1", i);
         sbox1
             .call::<String>("Echo", "hello".to_string())
             .unwrap_or_else(|e| {
+                eprintln!("[MAIN] ERROR: sbox1 interrupted at iteration {}: {:?}", i, e);
                 panic!(
                     "Iteration {}: sbox1 should not be interrupted, got: {:?}",
                     i, e
                 )
             });
+        eprintln!("[MAIN] Iteration {}: sbox1 completed", i);
 
         // Call sbox2 - may be interrupted
+        eprintln!("[MAIN] Iteration {}: calling sbox2", i);
         match sbox2.call::<String>("Echo", "hello".to_string()) {
-            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {
-                // Only allow successful calls or interrupted.
-                // The call can be successful if it completes before kill() is called.
+            Ok(_) => {
+                eprintln!("[MAIN] Iteration {}: sbox2 completed successfully", i);
             }
-            Err(e) => panic!("Iteration {}: sbox2 unexpected error: {:?}", i, e),
+            Err(HyperlightError::ExecutionCanceledByHost()) => {
+                eprintln!("[MAIN] Iteration {}: sbox2 was cancelled", i);
+            }
+            Err(e) => {
+                eprintln!("[MAIN] ERROR: sbox2 unexpected error at iteration {}: {:?}", i, e);
+                panic!("Iteration {}: sbox2 unexpected error: {:?}", i, e);
+            }
         };
 
         // Call sbox3 - should never be interrupted
+        eprintln!("[MAIN] Iteration {}: calling sbox3", i);
         sbox3
             .call::<String>("Echo", "hello".to_string())
             .unwrap_or_else(|e| {
+                eprintln!("[MAIN] ERROR: sbox3 interrupted at iteration {}: {:?}", i, e);
                 panic!(
                     "Iteration {}: sbox3 should not be interrupted, got: {:?}",
                     i, e
                 )
             });
+        eprintln!("[MAIN] Iteration {}: sbox3 completed", i);
 
         // Sync at END of iteration to ensure killer thread waits for work to complete
+        eprintln!("[MAIN] Iteration {}: waiting at barrier", i);
         barrier.wait();
+        eprintln!("[MAIN] Iteration {}: passed barrier", i);
     }
+    eprintln!("[MAIN] All {} iterations complete, joining killer thread", NUM_ITERS);
     thread.join().expect("Thread should finish");
+    eprintln!("[TEST] interrupt_same_thread completed successfully");
 }
 
 /// Same test as above but with no per-iteration barrier, to get more possible interleavings.
@@ -916,6 +942,7 @@ fn test_cpu_time_interrupt() {
     const NUM_THREADS: usize = 100;
     const ITERATIONS_PER_THREAD: usize = 500;
 
+    eprintln!("[TEST] Starting test_cpu_time_interrupt");
     // Create a pool of 100 sandboxes
     println!("Creating pool of {} sandboxes...", POOL_SIZE);
     let mut sandbox_pool: Vec<MultiUseSandbox> = Vec::with_capacity(POOL_SIZE);
@@ -990,6 +1017,10 @@ fn test_cpu_time_interrupt() {
                 let was_killed = Arc::new(AtomicBool::new(false));
                 let was_killed_clone = was_killed.clone();
 
+                // Flag to signal that monitor thread is ready (entered its monitoring loop)
+                let monitor_ready = Arc::new(AtomicBool::new(false));
+                let monitor_ready_clone = monitor_ready.clone();
+
                 // Spawn CPU time monitor thread
                 let monitor_thread = thread::spawn(move || {
                     let main_thread_id = match rx.recv() {
@@ -1015,6 +1046,9 @@ fn test_cpu_time_interrupt() {
                             return;
                         }
                         let start_time = start_time.assume_init();
+
+                        // Signal that we're ready to monitor
+                        monitor_ready_clone.store(true, Ordering::Release);
 
                         loop {
                             // Check if we should stop monitoring (guest completed)
@@ -1054,11 +1088,14 @@ fn test_cpu_time_interrupt() {
                     unsafe {
                         use std::ffi::c_void;
 
+                        eprintln!("[MONITOR] Windows monitoring thread starting");
+
                         // On Windows, use QueryThreadCycleTime for high-resolution CPU time measurement
                         // This measures actual CPU cycles consumed by the thread, similar to Linux's
                         // pthread_getcpuclockid, and is much more accurate than GetThreadTimes (~15ms resolution)
 
                         let thread_handle = main_thread_id as *mut c_void;
+                        eprintln!("[MONITOR] Got thread handle: {:?}", thread_handle);
 
                         // Get the CPU frequency to convert cycles to time
                         let mut frequency: i64 = 0;
@@ -1066,8 +1103,10 @@ fn test_cpu_time_interrupt() {
                             &mut frequency,
                         ) == 0
                         {
+                            eprintln!("[MONITOR] ERROR: QueryPerformanceFrequency failed");
                             return;
                         }
+                        eprintln!("[MONITOR] CPU frequency: {} Hz", frequency);
 
                         // Get starting CPU cycles for this thread
                         let mut start_cycles: u64 = 0;
@@ -1076,17 +1115,25 @@ fn test_cpu_time_interrupt() {
                             &mut start_cycles,
                         ) == 0
                         {
+                            eprintln!("[MONITOR] ERROR: QueryThreadCycleTime (start) failed");
                             return;
                         }
+                        eprintln!("[MONITOR] Start cycles: {}", start_cycles);
 
                         // Convert 5ms CPU limit to approximate cycle count
                         // This is approximate because CPU frequency can vary with power management,
                         // but gives us a baseline that's much more accurate than GetThreadTimes
                         let cpu_limit_cycles = (5_000_000u64 * frequency as u64) / 1_000_000_000;
+                        eprintln!("[MONITOR] CPU limit: {} cycles (~5ms)", cpu_limit_cycles);
 
+                        eprintln!("[MONITOR] Entering monitoring loop");
+                        // Signal that we're ready to monitor
+                        monitor_ready_clone.store(true, Ordering::Release);
+                        let mut loop_count = 0u64;
                         loop {
                             // Check if we should stop monitoring (guest completed)
                             if stop_monitoring_clone.load(Ordering::Acquire) {
+                                eprintln!("[MONITOR] Stop monitoring flag set, exiting after {} loops", loop_count);
                                 break;
                             }
 
@@ -1096,28 +1143,41 @@ fn test_cpu_time_interrupt() {
                                 &mut current_cycles,
                             ) == 0
                             {
+                                eprintln!("[MONITOR] ERROR: QueryThreadCycleTime (current) failed at loop {}", loop_count);
                                 break;
                             }
 
                             let elapsed_cycles = current_cycles - start_cycles;
 
+                            if loop_count < 3 || loop_count % 100 == 0 {
+                                eprintln!("[MONITOR] Loop {}: elapsed_cycles={}, limit={}", loop_count, elapsed_cycles, cpu_limit_cycles);
+                            }
+
                             if elapsed_cycles > cpu_limit_cycles {
+                                eprintln!("[MONITOR] CPU limit exceeded at loop {}: {} > {}", loop_count, elapsed_cycles, cpu_limit_cycles);
                                 // Double-check that monitoring should still continue before killing
                                 if stop_monitoring_clone.load(Ordering::Acquire) {
+                                    eprintln!("[MONITOR] Stop flag already set, not killing");
                                     break;
                                 }
 
+                                eprintln!("[MONITOR] Calling kill()");
                                 // Mark that we sent a kill signal BEFORE calling kill
                                 was_killed_clone.store(true, Ordering::Release);
                                 interrupt_handle.kill();
+                                eprintln!("[MONITOR] kill() returned");
                                 break;
                             }
 
+                            loop_count += 1;
                             thread::sleep(Duration::from_micros(50));
                         }
+                        eprintln!("[MONITOR] Exited monitoring loop after {} iterations", loop_count);
 
                         // Clean up the duplicated thread handle
+                        eprintln!("[MONITOR] Closing thread handle");
                         windows_sys::Win32::Foundation::CloseHandle(thread_handle);
+                        eprintln!("[MONITOR] Monitor thread exiting");
                     }
                 });
 
@@ -1157,11 +1217,29 @@ fn test_cpu_time_interrupt() {
 
                 should_monitor.store(true, Ordering::Release);
 
+                // Wait for monitor thread to be ready before starting guest execution
+                // This prevents the race where guest completes before monitor enters its loop
+                while !monitor_ready.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_micros(10));
+                }
+
+                if iteration < 3 || iteration % 50 == 0 {
+                    eprintln!("[THREAD-{}] Iteration {}: calling SpinForMs({}ms)", thread_id, iteration, cpu_time_ms);
+                }
+
                 // Call the guest function
                 let result = sandbox.call::<u64>("SpinForMs", cpu_time_ms);
 
+                if iteration < 3 {
+                    eprintln!("[THREAD-{}] Iteration {}: SpinForMs returned {:?}", thread_id, iteration, result);
+                }
+
                 // Signal the monitor to stop
                 stop_monitoring.store(true, Ordering::Release);
+                
+                if iteration < 3 {
+                    eprintln!("[THREAD-{}] Iteration {}: waiting for monitor thread", thread_id, iteration);
+                }
 
                 // Wait for monitor thread to complete to ensure was_killed flag is set
                 let _ = monitor_thread.join();
