@@ -207,13 +207,12 @@ involved in the gdb debugging of a Hyperlight guest running inside a **KVM** or 
       |                        └───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Dumping the guest state to an ELF core dump when an unhandled crash occurs
+## Dumping the guest state to an ELF core dump 
 
-When a guest crashes because of an unknown VmExit or unhandled exception, the vCPU state is dumped to an `ELF` core dump file.
+When a guest crashes because of an unknown VmExit or unhandled exception, the vCPU state can be optionally dumped to an `ELF` core dump file.
 This can be used to inspect the state of the guest at the time of the crash.
 
-To make Hyperlight dump the state of the vCPU (general purpose registers, registers) to an `ELF` core dump file, enable the `crashdump`
-feature and run.
+To make Hyperlight dump the state of the vCPU (general purpose registers, registers) to an `ELF` core dump file, enable the `crashdump` feature and run.
 The feature enables the creation of core dump files for both debug and release builds of Hyperlight hosts.
 By default, Hyperlight places the core dumps in the temporary directory (platform specific).
 To change this, use the `HYPERLIGHT_CORE_DUMP_DIR` environment variable to specify a directory.
@@ -226,6 +225,34 @@ To selectively disable this feature for a specific sandbox, you can set the `gue
     let mut cfg = SandboxConfiguration::default();
     cfg.set_guest_core_dump(false); // Disable core dump for this sandbox
 ```
+
+### Creating a dump on demand
+
+You can also create a core dump of the current state of the guest on demand by calling the `generate_crashdump` method on the `InitializedMultiUseSandbox` instance. This can be useful for debugging issues in the guest that do not cause crashes (e.g., a guest function that does not return).
+
+This is only available when the `crashdump` feature is enabled and then only if the sandbox
+is also configured to allow core dumps (which is the default behavior).
+
+# Examples
+
+Attach to your running process with gdb and call this function:
+
+```shell
+sudo gdb -p <pid_of_your_process>
+(gdb) info threads
+# find the thread that is running the guest function you want to debug
+(gdb) thread <thread_number>
+# switch to the frame where you have access to your MultiUseSandbox instance
+(gdb) backtrace
+(gdb) frame <frame_number>
+# get the pointer to your MultiUseSandbox instance
+# Get the sandbox pointer
+(gdb) print sandbox
+# Call the crashdump function with the pointer
+    # Call the crashdump function 
+call sandbox.generate_crashdump()
+```
+The crashdump should be available in crash dump directory (see `HYPERLIGHT_CORE_DUMP_DIR` env var).
 
 ### Inspecting the core dump
 
