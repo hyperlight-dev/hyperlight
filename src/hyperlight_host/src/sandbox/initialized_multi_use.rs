@@ -475,6 +475,47 @@ impl MultiUseSandbox {
     pub fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.vm.interrupt_handle()
     }
+    /// Generate a crash dump of the current state of the VM underlying this sandbox.
+    ///
+    /// Creates an ELF core dump file that can be used for debugging. The dump
+    /// captures the current state of the sandbox including registers, memory regions,
+    /// and other execution context.
+    ///
+    /// The location of the core dump file is determined by the `HYPERLIGHT_CORE_DUMP_DIR`
+    /// environment variable. If not set, it defaults to the system's temporary directory.
+    ///
+    /// This is only available when the `crashdump` feature is enabled and then only if the sandbox
+    /// is also configured to allow core dumps (which is the default behavior).
+    ///
+    /// This can be useful for generating a crash dump from gdb when trying to debug issues in the
+    /// guest that dont cause crashes (e.g. a guest function that does not return)
+    ///
+    /// # Examples
+    ///
+    /// Attach to your running process with gdb and call this function:
+    ///
+    /// ```shell
+    /// sudo gdb -p <pid_of_your_process>
+    /// (gdb) info threads
+    /// # find the thread that is running the guest function you want to debug
+    /// (gdb) thread <thread_number>
+    /// # switch to the frame where you have access to your MultiUseSandbox instance
+    /// (gdb) backtrace
+    /// (gdb) frame <frame_number>
+    /// # get the pointer to your MultiUseSandbox instance
+    /// # Get the sandbox pointer
+    /// (gdb) print sandbox
+    /// # Call the crashdump function
+    /// call sandbox.generate_crashdump()
+    /// ```
+    /// The crashdump should be available in crash dump directory (see `HYPERLIGHT_CORE_DUMP_DIR` env var).
+    ///
+    #[cfg(crashdump)]
+    #[instrument(err(Debug), skip_all, parent = Span::current())]
+
+    pub fn generate_crashdump(&self) -> Result<()> {
+        crate::hypervisor::crashdump::generate_crashdump(self.vm.as_ref())
+    }
 }
 
 impl Callable for MultiUseSandbox {
