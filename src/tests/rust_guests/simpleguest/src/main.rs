@@ -592,7 +592,6 @@ fn spin_for_ms(fc: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(ms_spun))
 }
 
-#[hyperlight_guest_tracing::trace_function]
 fn test_abort(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(code) = function_call.parameters.clone().unwrap()[0].clone() {
         abort_with_code(&[code as u8]);

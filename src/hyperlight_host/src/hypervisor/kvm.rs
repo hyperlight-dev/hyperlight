@@ -621,7 +621,7 @@ impl Hypervisor for KVMDriver {
     ) -> Result<HyperlightExit> {
         self.interrupt_handle
             .tid
-            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Relaxed);
+            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Release);
         // Note: if `InterruptHandle::kill()` is called while this thread is **here**
         // (after set_running_bit but before checking cancel_requested):
         // - kill() will stamp cancel_requested with the current generation

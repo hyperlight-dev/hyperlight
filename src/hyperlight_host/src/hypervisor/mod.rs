@@ -786,11 +786,11 @@ impl LinuxInterruptHandle {
     // clear the running bit and return the generation
     fn clear_running_bit(&self) -> u64 {
         self.running
-            .fetch_and(!Self::RUNNING_BIT, Ordering::Relaxed)
+            .fetch_and(!Self::RUNNING_BIT, Ordering::Release)
     }
 
     fn get_running_and_generation(&self) -> (bool, u64) {
-        let raw = self.running.load(Ordering::Relaxed);
+        let raw = self.running.load(Ordering::Acquire);
         let running = raw & Self::RUNNING_BIT != 0;
         let generation = raw & !Self::RUNNING_BIT;
         (running, generation)
@@ -837,7 +837,7 @@ impl LinuxInterruptHandle {
             log::info!("Sending signal to kill vcpu thread...");
             sent_signal = true;
             unsafe {
-                libc::pthread_kill(self.tid.load(Ordering::Relaxed) as _, signal_number);
+                libc::pthread_kill(self.tid.load(Ordering::Acquire) as _, signal_number);
             }
             std::thread::sleep(self.retry_delay);
         }

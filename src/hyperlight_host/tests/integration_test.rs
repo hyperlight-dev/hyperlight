@@ -62,9 +62,7 @@ fn interrupt_host_call() {
         }
     });
 
-    let result = sandbox.call::<i32>("CallHostSpin", ());
-    println!("Result: {:?}", result);
-    let result = result.unwrap_err();
+    let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
     assert!(matches!(result, HyperlightError::ExecutionCanceledByHost()));
 
     thread.join().unwrap();
@@ -101,8 +99,7 @@ fn interrupt_in_progress_guest_call() {
     thread.join().expect("Thread should finish");
 }
 
-/// Makes sure interrupting a vm before the guest call has started has no effect,
-/// but a second kill after the call starts will interrupt it
+/// Makes sure interrupting a vm before the guest call has started also prevents the guest call from being executed
 #[test]
 fn interrupt_guest_call_in_advance() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
@@ -111,20 +108,15 @@ fn interrupt_guest_call_in_advance() {
     let interrupt_handle = sbox1.interrupt_handle();
     assert!(!interrupt_handle.dropped()); // not yet dropped
 
-    // First kill before the guest call has started - should have no effect
-    // Then kill again after a delay to interrupt the actual call
+    // kill vm before the guest call has started
     let thread = thread::spawn(move || {
-        assert!(!interrupt_handle.kill()); // should return false since no call is active
+        assert!(!interrupt_handle.kill()); // should return false since vcpu is not running yet
         barrier2.wait();
-        // Wait a bit for the Spin call to actually start
-        thread::sleep(Duration::from_millis(100));
-        assert!(interrupt_handle.kill()); // this should succeed and interrupt the Spin call
         barrier2.wait(); // wait here until main thread has dropped the sandbox
         assert!(interrupt_handle.dropped());
     });
 
-    barrier.wait(); // wait until first `kill()` is called before starting the guest call
-    // The Spin call should be interrupted by the second kill()
+    barrier.wait(); // wait until `kill()` is called before starting the guest call
     let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
     assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
 
@@ -148,11 +140,9 @@ fn interrupt_guest_call_in_advance() {
 /// all possible interleavings, but can hopefully increases confidence somewhat.
 #[test]
 fn interrupt_same_thread() {
-    eprintln!("[TEST] interrupt_same_thread starting");
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    eprintln!("[TEST] Created 3 sandboxes");
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -162,85 +152,31 @@ fn interrupt_same_thread() {
 
     const NUM_ITERS: usize = 500;
 
-    // Spawn killer thread that attempts to interrupt sbox2
+    // kill vm after 1 second
     let thread = thread::spawn(move || {
-        eprintln!("[KILLER] Thread starting");
-        for i in 0..NUM_ITERS {
-            eprintln!("[KILLER] Iteration {}/{}: calling kill()", i, NUM_ITERS);
-            let killed = interrupt_handle.kill();
-            eprintln!("[KILLER] Iteration {}: kill() returned {}", i, killed);
-            // Sync at END of iteration to ensure main thread completes its work
-            eprintln!("[KILLER] Iteration {}: waiting at barrier", i);
+        for _ in 0..NUM_ITERS {
             barrier2.wait();
-            eprintln!("[KILLER] Iteration {}: passed barrier", i);
+            interrupt_handle.kill();
         }
-        eprintln!("[KILLER] Thread exiting after {} iterations", NUM_ITERS);
     });
 
-    for i in 0..NUM_ITERS {
-        eprintln!("[MAIN] Iteration {}/{}: starting", i, NUM_ITERS);
-
-        // Call sbox1 - should never be interrupted
-        eprintln!("[MAIN] Iteration {}: calling sbox1", i);
+    for _ in 0..NUM_ITERS {
+        barrier.wait();
         sbox1
             .call::<String>("Echo", "hello".to_string())
-            .unwrap_or_else(|e| {
-                eprintln!(
-                    "[MAIN] ERROR: sbox1 interrupted at iteration {}: {:?}",
-                    i, e
-                );
-                panic!(
-                    "Iteration {}: sbox1 should not be interrupted, got: {:?}",
-                    i, e
-                )
-            });
-        eprintln!("[MAIN] Iteration {}: sbox1 completed", i);
-
-        // Call sbox2 - may be interrupted
-        eprintln!("[MAIN] Iteration {}: calling sbox2", i);
+            .expect("Only sandbox 2 is allowed to be interrupted");
         match sbox2.call::<String>("Echo", "hello".to_string()) {
-            Ok(_) => {
-                eprintln!("[MAIN] Iteration {}: sbox2 completed successfully", i);
+            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {
+                // Only allow successful calls or interrupted.
+                // The call can be successful in case the call is finished before kill() is called.
             }
-            Err(HyperlightError::ExecutionCanceledByHost()) => {
-                eprintln!("[MAIN] Iteration {}: sbox2 was cancelled", i);
-            }
-            Err(e) => {
-                eprintln!(
-                    "[MAIN] ERROR: sbox2 unexpected error at iteration {}: {:?}",
-                    i, e
-                );
-                panic!("Iteration {}: sbox2 unexpected error: {:?}", i, e);
-            }
+            _ => panic!("Unexpected return"),
         };
-
-        // Call sbox3 - should never be interrupted
-        eprintln!("[MAIN] Iteration {}: calling sbox3", i);
         sbox3
             .call::<String>("Echo", "hello".to_string())
-            .unwrap_or_else(|e| {
-                eprintln!(
-                    "[MAIN] ERROR: sbox3 interrupted at iteration {}: {:?}",
-                    i, e
-                );
-                panic!(
-                    "Iteration {}: sbox3 should not be interrupted, got: {:?}",
-                    i, e
-                )
-            });
-        eprintln!("[MAIN] Iteration {}: sbox3 completed", i);
-
-        // Sync at END of iteration to ensure killer thread waits for work to complete
-        eprintln!("[MAIN] Iteration {}: waiting at barrier", i);
-        barrier.wait();
-        eprintln!("[MAIN] Iteration {}: passed barrier", i);
+            .expect("Only sandbox 2 is allowed to be interrupted");
     }
-    eprintln!(
-        "[MAIN] All {} iterations complete, joining killer thread",
-        NUM_ITERS
-    );
     thread.join().expect("Thread should finish");
-    eprintln!("[TEST] interrupt_same_thread completed successfully");
 }
 
 /// Same test as above but with no per-iteration barrier, to get more possible interleavings.
@@ -260,51 +196,31 @@ fn interrupt_same_thread_no_barrier() {
 
     const NUM_ITERS: usize = 500;
 
-    // Spawn killer thread that continuously attempts to interrupt sbox2
+    // kill vm after 1 second
     let thread = thread::spawn(move || {
         barrier2.wait();
-        // Use Acquire ordering to ensure we see the updated workload_done flag
-        while !workload_done2.load(Ordering::Acquire) {
+        while !workload_done2.load(Ordering::Relaxed) {
             interrupt_handle.kill();
-            // Small yield to prevent tight spinning
-            thread::yield_now();
         }
     });
 
     barrier.wait();
-    for i in 0..NUM_ITERS {
-        // Call sbox1 - should never be interrupted
+    for _ in 0..NUM_ITERS {
         sbox1
             .call::<String>("Echo", "hello".to_string())
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Iteration {}: sbox1 should not be interrupted, got: {:?}",
-                    i, e
-                )
-            });
-
-        // Call sbox2 - may be interrupted
+            .expect("Only sandbox 2 is allowed to be interrupted");
         match sbox2.call::<String>("Echo", "hello".to_string()) {
             Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {
                 // Only allow successful calls or interrupted.
-                // The call can be successful if it completes before kill() is called.
+                // The call can be successful in case the call is finished before kill() is called.
             }
-            Err(e) => panic!("Iteration {}: sbox2 unexpected error: {:?}", i, e),
+            _ => panic!("Unexpected return"),
         };
-
-        // Call sbox3 - should never be interrupted
         sbox3
             .call::<String>("Echo", "hello".to_string())
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Iteration {}: sbox3 should not be interrupted, got: {:?}",
-                    i, e
-                )
-            });
+            .expect("Only sandbox 2 is allowed to be interrupted");
     }
-
-    // Use Release ordering to ensure killer thread sees the update
-    workload_done.store(true, Ordering::Release);
+    workload_done.store(true, Ordering::Relaxed);
     thread.join().expect("Thread should finish");
 }
 
@@ -935,7 +851,6 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
         "Guest Function, string added by Host Function".to_string()
     );
 }
-
 /// Test that validates interrupt behavior with random kill timing under concurrent load
 /// Uses a pool of 100 sandboxes, 100 threads, and 500 iterations per thread.
 /// Randomly decides to kill some calls at random times during execution.
@@ -943,7 +858,6 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
 /// - Calls we chose to kill can end in any state (including some cancelled)
 /// - Calls we did NOT choose to kill NEVER return ExecutionCanceledByHost
 /// - We get a mix of killed and non-killed outcomes (not 100% or 0%)
-#[cfg(target_os = "linux")]
 #[test]
 fn interrupt_random_kill_stress_test() {
     use std::collections::VecDeque;
@@ -956,7 +870,7 @@ fn interrupt_random_kill_stress_test() {
     const KILL_PROBABILITY: f64 = 0.5; // 50% chance to attempt kill
     const GUEST_CALL_DURATION_MS: u32 = 10; // SpinForMs duration
 
-    // Create a pool of 100 sandboxes
+    // Create a pool of 50 sandboxes
     println!("Creating pool of {} sandboxes...", POOL_SIZE);
     let mut sandbox_pool: Vec<MultiUseSandbox> = Vec::with_capacity(POOL_SIZE);
     for i in 0..POOL_SIZE {
@@ -1002,18 +916,18 @@ fn interrupt_random_kill_stress_test() {
             println!("[THREAD-{}] Thread started, initializing RNG...", thread_id);
             // Use thread_id as seed for reproducible randomness per thread
             use std::collections::hash_map::RandomState;
-            use std::hash::{BuildHasher, Hash, Hasher};
+            use std::hash::{BuildHasher, Hash};
 
             let mut hasher = RandomState::new().build_hasher();
             thread_id.hash(&mut hasher);
-            let mut rng_state = hasher.finish();
+            let mut rng_state = RandomState::new().hash_one(thread_id);
 
             println!(
                 "[THREAD-{}] RNG initialized, entering iteration loop...",
                 thread_id
             );
 
-            // Simple LCG random number generator for reproducible randomness
+            // Simple random number generator for reproducible randomness
             let mut next_random = || -> u64 {
                 rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 rng_state
@@ -1068,23 +982,81 @@ fn interrupt_random_kill_stress_test() {
                 let interrupt_handle = sandbox.interrupt_handle();
 
                 // If we decided to kill, spawn a thread that will kill at a random time
+                // Use a barrier to ensure the killer thread waits until we're about to call the guest
                 let killer_thread = if should_kill {
+                    use std::sync::{Arc, Barrier};
+
+                    let barrier = Arc::new(Barrier::new(2));
+                    let barrier_clone = Arc::clone(&barrier);
+
                     // Generate random delay here before moving into thread
-                    let kill_delay_ms = (next_random() % 16) as u64;
-                    Some(thread::spawn(move || {
+                    let kill_delay_ms = next_random() % 16;
+                    let thread_id_clone = thread_id;
+                    let iteration_clone = iteration;
+                    let handle = thread::spawn(move || {
+                        eprintln!(
+                            "[KILLER-{}-{}] Waiting at barrier...",
+                            thread_id_clone, iteration_clone
+                        );
+                        // Wait at the barrier until the main thread is ready to call the guest
+                        barrier_clone.wait();
+                        eprintln!(
+                            "[KILLER-{}-{}] Passed barrier, sleeping for {}ms...",
+                            thread_id_clone, iteration_clone, kill_delay_ms
+                        );
                         // Random delay between 0 and 15ms (guest runs for ~10ms)
                         thread::sleep(Duration::from_millis(kill_delay_ms));
+                        eprintln!(
+                            "[KILLER-{}-{}] Calling kill()...",
+                            thread_id_clone, iteration_clone
+                        );
                         interrupt_handle.kill();
-                    }))
+                        eprintln!(
+                            "[KILLER-{}-{}] kill() returned, exiting thread",
+                            thread_id_clone, iteration_clone
+                        );
+                    });
+                    Some((handle, barrier))
                 } else {
                     None
                 };
 
                 // Call the guest function
+                eprintln!(
+                    "[THREAD-{}] Iteration {}: Calling guest function (should_kill={})...",
+                    thread_id, iteration, should_kill
+                );
+
+                // Release the barrier just before calling the guest function
+                if let Some((_, ref barrier)) = killer_thread {
+                    eprintln!(
+                        "[THREAD-{}] Iteration {}: Main thread waiting at barrier...",
+                        thread_id, iteration
+                    );
+                    barrier.wait();
+                    eprintln!(
+                        "[THREAD-{}] Iteration {}: Main thread passed barrier, calling guest...",
+                        thread_id, iteration
+                    );
+                }
+
                 let result = sandbox.call::<u64>("SpinForMs", GUEST_CALL_DURATION_MS);
+                eprintln!(
+                    "[THREAD-{}] Iteration {}: Guest call returned: {:?}",
+                    thread_id,
+                    iteration,
+                    result
+                        .as_ref()
+                        .map(|_| "Ok")
+                        .map_err(|e| format!("{:?}", e))
+                );
 
                 // Wait for killer thread to finish if it was spawned
-                if let Some(kt) = killer_thread {
+                if let Some((kt, _)) = killer_thread {
+                    eprintln!(
+                        "[THREAD-{}] Iteration {}: Waiting for killer thread to join...",
+                        thread_id, iteration
+                    );
                     let _ = kt.join();
                 }
 
@@ -1217,6 +1189,8 @@ fn interrupt_random_kill_stress_test() {
     );
 
     // CRITICAL VALIDATIONS
+    // TODO: this needs fixing on Windows - we can still kill the following call invocation there
+    #[cfg(target_os = "linux")]
     assert_eq!(
         unexpected_cancel, 0,
         "FAILURE: {} non-killed calls returned ExecutionCanceledByHost! This indicates false kills.",
