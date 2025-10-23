@@ -720,19 +720,6 @@ fn twenty_four_k_in_eight_k_out(function_call: &FunctionCall) -> Result<Vec<u8>>
     }
 }
 
-fn violate_seccomp_filters(function_call: &FunctionCall) -> Result<Vec<u8>> {
-    if function_call.parameters.is_none() {
-        let res = call_host_function::<u64>("MakeGetpidSyscall", None, ReturnType::ULong)?;
-
-        Ok(get_flatbuffer_result(res))
-    } else {
-        Err(HyperlightGuestError::new(
-            ErrorCode::GuestFunctionParameterTypeMismatch,
-            "Invalid parameters passed to violate_seccomp_filters".to_string(),
-        ))
-    }
-}
-
 fn call_given_paramless_hostfunc_that_returns_i64(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::String(hostfuncname) =
         function_call.parameters.clone().unwrap()[0].clone()
@@ -1415,14 +1402,6 @@ pub extern "C" fn hyperlight_main() {
         add_to_static_and_fail as usize,
     );
     register_function(add_to_static_and_fail_def);
-
-    let violate_seccomp_filters_def = GuestFunctionDefinition::new(
-        "ViolateSeccompFilters".to_string(),
-        Vec::new(),
-        ReturnType::ULong,
-        violate_seccomp_filters as usize,
-    );
-    register_function(violate_seccomp_filters_def);
 
     let echo_float_def = GuestFunctionDefinition::new(
         "EchoFloat".to_string(),

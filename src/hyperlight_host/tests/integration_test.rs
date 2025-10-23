@@ -49,13 +49,7 @@ fn interrupt_host_call() {
         Ok(())
     };
 
-    #[cfg(any(target_os = "windows", not(seccomp)))]
     usbox.register("Spin", spin).unwrap();
-
-    #[cfg(seccomp)]
-    usbox
-        .register_with_extra_allowed_syscalls("Spin", spin, vec![libc::SYS_clock_nanosleep])
-        .unwrap();
 
     let mut sandbox: MultiUseSandbox = usbox.evolve().unwrap();
     let interrupt_handle = sandbox.interrupt_handle();
