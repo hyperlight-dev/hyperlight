@@ -99,11 +99,10 @@ fn interrupt_in_progress_guest_call() {
     thread.join().expect("Thread should finish");
 }
 
-/// Makes sure interrupting a vm before the guest call has started also prevents the guest call from being executed
+/// Makes sure interrupting a vm before the guest call has started does not prevent the guest call from running
 #[test]
 fn interrupt_guest_call_in_advance() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let snapshot = sbox1.snapshot().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
     let interrupt_handle = sbox1.interrupt_handle();
@@ -118,12 +117,16 @@ fn interrupt_guest_call_in_advance() {
     });
 
     barrier.wait(); // wait until `kill()` is called before starting the guest call
-    let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
-    sbox1.restore(&snapshot).unwrap();
+    match sbox1.call::<String>("Echo", "hello".to_string()) {
+        Ok(_) => {}
+        Err(HyperlightError::ExecutionCanceledByHost()) => {
+            panic!("Unexpected Cancellation Error");
+        }
+        Err(_) => {}
+    }
 
-    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
-
-    // Make sure we can still call guest functions after the VM was interrupted
+    // Make sure we can still call guest functions after the VM was interrupted early
+    // i.e. make sure we dont kill the next iteration.
     sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
 
     // drop vm to make sure other thread can detect it
