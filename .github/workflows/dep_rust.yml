@@ -146,8 +146,8 @@ jobs:
           # with default features
           just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
 
-          # with only one driver enabled (driver mshv/kvm feature is ignored on windows) + seccomp 
-          just test ${{ inputs.config }} seccomp,${{ inputs.hypervisor == 'mshv' && 'mshv2' || inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
+          # with only one driver enabled (driver mshv/kvm feature is ignored on windows)
+          just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
 
           # make sure certain cargo features compile
           just check

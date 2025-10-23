@@ -80,8 +80,8 @@ test-like-ci config=default-target hypervisor="kvm":
     @# with default features
     just test {{config}} {{ if hypervisor == "mshv" {"mshv2"} else {""} }}
 
-    @# with only one driver enabled + seccomp + build-metadata + init-paging
-    just test {{config}} seccomp,build-metadata,init-paging,{{ if hypervisor == "mshv" {"mshv2"} else if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
+    @# with only one driver enabled + build-metadata + init-paging
+    just test {{config}} build-metadata,init-paging,{{ if hypervisor == "mshv" {"mshv2"} else if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
 
     @# make sure certain cargo features compile
     just check
@@ -145,7 +145,7 @@ like-ci config=default-target hypervisor="kvm":
     {{ if config == "release" { "just bench-ci main " + if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
 # runs all tests
-test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-seccomp target features) (test-doc target features)
+test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-doc target features)
 
 # runs unit tests
 test-unit target=default-target features="":
@@ -169,12 +169,6 @@ test-integration guest target=default-target features="":
     
     @# run the rest of the integration tests
     {{if os() == "windows" { "$env:" } else { "" } }}GUEST="{{guest}}"{{if os() == "windows" { ";" } else { "" } }} {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
-
-# runs seccomp tests
-test-seccomp target=default-target features="":
-    @# run seccomp test with feature "seccomp" on and off
-    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host test_violate_seccomp_filters --lib {{ if features =="" {''} else { "--features " + features } }} -- --ignored
-    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -p hyperlight-host test_violate_seccomp_filters --no-default-features {{ if features =~"mshv2" {"--features init-paging,mshv2"} else {"--features mshv3,init-paging,kvm" } }} --lib -- --ignored
 
 # tests compilation with no default features on different platforms
 test-compilation-no-default-features target=default-target:
