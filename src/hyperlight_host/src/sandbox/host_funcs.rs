@@ -25,7 +25,6 @@ use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionD
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use tracing::{Span, instrument};
 
-use super::ExtraAllowedSyscall;
 use crate::HyperlightError::HostFunctionNotFound;
 use crate::func::host_functions::TypeErasedHostFunction;
 use crate::mem::mgr::SandboxMemoryManager;
@@ -58,7 +57,6 @@ impl From<&mut FunctionRegistry> for HostFunctionDetails {
 
 pub struct FunctionEntry {
     pub function: TypeErasedHostFunction,
-    pub extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
     pub parameter_types: &'static [ParameterType],
     pub return_type: ReturnType,
 }
@@ -119,7 +117,6 @@ impl FunctionRegistry {
     fn call_host_func_impl(&self, name: &str, args: Vec<ParameterValue>) -> Result<ReturnValue> {
         let FunctionEntry {
             function,
-            extra_allowed_syscalls,
             parameter_types: _,
             return_type: _,
         } = self
@@ -127,10 +124,8 @@ impl FunctionRegistry {
             .get(name)
             .ok_or_else(|| HostFunctionNotFound(name.to_string()))?;
 
-        // Create a new thread when seccomp is enabled on Linux
-        maybe_with_seccomp(name, extra_allowed_syscalls.as_deref(), || {
-            crate::metrics::maybe_time_and_emit_host_call(name, || function.call(args))
-        })
+        // Make the host function call
+        crate::metrics::maybe_time_and_emit_host_call(name, || function.call(args))
     }
 }
 
@@ -152,59 +147,4 @@ pub(super) fn default_writer_func(s: String) -> Result<i32> {
             Ok(s.len() as i32)
         }
     }
-}
-
-#[cfg(seccomp)]
-fn maybe_with_seccomp<T: Send>(
-    name: &str,
-    syscalls: Option<&[ExtraAllowedSyscall]>,
-    f: impl FnOnce() -> Result<T> + Send,
-) -> Result<T> {
-    use std::thread;
-
-    use crate::seccomp::guest::get_seccomp_filter_for_host_function_worker_thread;
-
-    // Use a scoped thread so that we can pass around references without having to clone them.
-    thread::scope(|s| {
-        thread::Builder::new()
-            .name(format!("Host Function Worker Thread for: {name:?}"))
-            .spawn_scoped(s, move || {
-                let seccomp_filter = get_seccomp_filter_for_host_function_worker_thread(syscalls)?;
-                seccomp_filter
-                    .iter()
-                    .try_for_each(|filter| seccompiler::apply_filter(filter))?;
-
-                // We have a `catch_unwind` here because, if a disallowed syscall is issued,
-                // we handle it by panicking. This is to avoid returning execution to the
-                // offending host function—for two reasons: (1) if a host function is issuing
-                // disallowed syscalls, it could be unsafe to return to, and (2) returning
-                // execution after trapping the disallowed syscall can lead to UB (e.g., try
-                // running a host function that attempts to sleep without `SYS_clock_nanosleep`,
-                // you'll block the syscall but panic in the aftermath).
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-                    Ok(val) => val,
-                    Err(err) => {
-                        if let Some(crate::HyperlightError::DisallowedSyscall) =
-                            err.downcast_ref::<crate::HyperlightError>()
-                        {
-                            return Err(crate::HyperlightError::DisallowedSyscall);
-                        }
-
-                        crate::log_then_return!("Host function {} panicked", name);
-                    }
-                }
-            })?
-            .join()
-            .map_err(|_| new_error!("Error joining thread executing host function"))?
-    })
-}
-
-#[cfg(not(seccomp))]
-fn maybe_with_seccomp<T: Send>(
-    _name: &str,
-    _syscalls: Option<&[ExtraAllowedSyscall]>,
-    f: impl FnOnce() -> Result<T> + Send,
-) -> Result<T> {
-    // No seccomp, just call the function
-    f()
 }

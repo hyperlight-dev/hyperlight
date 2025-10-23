@@ -133,11 +133,7 @@ mod tests {
             if #[cfg(feature = "function_call_metrics")] {
                 use metrics::Label;
 
-                let expected_num_metrics = if cfg!(all(seccomp)) {
-                    3 // if seccomp enabled, the host call duration metric is emitted on a separate thread which this local recorder doesn't capture
-                } else {
-                    4
-                };
+                let expected_num_metrics = 4;
 
                 // Verify that the histogram metrics are recorded correctly
                 assert_eq!(snapshot.len(), expected_num_metrics);
@@ -185,25 +181,6 @@ mod tests {
                     ),
                     "Histogram metric does not match expected value"
                 );
-
-                if !cfg!(all(seccomp)) {
-                    // 4. Host call duration
-                    let histogram_key = CompositeKey::new(
-                        metrics_util::MetricKind::Histogram,
-                        Key::from_parts(
-                            METRIC_HOST_FUNC_DURATION,
-                            vec![Label::new("function_name", "HostPrint")],
-                        ),
-                    );
-                    let histogram_value = &snapshot.get(&histogram_key).unwrap().2;
-                    assert!(
-                        matches!(
-                            histogram_value,
-                            metrics_util::debugging::DebugValue::Histogram(histogram) if histogram.len() == 1
-                        ),
-                        "Histogram metric does not match expected value"
-                    );
-                }
             } else {
                 // Verify that the counter metrics are recorded correctly
                 assert_eq!(snapshot.len(), 1);

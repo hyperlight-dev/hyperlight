@@ -35,21 +35,6 @@ use crate::mem::shared_mem::ExclusiveSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::{MultiUseSandbox, Result, new_error};
 
-#[cfg(seccomp)]
-const EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC: &[super::ExtraAllowedSyscall] = &[
-    // Fuzzing fails without `mmap` being an allowed syscall on our seccomp filter.
-    // All fuzzing does is call `PrintOutput` (which calls `HostPrint` ). Thing is, `println!`
-    // is designed to be thread-safe in Rust and the std lib ensures this by using
-    // buffered I/O, which I think relies on `mmap`. This gets surfaced in fuzzing with an
-    // OOM error, which I think is happening because `println!` is not being able to allocate
-    // more memory for its buffers for the fuzzer's huge inputs.
-    libc::SYS_mmap,
-    libc::SYS_brk,
-    libc::SYS_mprotect,
-    #[cfg(mshv)]
-    libc::SYS_close,
-];
-
 #[cfg(any(crashdump, gdb))]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SandboxRuntimeConfig {
@@ -304,25 +289,7 @@ impl UninitializedSandbox {
         name: impl AsRef<str>,
         host_func: impl Into<HostFunction<Output, Args>>,
     ) -> Result<()> {
-        register_host_function(host_func, self, name.as_ref(), None)
-    }
-
-    /// Registers a host function with additional allowed syscalls during execution.
-    ///
-    /// Unlike [`register`](Self::register), this variant allows specifying extra syscalls
-    /// that will be permitted when the function handler runs.
-    #[cfg(seccomp)]
-    pub fn register_with_extra_allowed_syscalls<
-        Args: ParameterTuple,
-        Output: SupportedReturnType,
-    >(
-        &mut self,
-        name: impl AsRef<str>,
-        host_func: impl Into<HostFunction<Output, Args>>,
-        extra_allowed_syscalls: impl IntoIterator<Item = crate::sandbox::ExtraAllowedSyscall>,
-    ) -> Result<()> {
-        let extra_allowed_syscalls: Vec<_> = extra_allowed_syscalls.into_iter().collect();
-        register_host_function(host_func, self, name.as_ref(), Some(extra_allowed_syscalls))
+        register_host_function(host_func, self, name.as_ref())
     }
 
     /// Registers the special "HostPrint" function for guest printing.
@@ -334,40 +301,7 @@ impl UninitializedSandbox {
         &mut self,
         print_func: impl Into<HostFunction<i32, (String,)>>,
     ) -> Result<()> {
-        #[cfg(not(seccomp))]
-        self.register("HostPrint", print_func)?;
-
-        #[cfg(seccomp)]
-        self.register_with_extra_allowed_syscalls(
-            "HostPrint",
-            print_func,
-            EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC.iter().copied(),
-        )?;
-
-        Ok(())
-    }
-
-    /// Registers the "HostPrint" function with additional allowed syscalls.
-    ///
-    /// Like [`register_print`](Self::register_print), but allows specifying extra syscalls
-    /// that will be permitted during function execution.
-    #[cfg(seccomp)]
-    pub fn register_print_with_extra_allowed_syscalls(
-        &mut self,
-        print_func: impl Into<HostFunction<i32, (String,)>>,
-        extra_allowed_syscalls: impl IntoIterator<Item = crate::sandbox::ExtraAllowedSyscall>,
-    ) -> Result<()> {
-        #[cfg(seccomp)]
-        self.register_with_extra_allowed_syscalls(
-            "HostPrint",
-            print_func,
-            EXTRA_ALLOWED_SYSCALLS_FOR_WRITER_FUNC
-                .iter()
-                .copied()
-                .chain(extra_allowed_syscalls),
-        )?;
-
-        Ok(())
+        self.register("HostPrint", print_func)
     }
 }
 // Check to see if the current version of Windows is supported

@@ -76,8 +76,6 @@ pub mod metrics;
 /// outside this file. Types from this module needed for public consumption are
 /// re-exported below.
 pub mod sandbox;
-#[cfg(seccomp)]
-pub(crate) mod seccomp;
 /// Signal handling for Linux
 #[cfg(target_os = "linux")]
 pub(crate) mod signal_handlers;

@@ -1508,7 +1508,6 @@ dependencies = [
  "proptest",
  "rand",
  "rust-embed",
- "seccompiler",
  "serde",
  "serde_json",
  "serial_test",
@@ -3075,15 +3074,6 @@ name = "sdd"
 version = "3.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
-
-[[package]]
-name = "seccompiler"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "semver"

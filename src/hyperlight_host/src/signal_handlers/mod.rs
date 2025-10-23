@@ -18,43 +18,12 @@ use libc::c_int;
 
 use crate::sandbox::SandboxConfiguration;
 
-#[cfg(seccomp)]
-pub mod sigsys_signal_handler;
-
 pub(crate) fn setup_signal_handlers(config: &SandboxConfiguration) -> crate::Result<()> {
     // This is unsafe because signal handlers only allow a very restrictive set of
     // functions (i.e., async-signal-safe functions) to be executed inside them.
     // Anything that performs memory allocations, locks, and others are non-async-signal-safe.
     // Hyperlight signal handlers are all designed to be async-signal-safe, so this function
     // should be safe to call.
-    #[cfg(seccomp)]
-    {
-        use std::sync::Once;
-
-        vmm_sys_util::signal::register_signal_handler(
-            libc::SIGSYS,
-            sigsys_signal_handler::handle_sigsys,
-        )
-        .map_err(crate::HyperlightError::VmmSysError)?;
-
-        static PANIC_HOOK_INIT: Once = Once::new();
-        PANIC_HOOK_INIT.call_once(|| {
-            let original_hook = std::panic::take_hook();
-            // Set a custom panic hook that checks for "DisallowedSyscall"
-            std::panic::set_hook(Box::new(move |panic_info| {
-                // Check if the panic payload matches "DisallowedSyscall"
-                if let Some(crate::HyperlightError::DisallowedSyscall) = panic_info
-                    .payload()
-                    .downcast_ref::<crate::HyperlightError>(
-                ) {
-                    // Do nothing to avoid superfluous syscalls
-                    return;
-                }
-                // If not "DisallowedSyscall", use the original hook
-                original_hook(panic_info);
-            }));
-        });
-    }
     vmm_sys_util::signal::register_signal_handler(
         libc::SIGRTMIN() + config.get_interrupt_vcpu_sigrtmin_offset() as c_int,
         vm_kill_signal,

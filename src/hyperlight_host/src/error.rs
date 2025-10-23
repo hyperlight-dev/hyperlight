@@ -69,11 +69,6 @@ pub enum HyperlightError {
     #[error("Error converting CString {0:?}")]
     CStringConversionError(#[from] std::ffi::NulError),
 
-    /// A disallowed syscall was caught
-    #[error("Seccomp filter trapped on disallowed syscall (check STDERR for offending syscall)")]
-    #[cfg(seccomp)]
-    DisallowedSyscall,
-
     /// A generic error with a message
     #[error("{0}")]
     Error(String),
@@ -215,16 +210,6 @@ pub enum HyperlightError {
     /// Stack overflow detected in guest
     #[error("Stack overflow detected")]
     StackOverflow(),
-
-    /// a backend error occurred with seccomp filters
-    #[error("Backend Error with Seccomp Filter {0:?}")]
-    #[cfg(seccomp)]
-    SeccompFilterBackendError(#[from] seccompiler::BackendError),
-
-    /// an error occurred with seccomp filters
-    #[error("Error with Seccomp Filter {0:?}")]
-    #[cfg(seccomp)]
-    SeccompFilterError(#[from] seccompiler::Error),
 
     /// Tried to restore snapshot to a sandbox that is not the same as the one the snapshot was taken from
     #[error("Snapshot was taken from a different sandbox")]

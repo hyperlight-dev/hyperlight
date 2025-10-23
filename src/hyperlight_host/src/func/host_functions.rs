@@ -20,8 +20,8 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, Ret
 
 use super::utils::for_each_tuple;
 use super::{ParameterTuple, ResultType, SupportedReturnType};
+use crate::sandbox::UninitializedSandbox;
 use crate::sandbox::host_funcs::FunctionEntry;
-use crate::sandbox::{ExtraAllowedSyscall, UninitializedSandbox};
 use crate::{Result, new_error};
 
 /// A sandbox on which (primitive) host functions can be registered
@@ -32,15 +32,6 @@ pub trait Registerable {
         &mut self,
         name: &str,
         hf: impl Into<HostFunction<Output, Args>>,
-    ) -> Result<()>;
-    /// Register a primitive host function whose worker thread has
-    /// extra permissive seccomp filters installed
-    #[cfg(seccomp)]
-    fn register_host_function_with_syscalls<Args: ParameterTuple, Output: SupportedReturnType>(
-        &mut self,
-        name: &str,
-        hf: impl Into<HostFunction<Output, Args>>,
-        eas: Vec<ExtraAllowedSyscall>,
     ) -> Result<()>;
 }
 impl Registerable for UninitializedSandbox {
@@ -56,28 +47,6 @@ impl Registerable for UninitializedSandbox {
 
         let entry = FunctionEntry {
             function: hf.into().into(),
-            extra_allowed_syscalls: None,
-            parameter_types: Args::TYPE,
-            return_type: Output::TYPE,
-        };
-
-        (*hfs).register_host_function(name.to_string(), entry, &mut self.mgr)
-    }
-    #[cfg(seccomp)]
-    fn register_host_function_with_syscalls<Args: ParameterTuple, Output: SupportedReturnType>(
-        &mut self,
-        name: &str,
-        hf: impl Into<HostFunction<Output, Args>>,
-        eas: Vec<ExtraAllowedSyscall>,
-    ) -> Result<()> {
-        let mut hfs = self
-            .host_funcs
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-
-        let entry = FunctionEntry {
-            function: hf.into().into(),
-            extra_allowed_syscalls: Some(eas),
             parameter_types: Args::TYPE,
             return_type: Output::TYPE,
         };
@@ -195,13 +164,11 @@ pub(crate) fn register_host_function<Args: ParameterTuple, Output: SupportedRetu
     func: impl Into<HostFunction<Output, Args>>,
     sandbox: &mut UninitializedSandbox,
     name: &str,
-    extra_allowed_syscalls: Option<Vec<ExtraAllowedSyscall>>,
 ) -> Result<()> {
     let func = func.into().into();
 
     let entry = FunctionEntry {
         function: func,
-        extra_allowed_syscalls: extra_allowed_syscalls.clone(),
         parameter_types: Args::TYPE,
         return_type: Output::TYPE,
     };
