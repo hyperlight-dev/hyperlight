@@ -226,14 +226,14 @@ To selectively disable this feature for a specific sandbox, you can set the `gue
     cfg.set_guest_core_dump(false); // Disable core dump for this sandbox
 ```
 
-### Creating a dump on demand
+## Creating a dump on demand
 
 You can also create a core dump of the current state of the guest on demand by calling the `generate_crashdump` method on the `InitializedMultiUseSandbox` instance. This can be useful for debugging issues in the guest that do not cause crashes (e.g., a guest function that does not return).
 
 This is only available when the `crashdump` feature is enabled and then only if the sandbox
 is also configured to allow core dumps (which is the default behavior).
 
-# Examples
+### Example
 
 Attach to your running process with gdb and call this function:
 
@@ -252,7 +252,12 @@ sudo gdb -p <pid_of_your_process>
     # Call the crashdump function 
 call sandbox.generate_crashdump()
 ```
-The crashdump should be available in crash dump directory (see `HYPERLIGHT_CORE_DUMP_DIR` env var).
+The crashdump should be available `/tmp` or in the crash dump directory (see `HYPERLIGHT_CORE_DUMP_DIR` env var). To make this process easier, you can also create a gdb script that automates these steps. You can find an example script [here](../scripts/dump_all_sandboxes.gdb). This script will try and generate a crashdump for every active thread except thread 1 , it assumes that the variable sandbox exists in frame 15 on every thread. You can edit it to fit your needs. Then use it like this:
+
+```shell
+(gdb) source scripts/dump_all_sandboxes.gdb
+(gdb) dump_all_sandboxes
+```
 
 ### Inspecting the core dump
 

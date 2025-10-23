@@ -493,7 +493,7 @@ impl MultiUseSandbox {
     /// # Examples
     ///
     /// Attach to your running process with gdb and call this function:
-    /// 
+    ///
     /// ```shell
     /// sudo gdb -p <pid_of_your_process>
     /// (gdb) info threads
@@ -505,11 +505,11 @@ impl MultiUseSandbox {
     /// # get the pointer to your MultiUseSandbox instance
     /// # Get the sandbox pointer
     /// (gdb) print sandbox
-    /// # Call the crashdump function 
+    /// # Call the crashdump function
     /// call sandbox.generate_crashdump()
     /// ```
     /// The crashdump should be available in crash dump directory (see `HYPERLIGHT_CORE_DUMP_DIR` env var).
-    /// 
+    ///
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
 
