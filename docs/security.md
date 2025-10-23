@@ -19,5 +19,3 @@ All communication between the host and the guest is done through a shared memory
 Hyperlight provides a mechanism for the host to register functions that may be called from the guest. This mechanism is useful to allow developers to provide guests with strictly controlled access to functionality we don't make available by default inside the VM. This mechanism likely represents the largest attack surface area of this project.
 
 To mitigate the risk, only functions that have been explicitly exposed to the guest by the host application, are allowed to be called from the guest. Any attempt to call other host functions will result in an error.
-
-Additionally, we provide an API for using Seccomp filters to further restrict the system calls available to the host-provided functions, to help limit the impact of the un-audited or un-managed functions.
