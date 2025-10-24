@@ -62,6 +62,9 @@ fn interrupt_host_call() {
         }
     });
 
+    unsafe {
+        sandbox.clear_poison();
+    }
     let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
     assert!(matches!(result, HyperlightError::ExecutionCanceledByHost()));
 
@@ -88,6 +91,9 @@ fn interrupt_in_progress_guest_call() {
 
     let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
     assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    unsafe {
+        sbox1.clear_poison();
+    }
 
     barrier.wait();
     // Make sure we can still call guest functions after the VM was interrupted
@@ -119,6 +125,9 @@ fn interrupt_guest_call_in_advance() {
     barrier.wait(); // wait until `kill()` is called before starting the guest call
     let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
     assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    unsafe {
+        sbox1.clear_poison();
+    }
 
     // Make sure we can still call guest functions after the VM was interrupted
     sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
@@ -172,6 +181,9 @@ fn interrupt_same_thread() {
             }
             _ => panic!("Unexpected return"),
         };
+        unsafe {
+            sbox2.clear_poison();
+        }
         sbox3
             .call::<String>("Echo", "hello".to_string())
             .expect("Only sandbox 2 is allowed to be interrupted");
@@ -216,6 +228,9 @@ fn interrupt_same_thread_no_barrier() {
             }
             _ => panic!("Unexpected return"),
         };
+        unsafe {
+            sbox2.clear_poison();
+        }
         sbox3
             .call::<String>("Echo", "hello".to_string())
             .expect("Only sandbox 2 is allowed to be interrupted");
@@ -241,6 +256,9 @@ fn interrupt_moved_sandbox() {
         barrier2.wait();
         let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
         assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+        unsafe {
+            sbox1.clear_poison();
+        }
     });
 
     let thread2 = thread::spawn(move || {
@@ -297,6 +315,9 @@ fn interrupt_custom_signal_no_and_retry_delay() {
         assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
         // immediately reenter another guest function call after having being cancelled,
         // so that the vcpu is running again before the interruptor-thread has a chance to see that the vcpu is not running
+        unsafe {
+            sbox1.clear_poison();
+        }
     }
     thread.join().expect("Thread should finish");
 }
