@@ -65,6 +65,7 @@ impl GuestHandle {
     ///
     /// When calling `call_host_function<T>`, this function is called
     /// internally to get the return value.
+    #[instrument(skip_all, level = "Trace")]
     pub fn get_host_return_value<T: TryFrom<ReturnValue>>(&self) -> Result<T> {
         let inner = self
             .try_pop_shared_input_data_into::<FunctionCallResult>()
@@ -106,6 +107,7 @@ impl GuestHandle {
     ///
     /// Note: The function return value must be obtained by calling
     /// `get_host_return_value`.
+    #[instrument(skip_all, level = "Trace")]
     pub fn call_host_function_without_returning_result(
         &self,
         function_name: &str,
@@ -139,7 +141,7 @@ impl GuestHandle {
     /// sends it to the host, and then retrieves the return value.
     ///
     /// The return value is deserialized into the specified type `T`.
-    #[instrument(skip_all, level = "Trace")]
+    #[instrument(skip_all, level = "Info")]
     pub fn call_host_function<T: TryFrom<ReturnValue>>(
         &self,
         function_name: &str,

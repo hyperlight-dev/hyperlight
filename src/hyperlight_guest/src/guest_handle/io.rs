@@ -20,14 +20,14 @@ use core::any::type_name;
 use core::slice::from_raw_parts_mut;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use tracing::{Span, instrument};
+use tracing::instrument;
 
 use super::handle::GuestHandle;
 use crate::error::{HyperlightGuestError, Result};
 
 impl GuestHandle {
     /// Pops the top element from the shared input data buffer and returns it as a T
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[instrument(skip_all, level = "Trace")]
     pub fn try_pop_shared_input_data_into<T>(&self) -> Result<T>
     where
         T: for<'a> TryFrom<&'a [u8]>,
