@@ -136,9 +136,6 @@ mod tests {
 
         write_cmds_file(&cmd_file_path, cmd).expect("Failed to write gdb commands to file");
 
-        #[cfg(mshv2)] // mshv3 is a default feature is mutually exclusive with the mshv2 feature
-        let features = "gdb,mshv2";
-        #[cfg(not(mshv2))]
         let features = "gdb";
 
         // build it before running to avoid a race condition below
