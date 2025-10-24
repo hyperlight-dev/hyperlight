@@ -120,7 +120,7 @@ impl TraceContext {
 
         let current_ctx = Span::current().context();
 
-        let span = tracing::trace_span!("call-to-guest");
+        let span = tracing::info_span!("call-to-guest");
         let _ = span.set_parent(current_ctx);
         let entered = span.entered();
 
@@ -369,7 +369,7 @@ impl TraceContext {
     }
 
     pub fn new_host_trace(&mut self, ctx: Context) {
-        let span = tracing::trace_span!("call-to-host");
+        let span = tracing::info_span!("call-to-host");
         let _ = span.set_parent(ctx);
         let entered = span.entered();
         self.host_spans.push(entered);
