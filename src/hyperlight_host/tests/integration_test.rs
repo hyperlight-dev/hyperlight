@@ -741,18 +741,23 @@ fn recursive_stack_allocate_overflow() {
 fn log_message() {
     // The magic numbers below represent the number of fixed log messages that are emitted as
     // follows:
-    //  - internal_dispatch_function does a log::trace! in debug mode
     //  - logs from trace level tracing spans created as logs because of the tracing `log` feature
-    //    - 4 from evolve call (hyperlight_main + halt)
-    //    - 7 from guest call
+    //    - 4 from evolve call (generic_init + hyperlight_main)
+    //    - 8 from guest call
     // and are multiplied because we make 6 calls to `log_test_messages`
     // NOTE: These numbers need to be updated if log messages or spans are added/removed
     let num_fixed_trace_log = 12 * 6;
 
+    // Calculate fixed info logs
+    // - 4 logs per iteration from infrastructure at Info level (internal_dispatch_function)
+    //   (dispatch x 1 + call_guest x 1) * 2 logs (Enter/Exit) = 4 logs
+    // - 6 iterations
+    let num_fixed_info_log = 4 * 6;
+
     let tests = vec![
         (LevelFilter::Trace, 5 + num_fixed_trace_log),
-        (LevelFilter::Debug, 4),
-        (LevelFilter::Info, 3),
+        (LevelFilter::Debug, 4 + num_fixed_info_log),
+        (LevelFilter::Info, 3 + num_fixed_info_log),
         (LevelFilter::Warn, 2),
         (LevelFilter::Error, 1),
         (LevelFilter::Off, 0),

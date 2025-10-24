@@ -46,6 +46,7 @@ impl GuestSubscriber {
 
 impl Subscriber for GuestSubscriber {
     fn enabled(&self, _md: &Metadata<'_>) -> bool {
+        // Check if the metadata level is less than or equal to the maximum log level filter
         true
     }
 

@@ -22,11 +22,11 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, Functi
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-use tracing::{Span, instrument};
+use tracing::instrument;
 
 use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
 
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
+#[instrument(skip_all, level = "Info")]
 pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     // Validate this is a Guest Function Call
     if function_call.function_call_type() != FunctionCallType::Guest {
