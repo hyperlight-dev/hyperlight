@@ -1238,9 +1238,13 @@ mod tests {
                     vec![]
                 };
                 let status = std::process::Command::new("cargo")
-                    .args(["test", "-p", "hyperlight-host"])
+                    .args(["test", "-p", "hyperlight-host", "--lib"])
                     .args(target_args)
-                    .args(["--", "--ignored", test])
+                    .args([
+                        "--",
+                        "--ignored",
+                        &format!("guard_page_crash_test::{}", test),
+                    ])
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())

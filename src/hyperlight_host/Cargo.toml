@@ -67,7 +67,7 @@ windows = { version = "0.62", features = [
     "Win32_System_JobObjects",
     "Win32_System_SystemServices",
 ] }
-windows-sys = { version = "0.61", features = ["Win32"] }
+windows-sys = { version = "0.61", features = ["Win32", "Win32_System", "Win32_System_Performance", "Win32_System_WindowsProgramming", "Win32_Foundation"] }
 windows-result = "0.4"
 rust-embed = { version = "8.8.0", features = ["debug-embed", "include-exclude", "interpolate-folder-path"] }
 sha256 = "1.6.0"
@@ -79,8 +79,8 @@ kvm-bindings = { version = "0.14", features = ["fam-wrappers"], optional = true 
 kvm-ioctls = { version = "0.24", optional = true }
 mshv-bindings2 = { package="mshv-bindings", version = "=0.2.1", optional = true }
 mshv-ioctls2 = { package="mshv-ioctls",  version = "=0.2.1", optional = true}
-mshv-bindings3 = { package="mshv-bindings", version = "0.6.1", optional = true }
-mshv-ioctls3 = { package="mshv-ioctls",  version = "0.6.1", optional = true}
+mshv-bindings3 = { package="mshv-bindings", version = "0.6", optional = true }
+mshv-ioctls3 = { package="mshv-ioctls",  version = "0.6", optional = true}
 
 [dev-dependencies]
 uuid = { version = "1.18.1", features = ["v4"] }

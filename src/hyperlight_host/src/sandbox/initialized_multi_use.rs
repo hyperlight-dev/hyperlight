@@ -390,6 +390,10 @@ impl MultiUseSandbox {
         return_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
+        // Mark that a guest function call is now active
+        // (This also increments the generation counter internally)
+        self.vm.interrupt_handle().set_call_active();
+
         let res = (|| {
             let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
 
@@ -440,6 +444,10 @@ impl MultiUseSandbox {
         if res.is_err() {
             self.mem_mgr.clear_io_buffers();
         }
+
+        // Mark that the guest function call has completed
+        self.vm.interrupt_handle().clear_call_active();
+
         res
     }
 
