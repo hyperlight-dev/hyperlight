@@ -14,11 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv2)]
-extern crate mshv_bindings2 as mshv_bindings;
-#[cfg(mshv2)]
-extern crate mshv_ioctls2 as mshv_ioctls;
-
 #[cfg(mshv3)]
 extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
@@ -29,8 +24,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use log::{LevelFilter, error};
-#[cfg(mshv2)]
-use mshv_bindings::hv_message;
 use mshv_bindings::{
     FloatingPointUnit, SpecialRegisters, StandardRegisters, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
@@ -326,8 +319,6 @@ impl HypervLinuxDriver {
     ) -> Result<Self> {
         let mshv = Mshv::new()?;
         let pr = Default::default();
-        #[cfg(mshv2)]
-        let vm_fd = mshv.create_vm_with_config(&pr)?;
         #[cfg(mshv3)]
         let vm_fd = {
             // It's important to avoid create_vm() and explicitly use
@@ -697,11 +688,6 @@ impl Hypervisor for HypervLinuxDriver {
             // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
             // return either normally with an exit reason, or from being "kicked" by out signal handler, with an EINTR error,
             // both of which are fine.
-            #[cfg(mshv2)]
-            {
-                let hv_message: hv_message = Default::default();
-                self.vcpu_fd.run(hv_message)
-            }
             #[cfg(mshv3)]
             self.vcpu_fd.run()
         };

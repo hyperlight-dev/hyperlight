@@ -14,11 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv2)]
-extern crate mshv_bindings2 as mshv_bindings;
-#[cfg(mshv2)]
-extern crate mshv_ioctls2 as mshv_ioctls;
-
 #[cfg(mshv3)]
 extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]

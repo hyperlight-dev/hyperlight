@@ -14,11 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv2)]
-extern crate mshv_bindings2 as mshv_bindings;
-#[cfg(mshv2)]
-extern crate mshv_ioctls2 as mshv_ioctls;
-
 #[cfg(mshv3)]
 extern crate mshv_bindings3 as mshv_bindings;
 #[cfg(mshv3)]
@@ -32,10 +27,6 @@ use hyperlight_common::mem::PAGE_SHIFT;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 #[cfg(kvm)]
 use kvm_bindings::{KVM_MEM_READONLY, kvm_userspace_memory_region};
-#[cfg(mshv2)]
-use mshv_bindings::{
-    HV_MAP_GPA_EXECUTABLE, HV_MAP_GPA_PERMISSIONS_NONE, HV_MAP_GPA_READABLE, HV_MAP_GPA_WRITABLE,
-};
 #[cfg(mshv3)]
 use mshv_bindings::{
     MSHV_SET_MEM_BIT_EXECUTABLE, MSHV_SET_MEM_BIT_UNMAP, MSHV_SET_MEM_BIT_WRITABLE,
@@ -268,25 +259,6 @@ impl From<MemoryRegion> for mshv_user_mem_region {
         let guest_pfn = region.guest_region.start as u64 >> PAGE_SHIFT;
         let userspace_addr = region.host_region.start as u64;
 
-        #[cfg(mshv2)]
-        {
-            let flags = region.flags.iter().fold(0, |acc, flag| {
-                let flag_value = match flag {
-                    MemoryRegionFlags::NONE => HV_MAP_GPA_PERMISSIONS_NONE,
-                    MemoryRegionFlags::READ => HV_MAP_GPA_READABLE,
-                    MemoryRegionFlags::WRITE => HV_MAP_GPA_WRITABLE,
-                    MemoryRegionFlags::EXECUTE => HV_MAP_GPA_EXECUTABLE,
-                    _ => 0, // ignore any unknown flags
-                };
-                acc | flag_value
-            });
-            mshv_user_mem_region {
-                guest_pfn,
-                size,
-                userspace_addr,
-                flags,
-            }
-        }
         #[cfg(mshv3)]
         {
             let flags: u8 = region.flags.iter().fold(0, |acc, flag| {

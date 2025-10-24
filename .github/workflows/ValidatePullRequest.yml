@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv, mshv3, kvm]
+        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
         cpu: [amd, intel]
         config: [debug, release]
     uses: ./.github/workflows/dep_rust.yml

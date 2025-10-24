@@ -1495,10 +1495,8 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "metrics-util",
- "mshv-bindings 0.2.1",
- "mshv-bindings 0.6.1",
- "mshv-ioctls 0.2.1",
- "mshv-ioctls 0.6.1",
+ "mshv-bindings",
+ "mshv-ioctls",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
@@ -2073,18 +2071,6 @@ dependencies = [
 
 [[package]]
 name = "mshv-bindings"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f416b4432174e5a3f956a7887f4c1a4acea9511d81def67fcb8473293630ab9e"
-dependencies = [
- "libc",
- "num_enum",
- "vmm-sys-util",
- "zerocopy 0.7.35",
-]
-
-[[package]]
-name = "mshv-bindings"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fef6d8b8215ff502f0f662d1fc5229d6c79628208a0d03277ce52fbbe7fe1872"
@@ -2097,24 +2083,12 @@ dependencies = [
 
 [[package]]
 name = "mshv-ioctls"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d57586da719aacc905042eea71ff2efb52d16c7228a94af155c9ea45fe09c1c7"
-dependencies = [
- "libc",
- "mshv-bindings 0.2.1",
- "thiserror 1.0.69",
- "vmm-sys-util",
-]
-
-[[package]]
-name = "mshv-ioctls"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdbb879d6a9ca5359ae020c17ebf8587e0be309bf32beae636030e4408c2e481"
 dependencies = [
  "libc",
- "mshv-bindings 0.6.1",
+ "mshv-bindings",
  "thiserror 2.0.17",
  "vmm-sys-util",
 ]
