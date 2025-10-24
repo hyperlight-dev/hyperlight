@@ -220,7 +220,7 @@ pub(crate) extern "C" fn generic_init(peb_address: u64, seed: u64, ops: u64, max
     // It is important that all the tracing events are produced after the tracing is initialized.
     #[cfg(feature = "trace_guest")]
     if max_log_level != LevelFilter::Off {
-        hyperlight_guest_tracing::init_guest_tracing(guest_start_tsc);
+        hyperlight_guest_tracing::init_guest_tracing(guest_start_tsc, max_log_level);
     }
 
     #[cfg(feature = "macros")]

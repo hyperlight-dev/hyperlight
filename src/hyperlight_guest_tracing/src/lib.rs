@@ -48,6 +48,7 @@ mod trace {
     use alloc::sync::{Arc, Weak};
 
     use spin::Mutex;
+    use tracing::log::LevelFilter;
 
     use crate::state::GuestState;
     use crate::subscriber::GuestSubscriber;
@@ -61,12 +62,12 @@ mod trace {
     static GUEST_STATE: spin::Once<Weak<Mutex<GuestState>>> = spin::Once::new();
 
     /// Initialize the guest tracing subscriber as global default.
-    pub fn init_guest_tracing(guest_start_tsc: u64) {
+    pub fn init_guest_tracing(guest_start_tsc: u64, max_log_level: LevelFilter) {
         // Set as global default if not already set.
         if tracing_core::dispatcher::has_been_set() {
             return;
         }
-        let sub = GuestSubscriber::new(guest_start_tsc);
+        let sub = GuestSubscriber::new(guest_start_tsc, max_log_level);
         let state = sub.state();
         // Store state Weak<GuestState> to use later at runtime
         GUEST_STATE.call_once(|| Arc::downgrade(state));
