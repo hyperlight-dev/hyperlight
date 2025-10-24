@@ -23,13 +23,13 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult,
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::halt;
-use tracing::{Span, instrument};
+use tracing::instrument;
 
 use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
 
 type GuestFunc = fn(&FunctionCall) -> Result<Vec<u8>>;
 
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
+#[instrument(skip_all, level = "Info")]
 pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     // Validate this is a Guest Function Call
     if function_call.function_call_type() != FunctionCallType::Guest {
@@ -85,7 +85,7 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
 // This function may panic, as we have no other ways of dealing with errors at this level
 #[unsafe(no_mangle)]
 #[inline(never)]
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
+#[instrument(skip_all, level = "Trace")]
 fn internal_dispatch_function() {
     let handle = unsafe { GUEST_HANDLE };
 
@@ -119,7 +119,7 @@ fn internal_dispatch_function() {
 // This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()
 // which if it were included in the internal_dispatch_function cause the epilogue to not be called because the halt() would not return
 // when running in the hypervisor.
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
+#[instrument(skip_all, level = "Info")]
 pub(crate) extern "C" fn dispatch_function() {
     // The hyperlight host likes to use one partition and reset it in
     // various ways; if that has happened, there might stale TLB
