@@ -132,7 +132,7 @@ jobs:
           # use these commands in favor of build-and-move-c-guests to avoid building both configs
           just build-c-guests ${{ inputs.config }}
           just move-c-guests ${{ inputs.config }}
-          
+
       - name: Build
         run: just build ${{ inputs.config }}
         env: 
@@ -144,10 +144,10 @@ jobs:
           TARGET_TRIPLE: ${{ inputs.target_triple }}
         run: |
           # with default features
-          just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
+          just test ${{ inputs.config }}
 
           # with only one driver enabled (driver mshv/kvm feature is ignored on windows)
-          just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
+          just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
 
           # make sure certain cargo features compile
           just check
@@ -171,21 +171,21 @@ jobs:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
           TARGET_TRIPLE: ${{ inputs.target_triple }}
-        run: just run-rust-examples-linux ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
+        run: just run-rust-examples-linux ${{ inputs.config }}
 
       - name: Run Rust Gdb tests
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
           TARGET_TRIPLE: ${{ inputs.target_triple }}
-        run: just test-rust-gdb-debugging ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
+        run: just test-rust-gdb-debugging ${{ inputs.config }}
 
       - name: Run Rust Crashdump tests
         env:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
           TARGET_TRIPLE: ${{ inputs.target_triple }}
-        run: just test-rust-crashdump ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
+        run: just test-rust-crashdump ${{ inputs.config }}
 
       - name: Run Rust Tracing tests - linux
         if: runner.os == 'Linux'
@@ -193,7 +193,7 @@ jobs:
           CARGO_TERM_COLOR: always
           RUST_LOG: debug
           TARGET_TRIPLE: ${{ inputs.target_triple }}
-        run: just test-rust-tracing ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv' && 'mshv2' || '""'}}
+        run: just test-rust-tracing ${{ inputs.config }}
 
       - name: Download benchmarks from "latest"
         run: just bench-download ${{ runner.os }} ${{ inputs.hypervisor }} ${{ inputs.cpu}} dev-latest # compare to prerelease
@@ -204,5 +204,5 @@ jobs:
 
       - name: Run benchmarks
         run: |
-          just bench-ci main ${{ inputs.hypervisor == 'mshv' && 'mshv2' || ''}}
+          just bench-ci main
         if: ${{ inputs.config == 'release' &&  inputs.target_triple == '' }}

@@ -146,9 +146,6 @@ jobs:
           # kvm
           tar -zcvf benchmarks_Linux_kvm_amd.tar.gz benchmarks_Linux_kvm_amd
           tar -zcvf benchmarks_Linux_kvm_intel.tar.gz benchmarks_Linux_kvm_intel
-          # mshv2
-          tar -zcvf benchmarks_Linux_mshv_intel.tar.gz benchmarks_Linux_mshv_intel
-          tar -zcvf benchmarks_Linux_mshv_amd.tar.gz benchmarks_Linux_mshv_amd
           # mshv3
           tar -zcvf benchmarks_Linux_mshv3_amd.tar.gz benchmarks_Linux_mshv3_amd
           tar -zcvf benchmarks_Linux_mshv3_intel.tar.gz benchmarks_Linux_mshv3_intel
@@ -173,8 +170,6 @@ jobs:
             benchmarks_Windows_hyperv_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \
             benchmarks_Linux_kvm_intel.tar.gz \
-            benchmarks_Linux_mshv_intel.tar.gz \
-            benchmarks_Linux_mshv_amd.tar.gz \
             benchmarks_Linux_mshv3_amd.tar.gz \
             benchmarks_Linux_mshv3_intel.tar.gz \
             hyperlight-guest-c-api-linux.tar.gz \
@@ -191,8 +186,6 @@ jobs:
             benchmarks_Windows_hyperv_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \
             benchmarks_Linux_kvm_intel.tar.gz \
-            benchmarks_Linux_mshv_intel.tar.gz \
-            benchmarks_Linux_mshv_amd.tar.gz \
             benchmarks_Linux_mshv3_amd.tar.gz \
             benchmarks_Linux_mshv3_intel.tar.gz \
             hyperlight-guest-c-api-linux.tar.gz \
