@@ -10,7 +10,7 @@ readme.workspace = true
 description = """Provides the tracing functionality for the hyperlight guest."""
 
 [dependencies]
-heapless = { version = "0.8.0", features = ["serde"] }
+heapless = { version = "0.9.1", features = ["serde"] }
 hyperlight-common = { workspace = true, default-features = false }
 spin = "0.10.0"
 tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
