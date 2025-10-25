@@ -426,54 +426,33 @@ impl InterruptHandle for WindowsInterruptHandle {
     }
 }
 
-/// Get the logging level to pass to the guest entrypoint
-fn get_max_log_level() -> u32 {
-    // Check to see if the RUST_LOG environment variable is set
-    // and if so, parse it to get the log_level for hyperlight_guest
-    // if that is not set get the log level for the hyperlight_host
-
-    // This is done as the guest will produce logs based on the log level returned here
-    // producing those logs is expensive and we don't want to do it if the host is not
-    // going to process them
-
-    let val = std::env::var("RUST_LOG").unwrap_or_default();
-
-    let level = if val.contains("hyperlight_guest") {
-        val.split(',')
-            .find(|s| s.contains("hyperlight_guest"))
-            .unwrap_or("")
-            .split('=')
-            .nth(1)
-            .unwrap_or("")
-    } else if val.contains("hyperlight_host") {
-        val.split(',')
-            .find(|s| s.contains("hyperlight_host"))
-            .unwrap_or("")
-            .split('=')
-            .nth(1)
-            .unwrap_or("")
-    } else {
-        // look for a value string that does not contain "="
-        val.split(',').find(|s| !s.contains("=")).unwrap_or("")
-    };
-
-    log::info!("Determined guest log level: {}", level);
-    // Convert the log level string to a LevelFilter
-    // If no value is found, default to Error
-    LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
-}
-
 #[cfg(target_os = "windows")]
 #[derive(Debug)]
 pub(super) struct WindowsInterruptHandle {
-    // `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running, which is the reason we need this flag.
-    running: AtomicBool,
-    cancel_requested: AtomicBool,
+    /// Atomic value packing vcpu execution state.
+    ///
+    /// Bit layout:
+    /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
+    /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
+    ///
+    /// `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running,
+    /// which is why we need the RUNNING_BIT.
+    ///
+    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `HyperlightVm::run()` call
+    /// (e.g., during host function calls), but is cleared at the start of each new `HyperlightVm::run()` call.
+    state: AtomicU64,
+
     // This is used to signal the GDB thread to stop the vCPU
     #[cfg(gdb)]
     debug_interrupt: AtomicBool,
     partition_handle: windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE,
     dropped: AtomicBool,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsInterruptHandle {
+    const RUNNING_BIT: u64 = 1 << 1;
+    const CANCEL_BIT: u64 = 1 << 0;
 }
 
 #[cfg(target_os = "windows")]
@@ -483,20 +462,25 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
     }
 
     fn set_running(&self) {
-        self.running.store(true, Ordering::Relaxed);
+        // Release ordering to ensure prior memory operations are visible when another thread observes running=true
+        self.state.fetch_or(Self::RUNNING_BIT, Ordering::Release);
     }
 
     fn is_cancelled(&self) -> bool {
-        self.cancel_requested.load(Ordering::Relaxed)
+        // Acquire ordering to synchronize with the Release in kill()
+        // This ensures we see the CANCEL_BIT set by the interrupt thread
+        self.state.load(Ordering::Acquire) & Self::CANCEL_BIT != 0
     }
 
     fn clear_cancel(&self) {
-        self.cancel_requested.store(false, Ordering::Relaxed);
+        // Relaxed is sufficient here - we're the only thread that clears this bit
+        // at the start of run(), and there's no data race on the clear operation itself
+        self.state.fetch_and(!Self::CANCEL_BIT, Ordering::Relaxed);
     }
 
     fn clear_running(&self) {
-        // On Windows, clear running, cancel_requested, and debug_interrupt together
-        self.running.store(false, Ordering::Relaxed);
+        // Release ordering to ensure all vcpu operations are visible before clearing running
+        self.state.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
         #[cfg(gdb)]
         self.debug_interrupt.store(false, Ordering::Relaxed);
     }
@@ -528,8 +512,14 @@ impl InterruptHandle for WindowsInterruptHandle {
     fn kill(&self) -> bool {
         use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
 
-        self.cancel_requested.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
+        // Release ordering ensures that any writes before kill() are visible to the vcpu thread
+        // when it checks is_cancelled() with Acquire ordering
+        self.state.fetch_or(Self::CANCEL_BIT, Ordering::Release);
+
+        // Acquire ordering to synchronize with the Release in set_running()
+        // This ensures we see the running state set by the vcpu thread
+        let state = self.state.load(Ordering::Acquire);
+        (state & Self::RUNNING_BIT != 0)
             && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
     #[cfg(gdb)]
@@ -537,7 +527,9 @@ impl InterruptHandle for WindowsInterruptHandle {
         use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
 
         self.debug_interrupt.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
+        // Acquire ordering to synchronize with the Release in set_running()
+        let state = self.state.load(Ordering::Acquire);
+        (state & Self::RUNNING_BIT != 0)
             && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
 
