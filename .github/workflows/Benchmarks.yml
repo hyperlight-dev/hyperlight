@@ -68,7 +68,7 @@ jobs:
       - name: Run Benchmarks
         run: just bench-ci main ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: benchmarks_${{runner.os}}_${{matrix.hypervisor}}_${{ matrix.cpu }}
           path: ./target/criterion/
