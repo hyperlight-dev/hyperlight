@@ -56,9 +56,45 @@ static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// Guest functions can be called repeatedly while maintaining state between calls.
 /// The sandbox supports creating snapshots and restoring to previous states.
+///
+/// ## Sandbox Poisoning
+///
+/// The sandbox becomes **poisoned** when the guest is not run to completion, leaving it in
+/// an inconsistent state that could compromise memory safety, data integrity, or security.
+///
+/// ### When Does Poisoning Occur?
+///
+/// Poisoning happens when guest execution is interrupted before normal completion:
+///
+/// - **Guest panics or aborts** - When a guest function panics, crashes, or calls `abort()`,
+///   the normal cleanup and unwinding process is interrupted
+/// - **Invalid memory access** - Attempts to read/write/execute memory outside allowed regions
+/// - **Stack overflow** - Guest exhausts its stack space during execution
+/// - **Heap exhaustion** - Guest runs out of heap memory
+/// - **Host-initiated cancellation** - Calling [`InterruptHandle::kill()`] to forcefully
+///   terminate an in-progress guest function
+///
+/// ### Why This Is Unsafe
+///
+/// When guest execution doesn't complete normally, critical cleanup operations are skipped:
+///
+/// - **Memory leaks** - Heap allocations remain unreachable as the call stack is unwound
+/// - **Corrupted allocator state** - Memory allocator metadata (free lists, heap headers)
+///   left inconsistent
+/// - **Locked resources** - Mutexes or other synchronization primitives remain locked
+/// - **Partial state updates** - Data structures left half-modified (corrupted linked lists,
+///   inconsistent hash tables, etc.)
+///
+/// ### Recovery
+///
+/// Use [`restore()`](Self::restore) with a snapshot taken before poisoning occurred.
+/// This is the **only safe way** to recover - it completely replaces all memory state,
+/// eliminating any inconsistencies. See [`restore()`](Self::restore) for details.
 pub struct MultiUseSandbox {
     /// Unique identifier for this sandbox instance
     id: u64,
+    /// Whether this sandbox is poisoned
+    poisoned: bool,
     // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
     pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
@@ -87,6 +123,7 @@ impl MultiUseSandbox {
     ) -> MultiUseSandbox {
         Self {
             id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            poisoned: false,
             _host_funcs: host_funcs,
             mem_mgr: mgr,
             vm,
@@ -101,6 +138,11 @@ impl MultiUseSandbox {
     ///
     /// The snapshot is tied to this specific sandbox instance and can only be
     /// restored to the same sandbox it was created from.
+    ///
+    /// ## Poisoned Sandbox
+    ///
+    /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
+    /// is currently poisoned. Snapshots can only be taken from non-poisoned sandboxes.
     ///
     /// # Examples
     ///
@@ -122,6 +164,10 @@ impl MultiUseSandbox {
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn snapshot(&mut self) -> Result<Snapshot> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
+
         if let Some(snapshot) = &self.snapshot {
             return Ok(snapshot.clone());
         }
@@ -139,6 +185,22 @@ impl MultiUseSandbox {
     /// The snapshot must have been created from this same sandbox instance.
     /// Attempting to restore a snapshot from a different sandbox will return
     /// a [`SnapshotSandboxMismatch`](crate::HyperlightError::SnapshotSandboxMismatch) error.
+    ///
+    /// ## Poison State Recovery
+    ///
+    /// This method automatically clears any poison state when successful. This is safe because:
+    /// - Snapshots can only be taken from non-poisoned sandboxes
+    /// - Restoration completely replaces all memory state, eliminating any inconsistencies
+    ///   caused by incomplete guest execution
+    ///
+    /// ### What Gets Fixed During Restore
+    ///
+    /// When a poisoned sandbox is restored, the memory state is completely reset:
+    /// - **Leaked heap memory** - All allocations from interrupted execution are discarded
+    /// - **Corrupted allocator metadata** - Free lists and heap headers restored to consistent state
+    /// - **Locked mutexes** - All lock state is reset
+    /// - **Partial updates** - Data structures restored to their pre-execution state
+    ///
     ///
     /// # Examples
     ///
@@ -162,6 +224,35 @@ impl MultiUseSandbox {
     /// sandbox.restore(&snapshot)?;
     /// let restored_value: i32 = sandbox.call_guest_function_by_name("GetValue", ())?;
     /// assert_eq!(restored_value, 0); // Back to initial state
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## Recovering from Poison
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary, HyperlightError};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// // Take snapshot before potentially poisoning operation
+    /// let snapshot = sandbox.snapshot()?;
+    ///
+    /// // This might poison the sandbox (guest not run to completion)
+    /// let result = sandbox.call::<()>("guest_panic", ());
+    /// if result.is_err() {
+    ///     if sandbox.poisoned() {
+    ///         // Restore from snapshot to clear poison
+    ///         sandbox.restore(&snapshot)?;
+    ///         assert!(!sandbox.poisoned());
+    ///         
+    ///         // Sandbox is now usable again
+    ///         sandbox.call::<String>("Echo", "hello".to_string())?;
+    ///     }
+    /// }
     /// # Ok(())
     /// # }
     /// ```
@@ -197,12 +288,28 @@ impl MultiUseSandbox {
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
 
+        // Clear poison state when successfully restoring from snapshot.
+        //
+        // # Safety:
+        // This is safe because:
+        // 1. Snapshots can only be taken from non-poisoned sandboxes (verified at snapshot creation)
+        // 2. Restoration completely replaces all memory state, eliminating:
+        //    - All leaked heap allocations (memory is restored to snapshot state)
+        //    - All corrupted data structures (overwritten with consistent snapshot data)
+        //    - All inconsistent global state (reset to snapshot values)
+        self.poisoned = false;
+
         Ok(())
     }
 
     /// Calls a guest function by name with the specified arguments.
     ///
     /// Changes made to the sandbox during execution are *not* persisted.
+    ///
+    /// ## Poisoned Sandbox
+    ///
+    /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
+    /// is currently poisoned. Use [`restore()`](Self::restore) to recover from a poisoned state.
     ///
     /// # Examples
     ///
@@ -242,6 +349,9 @@ impl MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> Result<Output> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         let snapshot = self.snapshot()?;
         let res = self.call(func_name, args);
         self.restore(&snapshot)?;
@@ -251,6 +361,22 @@ impl MultiUseSandbox {
     /// Calls a guest function by name with the specified arguments.
     ///
     /// Changes made to the sandbox during execution are persisted.
+    ///
+    /// ## Poisoned Sandbox
+    ///
+    /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
+    /// is already poisoned before the call. Use [`restore()`](Self::restore) to recover from
+    /// a poisoned state.
+    ///
+    /// ## Sandbox Poisoning
+    ///
+    /// If this method returns an error, the sandbox may be poisoned if the guest was not run
+    /// to completion (due to panic, abort, memory violation, stack/heap exhaustion, or forced
+    /// termination). Use [`poisoned()`](Self::poisoned) to check the poison state and
+    /// [`restore()`](Self::restore) to recover if needed.
+    ///
+    /// If this method returns `Ok`, the sandbox is guaranteed to **not** be poisoned - the guest
+    /// function completed successfully and the sandbox state is consistent.
     ///
     /// # Examples
     ///
@@ -279,12 +405,44 @@ impl MultiUseSandbox {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// ## Handling Potential Poisoning
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// // Take snapshot before risky operation
+    /// let snapshot = sandbox.snapshot()?;
+    ///
+    /// // Call potentially unsafe guest function
+    /// let result = sandbox.call::<String>("RiskyOperation", "input".to_string());
+    ///
+    /// // Check if the call failed and poisoned the sandbox
+    /// if let Err(e) = result {
+    ///     eprintln!("Guest function failed: {}", e);
+    ///     
+    ///     if sandbox.poisoned() {
+    ///         eprintln!("Sandbox was poisoned, restoring from snapshot");
+    ///         sandbox.restore(&snapshot)?;
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     #[instrument(err(Debug), skip(self, args), parent = Span::current())]
     pub fn call<Output: SupportedReturnType>(
         &mut self,
         func_name: &str,
         args: impl ParameterTuple,
     ) -> Result<Output> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         // Reset snapshot since we are mutating the sandbox state
         self.snapshot = None;
         maybe_time_and_emit_guest_call(func_name, || {
@@ -303,12 +461,20 @@ impl MultiUseSandbox {
     /// (typically page-aligned). The `region_type` field is ignored as guest
     /// page table entries are not created.
     ///
+    /// ## Poisoned Sandbox
+    ///
+    /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
+    /// is currently poisoned. Use [`restore()`](Self::restore) to recover from a poisoned state.
+    ///
     /// # Safety
     ///
     /// The caller must ensure the host memory region remains valid and unmodified
     /// for the lifetime of `self`.
     #[instrument(err(Debug), skip(self, rgn), parent = Span::current())]
     pub unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         if rgn.flags.contains(MemoryRegionFlags::STACK_GUARD) {
             // Stack guard pages are an internal implementation detail
             // (which really should be moved into the guest)
@@ -330,8 +496,16 @@ impl MultiUseSandbox {
     /// Map the contents of a file into the guest at a particular address
     ///
     /// Returns the length of the mapping in bytes.
+    ///
+    /// ## Poisoned Sandbox
+    ///
+    /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
+    /// is currently poisoned. Use [`restore()`](Self::restore) to recover from a poisoned state.
     #[instrument(err(Debug), skip(self, _fp, _guest_base), parent = Span::current())]
     pub fn map_file_cow(&mut self, _fp: &Path, _guest_base: u64) -> Result<u64> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         #[cfg(windows)]
         log_then_return!("mmap'ing a file into the guest is not yet supported on Windows");
         #[cfg(unix)]
@@ -369,6 +543,11 @@ impl MultiUseSandbox {
     /// Calls a guest function with type-erased parameters and return values.
     ///
     /// This function is used for fuzz testing parameter and return type handling.
+    ///
+    /// ## Poisoned Sandbox
+    ///
+    /// This method will return [`crate::HyperlightError::PoisonedSandbox`] if the sandbox
+    /// is currently poisoned. Use [`restore()`](Self::restore) to recover from a poisoned state.
     #[cfg(feature = "fuzzing")]
     #[instrument(err(Debug), skip(self, args), parent = Span::current())]
     pub fn call_type_erased_guest_function_by_name(
@@ -377,6 +556,9 @@ impl MultiUseSandbox {
         ret_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         // Reset snapshot since we are mutating the sandbox state
         self.snapshot = None;
         maybe_time_and_emit_guest_call(func_name, || {
@@ -390,6 +572,9 @@ impl MultiUseSandbox {
         return_type: ReturnType,
         args: Vec<ParameterValue>,
     ) -> Result<ReturnValue> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         let res = (|| {
             let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
 
@@ -437,8 +622,11 @@ impl MultiUseSandbox {
         // - the serialized guest function result is zeroed out by us (the host) during deserialization, see `get_guest_function_call_result`
         // - any serialized host function call are zeroed out by us (the host) during deserialization, see `get_host_function_call`
         // - any serialized host function result is zeroed out by the guest during deserialization, see `get_host_return_value`
-        if res.is_err() {
+        if let Err(e) = &res {
             self.mem_mgr.clear_io_buffers();
+
+            // Determine if we should poison the sandbox.
+            self.poisoned |= e.is_poison_error();
         }
         res
     }
@@ -475,6 +663,7 @@ impl MultiUseSandbox {
     pub fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.vm.interrupt_handle()
     }
+
     /// Generate a crash dump of the current state of the VM underlying this sandbox.
     ///
     /// Creates an ELF core dump file that can be used for debugging. The dump
@@ -512,9 +701,48 @@ impl MultiUseSandbox {
     ///
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
-
     pub fn generate_crashdump(&self) -> Result<()> {
         crate::hypervisor::crashdump::generate_crashdump(self.vm.as_ref())
+    }
+
+    /// Returns whether the sandbox is currently poisoned.
+    ///
+    /// A poisoned sandbox is in an inconsistent state due to the guest not running to completion.
+    /// All operations will be rejected until the sandbox is restored from a non-poisoned snapshot.
+    ///
+    /// ## Causes of Poisoning
+    ///
+    /// The sandbox becomes poisoned when guest execution is interrupted:
+    /// - **Panics/Aborts** - Guest code panics or calls `abort()`
+    /// - **Invalid Memory Access** - Read/write/execute violations  
+    /// - **Stack Overflow** - Guest exhausts stack space
+    /// - **Heap Exhaustion** - Guest runs out of heap memory
+    /// - **Forced Termination** - [`InterruptHandle::kill()`] called during execution
+    ///
+    /// ## Recovery
+    ///
+    /// To clear the poison state, use [`restore()`](Self::restore) with a snapshot
+    /// that was taken before the sandbox became poisoned.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None
+    /// )?.evolve()?;
+    ///
+    /// // Check if sandbox is poisoned
+    /// if sandbox.poisoned() {
+    ///     println!("Sandbox is poisoned and needs attention");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn poisoned(&self) -> bool {
+        self.poisoned
     }
 }
 
@@ -524,6 +752,9 @@ impl Callable for MultiUseSandbox {
         func_name: &str,
         args: impl ParameterTuple,
     ) -> Result<Output> {
+        if self.poisoned {
+            return Err(crate::HyperlightError::PoisonedSandbox);
+        }
         self.call(func_name, args)
     }
 }
@@ -550,6 +781,96 @@ mod tests {
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
+
+    #[test]
+    fn poison() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+
+        // poison on purpose
+        let res = sbox
+            .call::<()>("guest_panic", "hello".to_string())
+            .unwrap_err();
+        assert!(
+            matches!(res, HyperlightError::GuestAborted(code, context) if code == ErrorCode::UnknownError as u8 && context.contains("hello"))
+        );
+        assert!(sbox.poisoned());
+
+        // guest calls should fail when poisoned
+        let res = sbox
+            .call::<()>("guest_panic", "hello2".to_string())
+            .unwrap_err();
+        assert!(matches!(res, HyperlightError::PoisonedSandbox));
+
+        // snapshot should fail when poisoned
+        if let Err(e) = sbox.snapshot() {
+            assert!(sbox.poisoned());
+            assert!(matches!(e, HyperlightError::PoisonedSandbox));
+        } else {
+            panic!("Snapshot should fail");
+        }
+
+        // map_region should fail when poisoned
+        #[cfg(target_os = "linux")]
+        {
+            let map_mem = allocate_guest_memory();
+            let guest_base = 0x0;
+            let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
+            let res = unsafe { sbox.map_region(&region) }.unwrap_err();
+            assert!(matches!(res, HyperlightError::PoisonedSandbox));
+        }
+
+        // map_file_cow should fail when poisoned
+        #[cfg(target_os = "linux")]
+        {
+            let temp_file = std::env::temp_dir().join("test_poison_map_file.bin");
+            let res = sbox.map_file_cow(&temp_file, 0x0).unwrap_err();
+            assert!(matches!(res, HyperlightError::PoisonedSandbox));
+            std::fs::remove_file(&temp_file).ok(); // Clean up
+        }
+
+        // call_guest_function_by_name (deprecated) should fail when poisoned
+        #[allow(deprecated)]
+        let res = sbox
+            .call_guest_function_by_name::<String>("Echo", "test".to_string())
+            .unwrap_err();
+        assert!(matches!(res, HyperlightError::PoisonedSandbox));
+
+        // restore to non-poisoned snapshot should work and clear poison
+        sbox.restore(&snapshot).unwrap();
+        assert!(!sbox.poisoned());
+
+        // guest calls should work again after restore
+        let res = sbox.call::<String>("Echo", "hello2".to_string()).unwrap();
+        assert_eq!(res, "hello2".to_string());
+        assert!(!sbox.poisoned());
+
+        // re-poison on purpose
+        let res = sbox
+            .call::<()>("guest_panic", "hello".to_string())
+            .unwrap_err();
+        assert!(
+            matches!(res, HyperlightError::GuestAborted(code, context) if code == ErrorCode::UnknownError as u8 && context.contains("hello"))
+        );
+        assert!(sbox.poisoned());
+
+        // restore to non-poisoned snapshot should work again
+        sbox.restore(&snapshot).unwrap();
+        assert!(!sbox.poisoned());
+
+        // guest calls should work again
+        let res = sbox.call::<String>("Echo", "hello3".to_string()).unwrap();
+        assert_eq!(res, "hello3".to_string());
+        assert!(!sbox.poisoned());
+
+        // snapshot should work again
+        let _ = sbox.snapshot().unwrap();
+    }
 
     /// Make sure input/output buffers are properly reset after guest call (with host call)
     #[test]
