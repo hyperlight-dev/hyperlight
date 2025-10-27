@@ -38,13 +38,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download Rust Guest Binaries
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: rust-guest-binaries-release
           path: ./downloaded-rust-guest-binaries-release
 
       - name: Download C Guest Binaries
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: c-guest-binaries-release
           path: ./downloaded-c-guest-binaries-release
