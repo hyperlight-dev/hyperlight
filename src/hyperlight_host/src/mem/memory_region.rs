@@ -22,7 +22,7 @@ extern crate mshv_ioctls3 as mshv_ioctls;
 use std::ops::Range;
 
 use bitflags::bitflags;
-#[cfg(mshv)]
+#[cfg(mshv3)]
 use hyperlight_common::mem::PAGE_SHIFT;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 #[cfg(kvm)]
@@ -31,7 +31,7 @@ use kvm_bindings::{KVM_MEM_READONLY, kvm_userspace_memory_region};
 use mshv_bindings::{
     MSHV_SET_MEM_BIT_EXECUTABLE, MSHV_SET_MEM_BIT_UNMAP, MSHV_SET_MEM_BIT_WRITABLE,
 };
-#[cfg(mshv)]
+#[cfg(mshv3)]
 use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
@@ -127,7 +127,7 @@ impl TryFrom<WHV_MEMORY_ACCESS_TYPE> for MemoryRegionFlags {
     }
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
     type Error = crate::HyperlightError;
 
@@ -252,33 +252,30 @@ impl MemoryRegionVecBuilder {
     }
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<MemoryRegion> for mshv_user_mem_region {
     fn from(region: MemoryRegion) -> Self {
         let size = (region.guest_region.end - region.guest_region.start) as u64;
         let guest_pfn = region.guest_region.start as u64 >> PAGE_SHIFT;
         let userspace_addr = region.host_region.start as u64;
 
-        #[cfg(mshv3)]
-        {
-            let flags: u8 = region.flags.iter().fold(0, |acc, flag| {
-                let flag_value = match flag {
-                    MemoryRegionFlags::NONE => 1 << MSHV_SET_MEM_BIT_UNMAP,
-                    MemoryRegionFlags::READ => 0,
-                    MemoryRegionFlags::WRITE => 1 << MSHV_SET_MEM_BIT_WRITABLE,
-                    MemoryRegionFlags::EXECUTE => 1 << MSHV_SET_MEM_BIT_EXECUTABLE,
-                    _ => 0, // ignore any unknown flags
-                };
-                acc | flag_value
-            });
+        let flags: u8 = region.flags.iter().fold(0, |acc, flag| {
+            let flag_value = match flag {
+                MemoryRegionFlags::NONE => 1 << MSHV_SET_MEM_BIT_UNMAP,
+                MemoryRegionFlags::READ => 0,
+                MemoryRegionFlags::WRITE => 1 << MSHV_SET_MEM_BIT_WRITABLE,
+                MemoryRegionFlags::EXECUTE => 1 << MSHV_SET_MEM_BIT_EXECUTABLE,
+                _ => 0, // ignore any unknown flags
+            };
+            acc | flag_value
+        });
 
-            mshv_user_mem_region {
-                guest_pfn,
-                size,
-                userspace_addr,
-                flags,
-                ..Default::default()
-            }
+        mshv_user_mem_region {
+            guest_pfn,
+            size,
+            userspace_addr,
+            flags,
+            ..Default::default()
         }
     }
 }

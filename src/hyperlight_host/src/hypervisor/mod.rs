@@ -29,7 +29,7 @@ use crate::sandbox::trace::MemTraceInfo;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// HyperV-on-linux functionality
-#[cfg(mshv)]
+#[cfg(mshv3)]
 pub mod hyperv_linux;
 #[cfg(target_os = "windows")]
 /// Hyperv-on-windows functionality
@@ -63,10 +63,10 @@ pub(crate) mod crashdump;
 
 use std::fmt::Debug;
 use std::str::FromStr;
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 use std::time::Duration;
 
 #[cfg(gdb)]
@@ -486,7 +486,7 @@ pub trait InterruptHandle: Debug + Send + Sync {
     fn dropped(&self) -> bool;
 }
 
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 #[derive(Debug)]
 pub(super) struct LinuxInterruptHandle {
     /// Invariant: vcpu is running => most significant bit (63) of `running` is set. (Neither converse nor inverse is true)
@@ -531,7 +531,7 @@ pub(super) struct LinuxInterruptHandle {
     sig_rt_min_offset: u8,
 }
 
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 impl LinuxInterruptHandle {
     const RUNNING_BIT: u64 = 1 << 63;
     const MAX_GENERATION: u64 = Self::RUNNING_BIT - 1;
@@ -593,7 +593,7 @@ impl LinuxInterruptHandle {
     }
 }
 
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 impl InterruptHandle for LinuxInterruptHandle {
     fn kill(&self) -> bool {
         self.cancel_requested.store(true, Ordering::Relaxed);

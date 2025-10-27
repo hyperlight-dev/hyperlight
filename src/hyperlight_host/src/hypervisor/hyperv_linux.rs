@@ -14,9 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv3)]
 extern crate mshv_bindings3 as mshv_bindings;
-#[cfg(mshv3)]
 extern crate mshv_ioctls3 as mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
@@ -27,7 +25,9 @@ use log::{LevelFilter, error};
 use mshv_bindings::{
     FloatingPointUnit, SpecialRegisters, StandardRegisters, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
-    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT, hv_register_assoc,
+    hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
+    hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
+    hv_partition_synthetic_processor_features, hv_register_assoc,
     hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
 };
 #[cfg(gdb)]
@@ -35,11 +35,6 @@ use mshv_bindings::{
     HV_INTERCEPT_ACCESS_MASK_EXECUTE, hv_intercept_parameters,
     hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT,
     mshv_install_intercept,
-};
-#[cfg(mshv3)]
-use mshv_bindings::{
-    hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
-    hv_partition_synthetic_processor_features,
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
@@ -319,7 +314,7 @@ impl HypervLinuxDriver {
     ) -> Result<Self> {
         let mshv = Mshv::new()?;
         let pr = Default::default();
-        #[cfg(mshv3)]
+
         let vm_fd = {
             // It's important to avoid create_vm() and explicitly use
             // create_vm_with_args() with an empty arguments structure
@@ -688,7 +683,6 @@ impl Hypervisor for HypervLinuxDriver {
             // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
             // return either normally with an exit reason, or from being "kicked" by out signal handler, with an EINTR error,
             // both of which are fine.
-            #[cfg(mshv3)]
             self.vcpu_fd.run()
         };
         // Note: if a `InterruptHandle::kill()` called while this thread is **here**

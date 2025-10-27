@@ -169,7 +169,7 @@ pub enum HyperlightError {
 
     /// mshv Error Occurred
     #[error("mshv Error {0:?}")]
-    #[cfg(mshv)]
+    #[cfg(mshv3)]
     MSHVError(#[from] mshv_ioctls::MshvError),
 
     /// No Hypervisor was found for Sandbox.
