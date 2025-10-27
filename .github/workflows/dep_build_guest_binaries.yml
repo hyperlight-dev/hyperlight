@@ -41,7 +41,7 @@ jobs:
         run: just guests
 
       - name: Upload Rust Guest Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rust-guest-binaries-${{ matrix.config }}
           path: |
@@ -50,7 +50,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload C Guest Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: c-guest-binaries-${{ matrix.config }}
           path: |
