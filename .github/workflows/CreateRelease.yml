@@ -134,7 +134,7 @@ jobs:
           just tar-static-lib
 
       - name: Download all benchmarks
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           pattern: benchmarks_*
 
