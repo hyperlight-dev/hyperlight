@@ -60,6 +60,7 @@ fn interrupt_host_call() {
         .unwrap();
 
     let mut sandbox: MultiUseSandbox = usbox.evolve().unwrap();
+    let snapshot = sandbox.snapshot().unwrap();
     let interrupt_handle = sandbox.interrupt_handle();
     assert!(!interrupt_handle.dropped()); // not yet dropped
 
@@ -72,6 +73,11 @@ fn interrupt_host_call() {
 
     let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
     assert!(matches!(result, HyperlightError::ExecutionCanceledByHost()));
+    assert!(sandbox.poisoned());
+
+    // Restore from snapshot to clear poison
+    sandbox.restore(&snapshot).unwrap();
+    assert!(!sandbox.poisoned());
 
     thread.join().unwrap();
 }
@@ -80,6 +86,7 @@ fn interrupt_host_call() {
 #[test]
 fn interrupt_in_progress_guest_call() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let snapshot = sbox1.snapshot().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
     let interrupt_handle = sbox1.interrupt_handle();
@@ -96,6 +103,11 @@ fn interrupt_in_progress_guest_call() {
 
     let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
     assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    assert!(sbox1.poisoned());
+
+    // Restore from snapshot to clear poison
+    sbox1.restore(&snapshot).unwrap();
+    assert!(!sbox1.poisoned());
 
     barrier.wait();
     // Make sure we can still call guest functions after the VM was interrupted
@@ -111,6 +123,7 @@ fn interrupt_in_progress_guest_call() {
 #[test]
 fn interrupt_guest_call_in_advance() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let snapshot = sbox1.snapshot().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
     let interrupt_handle = sbox1.interrupt_handle();
@@ -127,6 +140,11 @@ fn interrupt_guest_call_in_advance() {
     barrier.wait(); // wait until `kill()` is called before starting the guest call
     let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
     assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    assert!(sbox1.poisoned());
+
+    // Restore from snapshot to clear poison
+    sbox1.restore(&snapshot).unwrap();
+    assert!(!sbox1.poisoned());
 
     // Make sure we can still call guest functions after the VM was interrupted
     sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
@@ -150,6 +168,7 @@ fn interrupt_guest_call_in_advance() {
 fn interrupt_same_thread() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let snapshot2 = sbox2.snapshot().unwrap();
     let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
@@ -180,6 +199,9 @@ fn interrupt_same_thread() {
             }
             _ => panic!("Unexpected return"),
         };
+        if sbox2.poisoned() {
+            sbox2.restore(&snapshot2).unwrap();
+        }
         sbox3
             .call::<String>("Echo", "hello".to_string())
             .expect("Only sandbox 2 is allowed to be interrupted");
@@ -192,6 +214,7 @@ fn interrupt_same_thread() {
 fn interrupt_same_thread_no_barrier() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let snapshot2 = sbox2.snapshot().unwrap();
     let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
@@ -224,6 +247,9 @@ fn interrupt_same_thread_no_barrier() {
             }
             _ => panic!("Unexpected return"),
         };
+        if sbox2.poisoned() {
+            sbox2.restore(&snapshot2).unwrap();
+        }
         sbox3
             .call::<String>("Echo", "hello".to_string())
             .expect("Only sandbox 2 is allowed to be interrupted");
@@ -237,6 +263,7 @@ fn interrupt_same_thread_no_barrier() {
 #[test]
 fn interrupt_moved_sandbox() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let snapshot1 = sbox1.snapshot().unwrap();
     let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let interrupt_handle = sbox1.interrupt_handle();
@@ -249,6 +276,9 @@ fn interrupt_moved_sandbox() {
         barrier2.wait();
         let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
         assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+        assert!(sbox1.poisoned());
+        sbox1.restore(&snapshot1).unwrap();
+        assert!(!sbox1.poisoned());
     });
 
     let thread2 = thread::spawn(move || {
@@ -287,6 +317,7 @@ fn interrupt_custom_signal_no_and_retry_delay() {
     .evolve()
     .unwrap();
 
+    let snapshot1 = sbox1.snapshot().unwrap();
     let interrupt_handle = sbox1.interrupt_handle();
     assert!(!interrupt_handle.dropped()); // not yet dropped
 
@@ -303,8 +334,11 @@ fn interrupt_custom_signal_no_and_retry_delay() {
     for _ in 0..NUM_ITERS {
         let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
         assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+        assert!(sbox1.poisoned());
         // immediately reenter another guest function call after having being cancelled,
         // so that the vcpu is running again before the interruptor-thread has a chance to see that the vcpu is not running
+        sbox1.restore(&snapshot1).unwrap();
+        assert!(!sbox1.poisoned());
     }
     thread.join().expect("Thread should finish");
 }
