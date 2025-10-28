@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv, mshv3, kvm] # hyperv,hyperv-ws2025 are windows, mshv, mshv3 and kvm are linux
+        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm] # hyperv,hyperv-ws2025 are windows, mshv3 and kvm are linux
         cpu: [amd, intel]
         config: [release]
     runs-on: ${{ fromJson(
@@ -66,7 +66,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Benchmarks
-        run: just bench-ci main ${{ matrix.hypervisor == 'mshv' && 'mshv2' || ''}}
+        run: just bench-ci main
 
       - uses: actions/upload-artifact@v5
         with:

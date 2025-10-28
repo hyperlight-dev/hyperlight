@@ -29,7 +29,7 @@ use crate::sandbox::trace::MemTraceInfo;
 use crate::{HyperlightError, Result, log_then_return};
 
 /// HyperV-on-linux functionality
-#[cfg(mshv)]
+#[cfg(mshv3)]
 pub mod hyperv_linux;
 #[cfg(target_os = "windows")]
 /// Hyperv-on-windows functionality
@@ -63,10 +63,10 @@ pub(crate) mod crashdump;
 
 use std::fmt::Debug;
 use std::str::FromStr;
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 use std::time::Duration;
 
 #[cfg(gdb)]
@@ -693,7 +693,7 @@ pub trait InterruptHandle: Debug + Send + Sync {
     }
 }
 
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 #[derive(Debug)]
 pub(super) struct LinuxInterruptHandle {
     /// Atomic flag combining running state and generation counter.
@@ -820,7 +820,7 @@ pub(super) struct LinuxInterruptHandle {
     sig_rt_min_offset: u8,
 }
 
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 impl LinuxInterruptHandle {
     fn send_signal(&self, stamp_generation: bool) -> bool {
         let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
@@ -872,7 +872,7 @@ impl LinuxInterruptHandle {
     }
 }
 
-#[cfg(any(kvm, mshv))]
+#[cfg(any(kvm, mshv3))]
 impl InterruptHandle for LinuxInterruptHandle {
     fn kill(&self) -> bool {
         if !(self.call_active.load(Ordering::Acquire)) {

@@ -14,11 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv2)]
-extern crate mshv_ioctls2 as mshv_ioctls;
-
 #[cfg(mshv3)]
-extern crate mshv_ioctls3 as mshv_ioctls;
+extern crate mshv_ioctls;
 
 use std::array::TryFromSliceError;
 use std::cell::{BorrowError, BorrowMutError};
@@ -172,7 +169,7 @@ pub enum HyperlightError {
 
     /// mshv Error Occurred
     #[error("mshv Error {0:?}")]
-    #[cfg(mshv)]
+    #[cfg(mshv3)]
     MSHVError(#[from] mshv_ioctls::MshvError),
 
     /// No Hypervisor was found for Sandbox.
@@ -382,7 +379,7 @@ impl HyperlightError {
             HyperlightError::VmmSysError(_) => false,
             #[cfg(kvm)]
             HyperlightError::KVMError(_) => false,
-            #[cfg(mshv)]
+            #[cfg(mshv3)]
             HyperlightError::MSHVError(_) => false,
             #[cfg(gdb)]
             HyperlightError::TranslateGuestAddress(_) => false,

@@ -77,10 +77,8 @@ lazy_static = "1.4.0"
 [target.'cfg(unix)'.dependencies]
 kvm-bindings = { version = "0.14", features = ["fam-wrappers"], optional = true }
 kvm-ioctls = { version = "0.24", optional = true }
-mshv-bindings2 = { package="mshv-bindings", version = "=0.2.1", optional = true }
-mshv-ioctls2 = { package="mshv-ioctls",  version = "=0.2.1", optional = true}
-mshv-bindings3 = { package="mshv-bindings", version = "0.6.1", optional = true }
-mshv-ioctls3 = { package="mshv-ioctls",  version = "0.6.1", optional = true}
+mshv-bindings = { version = "0.6.1", optional = true }
+mshv-ioctls = { version = "0.6.1", optional = true}
 
 [dev-dependencies]
 uuid = { version = "1.18.1", features = ["v4"] }
@@ -135,9 +133,7 @@ crashdump = ["dep:chrono"]
 trace_guest = ["dep:opentelemetry", "dep:tracing-opentelemetry", "dep:hyperlight-guest-tracing", "hyperlight-common/trace_guest"]
 mem_profile = [ "trace_guest", "dep:framehop", "dep:fallible-iterator", "hyperlight-common/mem_profile" ]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
-# This feature is deprecated in favor of mshv3
-mshv2 = ["dep:mshv-bindings2", "dep:mshv-ioctls2"]
-mshv3 = ["dep:mshv-bindings3", "dep:mshv-ioctls3"]
+mshv3 = ["dep:mshv-bindings", "dep:mshv-ioctls"]
 # This enables easy debug in the guest
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]

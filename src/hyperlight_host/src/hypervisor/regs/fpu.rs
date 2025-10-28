@@ -13,22 +13,17 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#[cfg(mshv2)]
-extern crate mshv_bindings2 as mshv_bindings;
-#[cfg(mshv2)]
-extern crate mshv_ioctls2 as mshv_ioctls;
-
 #[cfg(mshv3)]
-extern crate mshv_bindings3 as mshv_bindings;
+extern crate mshv_bindings;
 #[cfg(mshv3)]
-extern crate mshv_ioctls3 as mshv_ioctls;
+extern crate mshv_ioctls;
 
 #[cfg(target_os = "windows")]
 use std::collections::HashSet;
 
 #[cfg(kvm)]
 use kvm_bindings::kvm_fpu;
-#[cfg(mshv)]
+#[cfg(mshv3)]
 use mshv_bindings::FloatingPointUnit;
 
 #[cfg(target_os = "windows")]
@@ -91,7 +86,7 @@ impl From<&CommonFpu> for kvm_fpu {
     }
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<&CommonFpu> for FloatingPointUnit {
     fn from(common_fpu: &CommonFpu) -> FloatingPointUnit {
         FloatingPointUnit {
@@ -129,7 +124,7 @@ impl From<&kvm_fpu> for CommonFpu {
     }
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<&FloatingPointUnit> for CommonFpu {
     fn from(mshv_fpu: &FloatingPointUnit) -> Self {
         Self {
@@ -390,7 +385,7 @@ mod tests {
         assert_eq!(original, round_tripped);
     }
 
-    #[cfg(mshv)]
+    #[cfg(mshv3)]
     #[test]
     fn round_trip_mshv_fpu() {
         use mshv_bindings::FloatingPointUnit;

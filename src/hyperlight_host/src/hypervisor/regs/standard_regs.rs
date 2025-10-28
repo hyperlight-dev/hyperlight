@@ -14,19 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv2)]
-extern crate mshv_bindings2 as mshv_bindings;
-#[cfg(mshv2)]
-extern crate mshv_ioctls2 as mshv_ioctls;
-
 #[cfg(mshv3)]
-extern crate mshv_bindings3 as mshv_bindings;
+extern crate mshv_bindings;
 #[cfg(mshv3)]
-extern crate mshv_ioctls3 as mshv_ioctls;
+extern crate mshv_ioctls;
 
 #[cfg(kvm)]
 use kvm_bindings::kvm_regs;
-#[cfg(mshv)]
+#[cfg(mshv3)]
 use mshv_bindings::StandardRegisters;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -106,7 +101,7 @@ impl From<&CommonRegisters> for kvm_regs {
 
 // --- MSHV ---
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<&StandardRegisters> for CommonRegisters {
     fn from(mshv_regs: &StandardRegisters) -> Self {
         CommonRegisters {
@@ -132,7 +127,7 @@ impl From<&StandardRegisters> for CommonRegisters {
     }
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<&CommonRegisters> for StandardRegisters {
     fn from(regs: &CommonRegisters) -> Self {
         StandardRegisters {
@@ -380,7 +375,7 @@ mod tests {
         assert_eq!(original, converted);
     }
 
-    #[cfg(mshv)]
+    #[cfg(mshv3)]
     #[test]
     fn round_trip_mshv_regs() {
         let original = common_regs();

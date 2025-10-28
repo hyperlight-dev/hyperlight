@@ -78,10 +78,10 @@ clean-rust:
 # convenience recipe to run all tests with the given target and features (similar to CI)
 test-like-ci config=default-target hypervisor="kvm":
     @# with default features
-    just test {{config}} {{ if hypervisor == "mshv" {"mshv2"} else {""} }}
+    just test {{config}}
 
     @# with only one driver enabled + build-metadata + init-paging
-    just test {{config}} build-metadata,init-paging,{{ if hypervisor == "mshv" {"mshv2"} else if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
+    just test {{config}} build-metadata,init-paging,{{ if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
 
     @# make sure certain cargo features compile
     just check
@@ -93,7 +93,7 @@ test-like-ci config=default-target hypervisor="kvm":
     just test-rust-crashdump {{config}}
 
     @# test the tracing related features
-    {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
 like-ci config=default-target hypervisor="kvm":
     @# Ensure up-to-date Cargo.lock
@@ -130,19 +130,19 @@ like-ci config=default-target hypervisor="kvm":
     {{ if os() == "windows" { "just run-rust-examples " + config } else { "" } }}
 
     @# Run Rust examples - linux
-    {{ if os() == "linux" { "just run-rust-examples-linux " + config + " " + if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    {{ if os() == "linux" { "just run-rust-examples-linux " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
     @# Run Rust Gdb tests
-    just test-rust-gdb-debugging {{ config }} {{ if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} 
+    just test-rust-gdb-debugging {{ config }} {{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} 
 
     @# Run Rust Crashdump tests
-    just test-rust-crashdump {{config}} {{ if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }}
+    just test-rust-crashdump {{config}} {{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }}
 
     @# Run Rust Tracing tests - linux
-    {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
     @# Run benchmarks
-    {{ if config == "release" { "just bench-ci main " + if hypervisor == "mshv" { "mshv2" } else if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    {{ if config == "release" { "just bench-ci main " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
 # runs all tests
 test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-doc target features)
@@ -174,13 +174,12 @@ test-integration guest target=default-target features="":
 
 # tests compilation with no default features on different platforms
 test-compilation-no-default-features target=default-target:
-    @# Linux should fail without a hypervisor feature (kvm, mshv, or mshv3)
+    @# Linux should fail without a hypervisor feature (kvm or mshv3)
     {{ if os() == "linux" { "! " + cargo-cmd + " check -p hyperlight-host --no-default-features "+target-triple-flag+" 2> /dev/null" } else { "" } }}
     @# Windows should succeed even without default features
     {{ if os() == "windows" { cargo-cmd + " check -p hyperlight-host --no-default-features" } else { "" } }}
     @# Linux should succeed with a hypervisor driver but without init-paging
     {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features kvm" } else { "" } }}  {{ target-triple-flag }}
-    {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features mshv2" } else { "" } }}  {{ target-triple-flag }}
     {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features mshv3" } else { "" } }}  {{ target-triple-flag }}
 
 # runs tests that exercise gdb debugging
@@ -310,7 +309,7 @@ tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
 # Downloads the benchmarks result from the given release tag.
 # If tag is not given, defaults to latest release
 # Options for os: "Windows", or "Linux"
-# Options for Linux hypervisor: "kvm", "mshv", "mshv3"
+# Options for Linux hypervisor: "kvm", "mshv3"
 # Options for Windows hypervisor: "hyperv"
 # Options for cpu: "amd", "intel"
 bench-download os hypervisor cpu tag="":

@@ -17,7 +17,7 @@ limitations under the License.
 use std::fmt::Debug;
 use std::sync::OnceLock;
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 use crate::hypervisor::hyperv_linux;
 #[cfg(kvm)]
 use crate::hypervisor::kvm;
@@ -27,7 +27,7 @@ static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
     AVAILABLE_HYPERVISOR.get_or_init(|| {
         cfg_if::cfg_if! {
-            if #[cfg(all(kvm, mshv))] {
+            if #[cfg(all(kvm, mshv3))] {
                 // If both features are enabled, we need to determine hypervisor at runtime.
                 // Currently /dev/kvm and /dev/mshv cannot exist on the same machine, so the first one
                 // that works is guaranteed to be correct.
@@ -44,7 +44,7 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
                 } else {
                     None
                 }
-            } else if #[cfg(mshv)] {
+            } else if #[cfg(mshv3)] {
                 if hyperv_linux::is_hypervisor_present() {
                     Some(HypervisorType::Mshv)
                 } else {
@@ -71,7 +71,7 @@ pub(crate) enum HypervisorType {
     #[cfg(kvm)]
     Kvm,
 
-    #[cfg(mshv)]
+    #[cfg(mshv3)]
     Mshv,
 
     #[cfg(target_os = "windows")]
@@ -79,7 +79,7 @@ pub(crate) enum HypervisorType {
 }
 
 // Compiler error if no hypervisor type is available
-#[cfg(not(any(kvm, mshv, target_os = "windows")))]
+#[cfg(not(any(kvm, mshv3, target_os = "windows")))]
 compile_error!(
-    "No hypervisor type is available for the current platform. Please enable either the `kvm` or `mshv` cargo feature."
+    "No hypervisor type is available for the current platform. Please enable either the `kvm` or `mshv3` cargo feature."
 );

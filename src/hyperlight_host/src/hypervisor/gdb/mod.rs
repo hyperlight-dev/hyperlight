@@ -20,7 +20,7 @@ mod event_loop;
 mod hyperv_debug;
 #[cfg(kvm)]
 mod kvm_debug;
-#[cfg(mshv)]
+#[cfg(mshv3)]
 mod mshv_debug;
 mod x86_64_target;
 
@@ -40,7 +40,7 @@ use hyperlight_common::mem::PAGE_SIZE;
 pub(crate) use hyperv_debug::HypervDebug;
 #[cfg(kvm)]
 pub(crate) use kvm_debug::KvmDebug;
-#[cfg(mshv)]
+#[cfg(mshv3)]
 pub(crate) use mshv_debug::MshvDebug;
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;

@@ -168,7 +168,7 @@ pub(crate) fn set_up_hypervisor_partition(
     let trace_info = MemTraceInfo::new(_load_info)?;
 
     match *get_available_hypervisor() {
-        #[cfg(mshv)]
+        #[cfg(mshv3)]
         Some(HypervisorType::Mshv) => {
             let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
                 regions,

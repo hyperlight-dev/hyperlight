@@ -14,22 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv2)]
-extern crate mshv_bindings2 as mshv_bindings;
-#[cfg(mshv2)]
-extern crate mshv_ioctls2 as mshv_ioctls;
-
 #[cfg(mshv3)]
-extern crate mshv_bindings3 as mshv_bindings;
+extern crate mshv_bindings;
 #[cfg(mshv3)]
-extern crate mshv_ioctls3 as mshv_ioctls;
+extern crate mshv_ioctls;
 
 #[cfg(target_os = "windows")]
 use std::collections::HashSet;
 
 #[cfg(kvm)]
 use kvm_bindings::{kvm_dtable, kvm_segment, kvm_sregs};
-#[cfg(mshv)]
+#[cfg(mshv3)]
 use mshv_bindings::{SegmentRegister, SpecialRegisters, TableRegister};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::*;
@@ -59,7 +54,7 @@ pub(crate) struct CommonSpecialRegisters {
     pub interrupt_bitmap: [u64; 4],
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<&SpecialRegisters> for CommonSpecialRegisters {
     fn from(value: &SpecialRegisters) -> Self {
         CommonSpecialRegisters {
@@ -85,7 +80,7 @@ impl From<&SpecialRegisters> for CommonSpecialRegisters {
     }
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<&CommonSpecialRegisters> for SpecialRegisters {
     fn from(other: &CommonSpecialRegisters) -> Self {
         SpecialRegisters {
@@ -345,7 +340,7 @@ pub(crate) struct CommonSegmentRegister {
     pub padding: u8,
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<SegmentRegister> for CommonSegmentRegister {
     fn from(other: SegmentRegister) -> Self {
         CommonSegmentRegister {
@@ -366,7 +361,7 @@ impl From<SegmentRegister> for CommonSegmentRegister {
     }
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<CommonSegmentRegister> for SegmentRegister {
     fn from(other: CommonSegmentRegister) -> Self {
         SegmentRegister {
@@ -498,7 +493,7 @@ pub(crate) struct CommonTableRegister {
     pub limit: u16,
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<TableRegister> for CommonTableRegister {
     fn from(other: TableRegister) -> Self {
         CommonTableRegister {
@@ -508,7 +503,7 @@ impl From<TableRegister> for CommonTableRegister {
     }
 }
 
-#[cfg(mshv)]
+#[cfg(mshv3)]
 impl From<CommonTableRegister> for TableRegister {
     fn from(other: CommonTableRegister) -> Self {
         TableRegister {
@@ -623,7 +618,7 @@ mod tests {
         assert_eq!(original, roundtrip);
     }
 
-    #[cfg(mshv)]
+    #[cfg(mshv3)]
     #[test]
     fn round_trip_mshv_sregs() {
         let original = sample_common_special_registers();

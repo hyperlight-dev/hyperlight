@@ -103,11 +103,11 @@ mod tests {
         use std::path::Path;
 
         cfg_if::cfg_if! {
-            if #[cfg(all(kvm, mshv))] {
+            if #[cfg(all(kvm, mshv3))] {
                 assert_eq!(Path::new("/dev/kvm").exists() || Path::new("/dev/mshv").exists(), super::is_hypervisor_present());
             } else if #[cfg(kvm)] {
                 assert_eq!(Path::new("/dev/kvm").exists(), super::is_hypervisor_present());
-            } else if #[cfg(mshv)] {
+            } else if #[cfg(mshv3)] {
                 assert_eq!(Path::new("/dev/mshv").exists(), super::is_hypervisor_present());
             } else {
                 assert!(!super::is_hypervisor_present());
