@@ -111,11 +111,10 @@ fn interrupt_in_progress_guest_call() {
     thread.join().expect("Thread should finish");
 }
 
-/// Makes sure interrupting a vm before the guest call has started also prevents the guest call from being executed
+/// Makes sure interrupting a vm before the guest call has started does not prevent the guest call from running
 #[test]
 fn interrupt_guest_call_in_advance() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let snapshot = sbox1.snapshot().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
     let interrupt_handle = sbox1.interrupt_handle();
@@ -130,15 +129,16 @@ fn interrupt_guest_call_in_advance() {
     });
 
     barrier.wait(); // wait until `kill()` is called before starting the guest call
-    let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
-    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
-    assert!(sbox1.poisoned());
+    match sbox1.call::<String>("Echo", "hello".to_string()) {
+        Ok(_) => {}
+        Err(HyperlightError::ExecutionCanceledByHost()) => {
+            panic!("Unexpected Cancellation Error");
+        }
+        Err(_) => {}
+    }
 
-    // Restore from snapshot to clear poison
-    sbox1.restore(&snapshot).unwrap();
-    assert!(!sbox1.poisoned());
-
-    // Make sure we can still call guest functions after the VM was interrupted
+    // Make sure we can still call guest functions after the VM was interrupted early
+    // i.e. make sure we dont kill the next iteration.
     sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
 
     // drop vm to make sure other thread can detect it
@@ -185,10 +185,9 @@ fn interrupt_same_thread() {
             .call::<String>("Echo", "hello".to_string())
             .expect("Only sandbox 2 is allowed to be interrupted");
         match sbox2.call::<String>("Echo", "hello".to_string()) {
-            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {
-                // Only allow successful calls or interrupted.
-                // The call can be successful in case the call is finished before kill() is called.
-            }
+            // Only allow successful calls or interrupted.
+            // The call can be successful in case the call is finished before kill() is called.
+            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {}
             _ => panic!("Unexpected return"),
         };
         if sbox2.poisoned() {
@@ -233,10 +232,9 @@ fn interrupt_same_thread_no_barrier() {
             .call::<String>("Echo", "hello".to_string())
             .expect("Only sandbox 2 is allowed to be interrupted");
         match sbox2.call::<String>("Echo", "hello".to_string()) {
-            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {
-                // Only allow successful calls or interrupted.
-                // The call can be successful in case the call is finished before kill() is called.
-            }
+            // Only allow successful calls or interrupted.
+            // The call can be successful in case the call is finished before kill() is called.
+            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {}
             _ => panic!("Unexpected return"),
         };
         if sbox2.poisoned() {
@@ -884,4 +882,467 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
         res,
         "Guest Function, string added by Host Function".to_string()
     );
+}
+/// Test that validates interrupt behavior with random kill timing under concurrent load
+/// Uses a pool of 100 sandboxes, 100 threads, and 500 iterations per thread.
+/// Randomly decides to kill some calls at random times during execution.
+/// Validates that:
+/// - Calls we chose to kill can end in any state (including some cancelled)
+/// - Calls we did NOT choose to kill NEVER return ExecutionCanceledByHost
+/// - We get a mix of killed and non-killed outcomes (not 100% or 0%)
+#[test]
+fn interrupt_random_kill_stress_test() {
+    // Wrapper to hold a sandbox and its snapshot together
+    struct SandboxWithSnapshot {
+        sandbox: MultiUseSandbox,
+        snapshot: Snapshot,
+    }
+
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+
+    use hyperlight_host::sandbox::snapshot::Snapshot;
+    use log::{error, trace};
+
+    const POOL_SIZE: usize = 100;
+    const NUM_THREADS: usize = 100;
+    const ITERATIONS_PER_THREAD: usize = 500;
+    const KILL_PROBABILITY: f64 = 0.5; // 50% chance to attempt kill
+    const GUEST_CALL_DURATION_MS: u32 = 10; // SpinForMs duration
+
+    // Create a pool of 50 sandboxes
+    println!("Creating pool of {} sandboxes...", POOL_SIZE);
+    let mut sandbox_pool: Vec<SandboxWithSnapshot> = Vec::with_capacity(POOL_SIZE);
+    for i in 0..POOL_SIZE {
+        let mut sandbox = new_uninit_rust().unwrap().evolve().unwrap();
+        // Create a snapshot for this sandbox
+        let snapshot = sandbox.snapshot().unwrap();
+        if (i + 1) % 10 == 0 {
+            println!("Created {}/{} sandboxes", i + 1, POOL_SIZE);
+        }
+        sandbox_pool.push(SandboxWithSnapshot { sandbox, snapshot });
+    }
+
+    // Wrap the pool in Arc<Mutex<VecDeque>> for thread-safe access
+    let pool = Arc::new(Mutex::new(VecDeque::from(sandbox_pool)));
+
+    // Counters for statistics
+    let total_iterations = Arc::new(AtomicUsize::new(0));
+    let kill_attempted_count = Arc::new(AtomicUsize::new(0)); // We chose to kill
+    let actually_killed_count = Arc::new(AtomicUsize::new(0)); // Got ExecutionCanceledByHost
+    let not_killed_completed_ok = Arc::new(AtomicUsize::new(0));
+    let not_killed_error = Arc::new(AtomicUsize::new(0)); // Non-cancelled errors
+    let killed_but_completed_ok = Arc::new(AtomicUsize::new(0));
+    let killed_but_error = Arc::new(AtomicUsize::new(0)); // Non-cancelled errors
+    let unexpected_cancelled = Arc::new(AtomicUsize::new(0)); // CRITICAL: non-killed calls that got cancelled
+    let sandbox_replaced_count = Arc::new(AtomicUsize::new(0)); // Sandboxes replaced due to restore failure
+
+    println!(
+        "Starting {} threads with {} iterations each...",
+        NUM_THREADS, ITERATIONS_PER_THREAD
+    );
+
+    // Spawn worker threads
+    let mut thread_handles = vec![];
+    for thread_id in 0..NUM_THREADS {
+        let pool_clone = Arc::clone(&pool);
+        let total_iterations_clone = Arc::clone(&total_iterations);
+        let kill_attempted_count_clone = Arc::clone(&kill_attempted_count);
+        let actually_killed_count_clone = Arc::clone(&actually_killed_count);
+        let not_killed_completed_ok_clone = Arc::clone(&not_killed_completed_ok);
+        let not_killed_error_clone = Arc::clone(&not_killed_error);
+        let killed_but_completed_ok_clone = Arc::clone(&killed_but_completed_ok);
+        let killed_but_error_clone = Arc::clone(&killed_but_error);
+        let unexpected_cancelled_clone = Arc::clone(&unexpected_cancelled);
+        let sandbox_replaced_count_clone = Arc::clone(&sandbox_replaced_count);
+
+        let handle = thread::spawn(move || {
+            // Use thread_id as seed for reproducible randomness per thread
+            use std::collections::hash_map::RandomState;
+            use std::hash::{BuildHasher, Hash};
+
+            let mut hasher = RandomState::new().build_hasher();
+            thread_id.hash(&mut hasher);
+            let mut rng_state = RandomState::new().hash_one(thread_id);
+
+            // Simple random number generator for reproducible randomness
+            let mut next_random = || -> u64 {
+                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng_state
+            };
+
+            for iteration in 0..ITERATIONS_PER_THREAD {
+                // === START OF ITERATION ===
+                // Get a sandbox from the pool for this iteration
+                let sandbox_with_snapshot = loop {
+                    let mut pool_guard = pool_clone.lock().unwrap();
+                    if let Some(sb) = pool_guard.pop_front() {
+                        break sb;
+                    }
+                    // Pool is empty, release lock and wait
+                    drop(pool_guard);
+                    trace!(
+                        "[THREAD-{}] Iteration {}: Pool empty, waiting for sandbox...",
+                        thread_id, iteration
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                };
+
+                // Use a guard struct to ensure sandbox is always returned to pool
+                struct SandboxGuard<'a> {
+                    sandbox_with_snapshot: Option<SandboxWithSnapshot>,
+                    pool: &'a Arc<Mutex<VecDeque<SandboxWithSnapshot>>>,
+                }
+
+                impl<'a> Drop for SandboxGuard<'a> {
+                    fn drop(&mut self) {
+                        if let Some(sb) = self.sandbox_with_snapshot.take() {
+                            let mut pool_guard = self.pool.lock().unwrap();
+                            pool_guard.push_back(sb);
+                            trace!(
+                                "[GUARD] Returned sandbox to pool, pool size now: {}",
+                                pool_guard.len()
+                            );
+                        }
+                    }
+                }
+
+                let mut guard = SandboxGuard {
+                    sandbox_with_snapshot: Some(sandbox_with_snapshot),
+                    pool: &pool_clone,
+                };
+
+                // Decide randomly: should we attempt to kill this call?
+                let should_kill = (next_random() as f64 / u64::MAX as f64) < KILL_PROBABILITY;
+
+                if should_kill {
+                    kill_attempted_count_clone.fetch_add(1, Ordering::Relaxed);
+                }
+
+                let sandbox_wrapper = guard.sandbox_with_snapshot.as_mut().unwrap();
+                let sandbox = &mut sandbox_wrapper.sandbox;
+                let interrupt_handle = sandbox.interrupt_handle();
+
+                // If we decided to kill, spawn a thread that will kill at a random time
+                // Use a barrier to ensure the killer thread waits until we're about to call the guest
+                let killer_thread = if should_kill {
+                    use std::sync::{Arc, Barrier};
+
+                    let barrier = Arc::new(Barrier::new(2));
+                    let barrier_clone = Arc::clone(&barrier);
+
+                    // Generate random delay here before moving into thread
+                    let kill_delay_ms = next_random() % 16;
+                    let thread_id_clone = thread_id;
+                    let iteration_clone = iteration;
+                    let handle = thread::spawn(move || {
+                        trace!(
+                            "[KILLER-{}-{}] Waiting at barrier...",
+                            thread_id_clone, iteration_clone
+                        );
+                        // Wait at the barrier until the main thread is ready to call the guest
+                        barrier_clone.wait();
+                        trace!(
+                            "[KILLER-{}-{}] Passed barrier, sleeping for {}ms...",
+                            thread_id_clone, iteration_clone, kill_delay_ms
+                        );
+                        // Random delay between 0 and 15ms (guest runs for ~10ms)
+                        thread::sleep(Duration::from_millis(kill_delay_ms));
+                        trace!(
+                            "[KILLER-{}-{}] Calling kill()...",
+                            thread_id_clone, iteration_clone
+                        );
+                        interrupt_handle.kill();
+                        trace!(
+                            "[KILLER-{}-{}] kill() returned, exiting thread",
+                            thread_id_clone, iteration_clone
+                        );
+                    });
+                    Some((handle, barrier))
+                } else {
+                    None
+                };
+
+                // Call the guest function
+                trace!(
+                    "[THREAD-{}] Iteration {}: Calling guest function (should_kill={})...",
+                    thread_id, iteration, should_kill
+                );
+
+                // Release the barrier just before calling the guest function
+                if let Some((_, ref barrier)) = killer_thread {
+                    trace!(
+                        "[THREAD-{}] Iteration {}: Main thread waiting at barrier...",
+                        thread_id, iteration
+                    );
+                    barrier.wait();
+                    trace!(
+                        "[THREAD-{}] Iteration {}: Main thread passed barrier, calling guest...",
+                        thread_id, iteration
+                    );
+                }
+
+                let result = sandbox.call::<u64>("SpinForMs", GUEST_CALL_DURATION_MS);
+                trace!(
+                    "[THREAD-{}] Iteration {}: Guest call returned: {:?}",
+                    thread_id,
+                    iteration,
+                    result
+                        .as_ref()
+                        .map(|_| "Ok")
+                        .map_err(|e| format!("{:?}", e))
+                );
+
+                // Wait for killer thread to finish if it was spawned
+                if let Some((kt, _)) = killer_thread {
+                    trace!(
+                        "[THREAD-{}] Iteration {}: Waiting for killer thread to join...",
+                        thread_id, iteration
+                    );
+                    let _ = kt.join();
+                }
+
+                // Process the result based on whether we attempted to kill
+                match result {
+                    Err(HyperlightError::ExecutionCanceledByHost()) => {
+                        // Restore the sandbox from the snapshot
+                        trace!(
+                            "[THREAD-{}] Iteration {}: Restoring sandbox from snapshot after ExecutionCanceledByHost...",
+                            thread_id, iteration
+                        );
+                        let sandbox_wrapper = guard.sandbox_with_snapshot.as_mut().unwrap();
+
+                        // Make sure the sandbox is poisoned
+                        assert!(sandbox_wrapper.sandbox.poisoned());
+
+                        // Try to restore the snapshot
+                        if let Err(e) = sandbox_wrapper.sandbox.restore(&sandbox_wrapper.snapshot) {
+                            error!(
+                                "CRITICAL: Thread {} iteration {}: Failed to restore snapshot: {:?}",
+                                thread_id, iteration, e
+                            );
+                            trace!(
+                                "[THREAD-{}] Iteration {}: Creating new sandbox to replace failed one...",
+                                thread_id, iteration
+                            );
+
+                            // Create a new sandbox with snapshot
+                            match new_uninit_rust().and_then(|uninit| uninit.evolve()) {
+                                Ok(mut new_sandbox) => {
+                                    match new_sandbox.snapshot() {
+                                        Ok(new_snapshot) => {
+                                            // Replace the failed sandbox with the new one
+                                            sandbox_wrapper.sandbox = new_sandbox;
+                                            sandbox_wrapper.snapshot = new_snapshot;
+                                            sandbox_replaced_count_clone
+                                                .fetch_add(1, Ordering::Relaxed);
+                                            trace!(
+                                                "[THREAD-{}] Iteration {}: Successfully replaced sandbox",
+                                                thread_id, iteration
+                                            );
+                                        }
+                                        Err(snapshot_err) => {
+                                            error!(
+                                                "CRITICAL: Thread {} iteration {}: Failed to create snapshot for new sandbox: {:?}",
+                                                thread_id, iteration, snapshot_err
+                                            );
+                                            // Still use the new sandbox even without snapshot
+                                            sandbox_wrapper.sandbox = new_sandbox;
+                                            sandbox_replaced_count_clone
+                                                .fetch_add(1, Ordering::Relaxed);
+                                        }
+                                    }
+                                }
+                                Err(create_err) => {
+                                    error!(
+                                        "CRITICAL: Thread {} iteration {}: Failed to create new sandbox: {:?}",
+                                        thread_id, iteration, create_err
+                                    );
+                                    // Continue with the broken sandbox - it will be removed from pool eventually
+                                }
+                            }
+                        }
+
+                        if should_kill {
+                            // We attempted to kill and it was cancelled - SUCCESS
+                            actually_killed_count_clone.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // We did NOT attempt to kill but got cancelled - CRITICAL FAILURE
+                            unexpected_cancelled_clone.fetch_add(1, Ordering::Relaxed);
+                            error!(
+                                "CRITICAL: Thread {} iteration {}: Got ExecutionCanceledByHost but did NOT attempt kill!",
+                                thread_id, iteration
+                            );
+                        }
+                    }
+                    Ok(_) => {
+                        if should_kill {
+                            // We attempted to kill but it completed OK - acceptable race condition
+                            killed_but_completed_ok_clone.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // We did NOT attempt to kill and it completed OK - EXPECTED
+                            not_killed_completed_ok_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(_other_error) => {
+                        // Log the other error so we can see what it is
+                        error!(
+                            "Thread {} iteration {}: Got non-cancellation error: {:?}",
+                            thread_id, iteration, _other_error
+                        );
+                        if should_kill {
+                            // We attempted to kill and got some other error - acceptable
+                            killed_but_error_clone.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // We did NOT attempt to kill and got some other error - acceptable
+                            not_killed_error_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+
+                total_iterations_clone.fetch_add(1, Ordering::Relaxed);
+
+                // Progress reporting
+                let current_total = total_iterations_clone.load(Ordering::Relaxed);
+                if current_total % 5000 == 0 {
+                    println!(
+                        "Progress: {}/{} iterations completed",
+                        current_total,
+                        NUM_THREADS * ITERATIONS_PER_THREAD
+                    );
+                }
+
+                // === END OF ITERATION ===
+                // SandboxGuard will automatically return sandbox to pool when it goes out of scope
+            }
+
+            trace!(
+                "[THREAD-{}] Completed all {} iterations!",
+                thread_id, ITERATIONS_PER_THREAD
+            );
+        });
+
+        thread_handles.push(handle);
+    }
+
+    trace!(
+        "All {} worker threads spawned, waiting for completion...",
+        NUM_THREADS
+    );
+
+    // Wait for all threads to complete
+    for (idx, handle) in thread_handles.into_iter().enumerate() {
+        trace!("Waiting for thread {} to join...", idx);
+        handle.join().unwrap();
+        trace!("Thread {} joined successfully", idx);
+    }
+
+    trace!("All threads joined successfully!");
+
+    // Collect final statistics
+    let total = total_iterations.load(Ordering::Relaxed);
+    let kill_attempted = kill_attempted_count.load(Ordering::Relaxed);
+    let actually_killed = actually_killed_count.load(Ordering::Relaxed);
+    let not_killed_ok = not_killed_completed_ok.load(Ordering::Relaxed);
+    let not_killed_err = not_killed_error.load(Ordering::Relaxed);
+    let killed_but_ok = killed_but_completed_ok.load(Ordering::Relaxed);
+    let killed_but_err = killed_but_error.load(Ordering::Relaxed);
+    let unexpected_cancel = unexpected_cancelled.load(Ordering::Relaxed);
+    let sandbox_replaced = sandbox_replaced_count.load(Ordering::Relaxed);
+
+    let no_kill_attempted = total - kill_attempted;
+
+    // Print detailed statistics
+    println!("\n=== Interrupt Random Kill Stress Test Statistics ===");
+    println!("Total iterations: {}", total);
+    println!();
+    println!(
+        "Kill Attempts: {} ({:.1}%)",
+        kill_attempted,
+        (kill_attempted as f64 / total as f64) * 100.0
+    );
+    println!(
+        "  - Actually killed (ExecutionCanceledByHost): {}",
+        actually_killed
+    );
+    println!("  - Completed OK despite kill attempt: {}", killed_but_ok);
+    println!(
+        "  - Error (non-cancelled) despite kill attempt: {}",
+        killed_but_err
+    );
+    if kill_attempted > 0 {
+        println!(
+            "  - Kill success rate: {:.1}%",
+            (actually_killed as f64 / kill_attempted as f64) * 100.0
+        );
+    }
+    println!();
+    println!(
+        "No Kill Attempts: {} ({:.1}%)",
+        no_kill_attempted,
+        (no_kill_attempted as f64 / total as f64) * 100.0
+    );
+    println!("  - Completed OK: {}", not_killed_ok);
+    println!("  - Error (non-cancelled): {}", not_killed_err);
+    println!(
+        "  - Cancelled (SHOULD BE 0): {} {}",
+        unexpected_cancel,
+        if unexpected_cancel == 0 {
+            "✅"
+        } else {
+            "❌ FAILURE"
+        }
+    );
+    println!();
+    println!("Sandbox Management:");
+    println!(
+        "  - Sandboxes replaced due to restore failure: {}",
+        sandbox_replaced
+    );
+
+    // CRITICAL VALIDATIONS
+    assert_eq!(
+        unexpected_cancel, 0,
+        "FAILURE: {} non-killed calls returned ExecutionCanceledByHost! This indicates false kills.",
+        unexpected_cancel
+    );
+
+    assert!(
+        actually_killed > 0,
+        "FAILURE: No calls were actually killed despite {} kill attempts!",
+        kill_attempted
+    );
+
+    assert!(
+        kill_attempted > 0,
+        "FAILURE: No kill attempts were made (expected ~50% of {} iterations)!",
+        total
+    );
+
+    assert!(
+        kill_attempted < total,
+        "FAILURE: All {} iterations were kill attempts (expected ~50%)!",
+        total
+    );
+
+    // Verify total accounting
+    assert_eq!(
+        total,
+        actually_killed
+            + not_killed_ok
+            + not_killed_err
+            + killed_but_ok
+            + killed_but_err
+            + unexpected_cancel,
+        "Iteration accounting mismatch!"
+    );
+
+    assert_eq!(
+        total,
+        NUM_THREADS * ITERATIONS_PER_THREAD,
+        "Not all iterations completed"
+    );
+
+    println!("\n✅ All validations passed!");
 }

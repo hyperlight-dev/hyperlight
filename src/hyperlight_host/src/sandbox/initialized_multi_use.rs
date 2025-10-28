@@ -47,10 +47,46 @@ use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
-use crate::{Result, log_then_return};
+use crate::{Result, log_then_return, new_error};
 
 /// Global counter for assigning unique IDs to sandboxes
 static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// RAII guard that automatically calls `clear_call_active()` when dropped.
+///
+/// This ensures that the call_active flag is always cleared when a guest function
+/// call completes, even if the function returns early due to an error.
+///
+/// Only one guard can exist per interrupt handle at a time - attempting to create
+/// a second guard will return an error.
+struct CallActiveGuard {
+    interrupt_handle: Arc<dyn InterruptHandle>,
+}
+
+impl CallActiveGuard {
+    /// Creates a new guard and marks a guest function call as active.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `call_active` is already true (i.e., another guard already exists).
+    fn new(interrupt_handle: Arc<dyn InterruptHandle>) -> Result<Self> {
+        // Atomically check that call_active is false and set it to true.
+        // This prevents creating multiple guards for the same interrupt handle.
+        let was_active = interrupt_handle.set_call_active();
+        if was_active {
+            return Err(new_error!(
+                "Attempted to create CallActiveGuard when a call is already active"
+            ));
+        }
+        Ok(Self { interrupt_handle })
+    }
+}
+
+impl Drop for CallActiveGuard {
+    fn drop(&mut self) {
+        self.interrupt_handle.clear_call_active();
+    }
+}
 
 /// A fully initialized sandbox that can execute guest functions multiple times.
 ///
@@ -575,6 +611,11 @@ impl MultiUseSandbox {
         if self.poisoned {
             return Err(crate::HyperlightError::PoisonedSandbox);
         }
+        // Mark that a guest function call is now active
+        // (This also increments the generation counter internally)
+        // The guard will automatically clear call_active when dropped
+        let _guard = CallActiveGuard::new(self.vm.interrupt_handle())?;
+
         let res = (|| {
             let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
 
@@ -628,6 +669,9 @@ impl MultiUseSandbox {
             // Determine if we should poison the sandbox.
             self.poisoned |= e.is_poison_error();
         }
+
+        // Note: clear_call_active() is automatically called when _guard is dropped here
+
         res
     }
 
