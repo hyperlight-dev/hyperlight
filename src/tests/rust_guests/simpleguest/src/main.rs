@@ -564,7 +564,44 @@ fn spin(_: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
-#[hyperlight_guest_tracing::trace_function]
+/// Spins the CPU for approximately the specified number of milliseconds
+fn spin_for_ms(fc: &FunctionCall) -> Result<Vec<u8>> {
+    let milliseconds = if let ParameterValue::UInt(ms) = fc.parameters.clone().unwrap()[0].clone() {
+        ms
+    } else {
+        return Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Expected UInt parameter".to_string(),
+        ));
+    };
+
+    // Simple busy-wait loop - not precise but good enough for testing
+    // Different iteration counts for debug vs release mode to ensure reasonable CPU usage
+    #[cfg(debug_assertions)]
+    // Debug mode - less optimized. The value 120,000 for iterations_per_ms was empirically chosen
+    // to achieve approximately a 50% "kill rate" in test runs, meaning that about half of the tests
+    // using this spin function will hit a timeout or resource limit imposed by the host. This helps
+    // stress-test the host's timeout and resource management logic. The value may need adjustment
+    // depending on the test environment or hardware.
+    let iterations_per_ms = 120_000;
+
+    #[cfg(not(debug_assertions))]
+    let iterations_per_ms = 1_000_000; // Release mode - highly optimized
+
+    let total_iterations = milliseconds * iterations_per_ms;
+
+    let mut counter: u64 = 0;
+    for _ in 0..total_iterations {
+        // Prevent the compiler from optimizing away the loop
+        counter = counter.wrapping_add(1);
+        core::hint::black_box(counter);
+    }
+
+    // Calculate the actual number of milliseconds spun for, based on the counter and iterations per ms
+    let ms_spun = counter / iterations_per_ms as u64;
+    Ok(get_flatbuffer_result(ms_spun))
+}
+
 fn test_abort(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(code) = function_call.parameters.clone().unwrap()[0].clone() {
         abort_with_code(&[code as u8]);
@@ -1214,6 +1251,14 @@ pub extern "C" fn hyperlight_main() {
         spin as usize,
     );
     register_function(spin_def);
+
+    let spin_for_ms_def = GuestFunctionDefinition::new(
+        "SpinForMs".to_string(),
+        Vec::from(&[ParameterType::UInt]),
+        ReturnType::ULong,
+        spin_for_ms as usize,
+    );
+    register_function(spin_for_ms_def);
 
     let abort_def = GuestFunctionDefinition::new(
         "GuestAbortWithCode".to_string(),

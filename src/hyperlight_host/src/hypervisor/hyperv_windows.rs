@@ -17,7 +17,7 @@ limitations under the License.
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
@@ -344,10 +344,11 @@ impl HypervWindowsDriver {
         };
 
         let interrupt_handle = Arc::new(WindowsInterruptHandle {
-            running: AtomicBool::new(false),
-            cancel_requested: AtomicBool::new(false),
+            running: AtomicU64::new(0),
+            cancel_requested: AtomicU64::new(0),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
+            call_active: AtomicBool::new(false),
             partition_handle,
             dropped: AtomicBool::new(false),
         });
@@ -736,7 +737,8 @@ impl Hypervisor for HypervWindowsDriver {
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn run(&mut self) -> Result<super::HyperlightExit> {
-        self.interrupt_handle.running.store(true, Ordering::Relaxed);
+        // Get current generation and set running bit
+        let generation = self.interrupt_handle.set_running_bit();
 
         #[cfg(not(gdb))]
         let debug_interrupt = false;
@@ -746,11 +748,10 @@ impl Hypervisor for HypervWindowsDriver {
             .debug_interrupt
             .load(Ordering::Relaxed);
 
-        // Don't run the vcpu if `cancel_requested` is true
+        // Check if cancellation was requested for THIS generation
         let exit_context = if self
             .interrupt_handle
-            .cancel_requested
-            .load(Ordering::Relaxed)
+            .is_cancel_requested_for_generation(generation)
             || debug_interrupt
         {
             WHV_RUN_VP_EXIT_CONTEXT {
@@ -770,12 +771,21 @@ impl Hypervisor for HypervWindowsDriver {
             }
             self.processor.run()?
         };
-        self.interrupt_handle
-            .cancel_requested
-            .store(false, Ordering::Relaxed);
-        self.interrupt_handle
-            .running
-            .store(false, Ordering::Relaxed);
+
+        // Clear running bit
+        self.interrupt_handle.clear_running_bit();
+
+        let is_canceled = exit_context.ExitReason == WHV_RUN_VP_EXIT_REASON(8193i32); // WHvRunVpExitReasonCanceled
+
+        // Check if this was a manual cancellation (vs internal Windows cancellation)
+        let cancel_was_requested_manually = self
+            .interrupt_handle
+            .is_cancel_requested_for_generation(generation);
+
+        // Only clear cancel_requested if we're actually processing a cancellation for this generation
+        if is_canceled && cancel_was_requested_manually {
+            self.interrupt_handle.clear_cancel_requested();
+        }
 
         #[cfg(gdb)]
         let debug_interrupt = self
@@ -851,12 +861,32 @@ impl Hypervisor for HypervWindowsDriver {
                     // return a special exit reason so that the gdb thread can handle it
                     // and resume execution
                     HyperlightExit::Debug(VcpuStopReason::Interrupt)
+                } else if !cancel_was_requested_manually {
+                    // This was an internal cancellation
+                    // The virtualization stack can use this function to return the control
+                    // of a virtual processor back to the virtualization stack in case it
+                    // needs to change the state of a VM or to inject an event into the processor
+                    // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
+                    debug!("Internal cancellation detected, returning Retry error");
+                    HyperlightExit::Retry()
                 } else {
                     HyperlightExit::Cancelled()
                 }
 
                 #[cfg(not(gdb))]
-                HyperlightExit::Cancelled()
+                {
+                    if !cancel_was_requested_manually {
+                        // This was an internal cancellation
+                        // The virtualization stack can use this function to return the control
+                        // of a virtual processor back to the virtualization stack in case it
+                        // needs to change the state of a VM or to inject an event into the processor
+                        // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
+                        debug!("Internal cancellation detected, returning Retry error");
+                        HyperlightExit::Retry()
+                    } else {
+                        HyperlightExit::Cancelled()
+                    }
+                }
             }
             #[cfg(gdb)]
             WHV_RUN_VP_EXIT_REASON(4098i32) => {
@@ -1123,30 +1153,77 @@ impl Drop for HypervWindowsDriver {
 
 #[derive(Debug)]
 pub struct WindowsInterruptHandle {
-    // `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running, which is the reason we need this flag.
-    running: AtomicBool,
-    cancel_requested: AtomicBool,
+    /// Combined running flag (bit 63) and generation counter (bits 0-62).
+    ///
+    /// The generation increments with each guest function call to prevent
+    /// stale cancellations from affecting new calls (ABA problem).
+    ///
+    /// Layout: `[running:1 bit][generation:63 bits]`
+    running: AtomicU64,
+
+    /// Combined cancel_requested flag (bit 63) and generation counter (bits 0-62).
+    ///
+    /// When kill() is called, this stores the current generation along with
+    /// the cancellation flag. The VCPU only honors the cancellation if the
+    /// generation matches its current generation.
+    ///
+    /// Layout: `[cancel_requested:1 bit][generation:63 bits]`
+    cancel_requested: AtomicU64,
+
     // This is used to signal the GDB thread to stop the vCPU
     #[cfg(gdb)]
     debug_interrupt: AtomicBool,
+    /// Flag indicating whether a guest function call is currently in progress.
+    ///
+    /// **true**: A guest function call is active (between call start and completion)
+    /// **false**: No guest function call is active
+    ///
+    /// # Purpose
+    ///
+    /// This flag prevents kill() from having any effect when called outside of a
+    /// guest function call. This solves the "kill-in-advance" problem where kill()
+    /// could be called before a guest function starts and would incorrectly cancel it.
+    call_active: AtomicBool,
     partition_handle: WHV_PARTITION_HANDLE,
     dropped: AtomicBool,
 }
 
 impl InterruptHandle for WindowsInterruptHandle {
     fn kill(&self) -> bool {
-        self.cancel_requested.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
-            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+        // Check if a call is actually active first
+        if !self.call_active.load(Ordering::Acquire) {
+            return false;
+        }
+
+        // Get the current running state and generation
+        let (running, generation) = self.get_running_and_generation();
+
+        // Set cancel_requested with the current generation
+        self.set_cancel_requested(generation);
+
+        // Only call WHvCancelRunVirtualProcessor if VCPU is actually running in guest mode
+        running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
         self.debug_interrupt.store(true, Ordering::Relaxed);
-        self.running.load(Ordering::Relaxed)
-            && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+        let (running, _) = self.get_running_and_generation();
+        running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
 
-    fn dropped(&self) -> bool {
-        self.dropped.load(Ordering::Relaxed)
+    fn get_call_active(&self) -> &AtomicBool {
+        &self.call_active
+    }
+
+    fn get_dropped(&self) -> &AtomicBool {
+        &self.dropped
+    }
+
+    fn get_running(&self) -> &AtomicU64 {
+        &self.running
+    }
+
+    fn get_cancel_requested(&self) -> &AtomicU64 {
+        &self.cancel_requested
     }
 }
