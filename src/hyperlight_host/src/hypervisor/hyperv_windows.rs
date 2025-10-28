@@ -822,6 +822,11 @@ impl Hypervisor for HypervWindowsDriver {
         }
     }
 
+    #[cfg(crashdump)]
+    fn runtime_config(&self) -> &crate::sandbox::uninitialized::SandboxRuntimeConfig {
+        &self.rt_cfg
+    }
+
     #[cfg(gdb)]
     fn handle_debug(
         &mut self,

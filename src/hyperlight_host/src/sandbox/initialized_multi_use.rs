@@ -157,8 +157,22 @@ impl MultiUseSandbox {
         dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
+        let id = SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        // Register with crash handler if dumps are enabled
+        #[cfg(feature = "crashdump")]
+        if vm.runtime_config().guest_core_dump
+            && let Err(e) = crate::crash_handler::register_sandbox(id, vm.as_ref())
+        {
+            tracing::error!(
+                "Failed to register sandbox {} with crash handler: {}",
+                id,
+                e
+            );
+        }
+
         Self {
-            id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            id,
             poisoned: false,
             _host_funcs: host_funcs,
             mem_mgr: mgr,
@@ -800,6 +814,14 @@ impl Callable for MultiUseSandbox {
             return Err(crate::HyperlightError::PoisonedSandbox);
         }
         self.call(func_name, args)
+    }
+}
+
+impl Drop for MultiUseSandbox {
+    fn drop(&mut self) {
+        // Unregister from crash handler if crashdump feature is enabled
+        #[cfg(feature = "crashdump")]
+        crate::crash_handler::unregister_sandbox(self.id);
     }
 }
 
