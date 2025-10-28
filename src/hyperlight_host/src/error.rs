@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 #[cfg(mshv3)]
-extern crate mshv_ioctls3 as mshv_ioctls;
+extern crate mshv_ioctls;
 
 use std::array::TryFromSliceError;
 use std::cell::{BorrowError, BorrowMutError};
@@ -379,7 +379,7 @@ impl HyperlightError {
             HyperlightError::VmmSysError(_) => false,
             #[cfg(kvm)]
             HyperlightError::KVMError(_) => false,
-            #[cfg(mshv)]
+            #[cfg(mshv3)]
             HyperlightError::MSHVError(_) => false,
             #[cfg(gdb)]
             HyperlightError::TranslateGuestAddress(_) => false,

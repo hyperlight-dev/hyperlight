@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #[cfg(mshv3)]
-extern crate mshv_bindings3 as mshv_bindings;
+extern crate mshv_bindings;
 #[cfg(mshv3)]
-extern crate mshv_ioctls3 as mshv_ioctls;
+extern crate mshv_ioctls;
 
 #[cfg(target_os = "windows")]
 use std::collections::HashSet;

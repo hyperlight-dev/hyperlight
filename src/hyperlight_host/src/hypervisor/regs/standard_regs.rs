@@ -15,9 +15,9 @@ limitations under the License.
 */
 
 #[cfg(mshv3)]
-extern crate mshv_bindings3 as mshv_bindings;
+extern crate mshv_bindings;
 #[cfg(mshv3)]
-extern crate mshv_ioctls3 as mshv_ioctls;
+extern crate mshv_ioctls;
 
 #[cfg(kvm)]
 use kvm_bindings::kvm_regs;
