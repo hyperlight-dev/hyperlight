@@ -303,6 +303,9 @@ pub(crate) trait Hypervisor: Debug + Send {
     #[cfg(crashdump)]
     fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>>;
 
+    #[cfg(crashdump)]
+    fn runtime_config(&self) -> &crate::sandbox::uninitialized::SandboxRuntimeConfig;
+
     #[cfg(gdb)]
     /// handles the cases when the vCPU stops due to a Debug event
     fn handle_debug(
