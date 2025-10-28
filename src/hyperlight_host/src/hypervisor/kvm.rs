@@ -37,7 +37,7 @@ use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
     EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
-use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
+use super::{HyperlightExit, Hypervisor, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::hypervisor::get_memory_access_violation;
@@ -667,11 +667,15 @@ impl Hypervisor for KVMDriver {
             .tid
             .store(unsafe { libc::pthread_self() as u64 }, Ordering::Release);
         // Note: if `InterruptHandle::kill()` is called while this thread is **here**
+        // Cast to internal trait for access to internal methods
+        let interrupt_handle_internal =
+            self.interrupt_handle.as_ref() as &dyn super::InterruptHandleInternal;
+
         // (after set_running_bit but before checking cancel_requested):
         // - kill() will stamp cancel_requested with the current generation
         // - We will check cancel_requested below and skip the VcpuFd::run() call
         // - This is the desired behavior - the kill takes effect immediately
-        let generation = self.interrupt_handle.set_running_bit();
+        let generation = interrupt_handle_internal.set_running_bit();
 
         #[cfg(not(gdb))]
         let debug_interrupt = false;
@@ -687,8 +691,7 @@ impl Hypervisor for KVMDriver {
         // - kill() will stamp cancel_requested with the current generation
         // - We will proceed with vcpu.run(), but signals will be sent to interrupt it
         // - The vcpu will be interrupted and return EINTR (handled below)
-        let exit_reason = if self
-            .interrupt_handle
+        let exit_reason = if interrupt_handle_internal
             .is_cancel_requested_for_generation(generation)
             || debug_interrupt
         {
@@ -716,9 +719,8 @@ impl Hypervisor for KVMDriver {
         // - kill() continues sending signals to this thread (running bit is still set)
         // - The signals are harmless (no-op handler), we just need to check cancel_requested
         // - We load cancel_requested below to determine if this run was cancelled
-        let cancel_requested = self
-            .interrupt_handle
-            .is_cancel_requested_for_generation(generation);
+        let cancel_requested =
+            interrupt_handle_internal.is_cancel_requested_for_generation(generation);
         #[cfg(gdb)]
         let debug_interrupt = self
             .interrupt_handle
@@ -730,7 +732,7 @@ impl Hypervisor for KVMDriver {
         // - kill() continues sending signals until running bit is cleared
         // - The newly stamped cancel_requested will affect the NEXT vcpu.run() call
         // - Signals sent now are harmless (no-op handler)
-        self.interrupt_handle.clear_running_bit();
+        interrupt_handle_internal.clear_running_bit();
         // At this point, running bit is clear so kill() will stop sending signals.
         // However, we may still receive delayed signals that were sent before clear_running_bit.
         // These stale signals are harmless because:
@@ -794,7 +796,7 @@ impl Hypervisor for KVMDriver {
                     // - A signal meant for a different sandbox on the same thread
                     // In these cases, we return Retry to continue execution.
                     if cancel_requested {
-                        self.interrupt_handle.clear_cancel_requested();
+                        interrupt_handle_internal.clear_cancel_requested();
                         HyperlightExit::Cancelled()
                     } else {
                         #[cfg(gdb)]
@@ -835,7 +837,7 @@ impl Hypervisor for KVMDriver {
         self as &mut dyn Hypervisor
     }
 
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+    fn interrupt_handle(&self) -> Arc<dyn super::InterruptHandleInternal> {
         self.interrupt_handle.clone()
     }
 

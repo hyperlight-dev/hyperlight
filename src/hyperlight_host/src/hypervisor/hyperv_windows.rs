@@ -55,8 +55,8 @@ use super::{
 };
 use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
 use crate::hypervisor::fpu::FP_CONTROL_WORD_DEFAULT;
-use crate::hypervisor::get_memory_access_violation;
 use crate::hypervisor::wrappers::WHvGeneralRegisters;
+use crate::hypervisor::{InterruptHandleInternal, get_memory_access_violation};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
@@ -737,8 +737,12 @@ impl Hypervisor for HypervWindowsDriver {
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn run(&mut self) -> Result<super::HyperlightExit> {
+        // Cast to internal trait for access to internal methods
+        let interrupt_handle_internal =
+            self.interrupt_handle.as_ref() as &dyn super::InterruptHandleInternal;
+
         // Get current generation and set running bit
-        let generation = self.interrupt_handle.set_running_bit();
+        let generation = interrupt_handle_internal.set_running_bit();
 
         #[cfg(not(gdb))]
         let debug_interrupt = false;
@@ -749,8 +753,7 @@ impl Hypervisor for HypervWindowsDriver {
             .load(Ordering::Relaxed);
 
         // Check if cancellation was requested for THIS generation
-        let exit_context = if self
-            .interrupt_handle
+        let exit_context = if interrupt_handle_internal
             .is_cancel_requested_for_generation(generation)
             || debug_interrupt
         {
@@ -773,18 +776,17 @@ impl Hypervisor for HypervWindowsDriver {
         };
 
         // Clear running bit
-        self.interrupt_handle.clear_running_bit();
+        interrupt_handle_internal.clear_running_bit();
 
         let is_canceled = exit_context.ExitReason == WHV_RUN_VP_EXIT_REASON(8193i32); // WHvRunVpExitReasonCanceled
 
         // Check if this was a manual cancellation (vs internal Windows cancellation)
-        let cancel_was_requested_manually = self
-            .interrupt_handle
-            .is_cancel_requested_for_generation(generation);
+        let cancel_was_requested_manually =
+            interrupt_handle_internal.is_cancel_requested_for_generation(generation);
 
         // Only clear cancel_requested if we're actually processing a cancellation for this generation
         if is_canceled && cancel_was_requested_manually {
-            self.interrupt_handle.clear_cancel_requested();
+            interrupt_handle_internal.clear_cancel_requested();
         }
 
         #[cfg(gdb)]
@@ -915,7 +917,7 @@ impl Hypervisor for HypervWindowsDriver {
         Ok(result)
     }
 
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+    fn interrupt_handle(&self) -> Arc<dyn super::InterruptHandleInternal> {
         self.interrupt_handle.clone()
     }
 
@@ -1204,6 +1206,7 @@ impl InterruptHandle for WindowsInterruptHandle {
         // Only call WHvCancelRunVirtualProcessor if VCPU is actually running in guest mode
         running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
+
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
         self.debug_interrupt.store(true, Ordering::Relaxed);
@@ -1211,12 +1214,14 @@ impl InterruptHandle for WindowsInterruptHandle {
         running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
     }
 
+    fn dropped(&self) -> bool {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
+impl InterruptHandleInternal for WindowsInterruptHandle {
     fn get_call_active(&self) -> &AtomicBool {
         &self.call_active
-    }
-
-    fn get_dropped(&self) -> &AtomicBool {
-        &self.dropped
     }
 
     fn get_running(&self) -> &AtomicU64 {

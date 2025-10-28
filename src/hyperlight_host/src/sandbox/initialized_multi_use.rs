@@ -57,17 +57,17 @@ static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// Only one guard can exist per interrupt handle at a time - attempting to create
 /// a second guard will return an error.
-struct CallActiveGuard {
-    interrupt_handle: Arc<dyn InterruptHandle>,
+struct CallActiveGuard<T: crate::hypervisor::InterruptHandleInternal + ?Sized> {
+    interrupt_handle: Arc<T>,
 }
 
-impl CallActiveGuard {
+impl<T: crate::hypervisor::InterruptHandleInternal + ?Sized> CallActiveGuard<T> {
     /// Creates a new guard and marks a guest function call as active.
     ///
     /// # Errors
     ///
     /// Returns an error if `call_active` is already true (i.e., another guard already exists).
-    fn new(interrupt_handle: Arc<dyn InterruptHandle>) -> Result<Self> {
+    fn new(interrupt_handle: Arc<T>) -> Result<Self> {
         // Atomically check that call_active is false and set it to true.
         // This prevents creating multiple guards for the same interrupt handle.
         let was_active = interrupt_handle.set_call_active();
@@ -80,7 +80,7 @@ impl CallActiveGuard {
     }
 }
 
-impl Drop for CallActiveGuard {
+impl<T: crate::hypervisor::InterruptHandleInternal + ?Sized> Drop for CallActiveGuard<T> {
     fn drop(&mut self) {
         self.interrupt_handle.clear_call_active();
     }
