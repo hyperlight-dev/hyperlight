@@ -63,7 +63,6 @@ pub(crate) mod crashdump;
 
 use std::fmt::Debug;
 use std::str::FromStr;
-#[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(any(kvm, mshv3))]
@@ -178,8 +177,8 @@ pub(crate) trait Hypervisor: Debug + Send {
         #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
     ) -> Result<HyperlightExit>;
 
-    /// Get InterruptHandle to underlying VM
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
+    /// Get InterruptHandle to underlying VM (returns internal trait)
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandleInternal>;
 
     /// Get regs
     #[allow(dead_code)]
@@ -462,7 +461,7 @@ impl VirtualCPU {
     }
 }
 
-/// A trait for handling interrupts to a sandbox's vcpu
+/// A trait for handling interrupts to a sandbox's vcpu (public API)
 pub trait InterruptHandle: Debug + Send + Sync {
     /// Interrupt the corresponding sandbox from running.
     ///
@@ -524,33 +523,28 @@ pub trait InterruptHandle: Debug + Send + Sync {
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool;
 
-    /// Returns the call_active atomic bool reference for default implementations.
-    ///
-    /// This is used by default trait methods to access the common call_active field.
-    fn get_call_active(&self) -> &std::sync::atomic::AtomicBool;
+    /// Check if the corresponding VM has been dropped.
+    fn dropped(&self) -> bool;
+}
 
-    /// Returns the dropped atomic bool reference for default implementations.
-    ///
-    /// This is used by default trait methods to access the common dropped field.
-    fn get_dropped(&self) -> &std::sync::atomic::AtomicBool;
+/// Internal trait for interrupt handle implementation details (private, cross-platform).
+///
+/// This trait contains all the internal atomics access methods and helper functions
+/// that are shared between Linux and Windows implementations. It extends InterruptHandle
+/// to inherit the public API.
+///
+/// This trait should NOT be used outside of hypervisor implementations.
+pub(crate) trait InterruptHandleInternal: InterruptHandle {
+    /// Returns the call_active atomic bool reference for internal implementations.
+    fn get_call_active(&self) -> &AtomicBool;
 
-    /// Returns the running atomic u64 reference for default implementations.
-    ///
-    /// This is used by default trait methods to access the common running field.
-    fn get_running(&self) -> &std::sync::atomic::AtomicU64;
+    /// Returns the running atomic u64 reference for internal implementations.
+    fn get_running(&self) -> &AtomicU64;
 
-    /// Returns the cancel_requested atomic u64 reference for default implementations.
-    ///
-    /// This is used by default trait methods to access the common cancel_requested field.
-    fn get_cancel_requested(&self) -> &std::sync::atomic::AtomicU64;
+    /// Returns the cancel_requested atomic u64 reference for internal implementations.
+    fn get_cancel_requested(&self) -> &AtomicU64;
 
-    /// Default implementation of dropped() - checks the dropped atomic flag.
-    fn dropped(&self) -> bool {
-        self.get_dropped()
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Default implementation of set_call_active() - increments generation and sets flag.
+    /// Set call_active - increments generation and sets flag.
     ///
     /// Increments the generation counter and sets the call_active flag to true,
     /// indicating that a guest function call is now in progress. This allows
@@ -563,11 +557,10 @@ pub trait InterruptHandle: Debug + Send + Sync {
     /// false otherwise.
     fn set_call_active(&self) -> bool {
         self.increment_generation();
-        self.get_call_active()
-            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        self.get_call_active().swap(true, Ordering::AcqRel)
     }
 
-    /// Default implementation of clear_call_active() - clears the call_active flag.
+    /// Clear call_active - clears the call_active flag.
     ///
     /// Clears the call_active flag, indicating that no guest function call is
     /// in progress. After this, kill() will have no effect and will return false.
@@ -575,12 +568,8 @@ pub trait InterruptHandle: Debug + Send + Sync {
     /// Must be called at the end of call_guest_function_by_name_no_reset(),
     /// after the guest call has fully completed (whether successfully or with error).
     fn clear_call_active(&self) {
-        self.get_call_active()
-            .store(false, std::sync::atomic::Ordering::Release)
+        self.get_call_active().store(false, Ordering::Release)
     }
-
-    // Default implementations for common cancel_requested operations
-    // These are identical between Linux and Windows implementations
 
     /// Set cancel_requested to true with the given generation.
     ///
@@ -591,8 +580,7 @@ pub trait InterruptHandle: Debug + Send + Sync {
         const CANCEL_REQUESTED_BIT: u64 = 1 << 63;
         const MAX_GENERATION: u64 = CANCEL_REQUESTED_BIT - 1;
         let value = CANCEL_REQUESTED_BIT | (generation & MAX_GENERATION);
-        self.get_cancel_requested()
-            .store(value, std::sync::atomic::Ordering::Release);
+        self.get_cancel_requested().store(value, Ordering::Release);
     }
 
     /// Clear cancel_requested (reset to no cancellation).
@@ -600,8 +588,7 @@ pub trait InterruptHandle: Debug + Send + Sync {
     /// This is called after a cancellation has been processed to reset the
     /// cancellation flag for the next guest call.
     fn clear_cancel_requested(&self) {
-        self.get_cancel_requested()
-            .store(0, std::sync::atomic::Ordering::Release);
+        self.get_cancel_requested().store(0, Ordering::Release);
     }
 
     /// Check if cancel_requested is set for the given generation.
@@ -614,9 +601,7 @@ pub trait InterruptHandle: Debug + Send + Sync {
     fn is_cancel_requested_for_generation(&self, generation: u64) -> bool {
         const CANCEL_REQUESTED_BIT: u64 = 1 << 63;
         const MAX_GENERATION: u64 = CANCEL_REQUESTED_BIT - 1;
-        let raw = self
-            .get_cancel_requested()
-            .load(std::sync::atomic::Ordering::Acquire);
+        let raw = self.get_cancel_requested().load(Ordering::Acquire);
         let is_set = raw & CANCEL_REQUESTED_BIT != 0;
         let stored_generation = raw & MAX_GENERATION;
         is_set && stored_generation == generation
@@ -629,11 +614,9 @@ pub trait InterruptHandle: Debug + Send + Sync {
     fn set_running_bit(&self) -> u64 {
         const RUNNING_BIT: u64 = 1 << 63;
         self.get_running()
-            .fetch_update(
-                std::sync::atomic::Ordering::Release,
-                std::sync::atomic::Ordering::Acquire,
-                |raw| Some(raw | RUNNING_BIT),
-            )
+            .fetch_update(Ordering::Release, Ordering::Acquire, |raw| {
+                Some(raw | RUNNING_BIT)
+            })
             .map(|raw| raw & !RUNNING_BIT) // Return the current generation
             .unwrap_or(0)
     }
@@ -649,19 +632,15 @@ pub trait InterruptHandle: Debug + Send + Sync {
         const RUNNING_BIT: u64 = 1 << 63;
         const MAX_GENERATION: u64 = RUNNING_BIT - 1;
         self.get_running()
-            .fetch_update(
-                std::sync::atomic::Ordering::Release,
-                std::sync::atomic::Ordering::Acquire,
-                |raw| {
-                    let current_generation = raw & !RUNNING_BIT;
-                    let running_bit = raw & RUNNING_BIT;
-                    if current_generation == MAX_GENERATION {
-                        // Restart generation from 0
-                        return Some(running_bit);
-                    }
-                    Some((current_generation + 1) | running_bit)
-                },
-            )
+            .fetch_update(Ordering::Release, Ordering::Acquire, |raw| {
+                let current_generation = raw & !RUNNING_BIT;
+                let running_bit = raw & RUNNING_BIT;
+                if current_generation == MAX_GENERATION {
+                    // Restart generation from 0
+                    return Some(running_bit);
+                }
+                Some((current_generation + 1) | running_bit)
+            })
             .map(|raw| (raw & !RUNNING_BIT) + 1) // Return the NEW generation
             .unwrap_or(1) // If wrapped, return 1
     }
@@ -673,9 +652,7 @@ pub trait InterruptHandle: Debug + Send + Sync {
     /// - generation: current generation counter value
     fn get_running_and_generation(&self) -> (bool, u64) {
         const RUNNING_BIT: u64 = 1 << 63;
-        let raw = self
-            .get_running()
-            .load(std::sync::atomic::Ordering::Acquire);
+        let raw = self.get_running().load(Ordering::Acquire);
         let running = raw & RUNNING_BIT != 0;
         let generation = raw & !RUNNING_BIT;
         (running, generation)
@@ -689,7 +666,7 @@ pub trait InterruptHandle: Debug + Send + Sync {
     fn clear_running_bit(&self) -> u64 {
         const RUNNING_BIT: u64 = 1 << 63;
         self.get_running()
-            .fetch_and(!RUNNING_BIT, std::sync::atomic::Ordering::Release)
+            .fetch_and(!RUNNING_BIT, Ordering::Release)
     }
 }
 
@@ -884,34 +861,31 @@ impl InterruptHandle for LinuxInterruptHandle {
         // right before sending each signal, ensuring they're always in sync
         self.send_signal(true)
     }
+
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
         self.debug_interrupt.store(true, Ordering::Relaxed);
         self.send_signal(false)
     }
 
+    fn dropped(&self) -> bool {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(any(kvm, mshv3))]
+impl InterruptHandleInternal for LinuxInterruptHandle {
     fn get_call_active(&self) -> &AtomicBool {
         &self.call_active
     }
 
-    fn get_dropped(&self) -> &AtomicBool {
-        &self.dropped
-    }
-
-    #[cfg(any(kvm, mshv))]
     fn get_running(&self) -> &AtomicU64 {
         &self.running
     }
 
-    #[cfg(any(kvm, mshv))]
     fn get_cancel_requested(&self) -> &AtomicU64 {
         &self.cancel_requested
     }
-
-    // #[cfg(any(kvm, mshv))]
-    // fn increment_generation_internal(&self) -> u64 {
-    //     self.increment_generation()
-    // }
 }
 
 #[cfg(all(test, any(target_os = "windows", kvm)))]
