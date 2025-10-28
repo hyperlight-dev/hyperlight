@@ -14,9 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv3)]
-extern crate mshv_ioctls;
-
 use std::array::TryFromSliceError;
 use std::cell::{BorrowError, BorrowMutError};
 use std::convert::Infallible;

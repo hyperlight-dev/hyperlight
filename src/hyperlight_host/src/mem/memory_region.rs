@@ -14,11 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv3)]
-extern crate mshv_bindings;
-#[cfg(mshv3)]
-extern crate mshv_ioctls;
-
 use std::ops::Range;
 
 use bitflags::bitflags;
@@ -30,9 +25,8 @@ use kvm_bindings::{KVM_MEM_READONLY, kvm_userspace_memory_region};
 #[cfg(mshv3)]
 use mshv_bindings::{
     MSHV_SET_MEM_BIT_EXECUTABLE, MSHV_SET_MEM_BIT_UNMAP, MSHV_SET_MEM_BIT_WRITABLE,
+    hv_x64_memory_intercept_message, mshv_user_mem_region,
 };
-#[cfg(mshv3)]
-use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
 
