@@ -43,9 +43,9 @@ pub use trace::{
 };
 
 /// Maximum number of spans that the guest can store
-const MAX_NO_OF_SPANS: usize = 10;
+pub const MAX_NO_OF_SPANS: usize = 10;
 /// Maximum number of events that the guest can store
-const MAX_NO_OF_EVENTS: usize = 10;
+pub const MAX_NO_OF_EVENTS: usize = 10;
 /// Maximum length a name can have in a span/event
 const MAX_NAME_LENGTH: usize = 64;
 /// Maximum length the target can have in a span/event
@@ -57,23 +57,18 @@ const MAX_FIELD_VALUE_LENGTH: usize = 96;
 /// Maximum number of fields a span/event can have
 const MAX_NO_OF_FIELDS: usize = 8;
 
-/// Alias for the complicated heapless::Vec type for Spans
-pub type Spans = hl::Vec<
-    GuestSpan<
-        MAX_NAME_LENGTH,
-        MAX_TARGET_LENGTH,
-        MAX_FIELD_KEY_LENGTH,
-        MAX_FIELD_VALUE_LENGTH,
-        MAX_NO_OF_FIELDS,
-    >,
-    MAX_NO_OF_SPANS,
+/// Alias for the complicated GuestSpan type
+pub type Span = GuestSpan<
+    MAX_NAME_LENGTH,
+    MAX_TARGET_LENGTH,
+    MAX_FIELD_KEY_LENGTH,
+    MAX_FIELD_VALUE_LENGTH,
+    MAX_NO_OF_FIELDS,
 >;
 
-/// Alias for the complicated heapless::Vec type for Events
-pub type Events = hl::Vec<
-    GuestEvent<MAX_NAME_LENGTH, MAX_FIELD_KEY_LENGTH, MAX_FIELD_VALUE_LENGTH, MAX_NO_OF_FIELDS>,
-    MAX_NO_OF_EVENTS,
->;
+/// Alias for the complicated GuestEvent type
+pub type Event =
+    GuestEvent<MAX_NAME_LENGTH, MAX_FIELD_KEY_LENGTH, MAX_FIELD_VALUE_LENGTH, MAX_NO_OF_FIELDS>;
 
 /// The trace level assigned to a span/event
 #[derive(Debug, Copy, Clone)]

@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
 use hyperlight_common::outb::OutBAction;
-use hyperlight_guest_tracing::{Events, Spans};
 use opentelemetry::global::BoxedSpan;
 use opentelemetry::trace::{Span as _, TraceContextExt, Tracer as _};
 use opentelemetry::{Context, KeyValue, global};
@@ -34,8 +33,8 @@ use crate::{HyperlightError, Result, new_error};
 /// Type that helps get the data from the guest provided the registers and memory access
 struct TraceBatch {
     pub guest_start_tsc: u64,
-    pub spans: Spans,
-    pub events: Events,
+    pub spans: Vec<hyperlight_guest_tracing::Span>,
+    pub events: Vec<hyperlight_guest_tracing::Event>,
 }
 
 impl TryFrom<(&CommonRegisters, &SandboxMemoryManager<HostSharedMemory>)> for TraceBatch {
@@ -52,39 +51,67 @@ impl TryFrom<(&CommonRegisters, &SandboxMemoryManager<HostSharedMemory>)> for Tr
             return Err(new_error!("A TraceBatch is not present"));
         }
 
-        // Transmute spans_ptr to Spans type
-        let mut spans = vec![0u8; std::mem::size_of::<Spans>()];
-        mem_mgr
-            .shared_mem
-            .copy_to_slice(&mut spans, spans_ptr - SandboxMemoryLayout::BASE_ADDRESS)
-            .map_err(|e| {
-                new_error!(
-                    "Failed to copy guest trace batch from guest memory to host: {:?}",
-                    e
-                )
-            })?;
+        // Allocate vector with capacity for spans
+        let mut spans: Vec<hyperlight_guest_tracing::Span> =
+            Vec::with_capacity(hyperlight_guest_tracing::MAX_NO_OF_SPANS);
 
-        let spans: Spans = unsafe {
-            let raw = spans.as_slice() as *const _ as *const Spans;
-            raw.read_unaligned()
-        };
+        {
+            // Calculate the number of bytes to copy
+            let bytes_len =
+                std::mem::size_of::<hyperlight_guest_tracing::Span>() * spans.capacity();
+            // Get the spare capacity as a mutable slice
+            let spare = spans.spare_capacity_mut();
+            // Create a slice from the spare capacity
+            let slice =
+                unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, bytes_len) };
 
-        // Transmute events_ptr to Events type
-        let mut events = vec![0u8; std::mem::size_of::<Events>()];
-        mem_mgr
-            .shared_mem
-            .copy_to_slice(&mut events, events_ptr - SandboxMemoryLayout::BASE_ADDRESS)
-            .map_err(|e| {
-                new_error!(
-                    "Failed to copy guest trace batch from guest memory to host: {:?}",
-                    e
-                )
-            })?;
+            // Copy the data from guest memory to host slice
+            mem_mgr
+                .shared_mem
+                .copy_to_slice(slice, spans_ptr - SandboxMemoryLayout::BASE_ADDRESS)
+                .map_err(|e| {
+                    new_error!(
+                        "Failed to copy guest trace batch from guest memory to host: {:?}",
+                        e
+                    )
+                })?;
+        }
 
-        let events: Events = unsafe {
-            let raw = events.as_slice() as *const _ as *const Events;
-            raw.read_unaligned()
-        };
+        // Safe because we just filled the vector with valid data
+        unsafe {
+            spans.set_len(hyperlight_guest_tracing::MAX_NO_OF_SPANS);
+        }
+
+        // Allocate vector with capacity for events
+        let mut events: Vec<hyperlight_guest_tracing::Event> =
+            Vec::with_capacity(hyperlight_guest_tracing::MAX_NO_OF_EVENTS);
+
+        {
+            // Calculate the number of bytes to copy
+            let bytes_len =
+                std::mem::size_of::<hyperlight_guest_tracing::Event>() * events.capacity();
+            // Get the spare capacity as a mutable slice
+            let spare = events.spare_capacity_mut();
+            // Create a slice from the spare capacity
+            let slice =
+                unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, bytes_len) };
+
+            // Copy the data from guest memory to host slice
+            mem_mgr
+                .shared_mem
+                .copy_to_slice(slice, events_ptr - SandboxMemoryLayout::BASE_ADDRESS)
+                .map_err(|e| {
+                    new_error!(
+                        "Failed to copy guest trace batch from guest memory to host: {:?}",
+                        e
+                    )
+                })?;
+        }
+
+        // Safe because we just filled the vector with valid data
+        unsafe {
+            events.set_len(hyperlight_guest_tracing::MAX_NO_OF_EVENTS);
+        }
 
         Ok(TraceBatch {
             guest_start_tsc,
