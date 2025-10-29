@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-common"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -1357,7 +1357,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-macro"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "env_logger",
  "hyperlight-component-util",
@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-util"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "itertools 0.14.0",
  "log",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -1404,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-bin"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "buddy_system_allocator",
  "cc",
@@ -1419,7 +1419,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "hyperlight-common",
  "hyperlight-guest-tracing-macro",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing-macro"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-host"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "bitflags 2.9.3",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight_guest_capi"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "cbindgen",
  "hyperlight-common",
