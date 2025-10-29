@@ -37,7 +37,7 @@ use super::{
     CR0_AM, CR0_ET, CR0_MP, CR0_NE, CR0_PE, CR0_PG, CR0_WP, CR4_OSFXSR, CR4_OSXMMEXCPT, CR4_PAE,
     EFER_LMA, EFER_LME, EFER_NX, EFER_SCE,
 };
-use super::{HyperlightExit, Hypervisor, InterruptHandle, LinuxInterruptHandle, VirtualCPU};
+use super::{HyperlightExit, Hypervisor, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::hypervisor::get_memory_access_violation;
@@ -356,7 +356,8 @@ impl KVMDriver {
 
         let interrupt_handle = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
-            cancel_requested: AtomicBool::new(false),
+            cancel_requested: AtomicU64::new(0),
+            call_active: AtomicBool::new(false),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
             #[cfg(all(
@@ -664,17 +665,18 @@ impl Hypervisor for KVMDriver {
     fn run(&mut self) -> Result<HyperlightExit> {
         self.interrupt_handle
             .tid
-            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Relaxed);
-        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
-        // Then this is fine since `cancel_requested` is set to true, so we will skip the `VcpuFd::run()` call
-        self.interrupt_handle
-            .set_running_and_increment_generation()
-            .map_err(|e| {
-                new_error!(
-                    "Error setting running state and incrementing generation: {}",
-                    e
-                )
-            })?;
+            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Release);
+        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
+        // Cast to internal trait for access to internal methods
+        let interrupt_handle_internal =
+            self.interrupt_handle.as_ref() as &dyn super::InterruptHandleInternal;
+
+        // (after set_running_bit but before checking cancel_requested):
+        // - kill() will stamp cancel_requested with the current generation
+        // - We will check cancel_requested below and skip the VcpuFd::run() call
+        // - This is the desired behavior - the kill takes effect immediately
+        let generation = interrupt_handle_internal.set_running_bit();
+
         #[cfg(not(gdb))]
         let debug_interrupt = false;
         #[cfg(gdb)]
@@ -682,14 +684,15 @@ impl Hypervisor for KVMDriver {
             .interrupt_handle
             .debug_interrupt
             .load(Ordering::Relaxed);
-        // Don't run the vcpu if `cancel_requested` is true
+        // Don't run the vcpu if `cancel_requested` is set for our generation
         //
-        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
-        // Then this is fine since `cancel_requested` is set to true, so we will skip the `VcpuFd::run()` call
-        let exit_reason = if self
-            .interrupt_handle
-            .cancel_requested
-            .load(Ordering::Relaxed)
+        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
+        // (after checking cancel_requested but before vcpu.run()):
+        // - kill() will stamp cancel_requested with the current generation
+        // - We will proceed with vcpu.run(), but signals will be sent to interrupt it
+        // - The vcpu will be interrupted and return EINTR (handled below)
+        let exit_reason = if interrupt_handle_internal
+            .is_cancel_requested_for_generation(generation)
             || debug_interrupt
         {
             Err(kvm_ioctls::Error::new(libc::EINTR))
@@ -703,34 +706,39 @@ impl Hypervisor for KVMDriver {
                     Some(hyperlight_guest_tracing::invariant_tsc::read_tsc());
             }
 
-            // Note: if a `InterruptHandle::kill()` called while this thread is **here**
-            // Then the vcpu will run, but we will keep sending signals to this thread
-            // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
-            // return either normally with an exit reason, or from being "kicked" by out signal handler, with an EINTR error,
-            // both of which are fine.
+            // Note: if `InterruptHandle::kill()` is called while this thread is **here**
+            // (during vcpu.run() execution):
+            // - kill() stamps cancel_requested with the current generation
+            // - kill() sends signals (SIGRTMIN+offset) to this thread repeatedly
+            // - The signal handler is a no-op, but it causes vcpu.run() to return EINTR
+            // - We check cancel_requested below and return Cancelled if generation matches
             self.vcpu_fd.run()
         };
-        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
-        // Then signals will be sent to this thread until `running` is set to false.
-        // This is fine since the signal handler is a no-op.
-        let cancel_requested = self
-            .interrupt_handle
-            .cancel_requested
-            .load(Ordering::Relaxed);
+        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
+        // (after vcpu.run() returns but before clear_running_bit):
+        // - kill() continues sending signals to this thread (running bit is still set)
+        // - The signals are harmless (no-op handler), we just need to check cancel_requested
+        // - We load cancel_requested below to determine if this run was cancelled
+        let cancel_requested =
+            interrupt_handle_internal.is_cancel_requested_for_generation(generation);
         #[cfg(gdb)]
         let debug_interrupt = self
             .interrupt_handle
             .debug_interrupt
             .load(Ordering::Relaxed);
-        // Note: if a `InterruptHandle::kill()` called while this thread is **here**
-        // Then `cancel_requested` will be set to true again, which will cancel the **next vcpu run**.
-        // Additionally signals will be sent to this thread until `running` is set to false.
-        // This is fine since the signal handler is a no-op.
-        self.interrupt_handle.clear_running_bit();
-        // At this point, `running` is false so no more signals will be sent to this thread,
-        // but we may still receive async signals that were sent before this point.
-        // To prevent those signals from interrupting subsequent calls to `run()` (on other vms!),
-        // we make sure to check `cancel_requested` before cancelling (see `libc::EINTR` match-arm below).
+        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
+        // (after loading cancel_requested but before clear_running_bit):
+        // - kill() stamps cancel_requested with the CURRENT generation (not the one we just loaded)
+        // - kill() continues sending signals until running bit is cleared
+        // - The newly stamped cancel_requested will affect the NEXT vcpu.run() call
+        // - Signals sent now are harmless (no-op handler)
+        interrupt_handle_internal.clear_running_bit();
+        // At this point, running bit is clear so kill() will stop sending signals.
+        // However, we may still receive delayed signals that were sent before clear_running_bit.
+        // These stale signals are harmless because:
+        // - The signal handler is a no-op
+        // - We check generation matching in cancel_requested before treating EINTR as cancellation
+        // - If generation doesn't match, we return Retry instead of Cancelled
         let result = match exit_reason {
             Ok(VcpuExit::Hlt) => {
                 crate::debug!("KVM - Halt Details : {:#?}", &self);
@@ -779,14 +787,16 @@ impl Hypervisor for KVMDriver {
                 }
             },
             Err(e) => match e.errno() {
-                // we send a signal to the thread to cancel execution this results in EINTR being returned by KVM so we return Cancelled
+                // We send a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
                 libc::EINTR => {
-                    // If cancellation was not requested for this specific vm, the vcpu was interrupted because of debug interrupt or
-                    // a stale signal that meant to be delivered to a previous/other vcpu on this same thread, so let's ignore it
+                    // Check if cancellation was requested for THIS specific generation.
+                    // If not, the EINTR came from:
+                    // - A debug interrupt (if GDB is enabled)
+                    // - A stale signal from a previous guest call (generation mismatch)
+                    // - A signal meant for a different sandbox on the same thread
+                    // In these cases, we return Retry to continue execution.
                     if cancel_requested {
-                        self.interrupt_handle
-                            .cancel_requested
-                            .store(false, Ordering::Relaxed);
+                        interrupt_handle_internal.clear_cancel_requested();
                         HyperlightExit::Cancelled()
                     } else {
                         #[cfg(gdb)]
@@ -827,7 +837,7 @@ impl Hypervisor for KVMDriver {
         self as &mut dyn Hypervisor
     }
 
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
+    fn interrupt_handle(&self) -> Arc<dyn super::InterruptHandleInternal> {
         self.interrupt_handle.clone()
     }
 

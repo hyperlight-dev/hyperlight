@@ -196,6 +196,27 @@ pub enum HyperlightError {
     #[error("Failure processing PE File {0:?}")]
     PEFileProcessingFailure(#[from] goblin::error::Error),
 
+    /// The sandbox becomes **poisoned** when the guest is not run to completion, leaving it in
+    /// an inconsistent state that could compromise memory safety, data integrity, or security.
+    ///
+    /// ### When Does Poisoning Occur?
+    ///
+    /// Poisoning happens when guest execution is interrupted before normal completion:
+    ///
+    /// - **Guest panics or aborts** - When a guest function panics, crashes, or calls `abort()`,
+    ///   the normal cleanup and unwinding process is interrupted
+    /// - **Invalid memory access** - Attempts to read/write/execute memory outside allowed regions
+    /// - **Stack overflow** - Guest exhausts its stack space during execution
+    /// - **Heap exhaustion** - Guest runs out of heap memory
+    /// - **Host-initiated cancellation** - Calling [`InterruptHandle::kill()`] to forcefully
+    ///   terminate an in-progress guest function
+    ///
+    /// ## Recovery
+    ///
+    /// Use [`crate::MultiUseSandbox::restore()`] to recover from a poisoned sandbox.
+    #[error("The sandbox was poisoned")]
+    PoisonedSandbox,
+
     /// Raw pointer is less than base address
     #[error("Raw pointer ({0:?}) was less than the base address ({1})")]
     RawPointerLessThanBaseAddress(RawPtr, u64),
@@ -298,6 +319,96 @@ impl<T> From<PoisonError<MutexGuard<'_, T>>> for HyperlightError {
             None => String::from(""),
         };
         HyperlightError::LockAttemptFailed(source)
+    }
+}
+
+impl HyperlightError {
+    /// Internal helper to determines if the given error has potential to poison the sandbox.
+    ///
+    /// Errors that poison the sandbox are those that can leave the sandbox in an inconsistent
+    /// state where memory, resources, or data structures may be corrupted or leaked. Usually
+    /// due to the guest not running to completion.
+    ///
+    /// If this method returns `true`, the sandbox will be poisoned and all further operations
+    /// will fail until the sandbox is restored from a non-poisoned snapshot using
+    /// [`crate::MultiUseSandbox::restore()`].
+    pub(crate) fn is_poison_error(&self) -> bool {
+        // wildcard _ or matches! not used here purposefully to ensure that new error variants
+        // are explicitly considered for poisoning behavior.
+        match self {
+            // These errors poison the sandbox because they can leave it in an inconsistent state due
+            // to the guest not running to completion.
+            HyperlightError::GuestAborted(_, _)
+            | HyperlightError::ExecutionCanceledByHost()
+            | HyperlightError::PoisonedSandbox
+            | HyperlightError::ExecutionAccessViolation(_)
+            | HyperlightError::StackOverflow()
+            | HyperlightError::MemoryAccessViolation(_, _, _) => true,
+            #[cfg(all(feature = "seccomp", target_os = "linux"))]
+            HyperlightError::DisallowedSyscall => true,
+
+            // All other errors do not poison the sandbox.
+            HyperlightError::AnyhowError(_)
+            | HyperlightError::BoundsCheckFailed(_, _)
+            | HyperlightError::CheckedAddOverflow(_, _)
+            | HyperlightError::CStringConversionError(_)
+            | HyperlightError::Error(_)
+            | HyperlightError::FailedToGetValueFromParameter()
+            | HyperlightError::FieldIsMissingInGuestLogData(_)
+            | HyperlightError::GuestError(_, _)
+            | HyperlightError::GuestExecutionHungOnHostFunctionCall()
+            | HyperlightError::GuestFunctionCallAlreadyInProgress()
+            | HyperlightError::GuestInterfaceUnsupportedType(_)
+            | HyperlightError::GuestOffsetIsInvalid(_)
+            | HyperlightError::HostFunctionNotFound(_)
+            | HyperlightError::IOError(_)
+            | HyperlightError::IntConversionFailure(_)
+            | HyperlightError::InvalidFlatBuffer(_)
+            | HyperlightError::JsonConversionFailure(_)
+            | HyperlightError::LockAttemptFailed(_)
+            | HyperlightError::MemoryAllocationFailed(_)
+            | HyperlightError::MemoryProtectionFailed(_)
+            | HyperlightError::MemoryRequestTooBig(_, _)
+            | HyperlightError::MetricNotFound(_)
+            | HyperlightError::MmapFailed(_)
+            | HyperlightError::MprotectFailed(_)
+            | HyperlightError::NoHypervisorFound()
+            | HyperlightError::NoMemorySnapshot
+            | HyperlightError::ParameterValueConversionFailure(_, _)
+            | HyperlightError::PEFileProcessingFailure(_)
+            | HyperlightError::RawPointerLessThanBaseAddress(_, _)
+            | HyperlightError::RefCellBorrowFailed(_)
+            | HyperlightError::RefCellMutBorrowFailed(_)
+            | HyperlightError::ReturnValueConversionFailure(_, _)
+            | HyperlightError::SnapshotSandboxMismatch
+            | HyperlightError::SystemTimeError(_)
+            | HyperlightError::TryFromSliceError(_)
+            | HyperlightError::UnexpectedNoOfArguments(_, _)
+            | HyperlightError::UnexpectedParameterValueType(_, _)
+            | HyperlightError::UnexpectedReturnValueType(_, _)
+            | HyperlightError::UTF8StringConversionFailure(_)
+            | HyperlightError::VectorCapacityIncorrect(_, _, _) => false,
+
+            #[cfg(target_os = "windows")]
+            HyperlightError::CrossBeamReceiveError(_) => false,
+            #[cfg(target_os = "windows")]
+            HyperlightError::CrossBeamSendError(_) => false,
+            #[cfg(target_os = "windows")]
+            HyperlightError::WindowsAPIError(_) => false,
+            #[cfg(target_os = "linux")]
+            HyperlightError::VmmSysError(_) => false,
+            #[cfg(kvm)]
+            HyperlightError::KVMError(_) => false,
+            #[cfg(mshv)]
+            HyperlightError::MSHVError(_) => false,
+            #[cfg(gdb)]
+            HyperlightError::TranslateGuestAddress(_) => false,
+            #[cfg(all(feature = "seccomp", target_os = "linux"))]
+            HyperlightError::SeccompFilterError(_) => false,
+
+            #[cfg(all(feature = "seccomp", target_os = "linux"))]
+            HyperlightError::SeccompFilterBackendError(_) => false,
+        }
     }
 }
 

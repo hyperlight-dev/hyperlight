@@ -4,6 +4,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.9.1] - 2025-10-29
+
+### Fixed
+
+- Fix race condition when killing sandboxes by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/959 and  https://github.com/hyperlight-dev/hyperlight/pull/994
+
+### Changed
+
+- Added poison sandbox detection  by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/931
+
 ## [v0.9.0] - 2025-08-28
 
 ### Fixed
@@ -188,7 +198,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.9.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.9.1..HEAD>
+[v0.9.1]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.8.0...v0.9.1>
 [v0.9.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.8.0...v0.9.0>
 [v0.8.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.7.0...v0.8.0>
 [v0.7.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.6.1...v0.7.0>
