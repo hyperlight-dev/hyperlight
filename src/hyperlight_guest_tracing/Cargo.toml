@@ -13,7 +13,7 @@ description = """Provides the tracing functionality for the hyperlight guest."""
 heapless = { version = "0.9.1", features = ["serde"] }
 hyperlight-common = { workspace = true, default-features = false }
 spin = "0.10.0"
-tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
+tracing = { version = "0.1.41", default-features = false, features = ["attributes", "log"] }
 tracing-core = { version = "0.1.34", default-features = false }
 
 [lints]
