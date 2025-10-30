@@ -304,6 +304,8 @@ impl MultiUseSandbox {
             unsafe { self.vm.map_region(&region)? };
         }
 
+        self.vm.reset_vcpu()?;
+
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
 
@@ -797,6 +799,7 @@ mod tests {
 
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
     use hyperlight_testing::simple_guest_as_string;
+    use rand::seq::IteratorRandom;
 
     #[cfg(target_os = "linux")]
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -1304,5 +1307,52 @@ mod tests {
             u_sbox.evolve().unwrap()
         };
         assert_ne!(sandbox3.id, sandbox_id);
+    }
+
+    #[test]
+    fn test_read_write_msr() {
+        let value: u64 = 0x0;
+
+        const N: usize = 100;
+
+        let msr_numbers = (0x0u32..0x20u32)
+            .chain(0x40000000u32..0x40000100u32)
+            .chain(0x80000000u32..0x80002000u32)
+            .chain(0xC0000000u32..0xC0002000u32)
+            .chain(0xC0010000u32..0xC0012000u32)
+            .choose_multiple(&mut rand::rng(), N);
+
+        for msr_number in msr_numbers {
+            // Create a fresh sandbox for each MSR test to ensure complete isolation
+            let mut sbox = UninitializedSandbox::new(
+                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+                None,
+            )
+            .unwrap()
+            .evolve()
+            .unwrap();
+
+            let err = sbox.call::<u64>("ReadMSR", msr_number).unwrap_err();
+            assert!(
+                matches!(err, HyperlightError::MsrReadViolation(msr) if msr == msr_number),
+                "got error: {:?}",
+                err
+            );
+            let mut sbox = UninitializedSandbox::new(
+                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+                None,
+            )
+            .unwrap()
+            .evolve()
+            .unwrap();
+            let err = sbox
+                .call::<()>("WriteMSR", (msr_number, value))
+                .unwrap_err();
+            assert!(
+                matches!(err, HyperlightError::MsrWriteViolation(msr_idx, value) if msr_idx == msr_number && value == value),
+                "got error: {:?}",
+                err
+            );
+        }
     }
 }

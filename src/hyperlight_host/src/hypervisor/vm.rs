@@ -18,6 +18,7 @@ use std::fmt::Debug;
 
 use super::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::Result;
+use crate::hypervisor::regs::CommonDebugRegs;
 use crate::mem::memory_region::MemoryRegion;
 
 /// Trait for single-vCPU VMs. Provides a common interface for basic VM operations.
@@ -40,9 +41,18 @@ pub(crate) trait Vm: Send + Sync + Debug {
     fn fpu(&self) -> Result<CommonFpu>;
     /// Set the FPU registers of the vCPU
     fn set_fpu(&self, fpu: &CommonFpu) -> Result<()>;
-    /// xsave
-    #[cfg(crashdump)]
+
+    /// Get xsave
+    #[allow(dead_code)]
     fn xsave(&self) -> Result<Vec<u8>>;
+    /// Set xsave
+    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()>;
+
+    /// Get the debug registers of the vCPU
+    #[allow(dead_code)]
+    fn debug_regs(&self) -> Result<CommonDebugRegs>;
+    /// Set the debug registers of the vCPU
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()>;
 
     /// Map memory region into this VM
     ///
@@ -58,6 +68,9 @@ pub(crate) trait Vm: Send + Sync + Debug {
 
     /// Runs the vCPU until it exits
     fn run_vcpu(&mut self) -> Result<VmExit>;
+
+    /// Enable MSR intercepts to trap all MSR accesses (read and write).
+    fn enable_msr_intercept(&mut self) -> Result<()>;
 
     // --------------------------
     // --- DEBUGGING BELOW ------
@@ -108,6 +121,10 @@ pub(crate) enum VmExit {
     Cancelled(),
     /// The vCPU has exited for a reason that is not handled by Hyperlight
     Unknown(String),
+    /// The vCPU tried to read from the given MSR
+    MsrRead(u32),
+    /// The vCPU tried to write to the given MSR with the given value
+    MsrWrite { msr_index: u32, value: u64 },
     /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
     #[cfg_attr(
         target_os = "windows",

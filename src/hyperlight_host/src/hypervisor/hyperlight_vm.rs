@@ -46,7 +46,7 @@ use crate::hypervisor::hyperv_linux::MshvVm;
 use crate::hypervisor::hyperv_windows::WhpVm;
 #[cfg(kvm)]
 use crate::hypervisor::kvm::KvmVm;
-use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::hypervisor::regs::{CommonDebugRegs, CommonSpecialRegisters};
 use crate::hypervisor::vm::{Vm, VmExit};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
@@ -115,6 +115,8 @@ impl HyperlightVm {
             Some(HypervisorType::Whp) => Box::new(WhpVm::new(handle, raw_size)?),
             None => return Err(NoHypervisorFound()),
         };
+
+        vm.enable_msr_intercept()?;
 
         for (i, region) in mem_regions.iter().enumerate() {
             // Safety: slots are unique and region points to valid memory since we created the regions
@@ -532,6 +534,12 @@ impl HyperlightVm {
                         }
                     }
                 }
+                Ok(VmExit::MsrRead(msr_index)) => {
+                    break Err(HyperlightError::MsrReadViolation(msr_index));
+                }
+                Ok(VmExit::MsrWrite { msr_index, value }) => {
+                    break Err(HyperlightError::MsrWriteViolation(msr_index, value));
+                }
                 Ok(VmExit::Cancelled()) => {
                     // If cancellation was not requested for this specific guest function call,
                     // the vcpu was interrupted by a stale cancellation from a previous call
@@ -590,6 +598,16 @@ impl HyperlightVm {
 
     pub(crate) fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
+    }
+
+    pub(crate) fn reset_vcpu(&self) -> Result<()> {
+        self.vm.set_regs(&CommonRegisters::default())?;
+        self.vm.set_sregs(&CommonSpecialRegisters::default())?;
+        self.vm.set_fpu(&CommonFpu::default())?;
+        self.vm.set_xsave(&[0; 1024])?;
+        self.vm.set_debug_regs(&CommonDebugRegs::default())?;
+        // TODO reset MSRs
+        Ok(())
     }
 
     #[cfg(gdb)]
