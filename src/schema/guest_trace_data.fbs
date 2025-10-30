@@ -1,0 +1,45 @@
+namespace Hyperlight.Generated;
+
+table KeyValue {
+    key: string (required);
+    value: string (required);
+}
+
+table OpenSpanType {
+    id: ulong;
+    parent: ulong = null;
+    name: string (required);
+    target: string (required);
+    tsc: ulong;
+    fields: [KeyValue];
+}
+
+table CloseSpanType {
+    id: ulong;
+    tsc: ulong;
+}
+
+table LogEventType {
+    parent_id: ulong;
+    name: string (required);
+    tsc: ulong;
+    fields: [KeyValue];
+}
+
+// Result-like union
+union GuestEventType {
+    OpenSpanType,
+    CloseSpanType,
+    LogEventType,
+}
+
+table GuestEventEnvelopeType {
+    event: GuestEventType;
+}
+
+table GuestTraceDataType {
+    start_tsc: ulong;
+    events: [GuestEventEnvelopeType];
+}
+
+root_type GuestTraceDataType;
