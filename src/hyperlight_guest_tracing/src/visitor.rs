@@ -15,59 +15,49 @@ limitations under the License.
 */
 extern crate alloc;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use heapless as hl;
+use hyperlight_common::flatbuffer_wrappers::guest_trace_data::KeyValue;
 use tracing_core::field::{Field, Visit};
 
 /// Visitor implementation to collect fields into a vector of key-value pairs
-pub(crate) struct FieldsVisitor<'a, const FK: usize, const FV: usize, const F: usize> {
-    pub out: &'a mut hl::Vec<(hl::String<FK>, hl::String<FV>), F>,
+pub(crate) struct FieldsVisitor<'a> {
+    pub out: &'a mut Vec<KeyValue>,
 }
 
-impl<const FK: usize, const FV: usize, const F: usize> Visit for FieldsVisitor<'_, FK, FV, F> {
+impl<'a> Visit for FieldsVisitor<'a> {
     /// Record a byte slice field
     /// # Arguments
     /// * `field` - The field metadata
     /// * `value` - The byte slice value
-    ///   NOTE: This implementation truncates the key and value if they exceed the allocated capacity
-    fn record_bytes(&mut self, field: &Field, value: &[u8]) {
-        let mut k = hl::String::<FK>::new();
-        let mut val = hl::String::<FV>::new();
-        // Shorten key and value if they are bigger than the space allocated
-        let _ = k.push_str(&field.name()[..usize::min(field.name().len(), k.capacity())]);
-        let _ =
-            val.push_str(&alloc::format!("{value:?}")[..usize::min(value.len(), val.capacity())]);
-        let _ = self.out.push((k, val));
+    fn record_bytes(&mut self, f: &Field, v: &[u8]) {
+        let k = String::from(f.name());
+        let mut val = String::new();
+        val.push_str(&alloc::format!("{v:?}"));
+        self.out.push(KeyValue { key: k, value: val });
     }
 
     /// Record a string field
     /// # Arguments
     /// * `f` - The field metadata
     /// * `v` - The string value
-    ///   NOTE: This implementation truncates the key and value if they exceed the allocated capacity
     fn record_str(&mut self, f: &Field, v: &str) {
-        let mut k = heapless::String::<FK>::new();
-        let mut val = heapless::String::<FV>::new();
-        // Shorten key and value if they are bigger than the space allocated
-        let _ = k.push_str(&f.name()[..usize::min(f.name().len(), k.capacity())]);
-        let _ = val.push_str(&v[..usize::min(v.len(), val.capacity())]);
-        let _ = self.out.push((k, val));
+        let k = String::from(f.name());
+        let mut val = String::new();
+        val.push_str(v);
+        self.out.push(KeyValue { key: k, value: val });
     }
 
     /// Record a debug field
     /// # Arguments
     /// * `f` - The field metadata
     /// * `v` - The debug value
-    ///   NOTE: This implementation truncates the key and value if they exceed the allocated capacity
     fn record_debug(&mut self, f: &Field, v: &dyn Debug) {
-        use heapless::String;
-        let mut k = String::<FK>::new();
-        let mut val = String::<FV>::new();
-        // Shorten key and value if they are bigger than the space allocated
-        let _ = k.push_str(&f.name()[..usize::min(f.name().len(), k.capacity())]);
-        let v = alloc::format!("{v:?}");
-        let _ = val.push_str(&v[..usize::min(v.len(), val.capacity())]);
-        let _ = self.out.push((k, val));
+        let k = String::from(f.name());
+        let mut val = String::new();
+        val.push_str(&alloc::format!("{v:?}"));
+        self.out.push(KeyValue { key: k, value: val });
     }
 }

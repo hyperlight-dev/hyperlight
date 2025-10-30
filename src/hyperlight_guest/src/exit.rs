@@ -34,9 +34,8 @@ pub fn halt() {
             unsafe {
                 asm!("hlt",
                     in("r8") OutBAction::TraceBatch as u64,
-                    in("r9") tbi.guest_start_tsc,
-                    in("r10") tbi.spans_ptr,
-                    in("r11") tbi.events_ptr,
+                    in("r9") tbi.serialized_data.as_ptr() as u64,
+                    in("r10") tbi.serialized_data.len() as u64,
                     options(nostack)
                 )
             };
@@ -134,9 +133,8 @@ pub(crate) unsafe fn out32(port: u16, val: u32) {
                     in("dx") port,
                     in("eax") val,
                     in("r8") OutBAction::TraceBatch as u64,
-                    in("r9") tbi.guest_start_tsc,
-                    in("r10") tbi.spans_ptr,
-                    in("r11") tbi.events_ptr,
+                    in("r9") tbi.serialized_data.as_ptr() as u64,
+                    in("r10") tbi.serialized_data.len() as u64,
                     options(preserves_flags, nomem, nostack)
                 )
             };
