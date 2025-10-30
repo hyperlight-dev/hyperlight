@@ -3,5 +3,6 @@ include "function_call_result.fbs";
 include "function_call.fbs";
 include "guest_error.fbs";
 include "guest_log_data.fbs";
+include "guest_trace_data.fbs";
 include "host_function_definition.fbs";
 include "host_function_details.fbs";
