@@ -21,18 +21,23 @@ use std::sync::LazyLock;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
-    FloatingPointUnit, SpecialRegisters, StandardRegisters, hv_message_type,
+    FloatingPointUnit, HV_INTERCEPT_ACCESS_MASK_READ, HV_INTERCEPT_ACCESS_MASK_WRITE,
+    HV_INTERCEPT_ACCESS_READ, HV_INTERCEPT_ACCESS_WRITE, SpecialRegisters, StandardRegisters,
+    XSave, hv_intercept_type_HV_INTERCEPT_TYPE_X64_MSR, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
+    hv_message_type_HVMSG_X64_MSR_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features, hv_register_assoc,
-    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
+    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_install_intercept,
+    mshv_user_mem_region,
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
+use crate::hypervisor::regs::CommonDebugRegs;
 use crate::hypervisor::{HyperlightExit, Hypervisor};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
@@ -108,6 +113,7 @@ impl Hypervisor for MshvVm {
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
         const UNMAPPED_GPA_MESSAGE: hv_message_type = hv_message_type_HVMSG_UNMAPPED_GPA;
         const INVALID_GPA_ACCESS_MESSAGE: hv_message_type = hv_message_type_HVMSG_GPA_INTERCEPT;
+        const MSR_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_MSR_INTERCEPT;
         #[cfg(gdb)]
         const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
@@ -150,6 +156,21 @@ impl Hypervisor for MshvVm {
                         MemoryRegionFlags::READ => HyperlightExit::MmioRead(gpa),
                         MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(gpa),
                         _ => HyperlightExit::Unknown("Unknown MMIO access".to_string()),
+                    }
+                }
+                MSR_MESSAGE => {
+                    let msr_message = m.to_msr_info().map_err(mshv_ioctls::MshvError::from)?;
+                    let edx = msr_message.rdx;
+                    let eax = msr_message.rax;
+                    let written_value = (edx << 32) | eax;
+                    let access = msr_message.header.intercept_access_type as u32;
+                    match access {
+                        HV_INTERCEPT_ACCESS_READ => HyperlightExit::MsrRead(msr_message.msr_number),
+                        HV_INTERCEPT_ACCESS_WRITE => HyperlightExit::MsrWrite {
+                            msr_index: msr_message.msr_number,
+                            value: written_value,
+                        },
+                        _ => HyperlightExit::Unknown(format!("Unknown MSR access type={}", access)),
                     }
                 }
                 #[cfg(gdb)]
@@ -212,6 +233,38 @@ impl Hypervisor for MshvVm {
     fn xsave(&self) -> Result<Vec<u8>> {
         let xsave = self.vcpu_fd.get_xsave()?;
         Ok(xsave.buffer.to_vec())
+    }
+
+    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()> {
+        let mut buf = XSave::default();
+        let (prefix, bytes, suffix) = unsafe { xsave.align_to() };
+        assert!(prefix.is_empty());
+        assert!(suffix.is_empty());
+        buf.buffer.copy_from_slice(bytes);
+        self.vcpu_fd.set_xsave(&buf)?;
+        Ok(())
+    }
+
+    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+        let debug_regs = self.vcpu_fd.get_debug_regs()?;
+        Ok(debug_regs.into())
+    }
+
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+        let mshv_debug_regs = drs.into();
+        self.vcpu_fd.set_debug_regs(&mshv_debug_regs)?;
+        Ok(())
+    }
+
+    fn enable_msr_intercept(&mut self) -> Result<()> {
+        // Install MSR intercepts, will interrupt on all MSR accesses (READ & WRITE)
+        let intercept = mshv_install_intercept {
+            access_type_mask: HV_INTERCEPT_ACCESS_MASK_WRITE | HV_INTERCEPT_ACCESS_MASK_READ,
+            intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_X64_MSR,
+            intercept_parameter: Default::default(),
+        };
+        self.vm_fd.install_intercept(intercept)?;
+        Ok(())
     }
 }
 

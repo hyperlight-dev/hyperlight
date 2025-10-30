@@ -84,6 +84,8 @@ pub struct SandboxConfiguration {
     /// Note: Since real-time signals can vary across platforms, ensure that the offset
     /// results in a signal number that is not already in use by other components of the system.
     interrupt_vcpu_sigrtmin_offset: u8,
+    /// Allow MSR (Model Specific Register) access. This is disabled by default for security reasons.
+    allow_msr: bool,
 }
 
 impl SandboxConfiguration {
@@ -119,6 +121,7 @@ impl SandboxConfiguration {
         interrupt_vcpu_sigrtmin_offset: u8,
         #[cfg(gdb)] guest_debug_info: Option<DebugInfo>,
         #[cfg(crashdump)] guest_core_dump: bool,
+        allow_msr: bool,
     ) -> Self {
         Self {
             input_data_size: max(input_data_size, Self::MIN_INPUT_SIZE),
@@ -135,6 +138,7 @@ impl SandboxConfiguration {
             guest_debug_info,
             #[cfg(crashdump)]
             guest_core_dump,
+            allow_msr,
         }
     }
 
@@ -227,6 +231,22 @@ impl SandboxConfiguration {
         self.guest_debug_info = Some(debug_info);
     }
 
+    /// Set whether MSR access is allowed. By default, MSR access is disabled for security reasons.
+    ///
+    /// # Safety
+    ///
+    /// If enabled, restoring a snapshot will not reset MSRs set by the guest.
+    /// This can result in data leaks between different guest executions (across a snapshot restore).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub unsafe fn set_allow_msr(&mut self, allow_msr: bool) {
+        self.allow_msr = allow_msr;
+    }
+
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_allow_msr(&self) -> bool {
+        self.allow_msr
+    }
+
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_definition_size(&self) -> usize {
         self.host_function_definition_size
@@ -296,6 +316,7 @@ impl Default for SandboxConfiguration {
             None,
             #[cfg(crashdump)]
             true,
+            false,
         )
     }
 }
@@ -324,6 +345,7 @@ mod tests {
             None,
             #[cfg(crashdump)]
             true,
+            false,
         );
         let exe_info = simple_guest_exe_info().unwrap();
 
@@ -358,6 +380,7 @@ mod tests {
             None,
             #[cfg(crashdump)]
             true,
+            false,
         );
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);

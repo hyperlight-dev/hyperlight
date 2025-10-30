@@ -33,7 +33,7 @@ use super::wrappers::HandleWrapper;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use crate::hypervisor::{HyperlightExit, Hypervisor};
+use crate::hypervisor::{CommonDebugRegs, HyperlightExit, Hypervisor};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, log_then_return, new_error};
 
@@ -266,6 +266,23 @@ impl Hypervisor for WhpVm {
             }
             // Execution was cancelled by the host.
             WHvRunVpExitReasonCanceled => HyperlightExit::Cancelled(),
+            // MSR access (read or write) - we configured all MSR writes to cause exits
+            WHvRunVpExitReasonX64MsrAccess => {
+                let msr_access = unsafe { exit_context.Anonymous.MsrAccess };
+                let eax = msr_access.Rax;
+                let edx = msr_access.Rdx;
+                let written_value = (edx << 32) | eax;
+                let access = unsafe { msr_access.AccessInfo.AsUINT32 };
+                // Missing from rust bindings for some reason, see https://github.com/MicrosoftDocs/Virtualization-Documentation/blob/265f685159dfd3b2fae8d1dcf1b7d206c31ee880/virtualization/api/hypervisor-platform/headers/WinHvPlatformDefs.h#L3020
+                match access {
+                    0 => HyperlightExit::MsrRead(msr_access.MsrNumber),
+                    1 => HyperlightExit::MsrWrite {
+                        msr_index: msr_access.MsrNumber,
+                        value: written_value,
+                    },
+                    _ => HyperlightExit::Unknown(format!("Unknown MSR access type={}", access)),
+                }
+            }
             #[cfg(gdb)]
             WHvRunVpExitReasonException => {
                 let exception = unsafe { exit_context.Anonymous.VpException };
@@ -450,6 +467,38 @@ impl Hypervisor for WhpVm {
         }
 
         Ok(xsave_buffer)
+    }
+
+    fn set_xsave(&self, _xsave: &[u32; 1024]) -> Result<()> {
+        todo!()
+    }
+
+    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+        todo!()
+    }
+
+    fn set_debug_regs(&self, _drs: &CommonDebugRegs) -> Result<()> {
+        todo!()
+    }
+
+    fn enable_msr_intercept(&mut self) -> Result<()> {
+        // Enable MSR exits through Extended VM Exits
+        // Note: This must be set BEFORE WHvSetupPartition for WHP, so this implementation
+        // is a no-op since the setup is already done in the constructor.
+        // For WHP, MSR intercepts must be enabled during partition creation.
+        // X64MsrExit bit position, missing from rust bindings for some reason.
+        // See https://github.com/MicrosoftDocs/Virtualization-Documentation/blob/265f685159dfd3b2fae8d1dcf1b7d206c31ee880/virtualization/api/hypervisor-platform/headers/WinHvPlatformDefs.h#L1495
+        let mut extended_exits_property = WHV_PARTITION_PROPERTY::default();
+        extended_exits_property.ExtendedVmExits.AsUINT64 = 1 << 1;
+        unsafe {
+            WHvSetPartitionProperty(
+                self.partition,
+                WHvPartitionPropertyCodeExtendedVmExits,
+                &extended_exits_property as *const _ as *const _,
+                std::mem::size_of::<WHV_PARTITION_PROPERTY>() as _,
+            )?;
+        }
+        Ok(())
     }
 
     /// Mark that initial memory setup is complete. After this, map_memory will fail.

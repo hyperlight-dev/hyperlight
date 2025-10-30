@@ -46,7 +46,7 @@ use crate::hypervisor::hyperv_linux::MshvVm;
 use crate::hypervisor::hyperv_windows::WhpVm;
 #[cfg(kvm)]
 use crate::hypervisor::kvm::KvmVm;
-use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::hypervisor::regs::{CommonDebugRegs, CommonSpecialRegisters};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::{HyperlightExit, InterruptHandle, InterruptHandleImpl, get_max_log_level};
@@ -80,6 +80,9 @@ pub(crate) struct HyperlightVm {
     next_slot: u32,                     // Monotonically increasing slot number
     freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
 
+    // pml4 saved to be able to restore it if needed
+    #[cfg(feature = "init-paging")]
+    pml4_addr: u64,
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(gdb)]
@@ -99,7 +102,7 @@ impl HyperlightVm {
         _pml4_addr: u64,
         entrypoint: u64,
         rsp: u64,
-        #[cfg_attr(not(any(kvm, mshv3)), allow(unused_variables))] config: &SandboxConfiguration,
+        config: &SandboxConfiguration,
         #[cfg(target_os = "windows")] handle: HandleWrapper,
         #[cfg(target_os = "windows")] raw_size: usize,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -121,6 +124,11 @@ impl HyperlightVm {
             Some(HypervisorType::Whp) => Box::new(WhpVm::new(handle, raw_size)?),
             None => return Err(NoHypervisorFound()),
         };
+
+        // MSR intercept can be unsafely disabled by the user in the config
+        if !config.get_allow_msr() {
+            vm.enable_msr_intercept()?;
+        }
 
         for (i, region) in mem_regions.iter().enumerate() {
             // Safety: slots are unique and region points to valid memory since we created the regions
@@ -191,6 +199,8 @@ impl HyperlightVm {
             mmap_regions: Vec::new(),
             freed_slots: Vec::new(),
 
+            #[cfg(feature = "init-paging")]
+            pml4_addr: _pml4_addr,
             #[cfg(gdb)]
             gdb_conn,
             #[cfg(gdb)]
@@ -272,9 +282,6 @@ impl HyperlightVm {
             ..Default::default()
         };
         self.vm.set_regs(&regs)?;
-
-        // reset fpu
-        self.vm.set_fpu(&CommonFpu::default())?;
 
         self.run(
             mem_mgr,
@@ -497,6 +504,12 @@ impl HyperlightVm {
                         }
                     }
                 }
+                Ok(HyperlightExit::MsrRead(msr_index)) => {
+                    break Err(HyperlightError::MsrReadViolation(msr_index));
+                }
+                Ok(HyperlightExit::MsrWrite { msr_index, value }) => {
+                    break Err(HyperlightError::MsrWriteViolation(msr_index, value));
+                }
                 Ok(HyperlightExit::Cancelled()) => {
                     // If cancellation was not requested for this specific guest function call,
                     // the vcpu was interrupted by a stale cancellation. This can occur when:
@@ -563,6 +576,23 @@ impl HyperlightVm {
 
     pub(crate) fn clear_cancel(&self) {
         self.interrupt_handle.clear_cancel();
+    }
+
+    pub(crate) fn reset_vcpu(&self) -> Result<()> {
+        self.vm.set_regs(&CommonRegisters::default())?;
+        #[cfg(feature = "init-paging")]
+        self.vm
+            .set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(
+                self.pml4_addr,
+            ))?;
+        #[cfg(not(feature = "init-paging"))]
+        self.vm
+            .set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())?;
+        self.vm.set_fpu(&CommonFpu::default())?;
+        self.vm.set_xsave(&[0; 1024])?;
+        self.vm.set_debug_regs(&CommonDebugRegs::default())?;
+        // MSRs don't need to be reset as they cannot be modified by guest (unless unsafely-allowed)
+        Ok(())
     }
 
     #[cfg(gdb)]

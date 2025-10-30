@@ -17,7 +17,9 @@ limitations under the License.
 use log::LevelFilter;
 
 use crate::Result;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::regs::{
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+};
 use crate::mem::memory_region::MemoryRegion;
 
 /// HyperV-on-linux functionality
@@ -73,6 +75,10 @@ pub(crate) enum HyperlightExit {
     MmioRead(u64),
     /// The vCPU tried to write to the given (unmapped) addr
     MmioWrite(u64),
+    /// The vCPU tried to read from the given MSR
+    MsrRead(u32),
+    /// The vCPU tried to write to the given MSR with the given value
+    MsrWrite { msr_index: u32, value: u64 },
     /// The vCPU execution has been cancelled
     Cancelled(),
     /// The vCPU has exited for a reason that is not handled by Hyperlight
@@ -126,6 +132,17 @@ pub(crate) trait Hypervisor: Send + Sync + Debug {
     /// xsave
     #[cfg(crashdump)]
     fn xsave(&self) -> Result<Vec<u8>>;
+    /// Set xsave
+    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()>;
+
+    /// Get the debug registers of the vCPU
+    #[allow(dead_code)]
+    fn debug_regs(&self) -> Result<CommonDebugRegs>;
+    /// Set the debug registers of the vCPU
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()>;
+
+    /// Enable MSR intercepts to trap all MSR accesses (read and write).
+    fn enable_msr_intercept(&mut self) -> Result<()>;
 
     /// Get partition handle
     #[cfg(target_os = "windows")]

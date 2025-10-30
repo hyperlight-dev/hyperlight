@@ -18,13 +18,19 @@ use std::sync::LazyLock;
 
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
+use kvm_bindings::{
+    KVM_CAP_X86_USER_SPACE_MSR, KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_FILTER_DEFAULT_DENY,
+    KVM_MSR_FILTER_READ, KVM_MSR_FILTER_WRITE, kvm_debugregs, kvm_enable_cap, kvm_fpu,
+    kvm_msr_filter, kvm_msr_filter_range, kvm_regs, kvm_sregs, kvm_userspace_memory_region,
+    kvm_xsave,
+};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
+use crate::hypervisor::regs::CommonDebugRegs;
 use crate::hypervisor::{HyperlightExit, Hypervisor};
 use crate::mem::memory_region::MemoryRegion;
 use crate::{Result, new_error};
@@ -109,6 +115,42 @@ impl Hypervisor for KvmVm {
             Ok(VcpuExit::IoOut(port, data)) => Ok(HyperlightExit::IoOut(port, data.to_vec())),
             Ok(VcpuExit::MmioRead(addr, _)) => Ok(HyperlightExit::MmioRead(addr)),
             Ok(VcpuExit::MmioWrite(addr, _)) => Ok(HyperlightExit::MmioWrite(addr)),
+            /* Note from KVM docs:
+            For KVM_EXIT_X86_RDMSR and KVM_EXIT_X86_WRMSR the corresponding operations are complete (and guest state is consistent)
+            only after userspace has re-entered the kernel with KVM_RUN. The kernel side will first finish incomplete operations and then check for pending signals.
+            The pending state of the operation is not preserved in state which is visible to userspace, thus userspace should ensure that the operation
+            is completed before performing a live migration. Userspace can re-enter the guest with an unmasked signal pending or with the immediate_exit field
+            set to complete pending operations without allowing any further instructions to be executed.
+            */
+            Ok(VcpuExit::X86Rdmsr(msr_exit)) => {
+                let msr_index = msr_exit.index;
+                *msr_exit.error = 1;
+                self.vcpu_fd.set_kvm_immediate_exit(1);
+                let exit = self.vcpu_fd.run().unwrap_err();
+                self.vcpu_fd.set_kvm_immediate_exit(0);
+                if exit.errno() != libc::EINTR {
+                    return Err(new_error!(
+                        "Expected EINTR after immediate exit run, got {:?}",
+                        exit
+                    ));
+                }
+                Ok(HyperlightExit::MsrRead(msr_index))
+            }
+            Ok(VcpuExit::X86Wrmsr(msr_exit)) => {
+                let msr_index = msr_exit.index;
+                let value = msr_exit.data;
+                *msr_exit.error = 1;
+                self.vcpu_fd.set_kvm_immediate_exit(1);
+                let exit = self.vcpu_fd.run().unwrap_err();
+                self.vcpu_fd.set_kvm_immediate_exit(0);
+                if exit.errno() != libc::EINTR {
+                    return Err(new_error!(
+                        "Expected EINTR after immediate exit run, got {:?}",
+                        exit
+                    ));
+                }
+                Ok(HyperlightExit::MsrWrite { msr_index, value })
+            }
             #[cfg(gdb)]
             Ok(VcpuExit::Debug(debug_exit)) => Ok(HyperlightExit::Debug {
                 dr6: debug_exit.dr6,
@@ -171,6 +213,63 @@ impl Hypervisor for KvmVm {
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect())
+    }
+
+    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()> {
+        let xsave = kvm_xsave {
+            region: *xsave,
+            ..Default::default()
+        };
+        // Safety: Safe because we only copy 4096 bytes
+        unsafe { self.vcpu_fd.set_xsave(&xsave)? };
+
+        Ok(())
+    }
+
+    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+        let kvm_debug_regs = self.vcpu_fd.get_debug_regs()?;
+        Ok(kvm_debug_regs.into())
+    }
+
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+        let kvm_debug_regs: kvm_debugregs = drs.into();
+        self.vcpu_fd.set_debug_regs(&kvm_debug_regs)?;
+        Ok(())
+    }
+
+    fn enable_msr_intercept(&mut self) -> Result<()> {
+        let cap = kvm_enable_cap {
+            cap: KVM_CAP_X86_USER_SPACE_MSR,
+            flags: 0,
+            args: [KVM_MSR_EXIT_REASON_FILTER as u64, 0, 0, 0],
+            pad: [0; 64],
+        };
+        self.vm_fd.enable_cap(&cap)?;
+
+        // Deny all MSR accesses using KVM_MSR_FILTER_DEFAULT_DENY.
+        // We need at least one range (even a minimal dummy range) because
+        // "Calling this ioctl with an empty set of ranges (all nmsrs == 0) disables MSR filtering.
+        // In that mode, KVM_MSR_FILTER_DEFAULT_DENY is invalid and causes an error."
+        // So we create a minimal range covering just 1 MSR with a bitmap of 0 (deny).
+        // All other MSRs will be denied by the default policy.
+        let mut bitmap = vec![0u8; 1]; // 1 byte covers 8 MSRs, all bits set to 0 (deny)
+        let mut ranges = [kvm_msr_filter_range::default(); 16];
+        ranges[0] = kvm_msr_filter_range {
+            flags: KVM_MSR_FILTER_READ | KVM_MSR_FILTER_WRITE,
+            nmsrs: 1, // Cover just 1 MSR
+            base: 0,  // Starting at MSR index 0
+            bitmap: bitmap.as_mut_ptr(),
+        };
+
+        let filter = kvm_msr_filter {
+            flags: KVM_MSR_FILTER_DEFAULT_DENY,
+            ranges,
+        };
+        // Safety: The bitmap pointer is valid and nmsrs is set correctly
+        // TODO replace with safe version
+        unsafe { self.vm_fd.set_msr_filter_unchecked(&filter)? };
+
+        Ok(())
     }
 }
 
