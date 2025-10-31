@@ -20,6 +20,8 @@ pub mod hyperlight {
         pub use self::function_call_type_generated::*;
         mod log_level_generated;
         pub use self::log_level_generated::*;
+        mod guest_event_type_generated;
+        pub use self::guest_event_type_generated::*;
         mod hlint_generated;
         pub use self::hlint_generated::*;
         mod hluint_generated;
@@ -54,6 +56,18 @@ pub mod hyperlight {
         pub use self::function_call_generated::*;
         mod guest_log_data_generated;
         pub use self::guest_log_data_generated::*;
+        mod key_value_generated;
+        pub use self::key_value_generated::*;
+        mod open_span_type_generated;
+        pub use self::open_span_type_generated::*;
+        mod close_span_type_generated;
+        pub use self::close_span_type_generated::*;
+        mod log_event_type_generated;
+        pub use self::log_event_type_generated::*;
+        mod guest_event_envelope_type_generated;
+        pub use self::guest_event_envelope_type_generated::*;
+        mod guest_trace_data_type_generated;
+        pub use self::guest_trace_data_type_generated::*;
         mod host_function_definition_generated;
         pub use self::host_function_definition_generated::*;
         mod host_function_details_generated;
