@@ -36,7 +36,7 @@ use core::ptr::write_volatile;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
-    ParameterType, ParameterValue, ReturnType,
+    ParameterType, ParameterValue, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
@@ -47,8 +47,8 @@ use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
-    call_host_function, call_host_function_without_returning_result, print_output_with_host_print,
-    read_n_bytes_from_user_memory,
+    call_host_function, call_host_function_without_returning_result, get_host_return_value_raw,
+    print_output_with_host_print, read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{MIN_STACK_ADDRESS, guest_logger};
@@ -1665,7 +1665,23 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
         func.expected_return_type,
     )
     .expect("failed to call host function");
-    Ok(get_flatbuffer_result(()))
+
+    let host_return = get_host_return_value_raw();
+    match host_return {
+        Ok(return_value) => match return_value {
+            ReturnValue::Int(i) => Ok(get_flatbuffer_result(i)),
+            ReturnValue::UInt(i) => Ok(get_flatbuffer_result(i)),
+            ReturnValue::Long(i) => Ok(get_flatbuffer_result(i)),
+            ReturnValue::ULong(i) => Ok(get_flatbuffer_result(i)),
+            ReturnValue::Float(i) => Ok(get_flatbuffer_result(i)),
+            ReturnValue::Double(i) => Ok(get_flatbuffer_result(i)),
+            ReturnValue::String(str) => Ok(get_flatbuffer_result(str.as_str())),
+            ReturnValue::Bool(bool) => Ok(get_flatbuffer_result(bool)),
+            ReturnValue::Void(()) => Ok(get_flatbuffer_result(())),
+            ReturnValue::VecBytes(byte) => Ok(get_flatbuffer_result(byte.as_slice())),
+        },
+        Err(e) => Err(e),
+    }
 }
 
 #[no_mangle]
