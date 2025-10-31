@@ -63,7 +63,7 @@ fn interrupt_host_call() {
         }
     });
 
-    let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
+    let result = sandbox.call::<()>("CallHostSpin", ()).unwrap_err();
     assert!(matches!(result, HyperlightError::ExecutionCanceledByHost()));
     assert!(sandbox.poisoned());
 
@@ -140,6 +140,9 @@ fn interrupt_guest_call_in_advance() {
     // Make sure we can still call guest functions after the VM was interrupted early
     // i.e. make sure we dont kill the next iteration.
     sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
+    assert!(!sbox1.poisoned());
+    sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
+    assert!(!sbox1.poisoned());
 
     // drop vm to make sure other thread can detect it
     drop(sbox1);
@@ -160,7 +163,7 @@ fn interrupt_guest_call_in_advance() {
 fn interrupt_same_thread() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let snapshot2 = sbox2.snapshot().unwrap();
+    let snapshot = sbox2.snapshot().unwrap();
     let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
@@ -191,7 +194,7 @@ fn interrupt_same_thread() {
             _ => panic!("Unexpected return"),
         };
         if sbox2.poisoned() {
-            sbox2.restore(&snapshot2).unwrap();
+            sbox2.restore(&snapshot).unwrap();
         }
         sbox3
             .call::<String>("Echo", "hello".to_string())
@@ -205,7 +208,7 @@ fn interrupt_same_thread() {
 fn interrupt_same_thread_no_barrier() {
     let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
     let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let snapshot2 = sbox2.snapshot().unwrap();
+    let snapshot = sbox2.snapshot().unwrap();
     let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
 
     let barrier = Arc::new(Barrier::new(2));
@@ -238,7 +241,7 @@ fn interrupt_same_thread_no_barrier() {
             _ => panic!("Unexpected return"),
         };
         if sbox2.poisoned() {
-            sbox2.restore(&snapshot2).unwrap();
+            sbox2.restore(&snapshot).unwrap();
         }
         sbox3
             .call::<String>("Echo", "hello".to_string())

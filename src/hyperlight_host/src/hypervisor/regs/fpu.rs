@@ -13,10 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#[cfg(mshv3)]
-extern crate mshv_bindings;
-#[cfg(mshv3)]
-extern crate mshv_ioctls;
 
 #[cfg(target_os = "windows")]
 use std::collections::HashSet;
