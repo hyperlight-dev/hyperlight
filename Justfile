@@ -194,7 +194,8 @@ test-rust-crashdump target=default-target features="":
 # rust test for tracing
 test-rust-tracing target=default-target features="":
     # Run tests for the tracing guest and macro
-    {{ cargo-cmd }} test -p hyperlight-guest-tracing --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }}
+    {{ cargo-cmd }} test -p hyperlight-guest-tracing -F trace --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
+    {{ cargo-cmd }} test -p hyperlight-common -F trace_guest --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
 
     # Build the tracing guest to ensure it builds with the tracing feature
     just build-rust-guests {{ target }} trace_guest
