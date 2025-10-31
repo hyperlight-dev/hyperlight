@@ -54,6 +54,11 @@ pub fn call_host_function_without_returning_result(
     handle.call_host_function_without_returning_result(function_name, parameters, return_type)
 }
 
+pub fn get_host_return_value_raw() -> Result<ReturnValue> {
+    let handle = unsafe { GUEST_HANDLE };
+    handle.get_host_return_raw()
+}
+
 pub fn get_host_return_value<T: TryFrom<ReturnValue>>() -> Result<T> {
     let handle = unsafe { GUEST_HANDLE };
     handle.get_host_return_value::<T>()

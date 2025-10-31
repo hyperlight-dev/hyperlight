@@ -88,6 +88,21 @@ impl GuestHandle {
         }
     }
 
+    pub fn get_host_return_raw(&self) -> Result<ReturnValue> {
+        let inner = self
+            .try_pop_shared_input_data_into::<FunctionCallResult>()
+            .expect("Unable to deserialize a return value from host")
+            .into_inner();
+
+        match inner {
+            Ok(ret) => Ok(ret),
+            Err(e) => Err(HyperlightGuestError {
+                kind: e.code,
+                message: e.message,
+            }),
+        }
+    }
+
     /// Call a host function without reading its return value from shared mem.
     /// This is used by both the Rust and C APIs to reduce code duplication.
     ///
