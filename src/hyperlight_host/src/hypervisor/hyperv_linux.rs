@@ -1087,7 +1087,7 @@ impl Hypervisor for HypervLinuxDriver {
         let regs = self.regs()?;
         tc.handle_trace(
             &regs,
-            self.mem_mgr.as_ref().ok_or_else(|| {
+            self.mem_mgr.as_mut().ok_or_else(|| {
                 new_error!("Memory manager is not initialized before handling trace")
             })?,
         )
