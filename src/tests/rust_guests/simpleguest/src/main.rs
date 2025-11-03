@@ -781,6 +781,58 @@ fn use_sse2_registers(_: &FunctionCall) -> Result<Vec<u8>> {
     Ok(get_flatbuffer_result(()))
 }
 
+fn read_msr(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::UInt(msr) = function_call.parameters.clone().unwrap()[0].clone() {
+        let (read_eax, read_edx): (u32, u32);
+        unsafe {
+            core::arch::asm!(
+                "rdmsr",
+                in("ecx") msr,
+                out("eax") read_eax,
+                out("edx") read_edx,
+                options(nostack, nomem)
+            );
+        }
+
+        let read_value = ((read_edx as u64) << 32) | (read_eax as u64);
+
+        Ok(get_flatbuffer_result(read_value))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to write_msr".to_string(),
+        ))
+    }
+}
+
+fn write_msr(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let (ParameterValue::UInt(msr), ParameterValue::ULong(value)) = (
+        function_call.parameters.clone().unwrap()[0].clone(),
+        function_call.parameters.clone().unwrap()[1].clone(),
+    ) {
+        // Split 64-bit value into EDX:EAX format for WRMSR
+        let eax = (value & 0xFFFFFFFF) as u32;
+        let edx = ((value >> 32) & 0xFFFFFFFF) as u32;
+
+        unsafe {
+            core::arch::asm!(
+                "wrmsr",
+                in("ecx") msr,
+                in("eax") eax,
+                in("edx") edx,
+                options(nostack, nomem)
+            );
+        }
+
+        Ok(get_flatbuffer_result(()))
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to write_msr".to_string(),
+        ))
+    }
+}
+
 fn add(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let (ParameterValue::Int(a), ParameterValue::Int(b)) = (
         function_call.parameters.clone().unwrap()[0].clone(),
@@ -1504,6 +1556,22 @@ pub extern "C" fn hyperlight_main() {
         use_sse2_registers as usize,
     );
     register_function(use_sse2_registers);
+
+    let read_msr_def = GuestFunctionDefinition::new(
+        "ReadMSR".to_string(),
+        Vec::from(&[ParameterType::UInt]),
+        ReturnType::ULong,
+        read_msr as usize,
+    );
+    register_function(read_msr_def);
+
+    let write_msr_def = GuestFunctionDefinition::new(
+        "WriteMSR".to_string(),
+        Vec::from(&[ParameterType::UInt, ParameterType::ULong]),
+        ReturnType::Void,
+        write_msr as usize,
+    );
+    register_function(write_msr_def);
 }
 
 fn send_message_to_host_method(

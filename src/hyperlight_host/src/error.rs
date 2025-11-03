@@ -14,9 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv3)]
-extern crate mshv_ioctls;
-
 use std::array::TryFromSliceError;
 use std::cell::{BorrowError, BorrowMutError};
 use std::convert::Infallible;
@@ -146,6 +143,14 @@ pub enum HyperlightError {
     /// Memory Allocation Failed.
     #[error("Memory Allocation Failed with OS Error {0:?}.")]
     MemoryAllocationFailed(Option<i32>),
+
+    /// MSR Read Violation - Guest attempted to read from a Model-Specific Register
+    #[error("Guest attempted to read from MSR {0:#x} which is not allowed")]
+    MsrReadViolation(u32),
+
+    /// MSR Write Violation - Guest attempted to write to a Model-Specific Register
+    #[error("Guest attempted to write {1:#x} to MSR {0:#x} which is not allowed")]
+    MsrWriteViolation(u32, u64),
 
     /// Memory Protection Failed
     #[error("Memory Protection Failed with OS Error {0:?}.")]
@@ -325,7 +330,9 @@ impl HyperlightError {
             | HyperlightError::PoisonedSandbox
             | HyperlightError::ExecutionAccessViolation(_)
             | HyperlightError::StackOverflow()
-            | HyperlightError::MemoryAccessViolation(_, _, _) => true,
+            | HyperlightError::MemoryAccessViolation(_, _, _)
+            | HyperlightError::MsrReadViolation(_)
+            | HyperlightError::MsrWriteViolation(_, _) => true,
 
             // All other errors do not poison the sandbox.
             HyperlightError::AnyhowError(_)
