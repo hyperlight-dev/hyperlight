@@ -1434,6 +1434,7 @@ dependencies = [
 name = "hyperlight-fuzz"
 version = "0.0.0"
 dependencies = [
+ "hyperlight-common",
  "hyperlight-host",
  "hyperlight-testing",
  "libfuzzer-sys",
