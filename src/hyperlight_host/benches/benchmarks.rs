@@ -142,9 +142,9 @@ fn guest_call_benchmark(c: &mut Criterion) {
                     start_barrier_clone.wait();
 
                     // Small delay to ensure the guest function is running in VM before interrupting
-                    thread::sleep(std::time::Duration::from_millis(1));
+                    thread::sleep(std::time::Duration::from_millis(10));
                     let kill_start = Instant::now();
-                    interrupt_handle.kill();
+                    assert!(interrupt_handle.kill());
                     kill_start
                 });
 
