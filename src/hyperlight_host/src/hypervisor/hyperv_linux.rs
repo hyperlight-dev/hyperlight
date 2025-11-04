@@ -30,6 +30,8 @@ use mshv_bindings::{
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
+#[cfg(gdb)]
+use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::vm::{Vm, VmExit};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -202,10 +204,10 @@ impl Vm for MshvVm {
         };
         Ok(result)
     }
+}
 
-    // -- DEBUGGING RELATED BELOW ---
-
-    #[cfg(gdb)]
+#[cfg(gdb)]
+impl DebuggableVm for MshvVm {
     fn translate_gva(&self, gva: u64) -> Result<u64> {
         use mshv_bindings::{HV_TRANSLATE_GVA_VALIDATE_READ, HV_TRANSLATE_GVA_VALIDATE_WRITE};
 
@@ -220,7 +222,6 @@ impl Vm for MshvVm {
         Ok(addr)
     }
 
-    #[cfg(gdb)]
     fn set_debug(&mut self, enabled: bool) -> Result<()> {
         use mshv_bindings::{
             HV_INTERCEPT_ACCESS_MASK_EXECUTE, hv_intercept_parameters,
@@ -259,7 +260,6 @@ impl Vm for MshvVm {
         Ok(())
     }
 
-    #[cfg(gdb)]
     fn set_single_step(&mut self, enable: bool) -> Result<()> {
         let mut regs = self.regs()?;
         if enable {
@@ -271,7 +271,6 @@ impl Vm for MshvVm {
         Ok(())
     }
 
-    #[cfg(gdb)]
     fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
         use crate::new_error;
@@ -310,7 +309,6 @@ impl Vm for MshvVm {
         Ok(())
     }
 
-    #[cfg(gdb)]
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         use crate::new_error;
 

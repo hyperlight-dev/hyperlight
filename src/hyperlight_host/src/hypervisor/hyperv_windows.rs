@@ -34,6 +34,8 @@ use super::vm::{Vm, VmExit};
 #[cfg(not(gdb))]
 use super::vm::{Vm, VmExit};
 use super::wrappers::HandleWrapper;
+#[cfg(gdb)]
+use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, log_then_return, new_error};
@@ -471,7 +473,14 @@ impl Vm for WhpVm {
         Ok(result)
     }
 
-    #[cfg(gdb)]
+    /// Mark that initial memory setup is complete. After this, map_memory will fail.
+    fn complete_initial_memory_setup(&mut self) {
+        self.initial_memory_setup_done = true;
+    }
+}
+
+#[cfg(gdb)]
+impl DebuggableVm for WhpVm {
     fn translate_gva(&self, gva: u64) -> Result<u64> {
         let mut gpa = 0;
         let mut result = WHV_TRANSLATE_GVA_RESULT::default();
@@ -494,7 +503,6 @@ impl Vm for WhpVm {
         Ok(gpa)
     }
 
-    #[cfg(gdb)]
     fn set_debug(&mut self, enable: bool) -> Result<()> {
         if enable {
             // Set the extended VM exits property to enable extended VM exits
@@ -527,7 +535,6 @@ impl Vm for WhpVm {
         Ok(())
     }
 
-    #[cfg(gdb)]
     fn set_single_step(&mut self, enable: bool) -> Result<()> {
         let mut regs = self.regs()?;
         if enable {
@@ -539,7 +546,6 @@ impl Vm for WhpVm {
         Ok(())
     }
 
-    #[cfg(gdb)]
     fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
 
@@ -599,7 +605,6 @@ impl Vm for WhpVm {
         Ok(())
     }
 
-    #[cfg(gdb)]
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         // Get current debug registers
         const LEN: usize = 6;
@@ -650,11 +655,6 @@ impl Vm for WhpVm {
         } else {
             Err(new_error!("Tried to remove non-existing hw-breakpoint"))
         }
-    }
-
-    /// Mark that initial memory setup is complete. After this, map_memory will fail.
-    fn complete_initial_memory_setup(&mut self) {
-        self.initial_memory_setup_done = true;
     }
 }
 

@@ -34,8 +34,10 @@ use super::LinuxInterruptHandle;
 #[cfg(target_os = "windows")]
 use super::WindowsInterruptHandle;
 #[cfg(gdb)]
-use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, VcpuStopReason, arch};
+use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, DebuggableVm, VcpuStopReason, arch};
 use super::regs::{CommonFpu, CommonRegisters};
+#[cfg(not(gdb))]
+use super::vm::Vm;
 use super::{InterruptHandle, InterruptHandleImpl, get_max_log_level};
 use crate::HyperlightError::{ExecutionCanceledByHost, NoHypervisorFound};
 #[cfg(crashdump)]
@@ -47,7 +49,7 @@ use crate::hypervisor::hyperv_windows::WhpVm;
 #[cfg(kvm)]
 use crate::hypervisor::kvm::KvmVm;
 use crate::hypervisor::regs::CommonSpecialRegisters;
-use crate::hypervisor::vm::{Vm, VmExit};
+use crate::hypervisor::vm::VmExit;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -66,6 +68,9 @@ use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{HyperlightError, Result, log_then_return, new_error};
 
 pub(crate) struct HyperlightVm {
+    #[cfg(gdb)]
+    vm: Box<dyn DebuggableVm>,
+    #[cfg(not(gdb))]
     vm: Box<dyn Vm>,
     page_size: usize,
     entrypoint: u64,
@@ -105,8 +110,13 @@ impl HyperlightVm {
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
     ) -> Result<Self> {
+        #[cfg(gdb)]
+        type VmType = Box<dyn DebuggableVm>;
+        #[cfg(not(gdb))]
+        type VmType = Box<dyn Vm>;
+
         #[allow(unused_mut)] // needs to be mutable when gdb is enabled
-        let mut vm: Box<dyn Vm> = match get_available_hypervisor() {
+        let mut vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new()?),
             #[cfg(mshv3)]

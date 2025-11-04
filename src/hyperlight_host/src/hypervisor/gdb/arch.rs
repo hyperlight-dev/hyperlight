@@ -16,10 +16,9 @@ limitations under the License.
 
 //! This file contains architecture specific code for the x86_64
 
-use super::VcpuStopReason;
+use super::{DebuggableVm, VcpuStopReason};
 use crate::Result;
 use crate::hypervisor::regs::CommonRegisters;
-use crate::hypervisor::vm::Vm;
 
 // Described in Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
 // of Intel 64 and IA-32 Architectures Software Developer's Manual
@@ -53,7 +52,7 @@ pub(crate) const DR6_HW_BP_FLAGS_MASK: u64 = 0x0F << DR6_HW_BP_FLAGS_POS;
 /// Determine the reason the vCPU stopped
 /// This is done by checking the DR6 register and the exception id
 pub(crate) fn vcpu_stop_reason(
-    vm: &mut dyn Vm,
+    vm: &mut dyn DebuggableVm,
     entrypoint: u64,
     dr6: u64,
     exception: u32,

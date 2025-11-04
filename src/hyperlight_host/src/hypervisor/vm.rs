@@ -59,31 +59,6 @@ pub(crate) trait Vm: Send + Sync + Debug {
     /// Runs the vCPU until it exits
     fn run_vcpu(&mut self) -> Result<VmExit>;
 
-    // --------------------------
-    // --- DEBUGGING BELOW ------
-    // --------------------------
-
-    /// Translates a guest virtual address to a guest physical address
-    #[cfg(gdb)]
-    fn translate_gva(&self, gva: u64) -> Result<u64>;
-
-    /// Enable/disable debugging
-    #[cfg(gdb)]
-    fn set_debug(&mut self, enable: bool) -> Result<()>;
-
-    /// Enable/disable single stepping
-    #[cfg(gdb)]
-    fn set_single_step(&mut self, enable: bool) -> Result<()>;
-
-    /// Add a hardware breakpoint at the given address.
-    /// Must be idempotent.
-    #[cfg(gdb)]
-    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()>;
-
-    /// Remove a hardware breakpoint at the given address
-    #[cfg(gdb)]
-    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()>;
-
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;

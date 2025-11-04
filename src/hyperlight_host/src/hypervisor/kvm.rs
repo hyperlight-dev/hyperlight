@@ -23,6 +23,8 @@ use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
+#[cfg(gdb)]
+use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::vm::{Vm, VmExit};
 use crate::mem::memory_region::MemoryRegion;
@@ -161,10 +163,10 @@ impl Vm for KvmVm {
             ))),
         }
     }
+}
 
-    // --- DEBUGGING RELATED BELOW ---
-
-    #[cfg(gdb)]
+#[cfg(gdb)]
+impl DebuggableVm for KvmVm {
     fn translate_gva(&self, gva: u64) -> Result<u64> {
         use crate::HyperlightError;
 
@@ -176,7 +178,6 @@ impl Vm for KvmVm {
         }
     }
 
-    #[cfg(gdb)]
     fn set_debug(&mut self, enable: bool) -> Result<()> {
         use kvm_bindings::{KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP};
 
@@ -192,7 +193,6 @@ impl Vm for KvmVm {
         Ok(())
     }
 
-    #[cfg(gdb)]
     fn set_single_step(&mut self, enable: bool) -> Result<()> {
         use kvm_bindings::KVM_GUESTDBG_SINGLESTEP;
 
@@ -213,7 +213,6 @@ impl Vm for KvmVm {
         Ok(())
     }
 
-    #[cfg(gdb)]
     fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
         use crate::new_error;
@@ -238,7 +237,6 @@ impl Vm for KvmVm {
         Ok(())
     }
 
-    #[cfg(gdb)]
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         use crate::new_error;
 
