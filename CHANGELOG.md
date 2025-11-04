@@ -4,6 +4,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+
+## [v0.11.0] - 2025-11-04
+
+### Fixed
+* Fixes a race condition in killing Sandboxes by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/959
+
+### Changed
+* Unify register representation across hypervisors by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/907
+* Guest tracing improvements to use `tracing` crate by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/844
+* Serialize guest trace data using flatbuffers by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/999
+
+### Added
+* Add support for mmapped memory in crashdumps and guest debugging by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/943
+* Add poison state to sandbox by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/931
+* Crashdump on demand by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/972
+
+### Removed
+* Remove seccomp by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/971
+* Remove mshv2 feature by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/973
+
+
 ## [v0.10.0] - 2025-10-02
 
 ### Fixed
@@ -201,7 +222,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.11.0..HEAD>
+[v0.11.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0...v0.11.0>
 [v0.10.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.9.0...v0.10.0>
 [v0.9.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.8.0...v0.9.0>
 [v0.8.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.7.0...v0.8.0>
