@@ -19,7 +19,9 @@ limitations under the License.
     reason = "This is a benchmark file, so using disallowed macros is fine here."
 )]
 
-use std::sync::Mutex;
+use std::sync::{Arc, Barrier, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use flatbuffers::FlatBufferBuilder;
@@ -30,148 +32,343 @@ use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 
-fn create_uninit_sandbox() -> UninitializedSandbox {
+/// Sandbox heap size configurations for benchmarking.
+/// Only affects heap size - all other configuration remains at defaults.
+#[derive(Clone, Copy)]
+enum SandboxSize {
+    /// Default configuration (uses hyperlight defaults)
+    Default,
+    /// Small heap: 8 MB
+    Small,
+    /// Medium heap: 64 MB
+    Medium,
+    /// Large heap: 256 MB
+    Large,
+}
+
+impl SandboxSize {
+    /// Returns the configuration for this sandbox size.
+    /// Returns None for Default to use hyperlight's default configuration.
+    fn config(&self) -> Option<SandboxConfiguration> {
+        match self {
+            Self::Default => None,
+            Self::Small => {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_heap_size(8 * 1024 * 1024); // 8 MB
+                Some(cfg)
+            }
+            Self::Medium => {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_heap_size(64 * 1024 * 1024); // 64 MB
+                Some(cfg)
+            }
+            Self::Large => {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_heap_size(256 * 1024 * 1024); // 256 MB
+                Some(cfg)
+            }
+        }
+    }
+
+    /// Returns the name of this size for use in benchmark identifiers.
+    fn name(&self) -> &str {
+        match self {
+            Self::Default => "default",
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+
+    /// Returns all size variants for iteration.
+    const fn all() -> [SandboxSize; 4] {
+        [Self::Default, Self::Small, Self::Medium, Self::Large]
+    }
+}
+
+fn create_uninit_sandbox_with_size(size: SandboxSize) -> UninitializedSandbox {
     let path = simple_guest_as_string().unwrap();
-    UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap()
+    UninitializedSandbox::new(GuestBinary::FilePath(path), size.config()).unwrap()
 }
 
-fn create_multiuse_sandbox() -> MultiUseSandbox {
-    create_uninit_sandbox().evolve().unwrap()
+fn create_multiuse_sandbox_with_size(size: SandboxSize) -> MultiUseSandbox {
+    create_uninit_sandbox_with_size(size).evolve().unwrap()
 }
 
-fn guest_call_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("guest_functions");
+// ============================================================================
+// Benchmark Category: Sandbox Lifecycle
+// ============================================================================
 
-    // Benchmarks a single guest function call.
-    // The benchmark does **not** include the time to reset the sandbox memory after the call.
-    group.bench_function("guest_call", |b| {
-        let mut sbox = create_multiuse_sandbox();
+fn bench_create_uninitialized(b: &mut criterion::Bencher, size: SandboxSize) {
+    // Ideally wanted to use b.iter_with_large_drop, but runs out of memory on windows runners: "The paging file is too small for this operation to complete."
+    b.iter_batched(
+        || (),
+        |_| create_uninit_sandbox_with_size(size),
+        criterion::BatchSize::PerIteration,
+    );
+}
 
-        b.iter(|| sbox.call::<String>("Echo", "hello\n".to_string()).unwrap());
-    });
+fn bench_create_uninitialized_and_drop(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter(|| create_uninit_sandbox_with_size(size));
+}
 
-    // Benchmarks a single guest function call.
-    // The benchmark does include the time to reset the sandbox memory after the call.
-    group.bench_function("guest_call_with_restore", |b| {
-        let mut sbox = create_multiuse_sandbox();
-        let snapshot = sbox.snapshot().unwrap();
+fn bench_create_initialized(b: &mut criterion::Bencher, size: SandboxSize) {
+    // Ideally wanted to use b.iter_with_large_drop, but runs out of memory on windows runners: "The paging file is too small for this operation to complete."
+    b.iter_batched(
+        || (),
+        |_| create_multiuse_sandbox_with_size(size),
+        criterion::BatchSize::PerIteration,
+    );
+}
 
-        b.iter(|| {
-            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
-            sbox.restore(&snapshot).unwrap();
+fn bench_create_initialized_and_drop(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter(|| create_multiuse_sandbox_with_size(size));
+}
+
+fn sandbox_lifecycle_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sandboxes");
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("create_uninitialized/{}", size.name()), |b| {
+            bench_create_uninitialized(b, size)
         });
-    });
+    }
 
-    // Benchmarks a guest function call calling into the host.
-    // The benchmark does **not** include the time to reset the sandbox memory after the call.
-    group.bench_function("guest_call_with_call_to_host_function", |b| {
-        let mut uninitialized_sandbox = create_uninit_sandbox();
+    for size in SandboxSize::all() {
+        group.bench_function(
+            format!("create_uninitialized_and_drop/{}", size.name()),
+            |b| bench_create_uninitialized_and_drop(b, size),
+        );
+    }
 
-        // Define a host function that adds two integers and register it.
-        uninitialized_sandbox
-            .register("HostAdd", |a: i32, b: i32| Ok(a + b))
-            .unwrap();
-
-        let mut multiuse_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
-
-        b.iter(|| {
-            multiuse_sandbox
-                .call::<i32>("Add", (1_i32, 41_i32))
-                .unwrap()
+    for size in SandboxSize::all() {
+        group.bench_function(format!("create_initialized/{}", size.name()), |b| {
+            bench_create_initialized(b, size)
         });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(
+            format!("create_initialized_and_drop/{}", size.name()),
+            |b| bench_create_initialized_and_drop(b, size),
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Guest Calls
+// ============================================================================
+
+fn bench_guest_call(b: &mut criterion::Bencher, size: SandboxSize) {
+    let mut sbox = create_multiuse_sandbox_with_size(size);
+    b.iter(|| sbox.call::<String>("Echo", "hello\n".to_string()).unwrap());
+}
+
+fn bench_guest_call_with_restore(b: &mut criterion::Bencher, size: SandboxSize) {
+    let mut sbox = create_multiuse_sandbox_with_size(size);
+    let snapshot = sbox.snapshot().unwrap();
+
+    b.iter(|| {
+        sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+        sbox.restore(&snapshot).unwrap();
     });
+}
 
-    // same as guest_call, but the call will be made on different thread
-    group.bench_function("guest_call_on_different_thread", |b| {
-        use std::sync::{Arc, Barrier};
-        use std::thread;
-        use std::time::Instant;
+fn bench_guest_call_with_host_function(b: &mut criterion::Bencher, size: SandboxSize) {
+    let mut uninitialized_sandbox = create_uninit_sandbox_with_size(size);
 
-        b.iter_custom(|iters| {
-            let mut total_duration = std::time::Duration::ZERO;
-            let sbox = Arc::new(Mutex::new(create_multiuse_sandbox()));
+    uninitialized_sandbox
+        .register("HostAdd", |a: i32, b: i32| Ok(a + b))
+        .unwrap();
 
-            for _ in 0..iters {
-                // Ensure vcpu is "bound" on this main thread
-                {
-                    let mut sbox = sbox.lock().unwrap();
-                    sbox.call::<String>("Echo", "warmup\n".to_string()).unwrap();
-                }
+    let mut multiuse_sandbox: MultiUseSandbox = uninitialized_sandbox.evolve().unwrap();
 
-                let barrier = Arc::new(Barrier::new(2));
-                let barrier_clone = Arc::clone(&barrier);
-                let sbox_clone = Arc::clone(&sbox);
+    b.iter(|| {
+        multiuse_sandbox
+            .call::<i32>("Add", (1_i32, 41_i32))
+            .unwrap()
+    });
+}
 
-                let handle = thread::spawn(move || {
-                    barrier_clone.wait();
+fn bench_guest_call_different_thread(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut total_duration = Duration::ZERO;
+        let sbox = Arc::new(Mutex::new(create_multiuse_sandbox_with_size(size)));
 
-                    let mut sbox = sbox_clone.lock().unwrap();
-                    let start = Instant::now();
-                    // Measure the first call after thread switch
-                    // According to KVM docs, this should show performance impact
-                    sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
-                    start.elapsed()
-                });
-
-                barrier.wait();
-
-                total_duration += handle.join().unwrap();
+        for _ in 0..iters {
+            // Ensure vcpu is "bound" on this main thread
+            {
+                let mut sbox = sbox.lock().unwrap();
+                sbox.call::<String>("Echo", "warmup\n".to_string()).unwrap();
             }
 
-            total_duration
+            let barrier = Arc::new(Barrier::new(2));
+            let barrier_clone = Arc::clone(&barrier);
+            let sbox_clone = Arc::clone(&sbox);
+
+            let handle = thread::spawn(move || {
+                barrier_clone.wait();
+
+                let mut sbox = sbox_clone.lock().unwrap();
+                let start = Instant::now();
+                // Measure the first call after thread switch
+                sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                start.elapsed()
+            });
+
+            barrier.wait();
+
+            total_duration += handle.join().unwrap();
+        }
+
+        total_duration
+    });
+}
+
+fn bench_guest_call_interrupt_latency(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut total_interrupt_latency = Duration::ZERO;
+
+        for _ in 0..iters {
+            let mut sbox = create_multiuse_sandbox_with_size(size);
+            let interrupt_handle = sbox.interrupt_handle();
+
+            let start_barrier = Arc::new(Barrier::new(2));
+            let start_barrier_clone = Arc::clone(&start_barrier);
+
+            let observer_thread = thread::spawn(move || {
+                start_barrier_clone.wait();
+
+                // Small delay to ensure the guest function is running in VM before interrupting
+                thread::sleep(std::time::Duration::from_millis(10));
+                let kill_start = Instant::now();
+                assert!(interrupt_handle.kill());
+                kill_start
+            });
+
+            start_barrier.wait();
+
+            let result = sbox.call::<i32>("Spin", ());
+
+            let call_end = Instant::now();
+            let kill_start = observer_thread.join().unwrap();
+
+            assert!(
+                matches!(
+                    result,
+                    Err(hyperlight_host::HyperlightError::ExecutionCanceledByHost())
+                ),
+                "Guest function should be interrupted"
+            );
+
+            total_interrupt_latency += call_end.duration_since(kill_start);
+        }
+
+        total_interrupt_latency
+    });
+}
+
+fn guest_calls_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("guest_calls");
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("call/{}", size.name()), |b| {
+            bench_guest_call(b, size)
         });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("call_with_restore/{}", size.name()), |b| {
+            bench_guest_call_with_restore(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("call_with_host_function/{}", size.name()), |b| {
+            bench_guest_call_with_host_function(b, size)
+        });
+    }
+
+    group.bench_function("different_thread".to_string(), |b| {
+        bench_guest_call_different_thread(b, SandboxSize::Default)
     });
 
-    // Measure the time between calling interrupt_handle.kill() and the guest function returning.
-    group.bench_function("guest_call_time_to_interrupt", |b| {
-        use std::sync::{Arc, Barrier};
-        use std::thread;
-        use std::time::Instant;
-
-        b.iter_custom(|iters| {
-            let mut total_interrupt_latency = std::time::Duration::ZERO;
-
-            for _ in 0..iters {
-                let mut sbox = create_multiuse_sandbox();
-                let interrupt_handle = sbox.interrupt_handle();
-
-                let start_barrier = Arc::new(Barrier::new(2));
-                let start_barrier_clone = Arc::clone(&start_barrier);
-
-                let observer_thread = thread::spawn(move || {
-                    start_barrier_clone.wait();
-
-                    // Small delay to ensure the guest function is running in VM before interrupting
-                    thread::sleep(std::time::Duration::from_millis(10));
-                    let kill_start = Instant::now();
-                    assert!(interrupt_handle.kill());
-                    kill_start
-                });
-
-                start_barrier.wait();
-
-                let result = sbox.call::<i32>("Spin", ());
-
-                let call_end = Instant::now();
-                let kill_start = observer_thread.join().unwrap();
-
-                assert!(
-                    matches!(
-                        result,
-                        Err(hyperlight_host::HyperlightError::ExecutionCanceledByHost())
-                    ),
-                    "Guest function should be interrupted"
-                );
-
-                total_interrupt_latency += call_end.duration_since(kill_start);
-            }
-
-            total_interrupt_latency
-        });
+    group.bench_function("interrupt_latency".to_string(), |b| {
+        bench_guest_call_interrupt_latency(b, SandboxSize::Default)
     });
 
     group.finish();
 }
+
+// ============================================================================
+// Benchmark Category: Snapshots
+// ============================================================================
+
+fn bench_snapshot_create(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        let mut total_duration = Duration::ZERO;
+
+        for _ in 0..iters {
+            // Make a call to modify memory
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+
+            // Measure only the snapshot creation time
+            let start = Instant::now();
+            let snapshot = sbox.snapshot().unwrap();
+            total_duration += start.elapsed();
+
+            std::hint::black_box(snapshot);
+        }
+
+        total_duration
+    });
+}
+
+fn bench_snapshot_restore(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        // Create initial snapshot
+        let snapshot = sbox.snapshot().unwrap();
+        let mut total_duration = Duration::ZERO;
+
+        for _ in 0..iters {
+            // Make a call to modify memory
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+
+            // Measure only the restore time
+            let start = Instant::now();
+            sbox.restore(&snapshot).unwrap();
+            total_duration += start.elapsed();
+        }
+
+        total_duration
+    });
+}
+
+fn snapshots_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("snapshots");
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("create/{}", size.name()), |b| {
+            bench_snapshot_create(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("restore/{}", size.name()), |b| {
+            bench_snapshot_restore(b, size)
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Guest Calls (Large Parameters)
+// ============================================================================
 
 fn guest_call_benchmark_large_param(c: &mut Criterion) {
     let mut group = c.benchmark_group("guest_functions_with_large_parameters");
@@ -205,33 +402,9 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
     group.finish();
 }
 
-fn sandbox_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("sandboxes");
-
-    // Benchmarks the time to create a new uninitialized sandbox.
-    // Does **not** include the time to drop the sandbox.
-    group.bench_function("create_uninitialized_sandbox", |b| {
-        b.iter_with_large_drop(create_uninit_sandbox);
-    });
-
-    // Benchmarks the time to create a new uninitialized sandbox and drop it.
-    group.bench_function("create_uninitialized_sandbox_and_drop", |b| {
-        b.iter(create_uninit_sandbox);
-    });
-
-    // Benchmarks the time to create a new sandbox.
-    // Does **not** include the time to drop the sandbox.
-    group.bench_function("create_sandbox", |b| {
-        b.iter_with_large_drop(create_multiuse_sandbox);
-    });
-
-    // Benchmarks the time to create a new sandbox and drop it.
-    group.bench_function("create_sandbox_and_drop", |b| {
-        b.iter(create_multiuse_sandbox);
-    });
-
-    group.finish();
-}
+// ============================================================================
+// Benchmark Category: Serialization
+// ============================================================================
 
 fn function_call_serialization_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("function_call_serialization");
@@ -281,6 +454,10 @@ fn function_call_serialization_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// Benchmark Category: Sample Workloads
+// ============================================================================
+
 fn sample_workloads_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sample_workloads");
 
@@ -317,6 +494,12 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default();
-    targets = guest_call_benchmark, sandbox_benchmark, guest_call_benchmark_large_param, function_call_serialization_benchmark, sample_workloads_benchmark
+    targets =
+        sandbox_lifecycle_benchmark,
+        guest_calls_benchmark,
+        snapshots_benchmark,
+        guest_call_benchmark_large_param,
+        function_call_serialization_benchmark,
+        sample_workloads_benchmark
 }
 criterion_main!(benches);
