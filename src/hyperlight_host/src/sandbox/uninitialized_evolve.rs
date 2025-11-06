@@ -28,7 +28,7 @@ use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::shared_mem::GuestSharedMemory;
+use crate::mem::shared_mem::HostSharedMemory;
 #[cfg(any(feature = "init-paging", target_os = "windows"))]
 use crate::mem::shared_mem::SharedMemory;
 #[cfg(gdb)]
@@ -41,9 +41,9 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    let (hshm, mut gshm) = u_sbox.mgr.build();
+    let (mut hshm, gshm) = u_sbox.mgr.build();
     let mut vm = set_up_hypervisor_partition(
-        &mut gshm,
+        &mut hshm,
         &u_sbox.config,
         #[cfg(any(crashdump, gdb))]
         &u_sbox.rt_cfg,
@@ -71,7 +71,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         peb_addr,
         seed,
         page_size,
-        hshm.clone(),
+        &mut hshm,
         u_sbox.host_funcs.clone(),
         u_sbox.max_guest_log_level,
         #[cfg(gdb)]
@@ -99,8 +99,8 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 }
 
 pub(crate) fn set_up_hypervisor_partition(
-    mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
-    #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
+    mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    config: &SandboxConfiguration,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {

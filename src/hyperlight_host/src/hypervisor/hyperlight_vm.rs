@@ -76,8 +76,6 @@ pub(crate) struct HyperlightVm {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
-    mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
-    host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
 
     sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
     mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
@@ -193,8 +191,6 @@ impl HyperlightVm {
             orig_rsp: rsp_gp,
             interrupt_handle,
             page_size: 0, // Will be set in `initialise`
-            mem_mgr: None,
-            host_funcs: None,
 
             next_slot: mem_regions.len() as u32,
             sandbox_regions: mem_regions,
@@ -229,13 +225,11 @@ impl HyperlightVm {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
-        self.mem_mgr = Some(mem_mgr);
-        self.host_funcs = Some(host_funcs);
         self.page_size = page_size as usize;
 
         let max_guest_log_level: u64 = match max_guest_log_level {
@@ -259,6 +253,8 @@ impl HyperlightVm {
         self.vm.set_regs(&regs)?;
 
         self.run(
+            mem_mgr,
+            host_funcs,
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )?;
@@ -269,6 +265,8 @@ impl HyperlightVm {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn dispatch_call_from_host(
         &mut self,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
         dispatch_func_addr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
@@ -285,6 +283,8 @@ impl HyperlightVm {
         self.vm.set_fpu(&CommonFpu::default())?;
 
         self.run(
+            mem_mgr,
+            host_funcs,
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )?;
@@ -325,61 +325,10 @@ impl HyperlightVm {
         &self.mmap_regions
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(&mut self, port: u16, data: Vec<u8>) -> Result<()> {
-        if data.is_empty() {
-            log_then_return!("no data was given in IO interrupt");
-        }
-
-        #[allow(clippy::get_first)]
-        let val = u32::from_le_bytes([
-            data.get(0).copied().unwrap_or(0),
-            data.get(1).copied().unwrap_or(0),
-            data.get(2).copied().unwrap_or(0),
-            data.get(3).copied().unwrap_or(0),
-        ]);
-
-        #[cfg(feature = "mem_profile")]
-        {
-            // We need to handle the borrow checker issue where we need both:
-            // - &mut MemMgrWrapper (from self.mem_mgr.as_mut())
-            // - &mut dyn Hypervisor (from self)
-            // We'll use a temporary approach to extract the mem_mgr temporarily
-            let mem_mgr_option = self.mem_mgr.take();
-            let mut mem_mgr =
-                mem_mgr_option.ok_or_else(|| new_error!("mem_mgr not initialized"))?;
-            let host_funcs = self
-                .host_funcs
-                .as_ref()
-                .ok_or_else(|| new_error!("host_funcs not initialized"))?
-                .clone();
-
-            handle_outb(&mut mem_mgr, host_funcs, port, val, self)?;
-
-            // Put the mem_mgr back
-            self.mem_mgr = Some(mem_mgr);
-        }
-
-        #[cfg(not(feature = "mem_profile"))]
-        {
-            let mem_mgr = self
-                .mem_mgr
-                .as_mut()
-                .ok_or_else(|| new_error!("mem_mgr not initialized"))?;
-            let host_funcs = self
-                .host_funcs
-                .as_ref()
-                .ok_or_else(|| new_error!("host_funcs not initialized"))?
-                .clone();
-
-            handle_outb(mem_mgr, host_funcs, port, val)?;
-        }
-
-        Ok(())
-    }
-
     fn run(
         &mut self,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // ===== KILL() TIMING POINT 1: Between guest function calls =====
@@ -425,7 +374,7 @@ impl HyperlightVm {
 
                 // Handle the guest trace data if any
                 #[cfg(feature = "trace_guest")]
-                if let Err(e) = self.handle_trace(&mut tc) {
+                if let Err(e) = tc.handle_trace(&self.vm.regs()?, mem_mgr) {
                     // If no trace data is available, we just log a message and continue
                     // Is this the right thing to do?
                     log::debug!("Error handling guest trace: {:?}", e);
@@ -469,7 +418,28 @@ impl HyperlightVm {
                 Ok(VmExit::Halt()) => {
                     break Ok(());
                 }
-                Ok(VmExit::IoOut(port, data)) => self.handle_io(port, data)?,
+                Ok(VmExit::IoOut(port, data)) => {
+                    if data.is_empty() {
+                        log_then_return!("no data was given in IO interrupt");
+                    }
+
+                    #[allow(clippy::get_first)]
+                    let val: u32 = u32::from_le_bytes([
+                        data.get(0).copied().unwrap_or(0),
+                        data.get(1).copied().unwrap_or(0),
+                        data.get(2).copied().unwrap_or(0),
+                        data.get(3).copied().unwrap_or(0),
+                    ]);
+                    handle_outb(
+                        mem_mgr,
+                        host_funcs.clone(),
+                        port,
+                        val,
+                        &self.vm.regs()?,
+                        #[cfg(feature = "mem_profile")]
+                        &mut self.trace_info,
+                    )?;
+                }
                 Ok(VmExit::MmioRead(addr)) => {
                     let all_regions = self
                         .sandbox_regions
@@ -491,17 +461,9 @@ impl HyperlightVm {
                             ));
                         }
                         None => {
-                            match &self.mem_mgr {
-                                Some(mem_mgr) => {
-                                    if !mem_mgr.check_stack_guard()? {
-                                        break Err(HyperlightError::StackOverflow());
-                                    }
-                                }
-                                None => {
-                                    break Err(new_error!("Memory manager not initialized"));
-                                }
-                            }
-
+                            // if !self.mem_mgr.check_stack_guard()? {
+                            //     break Err(HyperlightError::StackOverflow());
+                            // }
                             break Err(new_error!("MMIO READ access address {:#x}", addr));
                         }
                     }
@@ -527,15 +489,8 @@ impl HyperlightVm {
                             ));
                         }
                         None => {
-                            match &self.mem_mgr {
-                                Some(mem_mgr) => {
-                                    if !mem_mgr.check_stack_guard()? {
-                                        break Err(HyperlightError::StackOverflow());
-                                    }
-                                }
-                                None => {
-                                    break Err(new_error!("Memory manager not initialized"));
-                                }
+                            if mem_mgr.check_stack_guard()? {
+                                break Err(HyperlightError::StackOverflow());
                             }
 
                             break Err(new_error!("MMIO WRITE access address {:#x}", addr));
@@ -802,27 +757,6 @@ impl HyperlightVm {
             self.rt_cfg.binary_path.clone(),
             filename,
         ))
-    }
-
-    #[cfg(feature = "mem_profile")]
-    pub(crate) fn vm_regs(&self) -> Result<CommonRegisters> {
-        self.vm.regs()
-    }
-
-    #[cfg(feature = "trace_guest")]
-    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
-        let regs = self.vm.regs()?;
-        tc.handle_trace(
-            &regs,
-            self.mem_mgr.as_mut().ok_or_else(|| {
-                new_error!("Memory manager is not initialized before handling trace")
-            })?,
-        )
-    }
-
-    #[cfg(feature = "mem_profile")]
-    pub(crate) fn trace_info_mut(&mut self) -> &mut MemTraceInfo {
-        &mut self.trace_info
     }
 }
 

@@ -492,9 +492,9 @@ pub(crate) mod tests {
         let rt_cfg: SandboxRuntimeConfig = Default::default();
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
-        let (mem_mgr, mut gshm) = sandbox.mgr.build();
+        let (mut hshm, _gshm) = sandbox.mgr.build();
         let mut vm = set_up_hypervisor_partition(
-            &mut gshm,
+            &mut hshm,
             &config,
             #[cfg(any(crashdump, gdb))]
             &rt_cfg,
@@ -509,14 +509,14 @@ pub(crate) mod tests {
         let guest_max_log_level = Some(log::LevelFilter::Error);
 
         #[cfg(gdb)]
-        let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr.clone()));
+        let dbg_mem_access_fn = Arc::new(Mutex::new(hshm.clone()));
 
         // Test the initialise method
         vm.initialise(
             peb_addr,
             seed,
             page_size,
-            mem_mgr,
+            &mut hshm,
             host_funcs,
             guest_max_log_level,
             #[cfg(gdb)]
