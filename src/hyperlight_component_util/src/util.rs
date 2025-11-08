@@ -21,6 +21,7 @@ use crate::etypes;
 /// given filename, relative to the cargo manifest directory.
 pub fn read_wit_type_from_file<R, F: FnMut(String, &etypes::Component) -> R>(
     filename: impl AsRef<std::ffi::OsStr>,
+    world_name: Option<String>,
     mut cb: F,
 ) -> R {
     let path = std::path::Path::new(&filename);
@@ -30,7 +31,7 @@ pub fn read_wit_type_from_file<R, F: FnMut(String, &etypes::Component) -> R>(
 
     let bytes = std::fs::read(path).unwrap();
     let i = wasmparser::Parser::new(0).parse_all(&bytes);
-    let ct = crate::component::read_component_single_exported_type(i);
+    let ct = crate::component::read_component_single_exported_type(i, world_name);
 
     // because of the two-level encapsulation scheme, we need to look
     // for the single export of the component type that we just read
