@@ -149,8 +149,99 @@ pub fn read_component_single_exported_type<'a>(
             _ => {}
         }
     }
+
+    // eprintln!("{:?}",ctx.types.into_iter().nth(n));
     match last_idx {
         None => panic!("no exported type"),
+        Some(n) => match ctx.types.into_iter().nth(n) {
+            Some(Defined::Component(c)) => c,
+            _ => panic!("final export is not component"),
+        },
+    }
+}
+
+pub fn read_component_specific_world_name<'a>(
+    items: impl Iterator<Item = wasmparser::Result<Payload<'a>>>,
+    world_name: String,
+) -> Component<'a> {
+    let mut ctx = Ctx::new(None, false);
+    let mut world_idx = None;
+
+    for x in items {
+        match x {
+            Ok(Version { num, encoding, .. }) => {
+                if encoding != wasmparser::Encoding::Component {
+                    panic!("wasm file is not a component")
+                }
+                if num != 0xd {
+                    panic!("unknown component encoding version 0x{:x}\n", num);
+                }
+            }
+            Ok(ComponentTypeSection(ts)) => {
+                for t in ts {
+                    match t {
+                        Ok(ComponentType::Component(ct)) => {
+                            let ct_ = ctx.elab_component(&ct);
+                            ctx.types.push(Defined::Component(ct_.unwrap()));
+                        }
+                        _ => panic!("non-component type"),
+                    }
+                }
+            }
+            Ok(ComponentExportSection(es)) => {
+                for e in es {
+                    match e {
+                        Err(_) => panic!("invalid export section"),
+                        Ok(ce) => {
+                            if ce.kind == ComponentExternalKind::Type {
+                                ctx.types.push(raw_type_export_type(&ctx, &ce).clone());
+                                match ce.name {
+                                    wasmparser::ComponentExportName(name) => {
+                                        if name.eq_ignore_ascii_case(&world_name) {
+                                            eprintln!("WE GOT IN = {}", name);
+                                            eprintln!("Found matching world: {} (looking for: {})", name, world_name);
+                                            world_idx = Some(ctx.types.len() - 1);
+                                            eprintln!("Found matching world: {} (looking for: {:?})", name, world_idx.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(ComponentAliasSection(r#as)) => {
+                for a in r#as {
+                    match a {
+                        Ok(ComponentAlias::InstanceExport {
+                            kind: ComponentExternalKind::Type,
+                            ..
+                        })
+                        | Ok(ComponentAlias::Outer {
+                            kind: ComponentOuterAliasKind::Type,
+                            ..
+                        }) => {
+                            panic!("Component outer type aliases are not supported")
+                        }
+                        // Anything else doesn't affect the index
+                        // space that we are interested in, so we can
+                        // safely ignore
+                        _ => {}
+                    }
+                }
+            }
+
+            // No other component section should be terribly relevant
+            // for us.  We would not generally expect to find them in
+            // a file that just represents a type like this, but it
+            // seems like there are/may be a whole bunch of debugging
+            // custom sections, etc that might show up, so for now
+            // let's just ignore anything.
+            _ => {}
+        }
+    }
+    match world_idx {
+        None => panic!("expected world name not found"),
         Some(n) => match ctx.types.into_iter().nth(n) {
             Some(Defined::Component(c)) => c,
             _ => panic!("final export is not component"),
