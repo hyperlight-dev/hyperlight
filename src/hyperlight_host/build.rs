@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
 
     // Windows requires the hyperlight_surrogate.exe binary to be next to the executable running
-    // hyperlight. We are using rust-ebmed to include the binary in the hyperlight-host library
+    // hyperlight. We are using rust-embed to include the binary in the hyperlight-host library
     // and then extracting it at runtime why the surrogate process manager starts and needed pass
     // the location of the binary to the rust build.
     #[cfg(target_os = "windows")]
