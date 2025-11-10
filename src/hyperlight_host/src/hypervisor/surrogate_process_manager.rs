@@ -151,7 +151,7 @@ impl SurrogateProcessManager {
 
         // Allocate the memory by creating a view over the memory mapped file
 
-        // Use MapViewOfFile2 to map memoy into the surrogate process, the MapViewOfFile2 API is implemented in as an inline function in a windows header file
+        // Use MapViewOfFile2 to map memory into the surrogate process, the MapViewOfFile2 API is implemented in as an inline function in a windows header file
         // (see https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile2#remarks) so we use the same API it uses in the header file here instead of
         // MapViewOfFile2 which does not exist in the rust crate (see https://github.com/microsoft/windows-rs/issues/2595)
         let allocated_address = unsafe {
