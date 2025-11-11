@@ -50,6 +50,39 @@ pub fn read_wit_type_from_file<R, F: FnMut(String, &etypes::Component) -> R>(
     cb(export.kebab_name.to_string(), ct)
 }
 
+pub fn read_world_from_file_1<R, F: FnMut(String, &etypes::Component) -> R>(
+    filename: impl AsRef<std::ffi::OsStr>,
+    world_name: Option<String>,
+    mut cb: F,
+) -> R {
+    let path = std::path::Path::new(&filename);
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    eprintln!("PATH2 = {:?}", path);
+    let manifest_dir = std::path::Path::new(&manifest_dir);
+    let path = manifest_dir.join(path);
+
+    let bytes = std::fs::read(path).unwrap();
+    let i = wasmparser::Parser::new(0).parse_all(&bytes);
+    let ct = crate::component::read_component_specific_world_name(i, world_name.unwrap());
+
+    // because of the two-level encapsulation scheme, we need to look
+    // for the single export of the component type that we just read
+    if !ct.uvars.is_empty()
+        || !ct.imports.is_empty()
+        || !ct.instance.evars.is_empty()
+        || ct.instance.unqualified.exports.len() != 1
+    {
+        panic!("malformed component type container for wit type");
+    };
+    let export = &ct.instance.unqualified.exports[0];
+    use etypes::ExternDesc;
+    let ExternDesc::Component(ct) = &export.desc else {
+        panic!("malformed component type container: does not contain component type");
+    };
+    log::debug!("hcm: considering component type {:?}", ct);
+    cb(export.kebab_name.to_string(), ct)
+}
+
 /// Deal with `$HYPERLIGHT_COMPONENT_MACRO_DEBUG`: if it is present,
 /// save the given token stream (representing the result of
 /// macroexpansion) to the debug file and include that file instead of

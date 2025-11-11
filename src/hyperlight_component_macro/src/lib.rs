@@ -50,6 +50,8 @@ limitations under the License.
 extern crate proc_macro;
 
 use hyperlight_component_util::*;
+use syn::parse::{Parse, ParseStream};
+use syn::{Ident, LitStr, Result, Token};
 
 /// Create host bindings for the wasm component type in the file
 /// passed in (or `$WIT_WORLD`, if nothing is passed in). This will
@@ -63,6 +65,7 @@ use hyperlight_component_util::*;
 /// `instantiate()` method on the component trait that makes
 /// instantiating the sandbox particularly ergonomic in core
 /// Hyperlight.
+
 #[proc_macro]
 pub fn host_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let _ = env_logger::try_init();
@@ -77,6 +80,48 @@ pub fn host_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         });
         util::emit_decls(decls).into()
     })
+}
+
+#[proc_macro]
+pub fn host_bindgen2(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let _ = env_logger::try_init();
+
+    let parsed_bindgen_input = syn::parse_macro_input!(input as BindgenInputParams);
+
+    eprintln!("WE GET BACK FROM THE PARSING");
+    eprintln!("{:?}", parsed_bindgen_input);
+
+    let path = parsed_bindgen_input.path.unwrap_or_else(|| {
+        let wit_world_env = std::env::var_os("WIT_WORLD");
+
+        if let Some(env) = wit_world_env {
+            std::path::PathBuf::from(env)
+        } else {
+            std::path::PathBuf::new()
+        }
+    });
+
+    let world_name = parsed_bindgen_input.world_name;
+
+    // what do we do, do we disturb the function signature or
+    // put this world_name as an env or a rust static variable.
+    // keeping as a rust static variable seems to be an appropriate
+    // choice. frequently changing the OS env will be stupid
+
+    eprintln!("PATH = {:?} \n WORLD_NAME = {:?}", path.clone().into_os_string(), world_name.clone());
+    
+
+    util::read_world_from_file_1(
+        path.into_os_string(),
+        world_name,
+        |kebab_name, ct: &etypes::Component<'_>| {
+            let decls = emit::run_state(false, false, |s| {
+                rtypes::emit_toplevel(s, &kebab_name, ct);
+                host::emit_toplevel(s, &kebab_name, ct);
+            });
+            util::emit_decls(decls).into()
+        },
+    )
 }
 
 /// Create the hyperlight_guest_init() function (which should be
@@ -106,4 +151,47 @@ pub fn guest_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream 
         // a debug temporary file be created.
         util::emit_decls(decls).into()
     })
+}
+
+#[derive(Debug)]
+struct BindgenInputParams {
+    world_name: Option<String>,
+    path: Option<std::path::PathBuf>,
+}
+
+impl Parse for BindgenInputParams {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let content;
+        syn::braced!(content in input);
+        eprintln!("Content = \n {:?}", content);
+
+        let mut world_name = None;
+        let mut path = None;
+
+        // Parse key-value pairs inside the braces
+        while !content.is_empty() {
+            let key: Ident = content.parse()?;
+            content.parse::<Token![:]>()?;
+
+            match key.to_string().as_str() {
+                "world_name" => {
+                    let value: LitStr = content.parse()?;
+                    world_name = Some(value.value());
+                }
+                "path" => {
+                    let value: LitStr = content.parse()?;
+                    path = Some(std::path::PathBuf::from(value.value()));
+                }
+                _ => {
+                    return Err(syn::Error::new(key.span(), format!("Unknown key: {}", key)));
+                }
+            }
+
+            // Parse optional comma
+            if content.peek(Token![,]) {
+                content.parse::<Token![,]>()?;
+            }
+        }
+        Ok(Self { world_name, path })
+    }
 }
