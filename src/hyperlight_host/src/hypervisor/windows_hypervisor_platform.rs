@@ -520,56 +520,6 @@ impl VMProcessor {
 
         self.set_registers(&registers)
     }
-
-    #[cfg(gdb)]
-    pub(super) fn get_debug_regs(&self) -> Result<WHvDebugRegisters> {
-        const LEN: usize = 6;
-
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterDr0,
-            WHvX64RegisterDr1,
-            WHvX64RegisterDr2,
-            WHvX64RegisterDr3,
-            WHvX64RegisterDr6,
-            WHvX64RegisterDr7,
-        ];
-
-        let mut out: [Align16<WHV_REGISTER_VALUE>; LEN] = unsafe { std::mem::zeroed() };
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.get_partition_hdl(),
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
-            Ok(WHvDebugRegisters {
-                dr0: out[0].0.Reg64,
-                dr1: out[1].0.Reg64,
-                dr2: out[2].0.Reg64,
-                dr3: out[3].0.Reg64,
-                dr6: out[4].0.Reg64,
-                dr7: out[5].0.Reg64,
-            })
-        }
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn run(&mut self) -> Result<WHV_RUN_VP_EXIT_CONTEXT> {
-        let partition_handle = self.get_partition_hdl();
-        let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
-
-        unsafe {
-            WHvRunVirtualProcessor(
-                partition_handle,
-                0,
-                &mut exit_context as *mut _ as *mut c_void,
-                std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
-            )?;
-        }
-
-        Ok(exit_context)
-    }
 }
 
 impl Drop for VMProcessor {

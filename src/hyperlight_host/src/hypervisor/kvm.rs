@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
@@ -23,8 +23,6 @@ use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::LevelFilter;
 use tracing::{Span, instrument};
-#[cfg(feature = "trace_guest")]
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 
@@ -33,18 +31,17 @@ use super::gdb::{
     DebugCommChannel, DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, KvmDebug,
     VcpuStopReason,
 };
-use super::{HyperlightExit, Hypervisor, LinuxInterruptHandle, VirtualCPU};
+use super::{Hypervisor, LinuxInterruptHandle};
 #[cfg(gdb)]
 use crate::HyperlightError;
-use crate::hypervisor::get_memory_access_violation;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, VmExit};
+use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::outb::handle_outb;
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
@@ -75,11 +72,9 @@ pub(crate) fn is_hypervisor_present() -> bool {
 
 #[cfg(gdb)]
 mod debug {
-    use kvm_bindings::kvm_debug_exit_arch;
-
     use super::KVMDriver;
     use crate::hypervisor::gdb::{
-        DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason,
+        DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, KvmDebug,
     };
     use crate::{Result, new_error};
 
@@ -93,19 +88,6 @@ mod debug {
             self.debug = Some(debug);
 
             Ok(())
-        }
-
-        /// Get the reason the vCPU has stopped
-        pub(crate) fn get_stop_reason(
-            &mut self,
-            debug_exit: kvm_debug_exit_arch,
-        ) -> Result<VcpuStopReason> {
-            let debug = self
-                .debug
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            debug.get_stop_reason(&self.vcpu_fd, debug_exit, self.entrypoint)
         }
 
         pub(crate) fn process_dbg_request(
@@ -271,9 +253,7 @@ pub(crate) struct KVMDriver {
     vcpu_fd: VcpuFd,
     entrypoint: u64,
     orig_rsp: GuestPtr,
-    interrupt_handle: Arc<LinuxInterruptHandle>,
-    mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
-    host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
+    interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
     sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
     mmap_regions: Vec<(MemoryRegion, u32)>, // Later mapped regions (region, slot number)
@@ -332,10 +312,8 @@ impl KVMDriver {
 
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
 
-        let interrupt_handle = Arc::new(LinuxInterruptHandle {
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
-            cancel_requested: AtomicU64::new(0),
-            call_active: AtomicBool::new(false),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
             #[cfg(all(
@@ -353,8 +331,8 @@ impl KVMDriver {
             )))]
             tid: AtomicU64::new(unsafe { libc::pthread_self() }),
             retry_delay: config.get_interrupt_retry_delay(),
-            dropped: AtomicBool::new(false),
             sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+            dropped: AtomicBool::new(false),
         });
 
         let mut kvm = Self {
@@ -369,8 +347,6 @@ impl KVMDriver {
             mmap_regions: Vec::new(),
             freed_slots: Vec::new(),
             interrupt_handle: interrupt_handle.clone(),
-            mem_mgr: None,
-            host_funcs: None,
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
@@ -432,13 +408,11 @@ impl Hypervisor for KVMDriver {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
+        mut mem_mgr: SandboxMemoryManager<HostSharedMemory>,
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
-        self.mem_mgr = Some(mem_mgr);
-        self.host_funcs = Some(host_funcs);
         self.page_size = page_size as usize;
 
         let max_guest_log_level: u64 = match max_guest_log_level {
@@ -460,10 +434,21 @@ impl Hypervisor for KVMDriver {
         };
         self.set_regs(&regs)?;
 
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
+        self.run(
+            self.entrypoint,
+            self.interrupt_handle.clone(),
+            &self.sandbox_regions.clone(),
+            &self
+                .mmap_regions
+                .iter()
+                .map(|(r, _)| r.clone())
+                .collect::<Vec<_>>(),
+            &mut mem_mgr,
+            host_funcs.clone(),
             #[cfg(gdb)]
             dbg_mem_access_fn,
+            #[cfg(crashdump)]
+            &self.rt_cfg.clone(),
         )
     }
 
@@ -530,6 +515,8 @@ impl Hypervisor for KVMDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -543,243 +530,50 @@ impl Hypervisor for KVMDriver {
         // reset fpu state
         self.set_fpu(&CommonFpu::default())?;
 
-        // run
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
+        self.run(
+            self.entrypoint,
+            self.interrupt_handle.clone(),
+            &self.sandbox_regions.clone(),
+            &self
+                .mmap_regions
+                .iter()
+                .map(|(r, _)| r.clone())
+                .collect::<Vec<_>>(),
+            mem_mgr,
+            host_funcs.clone(),
             #[cfg(gdb)]
             dbg_mem_access_fn,
-        )?;
-
-        Ok(())
+            #[cfg(crashdump)]
+            &self.rt_cfg.clone(),
+        )
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        _rip: u64,
-        _instruction_length: u64,
-    ) -> Result<()> {
-        // KVM does not need RIP or instruction length, as it automatically sets the RIP
-
-        // The payload param for the outb_handle_fn is the first byte
-        // of the data array cast to an u64. Thus, we need to make sure
-        // the data array has at least one u8, then convert that to an u64
-        if data.is_empty() {
-            log_then_return!("no data was given in IO interrupt");
-        } else {
-            let mut padded = [0u8; 4];
-            let copy_len = data.len().min(4);
-            padded[..copy_len].copy_from_slice(&data[..copy_len]);
-            let value = u32::from_le_bytes(padded);
-
-            #[cfg(feature = "mem_profile")]
-            {
-                // We need to handle the borrow checker issue where we need both:
-                // - &mut SandboxMemoryManager (from self.mem_mgr.as_mut())
-                // - &mut dyn Hypervisor (from self)
-                // We'll use a temporary approach to extract the mem_mgr temporarily
-                let mem_mgr_option = self.mem_mgr.take();
-                let mut mem_mgr =
-                    mem_mgr_option.ok_or_else(|| new_error!("mem_mgr not initialized"))?;
-                let host_funcs = self
-                    .host_funcs
-                    .as_ref()
-                    .ok_or_else(|| new_error!("host_funcs not initialized"))?
-                    .clone();
-
-                handle_outb(&mut mem_mgr, host_funcs, self, port, value)?;
-
-                // Put the mem_mgr back
-                self.mem_mgr = Some(mem_mgr);
-            }
-
-            #[cfg(not(feature = "mem_profile"))]
-            {
-                let mem_mgr = self
-                    .mem_mgr
-                    .as_mut()
-                    .ok_or_else(|| new_error!("mem_mgr not initialized"))?;
-                let host_funcs = self
-                    .host_funcs
-                    .as_ref()
-                    .ok_or_else(|| new_error!("host_funcs not initialized"))?
-                    .clone();
-
-                handle_outb(mem_mgr, host_funcs, port, value)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(
-        &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
-    ) -> Result<HyperlightExit> {
-        self.interrupt_handle
-            .tid
-            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Release);
-        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
-        // Cast to internal trait for access to internal methods
-        let interrupt_handle_internal =
-            self.interrupt_handle.as_ref() as &dyn super::InterruptHandleInternal;
-
-        // (after set_running_bit but before checking cancel_requested):
-        // - kill() will stamp cancel_requested with the current generation
-        // - We will check cancel_requested below and skip the VcpuFd::run() call
-        // - This is the desired behavior - the kill takes effect immediately
-        let generation = interrupt_handle_internal.set_running_bit();
-
-        #[cfg(not(gdb))]
-        let debug_interrupt = false;
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
-        // Don't run the vcpu if `cancel_requested` is set for our generation
-        //
-        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
-        // (after checking cancel_requested but before vcpu.run()):
-        // - kill() will stamp cancel_requested with the current generation
-        // - We will proceed with vcpu.run(), but signals will be sent to interrupt it
-        // - The vcpu will be interrupted and return EINTR (handled below)
-        let exit_reason = if interrupt_handle_internal
-            .is_cancel_requested_for_generation(generation)
-            || debug_interrupt
-        {
-            Err(kvm_ioctls::Error::new(libc::EINTR))
-        } else {
-            #[cfg(feature = "trace_guest")]
-            tc.setup_guest_trace(Span::current().context());
-
-            // Note: if `InterruptHandle::kill()` is called while this thread is **here**
-            // (during vcpu.run() execution):
-            // - kill() stamps cancel_requested with the current generation
-            // - kill() sends signals (SIGRTMIN+offset) to this thread repeatedly
-            // - The signal handler is a no-op, but it causes vcpu.run() to return EINTR
-            // - We check cancel_requested below and return Cancelled if generation matches
-            self.vcpu_fd.run()
-        };
-        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
-        // (after vcpu.run() returns but before clear_running_bit):
-        // - kill() continues sending signals to this thread (running bit is still set)
-        // - The signals are harmless (no-op handler), we just need to check cancel_requested
-        // - We load cancel_requested below to determine if this run was cancelled
-        let cancel_requested =
-            interrupt_handle_internal.is_cancel_requested_for_generation(generation);
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
-        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
-        // (after loading cancel_requested but before clear_running_bit):
-        // - kill() stamps cancel_requested with the CURRENT generation (not the one we just loaded)
-        // - kill() continues sending signals until running bit is cleared
-        // - The newly stamped cancel_requested will affect the NEXT vcpu.run() call
-        // - Signals sent now are harmless (no-op handler)
-        interrupt_handle_internal.clear_running_bit();
-        // At this point, running bit is clear so kill() will stop sending signals.
-        // However, we may still receive delayed signals that were sent before clear_running_bit.
-        // These stale signals are harmless because:
-        // - The signal handler is a no-op
-        // - We check generation matching in cancel_requested before treating EINTR as cancellation
-        // - If generation doesn't match, we return Retry instead of Cancelled
-        let result = match exit_reason {
-            Ok(VcpuExit::Hlt) => {
-                crate::debug!("KVM - Halt Details : {:#?}", &self);
-                HyperlightExit::Halt()
-            }
-            Ok(VcpuExit::IoOut(port, data)) => {
-                // because vcpufd.run() mutably borrows self we cannot pass self to crate::debug! macro here
-                crate::debug!("KVM IO Details : \nPort : {}\nData : {:?}", port, data);
-                // KVM does not need to set RIP or instruction length so these are set to 0
-                HyperlightExit::IoOut(port, data.to_vec(), 0, 0)
-            }
-            Ok(VcpuExit::MmioRead(addr, _)) => {
-                crate::debug!("KVM MMIO Read -Details: Address: {} \n {:#?}", addr, &self);
-
-                match get_memory_access_violation(
-                    addr as usize,
-                    self.sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
-                    MemoryRegionFlags::READ,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
-            }
-            Ok(VcpuExit::MmioWrite(addr, _)) => {
-                crate::debug!("KVM MMIO Write -Details: Address: {} \n {:#?}", addr, &self);
-
-                match get_memory_access_violation(
-                    addr as usize,
-                    self.sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
-                    MemoryRegionFlags::WRITE,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
-            }
+    fn run_vcpu(&mut self) -> Result<VmExit> {
+        match self.vcpu_fd.run() {
+            Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
+            Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
+            Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
+            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
             #[cfg(gdb)]
-            // KVM provides architecture specific information about the vCPU state when exiting
-            Ok(VcpuExit::Debug(debug_exit)) => match self.get_stop_reason(debug_exit) {
-                Ok(reason) => HyperlightExit::Debug(reason),
-                Err(e) => {
-                    log_then_return!("Error getting stop reason: {:?}", e);
-                }
-            },
+            Ok(VcpuExit::Debug(debug_exit)) => Ok(VmExit::Debug {
+                dr6: debug_exit.dr6,
+                exception: debug_exit.exception,
+            }),
             Err(e) => match e.errno() {
-                // We send a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
-                libc::EINTR => {
-                    // Check if cancellation was requested for THIS specific generation.
-                    // If not, the EINTR came from:
-                    // - A debug interrupt (if GDB is enabled)
-                    // - A stale signal from a previous guest call (generation mismatch)
-                    // - A signal meant for a different sandbox on the same thread
-                    // In these cases, we return Retry to continue execution.
-                    if cancel_requested {
-                        interrupt_handle_internal.clear_cancel_requested();
-                        HyperlightExit::Cancelled()
-                    } else {
-                        #[cfg(gdb)]
-                        if debug_interrupt {
-                            self.interrupt_handle
-                                .debug_interrupt
-                                .store(false, Ordering::Relaxed);
+                libc::EINTR => Ok(VmExit::Cancelled()),
+                libc::EAGAIN => Ok(VmExit::Retry()),
 
-                            // If the vCPU was stopped because of an interrupt, we need to
-                            // return a special exit reason so that the gdb thread can handle it
-                            // and resume execution
-                            HyperlightExit::Debug(VcpuStopReason::Interrupt)
-                        } else {
-                            HyperlightExit::Retry()
-                        }
-
-                        #[cfg(not(gdb))]
-                        HyperlightExit::Retry()
-                    }
-                }
-                libc::EAGAIN => HyperlightExit::Retry(),
-                _ => {
-                    crate::debug!("KVM Error -Details: Address: {} \n {:#?}", e, &self);
-                    log_then_return!("Error running VCPU {:?}", e);
-                }
+                other => Ok(VmExit::Unknown(format!(
+                    "Unknown KVM VCPU error: {}",
+                    other
+                ))),
             },
-            Ok(other) => {
-                let err_msg = format!("Unexpected KVM Exit {:?}", other);
-                crate::debug!("KVM Other Exit Details: {:#?}", &self);
-                HyperlightExit::Unknown(err_msg)
-            }
-        };
-        Ok(result)
+            Ok(other) => Ok(VmExit::Unknown(format!(
+                "Unknown KVM VCPU exit: {:?}",
+                other
+            ))),
+        }
     }
 
     fn regs(&self) -> Result<super::regs::CommonRegisters> {
@@ -815,12 +609,7 @@ impl Hypervisor for KVMDriver {
         Ok(())
     }
 
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
-    }
-
-    fn interrupt_handle(&self) -> Arc<dyn super::InterruptHandleInternal> {
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
     }
 
@@ -986,6 +775,16 @@ impl Hypervisor for KVMDriver {
             // If the vCPU stopped because of any other reason except a crash, we can handle it
             // normally
             _ => {
+                // Temporary spot to remove hw breakpoints on exit
+                // TODO: remove in future PR
+                if stop_reason == VcpuStopReason::EntryPointBp {
+                    #[allow(clippy::unwrap_used)] // we checked this above
+                    self.debug
+                        .as_mut()
+                        .unwrap()
+                        .remove_hw_breakpoint(&self.vcpu_fd, self.entrypoint)?;
+                }
+
                 // Send the stop reason to the gdb thread
                 self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
                     .map_err(|e| {
@@ -1030,23 +829,33 @@ impl Hypervisor for KVMDriver {
         Ok(())
     }
 
-    fn check_stack_guard(&self) -> Result<bool> {
-        if let Some(mgr) = self.mem_mgr.as_ref() {
-            mgr.check_stack_guard()
+    #[cfg(gdb)]
+    fn gdb_connection(&self) -> Option<&DebugCommChannel<DebugResponse, DebugMsg>> {
+        self.gdb_conn.as_ref()
+    }
+
+    #[cfg(gdb)]
+    fn translate_gva(&self, gva: u64) -> Result<u64> {
+        let tr = self
+            .vcpu_fd
+            .translate_gva(gva)
+            .map_err(|_| HyperlightError::TranslateGuestAddress(gva))?;
+
+        if tr.valid == 0 {
+            Err(HyperlightError::TranslateGuestAddress(gva))
         } else {
-            Err(new_error!("Memory manager is not initialized"))
+            Ok(tr.physical_address)
         }
     }
 
     #[cfg(feature = "trace_guest")]
-    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
+    fn handle_trace(
+        &mut self,
+        tc: &mut crate::sandbox::trace::TraceContext,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    ) -> Result<()> {
         let regs = self.regs()?;
-        tc.handle_trace(
-            &regs,
-            self.mem_mgr.as_mut().ok_or_else(|| {
-                new_error!("Memory manager is not initialized before handling trace")
-            })?,
-        )
+        tc.handle_trace(&regs, mem_mgr)
     }
 
     #[cfg(feature = "mem_profile")]
@@ -1057,6 +866,6 @@ impl Hypervisor for KVMDriver {
 
 impl Drop for KVMDriver {
     fn drop(&mut self) {
-        self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
+        self.interrupt_handle.set_dropped();
     }
 }

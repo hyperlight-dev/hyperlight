@@ -23,7 +23,6 @@ use elfcore::{
     ReadProcessMemory, ThreadView, VaProtection, VaRegion,
 };
 
-use super::Hypervisor;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
 
@@ -262,12 +261,7 @@ impl ReadProcessMemory for GuestMemReader {
 ///
 /// # Returns
 /// * `Result<()>`: Success or error
-pub(crate) fn generate_crashdump(hv: &dyn Hypervisor) -> Result<()> {
-    // Get crash context from hypervisor
-    let ctx = hv
-        .crashdump_context()
-        .map_err(|e| new_error!("Failed to get crashdump context: {:?}", e))?;
-
+pub(crate) fn generate_crashdump(ctx: Option<CrashDumpContext>) -> Result<()> {
     // Get env variable for core dump directory
     let core_dump_dir = std::env::var("HYPERLIGHT_CORE_DUMP_DIR").ok();
 

@@ -16,10 +16,8 @@ limitations under the License.
 
 use std::collections::HashMap;
 
-use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
-
-use super::arch::{MAX_NO_OF_HW_BP, vcpu_stop_reason};
-use super::{GuestDebug, SW_BP_SIZE, VcpuStopReason};
+use super::arch::MAX_NO_OF_HW_BP;
+use super::{GuestDebug, SW_BP_SIZE};
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
 use crate::hypervisor::windows_hypervisor_platform::VMProcessor;
 use crate::hypervisor::wrappers::WHvDebugRegisters;
@@ -50,15 +48,6 @@ impl HypervDebug {
             sw_breakpoints: HashMap::new(),
             dbg_cfg: WHvDebugRegisters::default(),
         }
-    }
-
-    /// Returns the instruction pointer from the stopped vCPU
-    fn get_instruction_pointer(&self, vcpu_fd: &VMProcessor) -> Result<u64> {
-        let regs = vcpu_fd
-            .regs()
-            .map_err(|e| new_error!("Could not retrieve registers from vCPU: {:?}", e))?;
-
-        Ok(regs.rip)
     }
 
     /// This method sets the kvm debugreg fields to enable breakpoints at
@@ -119,42 +108,6 @@ impl HypervDebug {
             .map_err(|e| new_error!("Could not set guest registers: {:?}", e))?;
 
         Ok(())
-    }
-
-    /// Get the reason the vCPU has stopped
-    pub(crate) fn get_stop_reason(
-        &mut self,
-        vcpu_fd: &VMProcessor,
-        exception: WHV_VP_EXCEPTION_CONTEXT,
-        entrypoint: u64,
-    ) -> Result<VcpuStopReason> {
-        let rip = self.get_instruction_pointer(vcpu_fd)?;
-        let rip = self.translate_gva(vcpu_fd, rip)?;
-
-        let debug_regs = vcpu_fd
-            .get_debug_regs()
-            .map_err(|e| new_error!("Could not retrieve registers from vCPU: {:?}", e))?;
-
-        // Check if the vCPU stopped because of a hardware breakpoint
-        let reason = vcpu_stop_reason(
-            self.single_step,
-            rip,
-            debug_regs.dr6,
-            entrypoint,
-            exception.ExceptionType as u32,
-            &self.hw_breakpoints,
-            &self.sw_breakpoints,
-        );
-
-        if let VcpuStopReason::EntryPointBp = reason {
-            // In case the hw breakpoint is the entry point, remove it to
-            // avoid hanging here as gdb does not remove breakpoints it
-            // has not set.
-            // Gdb expects the target to be stopped when connected.
-            self.remove_hw_breakpoint(vcpu_fd, entrypoint)?;
-        }
-
-        Ok(reason)
     }
 }
 

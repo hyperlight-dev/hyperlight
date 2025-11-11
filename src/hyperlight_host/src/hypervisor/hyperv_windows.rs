@@ -14,19 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::ffi::c_void;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
 use tracing::{Span, instrument};
-#[cfg(feature = "trace_guest")]
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 use windows::Win32::System::Hypervisor::{
-    WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_RUN_VP_EXIT_CONTEXT, WHV_RUN_VP_EXIT_REASON,
-    WHvCancelRunVirtualProcessor,
+    WHV_MEMORY_ACCESS_TYPE, WHV_REGISTER_VALUE, WHV_RUN_VP_EXIT_CONTEXT, WHV_RUN_VP_EXIT_REASON,
+    WHvRunVirtualProcessor, WHvRunVpExitReasonCanceled, WHvRunVpExitReasonMemoryAccess,
+    WHvRunVpExitReasonX64Halt, WHvRunVpExitReasonX64IoPortAccess, WHvX64RegisterRip,
 };
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
@@ -37,6 +37,10 @@ use {
         VcpuStopReason,
     },
     crate::HyperlightError,
+    crate::new_error,
+    windows::Win32::System::Hypervisor::WHvGetVirtualProcessorRegisters,
+    windows::Win32::System::Hypervisor::WHvRunVpExitReasonException,
+    windows::Win32::System::Hypervisor::WHvX64RegisterDr6,
 };
 
 use super::regs::CommonSpecialRegisters;
@@ -44,28 +48,26 @@ use super::surrogate_process::SurrogateProcess;
 use super::surrogate_process_manager::*;
 use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
 use super::wrappers::HandleWrapper;
-use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
-use crate::hypervisor::{InterruptHandleInternal, get_memory_access_violation};
+use super::{Hypervisor, InterruptHandle};
+use crate::hypervisor::regs::{Align16, CommonFpu, CommonRegisters};
+use crate::hypervisor::{InterruptHandleImpl, VmExit, WindowsInterruptHandle};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::outb::handle_outb;
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
-use crate::{Result, debug, log_then_return, new_error};
+use crate::{Result, log_then_return};
 
 #[cfg(gdb)]
 mod debug {
-    use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
 
     use super::{HypervWindowsDriver, *};
     use crate::Result;
-    use crate::hypervisor::gdb::{DebugMemoryAccess, DebugMsg, DebugResponse, VcpuStopReason};
+    use crate::hypervisor::gdb::{DebugMemoryAccess, DebugMsg, DebugResponse};
 
     impl HypervWindowsDriver {
         /// Resets the debug information to disable debugging
@@ -77,19 +79,6 @@ mod debug {
             self.debug = Some(debug);
 
             Ok(())
-        }
-
-        /// Get the reason the vCPU has stopped
-        pub(crate) fn get_stop_reason(
-            &mut self,
-            exception: WHV_VP_EXCEPTION_CONTEXT,
-        ) -> Result<VcpuStopReason> {
-            let debug = self
-                .debug
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            debug.get_stop_reason(&self.processor, exception, self.entrypoint)
         }
 
         pub(crate) fn process_dbg_request(
@@ -263,9 +252,7 @@ pub(crate) struct HypervWindowsDriver {
     _surrogate_process: SurrogateProcess, // we need to keep a reference to the SurrogateProcess for the duration of the driver since otherwise it will dropped and the memory mapping will be unmapped and the surrogate process will be returned to the pool
     entrypoint: u64,
     orig_rsp: GuestPtr,
-    interrupt_handle: Arc<WindowsInterruptHandle>,
-    mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
-    host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
+    interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
     sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
     mmap_regions: Vec<MemoryRegion>,    // Later mapped regions
@@ -326,12 +313,10 @@ impl HypervWindowsDriver {
             (None, None)
         };
 
-        let interrupt_handle = Arc::new(WindowsInterruptHandle {
-            running: AtomicU64::new(0),
-            cancel_requested: AtomicU64::new(0),
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(WindowsInterruptHandle {
+            state: AtomicU64::new(0),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
-            call_active: AtomicBool::new(false),
             partition_handle,
             dropped: AtomicBool::new(false),
         });
@@ -342,8 +327,6 @@ impl HypervWindowsDriver {
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
             interrupt_handle: interrupt_handle.clone(),
-            mem_mgr: None,
-            host_funcs: None,
             sandbox_regions: mem_regions,
             mmap_regions: Vec::new(),
             #[cfg(gdb)]
@@ -366,17 +349,6 @@ impl HypervWindowsDriver {
         }
 
         Ok(hv)
-    }
-
-    #[inline]
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn get_exit_details(&self, exit_reason: WHV_RUN_VP_EXIT_REASON) -> Result<String> {
-        let mut error = String::new();
-        error.push_str(&format!(
-            "Did not receive a halt from Hypervisor as expected - Received {exit_reason:?}!\n"
-        ));
-        error.push_str(&format!("Registers: \n{:#?}", self.processor.regs()?));
-        Ok(error)
     }
 }
 
@@ -415,14 +387,11 @@ impl Hypervisor for HypervWindowsDriver {
         peb_address: RawPtr,
         seed: u64,
         page_size: u32,
-        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
+        mut mem_mgr: SandboxMemoryManager<HostSharedMemory>,
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
-        self.mem_mgr = Some(mem_mgr);
-        self.host_funcs = Some(host_funcs);
-
         let max_guest_log_level: u64 = match max_guest_log_level {
             Some(level) => level as u64,
             None => self.get_max_log_level().into(),
@@ -443,10 +412,17 @@ impl Hypervisor for HypervWindowsDriver {
         };
         self.set_regs(&regs)?;
 
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
+        self.run(
+            self.entrypoint,
+            self.interrupt_handle.clone(),
+            &self.sandbox_regions.clone(),
+            &self.mmap_regions.clone(),
+            &mut mem_mgr,
+            host_funcs.clone(),
             #[cfg(gdb)]
-            dbg_mem_access_hdl,
+            dbg_mem_access_fn,
+            #[cfg(crashdump)]
+            &self.rt_cfg.clone(),
         )
     }
 
@@ -468,7 +444,9 @@ impl Hypervisor for HypervWindowsDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
-        #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: Arc<Mutex<FunctionRegistry>>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
         let regs = CommonRegisters {
@@ -482,158 +460,53 @@ impl Hypervisor for HypervWindowsDriver {
         // reset fpu state
         self.processor.set_fpu(&CommonFpu::default())?;
 
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
+        self.run(
+            self.entrypoint,
+            self.interrupt_handle.clone(),
+            &self.sandbox_regions.clone(),
+            &self.mmap_regions.clone(),
+            mem_mgr,
+            host_funcs.clone(),
             #[cfg(gdb)]
-            dbg_mem_access_hdl,
-        )?;
-
-        Ok(())
+            dbg_mem_access_fn,
+            #[cfg(crashdump)]
+            &self.rt_cfg.clone(),
+        )
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        rip: u64,
-        instruction_length: u64,
-    ) -> Result<()> {
-        let mut padded = [0u8; 4];
-        let copy_len = data.len().min(4);
-        padded[..copy_len].copy_from_slice(&data[..copy_len]);
-        let val = u32::from_le_bytes(padded);
+    #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
+    fn run_vcpu(&mut self) -> Result<VmExit> {
+        let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
 
-        #[cfg(feature = "mem_profile")]
-        {
-            // We need to handle the borrow checker issue where we need both:
-            // - &mut SandboxMemoryManager (from self.mem_mgr.as_mut())
-            // - &mut dyn Hypervisor (from self)
-            // We'll use a temporary approach to extract the mem_mgr temporarily
-            let mem_mgr_option = self.mem_mgr.take();
-            let mut mem_mgr = mem_mgr_option
-                .ok_or_else(|| new_error!("mem_mgr should be initialized before handling IO"))?;
-            let host_funcs = self
-                .host_funcs
-                .as_ref()
-                .ok_or_else(|| new_error!("host_funcs should be initialized before handling IO"))?
-                .clone();
-
-            handle_outb(&mut mem_mgr, host_funcs, self, port, val)?;
-
-            // Put the mem_mgr back
-            self.mem_mgr = Some(mem_mgr);
+        unsafe {
+            WHvRunVirtualProcessor(
+                self.processor.get_partition_hdl(),
+                0,
+                &mut exit_context as *mut _ as *mut c_void,
+                std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
+            )?;
         }
-
-        #[cfg(not(feature = "mem_profile"))]
-        {
-            let mem_mgr = self
-                .mem_mgr
-                .as_mut()
-                .ok_or_else(|| new_error!("mem_mgr should be initialized before handling IO"))?;
-            let host_funcs = self
-                .host_funcs
-                .as_ref()
-                .ok_or_else(|| new_error!("host_funcs should be initialized before handling IO"))?
-                .clone();
-
-            handle_outb(mem_mgr, host_funcs, port, val)?;
-        }
-
-        let mut regs = self.regs()?;
-        regs.rip = rip + instruction_length;
-        self.set_regs(&regs)
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(
-        &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
-    ) -> Result<super::HyperlightExit> {
-        // Cast to internal trait for access to internal methods
-        let interrupt_handle_internal =
-            self.interrupt_handle.as_ref() as &dyn super::InterruptHandleInternal;
-
-        // Get current generation and set running bit
-        let generation = interrupt_handle_internal.set_running_bit();
-
-        #[cfg(not(gdb))]
-        let debug_interrupt = false;
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
-
-        // Check if cancellation was requested for THIS generation
-        let exit_context = if interrupt_handle_internal
-            .is_cancel_requested_for_generation(generation)
-            || debug_interrupt
-        {
-            WHV_RUN_VP_EXIT_CONTEXT {
-                ExitReason: WHV_RUN_VP_EXIT_REASON(8193i32), // WHvRunVpExitReasonCanceled
-                VpContext: Default::default(),
-                Anonymous: Default::default(),
-                Reserved: Default::default(),
-            }
-        } else {
-            #[cfg(feature = "trace_guest")]
-            tc.setup_guest_trace(Span::current().context());
-
-            self.processor.run()?
-        };
-
-        // Clear running bit
-        interrupt_handle_internal.clear_running_bit();
-
-        let is_canceled = exit_context.ExitReason == WHV_RUN_VP_EXIT_REASON(8193i32); // WHvRunVpExitReasonCanceled
-
-        // Check if this was a manual cancellation (vs internal Windows cancellation)
-        let cancel_was_requested_manually =
-            interrupt_handle_internal.is_cancel_requested_for_generation(generation);
-
-        // Only clear cancel_requested if we're actually processing a cancellation for this generation
-        if is_canceled && cancel_was_requested_manually {
-            interrupt_handle_internal.clear_cancel_requested();
-        }
-
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
 
         let result = match exit_context.ExitReason {
-            // WHvRunVpExitReasonX64IoPortAccess
-            WHV_RUN_VP_EXIT_REASON(2i32) => {
-                // size of current instruction is in lower byte of _bitfield
-                // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvexitcontextdatatypes)
+            WHvRunVpExitReasonX64IoPortAccess => unsafe {
                 let instruction_length = exit_context.VpContext._bitfield & 0xF;
-                unsafe {
-                    debug!(
-                        "HyperV IO Details :\n Port: {:#x} \n {:#?}",
-                        exit_context.Anonymous.IoPortAccess.PortNumber, &self
-                    );
-                    HyperlightExit::IoOut(
-                        exit_context.Anonymous.IoPortAccess.PortNumber,
-                        exit_context
-                            .Anonymous
-                            .IoPortAccess
-                            .Rax
-                            .to_le_bytes()
-                            .to_vec(),
-                        exit_context.VpContext.Rip,
-                        instruction_length as u64,
-                    )
-                }
-            }
-            // HvRunVpExitReasonX64Halt
-            WHV_RUN_VP_EXIT_REASON(8i32) => {
-                debug!("HyperV Halt Details :\n {:#?}", &self);
-                HyperlightExit::Halt()
-            }
-            // WHvRunVpExitReasonMemoryAccess
-            WHV_RUN_VP_EXIT_REASON(1i32) => {
+                let rip = exit_context.VpContext.Rip + instruction_length as u64;
+                self.processor.set_registers(&[(
+                    WHvX64RegisterRip,
+                    Align16(WHV_REGISTER_VALUE { Reg64: rip }),
+                )])?;
+                VmExit::IoOut(
+                    exit_context.Anonymous.IoPortAccess.PortNumber,
+                    exit_context
+                        .Anonymous
+                        .IoPortAccess
+                        .Rax
+                        .to_le_bytes()
+                        .to_vec(),
+                )
+            },
+            WHvRunVpExitReasonX64Halt => VmExit::Halt(),
+            WHvRunVpExitReasonMemoryAccess => {
                 let gpa = unsafe { exit_context.Anonymous.MemoryAccess.Gpa };
                 let access_info = unsafe {
                     WHV_MEMORY_ACCESS_TYPE(
@@ -642,86 +515,44 @@ impl Hypervisor for HypervWindowsDriver {
                     )
                 };
                 let access_info = MemoryRegionFlags::try_from(access_info)?;
-                debug!(
-                    "HyperV Memory Access Details :\n GPA: {:#?}\n Access Info :{:#?}\n {:#?} ",
-                    gpa, access_info, &self
-                );
-
-                match get_memory_access_violation(
-                    gpa as usize,
-                    self.sandbox_regions.iter().chain(self.mmap_regions.iter()),
-                    access_info,
-                ) {
-                    Some(access_info) => access_info,
-                    None => HyperlightExit::Mmio(gpa),
+                match access_info {
+                    MemoryRegionFlags::READ => VmExit::MmioRead(gpa),
+                    MemoryRegionFlags::WRITE => VmExit::MmioWrite(gpa),
+                    _ => VmExit::Unknown("Unknown memory access type".to_string()),
                 }
             }
-            //  WHvRunVpExitReasonCanceled
-            //  Execution was cancelled by the host.
-            //  This will happen when guest code runs for too long
-            WHV_RUN_VP_EXIT_REASON(8193i32) => {
-                debug!("HyperV Cancelled Details :\n {:#?}", &self);
-                #[cfg(gdb)]
-                if debug_interrupt {
-                    self.interrupt_handle
-                        .debug_interrupt
-                        .store(false, Ordering::Relaxed);
-
-                    // If the vCPU was stopped because of an interrupt, we need to
-                    // return a special exit reason so that the gdb thread can handle it
-                    // and resume execution
-                    HyperlightExit::Debug(VcpuStopReason::Interrupt)
-                } else if !cancel_was_requested_manually {
-                    // This was an internal cancellation
-                    // The virtualization stack can use this function to return the control
-                    // of a virtual processor back to the virtualization stack in case it
-                    // needs to change the state of a VM or to inject an event into the processor
-                    // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
-                    debug!("Internal cancellation detected, returning Retry error");
-                    HyperlightExit::Retry()
-                } else {
-                    HyperlightExit::Cancelled()
-                }
-
-                #[cfg(not(gdb))]
-                {
-                    if !cancel_was_requested_manually {
-                        // This was an internal cancellation
-                        // The virtualization stack can use this function to return the control
-                        // of a virtual processor back to the virtualization stack in case it
-                        // needs to change the state of a VM or to inject an event into the processor
-                        // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
-                        debug!("Internal cancellation detected, returning Retry error");
-                        HyperlightExit::Retry()
-                    } else {
-                        HyperlightExit::Cancelled()
-                    }
-                }
-            }
+            // Execution was cancelled by the host.
+            WHvRunVpExitReasonCanceled => VmExit::Cancelled(),
             #[cfg(gdb)]
-            WHV_RUN_VP_EXIT_REASON(4098i32) => {
-                // Get information about the exception that triggered the exit
+            WHvRunVpExitReasonException => {
                 let exception = unsafe { exit_context.Anonymous.VpException };
 
-                match self.get_stop_reason(exception) {
-                    Ok(reason) => HyperlightExit::Debug(reason),
-                    Err(e) => {
-                        log_then_return!("Error getting stop reason: {}", e);
+                // Get the DR6 register to see which breakpoint was hit
+                let dr6 = {
+                    let names = [WHvX64RegisterDr6];
+                    let mut out: [Align16<WHV_REGISTER_VALUE>; 1] = unsafe { std::mem::zeroed() };
+                    unsafe {
+                        WHvGetVirtualProcessorRegisters(
+                            self.processor.get_partition_hdl(),
+                            0,
+                            names.as_ptr(),
+                            out.len() as u32,
+                            out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+                        )?;
                     }
-                }
-            }
-            WHV_RUN_VP_EXIT_REASON(_) => {
-                debug!(
-                    "HyperV Unexpected Exit Details :#nReason {:#?}\n {:#?}",
-                    exit_context.ExitReason, &self
-                );
-                match self.get_exit_details(exit_context.ExitReason) {
-                    Ok(error) => HyperlightExit::Unknown(error),
-                    Err(e) => HyperlightExit::Unknown(format!("Error getting exit details: {}", e)),
-                }
-            }
-        };
+                    unsafe { out[0].0.Reg64 }
+                };
 
+                VmExit::Debug {
+                    dr6,
+                    exception: exception.ExceptionType as u32,
+                }
+            }
+            WHV_RUN_VP_EXIT_REASON(_) => VmExit::Unknown(format!(
+                "Unknown exit reason '{}'",
+                exit_context.ExitReason.0
+            )),
+        };
         Ok(result)
     }
 
@@ -754,13 +585,8 @@ impl Hypervisor for HypervWindowsDriver {
         self.processor.set_sregs(sregs)
     }
 
-    fn interrupt_handle(&self) -> Arc<dyn super::InterruptHandleInternal> {
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
     }
 
     #[cfg(crashdump)]
@@ -920,6 +746,16 @@ impl Hypervisor for HypervWindowsDriver {
             // If the vCPU stopped because of any other reason except a crash, we can handle it
             // normally
             _ => {
+                // Temporary spot to remove hw breakpoints on exit
+                // TODO: remove in future PR
+                if stop_reason == VcpuStopReason::EntryPointBp {
+                    #[allow(clippy::unwrap_used)] // we checked this above
+                    self.debug
+                        .as_mut()
+                        .unwrap()
+                        .remove_hw_breakpoint(&self.processor, self.entrypoint)?;
+                }
+
                 self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))
                     .map_err(|e| {
                         new_error!("Couldn't signal vCPU stopped event to GDB thread: {:?}", e)
@@ -963,23 +799,45 @@ impl Hypervisor for HypervWindowsDriver {
         Ok(())
     }
 
-    fn check_stack_guard(&self) -> Result<bool> {
-        if let Some(mgr) = self.mem_mgr.as_ref() {
-            mgr.check_stack_guard()
-        } else {
-            Err(new_error!("Memory manager is not initialized"))
+    #[cfg(gdb)]
+    fn gdb_connection(&self) -> Option<&DebugCommChannel<DebugResponse, DebugMsg>> {
+        self.gdb_conn.as_ref()
+    }
+
+    #[cfg(gdb)]
+    fn translate_gva(&self, gva: u64) -> Result<u64> {
+        use windows::Win32::System::Hypervisor::{
+            WHV_TRANSLATE_GVA_RESULT, WHvTranslateGva, WHvTranslateGvaFlagValidateRead,
+        };
+
+        let partition_handle = self.processor.get_partition_hdl();
+        let mut gpa = 0;
+        let mut result = WHV_TRANSLATE_GVA_RESULT::default();
+
+        unsafe {
+            WHvTranslateGva(
+                partition_handle,
+                0,
+                gva,
+                // Only validate read access because the write access is handled through the
+                // host memory mapping
+                WHvTranslateGvaFlagValidateRead,
+                &mut result,
+                &mut gpa,
+            )?;
         }
+
+        Ok(gpa)
     }
 
     #[cfg(feature = "trace_guest")]
-    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
+    fn handle_trace(
+        &mut self,
+        tc: &mut crate::sandbox::trace::TraceContext,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    ) -> Result<()> {
         let regs = self.regs()?;
-        tc.handle_trace(
-            &regs,
-            self.mem_mgr.as_mut().ok_or_else(|| {
-                new_error!("Memory manager is not initialized before handling trace")
-            })?,
-        )
+        tc.handle_trace(&regs, mem_mgr)
     }
 
     #[cfg(feature = "mem_profile")]
@@ -990,86 +848,6 @@ impl Hypervisor for HypervWindowsDriver {
 
 impl Drop for HypervWindowsDriver {
     fn drop(&mut self) {
-        self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
-    }
-}
-
-#[derive(Debug)]
-pub struct WindowsInterruptHandle {
-    /// Combined running flag (bit 63) and generation counter (bits 0-62).
-    ///
-    /// The generation increments with each guest function call to prevent
-    /// stale cancellations from affecting new calls (ABA problem).
-    ///
-    /// Layout: `[running:1 bit][generation:63 bits]`
-    running: AtomicU64,
-
-    /// Combined cancel_requested flag (bit 63) and generation counter (bits 0-62).
-    ///
-    /// When kill() is called, this stores the current generation along with
-    /// the cancellation flag. The VCPU only honors the cancellation if the
-    /// generation matches its current generation.
-    ///
-    /// Layout: `[cancel_requested:1 bit][generation:63 bits]`
-    cancel_requested: AtomicU64,
-
-    // This is used to signal the GDB thread to stop the vCPU
-    #[cfg(gdb)]
-    debug_interrupt: AtomicBool,
-    /// Flag indicating whether a guest function call is currently in progress.
-    ///
-    /// **true**: A guest function call is active (between call start and completion)
-    /// **false**: No guest function call is active
-    ///
-    /// # Purpose
-    ///
-    /// This flag prevents kill() from having any effect when called outside of a
-    /// guest function call. This solves the "kill-in-advance" problem where kill()
-    /// could be called before a guest function starts and would incorrectly cancel it.
-    call_active: AtomicBool,
-    partition_handle: WHV_PARTITION_HANDLE,
-    dropped: AtomicBool,
-}
-
-impl InterruptHandle for WindowsInterruptHandle {
-    fn kill(&self) -> bool {
-        // Check if a call is actually active first
-        if !self.call_active.load(Ordering::Acquire) {
-            return false;
-        }
-
-        // Get the current running state and generation
-        let (running, generation) = self.get_running_and_generation();
-
-        // Set cancel_requested with the current generation
-        self.set_cancel_requested(generation);
-
-        // Only call WHvCancelRunVirtualProcessor if VCPU is actually running in guest mode
-        running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
-    }
-
-    #[cfg(gdb)]
-    fn kill_from_debugger(&self) -> bool {
-        self.debug_interrupt.store(true, Ordering::Relaxed);
-        let (running, _) = self.get_running_and_generation();
-        running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
-    }
-
-    fn dropped(&self) -> bool {
-        self.dropped.load(Ordering::Relaxed)
-    }
-}
-
-impl InterruptHandleInternal for WindowsInterruptHandle {
-    fn get_call_active(&self) -> &AtomicBool {
-        &self.call_active
-    }
-
-    fn get_running(&self) -> &AtomicU64 {
-        &self.running
-    }
-
-    fn get_cancel_requested(&self) -> &AtomicU64 {
-        &self.cancel_requested
+        self.interrupt_handle.set_dropped();
     }
 }

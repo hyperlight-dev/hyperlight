@@ -47,46 +47,10 @@ use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
-use crate::{Result, log_then_return, new_error};
+use crate::{Result, log_then_return};
 
 /// Global counter for assigning unique IDs to sandboxes
 static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// RAII guard that automatically calls `clear_call_active()` when dropped.
-///
-/// This ensures that the call_active flag is always cleared when a guest function
-/// call completes, even if the function returns early due to an error.
-///
-/// Only one guard can exist per interrupt handle at a time - attempting to create
-/// a second guard will return an error.
-struct CallActiveGuard<T: crate::hypervisor::InterruptHandleInternal + ?Sized> {
-    interrupt_handle: Arc<T>,
-}
-
-impl<T: crate::hypervisor::InterruptHandleInternal + ?Sized> CallActiveGuard<T> {
-    /// Creates a new guard and marks a guest function call as active.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `call_active` is already true (i.e., another guard already exists).
-    fn new(interrupt_handle: Arc<T>) -> Result<Self> {
-        // Atomically check that call_active is false and set it to true.
-        // This prevents creating multiple guards for the same interrupt handle.
-        let was_active = interrupt_handle.set_call_active();
-        if was_active {
-            return Err(new_error!(
-                "Attempted to create CallActiveGuard when a call is already active"
-            ));
-        }
-        Ok(Self { interrupt_handle })
-    }
-}
-
-impl<T: crate::hypervisor::InterruptHandleInternal + ?Sized> Drop for CallActiveGuard<T> {
-    fn drop(&mut self) {
-        self.interrupt_handle.clear_call_active();
-    }
-}
 
 /// A fully initialized sandbox that can execute guest functions multiple times.
 ///
@@ -611,10 +575,6 @@ impl MultiUseSandbox {
         if self.poisoned {
             return Err(crate::HyperlightError::PoisonedSandbox);
         }
-        // Mark that a guest function call is now active
-        // (This also increments the generation counter internally)
-        // The guard will automatically clear call_active when dropped
-        let _guard = CallActiveGuard::new(self.vm.interrupt_handle())?;
 
         let res = (|| {
             let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
@@ -633,6 +593,8 @@ impl MultiUseSandbox {
 
             self.vm.dispatch_call_from_host(
                 self.dispatch_ptr.clone(),
+                &mut self.mem_mgr,
+                self._host_funcs.clone(),
                 #[cfg(gdb)]
                 self.dbg_mem_access_fn.clone(),
             )?;
@@ -746,7 +708,8 @@ impl MultiUseSandbox {
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn generate_crashdump(&self) -> Result<()> {
-        crate::hypervisor::crashdump::generate_crashdump(self.vm.as_ref())
+        let ctx = self.vm.crashdump_context()?;
+        crate::hypervisor::crashdump::generate_crashdump(ctx)
     }
 
     /// Returns whether the sandbox is currently poisoned.
