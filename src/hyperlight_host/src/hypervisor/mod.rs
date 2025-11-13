@@ -223,7 +223,7 @@ pub(crate) trait Hypervisor: Debug + Send {
                     //    - Signals will interrupt the guest (RUNNING_BIT=true), causing VmExit::Cancelled()
                     //    - If the guest completes before any signals arrive, kill() may have no effect
                     //      - If there are more iterations to do (IO/host func, etc.), the next iteration will be cancelled
-                    let exit_reason = self.run_vcpu();
+                    let exit_reason = self.run_vcpu(); // Note, this function must not create any spans as it is called after setting up guest trace span
 
                     // End current host trace by closing the current span that captures traces
                     // happening when a guest exits and re-enters.

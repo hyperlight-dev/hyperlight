@@ -548,7 +548,7 @@ impl Hypervisor for KVMDriver {
         )
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    // Note, this function should not be instrumented with a span as it is called after setting up guest trace span
     fn run_vcpu(&mut self) -> Result<VmExit> {
         match self.vcpu_fd.run() {
             Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),

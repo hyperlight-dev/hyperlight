@@ -474,6 +474,7 @@ impl Hypervisor for HypervWindowsDriver {
         )
     }
 
+    // Note, this function should not be instrumented with a span as it is called after setting up guest trace span
     #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
     fn run_vcpu(&mut self) -> Result<VmExit> {
         let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();

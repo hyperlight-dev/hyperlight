@@ -559,7 +559,7 @@ impl Hypervisor for HypervLinuxDriver {
         )
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    // Note, this function should not be instrumented with a span as it is called after setting up guest trace span
     fn run_vcpu(&mut self) -> Result<VmExit> {
         const HALT: hv_message_type = hv_message_type_HVMSG_X64_HALT;
         const IO_PORT: hv_message_type = hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
