@@ -30,8 +30,9 @@ use super::memory_region::{
 };
 #[cfg(feature = "init-paging")]
 use super::mgr::AMOUNT_OF_MEMORY_PER_PT;
-use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory};
+use super::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 use crate::error::HyperlightError::{GuestOffsetIsInvalid, MemoryRequestTooBig};
+use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, new_error};
 
@@ -561,7 +562,7 @@ impl SandboxMemoryLayout {
 
     /// Returns the memory regions associated with this memory layout,
     /// suitable for passing to a hypervisor for mapping into memory
-    pub fn get_memory_regions(&self, shared_mem: &GuestSharedMemory) -> Result<Vec<MemoryRegion>> {
+    pub fn get_memory_regions(&self, shared_mem: &HostSharedMemory) -> Result<Vec<MemoryRegion>> {
         let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, shared_mem.base_addr());
 
         cfg_if::cfg_if! {

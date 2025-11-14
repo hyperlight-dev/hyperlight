@@ -37,7 +37,8 @@ use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
 use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::{ParameterTuple, SupportedReturnType};
-use crate::hypervisor::{Hypervisor, InterruptHandle};
+use crate::hypervisor::InterruptHandle;
+use crate::hypervisor::hyperlight_vm::HyperlightVm;
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -47,46 +48,10 @@ use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
-use crate::{Result, log_then_return, new_error};
+use crate::{Result, log_then_return};
 
 /// Global counter for assigning unique IDs to sandboxes
 static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// RAII guard that automatically calls `clear_call_active()` when dropped.
-///
-/// This ensures that the call_active flag is always cleared when a guest function
-/// call completes, even if the function returns early due to an error.
-///
-/// Only one guard can exist per interrupt handle at a time - attempting to create
-/// a second guard will return an error.
-struct CallActiveGuard<T: crate::hypervisor::InterruptHandleInternal + ?Sized> {
-    interrupt_handle: Arc<T>,
-}
-
-impl<T: crate::hypervisor::InterruptHandleInternal + ?Sized> CallActiveGuard<T> {
-    /// Creates a new guard and marks a guest function call as active.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `call_active` is already true (i.e., another guard already exists).
-    fn new(interrupt_handle: Arc<T>) -> Result<Self> {
-        // Atomically check that call_active is false and set it to true.
-        // This prevents creating multiple guards for the same interrupt handle.
-        let was_active = interrupt_handle.set_call_active();
-        if was_active {
-            return Err(new_error!(
-                "Attempted to create CallActiveGuard when a call is already active"
-            ));
-        }
-        Ok(Self { interrupt_handle })
-    }
-}
-
-impl<T: crate::hypervisor::InterruptHandleInternal + ?Sized> Drop for CallActiveGuard<T> {
-    fn drop(&mut self) {
-        self.interrupt_handle.clear_call_active();
-    }
-}
 
 /// A fully initialized sandbox that can execute guest functions multiple times.
 ///
@@ -131,10 +96,9 @@ pub struct MultiUseSandbox {
     id: u64,
     /// Whether this sandbox is poisoned
     poisoned: bool,
-    // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
-    pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
+    pub(super) host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
-    vm: Box<dyn Hypervisor>,
+    vm: HyperlightVm,
     dispatch_ptr: RawPtr,
     #[cfg(gdb)]
     dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
@@ -153,14 +117,14 @@ impl MultiUseSandbox {
     pub(super) fn from_uninit(
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
-        vm: Box<dyn Hypervisor>,
+        vm: HyperlightVm,
         dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
             id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             poisoned: false,
-            _host_funcs: host_funcs,
+            host_funcs,
             mem_mgr: mgr,
             vm,
             dispatch_ptr,
@@ -207,13 +171,17 @@ impl MultiUseSandbox {
         if let Some(snapshot) = &self.snapshot {
             return Ok(snapshot.clone());
         }
-        let mapped_regions_iter = self.vm.get_mapped_regions();
-        let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
-        let memory_snapshot = self.mem_mgr.snapshot(self.id, mapped_regions_vec)?;
-        let inner = Arc::new(memory_snapshot);
-        let snapshot = Snapshot { inner };
-        self.snapshot = Some(snapshot.clone());
-        Ok(snapshot)
+        let mapped_regions: Vec<MemoryRegion> = self
+            .vm
+            .get_mapped_regions()
+            .iter()
+            .map(|(_, region)| region)
+            .cloned()
+            .collect();
+        let memory_snapshot = self.mem_mgr.snapshot(self.id, mapped_regions)?;
+        Ok(Snapshot {
+            inner: Arc::new(memory_snapshot),
+        })
     }
 
     /// Restores the sandbox's memory to a previously captured snapshot state.
@@ -307,18 +275,32 @@ impl MultiUseSandbox {
 
         self.mem_mgr.restore_snapshot(&snapshot.inner)?;
 
-        let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
+        let current_regions: HashSet<_> = self
+            .vm
+            .get_mapped_regions()
+            .iter()
+            .map(|(_, region)| region)
+            .cloned()
+            .collect();
         let snapshot_regions: HashSet<_> = snapshot.inner.regions().iter().cloned().collect();
 
-        let regions_to_unmap = current_regions.difference(&snapshot_regions);
-        let regions_to_map = snapshot_regions.difference(&current_regions);
+        let regions_to_unmap: Vec<_> = current_regions
+            .difference(&snapshot_regions)
+            .cloned()
+            .collect();
+        let regions_to_map: Vec<_> = snapshot_regions
+            .difference(&current_regions)
+            .cloned()
+            .collect();
 
         for region in regions_to_unmap {
-            unsafe { self.vm.unmap_region(region)? };
+            self.vm.unmap_region(&region)?;
         }
 
         for region in regions_to_map {
-            unsafe { self.vm.map_region(region)? };
+            // Safety: The region has been mapped before, and at that point the caller promised that the memory region is valid
+            // in their call to `MultiUseSandbox::map_region`
+            unsafe { self.vm.map_region(&region)? };
         }
 
         // The restored snapshot is now our most current snapshot
@@ -611,10 +593,6 @@ impl MultiUseSandbox {
         if self.poisoned {
             return Err(crate::HyperlightError::PoisonedSandbox);
         }
-        // Mark that a guest function call is now active
-        // (This also increments the generation counter internally)
-        // The guard will automatically clear call_active when dropped
-        let _guard = CallActiveGuard::new(self.vm.interrupt_handle())?;
 
         let res = (|| {
             let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);
@@ -632,6 +610,8 @@ impl MultiUseSandbox {
             self.mem_mgr.write_guest_function_call(buffer)?;
 
             self.vm.dispatch_call_from_host(
+                &mut self.mem_mgr,
+                self.host_funcs.clone(),
                 self.dispatch_ptr.clone(),
                 #[cfg(gdb)]
                 self.dbg_mem_access_fn.clone(),
@@ -746,7 +726,7 @@ impl MultiUseSandbox {
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn generate_crashdump(&self) -> Result<()> {
-        crate::hypervisor::crashdump::generate_crashdump(self.vm.as_ref())
+        crate::hypervisor::crashdump::generate_crashdump(&self.vm)
     }
 
     /// Returns whether the sandbox is currently poisoned.
@@ -1208,7 +1188,7 @@ mod tests {
 
         match err {
             HyperlightError::MemoryAccessViolation(addr, ..) if addr == guest_base as u64 => {}
-            _ => panic!("Expected MemoryAccessViolation error"),
+            e => panic!("Expected MemoryAccessViolation error, got {:?}", e),
         };
     }
 
@@ -1281,8 +1261,8 @@ mod tests {
         assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
 
         // Verify the region is the same
-        let mut restored_regions = sbox.vm.get_mapped_regions();
-        assert_eq!(*restored_regions.next().unwrap(), region);
+        let mut restored_regions = sbox.vm.get_mapped_regions().iter();
+        assert_eq!(restored_regions.next().unwrap().1, region);
         assert!(restored_regions.next().is_none());
         drop(restored_regions);
 
