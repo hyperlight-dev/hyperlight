@@ -268,7 +268,7 @@ pub(crate) trait Hypervisor: Debug + Send {
                     let regs = self.regs()?;
                     let rip_gva = self.translate_gva(regs.rip)?;
                     // Handle debug event (breakpoints)
-                    let stop_reason = arch::vcpu_stop_reason(rip_gva, _entrypoint, dr6, exception)?;
+                    let stop_reason = arch::vcpu_stop_reason(rip_gva, _entrypoint, dr6, exception);
 
                     if stop_reason == VcpuStopReason::EntryPointBp {
                         // TODO in next PR: make sure to remove hw breakpoint here
@@ -714,7 +714,7 @@ impl LinuxInterruptHandle {
     /// - CANCEL_BIT remains unchanged
     ///
     /// # Memory Ordering
-    /// Uses `Release` ordering to ensure that the `tid` store (which uses `Relaxed`)
+    /// Uses `Release` ordering to ensure that the `tid` store (which uses `Release`)
     /// is visible to any thread that observes RUNNING_BIT=true via `Acquire` ordering.
     /// This prevents the interrupt thread from reading a stale `tid` value.
     #[expect(clippy::expect_used)]

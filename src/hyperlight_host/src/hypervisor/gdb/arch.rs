@@ -17,7 +17,6 @@ limitations under the License.
 //! This file contains architecture specific code for the x86_64
 
 use super::VcpuStopReason;
-use crate::Result;
 
 // Described in Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
 // of Intel 64 and IA-32 Architectures Software Developer's Manual
@@ -55,14 +54,14 @@ pub(crate) fn vcpu_stop_reason(
     entrypoint: u64,
     dr6: u64,
     exception: u32,
-) -> Result<VcpuStopReason> {
+) -> VcpuStopReason {
     if DB_EX_ID == exception {
         // If the BS flag in DR6 register is set, it means a single step
         // instruction triggered the exit
         // Check page 19-4 Vol. 3B of Intel 64 and IA-32
         // Architectures Software Developer's Manual
         if dr6 & DR6_BS_FLAG_MASK != 0 {
-            return Ok(VcpuStopReason::DoneStep);
+            return VcpuStopReason::DoneStep;
         }
 
         // If any of the B0-B3 flags in DR6 register is set, it means a
@@ -71,14 +70,14 @@ pub(crate) fn vcpu_stop_reason(
         // Architectures Software Developer's Manual
         if DR6_HW_BP_FLAGS_MASK & dr6 != 0 {
             if rip == entrypoint {
-                return Ok(VcpuStopReason::EntryPointBp);
+                return VcpuStopReason::EntryPointBp;
             }
-            return Ok(VcpuStopReason::HwBp);
+            return VcpuStopReason::HwBp;
         }
     }
 
     if BP_EX_ID == exception {
-        return Ok(VcpuStopReason::SwBp);
+        return VcpuStopReason::SwBp;
     }
 
     // Log an error and provide internal debugging info
@@ -95,5 +94,5 @@ pub(crate) fn vcpu_stop_reason(
         exception,
     );
 
-    Ok(VcpuStopReason::Unknown)
+    VcpuStopReason::Unknown
 }
