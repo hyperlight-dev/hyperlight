@@ -313,7 +313,7 @@ impl KVMDriver {
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
 
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            running: AtomicU64::new(0),
+            state: AtomicU64::new(0),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
             #[cfg(all(

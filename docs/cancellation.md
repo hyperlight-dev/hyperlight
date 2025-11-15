@@ -10,22 +10,16 @@ Hyperlight provides a mechanism to forcefully interrupt guest execution through 
 
 ### LinuxInterruptHandle State
 
-The `LinuxInterruptHandle` uses an atomic `u64` value to pack multiple pieces of state:
+The `LinuxInterruptHandle` uses a packed atomic u64 to track execution state:
 
-```
-Bit Layout of running: AtomicU64
-┌─────────────┬──────────────┬───────────────────────────┐
-│  Bit 63     │   Bit 62     │      Bits 61-0            │
-│ RUNNING_BIT │ CANCEL_BIT   │   Generation Counter      │
-└─────────────┴──────────────┴───────────────────────────┘
-```
-
-- **RUNNING_BIT (bit 63)**: Set when vCPU is actively running in guest mode
-- **CANCEL_BIT (bit 62)**: Set when cancellation has been requested via `kill()`
-- **Generation Counter (bits 0-61)**: Incremented on each vCPU run to prevent ABA problems
+- **state (AtomicU64)**: Packs two bits:
+  - **Bit 1 (RUNNING_BIT)**: Set when vCPU is actively running in guest mode
+  - **Bit 0 (CANCEL_BIT)**: Set when cancellation has been requested via `kill()`
 - **tid (AtomicU64)**: Thread ID where the vCPU is running
 - **debug_interrupt (AtomicBool)**: Set when debugger interrupt is requested (gdb feature only)
 - **dropped (AtomicBool)**: Set when the corresponding VM has been dropped
+
+The packed state allows atomic snapshots of both RUNNING_BIT and CANCEL_BIT via `get_running_and_cancel()`. The CANCEL_BIT persists across vcpu exits/re-entries within a single `run()` call (e.g., during host function calls), but is cleared at the start of each new `run()` call.
 
 ### Signal Mechanism
 
@@ -50,7 +44,7 @@ sequenceDiagram
         VM->>IH: set_tid()
         Note right of VM: Store current thread ID
         VM->>IH: set_running()
-        Note right of VM: Set RUNNING_BIT=true<br/>Increment generation
+        Note right of VM: Set running=true
 
         VM->>IH: is_cancelled()
         
@@ -107,7 +101,7 @@ sequenceDiagram
 
 2. **Timing Point 2** - Before entering run loop iteration:
    - `set_tid()` stores the current thread ID
-   - `set_running()` sets RUNNING_BIT and increments generation counter
+   - `set_running()` sets running to true
    - If `kill()` completes before this, early `Cancelled()` is returned
 
 3. **Timing Point 3** - Before calling `run_vcpu()`:
@@ -142,19 +136,17 @@ sequenceDiagram
     activate IH
     
     IH->>IH: fetch_or(CANCEL_BIT, Release)
-    Note right of IH: Atomically set CANCEL_BIT<br/>with Release ordering
+    Note right of IH: Atomically set cancel=true<br/>with Release ordering
     
     IH->>IH: send_signal()
     activate IH
     
     loop Retry Loop
-        IH->>IH: get_running_cancel_and_generation()
+        IH->>IH: get_running_and_cancel()
         Note right of IH: Load with Acquire ordering
         
         alt Not running OR not cancelled
-            IH-->>IH: break (sent_signal=false)
-        else Generation changed (ABA prevention)
-            IH-->>IH: break (sent_signal=true)
+            IH-->>IH: break (sent_signal=false/true)
         else Running AND cancelled
             IH->>IH: tid.load(Acquire)
             IH->>Signal: pthread_kill(tid, SIGRTMIN+offset)
@@ -183,23 +175,23 @@ sequenceDiagram
 
 ### Kill Operation Steps
 
-1. **Set CANCEL_BIT**: Atomically set the CANCEL_BIT using `fetch_or` with `Release` ordering
+1. **Set Cancel Flag**: Atomically set the CANCEL_BIT using `fetch_or(CANCEL_BIT)` with `Release` ordering
    - Ensures all writes before `kill()` are visible when vCPU thread checks `is_cancelled()` with `Acquire`
 
-2. **Send Signals**: Enter retry loop to send signals
-   - Check if vCPU is running and cancellation/debug interrupt is requested
-   - Use `Acquire` ordering to read `running` to synchronize with `Release` in `set_running()`
-   - This ensures we see the correct `tid` value
+2. **Send Signals**: Enter retry loop via `send_signal()`
+   - Atomically load both running and cancel flags via `get_running_and_cancel()` with `Acquire` ordering
+   - Continue if `running=true AND cancel=true` (or `running=true AND debug_interrupt=true` with gdb)
+   - Exit loop immediately if `running=false OR cancel=false`
    
 3. **Signal Delivery**: Send `SIGRTMIN+offset` via `pthread_kill`
    - Signal interrupts the `ioctl` that runs the vCPU, causing `EINTR`
    - Signal handler is intentionally a no-op
    - Returns `VmExit::Cancelled()` when `EINTR` is received
 
-4. **Retry Loop**: Continue sending signals until:
-   - vCPU is no longer running (RUNNING_BIT cleared)
-   - Generation counter changes (prevents ABA problem)
-   - Cancellation/debug interrupt is cleared
+4. **Loop Termination**: The signal loop terminates when:
+   - vCPU is no longer running (`running=false`), OR
+   - Cancellation is no longer requested (`cancel=false`)
+   - See the loop termination proof in the source code for rigorous correctness analysis
 
 ## Memory Ordering Guarantees
 
@@ -242,23 +234,28 @@ graph TB
 
 1. **tid Store → running Load Synchronization**:
    - `set_tid()`: Stores `tid` with `Release` ordering
-   - `set_running()`: Uses `Release` ordering
-   - `send_signal()`: Loads `running` with `Acquire` ordering
+   - `set_running()`: Sets RUNNING_BIT with `Release` ordering (via `fetch_or`)
+   - `send_signal()`: Loads `state` with `Acquire` ordering via `get_running_and_cancel()`
    - **Guarantee**: When interrupt thread observes RUNNING_BIT=true, it sees the correct `tid` value
 
 2. **CANCEL_BIT Synchronization**:
-   - `kill()`: Sets CANCEL_BIT with `Release` ordering
-   - `is_cancelled()`: Loads with `Acquire` ordering
+   - `kill()`: Sets CANCEL_BIT with `Release` ordering (via `fetch_or`)
+   - `is_cancelled()`: Loads `state` with `Acquire` ordering
    - **Guarantee**: When vCPU thread observes CANCEL_BIT=true, it sees all writes before `kill()`
 
 3. **clear_running Synchronization**:
-   - `clear_running()`: Clears RUNNING_BIT with `Release` ordering
-   - `send_signal()`: Loads with `Acquire` ordering
+   - `clear_running()`: Clears RUNNING_BIT with `Release` ordering (via `fetch_and`)
+   - `send_signal()`: Loads `state` with `Acquire` ordering via `get_running_and_cancel()`
    - **Guarantee**: When interrupt thread observes RUNNING_BIT=false, all vCPU operations are complete
 
-4. **clear_cancel**:
-   - Uses `Relaxed` ordering
-   - **Rationale**: Only vCPU thread clears this bit at the start of `run()`, no race condition
+4. **clear_cancel Synchronization**:
+   - `clear_cancel()`: Clears CANCEL_BIT with `Release` ordering (via `fetch_and`)
+   - **Rationale**: Uses Release because the VM can move between threads across guest calls, ensuring operations from previous run() are visible to other threads
+
+5. **dropped flag**:
+   - `set_dropped()`: Uses `Release` ordering
+   - `dropped()`: Uses `Acquire` ordering
+   - **Guarantee**: All VM cleanup operations are visible when `dropped()` returns true
 
 ### Happens-Before Relationships
 
@@ -271,13 +268,13 @@ sequenceDiagram
     Note right of VT: Store thread ID
     
     VT->>VT: set_running() (Release)
-    Note right of VT: Set RUNNING_BIT=true<br/>Increment generation
+    Note right of VT: Set running=true
     
     Note over VT,IT: Sync #1: set_running(Release) → send_signal(Acquire)
     VT-->>IT: synchronizes-with
     Note over IT: send_signal()
-    IT->>IT: Load running (Acquire)
-    Note right of IT: Observes RUNNING_BIT=true
+    IT->>IT: get_running_and_cancel() (Acquire)
+    Note right of IT: Atomically load both bits<br/>Observes running=true
     
     IT->>IT: Load tid (Acquire)
     Note right of IT: Sees correct tid value<br/>(from set_tid Release)
@@ -290,79 +287,43 @@ sequenceDiagram
     
     par Concurrent Operations
         Note over IT: kill()
-        IT->>IT: Set CANCEL_BIT (Release)
-        Note right of IT: Request cancellation
+        IT->>IT: fetch_or(CANCEL_BIT, Release)
+        Note right of IT: Atomically set CANCEL_BIT
     and
         Note over VT: Guest interrupted
         VT->>VT: is_cancelled() (Acquire)
-        Note right of VT: Observes CANCEL_BIT=true<br/>Sees all writes before kill()
+        Note right of VT: Observes cancel=true<br/>Sees all writes before kill()
     end
     
     Note over IT,VT: Sync #2: kill(Release) → is_cancelled(Acquire)
     IT-->>VT: synchronizes-with
     
     VT->>VT: clear_running() (Release)
-    Note right of VT: Clear RUNNING_BIT<br/>All vCPU ops complete
+    Note right of VT: fetch_and to clear RUNNING_BIT<br/>All vCPU ops complete
     
     Note over VT,IT: Sync #3: clear_running(Release) → send_signal(Acquire)
     VT-->>IT: synchronizes-with
     
     IT->>IT: send_signal() observes
-    Note right of IT: RUNNING_BIT=false<br/>Stop sending signals
+    Note right of IT: running=false<br/>Stop sending signals
 ```
 
 ## Interaction with Host Function Calls
 
 When a guest performs a host function call, the vCPU exits and the host function executes with `RUNNING_BIT=false`, preventing signal delivery during host execution. The `CANCEL_BIT` persists across this exit and re-entry, so if `kill()` was called, cancellation will be detected when the guest attempts to resume execution. This ensures cancellation takes effect even if it occurs during a host call, while avoiding signals during non-guest code execution.
 
-## ABA Problem Prevention
+## Signal Behavior Across Loop Iterations
 
-The generation counter prevents the ABA problem where:
+When the run loop iterates (e.g., for host calls or IO operations):
 
-1. vCPU runs with generation N (e.g., in guest code)
-2. Interrupt thread reads generation N and RUNNING_BIT=true, begins sending signals
-3. vCPU exits (e.g., for a host call), RUNNING_BIT=false
-4. vCPU runs again with generation N+1 (re-entering guest), RUNNING_BIT=true
-5. Without generation counter, interrupt thread would continue sending signals to the new iteration
+1. Before host call: `clear_running()` sets `running=false`
+2. `send_signal()` loop checks `running && cancel` - exits immediately when `running=false`
+3. After host call: `set_running()` sets `running=true` again
+4. `is_cancelled()` check detects persistent `cancel` flag and returns early
 
-**Solution**: The interrupt thread captures the generation when it first observes RUNNING_BIT=true, and stops sending signals if the generation changes. This ensures signals are only sent during the intended vCPU run iteration within a single `run()` call.
+**Key insight**: The `running && cancel` check is sufficient. When `running` becomes false (host call starts), the signal loop exits immediately. When the vCPU would resume, the early `is_cancelled()` check catches the persistent `cancel` flag before entering the guest.
 
-```mermaid
-stateDiagram-v2
-    [*] --> NotRunning: Generation=N
-    NotRunning --> Running1: set_running()<br/>Generation=N+1
-    Running1 --> NotRunning: clear_running()<br/>Generation=N+1
-    NotRunning --> Running2: set_running()<br/>Generation=N+2
-    
-    note right of Running1
-        Interrupt thread captures
-        target_generation=N+1
-    end note
-    
-    note right of Running2
-        Interrupt thread detects
-        generation changed:
-        N+2 ≠ N+1
-        Stops sending signals
-    end note
-```
-
-## Signal Safety
-
-The signal handler is designed to be async-signal-safe:
-
-```c
-extern "C" fn vm_kill_signal(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
-    // Do nothing. SIGRTMIN is just used to issue a VM exit to the underlying VM.
-}
-```
-
-**Why no-op?**
-- Signal's purpose is to interrupt the `ioctl` system call via `EINTR`
-- No unsafe operations (allocation, locks, etc.) in signal handler
-- Actual cancellation handling occurs in the main vCPU thread after `ioctl` returns
-
-**Signal Chaining Note**: Hyperlight does not provide signal chaining for `SIGRTMIN+offset`. Since Hyperlight may issue ~200 signals back-to-back during cancellation retry loop, it's unlikely embedders want to handle these signals.
+**Signal Chaining Note**: Hyperlight does not provide signal chaining for `SIGRTMIN+offset`. Since Hyperlight may issue signals back-to-back during cancellation retry loop, it's unlikely embedders want to handle these signals.
 
 ## Race Conditions and Edge Cases
 
@@ -423,22 +384,6 @@ Result: is_cancelled() returns true, causing VmExit::Cancelled()
 
 **Handled correctly** - `cancel_requested` flag filters stale signals.
 
-## Performance Considerations
+### Race 5: ABA Problem
 
-- **Signal Retry**: Default retry delay is ~1μs between signals
-- **Signal Volume**: May send up to ~200 signals during cancellation
-- **Memory Ordering**: Acquire/Release ordering has minimal overhead on modern x86_64 CPUs
-- **Atomic Operations**: All atomic operations are lock-free on 64-bit platforms
-
-## Summary
-
-Hyperlight's cancellation mechanism on Linux provides:
-
-1. **Thread-safe cancellation** via atomic operations and memory ordering
-2. **Signal-based interruption** using `SIGRTMIN+offset` to cause VM exits
-3. **ABA problem prevention** through generation counters
-4. **Scoped cancellation** that applies to single guest function calls
-5. **Race condition handling** for various timing scenarios
-6. **Async-signal-safe implementation** with no-op signal handler
-
-The design balances correctness, performance, and usability for forceful guest interruption.
+The ABA problem (where a new guest call starts during the InterruptHandle's `send_signal()` loop, potentially causing the loop to send signals to a different guest call) is prevented by clearing CANCEL_BIT at the start of each `run()` call, ensuring each guest call starts with a clean cancellation state. This breaks out any ongoing slow `send_signal()` loops from previous calls that did not have time to observe the cleared CANCEL_BIT after the first `run()` call completed.

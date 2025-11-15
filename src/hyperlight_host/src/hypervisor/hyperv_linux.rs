@@ -356,7 +356,7 @@ impl HypervLinuxDriver {
         })?;
 
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            running: AtomicU64::new(0),
+            state: AtomicU64::new(0),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
             #[cfg(all(
