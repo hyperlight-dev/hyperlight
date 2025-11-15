@@ -25,10 +25,11 @@ use tracing::{Span, instrument};
 use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
-#[cfg(feature = "mem_profile")]
-use crate::hypervisor::Hypervisor;
+use crate::hypervisor::regs::CommonRegisters;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
+#[cfg(feature = "mem_profile")]
+use crate::sandbox::trace::MemTraceInfo;
 use crate::{HyperlightError, Result, new_error};
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level="Trace")]
@@ -148,9 +149,10 @@ fn outb_abort(mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>, data: u32) -
 pub(crate) fn handle_outb(
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     host_funcs: Arc<Mutex<FunctionRegistry>>,
-    #[cfg(feature = "mem_profile")] _hv: &mut dyn Hypervisor,
+    _regs: &CommonRegisters,
     port: u16,
     data: u32,
+    #[cfg(feature = "mem_profile")] trace_info: &mut MemTraceInfo,
 ) -> Result<()> {
     match port.try_into()? {
         OutBAction::Log => outb_log(mem_mgr),
@@ -185,17 +187,9 @@ pub(crate) fn handle_outb(
         #[cfg(feature = "trace_guest")]
         OutBAction::TraceBatch => Ok(()),
         #[cfg(feature = "mem_profile")]
-        OutBAction::TraceMemoryAlloc => {
-            let regs = _hv.regs()?;
-            let trace_info = _hv.trace_info_mut();
-            trace_info.handle_trace_mem_alloc(&regs, mem_mgr)
-        }
+        OutBAction::TraceMemoryAlloc => trace_info.handle_trace_mem_alloc(_regs, mem_mgr),
         #[cfg(feature = "mem_profile")]
-        OutBAction::TraceMemoryFree => {
-            let regs = _hv.regs()?;
-            let trace_info = _hv.trace_info_mut();
-            trace_info.handle_trace_mem_free(&regs, mem_mgr)
-        }
+        OutBAction::TraceMemoryFree => trace_info.handle_trace_mem_free(_regs, mem_mgr),
     }
 }
 #[cfg(test)]
