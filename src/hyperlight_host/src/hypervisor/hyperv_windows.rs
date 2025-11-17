@@ -17,17 +17,14 @@ limitations under the License.
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
 use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use windows::Win32::System::Hypervisor::{
-    WHV_MEMORY_ACCESS_TYPE, WHV_PARTITION_HANDLE, WHV_RUN_VP_EXIT_CONTEXT, WHV_RUN_VP_EXIT_REASON,
-    WHvCancelRunVirtualProcessor,
-};
+use windows::Win32::System::Hypervisor::{WHV_MEMORY_ACCESS_TYPE, WHV_RUN_VP_EXIT_REASON};
 #[cfg(crashdump)]
 use {super::crashdump, std::path::Path};
 #[cfg(gdb)]
@@ -46,7 +43,7 @@ use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
 use super::wrappers::HandleWrapper;
 use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
-use crate::hypervisor::{InterruptHandleInternal, get_memory_access_violation};
+use crate::hypervisor::{InterruptHandleImpl, WindowsInterruptHandle, get_memory_access_violation};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -263,7 +260,7 @@ pub(crate) struct HypervWindowsDriver {
     _surrogate_process: SurrogateProcess, // we need to keep a reference to the SurrogateProcess for the duration of the driver since otherwise it will dropped and the memory mapping will be unmapped and the surrogate process will be returned to the pool
     entrypoint: u64,
     orig_rsp: GuestPtr,
-    interrupt_handle: Arc<WindowsInterruptHandle>,
+    interrupt_handle: Arc<dyn InterruptHandleImpl>,
     mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
 
@@ -327,11 +324,9 @@ impl HypervWindowsDriver {
         };
 
         let interrupt_handle = Arc::new(WindowsInterruptHandle {
-            running: AtomicU64::new(0),
-            cancel_requested: AtomicU64::new(0),
+            state: AtomicU64::new(0),
             #[cfg(gdb)]
             debug_interrupt: AtomicBool::new(false),
-            call_active: AtomicBool::new(false),
             partition_handle,
             dropped: AtomicBool::new(false),
         });
@@ -443,8 +438,10 @@ impl Hypervisor for HypervWindowsDriver {
         };
         self.set_regs(&regs)?;
 
+        let interrupt_handle = self.interrupt_handle.clone();
         VirtualCPU::run(
             self.as_mut_hypervisor(),
+            interrupt_handle,
             #[cfg(gdb)]
             dbg_mem_access_hdl,
         )
@@ -482,13 +479,13 @@ impl Hypervisor for HypervWindowsDriver {
         // reset fpu state
         self.processor.set_fpu(&CommonFpu::default())?;
 
+        let interrupt_handle = self.interrupt_handle.clone();
         VirtualCPU::run(
             self.as_mut_hypervisor(),
+            interrupt_handle,
             #[cfg(gdb)]
             dbg_mem_access_hdl,
-        )?;
-
-        Ok(())
+        )
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -550,58 +547,10 @@ impl Hypervisor for HypervWindowsDriver {
         &mut self,
         #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
     ) -> Result<super::HyperlightExit> {
-        // Cast to internal trait for access to internal methods
-        let interrupt_handle_internal =
-            self.interrupt_handle.as_ref() as &dyn super::InterruptHandleInternal;
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
 
-        // Get current generation and set running bit
-        let generation = interrupt_handle_internal.set_running_bit();
-
-        #[cfg(not(gdb))]
-        let debug_interrupt = false;
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
-
-        // Check if cancellation was requested for THIS generation
-        let exit_context = if interrupt_handle_internal
-            .is_cancel_requested_for_generation(generation)
-            || debug_interrupt
-        {
-            WHV_RUN_VP_EXIT_CONTEXT {
-                ExitReason: WHV_RUN_VP_EXIT_REASON(8193i32), // WHvRunVpExitReasonCanceled
-                VpContext: Default::default(),
-                Anonymous: Default::default(),
-                Reserved: Default::default(),
-            }
-        } else {
-            #[cfg(feature = "trace_guest")]
-            tc.setup_guest_trace(Span::current().context());
-
-            self.processor.run()?
-        };
-
-        // Clear running bit
-        interrupt_handle_internal.clear_running_bit();
-
-        let is_canceled = exit_context.ExitReason == WHV_RUN_VP_EXIT_REASON(8193i32); // WHvRunVpExitReasonCanceled
-
-        // Check if this was a manual cancellation (vs internal Windows cancellation)
-        let cancel_was_requested_manually =
-            interrupt_handle_internal.is_cancel_requested_for_generation(generation);
-
-        // Only clear cancel_requested if we're actually processing a cancellation for this generation
-        if is_canceled && cancel_was_requested_manually {
-            interrupt_handle_internal.clear_cancel_requested();
-        }
-
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
+        let exit_context = self.processor.run()?;
 
         let result = match exit_context.ExitReason {
             // WHvRunVpExitReasonX64IoPortAccess
@@ -658,45 +607,10 @@ impl Hypervisor for HypervWindowsDriver {
             }
             //  WHvRunVpExitReasonCanceled
             //  Execution was cancelled by the host.
-            //  This will happen when guest code runs for too long
             WHV_RUN_VP_EXIT_REASON(8193i32) => {
                 debug!("HyperV Cancelled Details :\n {:#?}", &self);
-                #[cfg(gdb)]
-                if debug_interrupt {
-                    self.interrupt_handle
-                        .debug_interrupt
-                        .store(false, Ordering::Relaxed);
 
-                    // If the vCPU was stopped because of an interrupt, we need to
-                    // return a special exit reason so that the gdb thread can handle it
-                    // and resume execution
-                    HyperlightExit::Debug(VcpuStopReason::Interrupt)
-                } else if !cancel_was_requested_manually {
-                    // This was an internal cancellation
-                    // The virtualization stack can use this function to return the control
-                    // of a virtual processor back to the virtualization stack in case it
-                    // needs to change the state of a VM or to inject an event into the processor
-                    // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
-                    debug!("Internal cancellation detected, returning Retry error");
-                    HyperlightExit::Retry()
-                } else {
-                    HyperlightExit::Cancelled()
-                }
-
-                #[cfg(not(gdb))]
-                {
-                    if !cancel_was_requested_manually {
-                        // This was an internal cancellation
-                        // The virtualization stack can use this function to return the control
-                        // of a virtual processor back to the virtualization stack in case it
-                        // needs to change the state of a VM or to inject an event into the processor
-                        // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
-                        debug!("Internal cancellation detected, returning Retry error");
-                        HyperlightExit::Retry()
-                    } else {
-                        HyperlightExit::Cancelled()
-                    }
-                }
+                HyperlightExit::Cancelled()
             }
             #[cfg(gdb)]
             WHV_RUN_VP_EXIT_REASON(4098i32) => {
@@ -754,7 +668,7 @@ impl Hypervisor for HypervWindowsDriver {
         self.processor.set_sregs(sregs)
     }
 
-    fn interrupt_handle(&self) -> Arc<dyn super::InterruptHandleInternal> {
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
     }
 
@@ -990,86 +904,6 @@ impl Hypervisor for HypervWindowsDriver {
 
 impl Drop for HypervWindowsDriver {
     fn drop(&mut self) {
-        self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
-    }
-}
-
-#[derive(Debug)]
-pub struct WindowsInterruptHandle {
-    /// Combined running flag (bit 63) and generation counter (bits 0-62).
-    ///
-    /// The generation increments with each guest function call to prevent
-    /// stale cancellations from affecting new calls (ABA problem).
-    ///
-    /// Layout: `[running:1 bit][generation:63 bits]`
-    running: AtomicU64,
-
-    /// Combined cancel_requested flag (bit 63) and generation counter (bits 0-62).
-    ///
-    /// When kill() is called, this stores the current generation along with
-    /// the cancellation flag. The VCPU only honors the cancellation if the
-    /// generation matches its current generation.
-    ///
-    /// Layout: `[cancel_requested:1 bit][generation:63 bits]`
-    cancel_requested: AtomicU64,
-
-    // This is used to signal the GDB thread to stop the vCPU
-    #[cfg(gdb)]
-    debug_interrupt: AtomicBool,
-    /// Flag indicating whether a guest function call is currently in progress.
-    ///
-    /// **true**: A guest function call is active (between call start and completion)
-    /// **false**: No guest function call is active
-    ///
-    /// # Purpose
-    ///
-    /// This flag prevents kill() from having any effect when called outside of a
-    /// guest function call. This solves the "kill-in-advance" problem where kill()
-    /// could be called before a guest function starts and would incorrectly cancel it.
-    call_active: AtomicBool,
-    partition_handle: WHV_PARTITION_HANDLE,
-    dropped: AtomicBool,
-}
-
-impl InterruptHandle for WindowsInterruptHandle {
-    fn kill(&self) -> bool {
-        // Check if a call is actually active first
-        if !self.call_active.load(Ordering::Acquire) {
-            return false;
-        }
-
-        // Get the current running state and generation
-        let (running, generation) = self.get_running_and_generation();
-
-        // Set cancel_requested with the current generation
-        self.set_cancel_requested(generation);
-
-        // Only call WHvCancelRunVirtualProcessor if VCPU is actually running in guest mode
-        running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
-    }
-
-    #[cfg(gdb)]
-    fn kill_from_debugger(&self) -> bool {
-        self.debug_interrupt.store(true, Ordering::Relaxed);
-        let (running, _) = self.get_running_and_generation();
-        running && unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
-    }
-
-    fn dropped(&self) -> bool {
-        self.dropped.load(Ordering::Relaxed)
-    }
-}
-
-impl InterruptHandleInternal for WindowsInterruptHandle {
-    fn get_call_active(&self) -> &AtomicBool {
-        &self.call_active
-    }
-
-    fn get_running(&self) -> &AtomicU64 {
-        &self.running
-    }
-
-    fn get_cancel_requested(&self) -> &AtomicU64 {
-        &self.cancel_requested
+        self.interrupt_handle.set_dropped();
     }
 }

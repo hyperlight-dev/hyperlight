@@ -291,7 +291,7 @@ fn interrupt_moved_sandbox() {
 /// This will exercise the ABA-problem, where the vcpu could be successfully interrupted,
 /// but restarted, before the interruptor-thread has a chance to see that the vcpu was killed.
 ///
-/// The ABA-problem is solved by introducing run-generation on the vcpu.
+/// The ABA-problem is solved by clearing CANCEL bit at the start of each VirtualCPU::run() call.
 #[test]
 #[cfg(target_os = "linux")]
 fn interrupt_custom_signal_no_and_retry_delay() {
