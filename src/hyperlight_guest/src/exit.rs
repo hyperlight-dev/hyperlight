@@ -21,6 +21,9 @@ use hyperlight_common::outb::OutBAction;
 use tracing::instrument;
 
 /// Halt the execution of the guest and returns control to the host.
+/// Halt is generally called for a successful completion of the guest's work,
+/// this means we can instrument it as a trace point because the trace state
+/// shall not be locked at this point (we are not in an exception context).
 #[inline(never)]
 #[instrument(skip_all, level = "Trace")]
 pub fn halt() {
@@ -122,7 +125,12 @@ pub(crate) fn outb(port: u16, data: &[u8]) {
 }
 
 /// OUT function for sending a 32-bit value to the host.
-#[instrument(skip_all, level = "Trace")]
+/// `out32` can be called from an exception context, so we must be careful
+/// with the tracing state that might be locked at that time.
+/// The tracing state calls `try_lock` internally to avoid deadlocks.
+/// Furthermore, the instrument macro is not used here to avoid creating spans
+/// in exception contexts. Because if the trace state is already locked, trying to create a span
+/// would cause a panic, which is undesirable in exception handling.
 pub(crate) unsafe fn out32(port: u16, val: u32) {
     #[cfg(feature = "trace_guest")]
     {

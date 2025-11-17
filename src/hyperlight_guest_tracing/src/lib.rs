@@ -55,6 +55,11 @@ mod trace {
     use crate::subscriber::GuestSubscriber;
 
     /// Weak reference to the guest state so we can manually trigger flush to host
+    /// The `GuestState` is ONLY accessed from two places:
+    /// - The tracing subscriber, when spans/events are created in the guest
+    /// - The guest tracing API, when we want manual control to flush the events to the host
+    ///
+    /// The mutex ensures safe access to the state from both places.
     static GUEST_STATE: spin::Once<Weak<Mutex<GuestState>>> = spin::Once::new();
 
     /// Initialize the guest tracing subscriber as global default.
@@ -72,12 +77,27 @@ mod trace {
         let _ = tracing_core::dispatcher::set_global_default(tracing_core::Dispatch::new(sub));
     }
 
-    /// Sets the guset starting timestamp reported to the host on a VMExit
+    /// Sets the guest starting timestamp reported to the host on a VMExit
+    /// NOTE: Panics if unable to lock the guest state.
     pub fn set_start_tsc(guest_start_tsc: u64) {
         if let Some(w) = GUEST_STATE.get()
-            && let Some(state) = w.upgrade()
+            && let Some(state_mutex) = w.upgrade()
         {
-            state.lock().set_start_tsc(guest_start_tsc);
+            // We want to protect against re-entrancy issues produced by tracing code that locks
+            // the state and then causes an exception that tries to lock the state again.
+            //
+            // For example:
+            // - 1. A span is created, locking the state
+            // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+            // - 3. The exception handler uses the tracing API to send the trace data to the host
+            // or just create spans/events for logging purposes.
+            // - 4. The tracing API tries to lock the state again, causing a deadlock.
+            // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+            // the issue.
+            let mut state = state_mutex
+                .try_lock()
+                .expect("guest_tracing: Unable to lock guest tracing state in `set_start_tsc`");
+            state.set_start_tsc(guest_start_tsc);
         }
     }
 
@@ -87,32 +107,78 @@ mod trace {
     /// This expects an outb call to send the spans to the host.
     /// After calling this function, the internal state is marked
     /// for cleaning on the next access.
+    ///
+    /// NOTE: Panics if unable to lock the guest state.
     pub fn end_trace() {
         if let Some(w) = GUEST_STATE.get()
-            && let Some(state) = w.upgrade()
+            && let Some(state_mutex) = w.upgrade()
         {
-            state.lock().end_trace();
+            // We want to protect against re-entrancy issues produced by tracing code that locks
+            // the state and then causes an exception that tries to lock the state again.
+            //
+            // For example:
+            // - 1. A span is created, locking the state
+            // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+            // - 3. The exception handler uses the tracing API to send the trace data to the host
+            // or just create spans/events for logging purposes.
+            // - 4. The tracing API tries to lock the state again, causing a deadlock.
+            // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+            // the issue.
+            let mut state = state_mutex
+                .try_lock()
+                .expect("guest_tracing: Unable to lock guest tracing state in `end_trace`");
+            state.end_trace();
         }
     }
 
     /// Cleans the internal trace state by removing closed spans and events.
     /// This ensures that after a VM exit, we keep the spans that
     /// are still active (in the stack) and remove all other spans and events.
+    /// NOTE: Panics if unable to lock the guest state.
     pub fn clean_trace_state() {
         if let Some(w) = GUEST_STATE.get()
-            && let Some(state) = w.upgrade()
+            && let Some(state_mutex) = w.upgrade()
         {
-            state.lock().clean();
+            // We want to protect against re-entrancy issues produced by tracing code that locks
+            // the state and then causes an exception that tries to lock the state again.
+            //
+            // For example:
+            // - 1. A span is created, locking the state
+            // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+            // - 3. The exception handler uses the tracing API to send the trace data to the host
+            // or just create spans/events for logging purposes.
+            // - 4. The tracing API tries to lock the state again, causing a deadlock.
+            // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+            // the issue.
+            let mut state = state_mutex
+                .try_lock()
+                .expect("guest_tracing: Unable to lock guest tracing state in `clean_trace_state`");
+            state.clean();
         }
     }
 
     /// Returns information about the current trace state needed by the host to read the spans.
+    /// NOTE: Panics if unable to lock the guest state.
     pub fn guest_trace_info() -> Option<TraceBatchInfo> {
         let mut res = None;
         if let Some(w) = GUEST_STATE.get()
-            && let Some(state) = w.upgrade()
+            && let Some(state_mutex) = w.upgrade()
         {
-            res = Some(state.lock().guest_trace_info());
+            // We want to protect against re-entrancy issues produced by tracing code that locks
+            // the state and then causes an exception that tries to lock the state again.
+            //
+            // For example:
+            // - 1. A span is created, locking the state
+            // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+            // - 3. The exception handler uses the tracing API to send the trace data to the host
+            // or just create spans/events for logging purposes.
+            // - 4. The tracing API tries to lock the state again, causing a deadlock.
+            // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+            // the issue.
+            let mut state = state_mutex
+                .try_lock()
+                .expect("guest_tracing: Unable to lock guest tracing state in `guest_trace_info`");
+            res = Some(state.guest_trace_info());
         }
         res
     }

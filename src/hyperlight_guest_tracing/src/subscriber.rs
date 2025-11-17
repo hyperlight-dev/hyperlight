@@ -29,6 +29,7 @@ pub(crate) struct GuestSubscriber {
     /// Internal state that holds the spans and events
     /// Protected by a Mutex for inner mutability
     /// A reference to this state is stored in a static variable
+    /// so it can be accessed from the guest tracing API
     state: Arc<Mutex<GuestState>>,
 }
 
@@ -49,27 +50,123 @@ impl Subscriber for GuestSubscriber {
     }
 
     fn new_span(&self, attrs: &Attributes<'_>) -> Id {
-        self.state.lock().new_span(attrs)
+        // We want to protect against re-entrancy issues produced by tracing code that locks
+        // the state and then causes an exception that tries to lock the state again.
+        //
+        // For example:
+        // - 1. A span is created, locking the state
+        // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+        // - 3. The exception handler uses the tracing API to send the trace data to the host
+        // or just create spans/events for logging purposes.
+        // - 4. The tracing API tries to lock the state again, causing a deadlock.
+        // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+        // the issue.
+        let mut state = self
+            .state
+            .try_lock()
+            .expect("guest_tracing: Unable to lock guest tracing state in `new_span`");
+
+        state.new_span(attrs)
     }
 
     fn record(&self, id: &Id, values: &Record<'_>) {
-        self.state.lock().record(id, values)
+        // We want to protect against re-entrancy issues produced by tracing code that locks
+        // the state and then causes an exception that tries to lock the state again.
+        //
+        // For example:
+        // - 1. A span is created, locking the state
+        // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+        // - 3. The exception handler uses the tracing API to send the trace data to the host
+        // or just create spans/events for logging purposes.
+        // - 4. The tracing API tries to lock the state again, causing a deadlock.
+        // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+        // the issue.
+        let mut state = self
+            .state
+            .try_lock()
+            .expect("guest_tracing: Unable to lock guest tracing state in `record`");
+
+        state.record(id, values)
     }
 
     fn event(&self, event: &Event<'_>) {
-        self.state.lock().event(event)
+        // We want to protect against re-entrancy issues produced by tracing code that locks
+        // the state and then causes an exception that tries to lock the state again.
+        //
+        // For example:
+        // - 1. A span is created, locking the state
+        // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+        // - 3. The exception handler uses the tracing API to send the trace data to the host
+        // or just create spans/events for logging purposes.
+        // - 4. The tracing API tries to lock the state again, causing a deadlock.
+        // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+        // the issue.
+        let mut state = self
+            .state
+            .try_lock()
+            .expect("guest_tracing: Unable to lock guest tracing state in `event`");
+
+        state.event(event)
     }
 
     fn enter(&self, id: &Id) {
-        self.state.lock().enter(id)
+        // We want to protect against re-entrancy issues produced by tracing code that locks
+        // the state and then causes an exception that tries to lock the state again.
+        //
+        // For example:
+        // - 1. A span is created, locking the state
+        // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+        // - 3. The exception handler uses the tracing API to send the trace data to the host
+        // or just create spans/events for logging purposes.
+        // - 4. The tracing API tries to lock the state again, causing a deadlock.
+        // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+        // the issue.
+        let mut state = self
+            .state
+            .try_lock()
+            .expect("guest_tracing: Unable to lock guest tracing state in `enter`");
+
+        state.enter(id)
     }
 
     fn exit(&self, id: &Id) {
-        self.state.lock().exit(id)
+        // We want to protect against re-entrancy issues produced by tracing code that locks
+        // the state and then causes an exception that tries to lock the state again.
+        //
+        // For example:
+        // - 1. A span is created, locking the state
+        // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+        // - 3. The exception handler uses the tracing API to send the trace data to the host
+        // or just create spans/events for logging purposes.
+        // - 4. The tracing API tries to lock the state again, causing a deadlock.
+        // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+        // the issue.
+        let mut state = self
+            .state
+            .try_lock()
+            .expect("guest_tracing: Unable to lock guest tracing state in `exit`");
+
+        state.exit(id)
     }
 
     fn try_close(&self, id: Id) -> bool {
-        self.state.lock().try_close(id)
+        // We want to protect against re-entrancy issues produced by tracing code that locks
+        // the state and then causes an exception that tries to lock the state again.
+        //
+        // For example:
+        // - 1. A span is created, locking the state
+        // - 2. An exception occurs while the span is being created (e.g. not enough memory, etc.)
+        // - 3. The exception handler uses the tracing API to send the trace data to the host
+        // or just create spans/events for logging purposes.
+        // - 4. The tracing API tries to lock the state again, causing a deadlock.
+        // To avoid this, we use try_lock and if we cannot acquire the lock, we panic to signal
+        // the issue.
+        let mut state = self
+            .state
+            .try_lock()
+            .expect("guest_tracing: Unable to lock guest tracing state in `try_close`");
+
+        state.try_close(id)
     }
 
     fn record_follows_from(&self, _span: &Id, _follows: &Id) {
