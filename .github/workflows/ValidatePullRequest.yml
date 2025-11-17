@@ -63,7 +63,7 @@ jobs:
       - docs-pr
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
-      targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call"]' # Pass as a JSON array
+      targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call", "fuzz_guest_trace"]' # Pass as a JSON array
       max_total_time: 300 # 5 minutes in seconds
       docs_only: ${{needs.docs-pr.outputs.docs-only}}
     secrets: inherit

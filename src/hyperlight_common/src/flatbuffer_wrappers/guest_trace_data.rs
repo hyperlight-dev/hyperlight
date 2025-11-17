@@ -573,6 +573,13 @@ impl<T: Fn(&[u8])> EventsEncoder for EventsBatchEncoderGeneric<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flatbuffers::FlatBufferBuilder;
+
+    use crate::flatbuffers::hyperlight::generated::{
+        GuestEventEnvelopeType as FbGuestEventEnvelopeType,
+        GuestEventEnvelopeTypeArgs as FbGuestEventEnvelopeTypeArgs,
+        GuestEventType as FbGuestEventType,
+    };
 
     /// Utility function to check an original GuestTraceData against a deserialized one
     fn check_fb_guest_trace_data(orig: &[GuestEvent], deserialized: &[GuestEvent]) {
@@ -978,5 +985,66 @@ mod tests {
             .expect("Deserialization failed");
 
         check_fb_guest_trace_data(&events, &deserialized);
+    }
+
+    #[test]
+    fn test_events_batch_decoder_errors_on_truncated_buffer() {
+        let events = [GuestEvent::LogEvent {
+            parent_id: 42,
+            name: "log".to_string(),
+            tsc: 9001,
+            fields: Vec::new(),
+        }];
+
+        let mut serializer = EventsBatchEncoder::new(512, |_| {});
+        for event in &events {
+            serializer.encode(event);
+        }
+        let mut truncated = serializer.finish().to_vec();
+        assert!(truncated.pop().is_some(), "serialized buffer must be non-empty");
+
+        let err = EventsBatchDecoder {}
+            .decode(&truncated)
+            .expect_err("Decoder must fail when payload is truncated");
+        assert!(
+            err.to_string()
+                .contains("The serialized buffer does not contain a full set of events"),
+            "unexpected error: {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn test_guest_event_try_from_errors_on_missing_union_payload() {
+        let mut builder = FlatBufferBuilder::new();
+        let envelope = FbGuestEventEnvelopeType::create(
+            &mut builder,
+            &FbGuestEventEnvelopeTypeArgs {
+                event_type: FbGuestEventType::OpenSpan,
+                event: None,
+            },
+        );
+        builder.finish_size_prefixed(envelope, None);
+        let serialized = builder.finished_data();
+
+        let err = GuestEvent::try_from(serialized)
+            .expect_err("Deserialization must fail when union payload is missing");
+        assert!(
+            err.to_string().contains("InconsistentUnion"),
+            "unexpected error: {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn test_event_key_value_try_from_rejects_short_buffer() {
+        let buffer = [0x00_u8, 0x01, 0x02];
+        let err = EventKeyValue::try_from(buffer.as_slice())
+            .expect_err("Deserialization must fail for undersized buffer");
+        assert!(
+            err.to_string().contains("Error while reading EventKeyValue"),
+            "unexpected error: {}",
+            err,
+        );
     }
 }

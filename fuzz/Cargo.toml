@@ -14,15 +14,15 @@ hyperlight-host = { workspace = true, default-features = true, features = ["fuzz
 hyperlight-common = {workspace = true}
 
 [[bin]]
-name = "fuzz_host_print"
-path = "fuzz_targets/host_print.rs"
+name = "fuzz_guest_call"
+path = "fuzz_targets/guest_call.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "fuzz_guest_call"
-path = "fuzz_targets/guest_call.rs"
+name = "fuzz_guest_trace"
+path = "fuzz_targets/guest_trace.rs"
 test = false
 doc = false
 bench = false
@@ -33,3 +33,14 @@ path = "fuzz_targets/host_call.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_host_print"
+path = "fuzz_targets/host_print.rs"
+test = false
+doc = false
+bench = false
+
+[features]
+default = []
+trace = ["hyperlight-host/trace_guest", "hyperlight-common/trace_guest"]

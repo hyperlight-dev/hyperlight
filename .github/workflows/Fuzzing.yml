@@ -13,7 +13,7 @@ jobs:
   fuzzing:
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
-      targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call"]' # Pass as a JSON array
+      targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call", "fuzz_guest_trace"]' # Pass as a JSON array
       max_total_time: 18000 # 5 hours in seconds
     secrets: inherit
 
@@ -26,7 +26,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-        
+
       - name: Notify Fuzzing Failure
         run: ./dev/notify-ci-failure.sh --labels="area/fuzzing,area/testing,lifecycle/needs-review,release-blocker"
         env:
