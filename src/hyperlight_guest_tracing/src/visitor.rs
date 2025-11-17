@@ -34,8 +34,7 @@ impl<'a> Visit for FieldsVisitor<'a> {
     /// * `value` - The byte slice value
     fn record_bytes(&mut self, f: &Field, v: &[u8]) {
         let k = String::from(f.name());
-        let mut val = String::new();
-        val.push_str(&alloc::format!("{v:?}"));
+        let val = alloc::format!("{v:?}");
         self.out.push(KeyValue { key: k, value: val });
     }
 
@@ -45,8 +44,7 @@ impl<'a> Visit for FieldsVisitor<'a> {
     /// * `v` - The string value
     fn record_str(&mut self, f: &Field, v: &str) {
         let k = String::from(f.name());
-        let mut val = String::new();
-        val.push_str(v);
+        let val = String::from(v);
         self.out.push(KeyValue { key: k, value: val });
     }
 
@@ -56,8 +54,7 @@ impl<'a> Visit for FieldsVisitor<'a> {
     /// * `v` - The debug value
     fn record_debug(&mut self, f: &Field, v: &dyn Debug) {
         let k = String::from(f.name());
-        let mut val = String::new();
-        val.push_str(&alloc::format!("{v:?}"));
+        let val = alloc::format!("{v:?}");
         self.out.push(KeyValue { key: k, value: val });
     }
 }
