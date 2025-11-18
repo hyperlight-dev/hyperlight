@@ -15,7 +15,7 @@ Shared implementation for the procedural macros that generate Hyperlight host an
 name = "hyperlight_component_util"
 
 [dependencies]
-wasmparser = { version = "0.240.0" }
+wasmparser = { version = "0.241.2" }
 quote = { version = "1.0.42" }
 proc-macro2 = { version = "1.0.103" }
 syn = { version = "2.0.110" }
