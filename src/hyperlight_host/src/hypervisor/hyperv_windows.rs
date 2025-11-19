@@ -672,6 +672,10 @@ impl Hypervisor for HypervWindowsDriver {
         self.interrupt_handle.clone()
     }
 
+    fn clear_cancel(&self) {
+        self.interrupt_handle.clear_cancel();
+    }
+
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
         self as &mut dyn Hypervisor

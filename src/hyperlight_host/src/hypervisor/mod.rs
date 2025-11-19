@@ -180,6 +180,9 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Get InterruptHandle to underlying VM (returns internal trait)
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
 
+    /// Clear the cancellation flag
+    fn clear_cancel(&self);
+
     /// Get regs
     #[allow(dead_code)]
     fn regs(&self) -> Result<CommonRegisters>;
@@ -359,23 +362,16 @@ impl VirtualCPU {
         interrupt_handle: Arc<dyn InterruptHandleImpl>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
-        // ===== KILL() TIMING POINT 1: Between guest function calls =====
-        // Clear any stale cancellation from a previous guest function call or if kill() was called too early.
-        // This ensures that kill() called BETWEEN different guest function calls doesn't affect the next call.
-        //
-        // If kill() was called and ran to completion BEFORE this line executes:
-        //    - kill() has NO effect on this guest function call because CANCEL_BIT is cleared here.
-        //    - NOTE: stale signals can still be delivered, but they will be ignored.
-        interrupt_handle.clear_cancel();
-
         // Keeps the trace context and open spans
         #[cfg(feature = "trace_guest")]
         let mut tc = crate::sandbox::trace::TraceContext::new();
 
         loop {
-            // ===== KILL() TIMING POINT 2: Before set_tid() =====
+            // ===== KILL() TIMING POINT 2: Before set_running() =====
             // If kill() is called and ran to completion BEFORE this line executes:
             //    - CANCEL_BIT will be set and we will return an early VmExit::Cancelled()
+            //      without sending any signals/WHV api calls
+            #[cfg(any(kvm, mshv3))]
             interrupt_handle.set_tid();
             interrupt_handle.set_running();
 
@@ -383,6 +379,9 @@ impl VirtualCPU {
                 if interrupt_handle.is_cancelled() || interrupt_handle.is_debug_interrupted() {
                     Ok(HyperlightExit::Cancelled())
                 } else {
+                    // ==== KILL() TIMING POINT 3: Before calling run() ====
+                    // If kill() is called and ran to completion BEFORE this line executes:
+                    //    - Will still do a VM entry, but signals will be sent until VM exits
                     #[cfg(feature = "trace_guest")]
                     let result = hv.run(&mut tc);
                     #[cfg(not(feature = "trace_guest"))]
@@ -405,28 +404,23 @@ impl VirtualCPU {
                 }
             };
 
-            // ===== KILL() TIMING POINT 4: Before capturing cancel_requested =====
+            // ===== KILL() TIMING POINT 4: Before clear_running() =====
             // If kill() is called and ran to completion BEFORE this line executes:
-            //    - CANCEL_BIT will be set
-            //    - Signals may still be sent (RUNNING_BIT=true) but are harmless no-ops
-            //    - kill() will have no effect on this iteration, but CANCEL_BIT will persist
-            //    - If the loop continues (e.g., for a host call), the next iteration will be cancelled
-            //    - Stale signals from before clear_running() may arrive and kick future iterations,
-            //      but will be filtered out by the cancel_requested check below (and retried).
+            //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
+            //    - Signals will be sent until `clear_running()` is called, which is ok
+            interrupt_handle.clear_running();
+
+            // ===== KILL() TIMING POINT 5: Before capturing cancel_requested =====
+            // If kill() is called and ran to completion BEFORE this line executes:
+            //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
+            //    - Signals will not be sent
             let cancel_requested = interrupt_handle.is_cancelled();
             let debug_interrupted = interrupt_handle.is_debug_interrupted();
 
-            // ===== KILL() TIMING POINT 5: Before calling clear_running() =====
-            // Same as point 4.
-            interrupt_handle.clear_running();
-
-            // ===== KILL() TIMING POINT 6: After calling clear_running() =====
+            // ===== KILL() TIMING POINT 6: Before checking exit_reason =====
             // If kill() is called and ran to completion BEFORE this line executes:
-            //    - CANCEL_BIT will be set but won't affect this iteration, it is never read below this comment
-            //      and cleared at next run() start
-            //    - RUNNING_BIT=false, so no new signals will be sent
-            //    - Stale signals from before clear_running() may arrive and kick future iterations,
-            //      but will be filtered out by the cancel_requested check below (and retried).
+            //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
+            //    - Signals will not be sent
             match exit_reason {
                 #[cfg(gdb)]
                 Ok(HyperlightExit::Debug(stop_reason)) => {
@@ -526,7 +520,8 @@ impl VirtualCPU {
 
 /// A trait for platform-specific interrupt handle implementation details
 pub(crate) trait InterruptHandleImpl: InterruptHandle {
-    /// Set the thread ID for the vcpu thread (no-op on Windows)
+    /// Set the thread ID for the vcpu thread
+    #[cfg(any(kvm, mshv3))]
     fn set_tid(&self);
 
     /// Set the running state
@@ -588,8 +583,8 @@ pub(super) struct LinuxInterruptHandle {
     /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
     /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
     ///
-    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `HyperlightVm::run()` call
-    /// (e.g., during host function calls), but is cleared at the start of each new `HyperlightVm::run()` call.
+    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
+    /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
     state: AtomicU64,
 
     /// Thread ID where the vcpu is running.
@@ -641,7 +636,7 @@ impl LinuxInterruptHandle {
             // Exit if not running OR if neither cancel nor debug_interrupt is set
             #[cfg(gdb)]
             let should_continue =
-                running && (cancel || self.debug_interrupt.load(Ordering::Relaxed));
+                running && (cancel || self.debug_interrupt.load(Ordering::Acquire));
             #[cfg(not(gdb))]
             let should_continue = running && cancel;
 
@@ -701,7 +696,7 @@ impl InterruptHandleImpl for LinuxInterruptHandle {
     fn is_debug_interrupted(&self) -> bool {
         #[cfg(gdb)]
         {
-            self.debug_interrupt.load(Ordering::Relaxed)
+            self.debug_interrupt.load(Ordering::Acquire)
         }
         #[cfg(not(gdb))]
         {
@@ -711,7 +706,7 @@ impl InterruptHandleImpl for LinuxInterruptHandle {
 
     #[cfg(gdb)]
     fn clear_debug_interrupt(&self) {
-        self.debug_interrupt.store(false, Ordering::Relaxed);
+        self.debug_interrupt.store(false, Ordering::Release);
     }
 
     fn set_dropped(&self) {
@@ -734,7 +729,7 @@ impl InterruptHandle for LinuxInterruptHandle {
 
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
-        self.debug_interrupt.store(true, Ordering::Relaxed);
+        self.debug_interrupt.store(true, Ordering::Release);
         self.send_signal()
     }
     fn dropped(&self) -> bool {
@@ -756,8 +751,8 @@ pub(super) struct WindowsInterruptHandle {
     /// `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running,
     /// which is why we need the RUNNING_BIT.
     ///
-    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `HyperlightVm::run()` call
-    /// (e.g., during host function calls), but is cleared at the start of each new `HyperlightVm::run()` call.
+    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
+    /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
     state: AtomicU64,
 
     // This is used to signal the GDB thread to stop the vCPU
@@ -775,10 +770,6 @@ impl WindowsInterruptHandle {
 
 #[cfg(target_os = "windows")]
 impl InterruptHandleImpl for WindowsInterruptHandle {
-    fn set_tid(&self) {
-        // No-op on Windows - we don't need to track thread ID
-    }
-
     fn set_running(&self) {
         // Release ordering to ensure prior memory operations are visible when another thread observes running=true
         self.state.fetch_or(Self::RUNNING_BIT, Ordering::Release);
@@ -801,13 +792,13 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
         // Release ordering to ensure all vcpu operations are visible before clearing running
         self.state.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
         #[cfg(gdb)]
-        self.debug_interrupt.store(false, Ordering::Relaxed);
+        self.debug_interrupt.store(false, Ordering::Release);
     }
 
     fn is_debug_interrupted(&self) -> bool {
         #[cfg(gdb)]
         {
-            self.debug_interrupt.load(Ordering::Relaxed)
+            self.debug_interrupt.load(Ordering::Acquire)
         }
         #[cfg(not(gdb))]
         {
@@ -818,7 +809,7 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
     #[cfg(gdb)]
     fn clear_debug_interrupt(&self) {
         #[cfg(gdb)]
-        self.debug_interrupt.store(false, Ordering::Relaxed);
+        self.debug_interrupt.store(false, Ordering::Release);
     }
 
     fn set_dropped(&self) {
@@ -850,7 +841,7 @@ impl InterruptHandle for WindowsInterruptHandle {
     fn kill_from_debugger(&self) -> bool {
         use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
 
-        self.debug_interrupt.store(true, Ordering::Relaxed);
+        self.debug_interrupt.store(true, Ordering::Release);
         // Acquire ordering to synchronize with the Release in set_running()
         let state = self.state.load(Ordering::Acquire);
         if state & Self::RUNNING_BIT != 0 {

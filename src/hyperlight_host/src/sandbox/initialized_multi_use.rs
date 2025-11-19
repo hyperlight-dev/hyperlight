@@ -575,6 +575,10 @@ impl MultiUseSandbox {
         if self.poisoned {
             return Err(crate::HyperlightError::PoisonedSandbox);
         }
+        // ===== KILL() TIMING POINT 1 =====
+        // Clear any stale cancellation from a previous guest function call or if kill() was called too early.
+        // Any kill() that completed (even partially) BEFORE this line has NO effect on this call.
+        self.vm.clear_cancel();
 
         let res = (|| {
             let estimated_capacity = estimate_flatbuffer_capacity(function_name, &args);

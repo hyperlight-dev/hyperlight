@@ -734,6 +734,10 @@ impl Hypervisor for KVMDriver {
         self.interrupt_handle.clone()
     }
 
+    fn clear_cancel(&self) {
+        self.interrupt_handle.clear_cancel();
+    }
+
     #[cfg(crashdump)]
     fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>> {
         if self.rt_cfg.guest_core_dump {
