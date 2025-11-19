@@ -235,13 +235,17 @@ impl TraceContext {
         let trace_batch = TraceBatch::try_from((regs, mem_mgr))?;
         let trace_batch = trace_batch.data;
 
+        self.handle_trace_impl(trace_batch)
+    }
+
+    fn handle_trace_impl(&mut self, trace_data: GuestTraceData) -> Result<()> {
         let tracer = global::tracer("guest-tracer");
 
         // Stack to keep track of open spans
         let mut spans_stack = vec![];
 
         // Process each event
-        for ev in trace_batch.events.into_iter() {
+        for ev in trace_data.events.into_iter() {
             match ev {
                 GuestEvent::OpenSpan {
                     id,
@@ -253,7 +257,7 @@ impl TraceContext {
                 } => {
                     // Calculate start timestamp
                     let start_ts =
-                        self.calculate_guest_time_relative_to_host(trace_batch.start_tsc, tsc)?;
+                        self.calculate_guest_time_relative_to_host(trace_data.start_tsc, tsc)?;
 
                     // Determine parent context
                     // Priority:
@@ -300,7 +304,7 @@ impl TraceContext {
                     // Remove the span and end it
                     if let Some(mut span) = self.guest_spans.remove(&id) {
                         let end_ts =
-                            self.calculate_guest_time_relative_to_host(trace_batch.start_tsc, tsc)?;
+                            self.calculate_guest_time_relative_to_host(trace_data.start_tsc, tsc)?;
                         span.end_with_timestamp(end_ts);
 
                         // The span ids should be closed in order
@@ -320,7 +324,7 @@ impl TraceContext {
                     fields,
                 } => {
                     let ts =
-                        self.calculate_guest_time_relative_to_host(trace_batch.start_tsc, tsc)?;
+                        self.calculate_guest_time_relative_to_host(trace_data.start_tsc, tsc)?;
 
                     // Add the event to the parent span
                     // It should always have a parent span
@@ -387,5 +391,220 @@ impl Drop for TraceContext {
         while let Some(entered) = self.host_spans.pop() {
             entered.exit();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperlight_common::flatbuffer_wrappers::guest_trace_data::{
+        GuestEvent, GuestTraceData, KeyValue,
+    };
+
+    use super::*;
+
+    fn create_dummy_trace_context() -> TraceContext {
+        let mut trace_ctx = TraceContext::new();
+        // Set TSC frequency to avoid calculating it
+        trace_ctx.tsc_freq = Some(3_200_000_000); // 3.2 GHz
+        // Set start wall time and Instant
+        trace_ctx.start_wall = Some(SystemTime::now() - Duration::from_secs(1));
+        trace_ctx.start_instant = Some(Instant::now() - Duration::from_secs(1));
+
+        trace_ctx
+    }
+
+    fn create_open_span(
+        id: u64,
+        parent_id: Option<u64>,
+        name_str: &str,
+        target_str: &str,
+        start_tsc: u64,
+        fields: Vec<KeyValue>,
+    ) -> GuestEvent {
+        GuestEvent::OpenSpan {
+            id,
+            parent_id,
+            name: String::from(name_str),
+            target: String::from(target_str),
+            tsc: start_tsc,
+            fields,
+        }
+    }
+
+    fn create_close_span(id: u64, end_tsc: u64) -> GuestEvent {
+        GuestEvent::CloseSpan { id, tsc: end_tsc }
+    }
+
+    fn create_log_event(
+        parent_id: u64,
+        tsc: u64,
+        name_str: &str,
+        fields: Vec<KeyValue>,
+    ) -> GuestEvent {
+        GuestEvent::LogEvent {
+            parent_id,
+            name: String::from(name_str),
+            tsc,
+            fields,
+        }
+    }
+
+    #[test]
+    fn test_guest_trace_context_creation() {
+        let trace_ctx = TraceContext::new();
+        assert!(trace_ctx.host_spans.len() == 1);
+        assert!(trace_ctx.guest_spans.is_empty());
+    }
+
+    /// Test handling a `TraceBatch` with no spans or events.
+    #[test]
+    fn test_guest_trace_empty_trace_batch() {
+        let mut trace_ctx = TraceContext::new();
+
+        let trace_data = GuestTraceData {
+            start_tsc: 0,
+            events: Vec::new(),
+        };
+
+        let res = trace_ctx.handle_trace_impl(trace_data);
+        assert!(res.is_ok());
+        assert!(trace_ctx.guest_spans.is_empty());
+        assert!(trace_ctx.host_spans.len() == 1);
+    }
+
+    /// Test handling a `TraceBatch` with one span and no events.
+    /// The span is not closed.
+    #[test]
+    fn test_guest_trace_single_span() {
+        let mut trace_ctx = create_dummy_trace_context();
+
+        let trace_data = GuestTraceData {
+            start_tsc: 1000,
+            events: vec![create_open_span(
+                1,
+                None,
+                "test-span",
+                "test-target",
+                2000,
+                vec![],
+            )],
+        };
+
+        let res = trace_ctx.handle_trace_impl(trace_data);
+        assert!(res.is_ok());
+        assert!(trace_ctx.guest_spans.len() == 1);
+        // The active host span is new because a new guest span was created
+        assert!(trace_ctx.host_spans.len() == 2);
+    }
+
+    /// Test handling a `TraceBatch` with one span that is closed.
+    /// The span is closed.
+    #[test]
+    fn test_guest_trace_single_closed_span() {
+        let mut trace_ctx = create_dummy_trace_context();
+
+        let trace_data = GuestTraceData {
+            start_tsc: 1000,
+            events: vec![
+                create_open_span(1, None, "test-span", "test-target", 2000, vec![]),
+                create_close_span(1, 2500),
+            ],
+        };
+
+        let res = trace_ctx.handle_trace_impl(trace_data);
+        assert!(res.is_ok());
+        assert!(trace_ctx.guest_spans.is_empty());
+        // The active host span is the same as before because no new guest span was created
+        // as the span was closed.
+        assert!(trace_ctx.host_spans.len() == 1);
+    }
+
+    /// Test handling a `TraceBatch` with one span and one event.
+    /// The span is not closed.
+    #[test]
+    fn test_guest_trace_span_with_event() {
+        let mut trace_ctx = create_dummy_trace_context();
+
+        let trace_data = GuestTraceData {
+            start_tsc: 1000,
+            events: vec![
+                create_open_span(1, None, "test-span", "test-target", 2000, vec![]),
+                create_log_event(1, 2500, "test-event", vec![]),
+            ],
+        };
+
+        let res = trace_ctx.handle_trace_impl(trace_data);
+        assert!(res.is_ok());
+        assert!(trace_ctx.guest_spans.len() == 1);
+        // The active host span is new because a new guest span was created
+        assert!(trace_ctx.host_spans.len() == 2);
+    }
+
+    /// Test handling a `TraceBatch` with two open spans in a parent-child relationship.
+    /// The spans are not closed.
+    #[test]
+    fn test_guest_trace_parent_child_spans() {
+        let mut trace_ctx = create_dummy_trace_context();
+
+        let trace_data = GuestTraceData {
+            start_tsc: 1000,
+            events: vec![
+                create_open_span(1, None, "parent-span", "test-target", 2000, vec![]),
+                create_open_span(2, Some(1), "child-span", "test-target", 2500, vec![]),
+            ],
+        };
+
+        let res = trace_ctx.handle_trace_impl(trace_data);
+        assert!(res.is_ok());
+        assert!(trace_ctx.guest_spans.len() == 2);
+        // The active host span is new because new guest spans were created
+        assert!(trace_ctx.host_spans.len() == 2);
+    }
+
+    /// Test handling a `TraceBatch` with two closed spans in a parent-child relationship.
+    /// The spans are closed.
+    #[test]
+    fn test_guest_trace_closed_parent_child_spans() {
+        let mut trace_ctx = create_dummy_trace_context();
+
+        let trace_data = GuestTraceData {
+            start_tsc: 1000,
+            events: vec![
+                create_open_span(1, None, "parent-span", "test-target", 2000, vec![]),
+                create_open_span(2, Some(1), "child-span", "test-target", 2500, vec![]),
+                create_close_span(2, 3500),
+                create_close_span(1, 3000),
+            ],
+        };
+
+        let res = trace_ctx.handle_trace_impl(trace_data);
+        assert!(res.is_ok());
+        assert!(trace_ctx.guest_spans.is_empty());
+        // The active host span is the same as before because no new guest spans were created
+        // as the spans were closed.
+        assert!(trace_ctx.host_spans.len() == 1);
+    }
+
+    /// Test handling a `TraceBatch` with two spans partially closed in a parent-child
+    /// relationship.
+    /// The parent span is open, the child span is closed.
+    #[test]
+    fn test_guest_trace_partially_closed_parent_child_spans() {
+        let mut trace_ctx = create_dummy_trace_context();
+
+        let trace_data = GuestTraceData {
+            start_tsc: 1000,
+            events: vec![
+                create_open_span(1, None, "parent-span", "test-target", 2000, vec![]),
+                create_open_span(2, Some(1), "child-span", "test-target", 2500, vec![]),
+                create_close_span(2, 3500),
+            ],
+        };
+
+        let res = trace_ctx.handle_trace_impl(trace_data);
+        assert!(res.is_ok());
+        assert!(trace_ctx.guest_spans.len() == 1);
+        // The active host span is new because a new guest span was created
+        assert!(trace_ctx.host_spans.len() == 2);
     }
 }
