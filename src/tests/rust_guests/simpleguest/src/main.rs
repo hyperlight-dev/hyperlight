@@ -1097,6 +1097,14 @@ pub extern "C" fn hyperlight_main() {
     );
     register_function(host_call_loop_def);
 
+    let call_host_then_spin_def = GuestFunctionDefinition::new(
+        "CallHostThenSpin".to_string(),
+        Vec::from(&[ParameterType::String]),
+        ReturnType::Void,
+        call_host_then_spin as usize,
+    );
+    register_function(call_host_then_spin_def);
+
     let print_using_printf_def = GuestFunctionDefinition::new(
         "PrintUsingPrintf".to_string(),
         Vec::from(&[ParameterType::String]),
@@ -1635,6 +1643,23 @@ fn host_call_loop(function_call: &FunctionCall) -> Result<Vec<u8>> {
         Err(HyperlightGuestError::new(
             ErrorCode::GuestFunctionParameterTypeMismatch,
             "Invalid parameters passed to host_call_loop".to_string(),
+        ))
+    }
+}
+
+// Calls the given host function (no param, no return value) and then spins indefinitely.
+fn call_host_then_spin(function_call: &FunctionCall) -> Result<Vec<u8>> {
+    if let ParameterValue::String(host_func_name) = &function_call.parameters.as_ref().unwrap()[0] {
+        call_host_function::<()>(host_func_name, None, ReturnType::Void)?;
+        #[expect(
+            clippy::empty_loop,
+            reason = "This function is used to keep the CPU busy"
+        )]
+        loop {}
+    } else {
+        Err(HyperlightGuestError::new(
+            ErrorCode::GuestFunctionParameterTypeMismatch,
+            "Invalid parameters passed to call_host_then_spin".to_string(),
         ))
     }
 }

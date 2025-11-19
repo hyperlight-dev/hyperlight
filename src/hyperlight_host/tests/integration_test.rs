@@ -1346,3 +1346,97 @@ fn interrupt_random_kill_stress_test() {
 
     println!("\n✅ All validations passed!");
 }
+
+/// Ensures that `kill()` reliably interrupts a running guest
+///
+/// The test works by:
+/// 1. Guest calls a host function which waits on a barrier, ensuring the guest is "in-progress" and that `kill()` is not called prematurely to be ignored.
+/// 2. Once the guest has passed that host function barrier, the host calls `kill()`. The `kill()` could be delivered at any time after this point, for example while guest is still in the host func, or returning into guest vm.
+/// 3. The guest enters an infinite loop, so `kill()` is the only way to stop it.
+///
+/// This is repeated across multiple threads and iterations to stress test the cancellation mechanism.
+///
+/// **Failure Condition:** If this test hangs, it means `kill()` failed to stop the guest, leaving it spinning forever.
+#[test]
+fn interrupt_infinite_loop_stress_test() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    const NUM_THREADS: usize = 50;
+    const ITERATIONS_PER_THREAD: usize = 500;
+
+    let mut handles = vec![];
+
+    for i in 0..NUM_THREADS {
+        handles.push(thread::spawn(move || {
+            // Create a barrier for 2 threads:
+            // 1. The guest (executing a host function)
+            // 2. The killer thread
+            let barrier = Arc::new(Barrier::new(2));
+            let barrier_for_host = barrier.clone();
+
+            let mut uninit = new_uninit_rust().unwrap();
+
+            // Register a host function that waits on the barrier
+            uninit
+                .register("WaitForKill", move || {
+                    barrier_for_host.wait();
+                    Ok(())
+                })
+                .unwrap();
+
+            let mut sandbox = uninit.evolve().unwrap();
+            // Take a snapshot to restore after each kill
+            let snapshot = sandbox.snapshot().unwrap();
+
+            for j in 0..ITERATIONS_PER_THREAD {
+                let barrier_for_killer = barrier.clone();
+                let interrupt_handle = sandbox.interrupt_handle();
+
+                // Spawn the killer thread
+                let killer_thread = std::thread::spawn(move || {
+                    // Wait for the guest to call WaitForKill
+                    barrier_for_killer.wait();
+
+                    // The guest is now waiting on the barrier (or just finished waiting).
+                    // We kill it immediately.
+                    interrupt_handle.kill();
+                });
+
+                // Call the guest function "CallHostThenSpin" which calls "WaitForKill" once then spins
+                // NOTE: If this test hangs, it means the guest was not successfully killed and is spinning forever.
+                // This indicates a bug in the cancellation mechanism.
+                let res = sandbox.call::<()>("CallHostThenSpin", "WaitForKill".to_string());
+
+                // Wait for killer thread to finish
+                killer_thread.join().unwrap();
+
+                // We expect the execution to be canceled
+                match res {
+                    Err(HyperlightError::ExecutionCanceledByHost()) => {
+                        // Success!
+                    }
+                    Ok(_) => {
+                        panic!(
+                            "Thread {} Iteration {}: Guest finished successfully but should have been killed!",
+                            i, j
+                        );
+                    }
+                    Err(e) => {
+                        panic!(
+                            "Thread {} Iteration {}: Guest failed with unexpected error: {:?}",
+                            i, j, e
+                        );
+                    }
+                }
+
+                // Restore the sandbox for the next iteration
+                sandbox.restore(&snapshot).unwrap();
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
