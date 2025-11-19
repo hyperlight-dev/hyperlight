@@ -374,6 +374,8 @@ impl VirtualCPU {
             #[cfg(any(kvm, mshv3))]
             interrupt_handle.set_tid();
             interrupt_handle.set_running();
+            // NOTE: `set_running()`` must be called before checking `is_cancelled()`
+            // otherwise we risk missing a call to `kill()` because the vcpu would not be marked as running yet so signals won't be sent
 
             let exit_reason = {
                 if interrupt_handle.is_cancelled() || interrupt_handle.is_debug_interrupted() {
