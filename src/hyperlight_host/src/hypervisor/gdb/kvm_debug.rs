@@ -18,12 +18,12 @@ use std::collections::HashMap;
 
 use kvm_bindings::{
     KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP,
-    kvm_debug_exit_arch, kvm_guest_debug,
+    kvm_guest_debug,
 };
 use kvm_ioctls::VcpuFd;
 
-use super::arch::{MAX_NO_OF_HW_BP, SW_BP_SIZE, vcpu_stop_reason};
-use super::{GuestDebug, VcpuStopReason};
+use super::GuestDebug;
+use super::arch::{MAX_NO_OF_HW_BP, SW_BP_SIZE};
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
 use crate::{HyperlightError, Result, new_error};
 
@@ -57,15 +57,6 @@ impl KvmDebug {
             sw_breakpoints: HashMap::new(),
             dbg_cfg: dbg,
         }
-    }
-
-    /// Returns the instruction pointer from the stopped vCPU
-    fn get_instruction_pointer(&self, vcpu_fd: &VcpuFd) -> Result<u64> {
-        let regs = vcpu_fd
-            .get_regs()
-            .map_err(|e| new_error!("Could not retrieve registers from vCPU: {:?}", e))?;
-
-        Ok(regs.rip)
     }
 
     /// This method sets the kvm debugreg fields to enable breakpoints at
@@ -105,38 +96,6 @@ impl KvmDebug {
         self.single_step = step;
 
         Ok(())
-    }
-
-    /// Get the reason the vCPU has stopped
-    pub(crate) fn get_stop_reason(
-        &mut self,
-        vcpu_fd: &VcpuFd,
-        debug_exit: kvm_debug_exit_arch,
-        entrypoint: u64,
-    ) -> Result<VcpuStopReason> {
-        let rip = self.get_instruction_pointer(vcpu_fd)?;
-        let rip = self.translate_gva(vcpu_fd, rip)?;
-
-        // Check if the vCPU stopped because of a hardware breakpoint
-        let reason = vcpu_stop_reason(
-            self.single_step,
-            rip,
-            debug_exit.dr6,
-            entrypoint,
-            debug_exit.exception,
-            &self.hw_breakpoints,
-            &self.sw_breakpoints,
-        );
-
-        if let VcpuStopReason::EntryPointBp = reason {
-            // In case the hw breakpoint is the entry point, remove it to
-            // avoid hanging here as gdb does not remove breakpoints it
-            // has not set.
-            // Gdb expects the target to be stopped when connected.
-            self.remove_hw_breakpoint(vcpu_fd, entrypoint)?;
-        }
-
-        Ok(reason)
     }
 }
 

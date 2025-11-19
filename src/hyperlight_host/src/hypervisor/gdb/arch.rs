@@ -16,8 +16,6 @@ limitations under the License.
 
 //! This file contains architecture specific code for the x86_64
 
-use std::collections::HashMap;
-
 use super::VcpuStopReason;
 
 // Described in Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
@@ -51,23 +49,18 @@ pub(crate) const DR6_HW_BP_FLAGS_MASK: u64 = 0x0F << DR6_HW_BP_FLAGS_POS;
 
 /// Determine the reason the vCPU stopped
 /// This is done by checking the DR6 register and the exception id
-/// NOTE: Additional checks are done for the entrypoint, stored hw_breakpoints
-/// and sw_breakpoints to ensure the stop reason is valid with internal state
 pub(crate) fn vcpu_stop_reason(
-    single_step: bool,
     rip: u64,
-    dr6: u64,
     entrypoint: u64,
+    dr6: u64,
     exception: u32,
-    hw_breakpoints: &[u64],
-    sw_breakpoints: &HashMap<u64, [u8; SW_BP_SIZE]>,
 ) -> VcpuStopReason {
     if DB_EX_ID == exception {
         // If the BS flag in DR6 register is set, it means a single step
         // instruction triggered the exit
         // Check page 19-4 Vol. 3B of Intel 64 and IA-32
         // Architectures Software Developer's Manual
-        if dr6 & DR6_BS_FLAG_MASK != 0 && single_step {
+        if dr6 & DR6_BS_FLAG_MASK != 0 {
             return VcpuStopReason::DoneStep;
         }
 
@@ -75,7 +68,7 @@ pub(crate) fn vcpu_stop_reason(
         // hardware breakpoint triggered the exit
         // Check page 19-4 Vol. 3B of Intel 64 and IA-32
         // Architectures Software Developer's Manual
-        if DR6_HW_BP_FLAGS_MASK & dr6 != 0 && hw_breakpoints.contains(&rip) {
+        if DR6_HW_BP_FLAGS_MASK & dr6 != 0 {
             if rip == entrypoint {
                 return VcpuStopReason::EntryPointBp;
             }
@@ -83,28 +76,22 @@ pub(crate) fn vcpu_stop_reason(
         }
     }
 
-    if BP_EX_ID == exception && sw_breakpoints.contains_key(&rip) {
+    if BP_EX_ID == exception {
         return VcpuStopReason::SwBp;
     }
 
     // Log an error and provide internal debugging info
     log::error!(
         r"The vCPU exited because of an unknown reason:
-        single_step: {:?}
         rip: {:?}
         dr6: {:?}
         entrypoint: {:?}
         exception: {:?}
-        hw_breakpoints: {:?}
-        sw_breakpoints: {:?}
         ",
-        single_step,
         rip,
         dr6,
         entrypoint,
         exception,
-        hw_breakpoints,
-        sw_breakpoints,
     );
 
     VcpuStopReason::Unknown

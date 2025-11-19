@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-mod arch;
+pub(crate) mod arch;
 mod event_loop;
 #[cfg(target_os = "windows")]
 mod hyperv_debug;
@@ -235,7 +235,7 @@ impl DebugMemoryAccess {
 }
 
 /// Defines the possible reasons for which a vCPU can be stopped when debugging
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum VcpuStopReason {
     Crash,
     DoneStep,
