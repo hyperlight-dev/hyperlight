@@ -21,6 +21,9 @@ pub(crate) static METRIC_GUEST_ERROR_LABEL_CODE: &str = "code";
 // Counter metric that counts the number of times a guest function was called due to timing out
 pub(crate) static METRIC_GUEST_CANCELLATION: &str = "guest_cancellations_total";
 
+// Counter metric that counts the number of times a vcpu was kicked by a stale signal
+pub(crate) static METRIC_ERRONEOUS_VCPU_KICK: &str = "erroneous_vcpu_kicks_total";
+
 // Histogram metric that measures the duration of guest function calls
 #[cfg(feature = "function_call_metrics")]
 pub(crate) static METRIC_GUEST_FUNC_DURATION: &str = "guest_call_duration_seconds";

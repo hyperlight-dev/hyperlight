@@ -678,6 +678,8 @@ impl Hypervisor for HypervWindowsDriver {
                     // needs to change the state of a VM or to inject an event into the processor
                     // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
                     debug!("Internal cancellation detected, returning Retry error");
+                    // Track erroneous vCPU kick - internal cancellation not requested by user
+                    metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK).increment(1);
                     HyperlightExit::Retry()
                 } else {
                     HyperlightExit::Cancelled()
@@ -692,6 +694,8 @@ impl Hypervisor for HypervWindowsDriver {
                         // needs to change the state of a VM or to inject an event into the processor
                         // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
                         debug!("Internal cancellation detected, returning Retry error");
+                        // Track erroneous vCPU kick - internal cancellation not requested by user
+                        metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK).increment(1);
                         HyperlightExit::Retry()
                     } else {
                         HyperlightExit::Cancelled()
