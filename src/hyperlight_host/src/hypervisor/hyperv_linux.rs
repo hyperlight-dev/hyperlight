@@ -816,14 +816,16 @@ impl Hypervisor for HypervLinuxDriver {
                             HyperlightExit::Debug(VcpuStopReason::Interrupt)
                         } else {
                             // Track erroneous vCPU kick - stale signal from previous call
-                            metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK).increment(1);
+                            metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK)
+                                .increment(1);
                             HyperlightExit::Retry()
                         }
 
                         #[cfg(not(gdb))]
                         {
                             // Track erroneous vCPU kick - stale signal from previous call
-                            metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK).increment(1);
+                            metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK)
+                                .increment(1);
                             HyperlightExit::Retry()
                         }
                     }

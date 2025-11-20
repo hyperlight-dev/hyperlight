@@ -199,4 +199,33 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_erroneous_vcpu_kick_metric_exists() {
+        // This test verifies that the metric can be incremented without errors.
+        // The actual scenario where this metric is incremented (stale signal delivery)
+        // is a race condition that's difficult to reliably reproduce in a test.
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        let snapshot = with_local_recorder(&recorder, || {
+            // Manually increment the metric to verify it works
+            metrics::counter!(METRIC_ERRONEOUS_VCPU_KICK).increment(1);
+            snapshotter.snapshot()
+        });
+
+        // Verify the metric was recorded
+        #[expect(clippy::mutable_key_type)]
+        let snapshot = snapshot.into_hashmap();
+
+        let counter_key = CompositeKey::new(
+            metrics_util::MetricKind::Counter,
+            Key::from_name(METRIC_ERRONEOUS_VCPU_KICK),
+        );
+        assert_eq!(
+            snapshot.get(&counter_key).unwrap().2,
+            metrics_util::debugging::DebugValue::Counter(1),
+            "Erroneous vCPU kick metric should be recorded"
+        );
+    }
 }
