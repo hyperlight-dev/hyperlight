@@ -750,20 +750,22 @@ impl Hypervisor for KVMDriver {
                         HyperlightExit::Cancelled()
                     } else {
                         #[cfg(gdb)]
-                        if debug_interrupt {
-                            self.interrupt_handle
-                                .debug_interrupt
-                                .store(false, Ordering::Relaxed);
+                        {
+                            if debug_interrupt {
+                                self.interrupt_handle
+                                    .debug_interrupt
+                                    .store(false, Ordering::Relaxed);
 
-                            // If the vCPU was stopped because of an interrupt, we need to
-                            // return a special exit reason so that the gdb thread can handle it
-                            // and resume execution
-                            HyperlightExit::Debug(VcpuStopReason::Interrupt)
-                        } else {
-                            // Track erroneous vCPU kick - stale signal from previous call
-                            metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK)
-                                .increment(1);
-                            HyperlightExit::Retry()
+                                // If the vCPU was stopped because of an interrupt, we need to
+                                // return a special exit reason so that the gdb thread can handle it
+                                // and resume execution
+                                HyperlightExit::Debug(VcpuStopReason::Interrupt)
+                            } else {
+                                // Track erroneous vCPU kick - stale signal from previous call
+                                metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK)
+                                    .increment(1);
+                                HyperlightExit::Retry()
+                            }
                         }
 
                         #[cfg(not(gdb))]

@@ -662,27 +662,29 @@ impl Hypervisor for HypervWindowsDriver {
             WHV_RUN_VP_EXIT_REASON(8193i32) => {
                 debug!("HyperV Cancelled Details :\n {:#?}", &self);
                 #[cfg(gdb)]
-                if debug_interrupt {
-                    self.interrupt_handle
-                        .debug_interrupt
-                        .store(false, Ordering::Relaxed);
+                {
+                    if debug_interrupt {
+                        self.interrupt_handle
+                            .debug_interrupt
+                            .store(false, Ordering::Relaxed);
 
-                    // If the vCPU was stopped because of an interrupt, we need to
-                    // return a special exit reason so that the gdb thread can handle it
-                    // and resume execution
-                    HyperlightExit::Debug(VcpuStopReason::Interrupt)
-                } else if !cancel_was_requested_manually {
-                    // This was an internal cancellation
-                    // The virtualization stack can use this function to return the control
-                    // of a virtual processor back to the virtualization stack in case it
-                    // needs to change the state of a VM or to inject an event into the processor
-                    // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
-                    debug!("Internal cancellation detected, returning Retry error");
-                    // Track erroneous vCPU kick - internal cancellation not requested by user
-                    metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK).increment(1);
-                    HyperlightExit::Retry()
-                } else {
-                    HyperlightExit::Cancelled()
+                        // If the vCPU was stopped because of an interrupt, we need to
+                        // return a special exit reason so that the gdb thread can handle it
+                        // and resume execution
+                        HyperlightExit::Debug(VcpuStopReason::Interrupt)
+                    } else if !cancel_was_requested_manually {
+                        // This was an internal cancellation
+                        // The virtualization stack can use this function to return the control
+                        // of a virtual processor back to the virtualization stack in case it
+                        // needs to change the state of a VM or to inject an event into the processor
+                        // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvcancelrunvirtualprocessor#remarks
+                        debug!("Internal cancellation detected, returning Retry error");
+                        // Track erroneous vCPU kick - internal cancellation not requested by user
+                        metrics::counter!(crate::metrics::METRIC_ERRONEOUS_VCPU_KICK).increment(1);
+                        HyperlightExit::Retry()
+                    } else {
+                        HyperlightExit::Cancelled()
+                    }
                 }
 
                 #[cfg(not(gdb))]
