@@ -23,7 +23,7 @@ use crate::hypervisor::regs::{
     CommonFpu, CommonRegisters, CommonSegmentRegister, CommonSpecialRegisters,
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::metrics::METRIC_GUEST_CANCELLATION;
+use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 use crate::{HyperlightError, Result, log_then_return};
@@ -471,6 +471,8 @@ impl VirtualCPU {
                     // If cancellation was not requested for this specific guest function call,
                     // the vcpu was interrupted by a stale cancellation from a previous call
                     if !cancel_requested && !debug_interrupted {
+                        // Track that an erroneous vCPU kick occurred
+                        metrics::counter!(METRIC_ERRONEOUS_VCPU_KICKS).increment(1);
                         // treat this the same as a HyperlightExit::Retry, the cancel was not meant for this call
                         continue;
                     }
