@@ -48,6 +48,8 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
+#[cfg(gdb)]
+use crate::new_error;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::handle_outb;
 #[cfg(feature = "mem_profile")]
@@ -55,8 +57,6 @@ use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, debug, log_then_return};
-#[cfg(gdb)]
-use crate::new_error;
 
 #[cfg(gdb)]
 mod debug {
