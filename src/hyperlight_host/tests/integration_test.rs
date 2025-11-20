@@ -1440,3 +1440,185 @@ fn interrupt_infinite_loop_stress_test() {
         handle.join().unwrap();
     }
 }
+
+// Validates that kill delivery stays accurate when a sandbox hops between threads
+// mid-call and shares a thread ID with another sandbox, ensuring only the intended
+// VM is interrupted while bait sandboxes keep running.
+#[test]
+fn interrupt_infinite_moving_loop_stress_test() {
+    use std::sync::Arc;
+    use std::thread;
+
+    // We have a high thread count to stress test and to have interesting interleavings
+    const NUM_THREADS: usize = 200;
+
+    let mut handles = vec![];
+
+    for _ in 0..NUM_THREADS {
+        handles.push(thread::spawn(move || {
+            let entered_guest = Arc::new(AtomicBool::new(false));
+            let entered_guest_clone = entered_guest.clone();
+
+            let mut uninit = new_uninit_rust().unwrap();
+            // Register a host function that waits on the barrier
+            uninit
+                .register("WaitForKill", move || {
+                    entered_guest.store(true, Ordering::Relaxed);
+                    Ok(())
+                })
+                .unwrap();
+            let uninit2 = new_uninit_rust().unwrap();
+
+            // These 2 sandboxes will have the same TID
+            let sandbox = uninit.evolve().unwrap();
+            let bait = uninit2.evolve().unwrap();
+
+            let interrupt = sandbox.interrupt_handle();
+
+            let kill_handle = thread::spawn(move || {
+                let entered_before_kill = entered_guest_clone.load(Ordering::Relaxed);
+                interrupt.kill();
+                entered_before_kill
+            });
+
+            let mut sandbox_slot = Some(sandbox);
+            let mut bait_slot = Some(bait);
+
+            // bait-sandbox should NEVER be interrupted which is why we can unwrap()
+            // sandbox may or may not be interrupted depending on whether `kill()` was called prematurely or not
+            let sandbox_res = match rand::random_range(..8u8) {
+                // sandbox on main thread, then bait on main thread
+                0 => {
+                    let res = sandbox_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Real".to_string());
+                    bait_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Bait".to_string())
+                        .expect("Bait call should never be interrupted");
+                    res
+                }
+                // bait on main thread, then sandbox on main thread
+                1 => {
+                    bait_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Bait".to_string())
+                        .expect("Bait call should never be interrupted");
+                    sandbox_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Real".to_string())
+                }
+                // sandbox on spawned thread, bait on main thread
+                2 => {
+                    let mut sandbox = sandbox_slot.take().unwrap();
+                    let sandbox_handle =
+                        thread::spawn(move || sandbox.call::<String>("Echo", "Real".to_string()));
+                    bait_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Bait".to_string())
+                        .expect("Bait call should never be interrupted");
+                    sandbox_handle.join().unwrap()
+                }
+                // bait on spawned thread, sandbox on main thread
+                3 => {
+                    let mut bait = bait_slot.take().unwrap();
+                    let bait_handle = thread::spawn(move || {
+                        bait.call::<String>("Echo", "Bait".to_string())
+                            .expect("Bait call should never be interrupted");
+                    });
+                    let res = sandbox_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Real".to_string());
+                    bait_handle.join().unwrap();
+                    res
+                }
+                // sandbox on main thread, bait on spawned thread
+                4 => {
+                    let res = sandbox_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Real".to_string());
+                    let mut bait = bait_slot.take().unwrap();
+                    let bait_handle = thread::spawn(move || {
+                        bait.call::<String>("Echo", "Bait".to_string())
+                            .expect("Bait call should never be interrupted");
+                    });
+                    bait_handle.join().unwrap();
+                    res
+                }
+                // bait on main thread, sandbox on spawned thread
+                5 => {
+                    bait_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Bait".to_string())
+                        .expect("Bait call should never be interrupted");
+                    let mut sandbox = sandbox_slot.take().unwrap();
+                    let sandbox_handle =
+                        thread::spawn(move || sandbox.call::<String>("Echo", "Real".to_string()));
+                    sandbox_handle.join().unwrap()
+                }
+                // sandbox on spawned thread, bait on spawned thread
+                6 => {
+                    let mut sandbox = sandbox_slot.take().unwrap();
+                    let sandbox_handle =
+                        thread::spawn(move || sandbox.call::<String>("Echo", "Real".to_string()));
+                    let mut bait = bait_slot.take().unwrap();
+                    let bait_handle = thread::spawn(move || {
+                        bait.call::<String>("Echo", "Bait".to_string())
+                            .expect("Bait call should never be interrupted");
+                    });
+                    bait_handle.join().unwrap();
+                    sandbox_handle.join().unwrap()
+                }
+                // bait on spawned thread, sandbox on spawned thread (spawn bait first)
+                7 => {
+                    let mut bait = bait_slot.take().unwrap();
+                    let bait_handle = thread::spawn(move || {
+                        bait.call::<String>("Echo", "Bait".to_string())
+                            .expect("Bait call should never be interrupted");
+                    });
+                    let mut sandbox = sandbox_slot.take().unwrap();
+                    let sandbox_handle =
+                        thread::spawn(move || sandbox.call::<String>("Echo", "Real".to_string()));
+                    bait_handle.join().unwrap();
+                    sandbox_handle.join().unwrap()
+                }
+                _ => unreachable!(),
+            };
+
+            let entered_before_kill = kill_handle.join().unwrap();
+
+            // If the guest entered before calling kill, then we know for a fact the call should have been canceled since kill() was NOT premature.
+            if entered_before_kill {
+                assert!(matches!(
+                    sandbox_res,
+                    Err(HyperlightError::ExecutionCanceledByHost())
+                ));
+            }
+
+            // If we did NOT enter the guest before calling kill, then the call may or may not have been canceled depending on timing.
+            match sandbox_res {
+                Err(HyperlightError::ExecutionCanceledByHost()) => {
+                    // OK!
+                }
+                Ok(_) => {
+                    // OK!
+                }
+                Err(e) => {
+                    panic!("Got unexpected error: {:?}", e);
+                }
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
