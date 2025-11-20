@@ -63,7 +63,9 @@ pub(crate) mod crashdump;
 
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(any(kvm, mshv3))]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(any(kvm, mshv3))]
 use std::time::Duration;
@@ -588,7 +590,7 @@ pub(super) struct LinuxInterruptHandle {
     ///
     /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
     /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
-    state: AtomicU64,
+    state: AtomicU8,
 
     /// Thread ID where the vcpu is running.
     ///
@@ -608,10 +610,10 @@ pub(super) struct LinuxInterruptHandle {
 
 #[cfg(any(kvm, mshv3))]
 impl LinuxInterruptHandle {
-    const RUNNING_BIT: u64 = 1 << 1;
-    const CANCEL_BIT: u64 = 1 << 0;
+    const RUNNING_BIT: u8 = 1 << 1;
+    const CANCEL_BIT: u8 = 1 << 0;
     #[cfg(gdb)]
-    const DEBUG_INTERRUPT_BIT: u64 = 1 << 2;
+    const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
 
     /// Get the running, cancel and debug flags atomically.
     ///
@@ -756,7 +758,7 @@ pub(super) struct WindowsInterruptHandle {
     ///
     /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
     /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
-    state: AtomicU64,
+    state: AtomicU8,
 
     partition_handle: windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE,
     dropped: AtomicBool,
@@ -764,10 +766,10 @@ pub(super) struct WindowsInterruptHandle {
 
 #[cfg(target_os = "windows")]
 impl WindowsInterruptHandle {
-    const RUNNING_BIT: u64 = 1 << 1;
-    const CANCEL_BIT: u64 = 1 << 0;
+    const RUNNING_BIT: u8 = 1 << 1;
+    const CANCEL_BIT: u8 = 1 << 0;
     #[cfg(gdb)]
-    const DEBUG_INTERRUPT_BIT: u64 = 1 << 2;
+    const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
 }
 
 #[cfg(target_os = "windows")]

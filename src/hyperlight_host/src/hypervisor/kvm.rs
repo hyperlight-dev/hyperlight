@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
@@ -333,7 +333,7 @@ impl KVMDriver {
         let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
 
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            state: AtomicU64::new(0),
+            state: AtomicU8::new(0),
             #[cfg(all(
                 target_arch = "x86_64",
                 target_vendor = "unknown",

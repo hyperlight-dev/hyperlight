@@ -10,9 +10,9 @@ Hyperlight provides a mechanism to forcefully interrupt guest execution through 
 
 ### LinuxInterruptHandle State
 
-The `LinuxInterruptHandle` uses a packed atomic u64 to track execution state:
+The `LinuxInterruptHandle` uses a packed atomic u8 to track execution state:
 
-- **state (AtomicU64)**: Packs three bits:
+- **state (AtomicU8)**: Packs three bits:
   - **Bit 2 (DEBUG_INTERRUPT_BIT)**: Set when debugger interrupt is requested (gdb feature only)
   - **Bit 1 (RUNNING_BIT)**: Set when vCPU is actively running in guest mode
   - **Bit 0 (CANCEL_BIT)**: Set when cancellation has been requested via `kill()`
@@ -255,7 +255,7 @@ While the core cancellation mechanism follows the same conceptual model on Windo
 
 The `WindowsInterruptHandle` uses a simpler structure compared to Linux:
 
-- **state (AtomicU64)**: Packs three bits (RUNNING_BIT, CANCEL_BIT and DEBUG_INTERRUPT_BIT)
+- **state (AtomicU8)**: Packs three bits (RUNNING_BIT, CANCEL_BIT and DEBUG_INTERRUPT_BIT)
 - **partition_handle**: Windows Hyper-V partition handle for the VM
 - **dropped (AtomicBool)**: Set when the corresponding VM has been dropped
 

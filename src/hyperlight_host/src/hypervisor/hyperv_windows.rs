@@ -17,7 +17,7 @@ limitations under the License.
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::string::String;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
@@ -324,7 +324,7 @@ impl HypervWindowsDriver {
         };
 
         let interrupt_handle = Arc::new(WindowsInterruptHandle {
-            state: AtomicU64::new(0),
+            state: AtomicU8::new(0),
             partition_handle,
             dropped: AtomicBool::new(false),
         });

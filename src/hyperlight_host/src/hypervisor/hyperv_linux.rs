@@ -18,7 +18,7 @@ extern crate mshv_bindings;
 extern crate mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use log::{LevelFilter, error};
@@ -375,7 +375,7 @@ impl HypervLinuxDriver {
         })?;
 
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            state: AtomicU64::new(0),
+            state: AtomicU8::new(0),
             #[cfg(all(
                 target_arch = "x86_64",
                 target_vendor = "unknown",
