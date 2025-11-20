@@ -323,16 +323,6 @@ pub(crate) trait Hypervisor: Debug + Send {
         unimplemented!()
     }
 
-    /// Check stack guard to see if the stack is still valid
-    fn check_stack_guard(&self, mem_mgr: &SandboxMemoryManager<HostSharedMemory>) -> Result<bool>;
-
-    #[cfg(feature = "trace_guest")]
-    fn handle_trace(
-        &mut self,
-        tc: &mut crate::sandbox::trace::TraceContext,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-    ) -> Result<()>;
-
     /// Get a mutable reference of the trace info for the guest
     #[cfg(feature = "mem_profile")]
     fn trace_info_mut(&mut self) -> &mut MemTraceInfo;
@@ -408,10 +398,13 @@ impl VirtualCPU {
 
                     // Handle the guest trace data if any
                     #[cfg(feature = "trace_guest")]
-                    if let Err(e) = hv.handle_trace(&mut tc, mem_mgr) {
-                        // If no trace data is available, we just log a message and continue
-                        // Is this the right thing to do?
-                        log::debug!("Error handling guest trace: {:?}", e);
+                    {
+                        let regs = hv.regs()?;
+                        if let Err(e) = tc.handle_trace(&regs, mem_mgr) {
+                            // If no trace data is available, we just log a message and continue
+                            // Is this the right thing to do?
+                            log::debug!("Error handling guest trace: {:?}", e);
+                        }
                     }
 
                     result
@@ -453,7 +446,7 @@ impl VirtualCPU {
                     #[cfg(crashdump)]
                     crashdump::generate_crashdump(hv)?;
 
-                    if !hv.check_stack_guard(mem_mgr)? {
+                    if !mem_mgr.check_stack_guard()? {
                         log_then_return!(StackOverflow());
                     }
 

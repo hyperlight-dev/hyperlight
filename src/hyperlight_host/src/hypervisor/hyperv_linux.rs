@@ -953,20 +953,6 @@ impl Hypervisor for HypervLinuxDriver {
         Ok(())
     }
 
-    fn check_stack_guard(&self, mem_mgr: &SandboxMemoryManager<HostSharedMemory>) -> Result<bool> {
-        mem_mgr.check_stack_guard()
-    }
-
-    #[cfg(feature = "trace_guest")]
-    fn handle_trace(
-        &mut self,
-        tc: &mut crate::sandbox::trace::TraceContext,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-    ) -> Result<()> {
-        let regs = self.regs()?;
-        tc.handle_trace(&regs, mem_mgr)
-    }
-
     #[cfg(feature = "mem_profile")]
     fn trace_info_mut(&mut self) -> &mut MemTraceInfo {
         &mut self.trace_info
