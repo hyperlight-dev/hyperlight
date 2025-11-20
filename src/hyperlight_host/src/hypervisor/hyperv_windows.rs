@@ -325,8 +325,6 @@ impl HypervWindowsDriver {
 
         let interrupt_handle = Arc::new(WindowsInterruptHandle {
             state: AtomicU64::new(0),
-            #[cfg(gdb)]
-            debug_interrupt: AtomicBool::new(false),
             partition_handle,
             dropped: AtomicBool::new(false),
         });

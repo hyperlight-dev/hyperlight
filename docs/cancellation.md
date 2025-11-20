@@ -12,14 +12,14 @@ Hyperlight provides a mechanism to forcefully interrupt guest execution through 
 
 The `LinuxInterruptHandle` uses a packed atomic u64 to track execution state:
 
-- **state (AtomicU64)**: Packs two bits:
+- **state (AtomicU64)**: Packs three bits:
+  - **Bit 2 (DEBUG_INTERRUPT_BIT)**: Set when debugger interrupt is requested (gdb feature only)
   - **Bit 1 (RUNNING_BIT)**: Set when vCPU is actively running in guest mode
   - **Bit 0 (CANCEL_BIT)**: Set when cancellation has been requested via `kill()`
 - **tid (AtomicU64)**: Thread ID where the vCPU is running
-- **debug_interrupt (AtomicBool)**: Set when debugger interrupt is requested (gdb feature only)
 - **dropped (AtomicBool)**: Set when the corresponding VM has been dropped
 
-The packed state enables atomic reads of both RUNNING_BIT and CANCEL_BIT simultaneously via `get_running_and_cancel()`. Within a single `VirtualCPU::run()` call, the CANCEL_BIT remains set across vcpu exits and re-entries (such as when calling host functions), ensuring cancellation persists until the guest call completes. However, `clear_cancel()` resets the CANCEL_BIT at the beginning of each new guest function call (specifically in `MultiUseSandbox::call`, before `VirtualCPU::run()` is called), preventing cancellation requests from affecting subsequent guest function calls.
+The packed state enables atomic reads of RUNNING_BIT, CANCEL_BIT and DEBUG_INTERRUPT_BIT simultaneously via `get_running_cancel_debug()`. Within a single `VirtualCPU::run()` call, the CANCEL_BIT remains set across vcpu exits and re-entries (such as when calling host functions), ensuring cancellation persists until the guest call completes. However, `clear_cancel()` resets the CANCEL_BIT at the beginning of each new guest function call (specifically in `MultiUseSandbox::call`, before `VirtualCPU::run()` is called), preventing cancellation requests from affecting subsequent guest function calls.
 
 ### Signal Mechanism
 
@@ -176,9 +176,9 @@ sequenceDiagram
    - Ensures all writes before `kill()` are visible when vCPU thread checks `is_cancelled()` with `Acquire`
 
 2. **Send Signals**: Enter retry loop via `send_signal()`
-   - Atomically load both running and cancel flags via `get_running_and_cancel()` with `Acquire` ordering
-   - Continue if `running=true AND cancel=true` (or `running=true AND debug_interrupt=true` with gdb)
-   - Exit loop immediately if `running=false OR cancel=false`
+   - Atomically load running, cancel and debug flags via `get_running_cancel_debug()` with `Acquire` ordering
+   - Continue if `running=true AND cancel=true` (or `running=true AND debug=true` with gdb)
+   - Exit loop immediately if `running=false OR (cancel=false AND debug=false)`
    
 3. **Signal Delivery**: Send `SIGRTMIN+offset` via `pthread_kill`
    - Signal interrupts the `ioctl` that runs the vCPU, causing `EINTR`
@@ -209,7 +209,7 @@ graph TB
         F[send_signal<br/>Load running with Acquire]
         G[Load tid with Acquire]
         H[pthread_kill]
-        I[kill_from_debugger<br/>Store debug_interrupt<br/>with Release]
+        I[kill_from_debugger<br/>fetch_or DEBUG_INTERRUPT_BIT<br/>with Release]
     end
     
     B -->|Synchronizes-with| F
@@ -255,8 +255,7 @@ While the core cancellation mechanism follows the same conceptual model on Windo
 
 The `WindowsInterruptHandle` uses a simpler structure compared to Linux:
 
-- **state (AtomicU64)**: Packs the same two bits (RUNNING_BIT and CANCEL_BIT)
-- **debug_interrupt (AtomicBool)**: Set when debugger interrupt is requested (gdb feature only)
+- **state (AtomicU64)**: Packs three bits (RUNNING_BIT, CANCEL_BIT and DEBUG_INTERRUPT_BIT)
 - **partition_handle**: Windows Hyper-V partition handle for the VM
 - **dropped (AtomicBool)**: Set when the corresponding VM has been dropped
 

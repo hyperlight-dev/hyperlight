@@ -582,6 +582,7 @@ pub(super) struct LinuxInterruptHandle {
     /// Atomic value packing vcpu execution state.
     ///
     /// Bit layout:
+    /// - Bit 2: DEBUG_INTERRUPT_BIT - set when debugger interrupt is requested
     /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
     /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
     ///
@@ -594,11 +595,6 @@ pub(super) struct LinuxInterruptHandle {
     /// Note: Multiple VMs may have the same `tid` (same thread runs multiple sandboxes sequentially),
     /// but at most one VM will have RUNNING_BIT set at any given time.
     tid: AtomicU64,
-
-    /// Debugger interrupt flag (gdb feature only).
-    /// Set when `kill_from_debugger()` is called, cleared when vcpu stops running.
-    #[cfg(gdb)]
-    debug_interrupt: AtomicBool,
 
     /// Whether the corresponding VM has been dropped.
     dropped: AtomicBool,
@@ -614,17 +610,23 @@ pub(super) struct LinuxInterruptHandle {
 impl LinuxInterruptHandle {
     const RUNNING_BIT: u64 = 1 << 1;
     const CANCEL_BIT: u64 = 1 << 0;
+    #[cfg(gdb)]
+    const DEBUG_INTERRUPT_BIT: u64 = 1 << 2;
 
-    /// Get the running and cancel flags atomically.
+    /// Get the running, cancel and debug flags atomically.
     ///
     /// # Memory Ordering
     /// Uses `Acquire` ordering to synchronize with the `Release` in `set_running()` and `kill()`.
     /// This ensures that when we observe running=true, we also see the correct `tid` value.
-    fn get_running_and_cancel(&self) -> (bool, bool) {
+    fn get_running_cancel_debug(&self) -> (bool, bool, bool) {
         let state = self.state.load(Ordering::Acquire);
         let running = state & Self::RUNNING_BIT != 0;
         let cancel = state & Self::CANCEL_BIT != 0;
-        (running, cancel)
+        #[cfg(gdb)]
+        let debug = state & Self::DEBUG_INTERRUPT_BIT != 0;
+        #[cfg(not(gdb))]
+        let debug = false;
+        (running, cancel, debug)
     }
 
     fn send_signal(&self) -> bool {
@@ -632,15 +634,11 @@ impl LinuxInterruptHandle {
         let mut sent_signal = false;
 
         loop {
-            let (running, cancel) = self.get_running_and_cancel();
+            let (running, cancel, debug) = self.get_running_cancel_debug();
 
             // Check if we should continue sending signals
             // Exit if not running OR if neither cancel nor debug_interrupt is set
-            #[cfg(gdb)]
-            let should_continue =
-                running && (cancel || self.debug_interrupt.load(Ordering::Acquire));
-            #[cfg(not(gdb))]
-            let should_continue = running && cancel;
+            let should_continue = running && (cancel || debug);
 
             if !should_continue {
                 break;
@@ -698,7 +696,7 @@ impl InterruptHandleImpl for LinuxInterruptHandle {
     fn is_debug_interrupted(&self) -> bool {
         #[cfg(gdb)]
         {
-            self.debug_interrupt.load(Ordering::Acquire)
+            self.state.load(Ordering::Acquire) & Self::DEBUG_INTERRUPT_BIT != 0
         }
         #[cfg(not(gdb))]
         {
@@ -708,7 +706,8 @@ impl InterruptHandleImpl for LinuxInterruptHandle {
 
     #[cfg(gdb)]
     fn clear_debug_interrupt(&self) {
-        self.debug_interrupt.store(false, Ordering::Release);
+        self.state
+            .fetch_and(!Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
     }
 
     fn set_dropped(&self) {
@@ -731,7 +730,8 @@ impl InterruptHandle for LinuxInterruptHandle {
 
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
-        self.debug_interrupt.store(true, Ordering::Release);
+        self.state
+            .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
         self.send_signal()
     }
     fn dropped(&self) -> bool {
@@ -747,6 +747,7 @@ pub(super) struct WindowsInterruptHandle {
     /// Atomic value packing vcpu execution state.
     ///
     /// Bit layout:
+    /// - Bit 2: DEBUG_INTERRUPT_BIT - set when debugger interrupt is requested
     /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
     /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
     ///
@@ -757,9 +758,6 @@ pub(super) struct WindowsInterruptHandle {
     /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
     state: AtomicU64,
 
-    // This is used to signal the GDB thread to stop the vCPU
-    #[cfg(gdb)]
-    debug_interrupt: AtomicBool,
     partition_handle: windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE,
     dropped: AtomicBool,
 }
@@ -768,6 +766,8 @@ pub(super) struct WindowsInterruptHandle {
 impl WindowsInterruptHandle {
     const RUNNING_BIT: u64 = 1 << 1;
     const CANCEL_BIT: u64 = 1 << 0;
+    #[cfg(gdb)]
+    const DEBUG_INTERRUPT_BIT: u64 = 1 << 2;
 }
 
 #[cfg(target_os = "windows")]
@@ -793,14 +793,12 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
     fn clear_running(&self) {
         // Release ordering to ensure all vcpu operations are visible before clearing running
         self.state.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
-        #[cfg(gdb)]
-        self.debug_interrupt.store(false, Ordering::Release);
     }
 
     fn is_debug_interrupted(&self) -> bool {
         #[cfg(gdb)]
         {
-            self.debug_interrupt.load(Ordering::Acquire)
+            self.state.load(Ordering::Acquire) & Self::DEBUG_INTERRUPT_BIT != 0
         }
         #[cfg(not(gdb))]
         {
@@ -810,8 +808,8 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
 
     #[cfg(gdb)]
     fn clear_debug_interrupt(&self) {
-        #[cfg(gdb)]
-        self.debug_interrupt.store(false, Ordering::Release);
+        self.state
+            .fetch_and(!Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
     }
 
     fn set_dropped(&self) {
@@ -843,7 +841,8 @@ impl InterruptHandle for WindowsInterruptHandle {
     fn kill_from_debugger(&self) -> bool {
         use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
 
-        self.debug_interrupt.store(true, Ordering::Release);
+        self.state
+            .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
         // Acquire ordering to synchronize with the Release in set_running()
         let state = self.state.load(Ordering::Acquire);
         if state & Self::RUNNING_BIT != 0 {
