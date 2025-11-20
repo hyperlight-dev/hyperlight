@@ -63,7 +63,9 @@ pub(crate) mod crashdump;
 
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(any(kvm, mshv3))]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(any(kvm, mshv3))]
 use std::time::Duration;
@@ -178,7 +180,10 @@ pub(crate) trait Hypervisor: Debug + Send {
     ) -> Result<HyperlightExit>;
 
     /// Get InterruptHandle to underlying VM (returns internal trait)
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandleInternal>;
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
+
+    /// Clear the cancellation flag
+    fn clear_cancel(&self);
 
     /// Get regs
     #[allow(dead_code)]
@@ -356,6 +361,7 @@ impl VirtualCPU {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn run(
         hv: &mut dyn Hypervisor,
+        interrupt_handle: Arc<dyn InterruptHandleImpl>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // Keeps the trace context and open spans
@@ -363,26 +369,63 @@ impl VirtualCPU {
         let mut tc = crate::sandbox::trace::TraceContext::new();
 
         loop {
-            #[cfg(feature = "trace_guest")]
-            let result = {
-                let result = hv.run(&mut tc);
-                // End current host trace by closing the current span that captures traces
-                // happening when a guest exits and re-enters.
-                tc.end_host_trace();
+            // ===== KILL() TIMING POINT 2: Before set_running() =====
+            // If kill() is called and ran to completion BEFORE this line executes:
+            //    - CANCEL_BIT will be set and we will return an early VmExit::Cancelled()
+            //      without sending any signals/WHV api calls
+            #[cfg(any(kvm, mshv3))]
+            interrupt_handle.set_tid();
+            interrupt_handle.set_running();
+            // NOTE: `set_running()`` must be called before checking `is_cancelled()`
+            // otherwise we risk missing a call to `kill()` because the vcpu would not be marked as running yet so signals won't be sent
 
-                // Handle the guest trace data if any
-                if let Err(e) = hv.handle_trace(&mut tc) {
-                    // If no trace data is available, we just log a message and continue
-                    // Is this the right thing to do?
-                    log::debug!("Error handling guest trace: {:?}", e);
+            let exit_reason = {
+                if interrupt_handle.is_cancelled() || interrupt_handle.is_debug_interrupted() {
+                    Ok(HyperlightExit::Cancelled())
+                } else {
+                    // ==== KILL() TIMING POINT 3: Before calling run() ====
+                    // If kill() is called and ran to completion BEFORE this line executes:
+                    //    - Will still do a VM entry, but signals will be sent until VM exits
+                    #[cfg(feature = "trace_guest")]
+                    let result = hv.run(&mut tc);
+                    #[cfg(not(feature = "trace_guest"))]
+                    let result = hv.run();
+
+                    // End current host trace by closing the current span that captures traces
+                    // happening when a guest exits and re-enters.
+                    #[cfg(feature = "trace_guest")]
+                    tc.end_host_trace();
+
+                    // Handle the guest trace data if any
+                    #[cfg(feature = "trace_guest")]
+                    if let Err(e) = hv.handle_trace(&mut tc) {
+                        // If no trace data is available, we just log a message and continue
+                        // Is this the right thing to do?
+                        log::debug!("Error handling guest trace: {:?}", e);
+                    }
+
+                    result
                 }
-
-                result
             };
-            #[cfg(not(feature = "trace_guest"))]
-            let result = hv.run();
 
-            match result {
+            // ===== KILL() TIMING POINT 4: Before clear_running() =====
+            // If kill() is called and ran to completion BEFORE this line executes:
+            //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
+            //    - Signals will be sent until `clear_running()` is called, which is ok
+            interrupt_handle.clear_running();
+
+            // ===== KILL() TIMING POINT 5: Before capturing cancel_requested =====
+            // If kill() is called and ran to completion BEFORE this line executes:
+            //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
+            //    - Signals will not be sent
+            let cancel_requested = interrupt_handle.is_cancelled();
+            let debug_interrupted = interrupt_handle.is_debug_interrupted();
+
+            // ===== KILL() TIMING POINT 6: Before checking exit_reason =====
+            // If kill() is called and ran to completion BEFORE this line executes:
+            //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
+            //    - Signals will not be sent
+            match exit_reason {
                 #[cfg(gdb)]
                 Ok(HyperlightExit::Debug(stop_reason)) => {
                     if let Err(e) = hv.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
@@ -425,6 +468,24 @@ impl VirtualCPU {
                     ));
                 }
                 Ok(HyperlightExit::Cancelled()) => {
+                    // If cancellation was not requested for this specific guest function call,
+                    // the vcpu was interrupted by a stale cancellation from a previous call
+                    if !cancel_requested && !debug_interrupted {
+                        // treat this the same as a HyperlightExit::Retry, the cancel was not meant for this call
+                        continue;
+                    }
+
+                    // If the vcpu was interrupted by a debugger, we need to handle it
+                    #[cfg(gdb)]
+                    {
+                        interrupt_handle.clear_debug_interrupt();
+                        if let Err(e) =
+                            hv.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Interrupt)
+                        {
+                            log_then_return!(e);
+                        }
+                    }
+
                     // Shutdown is returned when the host has cancelled execution
                     // After termination, the main thread will re-initialize the VM
                     metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
@@ -461,54 +522,44 @@ impl VirtualCPU {
     }
 }
 
-/// A trait for handling interrupts to a sandbox's vcpu (public API)
-pub trait InterruptHandle: Debug + Send + Sync {
+/// A trait for platform-specific interrupt handle implementation details
+pub(crate) trait InterruptHandleImpl: InterruptHandle {
+    /// Set the thread ID for the vcpu thread
+    #[cfg(any(kvm, mshv3))]
+    fn set_tid(&self);
+
+    /// Set the running state
+    fn set_running(&self);
+
+    /// Clear the running state
+    fn clear_running(&self);
+
+    /// Mark the handle as dropped
+    fn set_dropped(&self);
+
+    /// Check if cancellation was requested
+    fn is_cancelled(&self) -> bool;
+
+    /// Clear the cancellation request flag
+    fn clear_cancel(&self);
+
+    /// Check if debug interrupt was requested (always returns false when gdb feature is disabled)
+    fn is_debug_interrupted(&self) -> bool;
+
+    // Clear the debug interrupt request flag
+    #[cfg(gdb)]
+    fn clear_debug_interrupt(&self);
+}
+
+/// A trait for handling interrupts to a sandbox's vcpu
+pub trait InterruptHandle: Send + Sync + Debug {
     /// Interrupt the corresponding sandbox from running.
     ///
-    /// This method attempts to cancel a currently executing guest function call by sending
-    /// a signal to the VCPU thread. It uses generation tracking and call_active flag to
-    /// ensure the interruption is safe and precise.
-    ///
-    /// # Behavior
-    ///
-    /// - **Guest function running**: If called while a guest function is executing (VCPU running
-    ///   or in a host function call), this stamps the current generation into cancel_requested
-    ///   and sends a signal to interrupt the VCPU. Returns `true`.
-    ///
-    /// - **No active call**: If called when no guest function call is in progress (call_active=false),
-    ///   this has no effect and returns `false`. This prevents "kill-in-advance" where kill()
-    ///   is called before a guest function starts.
-    ///
-    /// - **During host function**: If the guest call is currently executing a host function
-    ///   (VCPU not running but call_active=true), this stamps cancel_requested. When the
-    ///   host function returns and attempts to re-enter the guest, the cancellation will
-    ///   be detected and the call will abort. Returns `true`.
-    ///
-    /// # Generation Tracking
-    ///
-    /// The method stamps the current generation number along with the cancellation request.
-    /// This ensures that:
-    /// - Stale signals from previous calls are ignored (generation mismatch)
-    /// - Only the intended guest function call is affected
-    /// - Multiple rapid kill() calls on the same generation are idempotent
-    ///
-    /// # Blocking Behavior
-    ///
-    /// This function will block while attempting to deliver the signal to the VCPU thread,
-    /// retrying until either:
-    /// - The signal is successfully delivered (VCPU transitions from running to not running)
-    /// - The VCPU stops running for another reason (e.g., call completes normally)
-    ///
-    /// # Returns
-    ///
-    /// - `true`: Cancellation request was stamped (kill will take effect)
-    /// - `false`: No active call, cancellation request was not stamped (no effect)
+    /// - If this is called while the the sandbox currently executing a guest function call, it will interrupt the sandbox and return `true`.
+    /// - If this is called while the sandbox is not running (for example before or after calling a guest function), it will do nothing and return `false`.
     ///
     /// # Note
-    ///
-    /// To reliably interrupt a guest call, ensure `kill()` is called while the guest
-    /// function is actually executing. Calling kill() before call_guest_function() will
-    /// have no effect.
+    /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
     fn kill(&self) -> bool;
 
     /// Used by a debugger to interrupt the corresponding sandbox from running.
@@ -523,322 +574,82 @@ pub trait InterruptHandle: Debug + Send + Sync {
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool;
 
-    /// Check if the corresponding VM has been dropped.
+    /// Returns true if the corresponding sandbox has been dropped
     fn dropped(&self) -> bool;
-}
-
-/// Internal trait for interrupt handle implementation details (private, cross-platform).
-///
-/// This trait contains all the internal atomics access methods and helper functions
-/// that are shared between Linux and Windows implementations. It extends InterruptHandle
-/// to inherit the public API.
-///
-/// This trait should NOT be used outside of hypervisor implementations.
-pub(crate) trait InterruptHandleInternal: InterruptHandle {
-    /// Returns the call_active atomic bool reference for internal implementations.
-    fn get_call_active(&self) -> &AtomicBool;
-
-    /// Returns the running atomic u64 reference for internal implementations.
-    fn get_running(&self) -> &AtomicU64;
-
-    /// Returns the cancel_requested atomic u64 reference for internal implementations.
-    fn get_cancel_requested(&self) -> &AtomicU64;
-
-    /// Set call_active - increments generation and sets flag.
-    ///
-    /// Increments the generation counter and sets the call_active flag to true,
-    /// indicating that a guest function call is now in progress. This allows
-    /// kill() to stamp cancel_requested with the correct generation.
-    ///
-    /// Must be called at the start of call_guest_function_by_name_no_reset(),
-    /// before any VCPU execution begins.
-    ///
-    /// Returns true if call_active was already set (indicating a guard already exists),
-    /// false otherwise.
-    fn set_call_active(&self) -> bool {
-        self.increment_generation();
-        self.get_call_active().swap(true, Ordering::AcqRel)
-    }
-
-    /// Clear call_active - clears the call_active flag.
-    ///
-    /// Clears the call_active flag, indicating that no guest function call is
-    /// in progress. After this, kill() will have no effect and will return false.
-    ///
-    /// Must be called at the end of call_guest_function_by_name_no_reset(),
-    /// after the guest call has fully completed (whether successfully or with error).
-    fn clear_call_active(&self) {
-        self.get_call_active().store(false, Ordering::Release)
-    }
-
-    /// Set cancel_requested to true with the given generation.
-    ///
-    /// This stamps the cancellation request with the current generation number,
-    /// ensuring that only the VCPU running with this exact generation will honor
-    /// the cancellation.
-    fn set_cancel_requested(&self, generation: u64) {
-        const CANCEL_REQUESTED_BIT: u64 = 1 << 63;
-        const MAX_GENERATION: u64 = CANCEL_REQUESTED_BIT - 1;
-        let value = CANCEL_REQUESTED_BIT | (generation & MAX_GENERATION);
-        self.get_cancel_requested().store(value, Ordering::Release);
-    }
-
-    /// Clear cancel_requested (reset to no cancellation).
-    ///
-    /// This is called after a cancellation has been processed to reset the
-    /// cancellation flag for the next guest call.
-    fn clear_cancel_requested(&self) {
-        self.get_cancel_requested().store(0, Ordering::Release);
-    }
-
-    /// Check if cancel_requested is set for the given generation.
-    ///
-    /// Returns true only if BOTH:
-    /// - The cancellation flag is set
-    /// - The stored generation matches the provided generation
-    ///
-    /// This prevents stale cancellations from affecting new guest calls.
-    fn is_cancel_requested_for_generation(&self, generation: u64) -> bool {
-        const CANCEL_REQUESTED_BIT: u64 = 1 << 63;
-        const MAX_GENERATION: u64 = CANCEL_REQUESTED_BIT - 1;
-        let raw = self.get_cancel_requested().load(Ordering::Acquire);
-        let is_set = raw & CANCEL_REQUESTED_BIT != 0;
-        let stored_generation = raw & MAX_GENERATION;
-        is_set && stored_generation == generation
-    }
-
-    /// Set running bit to true, return current generation.
-    ///
-    /// This is called when the VCPU is about to enter guest mode. It atomically
-    /// sets the running flag while preserving the generation counter.
-    fn set_running_bit(&self) -> u64 {
-        const RUNNING_BIT: u64 = 1 << 63;
-        self.get_running()
-            .fetch_update(Ordering::Release, Ordering::Acquire, |raw| {
-                Some(raw | RUNNING_BIT)
-            })
-            .map(|raw| raw & !RUNNING_BIT) // Return the current generation
-            .unwrap_or(0)
-    }
-
-    /// Increment the generation for a new guest function call.
-    ///
-    /// The generation counter wraps around at MAX_GENERATION (2^63 - 1).
-    /// This is called at the start of each new guest function call to provide
-    /// a unique identifier that prevents ABA problems with stale cancellations.
-    ///
-    /// Returns the NEW generation number (after incrementing).
-    fn increment_generation(&self) -> u64 {
-        const RUNNING_BIT: u64 = 1 << 63;
-        const MAX_GENERATION: u64 = RUNNING_BIT - 1;
-        self.get_running()
-            .fetch_update(Ordering::Release, Ordering::Acquire, |raw| {
-                let current_generation = raw & !RUNNING_BIT;
-                let running_bit = raw & RUNNING_BIT;
-                if current_generation == MAX_GENERATION {
-                    // Restart generation from 0
-                    return Some(running_bit);
-                }
-                Some((current_generation + 1) | running_bit)
-            })
-            .map(|raw| (raw & !RUNNING_BIT) + 1) // Return the NEW generation
-            .unwrap_or(1) // If wrapped, return 1
-    }
-
-    /// Get the current running state and generation counter.
-    ///
-    /// Returns a tuple of (running, generation) where:
-    /// - running: true if VCPU is currently in guest mode
-    /// - generation: current generation counter value
-    fn get_running_and_generation(&self) -> (bool, u64) {
-        const RUNNING_BIT: u64 = 1 << 63;
-        let raw = self.get_running().load(Ordering::Acquire);
-        let running = raw & RUNNING_BIT != 0;
-        let generation = raw & !RUNNING_BIT;
-        (running, generation)
-    }
-
-    /// Clear the running bit and return the old value.
-    ///
-    /// This is called when the VCPU exits from guest mode back to host mode.
-    /// The return value (which includes the generation and the old running bit)
-    /// is currently unused by all callers.
-    fn clear_running_bit(&self) -> u64 {
-        const RUNNING_BIT: u64 = 1 << 63;
-        self.get_running()
-            .fetch_and(!RUNNING_BIT, Ordering::Release)
-    }
 }
 
 #[cfg(any(kvm, mshv3))]
 #[derive(Debug)]
 pub(super) struct LinuxInterruptHandle {
-    /// Atomic flag combining running state and generation counter.
+    /// Atomic value packing vcpu execution state.
     ///
-    /// **Bit 63**: VCPU running state (1 = running, 0 = not running)
-    /// **Bits 0-62**: Generation counter (incremented once per guest function call)
+    /// Bit layout:
+    /// - Bit 2: DEBUG_INTERRUPT_BIT - set when debugger interrupt is requested
+    /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
+    /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
     ///
-    /// # Generation Tracking
-    ///
-    /// The generation counter is incremented once at the start of each guest function call
-    /// and remains constant throughout that call, even if the VCPU is run multiple times
-    /// (due to host function calls, retries, etc.). This design solves the race condition
-    /// where a kill() from a previous call could spuriously cancel a new call.
-    ///
-    /// ## Why Generations Are Needed
-    ///
-    /// Consider this scenario WITHOUT generation tracking:
-    /// 1. Thread A starts guest call 1, VCPU runs
-    /// 2. Thread B calls kill(), sends signal to Thread A
-    /// 3. Guest call 1 completes before signal arrives
-    /// 4. Thread A starts guest call 2, VCPU runs again
-    /// 5. Stale signal from step 2 arrives and incorrectly cancels call 2
-    ///
-    /// WITH generation tracking:
-    /// 1. Thread A starts guest call 1 (generation N), VCPU runs
-    /// 2. Thread B calls kill(), stamps cancel_requested with generation N
-    /// 3. Guest call 1 completes, signal may or may not have arrived yet
-    /// 4. Thread A starts guest call 2 (generation N+1), VCPU runs again
-    /// 5. If stale signal arrives, signal handler checks: cancel_requested.generation (N) != current generation (N+1)
-    /// 6. Stale signal is ignored, call 2 continues normally
-    ///
-    /// ## Per-Call vs Per-Run Generation
-    ///
-    /// It's critical that generation is incremented per GUEST FUNCTION CALL, not per vcpu.run():
-    /// - A single guest function call may invoke vcpu.run() multiple times (host calls, retries)
-    /// - All run() calls within the same guest call must share the same generation
-    /// - This ensures kill() affects the entire guest function call atomically
-    ///
-    /// # Invariants
-    ///
-    /// - If VCPU is running: bit 63 is set (neither converse nor inverse holds)
-    /// - If VCPU is running: bits 0-62 match the current guest call's generation
-    running: AtomicU64,
+    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
+    /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
+    state: AtomicU8,
 
-    /// Thread ID where the VCPU is currently running.
+    /// Thread ID where the vcpu is running.
     ///
-    /// # Invariants
-    ///
-    /// - If VCPU is running: tid contains the thread ID of the executing thread
-    /// - Multiple VMs may share the same tid, but at most one will have running=true
+    /// Note: Multiple VMs may have the same `tid` (same thread runs multiple sandboxes sequentially),
+    /// but at most one VM will have RUNNING_BIT set at any given time.
     tid: AtomicU64,
-
-    /// Generation-aware cancellation request flag.
-    ///
-    /// **Bit 63**: Cancellation requested flag (1 = kill requested, 0 = no kill)
-    /// **Bits 0-62**: Generation number when cancellation was requested
-    ///
-    /// # Purpose
-    ///
-    /// This flag serves three critical functions:
-    ///
-    /// 1. **Prevent stale signals**: A VCPU may only be interrupted if cancel_requested
-    ///    is set AND the generation matches the current call's generation
-    ///
-    /// 2. **Handle host function calls**: If kill() is called while a host function is
-    ///    executing (VCPU not running but call is active), cancel_requested is stamped
-    ///    with the current generation. When the host function returns and the VCPU
-    ///    attempts to re-enter the guest, it will see the cancellation and abort.
-    ///
-    /// 3. **Detect stale kills**: If cancel_requested.generation doesn't match the
-    ///    current generation, it's from a previous call and should be ignored
-    ///
-    /// # States and Transitions
-    ///
-    /// - **No cancellation**: cancel_requested = 0 (bit 63 clear)
-    /// - **Cancellation for generation N**: cancel_requested = (1 << 63) | N
-    /// - Signal handler checks: (cancel_requested & 0x7FFFFFFFFFFFFFFF) == current_generation
-    cancel_requested: AtomicU64,
-
-    /// Flag indicating whether a guest function call is currently in progress.
-    ///
-    /// **true**: A guest function call is active (between call start and completion)
-    /// **false**: No guest function call is active
-    ///
-    /// # Purpose
-    ///
-    /// This flag prevents kill() from having any effect when called outside of a
-    /// guest function call. This solves the "kill-in-advance" problem where kill()
-    /// could be called before a guest function starts and would incorrectly cancel it.
-    ///
-    /// # Behavior
-    ///
-    /// - Set to true at the start of call_guest_function_by_name_no_reset()
-    /// - Cleared at the end of call_guest_function_by_name_no_reset()
-    /// - kill() only stamps cancel_requested if call_active is true
-    /// - If kill() is called when call_active=false, it returns false and has no effect
-    ///
-    /// # Why AtomicBool is Safe
-    ///
-    /// Although there's a theoretical race where:
-    /// 1. Thread A checks call_active (false)
-    /// 2. Thread B sets call_active (true) and starts guest call
-    /// 3. Thread A's kill() returns false (no effect)
-    ///
-    /// This is acceptable because the generation tracking provides an additional
-    /// safety layer. Even if a stale kill somehow stamped cancel_requested, the
-    /// generation mismatch would cause it to be ignored.
-    call_active: AtomicBool,
-
-    /// Debugger interrupt request flag (GDB only).
-    ///
-    /// Set when kill_from_debugger() is called, cleared when VCPU stops running.
-    /// Used to distinguish debugger interrupts from normal kill() interrupts.
-    #[cfg(gdb)]
-    debug_interrupt: AtomicBool,
 
     /// Whether the corresponding VM has been dropped.
     dropped: AtomicBool,
 
-    /// Delay between retry attempts when sending signals to the VCPU thread.
+    /// Delay between retry attempts when sending signals to interrupt the vcpu.
     retry_delay: Duration,
 
-    /// Offset from SIGRTMIN for the signal used to interrupt the VCPU thread.
+    /// Offset from SIGRTMIN for the signal used to interrupt the vcpu thread.
     sig_rt_min_offset: u8,
 }
 
 #[cfg(any(kvm, mshv3))]
 impl LinuxInterruptHandle {
-    fn send_signal(&self, stamp_generation: bool) -> bool {
+    const RUNNING_BIT: u8 = 1 << 1;
+    const CANCEL_BIT: u8 = 1 << 0;
+    #[cfg(gdb)]
+    const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
+
+    /// Get the running, cancel and debug flags atomically.
+    ///
+    /// # Memory Ordering
+    /// Uses `Acquire` ordering to synchronize with the `Release` in `set_running()` and `kill()`.
+    /// This ensures that when we observe running=true, we also see the correct `tid` value.
+    fn get_running_cancel_debug(&self) -> (bool, bool, bool) {
+        let state = self.state.load(Ordering::Acquire);
+        let running = state & Self::RUNNING_BIT != 0;
+        let cancel = state & Self::CANCEL_BIT != 0;
+        #[cfg(gdb)]
+        let debug = state & Self::DEBUG_INTERRUPT_BIT != 0;
+        #[cfg(not(gdb))]
+        let debug = false;
+        (running, cancel, debug)
+    }
+
+    fn send_signal(&self) -> bool {
         let signal_number = libc::SIGRTMIN() + self.sig_rt_min_offset as libc::c_int;
         let mut sent_signal = false;
-        let mut target_generation: Option<u64> = None;
 
         loop {
-            if !self.call_active.load(Ordering::Acquire) {
-                // No active call, so no need to send signal
+            let (running, cancel, debug) = self.get_running_cancel_debug();
+
+            // Check if we should continue sending signals
+            // Exit if not running OR if neither cancel nor debug_interrupt is set
+            let should_continue = running && (cancel || debug);
+
+            if !should_continue {
                 break;
-            }
-
-            let (running, generation) = self.get_running_and_generation();
-
-            // Stamp generation into cancel_requested if requested and this is the first iteration
-            // We stamp even when running=false to support killing during host function calls
-            // The generation tracking will prevent stale kills from affecting new calls
-            // Only stamp if a call is actually active (call_active=true)
-            if stamp_generation
-                && target_generation.is_none()
-                && self.call_active.load(Ordering::Acquire)
-            {
-                self.set_cancel_requested(generation);
-                target_generation = Some(generation);
-            }
-
-            // If not running, we've stamped the generation (if requested), so we're done
-            // This handles the host function call scenario
-            if !running {
-                break;
-            }
-
-            match target_generation {
-                None => target_generation = Some(generation),
-                // prevent ABA problem
-                Some(expected) if expected != generation => break,
-                _ => {}
             }
 
             log::info!("Sending signal to kill vcpu thread...");
             sent_signal = true;
+            // Acquire ordering to synchronize with the Release store in set_tid()
+            // This ensures we see the correct tid value for the currently running vcpu
             unsafe {
                 libc::pthread_kill(self.tid.load(Ordering::Acquire) as _, signal_number);
             }
@@ -850,41 +661,203 @@ impl LinuxInterruptHandle {
 }
 
 #[cfg(any(kvm, mshv3))]
-impl InterruptHandle for LinuxInterruptHandle {
-    fn kill(&self) -> bool {
-        if !(self.call_active.load(Ordering::Acquire)) {
-            // No active call, so no effect
-            return false;
-        }
+impl InterruptHandleImpl for LinuxInterruptHandle {
+    fn set_tid(&self) {
+        // Release ordering to synchronize with the Acquire load of `running` in send_signal()
+        // This ensures that when send_signal() observes RUNNING_BIT=true (via Acquire),
+        // it also sees the correct tid value stored here
+        self.tid
+            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Release);
+    }
 
-        // send_signal will stamp the generation into cancel_requested
-        // right before sending each signal, ensuring they're always in sync
-        self.send_signal(true)
+    fn set_running(&self) {
+        // Release ordering to ensure that the tid store (which uses Release)
+        // is visible to any thread that observes running=true via Acquire ordering.
+        // This prevents the interrupt thread from reading a stale tid value.
+        self.state.fetch_or(Self::RUNNING_BIT, Ordering::Release);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        // Acquire ordering to synchronize with the Release in kill()
+        // This ensures we see the cancel flag set by the interrupt thread
+        self.state.load(Ordering::Acquire) & Self::CANCEL_BIT != 0
+    }
+
+    fn clear_cancel(&self) {
+        // Release ordering to ensure that any operations from the previous run()
+        // are visible to other threads. While this is typically called by the vcpu thread
+        // at the start of run(), the VM itself can move between threads across guest calls.
+        self.state.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
+    }
+
+    fn clear_running(&self) {
+        // Release ordering to ensure all vcpu operations are visible before clearing running
+        self.state.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
+    }
+
+    fn is_debug_interrupted(&self) -> bool {
+        #[cfg(gdb)]
+        {
+            self.state.load(Ordering::Acquire) & Self::DEBUG_INTERRUPT_BIT != 0
+        }
+        #[cfg(not(gdb))]
+        {
+            false
+        }
     }
 
     #[cfg(gdb)]
-    fn kill_from_debugger(&self) -> bool {
-        self.debug_interrupt.store(true, Ordering::Relaxed);
-        self.send_signal(false)
+    fn clear_debug_interrupt(&self) {
+        self.state
+            .fetch_and(!Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
     }
 
-    fn dropped(&self) -> bool {
-        self.dropped.load(Ordering::Relaxed)
+    fn set_dropped(&self) {
+        // Release ordering to ensure all VM cleanup operations are visible
+        // to any thread that checks dropped() via Acquire
+        self.dropped.store(true, Ordering::Release);
     }
 }
 
 #[cfg(any(kvm, mshv3))]
-impl InterruptHandleInternal for LinuxInterruptHandle {
-    fn get_call_active(&self) -> &AtomicBool {
-        &self.call_active
+impl InterruptHandle for LinuxInterruptHandle {
+    fn kill(&self) -> bool {
+        // Release ordering ensures that any writes before kill() are visible to the vcpu thread
+        // when it checks is_cancelled() with Acquire ordering
+        self.state.fetch_or(Self::CANCEL_BIT, Ordering::Release);
+
+        // Send signals to interrupt the vcpu if it's currently running
+        self.send_signal()
     }
 
-    fn get_running(&self) -> &AtomicU64 {
-        &self.running
+    #[cfg(gdb)]
+    fn kill_from_debugger(&self) -> bool {
+        self.state
+            .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
+        self.send_signal()
+    }
+    fn dropped(&self) -> bool {
+        // Acquire ordering to synchronize with the Release in set_dropped()
+        // This ensures we see all VM cleanup operations that happened before drop
+        self.dropped.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+pub(super) struct WindowsInterruptHandle {
+    /// Atomic value packing vcpu execution state.
+    ///
+    /// Bit layout:
+    /// - Bit 2: DEBUG_INTERRUPT_BIT - set when debugger interrupt is requested
+    /// - Bit 1: RUNNING_BIT - set when vcpu is actively running
+    /// - Bit 0: CANCEL_BIT - set when cancellation has been requested
+    ///
+    /// `WHvCancelRunVirtualProcessor()` will return Ok even if the vcpu is not running,
+    /// which is why we need the RUNNING_BIT.
+    ///
+    /// CANCEL_BIT persists across vcpu exits/re-entries within a single `VirtualCPU::run()` call
+    /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
+    state: AtomicU8,
+
+    partition_handle: windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE,
+    dropped: AtomicBool,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsInterruptHandle {
+    const RUNNING_BIT: u8 = 1 << 1;
+    const CANCEL_BIT: u8 = 1 << 0;
+    #[cfg(gdb)]
+    const DEBUG_INTERRUPT_BIT: u8 = 1 << 2;
+}
+
+#[cfg(target_os = "windows")]
+impl InterruptHandleImpl for WindowsInterruptHandle {
+    fn set_running(&self) {
+        // Release ordering to ensure prior memory operations are visible when another thread observes running=true
+        self.state.fetch_or(Self::RUNNING_BIT, Ordering::Release);
     }
 
-    fn get_cancel_requested(&self) -> &AtomicU64 {
-        &self.cancel_requested
+    fn is_cancelled(&self) -> bool {
+        // Acquire ordering to synchronize with the Release in kill()
+        // This ensures we see the CANCEL_BIT set by the interrupt thread
+        self.state.load(Ordering::Acquire) & Self::CANCEL_BIT != 0
+    }
+
+    fn clear_cancel(&self) {
+        // Release ordering to ensure that any operations from the previous run()
+        // are visible to other threads. While this is typically called by the vcpu thread
+        // at the start of run(), the VM itself can move between threads across guest calls.
+        self.state.fetch_and(!Self::CANCEL_BIT, Ordering::Release);
+    }
+
+    fn clear_running(&self) {
+        // Release ordering to ensure all vcpu operations are visible before clearing running
+        self.state.fetch_and(!Self::RUNNING_BIT, Ordering::Release);
+    }
+
+    fn is_debug_interrupted(&self) -> bool {
+        #[cfg(gdb)]
+        {
+            self.state.load(Ordering::Acquire) & Self::DEBUG_INTERRUPT_BIT != 0
+        }
+        #[cfg(not(gdb))]
+        {
+            false
+        }
+    }
+
+    #[cfg(gdb)]
+    fn clear_debug_interrupt(&self) {
+        self.state
+            .fetch_and(!Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
+    }
+
+    fn set_dropped(&self) {
+        // Release ordering to ensure all VM cleanup operations are visible
+        // to any thread that checks dropped() via Acquire
+        self.dropped.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl InterruptHandle for WindowsInterruptHandle {
+    fn kill(&self) -> bool {
+        use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
+
+        // Release ordering ensures that any writes before kill() are visible to the vcpu thread
+        // when it checks is_cancelled() with Acquire ordering
+        self.state.fetch_or(Self::CANCEL_BIT, Ordering::Release);
+
+        // Acquire ordering to synchronize with the Release in set_running()
+        // This ensures we see the running state set by the vcpu thread
+        let state = self.state.load(Ordering::Acquire);
+        if state & Self::RUNNING_BIT != 0 {
+            unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+        } else {
+            false
+        }
+    }
+    #[cfg(gdb)]
+    fn kill_from_debugger(&self) -> bool {
+        use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
+
+        self.state
+            .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
+        // Acquire ordering to synchronize with the Release in set_running()
+        let state = self.state.load(Ordering::Acquire);
+        if state & Self::RUNNING_BIT != 0 {
+            unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
+        } else {
+            false
+        }
+    }
+
+    fn dropped(&self) -> bool {
+        // Acquire ordering to synchronize with the Release in set_dropped()
+        // This ensures we see all VM cleanup operations that happened before drop
+        self.dropped.load(Ordering::Acquire)
     }
 }
 

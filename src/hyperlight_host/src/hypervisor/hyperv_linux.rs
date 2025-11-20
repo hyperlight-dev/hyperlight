@@ -18,7 +18,7 @@ extern crate mshv_bindings;
 extern crate mshv_ioctls;
 
 use std::fmt::{Debug, Formatter};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use log::{LevelFilter, error};
@@ -51,8 +51,8 @@ use super::gdb::{
 use super::{HyperlightExit, Hypervisor, LinuxInterruptHandle, VirtualCPU};
 #[cfg(gdb)]
 use crate::HyperlightError;
-use crate::hypervisor::get_memory_access_violation;
 use crate::hypervisor::regs::CommonFpu;
+use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_memory_access_violation};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -273,7 +273,7 @@ pub(crate) struct HypervLinuxDriver {
     vcpu_fd: VcpuFd,
     orig_rsp: GuestPtr,
     entrypoint: u64,
-    interrupt_handle: Arc<LinuxInterruptHandle>,
+    interrupt_handle: Arc<dyn InterruptHandleImpl>,
     mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
 
@@ -374,12 +374,8 @@ impl HypervLinuxDriver {
             vm_fd.map_user_memory(mshv_region)
         })?;
 
-        let interrupt_handle = Arc::new(LinuxInterruptHandle {
-            running: AtomicU64::new(0),
-            cancel_requested: AtomicU64::new(0),
-            call_active: AtomicBool::new(false),
-            #[cfg(gdb)]
-            debug_interrupt: AtomicBool::new(false),
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
+            state: AtomicU8::new(0),
             #[cfg(all(
                 target_arch = "x86_64",
                 target_vendor = "unknown",
@@ -500,8 +496,11 @@ impl Hypervisor for HypervLinuxDriver {
         };
         self.vcpu_fd.set_regs(&regs)?;
 
+        let interrupt_handle = self.interrupt_handle.clone();
+
         VirtualCPU::run(
             self.as_mut_hypervisor(),
+            interrupt_handle,
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )
@@ -560,14 +559,15 @@ impl Hypervisor for HypervLinuxDriver {
         // reset fpu state
         self.set_fpu(&CommonFpu::default())?;
 
+        let interrupt_handle = self.interrupt_handle.clone();
+
         // run
         VirtualCPU::run(
             self.as_mut_hypervisor(),
+            interrupt_handle,
             #[cfg(gdb)]
             dbg_mem_access_fn,
-        )?;
-
-        Ok(())
+        )
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -643,76 +643,11 @@ impl Hypervisor for HypervLinuxDriver {
         #[cfg(gdb)]
         const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
-        self.interrupt_handle
-            .tid
-            .store(unsafe { libc::pthread_self() as u64 }, Ordering::Release);
-        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
-        // Cast to internal trait for access to internal methods
-        let interrupt_handle_internal =
-            self.interrupt_handle.as_ref() as &dyn super::InterruptHandleInternal;
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
 
-        // (after set_running_bit but before checking cancel_requested):
-        // - kill() will stamp cancel_requested with the current generation
-        // - We will check cancel_requested below and skip the VcpuFd::run() call
-        // - This is the desired behavior - the kill takes effect immediately
-        let generation = interrupt_handle_internal.set_running_bit();
+        let exit_reason = self.vcpu_fd.run();
 
-        #[cfg(not(gdb))]
-        let debug_interrupt = false;
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
-
-        // Don't run the vcpu if `cancel_requested` is set for our generation
-        //
-        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
-        // (after checking cancel_requested but before vcpu.run()):
-        // - kill() will stamp cancel_requested with the current generation
-        // - We will proceed with vcpu.run(), but signals will be sent to interrupt it
-        // - The vcpu will be interrupted and return EINTR (handled below)
-        let exit_reason = if interrupt_handle_internal
-            .is_cancel_requested_for_generation(generation)
-            || debug_interrupt
-        {
-            Err(mshv_ioctls::MshvError::from(libc::EINTR))
-        } else {
-            #[cfg(feature = "trace_guest")]
-            tc.setup_guest_trace(Span::current().context());
-
-            // Note: if a `InterruptHandle::kill()` called while this thread is **here**
-            // Then the vcpu will run, but we will keep sending signals to this thread
-            // to interrupt it until `running` is set to false. The `vcpu_fd::run()` call will
-            // return either normally with an exit reason, or from being "kicked" by out signal handler, with an EINTR error,
-            // both of which are fine.
-            self.vcpu_fd.run()
-        };
-        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
-        // (after vcpu.run() returns but before clear_running_bit):
-        // - kill() continues sending signals to this thread (running bit is still set)
-        // - The signals are harmless (no-op handler), we just need to check cancel_requested
-        // - We load cancel_requested below to determine if this run was cancelled
-        let cancel_requested =
-            interrupt_handle_internal.is_cancel_requested_for_generation(generation);
-        #[cfg(gdb)]
-        let debug_interrupt = self
-            .interrupt_handle
-            .debug_interrupt
-            .load(Ordering::Relaxed);
-        // Note: if `InterruptHandle::kill()` is called while this thread is **here**
-        // (after loading cancel_requested but before clear_running_bit):
-        // - kill() stamps cancel_requested with the CURRENT generation (not the one we just loaded)
-        // - kill() continues sending signals until running bit is cleared
-        // - The newly stamped cancel_requested will affect the NEXT vcpu.run() call
-        // - Signals sent now are harmless (no-op handler)
-        interrupt_handle_internal.clear_running_bit();
-        // At this point, running bit is clear so kill() will stop sending signals.
-        // However, we may still receive delayed signals that were sent before clear_running_bit.
-        // These stale signals are harmless because:
-        // - The signal handler is a no-op
-        // - We check generation matching in cancel_requested before treating EINTR as cancellation
-        // - If generation doesn't match, we return Retry instead of Cancelled
         let result = match exit_reason {
             Ok(m) => match m.header.message_type {
                 HALT_MESSAGE => {
@@ -793,35 +728,7 @@ impl Hypervisor for HypervLinuxDriver {
             },
             Err(e) => match e.errno() {
                 // We send a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
-                libc::EINTR => {
-                    // Check if cancellation was requested for THIS specific generation.
-                    // If not, the EINTR came from:
-                    // - A debug interrupt (if GDB is enabled)
-                    // - A stale signal from a previous guest call (generation mismatch)
-                    // - A signal meant for a different sandbox on the same thread
-                    // In these cases, we return Retry to continue execution.
-                    if cancel_requested {
-                        interrupt_handle_internal.clear_cancel_requested();
-                        HyperlightExit::Cancelled()
-                    } else {
-                        #[cfg(gdb)]
-                        if debug_interrupt {
-                            self.interrupt_handle
-                                .debug_interrupt
-                                .store(false, Ordering::Relaxed);
-
-                            // If the vCPU was stopped because of an interrupt, we need to
-                            // return a special exit reason so that the gdb thread can handle it
-                            // and resume execution
-                            HyperlightExit::Debug(VcpuStopReason::Interrupt)
-                        } else {
-                            HyperlightExit::Retry()
-                        }
-
-                        #[cfg(not(gdb))]
-                        HyperlightExit::Retry()
-                    }
-                }
+                libc::EINTR => HyperlightExit::Cancelled(),
                 libc::EAGAIN => HyperlightExit::Retry(),
                 _ => {
                     crate::debug!("mshv Error - Details: Error: {} \n {:#?}", e, &self);
@@ -870,8 +777,12 @@ impl Hypervisor for HypervLinuxDriver {
         self as &mut dyn Hypervisor
     }
 
-    fn interrupt_handle(&self) -> Arc<dyn super::InterruptHandleInternal> {
+    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
         self.interrupt_handle.clone()
+    }
+
+    fn clear_cancel(&self) {
+        self.interrupt_handle.clear_cancel();
     }
 
     #[cfg(crashdump)]
@@ -1102,7 +1013,7 @@ impl Hypervisor for HypervLinuxDriver {
 impl Drop for HypervLinuxDriver {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     fn drop(&mut self) {
-        self.interrupt_handle.dropped.store(true, Ordering::Relaxed);
+        self.interrupt_handle.set_dropped();
         for region in self.sandbox_regions.iter().chain(self.mmap_regions.iter()) {
             let mshv_region: mshv_user_mem_region = region.to_owned().into();
             match self.vm_fd.unmap_user_memory(mshv_region) {
