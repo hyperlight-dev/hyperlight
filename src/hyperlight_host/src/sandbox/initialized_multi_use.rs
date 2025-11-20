@@ -95,8 +95,7 @@ pub struct MultiUseSandbox {
     id: u64,
     /// Whether this sandbox is poisoned
     poisoned: bool,
-    // We need to keep a reference to the host functions, even if the compiler marks it as unused. The compiler cannot detect our dynamic usages of the host function in `HyperlightFunction::call`.
-    pub(super) _host_funcs: Arc<Mutex<FunctionRegistry>>,
+    pub(super) host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
     vm: Box<dyn Hypervisor>,
     dispatch_ptr: RawPtr,
@@ -124,7 +123,7 @@ impl MultiUseSandbox {
         Self {
             id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             poisoned: false,
-            _host_funcs: host_funcs,
+            host_funcs,
             mem_mgr: mgr,
             vm,
             dispatch_ptr,
@@ -597,6 +596,8 @@ impl MultiUseSandbox {
 
             self.vm.dispatch_call_from_host(
                 self.dispatch_ptr.clone(),
+                &mut self.mem_mgr,
+                &self.host_funcs,
                 #[cfg(gdb)]
                 self.dbg_mem_access_fn.clone(),
             )?;

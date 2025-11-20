@@ -25,7 +25,6 @@ use tracing::{Span, instrument};
 use tracing_log::format_trace;
 
 use super::host_funcs::FunctionRegistry;
-#[cfg(feature = "mem_profile")]
 use crate::hypervisor::Hypervisor;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -147,10 +146,10 @@ fn outb_abort(mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>, data: u32) -
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn handle_outb(
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-    host_funcs: Arc<Mutex<FunctionRegistry>>,
-    #[cfg(feature = "mem_profile")] _hv: &mut dyn Hypervisor,
+    host_funcs: &Arc<Mutex<FunctionRegistry>>,
     port: u16,
     data: u32,
+    _hv: &mut dyn Hypervisor,
 ) -> Result<()> {
     match port.try_into()? {
         OutBAction::Log => outb_log(mem_mgr),

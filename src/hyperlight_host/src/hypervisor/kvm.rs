@@ -272,8 +272,6 @@ pub(crate) struct KVMDriver {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
-    mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
-    host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
 
     sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
     mmap_regions: Vec<(MemoryRegion, u32)>, // Later mapped regions (region, slot number)
@@ -365,8 +363,6 @@ impl KVMDriver {
             mmap_regions: Vec::new(),
             freed_slots: Vec::new(),
             interrupt_handle: interrupt_handle.clone(),
-            mem_mgr: None,
-            host_funcs: None,
             #[cfg(gdb)]
             debug,
             #[cfg(gdb)]
@@ -428,13 +424,11 @@ impl Hypervisor for KVMDriver {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: Arc<Mutex<FunctionRegistry>>,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
-        self.mem_mgr = Some(mem_mgr);
-        self.host_funcs = Some(host_funcs);
         self.page_size = page_size as usize;
 
         let max_guest_log_level: u64 = match max_guest_log_level {
@@ -461,6 +455,8 @@ impl Hypervisor for KVMDriver {
         VirtualCPU::run(
             self.as_mut_hypervisor(),
             interrupt_handle,
+            mem_mgr,
+            host_funcs,
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )
@@ -529,6 +525,8 @@ impl Hypervisor for KVMDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -548,6 +546,8 @@ impl Hypervisor for KVMDriver {
         VirtualCPU::run(
             self.as_mut_hypervisor(),
             interrupt_handle,
+            mem_mgr,
+            host_funcs,
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )?;
@@ -562,6 +562,8 @@ impl Hypervisor for KVMDriver {
         data: Vec<u8>,
         _rip: u64,
         _instruction_length: u64,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
     ) -> Result<()> {
         // KVM does not need RIP or instruction length, as it automatically sets the RIP
 
@@ -576,41 +578,7 @@ impl Hypervisor for KVMDriver {
             padded[..copy_len].copy_from_slice(&data[..copy_len]);
             let value = u32::from_le_bytes(padded);
 
-            #[cfg(feature = "mem_profile")]
-            {
-                // We need to handle the borrow checker issue where we need both:
-                // - &mut SandboxMemoryManager (from self.mem_mgr.as_mut())
-                // - &mut dyn Hypervisor (from self)
-                // We'll use a temporary approach to extract the mem_mgr temporarily
-                let mem_mgr_option = self.mem_mgr.take();
-                let mut mem_mgr =
-                    mem_mgr_option.ok_or_else(|| new_error!("mem_mgr not initialized"))?;
-                let host_funcs = self
-                    .host_funcs
-                    .as_ref()
-                    .ok_or_else(|| new_error!("host_funcs not initialized"))?
-                    .clone();
-
-                handle_outb(&mut mem_mgr, host_funcs, self, port, value)?;
-
-                // Put the mem_mgr back
-                self.mem_mgr = Some(mem_mgr);
-            }
-
-            #[cfg(not(feature = "mem_profile"))]
-            {
-                let mem_mgr = self
-                    .mem_mgr
-                    .as_mut()
-                    .ok_or_else(|| new_error!("mem_mgr not initialized"))?;
-                let host_funcs = self
-                    .host_funcs
-                    .as_ref()
-                    .ok_or_else(|| new_error!("host_funcs not initialized"))?
-                    .clone();
-
-                handle_outb(mem_mgr, host_funcs, port, value)?;
-            }
+            handle_outb(mem_mgr, host_funcs, port, value, self)?;
         }
 
         Ok(())
@@ -942,23 +910,18 @@ impl Hypervisor for KVMDriver {
         Ok(())
     }
 
-    fn check_stack_guard(&self) -> Result<bool> {
-        if let Some(mgr) = self.mem_mgr.as_ref() {
-            mgr.check_stack_guard()
-        } else {
-            Err(new_error!("Memory manager is not initialized"))
-        }
+    fn check_stack_guard(&self, mem_mgr: &SandboxMemoryManager<HostSharedMemory>) -> Result<bool> {
+        mem_mgr.check_stack_guard()
     }
 
     #[cfg(feature = "trace_guest")]
-    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
+    fn handle_trace(
+        &mut self,
+        tc: &mut crate::sandbox::trace::TraceContext,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    ) -> Result<()> {
         let regs = self.regs()?;
-        tc.handle_trace(
-            &regs,
-            self.mem_mgr.as_mut().ok_or_else(|| {
-                new_error!("Memory manager is not initialized before handling trace")
-            })?,
-        )
+        tc.handle_trace(&regs, mem_mgr)
     }
 
     #[cfg(feature = "mem_profile")]
