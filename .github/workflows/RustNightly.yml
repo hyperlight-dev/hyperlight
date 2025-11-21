@@ -36,7 +36,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Notify Nightly Failure
         run: ./dev/notify-ci-failure.sh --title="Nightly musl Failure - ${{ github.run_number }}" --labels="area/ci-periodics,area/testing,lifecycle/needs-review,release-blocker"
