@@ -578,7 +578,16 @@ impl Hypervisor for KVMDriver {
             padded[..copy_len].copy_from_slice(&data[..copy_len]);
             let value = u32::from_le_bytes(padded);
 
-            handle_outb(mem_mgr, host_funcs, port, value, self)?;
+            #[cfg(feature = "mem_profile")]
+            {
+                let regs = self.regs()?;
+                let trace_info = self.trace_info_mut();
+                handle_outb(mem_mgr, host_funcs, port, value, &regs, trace_info)?;
+            }
+            #[cfg(not(feature = "mem_profile"))]
+            {
+                handle_outb(mem_mgr, host_funcs, port, value)?;
+            }
         }
 
         Ok(())
