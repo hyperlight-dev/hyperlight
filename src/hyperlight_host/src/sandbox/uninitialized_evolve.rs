@@ -44,7 +44,7 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    let (hshm, mut gshm) = u_sbox.mgr.build();
+    let (mut hshm, mut gshm) = u_sbox.mgr.build();
     let mut vm = set_up_hypervisor_partition(
         &mut gshm,
         &u_sbox.config,
@@ -74,8 +74,8 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         peb_addr,
         seed,
         page_size,
-        hshm.clone(),
-        u_sbox.host_funcs.clone(),
+        &mut hshm,
+        &u_sbox.host_funcs,
         u_sbox.max_guest_log_level,
         #[cfg(gdb)]
         dbg_mem_access_hdl,

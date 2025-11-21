@@ -131,8 +131,8 @@ pub(crate) trait Hypervisor: Debug + Send {
         peb_addr: RawPtr,
         seed: u64,
         page_size: u32,
-        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: Arc<Mutex<FunctionRegistry>>,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()>;
@@ -161,6 +161,8 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()>;
 
@@ -171,6 +173,8 @@ pub(crate) trait Hypervisor: Debug + Send {
         data: Vec<u8>,
         rip: u64,
         instruction_length: u64,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
     ) -> Result<()>;
 
     /// Run the vCPU
@@ -319,12 +323,6 @@ pub(crate) trait Hypervisor: Debug + Send {
         unimplemented!()
     }
 
-    /// Check stack guard to see if the stack is still valid
-    fn check_stack_guard(&self) -> Result<bool>;
-
-    #[cfg(feature = "trace_guest")]
-    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()>;
-
     /// Get a mutable reference of the trace info for the guest
     #[cfg(feature = "mem_profile")]
     fn trace_info_mut(&mut self) -> &mut MemTraceInfo;
@@ -362,6 +360,8 @@ impl VirtualCPU {
     pub(crate) fn run(
         hv: &mut dyn Hypervisor,
         interrupt_handle: Arc<dyn InterruptHandleImpl>,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // Keeps the trace context and open spans
@@ -398,10 +398,13 @@ impl VirtualCPU {
 
                     // Handle the guest trace data if any
                     #[cfg(feature = "trace_guest")]
-                    if let Err(e) = hv.handle_trace(&mut tc) {
-                        // If no trace data is available, we just log a message and continue
-                        // Is this the right thing to do?
-                        log::debug!("Error handling guest trace: {:?}", e);
+                    {
+                        let regs = hv.regs()?;
+                        if let Err(e) = tc.handle_trace(&regs, mem_mgr) {
+                            // If no trace data is available, we just log a message and continue
+                            // Is this the right thing to do?
+                            log::debug!("Error handling guest trace: {:?}", e);
+                        }
                     }
 
                     result
@@ -437,13 +440,13 @@ impl VirtualCPU {
                     break;
                 }
                 Ok(HyperlightExit::IoOut(port, data, rip, instruction_length)) => {
-                    hv.handle_io(port, data, rip, instruction_length)?
+                    hv.handle_io(port, data, rip, instruction_length, mem_mgr, host_funcs)?
                 }
                 Ok(HyperlightExit::Mmio(addr)) => {
                     #[cfg(crashdump)]
                     crashdump::generate_crashdump(hv)?;
 
-                    if !hv.check_stack_guard()? {
+                    if !mem_mgr.check_stack_guard()? {
                         log_then_return!(StackOverflow());
                     }
 
@@ -890,7 +893,7 @@ pub(crate) mod tests {
         let rt_cfg: SandboxRuntimeConfig = Default::default();
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
-        let (mem_mgr, mut gshm) = sandbox.mgr.build();
+        let (mut mem_mgr, mut gshm) = sandbox.mgr.build();
         let mut vm = set_up_hypervisor_partition(
             &mut gshm,
             &config,
@@ -914,8 +917,8 @@ pub(crate) mod tests {
             peb_addr,
             seed,
             page_size,
-            mem_mgr,
-            host_funcs,
+            &mut mem_mgr,
+            &host_funcs,
             guest_max_log_level,
             #[cfg(gdb)]
             dbg_mem_access_fn,

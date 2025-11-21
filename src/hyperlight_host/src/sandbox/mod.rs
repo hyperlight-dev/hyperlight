@@ -177,7 +177,7 @@ mod tests {
                         .pop()
                         .unwrap_or_else(|| panic!("Failed to pop Sandbox thread {}", i));
                     let host_funcs = sandbox
-                        ._host_funcs
+                        .host_funcs
                         .try_lock()
                         .map_err(|_| new_error!("Error locking"));
 

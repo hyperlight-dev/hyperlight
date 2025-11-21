@@ -48,13 +48,15 @@ use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
+#[cfg(gdb)]
+use crate::new_error;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::handle_outb;
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
-use crate::{Result, debug, log_then_return, new_error};
+use crate::{Result, debug, log_then_return};
 
 #[cfg(gdb)]
 mod debug {
@@ -261,8 +263,6 @@ pub(crate) struct HypervWindowsDriver {
     entrypoint: u64,
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
-    mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
-    host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
 
     sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
     mmap_regions: Vec<MemoryRegion>,    // Later mapped regions
@@ -335,8 +335,6 @@ impl HypervWindowsDriver {
             entrypoint,
             orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
             interrupt_handle: interrupt_handle.clone(),
-            mem_mgr: None,
-            host_funcs: None,
             sandbox_regions: mem_regions,
             mmap_regions: Vec::new(),
             #[cfg(gdb)]
@@ -408,14 +406,11 @@ impl Hypervisor for HypervWindowsDriver {
         peb_address: RawPtr,
         seed: u64,
         page_size: u32,
-        mem_mgr: SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: Arc<Mutex<FunctionRegistry>>,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
-        self.mem_mgr = Some(mem_mgr);
-        self.host_funcs = Some(host_funcs);
-
         let max_guest_log_level: u64 = match max_guest_log_level {
             Some(level) => level as u64,
             None => self.get_max_log_level().into(),
@@ -440,6 +435,8 @@ impl Hypervisor for HypervWindowsDriver {
         VirtualCPU::run(
             self.as_mut_hypervisor(),
             interrupt_handle,
+            mem_mgr,
+            host_funcs,
             #[cfg(gdb)]
             dbg_mem_access_hdl,
         )
@@ -463,6 +460,8 @@ impl Hypervisor for HypervWindowsDriver {
     fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
@@ -481,6 +480,8 @@ impl Hypervisor for HypervWindowsDriver {
         VirtualCPU::run(
             self.as_mut_hypervisor(),
             interrupt_handle,
+            mem_mgr,
+            host_funcs,
             #[cfg(gdb)]
             dbg_mem_access_hdl,
         )
@@ -493,6 +494,8 @@ impl Hypervisor for HypervWindowsDriver {
         data: Vec<u8>,
         rip: u64,
         instruction_length: u64,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
     ) -> Result<()> {
         let mut padded = [0u8; 4];
         let copy_len = data.len().min(4);
@@ -501,37 +504,12 @@ impl Hypervisor for HypervWindowsDriver {
 
         #[cfg(feature = "mem_profile")]
         {
-            // We need to handle the borrow checker issue where we need both:
-            // - &mut SandboxMemoryManager (from self.mem_mgr.as_mut())
-            // - &mut dyn Hypervisor (from self)
-            // We'll use a temporary approach to extract the mem_mgr temporarily
-            let mem_mgr_option = self.mem_mgr.take();
-            let mut mem_mgr = mem_mgr_option
-                .ok_or_else(|| new_error!("mem_mgr should be initialized before handling IO"))?;
-            let host_funcs = self
-                .host_funcs
-                .as_ref()
-                .ok_or_else(|| new_error!("host_funcs should be initialized before handling IO"))?
-                .clone();
-
-            handle_outb(&mut mem_mgr, host_funcs, self, port, val)?;
-
-            // Put the mem_mgr back
-            self.mem_mgr = Some(mem_mgr);
+            let regs = self.regs()?;
+            let trace_info = self.trace_info_mut();
+            handle_outb(mem_mgr, host_funcs, port, val, &regs, trace_info)?;
         }
-
         #[cfg(not(feature = "mem_profile"))]
         {
-            let mem_mgr = self
-                .mem_mgr
-                .as_mut()
-                .ok_or_else(|| new_error!("mem_mgr should be initialized before handling IO"))?;
-            let host_funcs = self
-                .host_funcs
-                .as_ref()
-                .ok_or_else(|| new_error!("host_funcs should be initialized before handling IO"))?
-                .clone();
-
             handle_outb(mem_mgr, host_funcs, port, val)?;
         }
 
@@ -877,25 +855,6 @@ impl Hypervisor for HypervWindowsDriver {
         }
 
         Ok(())
-    }
-
-    fn check_stack_guard(&self) -> Result<bool> {
-        if let Some(mgr) = self.mem_mgr.as_ref() {
-            mgr.check_stack_guard()
-        } else {
-            Err(new_error!("Memory manager is not initialized"))
-        }
-    }
-
-    #[cfg(feature = "trace_guest")]
-    fn handle_trace(&mut self, tc: &mut crate::sandbox::trace::TraceContext) -> Result<()> {
-        let regs = self.regs()?;
-        tc.handle_trace(
-            &regs,
-            self.mem_mgr.as_mut().ok_or_else(|| {
-                new_error!("Memory manager is not initialized before handling trace")
-            })?,
-        )
     }
 
     #[cfg(feature = "mem_profile")]
