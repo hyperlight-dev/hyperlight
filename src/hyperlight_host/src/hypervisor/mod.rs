@@ -469,7 +469,9 @@ impl VirtualCPU {
                 }
                 Ok(HyperlightExit::Cancelled()) => {
                     // If cancellation was not requested for this specific guest function call,
-                    // the vcpu was interrupted by a stale cancellation from a previous call
+                    // the vcpu was interrupted by a stale cancellation. This can occur when:
+                    // - Linux: A signal from a previous call arrives late
+                    // - Windows: WHvCancelRunVirtualProcessor called right after vcpu exits but RUNNING_BIT is still true
                     if !cancel_requested && !debug_interrupted {
                         // Track that an erroneous vCPU kick occurred
                         metrics::counter!(METRIC_ERRONEOUS_VCPU_KICKS).increment(1);
