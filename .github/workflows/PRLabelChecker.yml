@@ -11,7 +11,7 @@ jobs:
   check-labels:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Ensure exactly one "kind/*" label is applied
         run: |
           # Count the number of "kind/*" labels directly from the PR labels

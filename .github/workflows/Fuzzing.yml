@@ -25,7 +25,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         
       - name: Notify Fuzzing Failure
         run: ./dev/notify-ci-failure.sh --labels="area/fuzzing,area/testing,lifecycle/needs-review,release-blocker"

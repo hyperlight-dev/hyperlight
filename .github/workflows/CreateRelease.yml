@@ -29,7 +29,7 @@ jobs:
     needs: [release-blocker-check]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
         with:
@@ -50,7 +50,7 @@ jobs:
     needs: [release-blocker-check]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
         with:
@@ -107,7 +107,7 @@ jobs:
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
         run: echo "CONFIG=release" >> $GITHUB_ENV
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true

@@ -13,7 +13,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       # We are not using the common workflow here because it installs a bunch of tools we don't need.
       # TODO: Once the runner image is updated to include the necessary tools (without downloading), we can switch to the common workflow.
