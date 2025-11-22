@@ -234,7 +234,6 @@ impl DebuggableVm for MshvVm {
         };
 
         use crate::hypervisor::gdb::arch::{BP_EX_ID, DB_EX_ID};
-        use crate::new_error;
 
         if enabled {
             self.vm_fd
@@ -278,7 +277,6 @@ impl DebuggableVm for MshvVm {
 
     fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
-        use crate::new_error;
 
         let mut debug_regs = self.vcpu_fd.get_debug_regs()?;
 
@@ -315,8 +313,6 @@ impl DebuggableVm for MshvVm {
     }
 
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
-        use crate::new_error;
-
         let mut debug_regs = self.vcpu_fd.get_debug_regs()?;
 
         let regs = [

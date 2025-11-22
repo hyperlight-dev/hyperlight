@@ -361,15 +361,6 @@ impl HyperlightVm {
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
-        // ===== KILL() TIMING POINT 1: Between guest function calls =====
-        // Clear any stale cancellation from a previous guest function call or if kill() was called too early.
-        // This ensures that kill() called BETWEEN different guest function calls doesn't affect the next call.
-        //
-        // If kill() was called and ran to completion BEFORE this line executes:
-        //    - kill() has NO effect on this guest function call because CANCEL_BIT is cleared here.
-        //    - NOTE: stale signals can still be delivered, but they will be ignored.
-        self.interrupt_handle.clear_cancel();
-
         // Keeps the trace context and open spans
         #[cfg(feature = "trace_guest")]
         let mut tc = crate::sandbox::trace::TraceContext::new();
@@ -378,9 +369,12 @@ impl HyperlightVm {
             // ===== KILL() TIMING POINT 2: Before set_tid() =====
             // If kill() is called and ran to completion BEFORE this line executes:
             //    - CANCEL_BIT will be set and we will return an early VmExit::Cancelled()
+            //      without sending any signals/WHV api calls
             #[cfg(any(kvm, mshv3))]
             self.interrupt_handle.set_tid();
             self.interrupt_handle.set_running();
+            // NOTE: `set_running()`` must be called before checking `is_cancelled()`
+            // otherwise we risk missing a call to `kill()` because the vcpu would not be marked as running yet so signals won't be sent
 
             let exit_reason = if self.interrupt_handle.is_cancelled()
                 || self.interrupt_handle.is_debug_interrupted()
@@ -390,13 +384,10 @@ impl HyperlightVm {
                 #[cfg(feature = "trace_guest")]
                 tc.setup_guest_trace(Span::current().context());
 
-                // ===== KILL() TIMING POINT 3: Before calling run_vcpu() =====
+                // ==== KILL() TIMING POINT 3: Before calling run() ====
                 // If kill() is called and ran to completion BEFORE this line executes:
-                //    - CANCEL_BIT will be set, but it's too late to prevent entering the guest this iteration
-                //    - Signals will interrupt the guest (RUNNING_BIT=true), causing VmExit::Cancelled()
-                //    - If the guest completes before any signals arrive, kill() may have no effect
-                //      - If there are more iterations to do (IO/host func, etc.), the next iteration will be cancelled
-                let exit_reason = self.vm.run_vcpu();
+                //    - Will still do a VM entry, but signals will be sent until VM exits
+                let result = self.vm.run_vcpu();
 
                 // End current host trace by closing the current span that captures traces
                 // happening when a guest exits and re-enters.
@@ -405,12 +396,15 @@ impl HyperlightVm {
 
                 // Handle the guest trace data if any
                 #[cfg(feature = "trace_guest")]
-                if let Err(e) = self.handle_trace(&mut tc, mem_mgr) {
-                    // If no trace data is available, we just log a message and continue
-                    // Is this the right thing to do?
-                    log::debug!("Error handling guest trace: {:?}", e);
+                {
+                    let regs = self.vm.regs()?;
+                    if let Err(e) = tc.handle_trace(&regs, mem_mgr) {
+                        // If no trace data is available, we just log a message and continue
+                        // Is this the right thing to do?
+                        log::debug!("Error handling guest trace: {:?}", e);
+                    }
                 }
-                exit_reason
+                result
             };
 
             // ===== KILL() TIMING POINT 4: Before clear_running() =====
@@ -511,9 +505,9 @@ impl HyperlightVm {
                         continue;
                     }
 
+                    // If the vcpu was interrupted by a debugger, we need to handle it
                     #[cfg(gdb)]
-                    if debug_interrupted {
-                        // If the vcpu was interrupted by a debugger, we need to handle it
+                    {
                         self.interrupt_handle.clear_debug_interrupt();
                         if let Err(e) =
                             self.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Interrupt)
@@ -772,16 +766,6 @@ impl HyperlightVm {
             Ok(None)
         }
     }
-
-    #[cfg(feature = "trace_guest")]
-    fn handle_trace(
-        &mut self,
-        tc: &mut crate::sandbox::trace::TraceContext,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-    ) -> Result<()> {
-        let regs = self.vm.regs()?;
-        tc.handle_trace(&regs, mem_mgr)
-    }
 }
 
 impl Drop for HyperlightVm {
@@ -798,7 +782,8 @@ enum MemoryAccess {
     StackGuardPageViolation,
 }
 
-/// Determines if a memory access violation occurred at the given address with the given action type.
+/// Determines if a known memory access violation occurred at the given address with the given action type.
+/// Returns Some(reason) if violation reason could be determined, or None if violation occurred but in unmapped region.
 fn get_memory_access_violation<'a>(
     gpa: usize,
     tried: MemoryRegionFlags,

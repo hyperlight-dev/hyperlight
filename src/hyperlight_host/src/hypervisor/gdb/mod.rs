@@ -222,26 +222,6 @@ impl DebugMemoryAccess {
     }
 }
 
-/// Trait for VMs that support debugging capabilities.
-/// This extends the base Vm trait with GDB-specific functionality.
-pub(crate) trait DebuggableVm: Vm {
-    /// Translates a guest virtual address to a guest physical address
-    fn translate_gva(&self, gva: u64) -> crate::Result<u64>;
-
-    /// Enable/disable debugging
-    fn set_debug(&mut self, enable: bool) -> crate::Result<()>;
-
-    /// Enable/disable single stepping
-    fn set_single_step(&mut self, enable: bool) -> crate::Result<()>;
-
-    /// Add a hardware breakpoint at the given address.
-    /// Must be idempotent.
-    fn add_hw_breakpoint(&mut self, addr: u64) -> crate::Result<()>;
-
-    /// Remove a hardware breakpoint at the given address
-    fn remove_hw_breakpoint(&mut self, addr: u64) -> crate::Result<()>;
-}
-
 /// Defines the possible reasons for which a vCPU can be stopped when debugging
 #[derive(Debug)]
 pub enum VcpuStopReason {
@@ -293,6 +273,26 @@ pub(crate) enum DebugResponse {
     VcpuStopped(VcpuStopReason),
     WriteAddr,
     WriteRegisters,
+}
+
+/// Trait for VMs that support debugging capabilities.
+/// This extends the base Vm trait with GDB-specific functionality.
+pub(crate) trait DebuggableVm: Vm {
+    /// Translates a guest virtual address to a guest physical address
+    fn translate_gva(&self, gva: u64) -> crate::Result<u64>;
+
+    /// Enable/disable debugging
+    fn set_debug(&mut self, enable: bool) -> crate::Result<()>;
+
+    /// Enable/disable single stepping
+    fn set_single_step(&mut self, enable: bool) -> crate::Result<()>;
+
+    /// Add a hardware breakpoint at the given address.
+    /// Must be idempotent.
+    fn add_hw_breakpoint(&mut self, addr: u64) -> crate::Result<()>;
+
+    /// Remove a hardware breakpoint at the given address
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> crate::Result<()>;
 }
 
 /// Debug communication channel that is used for sending a request type and

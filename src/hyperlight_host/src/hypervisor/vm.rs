@@ -56,7 +56,8 @@ pub(crate) trait Vm: Send + Sync + Debug {
     /// Unmap memory region from this VM that has previously been mapped using `map_memory`.
     fn unmap_memory(&mut self, region: (u32, &MemoryRegion)) -> Result<()>;
 
-    /// Runs the vCPU until it exits
+    /// Runs the vCPU until it exits.
+    /// Note: this function should not emit any traces or spans as it is called after guest span is setup
     fn run_vcpu(&mut self) -> Result<VmExit>;
 
     /// Get partition handle
@@ -92,7 +93,7 @@ pub(crate) enum VmExit {
         )
     )]
     Retry(),
-    #[cfg(gdb)]
     /// The vCPU has exited due to a debug event (usually breakpoint)
+    #[cfg(gdb)]
     Debug { dr6: u64, exception: u32 },
 }

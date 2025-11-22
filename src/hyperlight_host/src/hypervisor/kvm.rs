@@ -149,13 +149,10 @@ impl Vm for KvmVm {
                 exception: debug_exit.exception,
             }),
             Err(e) => match e.errno() {
+                // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
                 libc::EINTR => Ok(VmExit::Cancelled()),
                 libc::EAGAIN => Ok(VmExit::Retry()),
-
-                other => Ok(VmExit::Unknown(format!(
-                    "Unknown KVM VCPU error: {}",
-                    other
-                ))),
+                _ => Ok(VmExit::Unknown(format!("Unknown KVM VCPU error: {}", e))),
             },
             Ok(other) => Ok(VmExit::Unknown(format!(
                 "Unknown KVM VCPU exit: {:?}",
@@ -215,7 +212,6 @@ impl DebuggableVm for KvmVm {
 
     fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
-        use crate::new_error;
 
         // Check if breakpoint already exists
         if self.debug_regs.arch.debugreg[..4].contains(&addr) {
@@ -238,8 +234,6 @@ impl DebuggableVm for KvmVm {
     }
 
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
-        use crate::new_error;
-
         // Find the index of the breakpoint
         let index = self.debug_regs.arch.debugreg[..4]
             .iter()
