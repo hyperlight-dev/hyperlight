@@ -42,15 +42,17 @@ const _: () = assert!(core::mem::offset_of!(ExceptionInfo, rsp) == 32);
 #[repr(C)]
 /// Saved context, pushed onto the stack by exception entry code
 pub struct Context {
-    /// in order: gs, fs, es
-    pub segments: [u64; 3],
+    /// in order: gs, fs, es, ds
+    pub segments: [u64; 4],
     pub fxsave: [u8; 512],
-    pub ds: u64,
     /// no `rsp`, since the processor saved it
     /// `rax` is at the top, `r15` the bottom
     pub gprs: [u64; 15],
+    /// Padding to ensure 16-byte alignment when combined with ExceptionInfo
+    _padding: [u64; 1],
 }
-const _: () = assert!(size_of::<Context>() == 152 + 512);
+const _: () = assert!(size_of::<Context>() == 32 + 512 + 120 + 8);
+const _: () = assert!((size_of::<Context>() + size_of::<ExceptionInfo>()) % 16 == 0);
 
 // TODO: This will eventually need to end up in a per-thread context,
 // when there are threads.
