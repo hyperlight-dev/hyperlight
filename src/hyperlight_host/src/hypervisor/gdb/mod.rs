@@ -14,14 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-mod arch;
+pub(crate) mod arch;
 mod event_loop;
-#[cfg(target_os = "windows")]
-mod hyperv_debug;
-#[cfg(kvm)]
-mod kvm_debug;
-#[cfg(mshv3)]
-mod mshv_debug;
 mod x86_64_target;
 
 use std::io::{self, ErrorKind};
@@ -29,24 +23,18 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::{slice, thread};
 
-pub(crate) use arch::{SW_BP, SW_BP_SIZE};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use event_loop::event_loop_thread;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::GdbStub;
 use gdbstub::target::TargetError;
-use hyperlight_common::mem::PAGE_SIZE;
-#[cfg(target_os = "windows")]
-pub(crate) use hyperv_debug::HypervDebug;
-#[cfg(kvm)]
-pub(crate) use kvm_debug::KvmDebug;
-#[cfg(mshv3)]
-pub(crate) use mshv_debug::MshvDebug;
 use thiserror::Error;
 use x86_64_target::HyperlightSandboxTarget;
 
 use super::InterruptHandle;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
+use super::regs::CommonRegisters;
+use super::vm::Vm;
+use crate::hypervisor::regs::CommonFpu;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
@@ -107,7 +95,7 @@ impl DebugMemoryAccess {
     ///   This address is shall be translated before calling this function
     /// # Returns
     /// * `Result<(), HyperlightError>` - Ok if successful, Err otherwise
-    fn read(&self, data: &mut [u8], gpa: u64) -> crate::Result<()> {
+    pub(crate) fn read(&self, data: &mut [u8], gpa: u64) -> crate::Result<()> {
         let read_len = data.len();
 
         let mem_offset = (gpa as usize)
@@ -172,7 +160,7 @@ impl DebugMemoryAccess {
     ///   This address is shall be translated before calling this function
     /// # Returns
     /// * `Result<(), HyperlightError>` - Ok if successful, Err otherwise
-    fn write(&self, data: &[u8], gpa: u64) -> crate::Result<()> {
+    pub(crate) fn write(&self, data: &[u8], gpa: u64) -> crate::Result<()> {
         let write_len = data.len();
 
         let mem_offset = (gpa as usize)
@@ -287,165 +275,24 @@ pub(crate) enum DebugResponse {
     WriteRegisters,
 }
 
-/// This trait is used to define common debugging functionality for Hypervisors
-pub(super) trait GuestDebug {
-    /// Type that wraps the vCPU functionality
-    type Vcpu;
+/// Trait for VMs that support debugging capabilities.
+/// This extends the base Vm trait with GDB-specific functionality.
+pub(crate) trait DebuggableVm: Vm {
+    /// Translates a guest virtual address to a guest physical address
+    fn translate_gva(&self, gva: u64) -> crate::Result<u64>;
 
-    /// Returns true whether the provided address is a hardware breakpoint
-    fn is_hw_breakpoint(&self, addr: &u64) -> bool;
-    /// Returns true whether the provided address is a software breakpoint
-    fn is_sw_breakpoint(&self, addr: &u64) -> bool;
-    /// Stores the address of the hw breakpoint
-    fn save_hw_breakpoint(&mut self, addr: &u64) -> bool;
-    /// Stores the data that the sw breakpoint op code replaces
-    fn save_sw_breakpoint_data(&mut self, addr: u64, data: [u8; 1]);
-    /// Deletes the address of the hw breakpoint from storage
-    fn delete_hw_breakpoint(&mut self, addr: &u64);
-    /// Retrieves the saved data that the sw breakpoint op code replaces
-    fn delete_sw_breakpoint_data(&mut self, addr: &u64) -> Option<[u8; 1]>;
+    /// Enable/disable debugging
+    fn set_debug(&mut self, enable: bool) -> crate::Result<()>;
 
-    /// Read registers
-    fn read_regs(&self, vcpu_fd: &Self::Vcpu) -> crate::Result<(CommonRegisters, CommonFpu)>;
-    /// Enables or disables stepping and sets the vCPU debug configuration
-    fn set_single_step(&mut self, vcpu_fd: &Self::Vcpu, enable: bool) -> crate::Result<()>;
-    /// Translates the guest address to physical address
-    fn translate_gva(&self, vcpu_fd: &Self::Vcpu, gva: u64) -> crate::Result<u64>;
-    /// Write registers
-    fn write_regs(
-        &self,
-        vcpu_fd: &Self::Vcpu,
-        regs: &CommonRegisters,
-        fpu: &CommonFpu,
-    ) -> crate::Result<()>;
+    /// Enable/disable single stepping
+    fn set_single_step(&mut self, enable: bool) -> crate::Result<()>;
 
-    /// Adds hardware breakpoint
-    fn add_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<()> {
-        let addr = self.translate_gva(vcpu_fd, addr)?;
+    /// Add a hardware breakpoint at the given address.
+    /// Must be idempotent.
+    fn add_hw_breakpoint(&mut self, addr: u64) -> crate::Result<()>;
 
-        if self.is_hw_breakpoint(&addr) {
-            return Ok(());
-        }
-
-        self.save_hw_breakpoint(&addr)
-            .then(|| self.set_single_step(vcpu_fd, false))
-            .ok_or_else(|| new_error!("Failed to save hw breakpoint"))?
-    }
-    /// Overwrites the guest memory with the SW Breakpoint op code that instructs
-    /// the vCPU to stop when is executed and stores the overwritten data to be
-    /// able to restore it
-    fn add_sw_breakpoint(
-        &mut self,
-        vcpu_fd: &Self::Vcpu,
-        addr: u64,
-        mem_access: &DebugMemoryAccess,
-    ) -> crate::Result<()> {
-        let addr = self.translate_gva(vcpu_fd, addr)?;
-
-        if self.is_sw_breakpoint(&addr) {
-            return Ok(());
-        }
-
-        // Write breakpoint OP code to write to guest memory
-        let mut save_data = [0; SW_BP_SIZE];
-        self.read_addrs(vcpu_fd, addr, &mut save_data[..], mem_access)?;
-        self.write_addrs(vcpu_fd, addr, &SW_BP, mem_access)?;
-
-        // Save guest memory to restore when breakpoint is removed
-        self.save_sw_breakpoint_data(addr, save_data);
-
-        Ok(())
-    }
-    /// Copies the data from the guest memory address to the provided slice
-    /// The address is checked to be a valid guest address
-    fn read_addrs(
-        &mut self,
-        vcpu_fd: &Self::Vcpu,
-        mut gva: u64,
-        mut data: &mut [u8],
-        mem_access: &DebugMemoryAccess,
-    ) -> crate::Result<()> {
-        let data_len = data.len();
-        log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
-
-        while !data.is_empty() {
-            let gpa = self.translate_gva(vcpu_fd, gva)?;
-
-            let read_len = std::cmp::min(
-                data.len(),
-                (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
-            );
-
-            mem_access.read(&mut data[..read_len], gpa)?;
-
-            data = &mut data[read_len..];
-            gva += read_len as u64;
-        }
-
-        Ok(())
-    }
-    /// Removes hardware breakpoint
-    fn remove_hw_breakpoint(&mut self, vcpu_fd: &Self::Vcpu, addr: u64) -> crate::Result<()> {
-        let addr = self.translate_gva(vcpu_fd, addr)?;
-
-        self.is_hw_breakpoint(&addr)
-            .then(|| {
-                self.delete_hw_breakpoint(&addr);
-                self.set_single_step(vcpu_fd, false)
-            })
-            .ok_or_else(|| new_error!("The address: {:?} is not a hw breakpoint", addr))?
-    }
-    /// Restores the overwritten data to the guest memory
-    fn remove_sw_breakpoint(
-        &mut self,
-        vcpu_fd: &Self::Vcpu,
-        addr: u64,
-        mem_access: &DebugMemoryAccess,
-    ) -> crate::Result<()> {
-        let addr = self.translate_gva(vcpu_fd, addr)?;
-
-        if self.is_sw_breakpoint(&addr) {
-            let save_data = self
-                .delete_sw_breakpoint_data(&addr)
-                .ok_or_else(|| new_error!("Expected to contain the sw breakpoint address"))?;
-
-            // Restore saved data to the guest's memory
-            self.write_addrs(vcpu_fd, addr, &save_data, mem_access)?;
-
-            Ok(())
-        } else {
-            Err(new_error!("The address: {:?} is not a sw breakpoint", addr))
-        }
-    }
-    /// Copies the data from the provided slice to the guest memory address
-    /// The address is checked to be a valid guest address
-    fn write_addrs(
-        &mut self,
-        vcpu_fd: &Self::Vcpu,
-        mut gva: u64,
-        mut data: &[u8],
-        mem_access: &DebugMemoryAccess,
-    ) -> crate::Result<()> {
-        let data_len = data.len();
-        log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
-
-        while !data.is_empty() {
-            let gpa = self.translate_gva(vcpu_fd, gva)?;
-
-            let write_len = std::cmp::min(
-                data.len(),
-                (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
-            );
-
-            // Use the memory access to write to guest memory
-            mem_access.write(&data[..write_len], gpa)?;
-
-            data = &data[write_len..];
-            gva += write_len as u64;
-        }
-
-        Ok(())
-    }
+    /// Remove a hardware breakpoint at the given address
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> crate::Result<()>;
 }
 
 /// Debug communication channel that is used for sending a request type and
@@ -554,10 +401,7 @@ mod tests {
         let res = gdb_conn.try_recv();
         assert!(res.is_err());
 
-        let res = hyp_conn.send(DebugResponse::ReadRegisters(Box::new((
-            Default::default(),
-            Default::default(),
-        ))));
+        let res = hyp_conn.send(DebugResponse::ReadRegisters(Default::default()));
         assert!(res.is_ok());
 
         let res = gdb_conn.recv();
