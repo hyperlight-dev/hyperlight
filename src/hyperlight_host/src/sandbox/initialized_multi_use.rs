@@ -37,8 +37,8 @@ use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
 use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::{ParameterTuple, SupportedReturnType};
+use crate::hypervisor::InterruptHandle;
 use crate::hypervisor::hyperlight_vm::HyperlightVm;
-use crate::hypervisor::{Hypervisor, InterruptHandle};
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -714,7 +714,7 @@ impl MultiUseSandbox {
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn generate_crashdump(&self) -> Result<()> {
-        crate::hypervisor::crashdump::generate_crashdump(self.vm.vm.as_ref() as &dyn Hypervisor)
+        crate::hypervisor::crashdump::generate_crashdump(&self.vm)
     }
 
     /// Returns whether the sandbox is currently poisoned.
@@ -1250,7 +1250,7 @@ mod tests {
 
         // Verify the region is the same
         let mut restored_regions = sbox.vm.get_mapped_regions();
-        assert_eq!(*restored_regions.next().unwrap(), region);
+        assert_eq!(restored_regions.next().unwrap(), &region);
         assert!(restored_regions.next().is_none());
         drop(restored_regions);
 

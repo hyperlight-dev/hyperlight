@@ -53,9 +53,6 @@ pub use uninitialized::GuestBinary;
 /// Re-export for `UninitializedSandbox` type
 pub use uninitialized::UninitializedSandbox;
 
-#[cfg(target_os = "windows")]
-use crate::hypervisor::windows_hypervisor_platform;
-
 // In case its not obvious why there are separate is_supported_platform and is_hypervisor_present functions its because
 // Hyperlight is designed to be able to run on a host that doesn't have a hypervisor.
 // In that case, the sandbox will be in process, we plan on making this a dev only feature and fixing up Linux support
