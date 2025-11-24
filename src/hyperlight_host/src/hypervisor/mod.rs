@@ -14,25 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use log::{LevelFilter, debug};
-use tracing::{Span, instrument};
+use log::LevelFilter;
 
-use crate::HyperlightError::StackOverflow;
-use crate::error::HyperlightError::ExecutionCanceledByHost;
-use crate::hypervisor::regs::{
-    CommonFpu, CommonRegisters, CommonSegmentRegister, CommonSpecialRegisters,
-};
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::metrics::METRIC_GUEST_CANCELLATION;
-#[cfg(feature = "mem_profile")]
-use crate::sandbox::trace::MemTraceInfo;
-use crate::{HyperlightError, Result, log_then_return};
-
-/// HyperV-on-linux functionality
 #[cfg(mshv3)]
-pub mod hyperv_linux;
+pub(crate) mod hyperv_linux;
 #[cfg(target_os = "windows")]
-/// Hyperv-on-windows functionality
 pub(crate) mod hyperv_windows;
 
 /// GDB debugging support
@@ -43,17 +29,14 @@ pub(crate) mod gdb;
 pub(crate) mod regs;
 
 #[cfg(kvm)]
-/// Functionality to manipulate KVM-based virtual machines
-pub mod kvm;
+pub(crate) mod kvm;
+
 #[cfg(target_os = "windows")]
 /// Hyperlight Surrogate Process
 pub(crate) mod surrogate_process;
 #[cfg(target_os = "windows")]
 /// Hyperlight Surrogate Process
 pub(crate) mod surrogate_process_manager;
-/// WindowsHypervisorPlatform utilities
-#[cfg(target_os = "windows")]
-pub(crate) mod windows_hypervisor_platform;
 /// Safe wrappers around windows types like `PSTR`
 #[cfg(target_os = "windows")]
 pub(crate) mod wrappers;
@@ -62,469 +45,52 @@ pub(crate) mod wrappers;
 pub(crate) mod crashdump;
 
 pub(crate) mod hyperlight_vm;
+pub(crate) mod vm;
 
 use std::fmt::Debug;
 use std::str::FromStr;
 #[cfg(any(kvm, mshv3))]
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+#[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
 #[cfg(any(kvm, mshv3))]
 use std::time::Duration;
 
-#[cfg(gdb)]
-use gdb::VcpuStopReason;
+/// Get the logging level to pass to the guest entrypoint
+fn get_max_log_level() -> u32 {
+    // Check to see if the RUST_LOG environment variable is set
+    // and if so, parse it to get the log_level for hyperlight_guest
+    // if that is not set get the log level for the hyperlight_host
 
-use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
-use crate::mem::shared_mem::HostSharedMemory;
-use crate::sandbox::host_funcs::FunctionRegistry;
+    // This is done as the guest will produce logs based on the log level returned here
+    // producing those logs is expensive and we don't want to do it if the host is not
+    // going to process them
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "init-paging")] {
-        pub(crate) const CR4_PAE: u64 = 1 << 5;
-        pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
-        pub(crate) const CR4_OSXMMEXCPT: u64 = 1 << 10;
-        pub(crate) const CR0_PE: u64 = 1;
-        pub(crate) const CR0_MP: u64 = 1 << 1;
-        pub(crate) const CR0_ET: u64 = 1 << 4;
-        pub(crate) const CR0_NE: u64 = 1 << 5;
-        pub(crate) const CR0_WP: u64 = 1 << 16;
-        pub(crate) const CR0_AM: u64 = 1 << 18;
-        pub(crate) const CR0_PG: u64 = 1 << 31;
-        pub(crate) const EFER_LME: u64 = 1 << 8;
-        pub(crate) const EFER_LMA: u64 = 1 << 10;
-        pub(crate) const EFER_SCE: u64 = 1;
-        pub(crate) const EFER_NX: u64 = 1 << 11;
-    }
-}
+    let val = std::env::var("RUST_LOG").unwrap_or_default();
 
-/// These are the generic exit reasons that we can handle from a Hypervisor the Hypervisors run method is responsible for mapping from
-/// the hypervisor specific exit reasons to these generic ones
-pub enum HyperlightExit {
-    #[cfg(gdb)]
-    /// The vCPU has exited due to a debug event
-    Debug(VcpuStopReason),
-    /// The vCPU has halted
-    Halt(),
-    /// The vCPU has issued a write to the given port with the given value
-    IoOut(u16, Vec<u8>, u64, u64),
-    /// The vCPU has attempted to read or write from an unmapped address
-    Mmio(u64),
-    /// The vCPU tried to access memory but was missing the required permissions
-    AccessViolation(u64, MemoryRegionFlags, MemoryRegionFlags),
-    /// The vCPU execution has been cancelled
-    Cancelled(),
-    /// The vCPU has exited for a reason that is not handled by Hyperlight
-    Unknown(String),
-    /// The operation should be retried
-    /// On Linux this can happen where a call to run the CPU can return EAGAIN
-    /// On Windows the platform could cause a cancelation of the VM run
-    Retry(),
-}
+    let level = if val.contains("hyperlight_guest") {
+        val.split(',')
+            .find(|s| s.contains("hyperlight_guest"))
+            .unwrap_or("")
+            .split('=')
+            .nth(1)
+            .unwrap_or("")
+    } else if val.contains("hyperlight_host") {
+        val.split(',')
+            .find(|s| s.contains("hyperlight_host"))
+            .unwrap_or("")
+            .split('=')
+            .nth(1)
+            .unwrap_or("")
+    } else {
+        // look for a value string that does not contain "="
+        val.split(',').find(|s| !s.contains("=")).unwrap_or("")
+    };
 
-/// A common set of hypervisor functionality
-pub(crate) trait Hypervisor: Debug + Send {
-    /// Initialise the internally stored vCPU with the given PEB address and
-    /// random number seed, then run it until a HLT instruction.
-    #[allow(clippy::too_many_arguments)]
-    fn initialise(
-        &mut self,
-        peb_addr: RawPtr,
-        seed: u64,
-        page_size: u32,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        guest_max_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()>;
-
-    /// Map a region of host memory into the sandbox.
-    ///
-    /// Depending on the host platform, there are likely alignment
-    /// requirements of at least one page for base and len.
-    unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()>;
-
-    /// Unmap a memory region from the sandbox
-    unsafe fn unmap_region(&mut self, rgn: &MemoryRegion) -> Result<()>;
-
-    /// Get the currently mapped dynamic memory regions (not including sandbox regions)
-    ///
-    /// Note: Box needed for trait to be object-safe :(
-    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_>;
-
-    /// Dispatch a call from the host to the guest using the given pointer
-    /// to the dispatch function _in the guest's address space_.
-    ///
-    /// Do this by setting the instruction pointer to `dispatch_func_addr`
-    /// and then running the execution loop until a halt instruction.
-    ///
-    /// Returns `Ok` if the call succeeded, and an `Err` if it failed
-    fn dispatch_call_from_host(
-        &mut self,
-        dispatch_func_addr: RawPtr,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()>;
-
-    /// Handle an IO exit from the internally stored vCPU.
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        rip: u64,
-        instruction_length: u64,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-    ) -> Result<()>;
-
-    /// Run the vCPU
-    fn run(
-        &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
-    ) -> Result<HyperlightExit>;
-
-    /// Get InterruptHandle to underlying VM (returns internal trait)
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
-
-    /// Clear the cancellation flag
-    fn clear_cancel(&self);
-
-    /// Get regs
-    #[allow(dead_code)]
-    fn regs(&self) -> Result<CommonRegisters>;
-    /// Set regs
-    #[allow(dead_code)]
-    fn set_regs(&mut self, regs: &CommonRegisters) -> Result<()>;
-    /// Get fpu regs
-    #[allow(dead_code)]
-    fn fpu(&self) -> Result<CommonFpu>;
-    /// Set fpu regs
-    #[allow(dead_code)]
-    fn set_fpu(&mut self, fpu: &CommonFpu) -> Result<()>;
-    /// Get special regs
-    #[allow(dead_code)]
-    fn sregs(&self) -> Result<CommonSpecialRegisters>;
-    /// Set special regs
-    #[allow(dead_code)]
-    fn set_sregs(&mut self, sregs: &CommonSpecialRegisters) -> Result<()>;
-
-    /// Setup initial special registers for the hypervisor
-    /// This is a default implementation that works for all hypervisors
-    fn setup_initial_sregs(&mut self, _pml4_addr: u64) -> Result<()> {
-        #[cfg(feature = "init-paging")]
-        let sregs = CommonSpecialRegisters {
-            cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
-            cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
-            cr3: _pml4_addr,
-            efer: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
-            cs: CommonSegmentRegister {
-                type_: 11,
-                present: 1,
-                s: 1,
-                l: 1,
-                ..Default::default()
-            },
-            tr: CommonSegmentRegister {
-                limit: 65535,
-                type_: 11,
-                present: 1,
-                s: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        #[cfg(not(feature = "init-paging"))]
-        let sregs = CommonSpecialRegisters {
-            cs: CommonSegmentRegister {
-                base: 0,
-                selector: 0,
-                limit: 0xFFFF,
-                type_: 11,
-                present: 1,
-                s: 1,
-                ..Default::default()
-            },
-            ds: CommonSegmentRegister {
-                base: 0,
-                selector: 0,
-                limit: 0xFFFF,
-                type_: 3,
-                present: 1,
-                s: 1,
-                ..Default::default()
-            },
-            tr: CommonSegmentRegister {
-                base: 0,
-                selector: 0,
-                limit: 0xFFFF,
-                type_: 11,
-                present: 1,
-                s: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        self.set_sregs(&sregs)?;
-        Ok(())
-    }
-
-    /// Get the logging level to pass to the guest entrypoint
-    fn get_max_log_level(&self) -> u32 {
-        // Check to see if the RUST_LOG environment variable is set
-        // and if so, parse it to get the log_level for hyperlight_guest
-        // if that is not set get the log level for the hyperlight_host
-
-        // This is done as the guest will produce logs based on the log level returned here
-        // producing those logs is expensive and we don't want to do it if the host is not
-        // going to process them
-
-        let val = std::env::var("RUST_LOG").unwrap_or_default();
-
-        let level = if val.contains("hyperlight_guest") {
-            val.split(',')
-                .find(|s| s.contains("hyperlight_guest"))
-                .unwrap_or("")
-                .split('=')
-                .nth(1)
-                .unwrap_or("")
-        } else if val.contains("hyperlight_host") {
-            val.split(',')
-                .find(|s| s.contains("hyperlight_host"))
-                .unwrap_or("")
-                .split('=')
-                .nth(1)
-                .unwrap_or("")
-        } else {
-            // look for a value string that does not contain "="
-            val.split(',').find(|s| !s.contains("=")).unwrap_or("")
-        };
-
-        log::info!("Determined guest log level: {}", level);
-        // Convert the log level string to a LevelFilter
-        // If no value is found, default to Error
-        LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
-    }
-
-    /// get a mutable trait object from self
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor;
-
-    #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>>;
-
-    #[cfg(gdb)]
-    /// handles the cases when the vCPU stops due to a Debug event
-    fn handle_debug(
-        &mut self,
-        _dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-        _stop_reason: VcpuStopReason,
-    ) -> Result<()> {
-        unimplemented!()
-    }
-
-    /// Get a mutable reference of the trace info for the guest
-    #[cfg(feature = "mem_profile")]
-    fn trace_info_mut(&mut self) -> &mut MemTraceInfo;
-}
-
-/// Returns a Some(HyperlightExit::AccessViolation(..)) if the given gpa doesn't have
-/// access its corresponding region. Returns None otherwise, or if the region is not found.
-pub(crate) fn get_memory_access_violation<'a>(
-    gpa: usize,
-    mut mem_regions: impl Iterator<Item = &'a MemoryRegion>,
-    access_info: MemoryRegionFlags,
-) -> Option<HyperlightExit> {
-    // find the region containing the given gpa
-    let region = mem_regions.find(|region| region.guest_region.contains(&gpa));
-
-    if let Some(region) = region
-        && (!region.flags.contains(access_info)
-            || region.flags.contains(MemoryRegionFlags::STACK_GUARD))
-    {
-        return Some(HyperlightExit::AccessViolation(
-            gpa as u64,
-            access_info,
-            region.flags,
-        ));
-    }
-    None
-}
-
-/// A virtual CPU that can be run until an exit occurs
-pub struct VirtualCPU {}
-
-impl VirtualCPU {
-    /// Run the given hypervisor until a halt instruction is reached
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn run(
-        hv: &mut dyn Hypervisor,
-        interrupt_handle: Arc<dyn InterruptHandleImpl>,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()> {
-        // Keeps the trace context and open spans
-        #[cfg(feature = "trace_guest")]
-        let mut tc = crate::sandbox::trace::TraceContext::new();
-
-        loop {
-            // ===== KILL() TIMING POINT 2: Before set_running() =====
-            // If kill() is called and ran to completion BEFORE this line executes:
-            //    - CANCEL_BIT will be set and we will return an early VmExit::Cancelled()
-            //      without sending any signals/WHV api calls
-            #[cfg(any(kvm, mshv3))]
-            interrupt_handle.set_tid();
-            interrupt_handle.set_running();
-            // NOTE: `set_running()`` must be called before checking `is_cancelled()`
-            // otherwise we risk missing a call to `kill()` because the vcpu would not be marked as running yet so signals won't be sent
-
-            let exit_reason = {
-                if interrupt_handle.is_cancelled() || interrupt_handle.is_debug_interrupted() {
-                    Ok(HyperlightExit::Cancelled())
-                } else {
-                    // ==== KILL() TIMING POINT 3: Before calling run() ====
-                    // If kill() is called and ran to completion BEFORE this line executes:
-                    //    - Will still do a VM entry, but signals will be sent until VM exits
-                    #[cfg(feature = "trace_guest")]
-                    let result = hv.run(&mut tc);
-                    #[cfg(not(feature = "trace_guest"))]
-                    let result = hv.run();
-
-                    // End current host trace by closing the current span that captures traces
-                    // happening when a guest exits and re-enters.
-                    #[cfg(feature = "trace_guest")]
-                    tc.end_host_trace();
-
-                    // Handle the guest trace data if any
-                    #[cfg(feature = "trace_guest")]
-                    {
-                        let regs = hv.regs()?;
-                        if let Err(e) = tc.handle_trace(&regs, mem_mgr) {
-                            // If no trace data is available, we just log a message and continue
-                            // Is this the right thing to do?
-                            log::debug!("Error handling guest trace: {:?}", e);
-                        }
-                    }
-
-                    result
-                }
-            };
-
-            // ===== KILL() TIMING POINT 4: Before clear_running() =====
-            // If kill() is called and ran to completion BEFORE this line executes:
-            //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
-            //    - Signals will be sent until `clear_running()` is called, which is ok
-            interrupt_handle.clear_running();
-
-            // ===== KILL() TIMING POINT 5: Before capturing cancel_requested =====
-            // If kill() is called and ran to completion BEFORE this line executes:
-            //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
-            //    - Signals will not be sent
-            let cancel_requested = interrupt_handle.is_cancelled();
-            let debug_interrupted = interrupt_handle.is_debug_interrupted();
-
-            // ===== KILL() TIMING POINT 6: Before checking exit_reason =====
-            // If kill() is called and ran to completion BEFORE this line executes:
-            //    - CANCEL_BIT will be set. Cancellation is deferred to the next iteration.
-            //    - Signals will not be sent
-            match exit_reason {
-                #[cfg(gdb)]
-                Ok(HyperlightExit::Debug(stop_reason)) => {
-                    if let Err(e) = hv.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
-                        log_then_return!(e);
-                    }
-                }
-
-                Ok(HyperlightExit::Halt()) => {
-                    break;
-                }
-                Ok(HyperlightExit::IoOut(port, data, rip, instruction_length)) => {
-                    hv.handle_io(port, data, rip, instruction_length, mem_mgr, host_funcs)?
-                }
-                Ok(HyperlightExit::Mmio(addr)) => {
-                    #[cfg(crashdump)]
-                    crashdump::generate_crashdump(hv)?;
-
-                    if !mem_mgr.check_stack_guard()? {
-                        log_then_return!(StackOverflow());
-                    }
-
-                    log_then_return!("MMIO access address {:#x}", addr);
-                }
-                Ok(HyperlightExit::AccessViolation(addr, tried, region_permission)) => {
-                    #[cfg(crashdump)]
-                    crashdump::generate_crashdump(hv)?;
-
-                    // If GDB is enabled, we handle the debug memory access
-                    // Disregard return value as we want to return the error
-                    #[cfg(gdb)]
-                    let _ = hv.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Crash);
-
-                    if region_permission.intersects(MemoryRegionFlags::STACK_GUARD) {
-                        return Err(HyperlightError::StackOverflow());
-                    }
-                    log_then_return!(HyperlightError::MemoryAccessViolation(
-                        addr,
-                        tried,
-                        region_permission
-                    ));
-                }
-                Ok(HyperlightExit::Cancelled()) => {
-                    // If cancellation was not requested for this specific guest function call,
-                    // the vcpu was interrupted by a stale cancellation from a previous call
-                    if !cancel_requested && !debug_interrupted {
-                        // treat this the same as a HyperlightExit::Retry, the cancel was not meant for this call
-                        continue;
-                    }
-
-                    // If the vcpu was interrupted by a debugger, we need to handle it
-                    #[cfg(gdb)]
-                    {
-                        interrupt_handle.clear_debug_interrupt();
-                        if let Err(e) =
-                            hv.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Interrupt)
-                        {
-                            log_then_return!(e);
-                        }
-                    }
-
-                    // Shutdown is returned when the host has cancelled execution
-                    // After termination, the main thread will re-initialize the VM
-                    metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
-                    log_then_return!(ExecutionCanceledByHost());
-                }
-                Ok(HyperlightExit::Unknown(reason)) => {
-                    #[cfg(crashdump)]
-                    crashdump::generate_crashdump(hv)?;
-                    // If GDB is enabled, we handle the debug memory access
-                    // Disregard return value as we want to return the error
-                    #[cfg(gdb)]
-                    let _ = hv.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Crash);
-
-                    log_then_return!("Unexpected VM Exit {:?}", reason);
-                }
-                Ok(HyperlightExit::Retry()) => {
-                    debug!("[VCPU] Retry - continuing VM run loop");
-                    continue;
-                }
-                Err(e) => {
-                    #[cfg(crashdump)]
-                    crashdump::generate_crashdump(hv)?;
-                    // If GDB is enabled, we handle the debug memory access
-                    // Disregard return value as we want to return the error
-                    #[cfg(gdb)]
-                    let _ = hv.handle_debug(dbg_mem_access_fn.clone(), VcpuStopReason::Crash);
-
-                    return Err(e);
-                }
-            }
-        }
-
-        Ok(())
-    }
+    log::info!("Determined guest log level: {}", level);
+    // Convert the log level string to a LevelFilter
+    // If no value is found, default to Error
+    LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
 }
 
 /// A trait for platform-specific interrupt handle implementation details
