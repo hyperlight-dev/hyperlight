@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use hyperlight_host::func::HostFunction;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, Result, UninitializedSandbox};
 #[cfg(gdb)]
 use hyperlight_host::sandbox::config::DebugInfo;
+use hyperlight_host::{GuestBinary, MultiUseSandbox, Result, UninitializedSandbox};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 
 /// Returns a rust/c simpleguest depending on environment variable GUEST.
@@ -37,13 +37,13 @@ pub fn new_uninit_rust() -> Result<UninitializedSandbox> {
         let mut cfg = SandboxConfiguration::default();
         let debug_info = DebugInfo { port: 8080 };
         cfg.set_guest_debug_info(debug_info);
-        
+
         UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().unwrap()),
             Some(cfg),
         )
     }
-    
+
     #[cfg(not(gdb))]
     UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),

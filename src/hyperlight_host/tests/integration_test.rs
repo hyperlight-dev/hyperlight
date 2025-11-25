@@ -1633,3 +1633,34 @@ fn interrupt_infinite_moving_loop_stress_test() {
         handle.join().unwrap();
     }
 }
+
+#[test]
+fn exception_handler_installation_and_validation() {
+    let mut sandbox: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+
+    // Verify handler count starts at 0
+    let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+    assert_eq!(count, 0, "Handler should not have been called yet");
+
+    // Install handler for vector
+    sandbox.call::<()>("InstallHandler", 3i32).unwrap();
+
+    // Try to install again - should be able to overwrite
+    sandbox.call::<()>("InstallHandler", 3i32).unwrap();
+
+    // Trigger int3 exception
+    let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
+    assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
+
+    // Verify handler was invoked
+    let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+    assert_eq!(count, 1, "Handler should have been called once");
+
+    // Trigger int3 exception
+    let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
+    assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
+
+    // Verify handler was invoked a second time
+    let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+    assert_eq!(count, 2, "Handler should have been called twice");
+}

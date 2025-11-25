@@ -21,46 +21,98 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::outb::Exception;
 use hyperlight_guest::exit::abort_with_code_and_message;
 
+/// Exception information pushed onto the stack by the CPU during an excpection.
+///
 /// See AMD64 Architecture Programmer's Manual, Volume 2
 ///     §8.9.3 Interrupt Stack Frame, pp. 283--284
 ///       Figure 8-14: Long-Mode Stack After Interrupt---Same Privilege,
 ///       Figure 8-15: Long-Mode Stack After Interrupt---Higher Privilege
-/// Subject to the proviso that we push a dummy error code of 0 for exceptions
-/// for which the processor does not provide one
+/// Note: For exceptions that don't provide an error code, we push a dummy value of 0.
 #[repr(C)]
 pub struct ExceptionInfo {
+    /// Error code provided by the processor (or 0 if not applicable).
     pub error_code: u64,
+    /// Instruction pointer at the time of the exception.
     pub rip: u64,
+    /// Code segment selector.
     pub cs: u64,
+    /// CPU flags register.
     pub rflags: u64,
+    /// Stack pointer at the time of the exception.
     pub rsp: u64,
+    /// Stack segment selector.
     pub ss: u64,
 }
 const _: () = assert!(core::mem::offset_of!(ExceptionInfo, rip) == 8);
 const _: () = assert!(core::mem::offset_of!(ExceptionInfo, rsp) == 32);
 
+/// Saved CPU context pushed onto the stack by exception entry code.
+///
+/// This structure contains all the saved CPU state needed to resume execution
+/// after handling an exception. It includes segment registers, floating-point state,
+/// and general-purpose registers.
 #[repr(C)]
-/// Saved context, pushed onto the stack by exception entry code
 pub struct Context {
-    /// in order: gs, fs, es
-    pub segments: [u64; 3],
+    /// Segment registers in order: GS, FS, ES, DS.
+    pub segments: [u64; 4],
+    /// FPU/SSE state saved via FXSAVE instruction (512 bytes).
     pub fxsave: [u8; 512],
-    pub ds: u64,
-    /// no `rsp`, since the processor saved it
-    /// `rax` is at the top, `r15` the bottom
+    /// General-purpose registers (RAX through R15, excluding RSP).
+    ///
+    /// The stack pointer (RSP) is not included here since it's saved
+    /// by the processor in the `ExceptionInfo` structure.
+    /// R15 is at index 0, RAX is at index 14.
     pub gprs: [u64; 15],
+    /// Padding to ensure 16-byte alignment when combined with ExceptionInfo.
+    padding: [u64; 1],
 }
-const _: () = assert!(size_of::<Context>() == 152 + 512);
+const _: () = assert!(size_of::<Context>() == 32 + 512 + 120 + 8);
+// The combination of the ExceptionInfo (pushed by the CPU) and the register Context
+// that we save to the stack must be 16byte aligned before calling the hl_exception_handler
+// as specified in the x86-64 ELF System V psABI specification, Section 3.2.2:
+//
+// https://gitlab.com/x86-psABIs/x86-64-ABI/-/jobs/artifacts/master/raw/x86-64-ABI/abi.pdf?job=build
+const _: () = assert!((size_of::<Context>() + size_of::<ExceptionInfo>()) % 16 == 0);
 
-// TODO: This will eventually need to end up in a per-thread context,
-// when there are threads.
+/// Array of installed exception handlers for vectors 0-30.
+///
+/// TODO: This will eventually need to be part of a per-thread context when threading is implemented.
 pub static HANDLERS: [core::sync::atomic::AtomicU64; 31] =
     [const { core::sync::atomic::AtomicU64::new(0) }; 31];
-pub type HandlerT = fn(n: u64, info: *mut ExceptionInfo, ctx: *mut Context, pf_addr: u64) -> bool;
 
-/// Exception handler
+/// Exception handler function type.
+///
+/// Handlers receive mutable pointers to the exception information and CPU context,
+/// allowing direct access and modification of exception state.
+///
+/// # Parameters
+/// * `exception_number` - Exception vector number (0-30)
+/// * `exception_info` - Mutable pointer to exception information (instruction pointer, error code, etc.)
+/// * `context` - Mutable pointer to saved CPU context (registers, FPU state, etc.)
+/// * `page_fault_address` - Page fault address (only valid for page fault exceptions)
+///
+/// # Returns
+/// * `true` - Suppress the default abort behavior and continue execution
+/// * `false` - Allow the default abort to occur
+///
+/// # Safety
+/// This function type uses raw mutable pointers. Handlers must ensure:
+/// - Pointers are valid for the duration of the handler
+/// - Any modifications to exception state maintain system integrity
+/// - Modified values are valid for CPU state (e.g., valid instruction pointers, aligned stack pointers)
+pub type ExceptionHandler = fn(
+    exception_number: u64,
+    exception_info: *mut ExceptionInfo,
+    context: *mut Context,
+    page_fault_address: u64,
+) -> bool;
+
+/// Internal exception handler invoked by the low-level exception entry code.
+///
+/// This function is called from assembly when an exception occurs. It checks for
+/// registered user handlers and either invokes them or aborts with an error message.
 #[unsafe(no_mangle)]
-pub extern "C" fn hl_exception_handler(
+pub(crate) extern "C" fn hl_exception_handler(
     stack_pointer: u64,
     exception_number: u64,
     page_fault_address: u64,
@@ -82,20 +134,18 @@ pub extern "C" fn hl_exception_handler(
         exception_number, saved_rip, page_fault_address, error_code, stack_pointer
     );
 
-    // We don't presently have any need for user-defined interrupts,
-    // so we only support handlers for the architecture-defined
-    // vectors (0-31)
+    // Check for registered user handlers (only for architecture-defined vectors 0-30)
     if exception_number < 31 {
         let handler =
             HANDLERS[exception_number as usize].load(core::sync::atomic::Ordering::Acquire);
-        if handler != 0
-            && unsafe {
-                core::mem::transmute::<u64, fn(u64, *mut ExceptionInfo, *mut Context, u64) -> bool>(
-                    handler,
-                )(exception_number, exn_info, ctx, page_fault_address)
-            }
-        {
-            return;
+        if handler != 0 {
+            unsafe {
+                let handler = core::mem::transmute::<u64, ExceptionHandler>(handler);
+                if handler(exception_number, exn_info, ctx, page_fault_address) {
+                    return;
+                }
+                // Handler returned false, fall through to abort
+            };
         }
     }
 
