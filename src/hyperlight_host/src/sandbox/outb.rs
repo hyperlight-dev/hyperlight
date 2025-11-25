@@ -20,7 +20,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult,
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::outb::{Exception, OutBAction};
-use log::{Level, Record};
+use tracing::log::{Level, Record};
 use tracing::{Span, instrument};
 use tracing_log::format_trace;
 
@@ -44,7 +44,17 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
 
     let log_data: GuestLogData = mgr.read_guest_log_data()?;
 
-    let record_level: Level = (&log_data.level).into();
+    // Convert from our LogLevel to tracing::Level
+    let tracing_level: tracing::Level = (&log_data.level).into();
+    
+    // Convert tracing::Level to log::Level for the Record API
+    let record_level: Level = match tracing_level {
+        tracing::Level::TRACE => Level::Trace,
+        tracing::Level::DEBUG => Level::Debug,
+        tracing::Level::INFO => Level::Info,
+        tracing::Level::WARN => Level::Warn,
+        tracing::Level::ERROR => Level::Error,
+    };
 
     // Work out if we need to log or trace
     // this API is marked as follows but it is the easiest way to work out if we should trace or log
@@ -80,7 +90,7 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
         )?;
     } else {
         // Create a log record for the GuestLogData
-        log::logger().log(
+        tracing::log::logger().log(
             &Record::builder()
                 .args(format_args!("{}", log_data.message))
                 .level(record_level)

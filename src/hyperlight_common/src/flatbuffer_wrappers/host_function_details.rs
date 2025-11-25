@@ -18,7 +18,6 @@ use alloc::vec::Vec;
 
 use anyhow::{Error, Result};
 use flatbuffers::{WIPOffset, size_prefixed_root};
-#[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
 use super::host_function_definition::HostFunctionDefinition;
@@ -37,7 +36,7 @@ pub struct HostFunctionDetails {
 
 impl TryFrom<&[u8]> for HostFunctionDetails {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: &[u8]) -> Result<Self> {
         let host_function_details_fb = size_prefixed_root::<FbHostFunctionDetails>(value)
             .map_err(|e| anyhow::anyhow!("Error while reading HostFunctionDetails: {:?}", e))?;
@@ -66,7 +65,7 @@ impl TryFrom<&[u8]> for HostFunctionDetails {
 
 impl TryFrom<&HostFunctionDetails> for Vec<u8> {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: &HostFunctionDetails) -> Result<Vec<u8>> {
         let mut builder = flatbuffers::FlatBufferBuilder::new();
         let vec_host_function_definitions = match &value.host_functions {

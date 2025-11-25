@@ -19,7 +19,6 @@ use alloc::vec::Vec;
 
 use anyhow::{Error, Result, anyhow};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
-#[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
 use super::function_types::{ParameterType, ReturnType};
@@ -41,7 +40,7 @@ pub struct HostFunctionDefinition {
 
 impl HostFunctionDefinition {
     /// Create a new `HostFunctionDefinition`.
-    #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(
         function_name: String,
         parameter_types: Option<Vec<ParameterType>>,
@@ -55,7 +54,7 @@ impl HostFunctionDefinition {
     }
 
     /// Convert this `HostFunctionDefinition` into a `WIPOffset<FbHostFunctionDefinition>`.
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn convert_to_flatbuffer_def<'a>(
         &self,
         builder: &mut FlatBufferBuilder<'a>,
@@ -89,7 +88,7 @@ impl HostFunctionDefinition {
     }
 
     /// Verify that the function call has the correct parameter types.
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub fn verify_equal_parameter_types(
         &self,
         function_call_parameter_types: &[ParameterType],
@@ -107,7 +106,7 @@ impl HostFunctionDefinition {
 
 impl TryFrom<&FbHostFunctionDefinition<'_>> for HostFunctionDefinition {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: &FbHostFunctionDefinition) -> Result<Self> {
         let function_name = value.function_name().to_string();
         let return_type = value.return_type().try_into().map_err(|_| {
@@ -140,7 +139,7 @@ impl TryFrom<&FbHostFunctionDefinition<'_>> for HostFunctionDefinition {
 
 impl TryFrom<&[u8]> for HostFunctionDefinition {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: &[u8]) -> Result<Self> {
         let fb_host_function_definition = flatbuffers::root::<FbHostFunctionDefinition<'_>>(value)
             .map_err(|e| anyhow!("Error while reading HostFunctionDefinition: {:?}", e))?;
@@ -150,7 +149,7 @@ impl TryFrom<&[u8]> for HostFunctionDefinition {
 
 impl TryFrom<&HostFunctionDefinition> for Vec<u8> {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(hfd: &HostFunctionDefinition) -> Result<Vec<u8>> {
         let mut builder = flatbuffers::FlatBufferBuilder::new();
         let host_function_definition = hfd.convert_to_flatbuffer_def(&mut builder)?;

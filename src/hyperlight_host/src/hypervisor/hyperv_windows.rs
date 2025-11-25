@@ -20,8 +20,8 @@ use std::string::String;
 use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::sync::{Arc, Mutex};
 
-use log::LevelFilter;
-use tracing::{Span, instrument};
+use tracing::{Level, Span, error, debug, instrument};
+use tracing::log::LevelFilter;
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use windows::Win32::System::Hypervisor::{WHV_MEMORY_ACCESS_TYPE, WHV_RUN_VP_EXIT_REASON};
@@ -102,7 +102,7 @@ mod debug {
                         debug
                             .add_hw_breakpoint(&self.processor, addr)
                             .map_err(|e| {
-                                log::error!("Failed to add hw breakpoint: {:?}", e);
+                                error!("Failed to add hw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -112,7 +112,7 @@ mod debug {
                         debug
                             .add_sw_breakpoint(&self.processor, addr, mem_access)
                             .map_err(|e| {
-                                log::error!("Failed to add sw breakpoint: {:?}", e);
+                                error!("Failed to add sw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -120,7 +120,7 @@ mod debug {
                     )),
                     DebugMsg::Continue => {
                         debug.set_single_step(&self.processor, false).map_err(|e| {
-                            log::error!("Failed to continue execution: {:?}", e);
+                            error!("Failed to continue execution: {:?}", e);
 
                             e
                         })?;
@@ -129,7 +129,7 @@ mod debug {
                     }
                     DebugMsg::DisableDebug => {
                         self.disable_debug().map_err(|e| {
-                            log::error!("Failed to disable debugging: {:?}", e);
+                            error!("Failed to disable debugging: {:?}", e);
 
                             e
                         })?;
@@ -154,7 +154,7 @@ mod debug {
                         debug
                             .read_addrs(&self.processor, addr, &mut data, mem_access)
                             .map_err(|e| {
-                                log::error!("Failed to read from address: {:?}", e);
+                                error!("Failed to read from address: {:?}", e);
 
                                 e
                             })?;
@@ -164,7 +164,7 @@ mod debug {
                     DebugMsg::ReadRegisters => debug
                         .read_regs(&self.processor)
                         .map_err(|e| {
-                            log::error!("Failed to read registers: {:?}", e);
+                            error!("Failed to read registers: {:?}", e);
 
                             e
                         })
@@ -173,7 +173,7 @@ mod debug {
                         debug
                             .remove_hw_breakpoint(&self.processor, addr)
                             .map_err(|e| {
-                                log::error!("Failed to remove hw breakpoint: {:?}", e);
+                                error!("Failed to remove hw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -183,7 +183,7 @@ mod debug {
                         debug
                             .remove_sw_breakpoint(&self.processor, addr, mem_access)
                             .map_err(|e| {
-                                log::error!("Failed to remove sw breakpoint: {:?}", e);
+                                error!("Failed to remove sw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -191,7 +191,7 @@ mod debug {
                     )),
                     DebugMsg::Step => {
                         debug.set_single_step(&self.processor, true).map_err(|e| {
-                            log::error!("Failed to enable step instruction: {:?}", e);
+                            error!("Failed to enable step instruction: {:?}", e);
 
                             e
                         })?;
@@ -202,7 +202,7 @@ mod debug {
                         debug
                             .write_addrs(&self.processor, addr, &data, mem_access)
                             .map_err(|e| {
-                                log::error!("Failed to write to address: {:?}", e);
+                                error!("Failed to write to address: {:?}", e);
 
                                 e
                             })?;
@@ -214,7 +214,7 @@ mod debug {
                         debug
                             .write_regs(&self.processor, regs, fpu)
                             .map_err(|e| {
-                                log::error!("Failed to write registers: {:?}", e);
+                                error!("Failed to write registers: {:?}", e);
 
                                 e
                             })
@@ -242,7 +242,7 @@ mod debug {
         }
 
         pub(crate) fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
-            log::debug!("Sending {:?}", cmd);
+            debug!("Sending {:?}", cmd);
 
             let gdb_conn = self
                 .gdb_conn
@@ -745,7 +745,7 @@ impl Hypervisor for HypervWindowsDriver {
                     })?;
 
                 loop {
-                    log::debug!("Debug wait for event to resume vCPU");
+                    debug!("Debug wait for event to resume vCPU");
                     // Wait for a message from gdb
                     let req = self.recv_dbg_msg()?;
 
@@ -784,7 +784,7 @@ impl Hypervisor for HypervWindowsDriver {
                                     DebugResponse::ErrorOccurred
                                 }
                                 Err(e) => {
-                                    log::error!("Error processing debug request: {:?}", e);
+                                    error!("Error processing debug request: {:?}", e);
                                     return Err(e);
                                 }
                             }
@@ -820,7 +820,7 @@ impl Hypervisor for HypervWindowsDriver {
                     })?;
 
                 loop {
-                    log::debug!("Debug wait for event to resume vCPU");
+                    debug!("Debug wait for event to resume vCPU");
 
                     // Wait for a message from gdb
                     let req = self.recv_dbg_msg()?;

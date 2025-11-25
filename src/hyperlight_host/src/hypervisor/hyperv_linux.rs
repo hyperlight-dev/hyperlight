@@ -21,7 +21,8 @@ use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 use std::sync::{Arc, Mutex};
 
-use log::{LevelFilter, error};
+use tracing::{Span, error, info, instrument};
+use tracing::log::LevelFilter;
 use mshv_bindings::{
     FloatingPointUnit, SpecialRegisters, StandardRegisters, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
@@ -37,7 +38,6 @@ use mshv_bindings::{
     mshv_install_intercept,
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
-use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(crashdump)]
@@ -109,7 +109,7 @@ mod debug {
                         debug
                             .add_hw_breakpoint(&self.vcpu_fd, addr)
                             .map_err(|e| {
-                                log::error!("Failed to add hw breakpoint: {:?}", e);
+                                error!("Failed to add hw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -119,7 +119,7 @@ mod debug {
                         debug
                             .add_sw_breakpoint(&self.vcpu_fd, addr, mem_access)
                             .map_err(|e| {
-                                log::error!("Failed to add sw breakpoint: {:?}", e);
+                                error!("Failed to add sw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -127,7 +127,7 @@ mod debug {
                     )),
                     DebugMsg::Continue => {
                         debug.set_single_step(&self.vcpu_fd, false).map_err(|e| {
-                            log::error!("Failed to continue execution: {:?}", e);
+                            error!("Failed to continue execution: {:?}", e);
 
                             e
                         })?;
@@ -136,7 +136,7 @@ mod debug {
                     }
                     DebugMsg::DisableDebug => {
                         self.disable_debug().map_err(|e| {
-                            log::error!("Failed to disable debugging: {:?}", e);
+                            error!("Failed to disable debugging: {:?}", e);
 
                             e
                         })?;
@@ -165,7 +165,7 @@ mod debug {
                     DebugMsg::ReadRegisters => debug
                         .read_regs(&self.vcpu_fd)
                         .map_err(|e| {
-                            log::error!("Failed to read registers: {:?}", e);
+                            error!("Failed to read registers: {:?}", e);
 
                             e
                         })
@@ -174,7 +174,7 @@ mod debug {
                         debug
                             .remove_hw_breakpoint(&self.vcpu_fd, addr)
                             .map_err(|e| {
-                                log::error!("Failed to remove hw breakpoint: {:?}", e);
+                                error!("Failed to remove hw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -184,7 +184,7 @@ mod debug {
                         debug
                             .remove_sw_breakpoint(&self.vcpu_fd, addr, mem_access)
                             .map_err(|e| {
-                                log::error!("Failed to remove sw breakpoint: {:?}", e);
+                                error!("Failed to remove sw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -192,7 +192,7 @@ mod debug {
                     )),
                     DebugMsg::Step => {
                         debug.set_single_step(&self.vcpu_fd, true).map_err(|e| {
-                            log::error!("Failed to enable step instruction: {:?}", e);
+                            error!("Failed to enable step instruction: {:?}", e);
 
                             e
                         })?;
@@ -209,7 +209,7 @@ mod debug {
                         debug
                             .write_regs(&self.vcpu_fd, regs, fpu)
                             .map_err(|e| {
-                                log::error!("Failed to write registers: {:?}", e);
+                                error!("Failed to write registers: {:?}", e);
 
                                 e
                             })
@@ -237,7 +237,7 @@ mod debug {
         }
 
         pub(crate) fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
-            log::debug!("Sending {:?}", cmd);
+            debug!("Sending {:?}", cmd);
 
             let gdb_conn = self
                 .gdb_conn
@@ -258,7 +258,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
     match Mshv::new() {
         Ok(_) => true,
         Err(_) => {
-            log::info!("MSHV is not available on this system");
+            info!("MSHV is not available on this system");
             false
         }
     }
@@ -850,7 +850,7 @@ impl Hypervisor for HypervLinuxDriver {
                     })?;
 
                 loop {
-                    log::debug!("Debug wait for event to resume vCPU");
+                    debug!("Debug wait for event to resume vCPU");
                     // Wait for a message from gdb
                     let req = self.recv_dbg_msg()?;
 
@@ -889,7 +889,7 @@ impl Hypervisor for HypervLinuxDriver {
                                     DebugResponse::ErrorOccurred
                                 }
                                 Err(e) => {
-                                    log::error!("Error processing debug request: {:?}", e);
+                                    error!("Error processing debug request: {:?}", e);
                                     return Err(e);
                                 }
                             }
@@ -925,7 +925,7 @@ impl Hypervisor for HypervLinuxDriver {
                     })?;
 
                 loop {
-                    log::debug!("Debug wait for event to resume vCPU");
+                    debug!("Debug wait for event to resume vCPU");
                     // Wait for a message from gdb
                     let req = self.recv_dbg_msg()?;
 

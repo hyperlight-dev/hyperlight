@@ -19,7 +19,6 @@ use alloc::vec::Vec;
 
 use anyhow::{Error, Result, anyhow};
 use flatbuffers::size_prefixed_root;
-#[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
 use super::guest_log_level::LogLevel;
@@ -40,7 +39,7 @@ pub struct GuestLogData {
 }
 
 impl GuestLogData {
-    #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(
         message: String,
         source: String,
@@ -62,7 +61,7 @@ impl GuestLogData {
 
 impl TryFrom<&[u8]> for GuestLogData {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(raw_bytes: &[u8]) -> Result<Self> {
         let gld_gen = size_prefixed_root::<FbGuestLogData>(raw_bytes)
             .map_err(|e| anyhow!("Error while reading GuestLogData: {:?}", e))?;
@@ -86,7 +85,7 @@ impl TryFrom<&[u8]> for GuestLogData {
 
 impl TryFrom<&GuestLogData> for Vec<u8> {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: &GuestLogData) -> Result<Vec<u8>> {
         let mut builder = flatbuffers::FlatBufferBuilder::new();
         let message = builder.create_string(&value.message);
@@ -115,13 +114,13 @@ impl TryFrom<&GuestLogData> for Vec<u8> {
 
 impl TryFrom<GuestLogData> for Vec<u8> {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: GuestLogData) -> Result<Vec<u8>> {
         (&value).try_into()
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+#[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 fn convert_generated_option(field_name: &str, opt: Option<&str>) -> Result<String> {
     opt.map(|s| s.to_string())
         .ok_or_else(|| anyhow!("Missing field: {}", field_name))

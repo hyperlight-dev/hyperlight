@@ -19,7 +19,6 @@ use alloc::vec::Vec;
 
 use anyhow::{Error, Result, anyhow, bail};
 use flatbuffers::size_prefixed_root;
-#[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
 use super::guest_error::GuestError;
@@ -284,7 +283,7 @@ pub enum ReturnType {
 }
 
 impl From<&ParameterValue> for ParameterType {
-    #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn from(value: &ParameterValue) -> Self {
         match *value {
             ParameterValue::Int(_) => ParameterType::Int,
@@ -303,7 +302,7 @@ impl From<&ParameterValue> for ParameterType {
 impl TryFrom<Parameter<'_>> for ParameterValue {
     type Error = Error;
 
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(param: Parameter<'_>) -> Result<Self> {
         let value = param.value_type();
         let result = match value {
@@ -343,7 +342,7 @@ impl TryFrom<Parameter<'_>> for ParameterValue {
 }
 
 impl From<ParameterType> for FbParameterType {
-    #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn from(value: ParameterType) -> Self {
         match value {
             ParameterType::Int => FbParameterType::hlint,
@@ -360,7 +359,7 @@ impl From<ParameterType> for FbParameterType {
 }
 
 impl From<ReturnType> for FbReturnType {
-    #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn from(value: ReturnType) -> Self {
         match value {
             ReturnType::Int => FbReturnType::hlint,
@@ -379,7 +378,7 @@ impl From<ReturnType> for FbReturnType {
 
 impl TryFrom<FbParameterType> for ParameterType {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: FbParameterType) -> Result<Self> {
         match value {
             FbParameterType::hlint => Ok(ParameterType::Int),
@@ -400,7 +399,7 @@ impl TryFrom<FbParameterType> for ParameterType {
 
 impl TryFrom<FbReturnType> for ReturnType {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: FbReturnType) -> Result<Self> {
         match value {
             FbReturnType::hlint => Ok(ReturnType::Int),
@@ -422,7 +421,7 @@ impl TryFrom<FbReturnType> for ReturnType {
 
 impl TryFrom<ParameterValue> for i32 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::Int(v) => Ok(v),
@@ -435,7 +434,7 @@ impl TryFrom<ParameterValue> for i32 {
 
 impl TryFrom<ParameterValue> for u32 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::UInt(v) => Ok(v),
@@ -448,7 +447,7 @@ impl TryFrom<ParameterValue> for u32 {
 
 impl TryFrom<ParameterValue> for i64 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::Long(v) => Ok(v),
@@ -461,7 +460,7 @@ impl TryFrom<ParameterValue> for i64 {
 
 impl TryFrom<ParameterValue> for u64 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::ULong(v) => Ok(v),
@@ -474,7 +473,7 @@ impl TryFrom<ParameterValue> for u64 {
 
 impl TryFrom<ParameterValue> for f32 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::Float(v) => Ok(v),
@@ -487,7 +486,7 @@ impl TryFrom<ParameterValue> for f32 {
 
 impl TryFrom<ParameterValue> for f64 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::Double(v) => Ok(v),
@@ -500,7 +499,7 @@ impl TryFrom<ParameterValue> for f64 {
 
 impl TryFrom<ParameterValue> for String {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::String(v) => Ok(v),
@@ -513,7 +512,7 @@ impl TryFrom<ParameterValue> for String {
 
 impl TryFrom<ParameterValue> for bool {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::Bool(v) => Ok(v),
@@ -526,7 +525,7 @@ impl TryFrom<ParameterValue> for bool {
 
 impl TryFrom<ParameterValue> for Vec<u8> {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ParameterValue) -> Result<Self> {
         match value {
             ParameterValue::VecBytes(v) => Ok(v),
@@ -539,7 +538,7 @@ impl TryFrom<ParameterValue> for Vec<u8> {
 
 impl TryFrom<ReturnValue> for i32 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::Int(v) => Ok(v),
@@ -552,7 +551,7 @@ impl TryFrom<ReturnValue> for i32 {
 
 impl TryFrom<ReturnValue> for u32 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::UInt(v) => Ok(v),
@@ -565,7 +564,7 @@ impl TryFrom<ReturnValue> for u32 {
 
 impl TryFrom<ReturnValue> for i64 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::Long(v) => Ok(v),
@@ -578,7 +577,7 @@ impl TryFrom<ReturnValue> for i64 {
 
 impl TryFrom<ReturnValue> for u64 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::ULong(v) => Ok(v),
@@ -591,7 +590,7 @@ impl TryFrom<ReturnValue> for u64 {
 
 impl TryFrom<ReturnValue> for f32 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::Float(v) => Ok(v),
@@ -604,7 +603,7 @@ impl TryFrom<ReturnValue> for f32 {
 
 impl TryFrom<ReturnValue> for f64 {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::Double(v) => Ok(v),
@@ -617,7 +616,7 @@ impl TryFrom<ReturnValue> for f64 {
 
 impl TryFrom<ReturnValue> for String {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::String(v) => Ok(v),
@@ -630,7 +629,7 @@ impl TryFrom<ReturnValue> for String {
 
 impl TryFrom<ReturnValue> for bool {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::Bool(v) => Ok(v),
@@ -643,7 +642,7 @@ impl TryFrom<ReturnValue> for bool {
 
 impl TryFrom<ReturnValue> for Vec<u8> {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::VecBytes(v) => Ok(v),
@@ -656,7 +655,7 @@ impl TryFrom<ReturnValue> for Vec<u8> {
 
 impl TryFrom<ReturnValue> for () {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: ReturnValue) -> Result<Self> {
         match value {
             ReturnValue::Void(()) => Ok(()),
@@ -669,7 +668,7 @@ impl TryFrom<ReturnValue> for () {
 
 impl TryFrom<ReturnValueBox<'_>> for ReturnValue {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(return_value_box: ReturnValueBox<'_>) -> Result<Self> {
         match return_value_box.value_type() {
             FbReturnValue::hlint => {
@@ -740,7 +739,7 @@ impl TryFrom<ReturnValueBox<'_>> for ReturnValue {
 
 impl TryFrom<&ReturnValue> for Vec<u8> {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(value: &ReturnValue) -> Result<Vec<u8>> {
         let mut builder = flatbuffers::FlatBufferBuilder::new();
         let result_bytes = match value {

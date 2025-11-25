@@ -19,8 +19,8 @@ use std::option::Option;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use log::LevelFilter;
 use tracing::{Span, instrument};
+use tracing::log::LevelFilter;
 
 use super::host_funcs::{FunctionRegistry, default_writer_func};
 use super::uninitialized_evolve::evolve_impl_multi_use;

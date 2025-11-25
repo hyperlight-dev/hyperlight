@@ -22,6 +22,7 @@ use std::vec::Vec;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
+use tracing::debug;
 
 use crate::emit::{
     FnName, ResourceItemName, State, WitName, kebab_to_cons, kebab_to_exports_name, kebab_to_fn,
@@ -164,7 +165,7 @@ fn try_find_local_var_id(
                 return Some(emit_resource_ref(s, n, path));
             }
         }
-        log::debug!("path is {:?}\n", path);
+        debug!("path is {:?}\n", path);
         let mut path = path.iter().rev();
         let name = kebab_to_type(path.next().unwrap().name());
         let owner = path.next();
@@ -216,7 +217,7 @@ pub fn emit_var_ref_value(s: &mut State, tv: &Tyvar) -> TokenStream {
 ///   the bound variable being referenced
 /// - `is_value`: whether this is a value (e.g. constructor) or type context.
 pub fn emit_var_ref_noff(s: &mut State, n: u32, is_value: bool) -> TokenStream {
-    log::debug!("var_ref {:?} {:?}", &s.bound_vars[n as usize], s.origin);
+    debug!("var_ref {:?} {:?}", &s.bound_vars[n as usize], s.origin);
     // if the variable was defined locally, try to reference it directly
     let id = try_find_local_var_id(s, n);
     let id = match id {
@@ -317,7 +318,7 @@ pub fn emit_value(s: &mut State, vt: &Value) -> TokenStream {
                         wrap(emit_var_ref(s, tv))
                     } else {
                         let n = crate::hl::resolve_handleable_to_resource(s, ht);
-                        log::debug!("resolved ht to r (4) {:?} {:?}", ht, n);
+                        debug!("resolved ht to r (4) {:?} {:?}", ht, n);
                         let id = format_ident!("HostResource{}", n);
                         wrap(quote! { #id })
                     }
@@ -339,7 +340,7 @@ pub fn emit_value(s: &mut State, vt: &Value) -> TokenStream {
                         wrap(emit_var_ref(s, tv))
                     } else {
                         let n = crate::hl::resolve_handleable_to_resource(s, ht);
-                        log::debug!("resolved ht to r (5) {:?} {:?}", ht, n);
+                        debug!("resolved ht to r (5) {:?} {:?}", ht, n);
                         let id = format_ident!("HostResource{}", n);
                         wrap(quote! { #id })
                     }
@@ -619,7 +620,7 @@ fn emit_extern_decl<'a, 'b, 'c>(
     s: &'c mut State<'a, 'b>,
     ed: &'c ExternDecl<'b>,
 ) -> TokenStream {
-    log::debug!("  emitting decl {:?}", ed.kebab_name);
+    debug!("  emitting decl {:?}", ed.kebab_name);
     match &ed.desc {
         ExternDesc::CoreModule(_) => panic!("core module (im/ex)ports are not supported"),
         ExternDesc::Func(ft) => {
@@ -749,7 +750,7 @@ fn emit_extern_decl<'a, 'b, 'c>(
 /// Emit (via mutating `s`) a Rust trait declaration corresponding to
 /// this instance type
 fn emit_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &'c Instance<'b>) {
-    log::debug!("emitting instance {:?}", wn);
+    debug!("emitting instance {:?}", wn);
     let mut s = s.with_cursor(wn.namespace_idents());
 
     let name = kebab_to_type(wn.name);
@@ -801,7 +802,7 @@ fn emit_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &'c Inst
     }
 
     drop(sv);
-    log::debug!("after exports, ncur_needs_vars is {:?}", needs_vars);
+    debug!("after exports, ncur_needs_vars is {:?}", needs_vars);
     for v in needs_vars {
         let id = s.noff_var_id(v);
         s.cur_trait().tvs.insert(id, (Some(v), TokenStream::new()));

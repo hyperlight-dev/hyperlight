@@ -16,6 +16,7 @@ limitations under the License.
 
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
+use tracing::debug;
 
 use crate::emit::{
     FnName, ResourceItemName, State, WitName, kebab_to_exports_name, kebab_to_fn, kebab_to_getter,
@@ -202,7 +203,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
         ExternDesc::CoreModule(_) => panic!("core module (im/ex)ports are not supported"),
         ExternDesc::Func(ft) => {
             let hln = emit_fn_hl_name(s, ed.kebab_name);
-            log::debug!("providing host function {}", hln);
+            debug!("providing host function {}", hln);
             let (pds, pus) = ft
                 .params
                 .iter()
@@ -382,7 +383,7 @@ fn emit_component<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, ct: &'c Com
 /// See [`emit_component`]
 pub fn emit_toplevel<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, n: &str, ct: &'c Component<'b>) {
     s.is_impl = true;
-    log::debug!("\n\n=== starting host emit ===\n");
+    debug!("\n\n=== starting host emit ===\n");
     let wn = split_wit_name(n);
     emit_component(s, wn, ct)
 }

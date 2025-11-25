@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use log::{LevelFilter, debug};
-use tracing::{Span, instrument};
+use tracing::{Span, debug, info, instrument};
+use tracing::log::LevelFilter;
 
 use crate::HyperlightError::StackOverflow;
 use crate::error::HyperlightError::ExecutionCanceledByHost;
@@ -301,7 +301,7 @@ pub(crate) trait Hypervisor: Debug + Send {
             val.split(',').find(|s| !s.contains("=")).unwrap_or("")
         };
 
-        log::info!("Determined guest log level: {}", level);
+        info!("Determined guest log level: {}", level);
         // Convert the log level string to a LevelFilter
         // If no value is found, default to Error
         LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
@@ -403,7 +403,7 @@ impl VirtualCPU {
                         if let Err(e) = tc.handle_trace(&regs, mem_mgr) {
                             // If no trace data is available, we just log a message and continue
                             // Is this the right thing to do?
-                            log::debug!("Error handling guest trace: {:?}", e);
+                            debug!("Error handling guest trace: {:?}", e);
                         }
                     }
 
@@ -649,7 +649,7 @@ impl LinuxInterruptHandle {
                 break;
             }
 
-            log::info!("Sending signal to kill vcpu thread...");
+            info!("Sending signal to kill vcpu thread...");
             sent_signal = true;
             // Acquire ordering to synchronize with the Release store in set_tid()
             // This ensures we see the correct tid value for the currently running vcpu

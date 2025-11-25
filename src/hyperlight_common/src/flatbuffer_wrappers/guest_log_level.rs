@@ -15,9 +15,7 @@ limitations under the License.
 */
 
 use anyhow::{Error, Result, bail};
-use log::Level;
-#[cfg(feature = "tracing")]
-use tracing::{Span, instrument};
+use tracing::{Level, Span, instrument};
 
 use crate::flatbuffers::hyperlight::generated::LogLevel as FbLogLevel;
 
@@ -34,7 +32,7 @@ pub enum LogLevel {
 }
 
 impl From<u8> for LogLevel {
-    #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn from(val: u8) -> LogLevel {
         match val {
             0 => LogLevel::Trace,
@@ -50,7 +48,7 @@ impl From<u8> for LogLevel {
 
 impl TryFrom<&FbLogLevel> for LogLevel {
     type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     fn try_from(val: &FbLogLevel) -> Result<LogLevel> {
         match *val {
             FbLogLevel::Trace => Ok(LogLevel::Trace),
@@ -68,7 +66,7 @@ impl TryFrom<&FbLogLevel> for LogLevel {
 }
 
 impl From<&LogLevel> for FbLogLevel {
-    #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn from(val: &LogLevel) -> FbLogLevel {
         match val {
             LogLevel::Critical => FbLogLevel::Critical,
@@ -89,14 +87,14 @@ impl From<&LogLevel> for Level {
     //TODO: instrument this once we fix the test
     fn from(val: &LogLevel) -> Level {
         match val {
-            LogLevel::Trace => Level::Trace,
-            LogLevel::Debug => Level::Debug,
-            LogLevel::Information => Level::Info,
-            LogLevel::Warning => Level::Warn,
-            LogLevel::Error => Level::Error,
-            LogLevel::Critical => Level::Error,
+            LogLevel::Trace => Level::TRACE,
+            LogLevel::Debug => Level::DEBUG,
+            LogLevel::Information => Level::INFO,
+            LogLevel::Warning => Level::WARN,
+            LogLevel::Error => Level::ERROR,
+            LogLevel::Critical => Level::ERROR,
             // If the log level is None then we will log as trace
-            LogLevel::None => Level::Trace,
+            LogLevel::None => Level::TRACE,
         }
     }
 }
@@ -104,11 +102,11 @@ impl From<&LogLevel> for Level {
 impl From<Level> for LogLevel {
     fn from(val: Level) -> LogLevel {
         match val {
-            Level::Trace => LogLevel::Trace,
-            Level::Debug => LogLevel::Debug,
-            Level::Info => LogLevel::Information,
-            Level::Warn => LogLevel::Warning,
-            Level::Error => LogLevel::Error,
+            Level::TRACE => LogLevel::Trace,
+            Level::DEBUG => LogLevel::Debug,
+            Level::INFO => LogLevel::Information,
+            Level::WARN => LogLevel::Warning,
+            Level::ERROR => LogLevel::Error,
         }
     }
 }
