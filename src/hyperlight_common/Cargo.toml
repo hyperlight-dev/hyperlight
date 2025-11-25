@@ -29,9 +29,6 @@ trace_guest = []
 mem_profile = []
 std = []
 
-[dev-dependencies]
-hyperlight-testing = { workspace = true }
-
 [lib]
 bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 doctest = false # reduce noise in test output
