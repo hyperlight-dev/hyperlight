@@ -14,11 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv3)]
-extern crate mshv_bindings;
-#[cfg(mshv3)]
-extern crate mshv_ioctls;
-
 use std::collections::HashMap;
 
 use mshv_bindings::{

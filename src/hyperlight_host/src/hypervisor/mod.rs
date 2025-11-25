@@ -19,9 +19,7 @@ use tracing::{Span, instrument};
 
 use crate::HyperlightError::StackOverflow;
 use crate::error::HyperlightError::ExecutionCanceledByHost;
-use crate::hypervisor::regs::{
-    CommonFpu, CommonRegisters, CommonSegmentRegister, CommonSpecialRegisters,
-};
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::metrics::METRIC_GUEST_CANCELLATION;
 #[cfg(feature = "mem_profile")]
@@ -77,25 +75,6 @@ use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::sandbox::host_funcs::FunctionRegistry;
-
-cfg_if::cfg_if! {
-    if #[cfg(feature = "init-paging")] {
-        pub(crate) const CR4_PAE: u64 = 1 << 5;
-        pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
-        pub(crate) const CR4_OSXMMEXCPT: u64 = 1 << 10;
-        pub(crate) const CR0_PE: u64 = 1;
-        pub(crate) const CR0_MP: u64 = 1 << 1;
-        pub(crate) const CR0_ET: u64 = 1 << 4;
-        pub(crate) const CR0_NE: u64 = 1 << 5;
-        pub(crate) const CR0_WP: u64 = 1 << 16;
-        pub(crate) const CR0_AM: u64 = 1 << 18;
-        pub(crate) const CR0_PG: u64 = 1 << 31;
-        pub(crate) const EFER_LME: u64 = 1 << 8;
-        pub(crate) const EFER_LMA: u64 = 1 << 10;
-        pub(crate) const EFER_SCE: u64 = 1;
-        pub(crate) const EFER_NX: u64 = 1 << 11;
-    }
-}
 
 /// These are the generic exit reasons that we can handle from a Hypervisor the Hypervisors run method is responsible for mapping from
 /// the hypervisor specific exit reasons to these generic ones
@@ -212,59 +191,10 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// This is a default implementation that works for all hypervisors
     fn setup_initial_sregs(&mut self, _pml4_addr: u64) -> Result<()> {
         #[cfg(feature = "init-paging")]
-        let sregs = CommonSpecialRegisters {
-            cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_PG | CR0_WP,
-            cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
-            cr3: _pml4_addr,
-            efer: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
-            cs: CommonSegmentRegister {
-                type_: 11,
-                present: 1,
-                s: 1,
-                l: 1,
-                ..Default::default()
-            },
-            tr: CommonSegmentRegister {
-                limit: 65535,
-                type_: 11,
-                present: 1,
-                s: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let sregs = CommonSpecialRegisters::standard_64bit_defaults(_pml4_addr);
 
         #[cfg(not(feature = "init-paging"))]
-        let sregs = CommonSpecialRegisters {
-            cs: CommonSegmentRegister {
-                base: 0,
-                selector: 0,
-                limit: 0xFFFF,
-                type_: 11,
-                present: 1,
-                s: 1,
-                ..Default::default()
-            },
-            ds: CommonSegmentRegister {
-                base: 0,
-                selector: 0,
-                limit: 0xFFFF,
-                type_: 3,
-                present: 1,
-                s: 1,
-                ..Default::default()
-            },
-            tr: CommonSegmentRegister {
-                base: 0,
-                selector: 0,
-                limit: 0xFFFF,
-                type_: 11,
-                present: 1,
-                s: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let sregs = CommonSpecialRegisters::standard_real_mode_defaults();
 
         self.set_sregs(&sregs)?;
         Ok(())

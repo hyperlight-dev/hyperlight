@@ -14,11 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(mshv3)]
-extern crate mshv_bindings;
-#[cfg(mshv3)]
-extern crate mshv_ioctls;
-
 #[cfg(target_os = "windows")]
 use std::collections::HashSet;
 
@@ -31,6 +26,25 @@ use windows::Win32::System::Hypervisor::*;
 
 #[cfg(target_os = "windows")]
 use super::FromWhpRegisterError;
+
+cfg_if::cfg_if! {
+    if #[cfg(feature = "init-paging")] {
+        pub(crate) const CR4_PAE: u64 = 1 << 5;
+        pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
+        pub(crate) const CR4_OSXMMEXCPT: u64 = 1 << 10;
+        pub(crate) const CR0_PE: u64 = 1;
+        pub(crate) const CR0_MP: u64 = 1 << 1;
+        pub(crate) const CR0_ET: u64 = 1 << 4;
+        pub(crate) const CR0_NE: u64 = 1 << 5;
+        pub(crate) const CR0_WP: u64 = 1 << 16;
+        pub(crate) const CR0_AM: u64 = 1 << 18;
+        pub(crate) const CR0_PG: u64 = 1 << 31;
+        pub(crate) const EFER_LME: u64 = 1 << 8;
+        pub(crate) const EFER_LMA: u64 = 1 << 10;
+        pub(crate) const EFER_SCE: u64 = 1;
+        pub(crate) const EFER_NX: u64 = 1 << 11;
+    }
+}
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub(crate) struct CommonSpecialRegisters {
@@ -52,6 +66,77 @@ pub(crate) struct CommonSpecialRegisters {
     pub efer: u64,
     pub apic_base: u64,
     pub interrupt_bitmap: [u64; 4],
+}
+
+impl CommonSpecialRegisters {
+    #[cfg(feature = "init-paging")]
+    pub(crate) fn standard_64bit_defaults(pml4_addr: u64) -> Self {
+        CommonSpecialRegisters {
+            cs: CommonSegmentRegister {
+                l: 1,          // 64-bit
+                type_: 0b1011, // Code, Readable, Accessed
+                present: 1,    // Present
+                s: 1,          // Non-system
+                ..Default::default()
+            },
+            tr: CommonSegmentRegister {
+                limit: 0xFFFF,
+                type_: 0b1011,
+                present: 1,
+                ..Default::default()
+            },
+            efer: EFER_LME | EFER_LMA | EFER_SCE | EFER_NX,
+            ds: Default::default(),
+            es: Default::default(),
+            fs: Default::default(),
+            gs: Default::default(),
+            ss: Default::default(),
+            ldt: Default::default(),
+            gdt: Default::default(),
+            idt: Default::default(),
+            cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_WP | CR0_PG,
+            cr2: 0,
+            cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
+            cr3: pml4_addr,
+            cr8: 0,
+            apic_base: 0,
+            interrupt_bitmap: [0; 4],
+        }
+    }
+
+    #[cfg(not(feature = "init-paging"))]
+    pub(crate) fn standard_real_mode_defaults() -> Self {
+        CommonSpecialRegisters {
+            cs: CommonSegmentRegister {
+                base: 0,
+                selector: 0,
+                limit: 0xFFFF,
+                type_: 11,
+                present: 1,
+                s: 1,
+                ..Default::default()
+            },
+            ds: CommonSegmentRegister {
+                base: 0,
+                selector: 0,
+                limit: 0xFFFF,
+                type_: 3,
+                present: 1,
+                s: 1,
+                ..Default::default()
+            },
+            tr: CommonSegmentRegister {
+                base: 0,
+                selector: 0,
+                limit: 0xFFFF,
+                type_: 11,
+                present: 1,
+                s: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(mshv3)]

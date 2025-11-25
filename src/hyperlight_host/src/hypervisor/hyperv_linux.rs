@@ -14,9 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-extern crate mshv_bindings;
-extern crate mshv_ioctls;
-
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 use std::sync::{Arc, Mutex};
@@ -68,7 +65,8 @@ use crate::{Result, log_then_return, new_error};
 
 #[cfg(gdb)]
 mod debug {
-    use super::mshv_bindings::hv_x64_exception_intercept_message;
+    use mshv_bindings::hv_x64_exception_intercept_message;
+
     use super::{HypervLinuxDriver, *};
     use crate::hypervisor::gdb::{DebugMemoryAccess, DebugMsg, DebugResponse, VcpuStopReason};
     use crate::{Result, new_error};
