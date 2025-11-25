@@ -240,6 +240,11 @@ fmt-apply:
 clippy target=default-target: (witguest-wit)
     {{ cargo-cmd }} clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings
 
+# for use on a linux host-machine when cross-compiling to windows. Uses the windows-gnu which should be sufficient for most purposes
+# Note: `--all-targets` does not work because build issues from tracy-crate
+clippyw target=default-target: (witguest-wit)
+    {{ cargo-cmd }} clippy --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
+
 clippy-guests target=default-target: (witguest-wit)
     cd src/tests/rust_guests/simpleguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
     cd src/tests/rust_guests/witguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
