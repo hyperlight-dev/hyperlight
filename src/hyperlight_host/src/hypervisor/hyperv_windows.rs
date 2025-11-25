@@ -20,8 +20,8 @@ use std::string::String;
 use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::sync::{Arc, Mutex};
 
-use tracing::{Level, Span, error, debug, instrument};
 use tracing::log::LevelFilter;
+use tracing::{Level, Span, debug, error, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use windows::Win32::System::Hypervisor::{WHV_MEMORY_ACCESS_TYPE, WHV_RUN_VP_EXIT_REASON};

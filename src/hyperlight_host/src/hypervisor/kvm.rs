@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use tracing::{Span, info, instrument};
 use tracing::log::LevelFilter;
+use tracing::{Span, info, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(crashdump)]

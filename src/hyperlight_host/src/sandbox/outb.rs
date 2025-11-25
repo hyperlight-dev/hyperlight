@@ -46,7 +46,7 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
 
     // Convert from our LogLevel to tracing::Level
     let tracing_level: tracing::Level = (&log_data.level).into();
-    
+
     // Convert tracing::Level to log::Level for the Record API
     let record_level: Level = match tracing_level {
         tracing::Level::TRACE => Level::Trace,
@@ -207,7 +207,7 @@ pub(crate) fn handle_outb(
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
     use hyperlight_testing::logger::{LOGGER, Logger};
-    use log::Level;
+    use tracing::log::{Level, LevelFilter};
     use tracing_core::callsite::rebuild_interest_cache;
 
     use super::outb_log;
@@ -234,7 +234,7 @@ mod tests {
     #[ignore]
     fn test_log_outb_log() {
         Logger::initialize_test_logger();
-        LOGGER.set_max_level(log::LevelFilter::Off);
+        LOGGER.set_max_level(LevelFilter::Off);
 
         let sandbox_cfg = SandboxConfiguration::default();
 
@@ -281,7 +281,7 @@ mod tests {
         }
         {
             // now, test logging
-            LOGGER.set_max_level(log::LevelFilter::Trace);
+            LOGGER.set_max_level(LevelFilter::Trace);
             let mut mgr = new_mgr();
             LOGGER.clear_log_calls();
 
@@ -314,7 +314,15 @@ mod tests {
                 outb_log(&mut mgr).unwrap();
 
                 LOGGER.test_log_records(|log_calls| {
-                    let expected_level: Level = (&level).into();
+                    // Convert through tracing::Level first
+                    let tracing_level: tracing::Level = (&level).into();
+                    let expected_level: Level = match tracing_level {
+                        tracing::Level::TRACE => Level::Trace,
+                        tracing::Level::DEBUG => Level::Debug,
+                        tracing::Level::INFO => Level::Info,
+                        tracing::Level::WARN => Level::Warn,
+                        tracing::Level::ERROR => Level::Error,
+                    };
 
                     assert!(
                         log_calls

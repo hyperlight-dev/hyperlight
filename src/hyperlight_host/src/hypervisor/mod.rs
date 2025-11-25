@@ -885,6 +885,7 @@ pub(crate) mod tests {
 
         use crate::mem::ptr::RawPtr;
         use crate::sandbox::host_funcs::FunctionRegistry;
+        use tracing::log::LevelFilter;
 
         let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
 
@@ -907,7 +908,7 @@ pub(crate) mod tests {
         let seed = 12345u64; // Random seed
         let page_size = 4096u32; // Standard page size
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
-        let guest_max_log_level = Some(log::LevelFilter::Error);
+        let guest_max_log_level = Some(LevelFilter::Error);
 
         #[cfg(gdb)]
         let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr.clone()));

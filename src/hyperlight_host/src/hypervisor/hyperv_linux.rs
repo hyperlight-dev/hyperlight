@@ -21,8 +21,6 @@ use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 use std::sync::{Arc, Mutex};
 
-use tracing::{Span, error, info, instrument};
-use tracing::log::LevelFilter;
 use mshv_bindings::{
     FloatingPointUnit, SpecialRegisters, StandardRegisters, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
@@ -38,6 +36,8 @@ use mshv_bindings::{
     mshv_install_intercept,
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
+use tracing::log::LevelFilter;
+use tracing::{Span, error, info, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(crashdump)]
