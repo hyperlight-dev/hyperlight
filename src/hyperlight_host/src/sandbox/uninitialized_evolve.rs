@@ -26,6 +26,7 @@ use super::hypervisor::{HypervisorType, get_available_hypervisor};
 use super::uninitialized::SandboxRuntimeConfig;
 use crate::HyperlightError::NoHypervisorFound;
 use crate::hypervisor::Hypervisor;
+use crate::hypervisor::hyperlight_vm::HyperlightVm;
 use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
@@ -106,7 +107,7 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
-) -> Result<Box<dyn Hypervisor>> {
+) -> Result<HyperlightVm> {
     #[cfg(feature = "init-paging")]
     let rsp_ptr = {
         let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
@@ -167,7 +168,7 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(feature = "mem_profile")]
     let trace_info = MemTraceInfo::new(_load_info)?;
 
-    match *get_available_hypervisor() {
+    let vm: Box<dyn Hypervisor> = match *get_available_hypervisor() {
         #[cfg(mshv3)]
         Some(HypervisorType::Mshv) => {
             let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
@@ -183,7 +184,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 #[cfg(feature = "mem_profile")]
                 trace_info,
             )?;
-            Ok(Box::new(hv))
+            Box::new(hv)
         }
 
         #[cfg(kvm)]
@@ -201,7 +202,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 #[cfg(feature = "mem_profile")]
                 trace_info,
             )?;
-            Ok(Box::new(hv))
+            Box::new(hv)
         }
 
         #[cfg(target_os = "windows")]
@@ -225,13 +226,15 @@ pub(crate) fn set_up_hypervisor_partition(
                 #[cfg(feature = "mem_profile")]
                 trace_info,
             )?;
-            Ok(Box::new(hv))
+            Box::new(hv)
         }
 
         _ => {
             log_then_return!(NoHypervisorFound());
         }
-    }
+    };
+
+    Ok(HyperlightVm::new(vm))
 }
 
 #[cfg(test)]
