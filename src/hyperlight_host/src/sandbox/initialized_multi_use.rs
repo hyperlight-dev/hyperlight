@@ -37,6 +37,7 @@ use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
 use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::{ParameterTuple, SupportedReturnType};
+use crate::hypervisor::hyperlight_vm::HyperlightVm;
 use crate::hypervisor::{Hypervisor, InterruptHandle};
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
@@ -97,7 +98,7 @@ pub struct MultiUseSandbox {
     poisoned: bool,
     pub(super) host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
-    vm: Box<dyn Hypervisor>,
+    vm: HyperlightVm,
     dispatch_ptr: RawPtr,
     #[cfg(gdb)]
     dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
@@ -116,7 +117,7 @@ impl MultiUseSandbox {
     pub(super) fn from_uninit(
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
-        vm: Box<dyn Hypervisor>,
+        vm: HyperlightVm,
         dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
@@ -714,7 +715,7 @@ impl MultiUseSandbox {
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn generate_crashdump(&self) -> Result<()> {
-        crate::hypervisor::crashdump::generate_crashdump(self.vm.as_ref())
+        crate::hypervisor::crashdump::generate_crashdump(self.vm.vm.as_ref() as &dyn Hypervisor)
     }
 
     /// Returns whether the sandbox is currently poisoned.

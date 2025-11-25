@@ -59,6 +59,8 @@ pub(crate) mod wrappers;
 #[cfg(crashdump)]
 pub(crate) mod crashdump;
 
+pub(crate) mod hyperlight_vm;
+
 use std::fmt::Debug;
 use std::str::FromStr;
 #[cfg(any(kvm, mshv3))]
