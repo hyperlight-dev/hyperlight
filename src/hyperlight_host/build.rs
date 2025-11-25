@@ -25,10 +25,10 @@ fn main() -> Result<()> {
 
     // Windows requires the hyperlight_surrogate.exe binary to be next to the executable running
     // hyperlight. We are using rust-embed to include the binary in the hyperlight-host library
-    // and then extracting it at runtime why the surrogate process manager starts and needed pass
+    // and then extracting it at runtime when the surrogate process manager starts. We need to pass
     // the location of the binary to the rust build.
-    #[cfg(target_os = "windows")]
-    {
+    // This logic runs when targeting Windows, even if cross-compiling from Linux.
+    if std::env::var("CARGO_CFG_TARGET_OS")? == "windows" {
         println!("cargo:rerun-if-changed=src/hyperlight_surrogate/src/main.rs");
 
         // Build hyperlight_surrogate and
@@ -56,7 +56,7 @@ fn main() -> Result<()> {
         // be the same as the CARGO_TARGET_DIR for the hyperlight-host otherwise
         // the build script will hang. Using a sub directory works tho!
         // xref - https://github.com/rust-lang/cargo/issues/6412
-        let target_dir = std::path::PathBuf::from(&out_dir).join("..\\..\\hls");
+        let target_dir = std::path::PathBuf::from(&out_dir).join("../../hls");
 
         let profile = std::env::var("PROFILE")?;
         let build_profile = if profile.to_lowercase() == "debug" {
@@ -65,19 +65,29 @@ fn main() -> Result<()> {
             profile.clone()
         };
 
-        std::process::Command::new("cargo")
+        let target_triple = std::env::var("TARGET")?;
+
+        let status = std::process::Command::new("cargo")
             .env("CARGO_TARGET_DIR", &target_dir)
             .arg("build")
             .arg("--manifest-path")
             .arg(&target_manifest_path)
+            .arg("--target")
+            .arg(&target_triple)
             .arg("--profile")
             .arg(build_profile)
             .arg("--verbose")
-            .output()
-            .unwrap();
+            .status()
+            .expect("Failed to execute cargo build for surrogate");
+
+        if !status.success() {
+            panic!("Failed to build hyperlight surrogate");
+        }
 
         println!("cargo:rustc-env=PROFILE={}", profile);
-        let surrogate_binary_dir = std::path::PathBuf::from(&target_dir).join(profile);
+        let surrogate_binary_dir = std::path::PathBuf::from(&target_dir)
+            .join(&target_triple)
+            .join(profile);
 
         println!(
             "cargo:rustc-env=HYPERLIGHT_SURROGATE_DIR={}",
