@@ -172,7 +172,6 @@ pub(crate) fn set_up_hypervisor_partition(
         #[cfg(mshv3)]
         Some(HypervisorType::Mshv) => {
             let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
-                regions,
                 entrypoint_ptr,
                 rsp_ptr,
                 pml4_ptr,
@@ -190,7 +189,6 @@ pub(crate) fn set_up_hypervisor_partition(
         #[cfg(kvm)]
         Some(HypervisorType::Kvm) => {
             let hv = crate::hypervisor::kvm::KVMDriver::new(
-                regions,
                 pml4_ptr.absolute()?,
                 entrypoint_ptr.absolute()?,
                 rsp_ptr.absolute()?,
@@ -234,7 +232,7 @@ pub(crate) fn set_up_hypervisor_partition(
         }
     };
 
-    Ok(HyperlightVm::new(vm))
+    HyperlightVm::new(vm, regions, config)
 }
 
 #[cfg(test)]

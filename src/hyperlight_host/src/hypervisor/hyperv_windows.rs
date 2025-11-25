@@ -431,15 +431,7 @@ impl Hypervisor for HypervWindowsDriver {
         };
         self.set_regs(&regs)?;
 
-        let interrupt_handle = self.interrupt_handle.clone();
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            interrupt_handle,
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_hdl,
-        )
+        Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -476,15 +468,7 @@ impl Hypervisor for HypervWindowsDriver {
         // reset fpu state
         self.processor.set_fpu(&CommonFpu::default())?;
 
-        let interrupt_handle = self.interrupt_handle.clone();
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            interrupt_handle,
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_hdl,
-        )
+        Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -650,11 +634,6 @@ impl Hypervisor for HypervWindowsDriver {
 
     fn clear_cancel(&self) {
         self.interrupt_handle.clear_cancel();
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
     }
 
     #[cfg(crashdump)]
