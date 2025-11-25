@@ -45,11 +45,11 @@ use super::gdb::{
     DebugCommChannel, DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, MshvDebug,
     VcpuStopReason,
 };
-use super::{HyperlightExit, Hypervisor, LinuxInterruptHandle, VirtualCPU};
+use super::{Hypervisor, LinuxInterruptHandle};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::hypervisor::regs::CommonFpu;
-use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_memory_access_violation};
+use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, HyperlightExit};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -273,9 +273,6 @@ pub(crate) struct HypervLinuxDriver {
     entrypoint: u64,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
-    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
-    mmap_regions: Vec<MemoryRegion>,    // Later mapped regions
-
     #[cfg(gdb)]
     debug: Option<MshvDebug>,
     #[cfg(gdb)]
@@ -299,7 +296,6 @@ impl HypervLinuxDriver {
     // TODO: refactor this function to take fewer arguments. Add trace_info to rt_cfg
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
-        mem_regions: Vec<MemoryRegion>,
         entrypoint_ptr: GuestPtr,
         rsp_ptr: GuestPtr,
         pml4_ptr: GuestPtr,
@@ -365,11 +361,6 @@ impl HypervLinuxDriver {
             (None, None)
         };
 
-        mem_regions.iter().try_for_each(|region| {
-            let mshv_region = region.to_owned().into();
-            vm_fd.map_user_memory(mshv_region)
-        })?;
-
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
             state: AtomicU8::new(0),
             #[cfg(all(
@@ -396,8 +387,6 @@ impl HypervLinuxDriver {
             page_size: 0,
             vm_fd,
             vcpu_fd,
-            sandbox_regions: mem_regions,
-            mmap_regions: Vec::new(),
             entrypoint: entrypoint_ptr.absolute()?,
             orig_rsp: rsp_ptr,
             interrupt_handle: interrupt_handle.clone(),
@@ -430,13 +419,6 @@ impl Debug for HypervLinuxDriver {
 
         f.field("Entrypoint", &self.entrypoint)
             .field("Original RSP", &self.orig_rsp);
-
-        for region in &self.sandbox_regions {
-            f.field("Sandbox Memory Region", &region);
-        }
-        for region in &self.mmap_regions {
-            f.field("Mapped Memory Region", &region);
-        }
 
         let regs = self.vcpu_fd.get_regs();
 
@@ -488,51 +470,22 @@ impl Hypervisor for HypervLinuxDriver {
         };
         self.vcpu_fd.set_regs(&regs)?;
 
-        let interrupt_handle = self.interrupt_handle.clone();
-
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            interrupt_handle,
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
-        if [
-            rgn.guest_region.start,
-            rgn.guest_region.end,
-            rgn.host_region.start,
-            rgn.host_region.end,
-        ]
-        .iter()
-        .any(|x| x % self.page_size != 0)
-        {
-            log_then_return!("region is not page-aligned");
-        }
-        let mshv_region: mshv_user_mem_region = rgn.to_owned().into();
-        self.vm_fd.map_user_memory(mshv_region)?;
-        self.mmap_regions.push(rgn.to_owned());
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn unmap_region(&mut self, region: &MemoryRegion) -> Result<()> {
-        if let Some(pos) = self.mmap_regions.iter().position(|r| r == region) {
-            let removed_region = self.mmap_regions.remove(pos);
-            let mshv_region: mshv_user_mem_region = removed_region.into();
-            self.vm_fd.unmap_user_memory(mshv_region)?;
-            Ok(())
-        } else {
-            Err(new_error!("Tried to unmap region that is not mapped"))
-        }
+    /// # Safety
+    /// The caller must ensure that the memory region is valid and points to valid memory,
+    /// and lives long enough for the VM to use it.
+    unsafe fn map_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
+        let mshv_region: mshv_user_mem_region = region.into();
+        self.vm_fd.map_user_memory(mshv_region)?;
+        Ok(())
     }
 
-    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
-        Box::new(self.mmap_regions.iter())
+    fn unmap_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
+        let mshv_region: mshv_user_mem_region = region.into();
+        self.vm_fd.unmap_user_memory(mshv_region)?;
+        Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -555,61 +508,11 @@ impl Hypervisor for HypervLinuxDriver {
         // reset fpu state
         self.set_fpu(&CommonFpu::default())?;
 
-        let interrupt_handle = self.interrupt_handle.clone();
-
         // run
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            interrupt_handle,
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        rip: u64,
-        instruction_length: u64,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-    ) -> Result<()> {
-        let mut padded = [0u8; 4];
-        let copy_len = data.len().min(4);
-        padded[..copy_len].copy_from_slice(&data[..copy_len]);
-        let val = u32::from_le_bytes(padded);
-
-        #[cfg(feature = "mem_profile")]
-        {
-            let regs = self.regs()?;
-            let trace_info = self.trace_info_mut();
-            handle_outb(mem_mgr, host_funcs, port, val, &regs, trace_info)?;
-        }
-        #[cfg(not(feature = "mem_profile"))]
-        {
-            handle_outb(mem_mgr, host_funcs, port, val)?;
-        }
-
-        // update rip
-        self.vcpu_fd.set_reg(&[hv_register_assoc {
-            name: hv_register_name_HV_X64_REGISTER_RIP,
-            value: hv_register_value {
-                reg64: rip + instruction_length,
-            },
-            ..Default::default()
-        }])?;
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(
-        &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
-    ) -> Result<super::HyperlightExit> {
+    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
         const HALT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_HALT;
         const IO_PORT_INTERCEPT_MESSAGE: hv_message_type =
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
@@ -618,97 +521,67 @@ impl Hypervisor for HypervLinuxDriver {
         #[cfg(gdb)]
         const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
-        #[cfg(feature = "trace_guest")]
-        tc.setup_guest_trace(Span::current().context());
-
         let exit_reason = self.vcpu_fd.run();
 
         let result = match exit_reason {
             Ok(m) => match m.header.message_type {
-                HALT_MESSAGE => {
-                    crate::debug!("mshv - Halt Details : {:#?}", &self);
-                    HyperlightExit::Halt()
-                }
+                HALT_MESSAGE => HyperlightExit::Halt(),
                 IO_PORT_INTERCEPT_MESSAGE => {
                     let io_message = m.to_ioport_info().map_err(mshv_ioctls::MshvError::from)?;
                     let port_number = io_message.port_number;
                     let rip = io_message.header.rip;
                     let rax = io_message.rax;
                     let instruction_length = io_message.header.instruction_length() as u64;
-                    crate::debug!("mshv IO Details : \nPort : {}\n{:#?}", port_number, &self);
-                    HyperlightExit::IoOut(
-                        port_number,
-                        rax.to_le_bytes().to_vec(),
-                        rip,
-                        instruction_length,
-                    )
+
+                    // mshv, unlike kvm, does not automatically increment RIP
+                    self.vcpu_fd.set_reg(&[hv_register_assoc {
+                        name: hv_register_name_HV_X64_REGISTER_RIP,
+                        value: hv_register_value {
+                            reg64: rip + instruction_length,
+                        },
+                        ..Default::default()
+                    }])?;
+                    HyperlightExit::IoOut(port_number, rax.to_le_bytes().to_vec())
                 }
                 UNMAPPED_GPA_MESSAGE => {
                     let mimo_message = m.to_memory_info().map_err(mshv_ioctls::MshvError::from)?;
                     let addr = mimo_message.guest_physical_address;
-                    crate::debug!(
-                        "mshv MMIO unmapped GPA -Details: Address: {} \n {:#?}",
-                        addr,
-                        &self
-                    );
-                    HyperlightExit::Mmio(addr)
+                    match MemoryRegionFlags::try_from(mimo_message)? {
+                        MemoryRegionFlags::READ => HyperlightExit::MmioRead(addr),
+                        MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(addr),
+                        _ => HyperlightExit::Unknown("Unknown MMIO access".to_string()),
+                    }
                 }
                 INVALID_GPA_ACCESS_MESSAGE => {
                     let mimo_message = m.to_memory_info().map_err(mshv_ioctls::MshvError::from)?;
                     let gpa = mimo_message.guest_physical_address;
                     let access_info = MemoryRegionFlags::try_from(mimo_message)?;
-                    crate::debug!(
-                        "mshv MMIO invalid GPA access -Details: Address: {} \n {:#?}",
-                        gpa,
-                        &self
-                    );
-                    match get_memory_access_violation(
-                        gpa as usize,
-                        self.sandbox_regions.iter().chain(self.mmap_regions.iter()),
-                        access_info,
-                    ) {
-                        Some(access_info_violation) => access_info_violation,
-                        None => HyperlightExit::Mmio(gpa),
+                    match access_info {
+                        MemoryRegionFlags::READ => HyperlightExit::MmioRead(gpa),
+                        MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(gpa),
+                        _ => HyperlightExit::Unknown("Unknown MMIO access".to_string()),
                     }
                 }
-                // The only case an intercept exit is expected is when debugging is enabled
-                // and the intercepts are installed.
-                // Provide the extra information about the exception to accurately determine
-                // the stop reason
                 #[cfg(gdb)]
                 EXCEPTION_INTERCEPT => {
-                    // Extract exception info from the message so we can figure out
-                    // more information about the vCPU state
-                    let ex_info = match m.to_exception_info().map_err(mshv_ioctls::MshvError::from)
-                    {
-                        Ok(info) => info,
-                        Err(e) => {
-                            log_then_return!("Error converting to exception info: {:?}", e);
-                        }
-                    };
+                    use mshv_bindings::DebugRegisters;
 
-                    match self.get_stop_reason(ex_info) {
-                        Ok(reason) => HyperlightExit::Debug(reason),
-                        Err(e) => {
-                            log_then_return!("Error getting stop reason: {:?}", e);
-                        }
+                    let ex_info = m
+                        .to_exception_info()
+                        .map_err(mshv_ioctls::MshvError::from)?;
+                    let DebugRegisters { dr6, .. } = self.vcpu_fd.get_debug_regs()?;
+                    HyperlightExit::Debug {
+                        dr6,
+                        exception: ex_info.exception_vector as u32,
                     }
                 }
-                other => {
-                    crate::debug!("mshv Other Exit: Exit: {:#?} \n {:#?}", other, &self);
-                    #[cfg(crashdump)]
-                    let _ = crashdump::generate_crashdump(self);
-                    log_then_return!("unknown Hyper-V run message type {:?}", other);
-                }
+                other => HyperlightExit::Unknown(format!("Unknown MSHV VCPU exit: {:?}", other)),
             },
             Err(e) => match e.errno() {
-                // We send a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
+                // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
                 libc::EINTR => HyperlightExit::Cancelled(),
                 libc::EAGAIN => HyperlightExit::Retry(),
-                _ => {
-                    crate::debug!("mshv Error - Details: Error: {} \n {:#?}", e, &self);
-                    log_then_return!("Error running VCPU {:?}", e);
-                }
+                _ => HyperlightExit::Unknown(format!("Unknown MSHV VCPU error: {}", e)),
             },
         };
         Ok(result)
@@ -745,11 +618,6 @@ impl Hypervisor for HypervLinuxDriver {
         let mshv_sregs: SpecialRegisters = sregs.into();
         self.vcpu_fd.set_sregs(&mshv_sregs)?;
         Ok(())
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
     }
 
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
@@ -970,13 +838,6 @@ impl Drop for HypervLinuxDriver {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     fn drop(&mut self) {
         self.interrupt_handle.set_dropped();
-        for region in self.sandbox_regions.iter().chain(self.mmap_regions.iter()) {
-            let mshv_region: mshv_user_mem_region = region.to_owned().into();
-            match self.vm_fd.unmap_user_memory(mshv_region) {
-                Ok(_) => (),
-                Err(e) => error!("Failed to unmap user memory in HyperVOnLinux ({:?})", e),
-            }
-        }
     }
 }
 
@@ -1036,7 +897,6 @@ mod tests {
         let config: SandboxConfiguration = Default::default();
 
         super::HypervLinuxDriver::new(
-            regions.build(),
             entrypoint_ptr,
             rsp_ptr,
             pml4_ptr,

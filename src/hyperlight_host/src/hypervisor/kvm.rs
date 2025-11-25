@@ -33,12 +33,12 @@ use super::gdb::{
     DebugCommChannel, DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, KvmDebug,
     VcpuStopReason,
 };
-use super::{HyperlightExit, Hypervisor, LinuxInterruptHandle, VirtualCPU};
+use super::{Hypervisor, LinuxInterruptHandle};
 #[cfg(gdb)]
 use crate::HyperlightError;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
-use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_memory_access_violation};
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::hypervisor::{HyperlightExit, InterruptHandle, InterruptHandleImpl};
+use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::shared_mem::HostSharedMemory;
@@ -273,11 +273,6 @@ pub(crate) struct KVMDriver {
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
-    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
-    mmap_regions: Vec<(MemoryRegion, u32)>, // Later mapped regions (region, slot number)
-    next_slot: u32,                     // Monotonically increasing slot number
-    freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
-
     #[cfg(gdb)]
     debug: Option<KvmDebug>,
     #[cfg(gdb)]
@@ -296,7 +291,6 @@ impl KVMDriver {
     // TODO: refactor this function to take fewer arguments. Add trace_info to rt_cfg
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
-        mem_regions: Vec<MemoryRegion>,
         pml4_addr: u64,
         entrypoint: u64,
         rsp: u64,
@@ -308,12 +302,6 @@ impl KVMDriver {
         let kvm = Kvm::new()?;
 
         let vm_fd = kvm.create_vm_with_type(0)?;
-
-        mem_regions.iter().enumerate().try_for_each(|(i, region)| {
-            let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
-            kvm_region.slot = i as u32;
-            unsafe { vm_fd.set_user_memory_region(kvm_region) }
-        })?;
 
         let vcpu_fd = vm_fd.create_vcpu(0)?;
 
@@ -358,10 +346,6 @@ impl KVMDriver {
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
-            next_slot: mem_regions.len() as u32,
-            sandbox_regions: mem_regions,
-            mmap_regions: Vec::new(),
-            freed_slots: Vec::new(),
             interrupt_handle: interrupt_handle.clone(),
             #[cfg(gdb)]
             debug,
@@ -391,12 +375,6 @@ impl Debug for KVMDriver {
         let mut f = f.debug_struct("KVM Driver");
         // Output each memory region
 
-        for region in &self.sandbox_regions {
-            f.field("Sandbox Memory Region", &region);
-        }
-        for region in &self.mmap_regions {
-            f.field("Mapped Memory Region", &region);
-        }
         let regs = self.vcpu_fd.get_regs();
         // check that regs is OK and then set field in debug struct
 
@@ -449,76 +427,25 @@ impl Hypervisor for KVMDriver {
             ..Default::default()
         };
         self.set_regs(&regs)?;
-
-        let interrupt_handle = self.interrupt_handle.clone();
-
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            interrupt_handle,
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn map_region(&mut self, region: &MemoryRegion) -> Result<()> {
-        if [
-            region.guest_region.start,
-            region.guest_region.end,
-            region.host_region.start,
-            region.host_region.end,
-        ]
-        .iter()
-        .any(|x| x % self.page_size != 0)
-        {
-            log_then_return!(
-                "region is not page-aligned {:x}, {region:?}",
-                self.page_size
-            );
-        }
-
-        let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
-
-        // Try to reuse a freed slot first, otherwise use next_slot
-        let slot = if let Some(freed_slot) = self.freed_slots.pop() {
-            freed_slot
-        } else {
-            let slot = self.next_slot;
-            self.next_slot += 1;
-            slot
-        };
-
-        kvm_region.slot = slot;
-        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
-        self.mmap_regions.push((region.to_owned(), slot));
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn unmap_region(&mut self, region: &MemoryRegion) -> Result<()> {
-        if let Some(idx) = self.mmap_regions.iter().position(|(r, _)| r == region) {
-            let (region, slot) = self.mmap_regions.remove(idx);
-            let mut kvm_region: kvm_userspace_memory_region = region.into();
-            kvm_region.slot = slot;
-            // Setting memory_size to 0 unmaps the slot's region
-            // From https://docs.kernel.org/virt/kvm/api.html
-            // > Deleting a slot is done by passing zero for memory_size.
-            kvm_region.memory_size = 0;
-            unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
-
-            // Add the freed slot to the reuse list
-            self.freed_slots.push(slot);
-
-            Ok(())
-        } else {
-            Err(new_error!("Tried to unmap region that is not mapped"))
-        }
+    unsafe fn map_memory(&mut self, (slot, region): (u32, &MemoryRegion)) -> Result<()> {
+        let mut kvm_region: kvm_userspace_memory_region = region.into();
+        kvm_region.slot = slot;
+        unsafe { self.vm_fd.set_user_memory_region(kvm_region)? };
+        Ok(())
     }
 
-    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
-        Box::new(self.mmap_regions.iter().map(|(region, _)| region))
+    fn unmap_memory(&mut self, (slot, region): (u32, &MemoryRegion)) -> Result<()> {
+        let mut kvm_region: kvm_userspace_memory_region = region.into();
+        kvm_region.slot = slot;
+        // Setting memory_size to 0 unmaps the slot's region
+        // From https://docs.kernel.org/virt/kvm/api.html
+        // > Deleting a slot is done by passing zero for memory_size.
+        kvm_region.memory_size = 0;
+        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
+        Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -540,131 +467,34 @@ impl Hypervisor for KVMDriver {
         // reset fpu state
         self.set_fpu(&CommonFpu::default())?;
 
-        let interrupt_handle = self.interrupt_handle.clone();
-
-        // run
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            interrupt_handle,
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )?;
-
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        _rip: u64,
-        _instruction_length: u64,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-    ) -> Result<()> {
-        // KVM does not need RIP or instruction length, as it automatically sets the RIP
-
-        // The payload param for the outb_handle_fn is the first byte
-        // of the data array cast to an u64. Thus, we need to make sure
-        // the data array has at least one u8, then convert that to an u64
-        if data.is_empty() {
-            log_then_return!("no data was given in IO interrupt");
-        } else {
-            let mut padded = [0u8; 4];
-            let copy_len = data.len().min(4);
-            padded[..copy_len].copy_from_slice(&data[..copy_len]);
-            let value = u32::from_le_bytes(padded);
-
-            #[cfg(feature = "mem_profile")]
-            {
-                let regs = self.regs()?;
-                let trace_info = self.trace_info_mut();
-                handle_outb(mem_mgr, host_funcs, port, value, &regs, trace_info)?;
-            }
-            #[cfg(not(feature = "mem_profile"))]
-            {
-                handle_outb(mem_mgr, host_funcs, port, value)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(
-        &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
-    ) -> Result<HyperlightExit> {
-        #[cfg(feature = "trace_guest")]
-        tc.setup_guest_trace(Span::current().context());
-
-        let exit_reason = self.vcpu_fd.run();
-        let result = match exit_reason {
-            Ok(VcpuExit::Hlt) => {
-                crate::debug!("KVM - Halt Details : {:#?}", &self);
-                HyperlightExit::Halt()
-            }
-            Ok(VcpuExit::IoOut(port, data)) => {
-                // because vcpufd.run() mutably borrows self we cannot pass self to crate::debug! macro here
-                crate::debug!("KVM IO Details : \nPort : {}\nData : {:?}", port, data);
-                // KVM does not need to set RIP or instruction length so these are set to 0
-                HyperlightExit::IoOut(port, data.to_vec(), 0, 0)
-            }
-            Ok(VcpuExit::MmioRead(addr, _)) => {
-                crate::debug!("KVM MMIO Read -Details: Address: {} \n {:#?}", addr, &self);
-
-                match get_memory_access_violation(
-                    addr as usize,
-                    self.sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
-                    MemoryRegionFlags::READ,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
-            }
-            Ok(VcpuExit::MmioWrite(addr, _)) => {
-                crate::debug!("KVM MMIO Write -Details: Address: {} \n {:#?}", addr, &self);
-
-                match get_memory_access_violation(
-                    addr as usize,
-                    self.sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
-                    MemoryRegionFlags::WRITE,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
-            }
+    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
+        match self.vcpu_fd.run() {
+            Ok(VcpuExit::Hlt) => Ok(HyperlightExit::Halt()),
+            Ok(VcpuExit::IoOut(port, data)) => Ok(HyperlightExit::IoOut(port, data.to_vec())),
+            Ok(VcpuExit::MmioRead(addr, _)) => Ok(HyperlightExit::MmioRead(addr)),
+            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(HyperlightExit::MmioWrite(addr)),
             #[cfg(gdb)]
-            // KVM provides architecture specific information about the vCPU state when exiting
-            Ok(VcpuExit::Debug(debug_exit)) => match self.get_stop_reason(debug_exit) {
-                Ok(reason) => HyperlightExit::Debug(reason),
-                Err(e) => {
-                    log_then_return!("Error getting stop reason: {:?}", e);
-                }
-            },
+            Ok(VcpuExit::Debug(debug_exit)) => Ok(HyperlightExit::Debug {
+                dr6: debug_exit.dr6,
+                exception: debug_exit.exception,
+            }),
             Err(e) => match e.errno() {
-                // We send a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
-                libc::EINTR => HyperlightExit::Cancelled(),
-                libc::EAGAIN => HyperlightExit::Retry(),
-                _ => {
-                    crate::debug!("KVM Error -Details: Address: {} \n {:#?}", e, &self);
-                    log_then_return!("Error running VCPU {:?}", e);
-                }
+                // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
+                libc::EINTR => Ok(HyperlightExit::Cancelled()),
+                libc::EAGAIN => Ok(HyperlightExit::Retry()),
+                _ => Ok(HyperlightExit::Unknown(format!(
+                    "Unknown KVM VCPU error: {}",
+                    e
+                ))),
             },
-            Ok(other) => {
-                let err_msg = format!("Unexpected KVM Exit {:?}", other);
-                crate::debug!("KVM Other Exit Details: {:#?}", &self);
-                HyperlightExit::Unknown(err_msg)
-            }
-        };
-        Ok(result)
+            Ok(other) => Ok(HyperlightExit::Unknown(format!(
+                "Unknown KVM VCPU exit: {:?}",
+                other
+            ))),
+        }
     }
 
     fn regs(&self) -> Result<super::regs::CommonRegisters> {
@@ -698,11 +528,6 @@ impl Hypervisor for KVMDriver {
         let kvm_sregs: kvm_sregs = sregs.into();
         self.vcpu_fd.set_sregs(&kvm_sregs)?;
         Ok(())
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
     }
 
     fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
