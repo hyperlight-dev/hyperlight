@@ -1622,3 +1622,76 @@ fn interrupt_infinite_moving_loop_stress_test() {
         handle.join().unwrap();
     }
 }
+
+#[test]
+fn exception_handler_installation_and_validation() {
+    let mut sandbox: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+
+    // Verify handler count starts at 0
+    let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+    assert_eq!(count, 0, "Handler should not have been called yet");
+
+    // Install handler for vector
+    let install_result: i32 = sandbox.call("InstallHandler", 3i32).unwrap();
+    assert_eq!(install_result, 0, "Handler installation should succeed");
+
+    // Try to install again - should fail with HandlerAlreadyInstalled (-2)
+    let reinstall_result: i32 = sandbox.call("InstallHandler", 3i32).unwrap();
+    assert_eq!(reinstall_result, -2, "Should fail to install handler twice");
+
+    // Trigger int3 exception
+    let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
+    assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
+
+    // Verify handler was invoked
+    let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+    assert_eq!(count, 1, "Handler should have been called once");
+
+    // Uninstall the handler
+    let uninstall_result: i32 = sandbox.call("UninstallHandler", 0i32).unwrap();
+    assert_eq!(uninstall_result, 0, "Handler uninstallation should succeed");
+
+    // Can install again after uninstalling
+    let reinstall_result: i32 = sandbox.call("InstallHandler", 0i32).unwrap();
+    assert_eq!(
+        reinstall_result, 0,
+        "Should be able to reinstall after uninstalling"
+    );
+
+    // Trigger int3 exception
+    let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
+    assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
+
+    // Verify handler was invoked a second time
+    let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+    assert_eq!(count, 2, "Handler should have been called once");
+
+    // Uninstall the handler to leave clean slate
+    let uninstall_result: i32 = sandbox.call("UninstallHandler", 0i32).unwrap();
+    assert_eq!(uninstall_result, 0, "Handler uninstallation should succeed");
+}
+
+#[test]
+fn exception_handler_invalid_vector() {
+    let mut sandbox: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+
+    // Try to install handler for invalid vector (>= 31)
+    let install_result: i32 = sandbox.call("InstallHandler", 31i32).unwrap();
+    assert_eq!(
+        install_result, -1,
+        "Should reject invalid vector with InvalidVector error (-1)"
+    );
+
+    let install_result: i32 = sandbox.call("InstallHandler", 255i32).unwrap();
+    assert_eq!(
+        install_result, -1,
+        "Should reject invalid vector with InvalidVector error (-1)"
+    );
+
+    // Try to uninstall handler for invalid vector
+    let uninstall_result: i32 = sandbox.call("UninstallHandler", 31i32).unwrap();
+    assert_eq!(
+        uninstall_result, -1,
+        "Should reject invalid vector with InvalidVector error (-1)"
+    );
+}
