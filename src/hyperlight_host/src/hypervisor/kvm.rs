@@ -18,19 +18,19 @@ use std::sync::LazyLock;
 
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
-use kvm_bindings::kvm_userspace_memory_region;
+use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::{HyperlightExit, Hypervisor};
 use crate::mem::memory_region::MemoryRegion;
 use crate::{Result, new_error};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
+#[instrument(skip_all, parent = Span::current(), level = "Trace")]
 pub(crate) fn is_hypervisor_present() -> bool {
     if let Ok(kvm) = Kvm::new() {
         let api_version = kvm.get_api_version();
@@ -85,40 +85,6 @@ impl KvmVm {
 }
 
 impl Hypervisor for KvmVm {
-    fn regs(&self) -> Result<CommonRegisters> {
-        Ok((&self.vcpu_fd.get_regs()?).into())
-    }
-
-    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
-        Ok(self.vcpu_fd.set_regs(&regs.into())?)
-    }
-
-    fn sregs(&self) -> Result<CommonSpecialRegisters> {
-        Ok((&self.vcpu_fd.get_sregs()?).into())
-    }
-
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        Ok(self.vcpu_fd.set_sregs(&sregs.into())?)
-    }
-
-    fn fpu(&self) -> Result<CommonFpu> {
-        Ok((&self.vcpu_fd.get_fpu()?).into())
-    }
-
-    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
-        Ok(self.vcpu_fd.set_fpu(&fpu.into())?)
-    }
-
-    #[cfg(crashdump)]
-    fn xsave(&self) -> Result<Vec<u8>> {
-        let xsave = self.vcpu_fd.get_xsave()?;
-        Ok(xsave
-            .region
-            .into_iter()
-            .flat_map(u32::to_le_bytes)
-            .collect())
-    }
-
     unsafe fn map_memory(&mut self, (slot, region): (u32, &MemoryRegion)) -> Result<()> {
         let mut kvm_region: kvm_userspace_memory_region = region.into();
         kvm_region.slot = slot;
@@ -162,6 +128,49 @@ impl Hypervisor for KvmVm {
                 other
             ))),
         }
+    }
+
+    fn regs(&self) -> Result<super::regs::CommonRegisters> {
+        let kvm_regs = self.vcpu_fd.get_regs()?;
+        Ok((&kvm_regs).into())
+    }
+
+    fn set_regs(&self, regs: &super::regs::CommonRegisters) -> Result<()> {
+        let kvm_regs: kvm_regs = regs.into();
+        self.vcpu_fd.set_regs(&kvm_regs)?;
+        Ok(())
+    }
+
+    fn fpu(&self) -> Result<super::regs::CommonFpu> {
+        let kvm_fpu = self.vcpu_fd.get_fpu()?;
+        Ok((&kvm_fpu).into())
+    }
+
+    fn set_fpu(&self, fpu: &super::regs::CommonFpu) -> Result<()> {
+        let kvm_fpu: kvm_fpu = fpu.into();
+        self.vcpu_fd.set_fpu(&kvm_fpu)?;
+        Ok(())
+    }
+
+    fn sregs(&self) -> Result<super::regs::CommonSpecialRegisters> {
+        let kvm_sregs = self.vcpu_fd.get_sregs()?;
+        Ok((&kvm_sregs).into())
+    }
+
+    fn set_sregs(&self, sregs: &super::regs::CommonSpecialRegisters) -> Result<()> {
+        let kvm_sregs: kvm_sregs = sregs.into();
+        self.vcpu_fd.set_sregs(&kvm_sregs)?;
+        Ok(())
+    }
+
+    #[cfg(crashdump)]
+    fn xsave(&self) -> Result<Vec<u8>> {
+        let xsave = self.vcpu_fd.get_xsave()?;
+        Ok(xsave
+            .region
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect())
     }
 }
 

@@ -21,7 +21,8 @@ use std::sync::LazyLock;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
-    hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
+    FloatingPointUnit, SpecialRegisters, StandardRegisters, hv_message_type,
+    hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features, hv_register_assoc,
@@ -32,7 +33,6 @@ use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::{HyperlightExit, Hypervisor};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
@@ -90,41 +90,6 @@ impl MshvVm {
 }
 
 impl Hypervisor for MshvVm {
-    fn regs(&self) -> Result<CommonRegisters> {
-        Ok((&self.vcpu_fd.get_regs()?).into())
-    }
-
-    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
-        Ok(self.vcpu_fd.set_regs(&regs.into())?)
-    }
-
-    fn sregs(&self) -> Result<CommonSpecialRegisters> {
-        Ok((&self.vcpu_fd.get_sregs()?).into())
-    }
-
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        self.vcpu_fd.set_sregs(&sregs.into())?;
-        Ok(())
-    }
-
-    fn fpu(&self) -> Result<CommonFpu> {
-        Ok((&self.vcpu_fd.get_fpu()?).into())
-    }
-
-    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
-        self.vcpu_fd.set_fpu(&fpu.into())?;
-        Ok(())
-    }
-
-    #[cfg(crashdump)]
-    fn xsave(&self) -> Result<Vec<u8>> {
-        let xsave = self.vcpu_fd.get_xsave()?;
-        Ok(xsave.buffer.to_vec())
-    }
-
-    /// # Safety
-    /// The caller must ensure that the memory region is valid and points to valid memory,
-    /// and lives long enough for the VM to use it.
     unsafe fn map_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
         let mshv_region: mshv_user_mem_region = region.into();
         self.vm_fd.map_user_memory(mshv_region)?;
@@ -209,6 +174,45 @@ impl Hypervisor for MshvVm {
         };
         Ok(result)
     }
+
+    fn regs(&self) -> Result<super::regs::CommonRegisters> {
+        let mshv_regs = self.vcpu_fd.get_regs()?;
+        Ok((&mshv_regs).into())
+    }
+
+    fn set_regs(&self, regs: &super::regs::CommonRegisters) -> Result<()> {
+        let mshv_regs: StandardRegisters = regs.into();
+        self.vcpu_fd.set_regs(&mshv_regs)?;
+        Ok(())
+    }
+
+    fn fpu(&self) -> Result<super::regs::CommonFpu> {
+        let mshv_fpu = self.vcpu_fd.get_fpu()?;
+        Ok((&mshv_fpu).into())
+    }
+
+    fn set_fpu(&self, fpu: &super::regs::CommonFpu) -> Result<()> {
+        let mshv_fpu: FloatingPointUnit = fpu.into();
+        self.vcpu_fd.set_fpu(&mshv_fpu)?;
+        Ok(())
+    }
+
+    fn sregs(&self) -> Result<super::regs::CommonSpecialRegisters> {
+        let mshv_sregs = self.vcpu_fd.get_sregs()?;
+        Ok((&mshv_sregs).into())
+    }
+
+    fn set_sregs(&self, sregs: &super::regs::CommonSpecialRegisters) -> Result<()> {
+        let mshv_sregs: SpecialRegisters = sregs.into();
+        self.vcpu_fd.set_sregs(&mshv_sregs)?;
+        Ok(())
+    }
+
+    #[cfg(crashdump)]
+    fn xsave(&self) -> Result<Vec<u8>> {
+        let xsave = self.vcpu_fd.get_xsave()?;
+        Ok(xsave.buffer.to_vec())
+    }
 }
 
 #[cfg(gdb)]
@@ -229,37 +233,36 @@ impl DebuggableVm for MshvVm {
 
     fn set_debug(&mut self, enabled: bool) -> Result<()> {
         use mshv_bindings::{
-            HV_INTERCEPT_ACCESS_MASK_EXECUTE, hv_intercept_parameters,
-            hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION, mshv_install_intercept,
+            HV_INTERCEPT_ACCESS_MASK_EXECUTE, HV_INTERCEPT_ACCESS_MASK_NONE,
+            hv_intercept_parameters, hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
+            mshv_install_intercept,
         };
 
         use crate::hypervisor::gdb::arch::{BP_EX_ID, DB_EX_ID};
 
-        if enabled {
-            self.vm_fd
-                .install_intercept(mshv_install_intercept {
-                    access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                    intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
-                    // Exception handler #DB (1)
-                    intercept_parameter: hv_intercept_parameters {
-                        exception_vector: DB_EX_ID as u16,
-                    },
-                })
-                .map_err(|e| new_error!("Cannot install debug exception intercept: {}", e))?;
-
-            // Install intercept for #BP (3) exception
-            self.vm_fd
-                .install_intercept(mshv_install_intercept {
-                    access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                    intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
-                    // Exception handler #BP (3)
-                    intercept_parameter: hv_intercept_parameters {
-                        exception_vector: BP_EX_ID as u16,
-                    },
-                })
-                .map_err(|e| new_error!("Cannot install breakpoint exception intercept: {}", e))?;
+        let access_type_mask = if enabled {
+            HV_INTERCEPT_ACCESS_MASK_EXECUTE
         } else {
-            // There doesn't seem to be any way to remove installed intercepts. But that's okay.
+            HV_INTERCEPT_ACCESS_MASK_NONE
+        };
+
+        for vector in [DB_EX_ID, BP_EX_ID] {
+            self.vm_fd
+                .install_intercept(mshv_install_intercept {
+                    access_type_mask,
+                    intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
+                    intercept_parameter: hv_intercept_parameters {
+                        exception_vector: vector as u16,
+                    },
+                })
+                .map_err(|e| {
+                    new_error!(
+                        "Cannot {} exception intercept for vector {}: {}",
+                        if enabled { "install" } else { "remove" },
+                        vector,
+                        e
+                    )
+                })?;
         }
         Ok(())
     }

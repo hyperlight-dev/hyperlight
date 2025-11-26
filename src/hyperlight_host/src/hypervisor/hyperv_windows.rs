@@ -120,26 +120,21 @@ impl WhpVm {
         })
     }
 
-    /// Helper for setting arbitrary registers.
-    fn set_registers(&self, registers: &[(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)]) -> Result<()> {
-        let register_count = registers.len();
-
-        // Prepare register names (no special alignment needed)
-        let mut register_names = Vec::with_capacity(register_count);
-        let mut register_values = Vec::with_capacity(register_count);
-
-        for (key, value) in registers.iter() {
-            register_names.push(*key);
-            register_values.push(Align16(*value));
-        }
+    /// Helper for setting arbitrary registers. Makes sure the same number
+    /// of names and values are passed (at the expense of some performance).
+    fn set_registers(
+        &self,
+        registers: &[(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)],
+    ) -> Result<()> {
+        let (names, values): (Vec<_>, Vec<_>) = registers.iter().copied().unzip();
 
         unsafe {
             WHvSetVirtualProcessorRegisters(
                 self.partition,
                 0,
-                register_names.as_ptr(),
-                register_count as u32,
-                register_values.as_ptr() as *const WHV_REGISTER_VALUE,
+                names.as_ptr(),
+                names.len() as u32,
+                values.as_ptr() as *const WHV_REGISTER_VALUE, // Casting Align16 away
             )?;
         }
 
@@ -148,175 +143,6 @@ impl WhpVm {
 }
 
 impl Hypervisor for WhpVm {
-    /// Get the partition handle for this VM
-    fn partition_handle(&self) -> WHV_PARTITION_HANDLE {
-        self.partition
-    }
-    fn regs(&self) -> Result<CommonRegisters> {
-        let mut whv_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_REGS_NAMES_LEN] =
-            unsafe { std::mem::zeroed() };
-
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                WHP_REGS_NAMES.as_ptr(),
-                whv_regs_values.len() as u32,
-                whv_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
-        }
-
-        WHP_REGS_NAMES
-            .into_iter()
-            .zip(whv_regs_values)
-            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
-            .as_slice()
-            .try_into()
-            .map_err(|e| {
-                new_error!(
-                    "Failed to convert WHP registers to CommonRegisters: {:?}",
-                    e
-                )
-            })
-    }
-
-    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
-        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_REGS_NAMES_LEN] =
-            regs.into();
-        let whp_regs_unaligned: Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> = whp_regs
-            .iter()
-            .map(|(name, value)| (*name, value.0))
-            .collect();
-        self.set_registers(&whp_regs_unaligned)?;
-        Ok(())
-    }
-
-    fn sregs(&self) -> Result<CommonSpecialRegisters> {
-        let mut whp_sregs_values: [Align16<WHV_REGISTER_VALUE>; WHP_SREGS_NAMES_LEN] =
-            unsafe { std::mem::zeroed() };
-
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                WHP_SREGS_NAMES.as_ptr(),
-                whp_sregs_values.len() as u32,
-                whp_sregs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
-        }
-
-        WHP_SREGS_NAMES
-            .into_iter()
-            .zip(whp_sregs_values)
-            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
-            .as_slice()
-            .try_into()
-            .map_err(|e| {
-                new_error!(
-                    "Failed to convert WHP registers to CommonSpecialRegisters: {:?}",
-                    e
-                )
-            })
-    }
-
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
-            sregs.into();
-        let whp_regs_unaligned: Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> = whp_regs
-            .iter()
-            .map(|(name, value)| (*name, value.0))
-            .collect();
-        self.set_registers(&whp_regs_unaligned)?;
-        Ok(())
-    }
-
-    fn fpu(&self) -> Result<CommonFpu> {
-        let mut whp_fpu_values: [Align16<WHV_REGISTER_VALUE>; WHP_FPU_NAMES_LEN] =
-            unsafe { std::mem::zeroed() };
-
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                WHP_FPU_NAMES.as_ptr(),
-                whp_fpu_values.len() as u32,
-                whp_fpu_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
-        }
-
-        WHP_FPU_NAMES
-            .into_iter()
-            .zip(whp_fpu_values)
-            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
-            .as_slice()
-            .try_into()
-            .map_err(|e| new_error!("Failed to convert WHP registers to CommonFpu: {:?}", e))
-    }
-
-    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
-        let whp_fpu: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_FPU_NAMES_LEN] =
-            fpu.into();
-        let whp_fpu_unaligned: Vec<(WHV_REGISTER_NAME, WHV_REGISTER_VALUE)> = whp_fpu
-            .iter()
-            .map(|(name, value)| (*name, value.0))
-            .collect();
-        self.set_registers(&whp_fpu_unaligned)?;
-        Ok(())
-    }
-
-    #[cfg(crashdump)]
-    fn xsave(&self) -> Result<Vec<u8>> {
-        use crate::HyperlightError;
-
-        // Get the required buffer size by calling with NULL buffer.
-        // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns
-        // WHV_E_INSUFFICIENT_BUFFER and sets buffer_size_needed to the required size.
-        let mut buffer_size_needed: u32 = 0;
-
-        let result = unsafe {
-            WHvGetVirtualProcessorXsaveState(
-                self.partition,
-                0,
-                std::ptr::null_mut(),
-                0,
-                &mut buffer_size_needed,
-            )
-        };
-
-        // Expect insufficient buffer error; any other error is unexpected
-        if let Err(e) = result
-            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
-        {
-            return Err(HyperlightError::WindowsAPIError(e));
-        }
-
-        // Allocate buffer with the required size
-        let mut xsave_buffer = vec![0u8; buffer_size_needed as usize];
-        let mut written_bytes = 0;
-
-        // Get the actual Xsave state
-        unsafe {
-            WHvGetVirtualProcessorXsaveState(
-                self.partition,
-                0,
-                xsave_buffer.as_mut_ptr() as *mut std::ffi::c_void,
-                buffer_size_needed,
-                &mut written_bytes,
-            )
-        }?;
-
-        // Verify the number of written bytes matches the expected size
-        if written_bytes != buffer_size_needed {
-            return Err(new_error!(
-                "Failed to get Xsave state: expected {} bytes, got {}",
-                buffer_size_needed,
-                written_bytes
-            ));
-        }
-
-        Ok(xsave_buffer)
-    }
-
     unsafe fn map_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
         // Only allow memory mapping during initial setup (the first batch of regions).
         // After the initial setup is complete, subsequent calls should fail,
@@ -408,7 +234,10 @@ impl Hypervisor for WhpVm {
             WHvRunVpExitReasonX64IoPortAccess => unsafe {
                 let instruction_length = exit_context.VpContext._bitfield & 0xF;
                 let rip = exit_context.VpContext.Rip + instruction_length as u64;
-                self.set_registers(&[(WHvX64RegisterRip, WHV_REGISTER_VALUE { Reg64: rip })])?;
+                self.set_registers(&[(
+                    WHvX64RegisterRip,
+                    Align16(WHV_REGISTER_VALUE { Reg64: rip }),
+                )])?;
                 HyperlightExit::IoOut(
                     exit_context.Anonymous.IoPortAccess.PortNumber,
                     exit_context
@@ -470,9 +299,167 @@ impl Hypervisor for WhpVm {
         Ok(result)
     }
 
+    fn regs(&self) -> Result<CommonRegisters> {
+        let mut whv_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_REGS_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_REGS_NAMES.as_ptr(),
+                whv_regs_values.len() as u32,
+                whv_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        WHP_REGS_NAMES
+            .into_iter()
+            .zip(whv_regs_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonRegisters: {:?}",
+                    e
+                )
+            })
+    }
+
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_REGS_NAMES_LEN] =
+            regs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
+    }
+
+    fn fpu(&self) -> Result<CommonFpu> {
+        let mut whp_fpu_values: [Align16<WHV_REGISTER_VALUE>; WHP_FPU_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_FPU_NAMES.as_ptr(),
+                whp_fpu_values.len() as u32,
+                whp_fpu_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        WHP_FPU_NAMES
+            .into_iter()
+            .zip(whp_fpu_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| new_error!("Failed to convert WHP registers to CommonFpu: {:?}", e))
+    }
+
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
+        let whp_fpu: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_FPU_NAMES_LEN] =
+            fpu.into();
+        self.set_registers(&whp_fpu)?;
+        Ok(())
+    }
+
+    fn sregs(&self) -> Result<CommonSpecialRegisters> {
+        let mut whp_sregs_values: [Align16<WHV_REGISTER_VALUE>; WHP_SREGS_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_SREGS_NAMES.as_ptr(),
+                whp_sregs_values.len() as u32,
+                whp_sregs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        WHP_SREGS_NAMES
+            .into_iter()
+            .zip(whp_sregs_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonSpecialRegisters: {:?}",
+                    e
+                )
+            })
+    }
+
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
+            sregs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
+    }
+
+    #[cfg(crashdump)]
+    fn xsave(&self) -> Result<Vec<u8>> {
+        use crate::HyperlightError;
+
+        // Get the required buffer size by calling with NULL buffer.
+        // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns
+        // WHV_E_INSUFFICIENT_BUFFER and sets buffer_size_needed to the required size.
+        let mut buffer_size_needed: u32 = 0;
+
+        let result = unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut buffer_size_needed,
+            )
+        };
+
+        // Expect insufficient buffer error; any other error is unexpected
+        if let Err(e) = result
+            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
+        {
+            return Err(HyperlightError::WindowsAPIError(e));
+        }
+
+        // Allocate buffer with the required size
+        let mut xsave_buffer = vec![0u8; buffer_size_needed as usize];
+        let mut written_bytes = 0;
+
+        // Get the actual Xsave state
+        unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                xsave_buffer.as_mut_ptr() as *mut std::ffi::c_void,
+                buffer_size_needed,
+                &mut written_bytes,
+            )
+        }?;
+
+        // Verify the number of written bytes matches the expected size
+        if written_bytes != buffer_size_needed {
+            return Err(new_error!(
+                "Failed to get Xsave state: expected {} bytes, got {}",
+                buffer_size_needed,
+                written_bytes
+            ));
+        }
+
+        Ok(xsave_buffer)
+    }
+
     /// Mark that initial memory setup is complete. After this, map_memory will fail.
     fn complete_initial_memory_setup(&mut self) {
         self.initial_memory_setup_done = true;
+    }
+
+    /// Get the partition handle for this VM
+    fn partition_handle(&self) -> WHV_PARTITION_HANDLE {
+        self.partition
     }
 }
 
@@ -501,30 +488,37 @@ impl DebuggableVm for WhpVm {
     }
 
     fn set_debug(&mut self, enable: bool) -> Result<()> {
-        if enable {
-            // Set the extended VM exits property to enable extended VM exits
-            let mut property: WHV_PARTITION_PROPERTY = Default::default();
-            property.ExtendedVmExits.AsUINT64 = 1 << 2; // EXTENDED_VM_EXIT_POS
+        let extended_vm_exits = if enable { 1 << 2 } else { 0 };
+        let exception_exit_bitmap = if enable {
+            (1 << WHvX64ExceptionTypeDebugTrapOrFault.0)
+                | (1 << WHvX64ExceptionTypeBreakpointTrap.0)
+        } else {
+            0
+        };
 
+        let properties = [
+            (
+                WHvPartitionPropertyCodeExtendedVmExits,
+                WHV_PARTITION_PROPERTY {
+                    ExtendedVmExits: WHV_EXTENDED_VM_EXITS {
+                        AsUINT64: extended_vm_exits,
+                    },
+                },
+            ),
+            (
+                WHvPartitionPropertyCodeExceptionExitBitmap,
+                WHV_PARTITION_PROPERTY {
+                    ExceptionExitBitmap: exception_exit_bitmap,
+                },
+            ),
+        ];
+
+        for (code, property) in properties {
             unsafe {
                 WHvSetPartitionProperty(
                     self.partition,
-                    WHvPartitionPropertyCodeExtendedVmExits,
+                    code,
                     &property as *const _ as *const c_void,
-                    std::mem::size_of::<WHV_PARTITION_PROPERTY>() as u32,
-                )?;
-            }
-
-            // Set the exception exit bitmap to include debug trap and breakpoint trap
-            let mut exception_property: WHV_PARTITION_PROPERTY = Default::default();
-            exception_property.ExceptionExitBitmap = (1 << WHvX64ExceptionTypeDebugTrapOrFault.0)
-                | (1 << WHvX64ExceptionTypeBreakpointTrap.0);
-
-            unsafe {
-                WHvSetPartitionProperty(
-                    self.partition,
-                    WHvPartitionPropertyCodeExceptionExitBitmap,
-                    &exception_property as *const _ as *const c_void,
                     std::mem::size_of::<WHV_PARTITION_PROPERTY>() as u32,
                 )?;
             }
@@ -592,11 +586,26 @@ impl DebuggableVm for WhpVm {
 
         // Set the debug registers
         let registers = vec![
-            (WHvX64RegisterDr0, WHV_REGISTER_VALUE { Reg64: dr0 }),
-            (WHvX64RegisterDr1, WHV_REGISTER_VALUE { Reg64: dr1 }),
-            (WHvX64RegisterDr2, WHV_REGISTER_VALUE { Reg64: dr2 }),
-            (WHvX64RegisterDr3, WHV_REGISTER_VALUE { Reg64: dr3 }),
-            (WHvX64RegisterDr7, WHV_REGISTER_VALUE { Reg64: dr7 }),
+            (
+                WHvX64RegisterDr0,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr0 }),
+            ),
+            (
+                WHvX64RegisterDr1,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr1 }),
+            ),
+            (
+                WHvX64RegisterDr2,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr2 }),
+            ),
+            (
+                WHvX64RegisterDr3,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr3 }),
+            ),
+            (
+                WHvX64RegisterDr7,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr7 }),
+            ),
         ];
         self.set_registers(&registers)?;
         Ok(())
@@ -641,11 +650,26 @@ impl DebuggableVm for WhpVm {
 
             // Set the debug registers
             let registers = vec![
-                (WHvX64RegisterDr0, WHV_REGISTER_VALUE { Reg64: dr0 }),
-                (WHvX64RegisterDr1, WHV_REGISTER_VALUE { Reg64: dr1 }),
-                (WHvX64RegisterDr2, WHV_REGISTER_VALUE { Reg64: dr2 }),
-                (WHvX64RegisterDr3, WHV_REGISTER_VALUE { Reg64: dr3 }),
-                (WHvX64RegisterDr7, WHV_REGISTER_VALUE { Reg64: dr7 }),
+                (
+                    WHvX64RegisterDr0,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr0 }),
+                ),
+                (
+                    WHvX64RegisterDr1,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr1 }),
+                ),
+                (
+                    WHvX64RegisterDr2,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr2 }),
+                ),
+                (
+                    WHvX64RegisterDr3,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr3 }),
+                ),
+                (
+                    WHvX64RegisterDr7,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr7 }),
+                ),
             ];
             self.set_registers(&registers)?;
             Ok(())
