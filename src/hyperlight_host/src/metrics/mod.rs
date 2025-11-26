@@ -21,6 +21,12 @@ pub(crate) static METRIC_GUEST_ERROR_LABEL_CODE: &str = "code";
 // Counter metric that counts the number of times a guest function was called due to timing out
 pub(crate) static METRIC_GUEST_CANCELLATION: &str = "guest_cancellations_total";
 
+// Counter metric that counts the number of times a vCPU was erroneously kicked by a stale cancellation
+// This can happen in two scenarios:
+// 1. Linux: A signal from a previous guest call arrives late and interrupts a new call
+// 2. Windows: WHvCancelRunVirtualProcessor is called right after vCPU exits but RUNNING_BIT is still true
+pub(crate) static METRIC_ERRONEOUS_VCPU_KICKS: &str = "erroneous_vcpu_kicks_total";
+
 // Histogram metric that measures the duration of guest function calls
 #[cfg(feature = "function_call_metrics")]
 pub(crate) static METRIC_GUEST_FUNC_DURATION: &str = "guest_call_duration_seconds";
