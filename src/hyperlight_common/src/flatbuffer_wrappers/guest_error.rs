@@ -18,7 +18,7 @@ extern crate flatbuffers;
 
 use alloc::string::{String, ToString};
 
-use tracing::{Span, instrument};
+use tracing::instrument;
 
 use crate::flatbuffers::hyperlight::generated::ErrorCode as FbErrorCode;
 
@@ -188,14 +188,14 @@ pub struct GuestError {
 }
 
 impl GuestError {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[instrument(skip_all, level = "Trace")]
     pub fn new(code: ErrorCode, message: String) -> Self {
         Self { code, message }
     }
 }
 
 impl Default for GuestError {
-    #[instrument(parent = Span::current(), level= "Trace")]
+    #[instrument(level = "Trace")]
     fn default() -> Self {
         Self {
             code: ErrorCode::NoError,

@@ -906,8 +906,7 @@ mod tests {
         use std::path::PathBuf;
 
         use hyperlight_testing::logger::{LOGGER as TEST_LOGGER, Logger as TestLogger};
-        use tracing::log::Level;
-        use tracing::log::LevelFilter;
+        use tracing::log::{Level, LevelFilter};
         use tracing_core::callsite::rebuild_interest_cache;
 
         {

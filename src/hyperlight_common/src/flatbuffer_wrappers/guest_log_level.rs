@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use anyhow::{Error, Result, bail};
-use tracing::{Level, Span, instrument};
+use tracing::{Level, instrument};
 
 use crate::flatbuffers::hyperlight::generated::LogLevel as FbLogLevel;
 
@@ -32,7 +32,7 @@ pub enum LogLevel {
 }
 
 impl From<u8> for LogLevel {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[instrument(skip_all, level = "Trace")]
     fn from(val: u8) -> LogLevel {
         match val {
             0 => LogLevel::Trace,
@@ -48,7 +48,7 @@ impl From<u8> for LogLevel {
 
 impl TryFrom<&FbLogLevel> for LogLevel {
     type Error = Error;
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    #[instrument(err(Debug), skip_all, level = "Trace")]
     fn try_from(val: &FbLogLevel) -> Result<LogLevel> {
         match *val {
             FbLogLevel::Trace => Ok(LogLevel::Trace),
@@ -66,7 +66,7 @@ impl TryFrom<&FbLogLevel> for LogLevel {
 }
 
 impl From<&LogLevel> for FbLogLevel {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[instrument(skip_all, level = "Trace")]
     fn from(val: &LogLevel) -> FbLogLevel {
         match val {
             LogLevel::Critical => FbLogLevel::Critical,

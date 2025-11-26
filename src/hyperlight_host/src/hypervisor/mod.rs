@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use tracing::{Span, debug, info, instrument};
 use tracing::log::LevelFilter;
+use tracing::{Span, debug, info, instrument};
 
 use crate::HyperlightError::StackOverflow;
 use crate::error::HyperlightError::ExecutionCanceledByHost;
@@ -883,9 +883,10 @@ pub(crate) mod tests {
             return Ok(());
         }
 
+        use tracing::log::LevelFilter;
+
         use crate::mem::ptr::RawPtr;
         use crate::sandbox::host_funcs::FunctionRegistry;
-        use tracing::log::LevelFilter;
 
         let filename = dummy_guest_as_string().map_err(|e| new_error!("{}", e))?;
 

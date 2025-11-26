@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 
 use anyhow::{Error, Result, bail};
 use flatbuffers::{FlatBufferBuilder, WIPOffset, size_prefixed_root};
-use tracing::{Span, instrument};
+use tracing::instrument;
 
 use super::function_types::{ParameterValue, ReturnType};
 use crate::flatbuffers::hyperlight::generated::{
@@ -52,7 +52,7 @@ pub struct FunctionCall {
 }
 
 impl FunctionCall {
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[instrument(skip_all, level = "Trace")]
     pub fn new(
         function_name: String,
         parameters: Option<Vec<ParameterValue>>,
@@ -213,7 +213,7 @@ impl FunctionCall {
     }
 }
 
-#[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+#[instrument(err(Debug), skip_all, level = "Trace")]
 pub fn validate_guest_function_call_buffer(function_call_buffer: &[u8]) -> Result<()> {
     let guest_function_call_fb = size_prefixed_root::<FbFunctionCall>(function_call_buffer)
         .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
@@ -225,7 +225,7 @@ pub fn validate_guest_function_call_buffer(function_call_buffer: &[u8]) -> Resul
     }
 }
 
-#[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+#[instrument(err(Debug), skip_all, level = "Trace")]
 pub fn validate_host_function_call_buffer(function_call_buffer: &[u8]) -> Result<()> {
     let host_function_call_fb = size_prefixed_root::<FbFunctionCall>(function_call_buffer)
         .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
@@ -239,7 +239,7 @@ pub fn validate_host_function_call_buffer(function_call_buffer: &[u8]) -> Result
 
 impl TryFrom<&[u8]> for FunctionCall {
     type Error = Error;
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    #[instrument(err(Debug), skip_all, level = "Trace")]
     fn try_from(value: &[u8]) -> Result<Self> {
         let function_call_fb = size_prefixed_root::<FbFunctionCall>(value)
             .map_err(|e| anyhow::anyhow!("Error reading function call buffer: {:?}", e))?;
