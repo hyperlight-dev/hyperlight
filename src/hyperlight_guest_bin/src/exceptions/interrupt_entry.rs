@@ -188,33 +188,32 @@ macro_rules! generate_exceptions {
 // | RFLAGS           | (Pushed by CPU on exception)
 // | CS               | (Pushed by CPU on exception)
 // | RIP              | (Pushed by CPU on exception)
-// | Error Code       | (Pushed by CPU or by handler)
-// +------------------+ <-- ExceptionInfo struct starts here
+// | Error Code       | (Pushed by CPU or by handler) <-- ExceptionInfo struct starts here
+// +------------------+
 // | Padding (8)      | (Pushed by context_save!)
 // +------------------+
-// | R15              | gprs[14]
-// | R14              | gprs[13]
-// | R13              | gprs[12]
-// | R12              | gprs[11]
-// | R11              | gprs[10]
-// | R10              | gprs[9]
-// | R9               | gprs[8]
+// | RAX              | gprs[14]
+// | RBX              | gprs[13]
+// | RCX              | gprs[12]
+// | RDX              | gprs[11]
+// | RSI              | gprs[10]
+// | RDI              | gprs[9]
+// | RBP              | gprs[8]
 // | R8               | gprs[7]
-// | RBP              | gprs[6]
-// | RDI              | gprs[5]
-// | RSI              | gprs[4]
-// | RDX              | gprs[3]
-// | RCX              | gprs[2]
-// | RBX              | gprs[1]
-// | RAX              | gprs[0] (15 GPRs total, 120 bytes)
+// | R9               | gprs[6]
+// | R10              | gprs[5]
+// | R11              | gprs[4]
+// | R12              | gprs[3]
+// | R13              | gprs[2]
+// | R14              | gprs[1]
+// | R15              | gprs[0] (15 GPRs total, 120 bytes)
 // +------------------+
 // | FXSAVE area      | (512 bytes for FPU/SSE state)
 // +------------------+
 // | GS               | segments[3]
 // | FS               | segments[2]
 // | ES               | segments[1]
-// | DS               | segments[0] (4 segment registers, 32 bytes)
-// +------------------+ <-- Context struct starts here
+// | DS               | segments[0] (4 segment registers, 32 bytes) <-- Context struct starts here
 // ```
 macro_rules! generate_excp {
     ($num:expr) => {

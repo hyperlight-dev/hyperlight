@@ -70,7 +70,7 @@ pub struct Context {
     ///
     /// The stack pointer (RSP) is not included here since it's saved
     /// by the processor in the `ExceptionInfo` structure.
-    /// RAX is at index 0, R15 is at index 14.
+    /// R15 is at index 0, RAX is at index 14.
     pub gprs: [u64; 15],
     /// Padding to ensure 16-byte alignment when combined with ExceptionInfo.
     padding: [u64; 1],

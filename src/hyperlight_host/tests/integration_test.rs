@@ -1648,11 +1648,11 @@ fn exception_handler_installation_and_validation() {
     assert_eq!(count, 1, "Handler should have been called once");
 
     // Uninstall the handler
-    let uninstall_result: i32 = sandbox.call("UninstallHandler", 0i32).unwrap();
+    let uninstall_result: i32 = sandbox.call("UninstallHandler", 3i32).unwrap();
     assert_eq!(uninstall_result, 0, "Handler uninstallation should succeed");
 
     // Can install again after uninstalling
-    let reinstall_result: i32 = sandbox.call("InstallHandler", 0i32).unwrap();
+    let reinstall_result: i32 = sandbox.call("InstallHandler", 3i32).unwrap();
     assert_eq!(
         reinstall_result, 0,
         "Should be able to reinstall after uninstalling"
@@ -1664,10 +1664,10 @@ fn exception_handler_installation_and_validation() {
 
     // Verify handler was invoked a second time
     let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
-    assert_eq!(count, 2, "Handler should have been called once");
+    assert_eq!(count, 2, "Handler should have been called twice");
 
     // Uninstall the handler to leave clean slate
-    let uninstall_result: i32 = sandbox.call("UninstallHandler", 0i32).unwrap();
+    let uninstall_result: i32 = sandbox.call("UninstallHandler", 3i32).unwrap();
     assert_eq!(uninstall_result, 0, "Handler uninstallation should succeed");
 }
 

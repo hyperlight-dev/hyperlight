@@ -82,8 +82,8 @@ fn set_static(_: &FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
-/// Test exception handler that validates stack layout and records invocation
-/// It is designed to handle the INT3 breakpoint exception
+// Test exception handler that validates stack layout and records invocation
+// It is designed to interact with the trigger_int3 breakpoint exception function below
 fn test_exception_handler(
     exception_number: u64,
     _exception_info: *mut ExceptionInfo,
@@ -118,6 +118,8 @@ fn test_exception_handler(
     // Modify R9 register directly and write R10 to context
     unsafe {
         // Modify R9 register directly using inline assembly
+        // this should be restored to the original value stored on the stack when the
+        // exception completes and is verified in trigger_int3
         core::arch::asm!("mov r9, {0}", in(reg) TEST_R9_MODIFIED_VALUE);
 
         // Write to R10 via context to verify context modification works
