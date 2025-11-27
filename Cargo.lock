@@ -1367,7 +1367,6 @@ dependencies = [
  "anyhow",
  "arbitrary",
  "flatbuffers",
- "log",
  "spin 0.10.0",
  "tracing",
 ]
@@ -1391,11 +1390,11 @@ name = "hyperlight-component-util"
 version = "0.11.0"
 dependencies = [
  "itertools 0.14.0",
- "log",
  "prettyplease",
  "proc-macro2",
  "quote",
  "syn",
+ "tracing",
  "wasmparser",
 ]
 
@@ -1478,7 +1477,6 @@ dependencies = [
  "kvm-ioctls",
  "lazy_static",
  "libc",
- "log",
  "metrics",
  "metrics-exporter-prometheus",
  "metrics-util",

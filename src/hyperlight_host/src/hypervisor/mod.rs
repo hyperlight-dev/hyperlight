@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use log::{LevelFilter, debug};
-use tracing::{Span, instrument};
+use tracing::log::LevelFilter;
+use tracing::{Span, debug, info, instrument};
 
 use crate::HyperlightError::StackOverflow;
 use crate::error::HyperlightError::ExecutionCanceledByHost;
@@ -231,7 +231,7 @@ pub(crate) trait Hypervisor: Debug + Send {
             val.split(',').find(|s| !s.contains("=")).unwrap_or("")
         };
 
-        log::info!("Determined guest log level: {}", level);
+        info!("Determined guest log level: {}", level);
         // Convert the log level string to a LevelFilter
         // If no value is found, default to Error
         LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
@@ -333,7 +333,7 @@ impl VirtualCPU {
                         if let Err(e) = tc.handle_trace(&regs, mem_mgr) {
                             // If no trace data is available, we just log a message and continue
                             // Is this the right thing to do?
-                            log::debug!("Error handling guest trace: {:?}", e);
+                            debug!("Error handling guest trace: {:?}", e);
                         }
                     }
 
@@ -583,7 +583,7 @@ impl LinuxInterruptHandle {
                 break;
             }
 
-            log::info!("Sending signal to kill vcpu thread...");
+            info!("Sending signal to kill vcpu thread...");
             sent_signal = true;
             // Acquire ordering to synchronize with the Release store in set_tid()
             // This ensures we see the correct tid value for the currently running vcpu
@@ -817,6 +817,8 @@ pub(crate) mod tests {
             return Ok(());
         }
 
+        use tracing::log::LevelFilter;
+
         use crate::mem::ptr::RawPtr;
         use crate::sandbox::host_funcs::FunctionRegistry;
 
@@ -841,7 +843,7 @@ pub(crate) mod tests {
         let seed = 12345u64; // Random seed
         let page_size = 4096u32; // Standard page size
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
-        let guest_max_log_level = Some(log::LevelFilter::Error);
+        let guest_max_log_level = Some(LevelFilter::Error);
 
         #[cfg(gdb)]
         let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr.clone()));

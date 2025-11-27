@@ -16,6 +16,7 @@ limitations under the License.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+use tracing::debug;
 
 use crate::emit::{
     FnName, ResolvedBoundVar, ResourceItemName, State, WitName, kebab_to_exports_name, kebab_to_fn,
@@ -344,7 +345,7 @@ fn emit_component<'a, 'b, 'c>(
 /// - functions when given a type that implements the `Guest` trait
 pub fn emit_toplevel<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, n: &str, ct: &'c Component<'b>) {
     s.is_impl = true;
-    log::debug!("\n\n=== starting guest emit ===\n");
+    debug!("\n\n=== starting guest emit ===\n");
     let wn = split_wit_name(n);
 
     let ns = wn.namespace_path();

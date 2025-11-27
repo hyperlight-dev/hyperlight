@@ -17,13 +17,12 @@ workspace = true
 [dependencies]
 flatbuffers = { version = "25.9.23", default-features = false }
 anyhow = { version = "1.0.100", default-features = false }
-log = "0.4.28"
-tracing = { version = "0.1.41", optional = true }
+tracing = { version = "0.1.41" }
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 spin = "0.10.0"
 
 [features]
-default = ["tracing"]
+default = []
 fuzzing = ["dep:arbitrary"]
 trace_guest = []
 mem_profile = []

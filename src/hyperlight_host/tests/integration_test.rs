@@ -25,7 +25,7 @@ use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
-use log::LevelFilter;
+use tracing::log::LevelFilter;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{new_uninit, new_uninit_c, new_uninit_rust};
@@ -774,10 +774,10 @@ fn log_message() {
     assert_eq!(1, LOGGER.num_log_calls());
 }
 
-fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
+fn log_test_messages(levelfilter: Option<LevelFilter>) {
     LOGGER.clear_log_calls();
     assert_eq!(0, LOGGER.num_log_calls());
-    for level in log::LevelFilter::iter() {
+    for level in LevelFilter::iter() {
         let mut sbox = new_uninit().unwrap();
         if let Some(levelfilter) = levelfilter {
             sbox.set_max_guest_log_level(levelfilter);
@@ -903,7 +903,7 @@ fn interrupt_random_kill_stress_test() {
     use std::sync::atomic::AtomicUsize;
 
     use hyperlight_host::sandbox::snapshot::Snapshot;
-    use log::{error, trace};
+    use tracing::log::{error, trace};
 
     const POOL_SIZE: usize = 100;
     const NUM_THREADS: usize = 100;
