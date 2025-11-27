@@ -196,6 +196,7 @@ test-rust-tracing target=default-target features="":
     # Run tests for the tracing guest and macro
     {{ cargo-cmd }} test -p hyperlight-guest-tracing -F trace --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
     {{ cargo-cmd }} test -p hyperlight-common -F trace_guest --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
+    {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {'--features trace_guest'} else { "--features trace_guest," + features } }} {{ target-triple-flag }}
 
     # Build the tracing guest to ensure it builds with the tracing feature
     just build-rust-guests {{ target }} trace_guest
