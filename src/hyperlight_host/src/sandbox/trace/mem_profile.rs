@@ -155,11 +155,22 @@ impl MemTraceInfo {
         let amt = regs.rax;
         let ptr = regs.rcx;
 
-        self.record_trace_frame(self.epoch, trace_identifier as u64, |f| {
-            let _ = f.write_all(&ptr.to_ne_bytes());
-            let _ = f.write_all(&amt.to_ne_bytes());
-            self.write_stack(f, &stack);
-        })
+        match trace_identifier {
+            TraceFrameType::MemAlloc => {
+                self.record_trace_frame(self.epoch, trace_identifier as u64, |f| {
+                    let _ = f.write_all(&ptr.to_ne_bytes());
+                    let _ = f.write_all(&amt.to_ne_bytes());
+                    self.write_stack(f, &stack);
+                })
+            }
+            // The MemFree case does not expect an amount, only a pointer
+            TraceFrameType::MemFree => {
+                self.record_trace_frame(self.epoch, trace_identifier as u64, |f| {
+                    let _ = f.write_all(&ptr.to_ne_bytes());
+                    self.write_stack(f, &stack);
+                })
+            }
+        }
     }
 
     #[inline(always)]
