@@ -4011,9 +4011,9 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
-version = "0.241.2"
+version = "0.242.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46d90019b1afd4b808c263e428de644f3003691f243387d30d673211ee0cb8e8"
+checksum = "ed3c6e611f4cd748d85c767815823b777dc56afca793fcda27beae4e85028849"
 dependencies = [
  "bitflags 2.10.0",
  "hashbrown 0.15.5",
