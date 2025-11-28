@@ -52,11 +52,23 @@ impl From<serde_json::Error> for HyperlightGuestError {
     }
 }
 
+/// Extension trait to add context to `Option<T>` and `Result<T, E>` types in guest code,
+/// converting them to `Result<T, HyperlightGuestError>`.
+///
+/// This is similar to anyhow::Context.
 pub trait GuestErrorContext {
     type Ok;
+    /// Adds context to the error if `self` is `None` or `Err`.
     fn context(self, ctx: impl Into<String>) -> Result<Self::Ok>;
+    /// Adds context and a specific error code to the error if `self` is `None` or `Err`.
     fn context_and_code(self, ec: ErrorCode, ctx: impl Into<String>) -> Result<Self::Ok>;
+    /// Lazily adds context to the error if `self` is `None` or `Err`.
+    ///
+    /// This is useful if constructing the context message is expensive.
     fn with_context<S: Into<String>>(self, ctx: impl FnOnce() -> S) -> Result<Self::Ok>;
+    /// Lazily adds context and a specific error code to the error if `self` is `None` or `Err`.
+    ///
+    /// This is useful if constructing the context message is expensive.
     fn with_context_and_code<S: Into<String>>(
         self,
         ec: ErrorCode,
@@ -121,6 +133,13 @@ impl<T, E: core::fmt::Debug> GuestErrorContext for core::result::Result<T, E> {
     }
 }
 
+/// Macro to return early with a `Err(HyperlightGuestError)`.
+/// Usage:
+/// ```ignore
+/// bail!(ErrorCode::UnknownError => "An error occurred: {}", details);
+/// // or
+/// bail!("A guest error occurred: {}", details); // defaults to ErrorCode::GuestError
+/// ```
 #[macro_export]
 macro_rules! bail {
     ($ec:expr => $($msg:tt)*) => {
@@ -131,6 +150,15 @@ macro_rules! bail {
     };
 }
 
+/// Macro to ensure a condition is true, otherwise returns early with a `Err(HyperlightGuestError)`.
+/// Usage:
+/// ```ignore
+/// ensure!(1 + 1 == 3, ErrorCode::UnknownError => "Maths is broken: {}", details);
+/// // or
+/// ensure!(1 + 1 == 3, "Maths is broken: {}", details); // defaults to ErrorCode::GuestError
+/// // or
+/// ensure!(1 + 1 == 3); // defaults to ErrorCode::GuestError with a default message
+/// ```
 #[macro_export]
 macro_rules! ensure {
     ($cond:expr) => {
@@ -283,7 +311,10 @@ mod tests {
         })();
         let err = result.unwrap_err();
         assert_eq!(err.kind, ErrorCode::GuestError);
-        assert_eq!(err.message, "Math is broken\nCaused by failed condition: `1 + 1 == 3`");
+        assert_eq!(
+            err.message,
+            "Math is broken\nCaused by failed condition: `1 + 1 == 3`"
+        );
     }
 
     #[test]
@@ -305,6 +336,9 @@ mod tests {
         })();
         let err = result.unwrap_err();
         assert_eq!(err.kind, ErrorCode::UnknownError);
-        assert_eq!(err.message, "Math is broken\nCaused by failed condition: `1 + 1 == 3`");
+        assert_eq!(
+            err.message,
+            "Math is broken\nCaused by failed condition: `1 + 1 == 3`"
+        );
     }
 }
