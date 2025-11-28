@@ -120,3 +120,30 @@ impl<T, E: core::fmt::Debug> GuestErrorContext for core::result::Result<T, E> {
         }
     }
 }
+
+#[macro_export]
+macro_rules! bail {
+    ($ec:expr => $($msg:tt)*) => {
+        return ::core::result::Result::Err($crate::error::HyperlightGuestError::new($ec, ::alloc::format!($($msg)*)));
+    };
+    ($($msg:tt)*) => {
+        $crate::bail!($crate::error::ErrorCode::GuestError => $($msg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! ensure {
+    ($cond:expr) => {
+        if !($cond) {
+            $crate::bail!(::core::concat!("Condition failed: `", ::core::stringify!($cond), "`"));
+        }
+    };
+    ($cond:expr, $ec:expr => $($msg:tt)*) => {
+        if !($cond) {
+            $crate::bail!($ec => ::core::concat!("{}\nCaused by failed condition: `", ::core::stringify!($cond), "`"), ::core::format_args!($($msg)*));
+        }
+    };
+    ($cond:expr, $($msg:tt)*) => {
+        $crate::ensure!($cond, $crate::error::ErrorCode::GuestError => $($msg)*);
+    };
+}
