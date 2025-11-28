@@ -147,3 +147,164 @@ macro_rules! ensure {
         $crate::ensure!($cond, $crate::error::ErrorCode::GuestError => $($msg)*);
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_context_option_some() {
+        let value: Option<u32> = Some(42);
+        let result = value.context("Should be Some");
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_context_option_none() {
+        let value: Option<u32> = None;
+        let result = value.context("Should be Some");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::GuestError);
+        assert_eq!(err.message, "Should be Some");
+    }
+
+    #[test]
+    fn test_context_and_code_option_none() {
+        let value: Option<u32> = None;
+        let result = value.context_and_code(ErrorCode::MallocFailed, "Should be Some");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::MallocFailed);
+        assert_eq!(err.message, "Should be Some");
+    }
+
+    #[test]
+    fn test_with_context_option_none() {
+        let value: Option<u32> = None;
+        let result = value.with_context(|| "Lazy context message");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::GuestError);
+        assert_eq!(err.message, "Lazy context message");
+    }
+
+    #[test]
+    fn test_with_context_and_code_option_none() {
+        let value: Option<u32> = None;
+        let result =
+            value.with_context_and_code(ErrorCode::MallocFailed, || "Lazy context message");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::MallocFailed);
+        assert_eq!(err.message, "Lazy context message");
+    }
+
+    #[test]
+    fn test_context_result_ok() {
+        let value: core::result::Result<u32, &str> = Ok(42);
+        let result = value.context("Should be Ok");
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_context_result_err() {
+        let value: core::result::Result<u32, &str> = Err("Some error");
+        let result = value.context("Should be Ok");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::GuestError);
+        assert_eq!(err.message, "Should be Ok.\nCaused by: \"Some error\"");
+    }
+
+    #[test]
+    fn test_context_and_code_result_err() {
+        let value: core::result::Result<u32, &str> = Err("Some error");
+        let result = value.context_and_code(ErrorCode::MallocFailed, "Should be Ok");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::MallocFailed);
+        assert_eq!(err.message, "Should be Ok.\nCaused by: \"Some error\"");
+    }
+
+    #[test]
+    fn test_with_context_result_err() {
+        let value: core::result::Result<u32, &str> = Err("Some error");
+        let result = value.with_context(|| "Lazy context message");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::GuestError);
+        assert_eq!(
+            err.message,
+            "Lazy context message.\nCaused by: \"Some error\""
+        );
+    }
+
+    #[test]
+    fn test_with_context_and_code_result_err() {
+        let value: core::result::Result<u32, &str> = Err("Some error");
+        let result =
+            value.with_context_and_code(ErrorCode::MallocFailed, || "Lazy context message");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::MallocFailed);
+        assert_eq!(
+            err.message,
+            "Lazy context message.\nCaused by: \"Some error\""
+        );
+    }
+
+    #[test]
+    fn test_bail_macro() {
+        let result: Result<u32> = (|| {
+            bail!("A guest error occurred");
+        })();
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::GuestError);
+        assert_eq!(err.message, "A guest error occurred");
+    }
+
+    #[test]
+    fn test_bail_macro_with_error_code() {
+        let result: Result<u32> = (|| {
+            bail!(ErrorCode::MallocFailed => "Memory allocation failed");
+        })();
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::MallocFailed);
+        assert_eq!(err.message, "Memory allocation failed");
+    }
+
+    #[test]
+    fn test_ensure_macro_pass() {
+        let result: Result<u32> = (|| {
+            ensure!(1 + 1 == 2, "Math works");
+            Ok(42)
+        })();
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_ensure_macro_fail() {
+        let result: Result<u32> = (|| {
+            ensure!(1 + 1 == 3, "Math is broken");
+            Ok(42)
+        })();
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::GuestError);
+        assert_eq!(err.message, "Math is broken\nCaused by failed condition: `1 + 1 == 3`");
+    }
+
+    #[test]
+    fn test_ensure_macro_fail_no_message() {
+        let result: Result<u32> = (|| {
+            ensure!(1 + 1 == 3);
+            Ok(42)
+        })();
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::GuestError);
+        assert_eq!(err.message, "Condition failed: `1 + 1 == 3`");
+    }
+
+    #[test]
+    fn test_ensure_macro_fail_with_error_code() {
+        let result: Result<u32> = (|| {
+            ensure!(1 + 1 == 3, ErrorCode::UnknownError => "Math is broken");
+            Ok(42)
+        })();
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorCode::UnknownError);
+        assert_eq!(err.message, "Math is broken\nCaused by failed condition: `1 + 1 == 3`");
+    }
+}
