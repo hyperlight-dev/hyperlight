@@ -51,3 +51,72 @@ impl From<serde_json::Error> for HyperlightGuestError {
         }
     }
 }
+
+pub trait GuestErrorContext {
+    type Ok;
+    fn context(self, ctx: impl Into<String>) -> Result<Self::Ok>;
+    fn context_and_code(self, ec: ErrorCode, ctx: impl Into<String>) -> Result<Self::Ok>;
+    fn with_context<S: Into<String>>(self, ctx: impl FnOnce() -> S) -> Result<Self::Ok>;
+    fn with_context_and_code<S: Into<String>>(
+        self,
+        ec: ErrorCode,
+        ctx: impl FnOnce() -> S,
+    ) -> Result<Self::Ok>;
+}
+
+impl<T> GuestErrorContext for Option<T> {
+    type Ok = T;
+    #[inline]
+    fn context(self, ctx: impl Into<String>) -> Result<T> {
+        self.with_context_and_code(ErrorCode::GuestError, || ctx)
+    }
+    #[inline]
+    fn context_and_code(self, ec: ErrorCode, ctx: impl Into<String>) -> Result<T> {
+        self.with_context_and_code(ec, || ctx)
+    }
+    #[inline]
+    fn with_context<S: Into<String>>(self, ctx: impl FnOnce() -> S) -> Result<T> {
+        self.with_context_and_code(ErrorCode::GuestError, ctx)
+    }
+    #[inline]
+    fn with_context_and_code<S: Into<String>>(
+        self,
+        ec: ErrorCode,
+        ctx: impl FnOnce() -> S,
+    ) -> Result<Self::Ok> {
+        match self {
+            Some(s) => Ok(s),
+            None => Err(HyperlightGuestError::new(ec, ctx().into())),
+        }
+    }
+}
+
+impl<T, E: core::fmt::Debug> GuestErrorContext for core::result::Result<T, E> {
+    type Ok = T;
+    #[inline]
+    fn context(self, ctx: impl Into<String>) -> Result<T> {
+        self.with_context_and_code(ErrorCode::GuestError, || ctx)
+    }
+    #[inline]
+    fn context_and_code(self, ec: ErrorCode, ctx: impl Into<String>) -> Result<T> {
+        self.with_context_and_code(ec, || ctx)
+    }
+    #[inline]
+    fn with_context<S: Into<String>>(self, ctx: impl FnOnce() -> S) -> Result<T> {
+        self.with_context_and_code(ErrorCode::GuestError, ctx)
+    }
+    #[inline]
+    fn with_context_and_code<S: Into<String>>(
+        self,
+        ec: ErrorCode,
+        ctx: impl FnOnce() -> S,
+    ) -> Result<T> {
+        match self {
+            Ok(s) => Ok(s),
+            Err(e) => Err(HyperlightGuestError::new(
+                ec,
+                format!("{}.\nCaused by: {e:?}", ctx().into()),
+            )),
+        }
+    }
+}
