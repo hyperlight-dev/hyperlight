@@ -44,7 +44,7 @@ use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::shared_mem::HostSharedMemory;
+use crate::mem::shared_mem::{SharedMemory, GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
@@ -296,6 +296,7 @@ pub(crate) struct KVMDriver {
 
     sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
     mmap_regions: Vec<(MemoryRegion, u32)>, // Later mapped regions (region, slot number)
+    scratch_slot: u32,  // The slot ID used for the scratch mapping
     next_slot: u32,                     // Monotonically increasing slot number
     freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
 
@@ -319,6 +320,7 @@ impl KVMDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
+        scratch_mem: &GuestSharedMemory,
         pml4_addr: u64,
         entrypoint: Option<u64>,
         rsp: u64,
@@ -377,6 +379,9 @@ impl KVMDriver {
             sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
         });
 
+        let scratch_slot = mem_regions.len() as u32;
+        map_scratch(&vm_fd, scratch_mem, scratch_slot)?;
+
         #[allow(unused_mut)]
         let mut hv = Self {
             _kvm: kvm,
@@ -385,7 +390,8 @@ impl KVMDriver {
             vcpu_fd,
             entrypoint,
             orig_rsp: rsp_gp,
-            next_slot: mem_regions.len() as u32,
+            scratch_slot,
+            next_slot: scratch_slot + 1,
             sandbox_regions: mem_regions,
             mmap_regions: Vec::new(),
             freed_slots: Vec::new(),
@@ -461,6 +467,18 @@ impl Debug for KVMDriver {
 
         f.finish()
     }
+}
+
+fn map_scratch(vm_fd: &VmFd, scratch: &GuestSharedMemory, slot: u32) -> Result<()> {
+    let mut rgn = kvm_userspace_memory_region {
+        slot,
+        guest_phys_addr: hyperlight_common::layout::scratch_base_gpa(scratch.mem_size()),
+        memory_size: scratch.mem_size() as u64,
+        userspace_addr: scratch.base_addr() as u64,
+        flags: 0,
+    };
+    unsafe { vm_fd.set_user_memory_region(rgn) }
+        .map_err(|e| new_error!("Failed to update scratch mapping: {:?}", e))
 }
 
 impl Hypervisor for KVMDriver {
@@ -1059,6 +1077,10 @@ impl Hypervisor for KVMDriver {
     #[cfg(feature = "trace_guest")]
     fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
         &mut self.trace_info
+    }
+
+    fn update_scratch_mapping(&mut self, gscratch: &GuestSharedMemory) -> Result<()> {
+        map_scratch(&self.vm_fd, gscratch, self.scratch_slot)
     }
 }
 

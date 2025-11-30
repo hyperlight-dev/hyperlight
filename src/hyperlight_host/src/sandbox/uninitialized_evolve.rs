@@ -149,7 +149,7 @@ pub(crate) fn set_up_hypervisor_partition(
         _load_info.info,
     )?;
 
-    match *get_available_hypervisor() {
+    Ok(match *get_available_hypervisor() {
         #[cfg(mshv)]
         Some(HypervisorType::Mshv) => {
             let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
@@ -165,13 +165,14 @@ pub(crate) fn set_up_hypervisor_partition(
                 #[cfg(feature = "trace_guest")]
                 trace_info,
             )?;
-            Ok(Box::new(hv))
+            Box::new(hv)
         }
 
         #[cfg(kvm)]
         Some(HypervisorType::Kvm) => {
             let hv = crate::hypervisor::kvm::KVMDriver::new(
                 regions,
+                &mgr.scratch_mem,
                 pml4_ptr.absolute()?,
                 entrypoint_ptr.map(|x| x.absolute()).transpose()?,
                 rsp_ptr.absolute()?,
@@ -183,7 +184,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 #[cfg(feature = "trace_guest")]
                 trace_info,
             )?;
-            Ok(Box::new(hv))
+            Box::new(hv)
         }
 
         #[cfg(target_os = "windows")]
@@ -207,13 +208,13 @@ pub(crate) fn set_up_hypervisor_partition(
                 #[cfg(feature = "trace_guest")]
                 trace_info,
             )?;
-            Ok(Box::new(hv))
+            Box::new(hv)
         }
 
         _ => {
             log_then_return!(NoHypervisorFound());
         }
-    }
+    })
 }
 
 #[cfg(test)]

@@ -72,7 +72,7 @@ use gdb::VcpuStopReason;
 
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
-use crate::mem::shared_mem::HostSharedMemory;
+use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::host_funcs::FunctionRegistry;
 
 cfg_if::cfg_if! {
@@ -255,6 +255,8 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Get a mutable reference of the trace info for the guest
     #[cfg(feature = "trace_guest")]
     fn trace_info_as_mut(&mut self) -> &mut TraceInfo;
+
+    fn update_scratch_mapping(&mut self, gscratch: &GuestSharedMemory) -> Result<()>;
 }
 
 /// Returns a Some(HyperlightExit::AccessViolation(..)) if the given gpa doesn't have

@@ -77,7 +77,7 @@ use crate::hypervisor::get_memory_access_violation;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::shared_mem::HostSharedMemory;
+use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::TraceInfo;
@@ -1179,6 +1179,10 @@ impl Hypervisor for HypervLinuxDriver {
     #[cfg(feature = "trace_guest")]
     fn trace_info_as_mut(&mut self) -> &mut TraceInfo {
         &mut self.trace_info
+    }
+
+    fn update_scratch_mapping(&mut self, gscratch: &GuestSharedMemory) -> Result<()> {
+        Ok(())
     }
 }
 

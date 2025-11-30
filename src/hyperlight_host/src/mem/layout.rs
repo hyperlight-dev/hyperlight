@@ -127,6 +127,10 @@ pub(crate) struct SandboxMemoryLayout {
     // The offset in the sandbox memory where the code starts
     guest_code_offset: usize,
     pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
+
+    // The size of the scratch region in physical memory; note that
+    // this will appear under the top of physical memory.
+    scratch_size: usize,
 }
 
 impl Debug for SandboxMemoryLayout {
@@ -201,6 +205,10 @@ impl Debug for SandboxMemoryLayout {
                 "Guest Code Offset",
                 &format_args!("{:#x}", self.guest_code_offset),
             )
+            .field(
+                "Scratch region size",
+                &format_args!("{:#x}", self.scratch_size),
+            )
             .finish()
     }
 }
@@ -225,6 +233,7 @@ impl SandboxMemoryLayout {
         code_size: usize,
         stack_size: usize,
         heap_size: usize,
+        scratch_size: usize,
         init_data_size: usize,
         init_data_permissions: Option<MemoryRegionFlags>,
     ) -> Result<Self> {
@@ -294,6 +303,7 @@ impl SandboxMemoryLayout {
             init_data_permissions,
             pt_offset,
             pt_size: None,
+            scratch_size,
         })
     }
 
@@ -321,6 +331,11 @@ impl SandboxMemoryLayout {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn get_guest_stack_size(&self) -> usize {
         self.stack_size
+    }
+
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(super) fn get_scratch_size(&self) -> usize {
+        self.scratch_size
     }
 
     /// Get the offset in guest memory to the output data pointer.
@@ -798,7 +813,7 @@ mod tests {
     fn test_get_memory_size() {
         let sbox_cfg = SandboxConfiguration::default();
         let sbox_mem_layout =
-            SandboxMemoryLayout::new(sbox_cfg, 4096, 2048, 4096, 0, None).unwrap();
+            SandboxMemoryLayout::new(sbox_cfg, 4096, 2048, 4096, 0x3000, 0, None).unwrap();
         assert_eq!(
             sbox_mem_layout.get_memory_size().unwrap(),
             get_expected_memory_size(&sbox_mem_layout)

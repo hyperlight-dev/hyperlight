@@ -14,5 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-// Keep in mind that the minimum upper half GVA is 0xffff_8000_0000_0000
-pub const SNAPSHOT_PT_GVA: usize = 0xffff_ff00_0000_0000;
+pub const MAX_GVA: usize = 0xffff_ffff_ffff_ffff;
+pub const SNAPSHOT_PT_GVA: usize = 0xffff_8000_0000_0000;
+
+// Let's assume 40-bit IPAs for now
+pub const MAX_GPA: usize = 0x0000_03ff_ffff_ffff;

@@ -312,7 +312,7 @@ impl ExclusiveSharedMemory {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
         use libc::{
-            MAP_ANONYMOUS, MAP_FAILED, MAP_NORESERVE, MAP_SHARED, PROT_NONE, PROT_READ, PROT_WRITE,
+            MAP_ANONYMOUS, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE,
             c_int, mmap, mprotect, off_t, size_t,
         };
 
@@ -345,7 +345,7 @@ impl ExclusiveSharedMemory {
                 null_mut(),
                 total_size as size_t,
                 PROT_READ | PROT_WRITE,
-                MAP_ANONYMOUS | MAP_SHARED | MAP_NORESERVE,
+                MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE,
                 -1 as c_int,
                 0 as off_t,
             )
@@ -681,6 +681,22 @@ pub trait SharedMemory {
     fn restore_from_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
         assert!(self.mem_size() == snapshot.mem_size());
         self.with_exclusivity(|e| e.copy_from_slice(snapshot.memory(), 0))?
+    }
+
+    /// Zero a shared memory region
+    fn zero(&mut self) -> Result<()> {
+        self.with_exclusivity(|e| {
+            let mut do_copy = true;
+            // TODO: Compare & add heuristic thresholds: mmap, MADV_DONTNEED, MADV_REMOVE, MADV_FREE (?)
+            #[cfg(target_os = "linux")]
+            unsafe {
+                let ret = libc::madvise(e.region.ptr as *mut libc::c_void, e.region.size, libc::MADV_DONTNEED);
+                if ret == 0 { do_copy = false; }
+            }
+            if do_copy {
+                e.as_mut_slice().fill(0);
+            }
+        })
     }
 }
 
