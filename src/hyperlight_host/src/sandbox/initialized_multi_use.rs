@@ -407,7 +407,6 @@ impl MultiUseSandbox {
                 self.dbg_mem_access_fn.clone(),
             )?;
 
-            self.mem_mgr.check_stack_guard()?;
             check_for_guest_error(&mut self.mem_mgr)?;
 
             self.mem_mgr.get_guest_function_call_result()
@@ -471,7 +470,6 @@ impl Callable for MultiUseSandbox {
 impl std::fmt::Debug for MultiUseSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MultiUseSandbox")
-            .field("stack_guard", &self.mem_mgr.get_stack_cookie())
             .finish()
     }
 }

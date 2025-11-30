@@ -1084,14 +1084,6 @@ impl Hypervisor for HypervWindowsDriver {
         Ok(())
     }
 
-    fn check_stack_guard(&self) -> Result<bool> {
-        if let Some(mgr) = self.mem_mgr.as_ref() {
-            mgr.check_stack_guard()
-        } else {
-            Err(new_error!("Memory manager is not initialized"))
-        }
-    }
-
     #[cfg(feature = "trace_guest")]
     fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64> {
         let regs = self.processor.get_regs()?;

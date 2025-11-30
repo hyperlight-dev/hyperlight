@@ -242,9 +242,6 @@ pub(crate) trait Hypervisor: Debug + Send {
         unimplemented!()
     }
 
-    /// Check stack guard to see if the stack is still valid
-    fn check_stack_guard(&self) -> Result<bool>;
-
     /// Read a register for trace/unwind purposes
     #[cfg(feature = "trace_guest")]
     fn read_trace_reg(&self, reg: TraceRegister) -> Result<u64>;
@@ -310,10 +307,6 @@ impl VirtualCPU {
                 Ok(HyperlightExit::Mmio(addr)) => {
                     #[cfg(crashdump)]
                     crashdump::generate_crashdump(hv)?;
-
-                    if !hv.check_stack_guard()? {
-                        log_then_return!(StackOverflow());
-                    }
 
                     log_then_return!("MMIO access address {:#x}", addr);
                 }
