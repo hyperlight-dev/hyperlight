@@ -52,7 +52,7 @@ impl Registerable for UninitializedSandbox {
             return_type: Output::TYPE,
         };
 
-        (*hfs).register_host_function(name.to_string(), entry, &mut self.mgr)
+        (*hfs).register_host_function(name.to_string(), entry)
     }
 }
 
@@ -196,7 +196,7 @@ pub(crate) fn register_host_function<Args: ParameterTuple, Output: SupportedRetu
         .host_funcs
         .try_lock()
         .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-        .register_host_function(name.to_string(), entry, &mut sandbox.mgr)?;
+        .register_host_function(name.to_string(), entry)?;
 
     Ok(())
 }

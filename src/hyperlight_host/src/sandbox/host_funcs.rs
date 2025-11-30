@@ -26,10 +26,8 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use tracing::{Span, instrument};
 
 use crate::HyperlightError::HostFunctionNotFound;
+use crate::Result;
 use crate::func::host_functions::TypeErasedHostFunction;
-use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::ExclusiveSharedMemory;
-use crate::{Result, new_error};
 
 #[derive(Default)]
 /// A Wrapper around details of functions exposed by the Host
@@ -68,20 +66,9 @@ impl FunctionRegistry {
         &mut self,
         name: String,
         func: FunctionEntry,
-        mgr: &mut SandboxMemoryManager<ExclusiveSharedMemory>,
     ) -> Result<()> {
         self.functions_map.insert(name, func);
 
-        let hfd = HostFunctionDetails::from(self);
-
-        let buffer: Vec<u8> = (&hfd).try_into().map_err(|e| {
-            new_error!(
-                "Error serializing host function details to flatbuffer: {}",
-                e
-            )
-        })?;
-
-        mgr.write_buffer_host_function_details(&buffer)?;
         Ok(())
     }
 

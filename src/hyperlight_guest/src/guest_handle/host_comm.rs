@@ -17,7 +17,6 @@ limitations under the License.
 use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::slice::from_raw_parts;
 
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
@@ -27,7 +26,6 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
-use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::outb::OutBAction;
 use tracing::instrument;
@@ -150,22 +148,6 @@ impl GuestHandle {
     ) -> Result<T> {
         self.call_host_function_without_returning_result(function_name, parameters, return_type)?;
         self.get_host_return_value::<T>()
-    }
-
-    #[instrument(skip_all, level = "Trace")]
-    pub fn get_host_function_details(&self) -> HostFunctionDetails {
-        let peb_ptr = self.peb().unwrap();
-        let host_function_details_buffer =
-            unsafe { (*peb_ptr).host_function_definitions.ptr as *const u8 };
-        let host_function_details_size =
-            unsafe { (*peb_ptr).host_function_definitions.size as usize };
-
-        let host_function_details_slice: &[u8] =
-            unsafe { from_raw_parts(host_function_details_buffer, host_function_details_size) };
-
-        host_function_details_slice
-            .try_into()
-            .expect("Failed to convert buffer to HostFunctionDetails")
     }
 
     /// Log a message with the specified log level, source, caller, source file, and line number.

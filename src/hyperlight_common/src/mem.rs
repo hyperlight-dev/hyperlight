@@ -48,5 +48,4 @@ pub struct HyperlightPEB {
     pub init_data: GuestMemoryRegion,
     pub guest_heap: GuestMemoryRegion,
     pub guest_stack: GuestStack,
-    pub host_function_definitions: GuestMemoryRegion,
 }

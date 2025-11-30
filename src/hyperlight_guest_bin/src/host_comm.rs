@@ -24,7 +24,6 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
@@ -70,12 +69,6 @@ pub fn get_host_return_value_raw() -> Result<ReturnValue> {
 pub fn get_host_return_value<T: TryFrom<ReturnValue>>() -> Result<T> {
     let handle = unsafe { GUEST_HANDLE };
     handle.get_host_return_value::<T>()
-}
-
-pub fn get_host_function_details() -> HostFunctionDetails {
-    let handle = unsafe { GUEST_HANDLE };
-
-    handle.get_host_function_details()
 }
 
 pub fn read_n_bytes_from_user_memory(num: u64) -> Result<Vec<u8>> {
