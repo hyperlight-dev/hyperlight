@@ -90,9 +90,10 @@ impl vm::TableOps for GuestPageTableBuffer {
         let b = self.buffer.borrow();
         b[addr.0 - (self.phys_base / PAGE_TABLE_SIZE)][addr.1]
     }
-    unsafe fn write_entry(&self, addr: (usize, usize), x: PageTableEntry) {
+    unsafe fn write_entry(&self, addr: (usize, usize), x: PageTableEntry) -> Option<(usize, usize)> {
         let mut b = self.buffer.borrow_mut();
         b[addr.0 - (self.phys_base / PAGE_TABLE_SIZE)][addr.1] = x;
+        None
     }
     fn to_phys(addr: (usize, usize)) -> PhysAddr {
         (addr.0 as u64 * PAGE_TABLE_SIZE as u64) + addr.1 as u64

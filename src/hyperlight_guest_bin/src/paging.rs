@@ -14,19 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use alloc::alloc::Layout;
 use core::arch::asm;
 
 use crate::OS_PAGE_SIZE;
-
-/// Convert a physical address in main memory to a virtual address
-/// through the pysmap
-///
-/// This is _not guaranteed_ to work with device memory
-pub fn ptov(x: u64) -> *mut u8 {
-    // Currently, all of main memory is identity mapped
-    x as *mut u8
-}
+use hyperlight_guest::prim_alloc::alloc_phys_pages;
 
 // TODO: This is not at all thread-safe atm
 // TODO: A lot of code in this file uses inline assembly to load and
@@ -44,6 +35,8 @@ static SNAPSHOT_PT_GPA: spin::Once<u64> = spin::Once::new();
 struct GuestMappingOperations {
     snapshot_pt_base_gpa: u64,
     snapshot_pt_base_gva: u64,
+    scratch_base_gpa: u64,
+    scratch_base_gva: u64,
 }
 impl GuestMappingOperations {
     fn new() -> Self {
@@ -56,14 +49,17 @@ impl GuestMappingOperations {
                 snapshot_pt_base_gpa
             }),
             snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA as u64,
+            scratch_base_gpa: hyperlight_guest::layout::scratch_base_gpa(),
+            scratch_base_gva: hyperlight_guest::layout::scratch_base_gva(),
         }
     }
-    fn ptov(&self, addr: u64) -> u64 {
-        if addr >= self.snapshot_pt_base_gpa {
-            self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)
+    fn ptov(&self, addr: u64) -> *mut u8 {
+        if addr >= self.scratch_base_gpa {
+            (self.scratch_base_gva + (addr - self.scratch_base_gpa)) as *mut u8
+        } else if addr >= self.snapshot_pt_base_gpa {
+            (self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)) as *mut u8
         } else {
-            // Assume for now that any of our own PTs are identity mapped.
-            addr
+            panic!("ptov encounted snapshot non-PT page")
         }
     }
 }
@@ -71,7 +67,7 @@ impl hyperlight_common::vm::TableOps for GuestMappingOperations {
     type TableAddr = u64;
     unsafe fn alloc_table(&self) -> u64 {
         let page_addr = unsafe { alloc_phys_pages(1) };
-        unsafe { ptov(page_addr).write_bytes(0u8, hyperlight_common::vm::PAGE_TABLE_SIZE) };
+        unsafe { self.ptov(page_addr).write_bytes(0u8, hyperlight_common::vm::PAGE_TABLE_SIZE) };
         page_addr
     }
     fn entry_addr(addr: u64, offset: u64) -> u64 {
@@ -85,11 +81,27 @@ impl hyperlight_common::vm::TableOps for GuestMappingOperations {
         }
         ret
     }
-    unsafe fn write_entry(&self, addr: u64, x: u64) {
+    unsafe fn write_entry(&self, addr: u64, x: u64) -> Option<u64> {
+        let mut addr = addr;
+        let mut ret = None;
+        if addr >= self.snapshot_pt_base_gpa && addr < self.scratch_base_gpa{
+            // This needs to be CoW'd over to the scratch region
+            unsafe {
+                let new_table = alloc_phys_pages(1);
+                core::ptr::copy(
+                    self.ptov(addr & !0xfff),
+                    self.ptov(new_table),
+                    hyperlight_common::vm::PAGE_TABLE_SIZE,
+                );
+                addr = new_table | (addr & 0xfff);
+                ret = Some(new_table);
+            }
+        }
         let addr = self.ptov(addr);
         unsafe {
             asm!("mov qword ptr [{}], {}", in(reg) addr, in(reg) x);
         }
+        ret
     }
     fn to_phys(addr: u64) -> u64 {
         addr
@@ -135,27 +147,10 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
     }
 }
 
-/// Allocate n contiguous physical pages and return the physical
-/// addresses of the pages in question.
-/// # Safety
-/// This function is not inherently unsafe but will likely become so in the future
-/// when a real physical page allocator is implemented.
-/// # Panics
-/// This function will panic if:
-/// - The Layout creation fails
-/// - Memory allocation fails
-pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
-    // Currently, since all of main memory is idmap'd, we can just
-    // allocate any appropriately aligned section of memory.
+pub fn vtop(gva: u64) -> Option<u64> {
+    use hyperlight_common::vm;
     unsafe {
-        let v = alloc::alloc::alloc_zeroed(
-            Layout::from_size_align(n as usize * OS_PAGE_SIZE as usize, OS_PAGE_SIZE as usize)
-                .expect("could not create physical page allocation layout"),
-        );
-        if v.is_null() {
-            panic!("could not allocate a physical page");
-        }
-        v as u64
+        vm::vtop::<_>(&GuestMappingOperations::new(), gva)
     }
 }
 

@@ -12,21 +12,19 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+ */
 
-#![no_std]
-// Deps
-
-extern crate alloc;
-
-// Modules
-pub mod prim_alloc;
-pub mod error;
-pub mod exit;
-pub mod layout;
-
-pub mod guest_handle {
-    pub mod handle;
-    pub mod host_comm;
-    pub mod io;
+pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
+    let addr = crate::layout::allocator_gva();
+    let nbytes = n * hyperlight_common::vm::PAGE_SIZE as u64;
+    let mut x = nbytes;
+    core::arch::asm!(
+        "lock xadd qword ptr [{addr}], {x}",
+        addr = in(reg) addr,
+        x = inout(reg) x
+    );
+    if x.checked_add(nbytes).is_none() {
+        panic!("Out of physical memory!")
+    }
+    x
 }
