@@ -44,9 +44,6 @@ pub struct SandboxConfiguration {
     /// Guest gdb debug port
     #[cfg(gdb)]
     guest_debug_info: Option<DebugInfo>,
-    /// The size of the memory buffer that is made available for Guest Function
-    /// Definitions
-    host_function_definition_size: usize,
     /// The size of the memory buffer that is made available for input to the
     /// Guest Binary
     input_data_size: usize,
@@ -93,12 +90,6 @@ impl SandboxConfiguration {
     pub const DEFAULT_OUTPUT_SIZE: usize = 0x4000;
     /// The minimum size of output data
     pub const MIN_OUTPUT_SIZE: usize = 0x2000;
-    /// The default size of host function definitionsSET
-    /// Host function definitions has its own page in memory, in order to be READ-ONLY
-    /// from a guest's perspective.
-    pub const DEFAULT_HOST_FUNCTION_DEFINITION_SIZE: usize = 0x1000;
-    /// The minimum size of host function definitions
-    pub const MIN_HOST_FUNCTION_DEFINITION_SIZE: usize = 0x1000;
     /// The default interrupt retry delay
     pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration = Duration::from_micros(500);
     /// The default signal offset from `SIGRTMIN` used to determine the signal number for interrupting
@@ -114,7 +105,6 @@ impl SandboxConfiguration {
     fn new(
         input_data_size: usize,
         output_data_size: usize,
-        function_definition_size: usize,
         stack_size_override: Option<u64>,
         heap_size_override: Option<u64>,
         interrupt_retry_delay: Duration,
@@ -125,10 +115,6 @@ impl SandboxConfiguration {
         Self {
             input_data_size: max(input_data_size, Self::MIN_INPUT_SIZE),
             output_data_size: max(output_data_size, Self::MIN_OUTPUT_SIZE),
-            host_function_definition_size: max(
-                function_definition_size,
-                Self::MIN_HOST_FUNCTION_DEFINITION_SIZE,
-            ),
             stack_size_override: stack_size_override.unwrap_or(0),
             heap_size_override: heap_size_override.unwrap_or(0),
             interrupt_retry_delay,
@@ -138,16 +124,6 @@ impl SandboxConfiguration {
             #[cfg(crashdump)]
             guest_core_dump,
         }
-    }
-
-    /// Set the size of the memory buffer that is made available for serialising host function definitions
-    /// the minimum value is MIN_HOST_FUNCTION_DEFINITION_SIZE
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn set_host_function_definition_size(&mut self, host_function_definition_size: usize) {
-        self.host_function_definition_size = max(
-            host_function_definition_size,
-            Self::MIN_HOST_FUNCTION_DEFINITION_SIZE,
-        );
     }
 
     /// Set the size of the memory buffer that is made available for input to the guest
@@ -230,11 +206,6 @@ impl SandboxConfiguration {
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_host_function_definition_size(&self) -> usize {
-        self.host_function_definition_size
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_input_data_size(&self) -> usize {
         self.input_data_size
     }
@@ -289,7 +260,6 @@ impl Default for SandboxConfiguration {
         Self::new(
             Self::DEFAULT_INPUT_SIZE,
             Self::DEFAULT_OUTPUT_SIZE,
-            Self::DEFAULT_HOST_FUNCTION_DEFINITION_SIZE,
             None,
             None,
             Self::DEFAULT_INTERRUPT_RETRY_DELAY,
@@ -312,11 +282,9 @@ mod tests {
         const HEAP_SIZE_OVERRIDE: u64 = 0x50000;
         const INPUT_DATA_SIZE_OVERRIDE: usize = 0x4000;
         const OUTPUT_DATA_SIZE_OVERRIDE: usize = 0x4001;
-        const HOST_FUNCTION_DEFINITION_SIZE_OVERRIDE: usize = 0x4002;
         let mut cfg = SandboxConfiguration::new(
             INPUT_DATA_SIZE_OVERRIDE,
             OUTPUT_DATA_SIZE_OVERRIDE,
-            HOST_FUNCTION_DEFINITION_SIZE_OVERRIDE,
             Some(STACK_SIZE_OVERRIDE),
             Some(HEAP_SIZE_OVERRIDE),
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
@@ -338,10 +306,6 @@ mod tests {
         assert_eq!(2048, cfg.heap_size_override);
         assert_eq!(INPUT_DATA_SIZE_OVERRIDE, cfg.input_data_size);
         assert_eq!(OUTPUT_DATA_SIZE_OVERRIDE, cfg.output_data_size);
-        assert_eq!(
-            HOST_FUNCTION_DEFINITION_SIZE_OVERRIDE,
-            cfg.host_function_definition_size
-        );
     }
 
     #[test]
@@ -349,7 +313,6 @@ mod tests {
         let mut cfg = SandboxConfiguration::new(
             SandboxConfiguration::MIN_INPUT_SIZE - 1,
             SandboxConfiguration::MIN_OUTPUT_SIZE - 1,
-            SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE - 1,
             None,
             None,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
@@ -361,25 +324,14 @@ mod tests {
         );
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
-        assert_eq!(
-            SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE,
-            cfg.host_function_definition_size
-        );
         assert_eq!(0, cfg.stack_size_override);
         assert_eq!(0, cfg.heap_size_override);
 
         cfg.set_input_data_size(SandboxConfiguration::MIN_INPUT_SIZE - 1);
         cfg.set_output_data_size(SandboxConfiguration::MIN_OUTPUT_SIZE - 1);
-        cfg.set_host_function_definition_size(
-            SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE - 1,
-        );
 
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
-        assert_eq!(
-            SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE,
-            cfg.host_function_definition_size
-        );
     }
 
     mod proptests {
@@ -404,12 +356,6 @@ mod tests {
                 prop_assert_eq!(size, cfg.get_output_data_size());
             }
 
-            #[test]
-            fn host_function_definition_size(size in SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE..=SandboxConfiguration::MIN_HOST_FUNCTION_DEFINITION_SIZE * 10) {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_host_function_definition_size(size);
-                prop_assert_eq!(size, cfg.get_host_function_definition_size());
-            }
 
             #[test]
             fn stack_size_override(size in 0x1000..=0x10000u64) {

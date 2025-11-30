@@ -76,14 +76,6 @@ impl FunctionRegistry {
 
         let hfd = HostFunctionDetails::from(self);
 
-        let buffer: Vec<u8> = (&hfd).try_into().map_err(|e| {
-            new_error!(
-                "Error serializing host function details to flatbuffer: {}",
-                e
-            )
-        })?;
-
-        mgr.write_buffer_host_function_details(&buffer)?;
         Ok(())
     }
 
