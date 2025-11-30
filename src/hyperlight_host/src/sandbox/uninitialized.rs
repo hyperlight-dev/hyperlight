@@ -23,6 +23,7 @@ use log::LevelFilter;
 use tracing::{Span, instrument};
 
 use super::host_funcs::{FunctionRegistry, default_writer_func};
+use super::snapshot::Snapshot;
 use super::uninitialized_evolve::evolve_impl_multi_use;
 use crate::func::host_functions::{HostFunction, register_host_function};
 use crate::func::{ParameterTuple, SupportedReturnType};
@@ -82,6 +83,7 @@ pub struct UninitializedSandbox {
     #[cfg(any(crashdump, gdb))]
     pub(crate) rt_cfg: SandboxRuntimeConfig,
     pub(crate) load_info: crate::mem::exe::LoadInfo,
+    pub(crate) snapshot: Arc<Snapshot>,
 }
 
 impl Debug for UninitializedSandbox {
@@ -99,6 +101,25 @@ pub enum GuestBinary<'a> {
     Buffer(&'a [u8]),
     /// A path to the GuestBinary
     FilePath(String),
+}
+impl<'a> GuestBinary<'a> {
+    /// If the guest binary is identified by a file, canonicalise the path
+    ///
+    /// TODO: Maybe we should make the GuestEnvironment or
+    ///       GuestBinary constructors crate-private and turn this
+    ///       into an invariant on one of those types.
+    pub fn canonicalize(&mut self) -> Result<()> {
+        if let GuestBinary::FilePath(p) = self {
+            let canon = Path::new(&p)
+                .canonicalize()
+                .map_err(|e| new_error!("GuestBinary not found: '{}': {}", p, e))?
+                .into_os_string()
+                .into_string()
+                .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?;
+            *self = GuestBinary::FilePath(canon)
+        }
+        Ok(())
+    }
 }
 
 /// A `GuestBlob` containing data and the permissions for its use.
@@ -152,19 +173,8 @@ impl<'a> From<GuestBinary<'a>> for GuestEnvironment<'a, '_> {
 }
 
 impl UninitializedSandbox {
-    /// Creates a new uninitialized sandbox for the given guest environment.
-    ///
-    /// The guest binary can be provided as either a file path or memory buffer.
-    /// An optional configuration can customize memory sizes and sandbox settings.
-    /// After creation, register host functions using [`register`](Self::register)
-    /// before calling [`evolve`](Self::evolve) to complete initialization and create the VM.
-    #[instrument(
-        err(Debug),
-        skip(env),
-        parent = Span::current()
-    )]
-    pub fn new<'a, 'b>(
-        env: impl Into<GuestEnvironment<'a, 'b>>,
+    pub fn from_snapshot(
+        snapshot: Arc<Snapshot>,
         cfg: Option<SandboxConfiguration>,
     ) -> Result<Self> {
         #[cfg(feature = "build-metadata")]
@@ -173,25 +183,6 @@ impl UninitializedSandbox {
         // hyperlight is only supported on Windows 11 and Windows Server 2022 and later
         #[cfg(target_os = "windows")]
         check_windows_version()?;
-
-        let env: GuestEnvironment<'_, '_> = env.into();
-        let guest_binary = env.guest_binary;
-        let guest_blob = env.init_data;
-
-        // If the guest binary is a file make sure it exists
-        let guest_binary = match guest_binary {
-            GuestBinary::FilePath(binary_path) => {
-                let path = Path::new(&binary_path)
-                    .canonicalize()
-                    .map_err(|e| new_error!("GuestBinary not found: '{}': {}", binary_path, e))?
-                    .into_os_string()
-                    .into_string()
-                    .map_err(|e| new_error!("Error converting OsString to String: {:?}", e))?;
-
-                GuestBinary::FilePath(path)
-            }
-            buffer @ GuestBinary::Buffer(_) => buffer,
-        };
 
         let sandbox_cfg = cfg.unwrap_or_default();
 
@@ -220,18 +211,10 @@ impl UninitializedSandbox {
             }
         };
 
-        let (mut mem_mgr_wrapper, load_info) = UninitializedSandbox::load_guest_binary(
-            sandbox_cfg,
-            &guest_binary,
-            guest_blob.as_ref(),
-        )?;
+        let mut mem_mgr_wrapper =
+            SandboxMemoryManager::<ExclusiveSharedMemory>::from_snapshot(snapshot.as_ref())?;
 
         mem_mgr_wrapper.write_memory_layout()?;
-
-        // if env has a guest blob, load it into shared mem
-        if let Some(blob) = guest_blob {
-            mem_mgr_wrapper.write_init_data(blob.data)?;
-        }
 
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
 
@@ -242,7 +225,8 @@ impl UninitializedSandbox {
             config: sandbox_cfg,
             #[cfg(any(crashdump, gdb))]
             rt_cfg,
-            load_info,
+            load_info: snapshot.load_info(),
+            snapshot,
         };
 
         // If we were passed a writer for host print register it otherwise use the default.
@@ -253,6 +237,26 @@ impl UninitializedSandbox {
         Ok(sandbox)
     }
 
+    /// Creates a new uninitialized sandbox for the given guest environment.
+    ///
+    /// The guest binary can be provided as either a file path or memory buffer.
+    /// An optional configuration can customize memory sizes and sandbox settings.
+    /// After creation, register host functions using [`register`](Self::register)
+    /// before calling [`evolve`](Self::evolve) to complete initialization and create the VM.
+    #[instrument(
+        err(Debug),
+        skip(env),
+        parent = Span::current()
+    )]
+    pub fn new<'a, 'b>(
+        env: impl Into<GuestEnvironment<'a, 'b>>,
+        cfg: Option<SandboxConfiguration>,
+    ) -> Result<Self> {
+        let cfg = cfg.unwrap_or_default();
+        let snapshot = Snapshot::from_env(env, cfg)?;
+        Self::from_snapshot(Arc::new(snapshot), Some(cfg))
+    }
+
     /// Creates and initializes the virtual machine, transforming this into a ready-to-use sandbox.
     ///
     /// This method consumes the `UninitializedSandbox` and performs the final initialization
@@ -261,33 +265,6 @@ impl UninitializedSandbox {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub fn evolve(self) -> Result<MultiUseSandbox> {
         evolve_impl_multi_use(self)
-    }
-
-    /// Load the file at `bin_path_str` into a PE file, then attempt to
-    /// load the PE file into a `SandboxMemoryManager` and return it.
-    ///
-    /// If `run_from_guest_binary` is passed as `true`, and this code is
-    /// running on windows, this function will call
-    /// `SandboxMemoryManager::load_guest_binary_using_load_library` to
-    /// create the new `SandboxMemoryManager`. If `run_from_guest_binary` is
-    /// passed as `true` and we're not running on windows, this function will
-    /// return an `Err`. Otherwise, if `run_from_guest_binary` is passed
-    /// as `false`, this function calls `SandboxMemoryManager::load_guest_binary_into_memory`.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(super) fn load_guest_binary(
-        cfg: SandboxConfiguration,
-        guest_binary: &GuestBinary,
-        guest_blob: Option<&GuestBlob>,
-    ) -> Result<(
-        SandboxMemoryManager<ExclusiveSharedMemory>,
-        crate::mem::exe::LoadInfo,
-    )> {
-        let exe_info = match guest_binary {
-            GuestBinary::FilePath(bin_path_str) => ExeInfo::from_file(bin_path_str)?,
-            GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
-        };
-
-        SandboxMemoryManager::load_guest_binary_into_memory(cfg, exe_info, guest_blob)
     }
 
     /// Sets the maximum log level for guest code execution.
@@ -477,20 +454,6 @@ mod tests {
         let _ = bytes.split_off(100);
         let sandbox = UninitializedSandbox::new(GuestBinary::Buffer(&bytes), None);
         assert!(sandbox.is_err());
-    }
-
-    #[test]
-    fn test_load_guest_binary_manual() {
-        let cfg = SandboxConfiguration::default();
-
-        let simple_guest_path = simple_guest_as_string().unwrap();
-
-        UninitializedSandbox::load_guest_binary(
-            cfg,
-            &GuestBinary::FilePath(simple_guest_path),
-            None.as_ref(),
-        )
-        .unwrap();
     }
 
     #[test]
@@ -926,7 +889,7 @@ mod tests {
             // There should be one event for the error that the binary path does not exist plus 14 info events for the logging of the crate info
 
             let events = subscriber.get_events();
-            assert_eq!(events.len(), 15);
+            assert_eq!(events.len(), 1);
 
             let mut count_matching_events = 0;
 
@@ -1004,7 +967,7 @@ mod tests {
             // load into the sandbox does not exist, plus the 14 info log records
 
             let num_calls = TEST_LOGGER.num_log_calls();
-            assert_eq!(19, num_calls);
+            assert_eq!(13, num_calls);
 
             // Log record 1
 
@@ -1023,7 +986,7 @@ mod tests {
 
             // Log record 17
 
-            let logcall = TEST_LOGGER.get_log_call(16).unwrap();
+            let logcall = TEST_LOGGER.get_log_call(10).unwrap();
             assert_eq!(Level::Error, logcall.level);
             assert!(
                 logcall
@@ -1034,14 +997,14 @@ mod tests {
 
             // Log record 18
 
-            let logcall = TEST_LOGGER.get_log_call(17).unwrap();
+            let logcall = TEST_LOGGER.get_log_call(11).unwrap();
             assert_eq!(Level::Trace, logcall.level);
             assert_eq!(logcall.args, "<- new;");
             assert_eq!("tracing::span::active", logcall.target);
 
             // Log record 19
 
-            let logcall = TEST_LOGGER.get_log_call(18).unwrap();
+            let logcall = TEST_LOGGER.get_log_call(12).unwrap();
             assert_eq!(Level::Trace, logcall.level);
             assert_eq!(logcall.args, "-- new;");
             assert_eq!("tracing::span", logcall.target);

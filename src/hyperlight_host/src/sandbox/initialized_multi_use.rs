@@ -47,9 +47,6 @@ use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::maybe_time_and_emit_guest_call;
 use crate::{Result, log_then_return};
 
-/// Global counter for assigning unique IDs to sandboxes
-static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// A fully initialized sandbox that can execute guest functions multiple times.
 ///
 /// Guest functions can be called repeatedly while maintaining state between calls.
@@ -84,7 +81,7 @@ impl MultiUseSandbox {
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
-            id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            id: super::snapshot::SANDBOX_CONFIGURATION_COUNTER.fetch_add(1, Ordering::Relaxed),
             _host_funcs: host_funcs,
             mem_mgr: mgr,
             vm,

@@ -36,7 +36,37 @@ pub fn ptov(x: u64) -> *mut u8 {
 //       virtual address 0, and Rust raw pointer operations can't be
 //       used to read/write from address 0.
 
-struct GuestMappingOperations {}
+// We get this out of CR3 the first time that we do any mapping
+// operation. In the future, if snapshot/restore changes to be able to
+// change the snapshot pt base, we will need to modify this.
+static SNAPSHOT_PT_GPA: spin::Once<u64> = spin::Once::new();
+
+struct GuestMappingOperations {
+    snapshot_pt_base_gpa: u64,
+    snapshot_pt_base_gva: u64,
+}
+impl GuestMappingOperations {
+    fn new() -> Self {
+        Self {
+            snapshot_pt_base_gpa: *SNAPSHOT_PT_GPA.call_once(|| {
+                let snapshot_pt_base_gpa: u64;
+                unsafe {
+                    asm!("mov {}, cr3", out(reg) snapshot_pt_base_gpa);
+                };
+                snapshot_pt_base_gpa
+            }),
+            snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA as u64,
+        }
+    }
+    fn ptov(&self, addr: u64) -> u64 {
+        if addr >= self.snapshot_pt_base_gpa {
+            self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)
+        } else {
+            // Assume for now that any of our own PTs are identity mapped.
+            addr
+        }
+    }
+}
 impl hyperlight_common::vm::TableOps for GuestMappingOperations {
     type TableAddr = u64;
     unsafe fn alloc_table(&self) -> u64 {
@@ -48,6 +78,7 @@ impl hyperlight_common::vm::TableOps for GuestMappingOperations {
         addr + offset
     }
     unsafe fn read_entry(&self, addr: u64) -> u64 {
+        let addr = self.ptov(addr);
         let ret: u64;
         unsafe {
             asm!("mov {}, qword ptr [{}]", out(reg) ret, in(reg) addr);
@@ -55,6 +86,7 @@ impl hyperlight_common::vm::TableOps for GuestMappingOperations {
         ret
     }
     unsafe fn write_entry(&self, addr: u64, x: u64) {
+        let addr = self.ptov(addr);
         unsafe {
             asm!("mov qword ptr [{}], {}", in(reg) addr, in(reg) x);
         }
@@ -88,7 +120,7 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
     use hyperlight_common::vm;
     unsafe {
         vm::map::<GuestMappingOperations>(
-            &GuestMappingOperations {},
+            &GuestMappingOperations::new(),
             vm::Mapping {
                 phys_base,
                 virt_base: virt_base as u64,

@@ -288,7 +288,7 @@ pub(crate) struct KVMDriver {
     vm_fd: VmFd,
     page_size: usize,
     vcpu_fd: VcpuFd,
-    entrypoint: u64,
+    entrypoint: Option<u64>,
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<LinuxInterruptHandle>,
     mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
@@ -320,7 +320,7 @@ impl KVMDriver {
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
         pml4_addr: u64,
-        entrypoint: u64,
+        entrypoint: Option<u64>,
         rsp: u64,
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -476,6 +476,7 @@ impl Hypervisor for KVMDriver {
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
+        let Some(entrypoint) = self.entrypoint else { return Ok(()); };
         self.mem_mgr = Some(mem_mgr);
         self.host_funcs = Some(host_funcs);
         self.page_size = page_size as usize;
@@ -486,7 +487,7 @@ impl Hypervisor for KVMDriver {
         };
 
         let regs = kvm_regs {
-            rip: self.entrypoint,
+            rip: entrypoint,
             rsp: self.orig_rsp.absolute()?,
 
             // function args

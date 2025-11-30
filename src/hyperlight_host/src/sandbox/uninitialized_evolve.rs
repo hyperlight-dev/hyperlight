@@ -107,40 +107,20 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<Box<dyn Hypervisor>> {
-    #[cfg(feature = "init-paging")]
-    let rsp_ptr = {
-        let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-        let rsp_u64 = mgr.set_up_shared_memory(&mut regions)?;
-        let rsp_raw = RawPtr::from(rsp_u64);
-        GuestPtr::try_from(rsp_raw)
-    }?;
-    #[cfg(not(feature = "init-paging"))]
-    let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
     let base_ptr = GuestPtr::try_from(Offset::from(0))?;
+    let rsp_ptr = {
+        let rsp_offset_u64 = mgr.layout.get_rsp_offset() as u64;
+        base_ptr + Offset::from(rsp_offset_u64)
+    };
+    let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
     let pml4_ptr = {
-        let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
+        let pml4_offset_u64 = mgr.layout.get_pt_offset() as u64;
         base_ptr + Offset::from(pml4_offset_u64)
     };
-    let entrypoint_ptr = {
-        let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;
+    let entrypoint_ptr = mgr.entrypoint_offset.map(|x| {
+        let entrypoint_total_offset = mgr.load_addr.clone() + x;
         GuestPtr::try_from(entrypoint_total_offset)
-    }?;
-
-    if base_ptr != pml4_ptr {
-        log_then_return!(
-            "Error: base_ptr ({:#?}) does not equal pml4_ptr ({:#?})",
-            base_ptr,
-            pml4_ptr
-        );
-    }
-    if entrypoint_ptr <= pml4_ptr {
-        log_then_return!(
-            "Error: entrypoint_ptr ({:#?}) is not greater than pml4_ptr ({:#?})",
-            entrypoint_ptr,
-            pml4_ptr
-        );
-    }
+    }).transpose()?;
 
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
@@ -193,7 +173,7 @@ pub(crate) fn set_up_hypervisor_partition(
             let hv = crate::hypervisor::kvm::KVMDriver::new(
                 regions,
                 pml4_ptr.absolute()?,
-                entrypoint_ptr.absolute()?,
+                entrypoint_ptr.map(|x| x.absolute()).transpose()?,
                 rsp_ptr.absolute()?,
                 config,
                 #[cfg(gdb)]

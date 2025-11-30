@@ -12,7 +12,43 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+ */
+//! This module describes the virtual and physical addresses of a
+//! number of special regions in the hyperlight VM, although we hope
+//! to reduce the number of these over time.
+//!
+//! A snapshot freshly created from an empty VM will result in roughly
+//! the following physical layout:
+//!
+//! +-------------------------------------------+
+//! |             Guest Page Tables             |
+//! +-------------------------------------------+
+//! |              Init Data                    | (GuestBlob size)
+//! +-------------------------------------------+
+//! |             Guest (User) Stack            |
+//! +-------------------------------------------+
+//! |             Guard Page (4KiB)             |
+//! +-------------------------------------------+
+//! |             Guest Heap                    |
+//! +-------------------------------------------+
+//! |             Output Data                   |
+//! +-------------------------------------------+
+//! |              Input Data                   |
+//! +-------------------------------------------+
+//! |        Host Function Definitions          |
+//! +-------------------------------------------+
+//! |                PEB Struct                 | (HyperlightPEB size)
+//! +-------------------------------------------+
+//! |               Guest Code                  |
+//! +-------------------------------------------+ 0x1_000
+//! |              NULL guard page              |
+//! +-------------------------------------------+ 0x0_000
+//!
+//! Everything except for the guest page tables is currently
+//! identity-mapped; the guest page tables themselves are mapped at
+//! [`hyperlight_common::layout::SNAPSHOT_PT_GVA`] =
+//! 0xffff_0000_0000_0000.
+
 use std::fmt::Debug;
 use std::mem::{offset_of, size_of};
 
@@ -26,7 +62,7 @@ use super::memory_region::MemoryRegionType::{
     Code, GuardPage, Heap, HostFunctionDefinitions, InitData, InputData, OutputData, Peb, Stack,
 };
 use super::memory_region::{
-    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegionFlags, MemoryRegionVecBuilder,
+    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind, MemoryRegionVecBuilder,
 };
 #[cfg(feature = "init-paging")]
 use super::mgr::AMOUNT_OF_MEMORY_PER_PT;
@@ -34,34 +70,6 @@ use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory};
 use crate::error::HyperlightError::{GuestOffsetIsInvalid, MemoryRequestTooBig};
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, new_error};
-
-// +-------------------------------------------+
-// |              Init Data                    | (GuestBlob size)
-// +-------------------------------------------+
-// |             Guest (User) Stack            |
-// +-------------------------------------------+
-// |             Guard Page (4KiB)             |
-// +-------------------------------------------+
-// |             Guest Heap                    |
-// +-------------------------------------------+
-// |             Output Data                   |
-// +-------------------------------------------+
-// |              Input Data                   |
-// +-------------------------------------------+
-// |        Host Function Definitions          |
-// +-------------------------------------------+
-// |                PEB Struct                 | (HyperlightPEB size)
-// +-------------------------------------------+
-// |               Guest Code                  |
-// +-------------------------------------------+
-// |                    PT                     |
-// +-------------------------------------------+ 0x3_000
-// |                    PD                     |
-// +-------------------------------------------+ 0x2_000
-// |                   PDPT                    |
-// +-------------------------------------------+ 0x1_000
-// |                   PML4                    |
-// +-------------------------------------------+ 0x0_000
 
 /// - `InitData` - some extra data that can be loaded onto the sandbox during
 ///   initialization.
@@ -114,12 +122,12 @@ pub(crate) struct SandboxMemoryLayout {
     guard_page_offset: usize,
     guest_user_stack_buffer_offset: usize, // the lowest address of the user stack
     init_data_offset: usize,
+    pt_offset: usize,
+    pt_size: Option<usize>,
 
     // other
     pub(crate) peb_address: usize,
     code_size: usize,
-    // The total size of the page tables
-    total_page_table_size: usize,
     // The offset in the sandbox memory where the code starts
     guest_code_offset: usize,
     pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
@@ -202,10 +210,6 @@ impl Debug for SandboxMemoryLayout {
                 &format_args!("{:#x}", self.init_data_offset),
             )
             .field(
-                "Page Table Size",
-                &format_args!("{:#x}", self.total_page_table_size),
-            )
-            .field(
                 "Guest Code Offset",
                 &format_args!("{:#x}", self.guest_code_offset),
             )
@@ -214,16 +218,13 @@ impl Debug for SandboxMemoryLayout {
 }
 
 impl SandboxMemoryLayout {
-    /// The offset into the sandbox's memory where the PML4 Table is located.
-    /// See https://www.pagetable.com/?p=14 for more information.
-    pub(crate) const PML4_OFFSET: usize = 0x0000;
     /// The maximum amount of memory a single sandbox will be allowed.
     /// The addressable virtual memory with current paging setup is virtual address 0x0 - 0x40000000 (excl.),
     /// However, the memory up to Self::BASE_ADDRESS is not used.
     const MAX_MEMORY_SIZE: usize = 0x40000000 - Self::BASE_ADDRESS;
 
     /// The base address of the sandbox's memory.
-    pub(crate) const BASE_ADDRESS: usize = 0x0;
+    pub(crate) const BASE_ADDRESS: usize = 0x1000;
 
     // the offset into a sandbox's input/output buffer where the stack starts
     const STACK_POINTER_SIZE_BYTES: u64 = 8;
@@ -231,7 +232,7 @@ impl SandboxMemoryLayout {
     /// Create a new `SandboxMemoryLayout` with the given
     /// `SandboxConfiguration`, code size and stack/heap size.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn new(
+    pub(crate) fn new(
         cfg: SandboxConfiguration,
         code_size: usize,
         stack_size: usize,
@@ -239,13 +240,9 @@ impl SandboxMemoryLayout {
         init_data_size: usize,
         init_data_permissions: Option<MemoryRegionFlags>,
     ) -> Result<Self> {
-        #[cfg(feature = "init-paging")]
-        let base = Self::get_total_page_table_size(cfg, code_size, stack_size, heap_size);
-        #[cfg(not(feature = "init-paging"))]
-        let base = Self::BASE_ADDRESS;
-        let guest_code_offset = base;
+        let guest_code_offset = 0;
         // The following offsets are to the fields of the PEB struct itself!
-        let peb_offset = base + round_up_to(code_size, PAGE_SIZE_USIZE);
+        let peb_offset = round_up_to(code_size, PAGE_SIZE_USIZE);
         let peb_security_cookie_seed_offset =
             peb_offset + offset_of!(HyperlightPEB, security_cookie_seed);
         let peb_guest_dispatch_function_ptr_offset =
@@ -285,6 +282,10 @@ impl SandboxMemoryLayout {
         // round up stack size to page size. This is needed for MemoryRegion
         let stack_size_rounded = round_up_to(stack_size, PAGE_SIZE_USIZE);
         let init_data_offset = guest_user_stack_buffer_offset + stack_size_rounded;
+        let pt_offset = round_up_to(
+            init_data_offset + init_data_size,
+            PAGE_SIZE_USIZE
+        );
 
         Ok(Self {
             peb_offset,
@@ -307,11 +308,12 @@ impl SandboxMemoryLayout {
             guest_user_stack_buffer_offset,
             peb_address,
             guard_page_offset,
-            total_page_table_size: base,
             guest_code_offset,
             init_data_offset,
             init_data_size,
             init_data_permissions,
+            pt_offset,
+            pt_size: None,
         })
     }
 
@@ -418,7 +420,7 @@ impl SandboxMemoryLayout {
 
     /// Get the offset to the top of the stack in guest memory
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_top_of_user_stack_offset(&self) -> usize {
+    pub(crate) fn get_top_of_user_stack_offset(&self) -> usize {
         self.guest_user_stack_buffer_offset
     }
 
@@ -434,13 +436,13 @@ impl SandboxMemoryLayout {
     /// layout.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_unaligned_memory_size(&self) -> usize {
-        self.init_data_offset + self.init_data_size
+        self.pt_offset + self.pt_size.unwrap_or(0)
     }
 
     /// get the code offset
     /// This is the offset in the sandbox memory where the code starts
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_guest_code_offset(&self) -> usize {
+    pub(crate) fn get_guest_code_offset(&self) -> usize {
         self.guest_code_offset
     }
 
@@ -450,56 +452,10 @@ impl SandboxMemoryLayout {
         Self::BASE_ADDRESS + self.guest_code_offset
     }
 
-    #[cfg(test)]
-    #[cfg(feature = "init-paging")]
-    /// Get the page table size
-    fn get_page_table_size(&self) -> usize {
-        self.total_page_table_size
-    }
-
-    // TODO: This over-counts on small sandboxes (because not all 512
-    // PTs may be required), under-counts on sandboxes with more than
-    // 1GiB memory, and would get unreasonably complicated if we
-    // needed to support hugepages.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[cfg(feature = "init-paging")]
-    fn get_total_page_table_size(
-        cfg: SandboxConfiguration,
-        code_size: usize,
-        stack_size: usize,
-        heap_size: usize,
-    ) -> usize {
-        // Get the configured memory size (assume each section is 4K aligned)
-
-        let mut total_mapped_memory_size: usize = round_up_to(code_size, PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(stack_size, PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(heap_size, PAGE_SIZE_USIZE);
-        total_mapped_memory_size +=
-            round_up_to(cfg.get_host_function_definition_size(), PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(cfg.get_input_data_size(), PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(cfg.get_output_data_size(), PAGE_SIZE_USIZE);
-        total_mapped_memory_size += round_up_to(size_of::<HyperlightPEB>(), PAGE_SIZE_USIZE);
-
-        // Add the base address of the sandbox
-        total_mapped_memory_size += Self::BASE_ADDRESS;
-
-        // Add the size of  the PML4, PDPT and PD
-        total_mapped_memory_size += 3 * PAGE_SIZE_USIZE;
-
-        // Add the maximum possible size of the PTs
-        total_mapped_memory_size += 512 * PAGE_SIZE_USIZE;
-
-        // Get the number of pages needed for the PTs
-
-        let num_pages: usize = total_mapped_memory_size.div_ceil(AMOUNT_OF_MEMORY_PER_PT) + 3; // PML4, PDPT, PD
-
-        num_pages * PAGE_SIZE_USIZE
-    }
-
     /// Get the total size of guest memory in `self`'s memory
     /// layout aligned to page size boundaries.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_memory_size(&self) -> Result<usize> {
+    pub(crate) fn get_memory_size(&self) -> Result<usize> {
         let total_memory = self.get_unaligned_memory_size();
 
         // Size should be a multiple of page size.
@@ -517,29 +473,35 @@ impl SandboxMemoryLayout {
         }
     }
 
+    /// Get the offset into the snapshot region of the page tables
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_pt_offset(&self) -> usize {
+        self.pt_offset
+    }
+
+    /// Get the offset into the snapshot region of the page tables
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn set_pt_size(&mut self, size: usize) {
+        self.pt_size = Some(size);
+    }
+
+    /// Get the offset into the snapshot region of the guest user stack
+    /// pointer, to be used when entering the guest
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_rsp_offset(&self) -> usize {
+        self.get_top_of_user_stack_offset()
+            + self.stack_size
+            - 0x28
+    }
+
+    pub fn get_memory_regions(&self, shared_mem: &GuestSharedMemory) -> Result<Vec<MemoryRegion>> {
+        self.get_memory_regions_(shared_mem.base_addr())
+    }
+
     /// Returns the memory regions associated with this memory layout,
     /// suitable for passing to a hypervisor for mapping into memory
-    pub fn get_memory_regions(&self, shared_mem: &GuestSharedMemory) -> Result<Vec<MemoryRegion>> {
-        let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, shared_mem.base_addr());
-
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "init-paging")] {
-                // PML4, PDPT, PD
-                let code_offset = builder.push_page_aligned(
-                    self.total_page_table_size,
-                    MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-                    PageTables,
-                );
-
-                if code_offset != self.guest_code_offset {
-                    return Err(new_error!(
-                        "Code offset does not match expected code offset expected:  {}, actual:  {}",
-                        self.guest_code_offset,
-                        code_offset
-                    ));
-                }
-            }
-        }
+    pub(crate) fn get_memory_regions_<K: MemoryRegionKind>(&self, host_base: K::HostBaseType) -> Result<Vec<MemoryRegion_<K>>> {
+        let mut builder = MemoryRegionVecBuilder::new(Self::BASE_ADDRESS, host_base);
 
         // code
         let peb_offset = builder.push_page_aligned(
@@ -688,13 +650,29 @@ impl SandboxMemoryLayout {
             ));
         }
 
-        let final_offset = if self.init_data_size > 0 {
+        let pt_offset = if self.init_data_size > 0 {
             let mem_flags = self
                 .init_data_permissions
                 .unwrap_or(DEFAULT_GUEST_BLOB_MEM_FLAGS);
             builder.push_page_aligned(self.init_data_size, mem_flags, InitData)
         } else {
             init_data_offset
+        };
+
+        let expected_pt_offset = TryInto::<usize>::try_into(self.pt_offset)?;
+
+        if pt_offset != expected_pt_offset {
+            return Err(new_error!(
+                "Page table offset does not match expected:  {}, actual:  {}",
+                expected_init_data_offset,
+                init_data_offset
+            ));
+        }
+
+        let final_offset = if let Some(pt_size) = self.pt_size {
+            builder.push_page_aligned(pt_size, MemoryRegionFlags::READ | MemoryRegionFlags::WRITE, PageTables)
+        } else {
+            pt_offset
         };
 
         let expected_final_offset = TryInto::<usize>::try_into(self.get_memory_size()?)?;
@@ -713,11 +691,10 @@ impl SandboxMemoryLayout {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn write_init_data(
         &self,
-        shared_mem: &mut ExclusiveSharedMemory,
+        out: &mut [u8],
         bytes: &[u8],
     ) -> Result<()> {
-        shared_mem.copy_from_slice(bytes, self.init_data_offset)?;
-        Ok(())
+        Ok(out[self.init_data_offset..self.init_data_offset + self.init_data_size].copy_from_slice(bytes))
     }
 
     /// Write the finished memory layout to `shared_mem` and return
@@ -801,24 +778,16 @@ impl SandboxMemoryLayout {
 
         // Set up user stack pointers
 
-        // Set up Min Guest User Stack Address
-
-        // The top of the user stack is calculated as the size of the guest memory + the guest offset which gives us the
-        // address at the bottom of the guest memory.
-
-        let bottom = guest_offset + size;
-        let min_user_stack_address = bottom - self.stack_size;
-
-        // Top of user stack
+        // Bottom of user stack
 
         shared_mem.write_u64(
             self.get_min_guest_stack_address_offset(),
-            min_user_stack_address.try_into()?,
+            get_address!(guest_user_stack_buffer_offset),
         )?;
 
         // Start of user stack
 
-        let start_of_user_stack: u64 = (min_user_stack_address + self.stack_size).try_into()?;
+        let start_of_user_stack: u64 = get_address!(guest_user_stack_buffer_offset) + self.stack_size as u64;
 
         shared_mem.write_u64(self.get_user_stack_pointer_offset(), start_of_user_stack)?;
 
@@ -873,10 +842,6 @@ mod tests {
         let cfg = layout.sandbox_memory_config;
         let mut expected_size = 0;
         // in order of layout
-        #[cfg(feature = "init-paging")]
-        {
-            expected_size += layout.get_page_table_size();
-        }
         expected_size += layout.code_size;
 
         expected_size += round_up_to(size_of::<HyperlightPEB>(), PAGE_SIZE_USIZE);

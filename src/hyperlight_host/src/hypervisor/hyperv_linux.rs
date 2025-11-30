@@ -309,7 +309,7 @@ pub(crate) struct HypervLinuxDriver {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
     orig_rsp: GuestPtr,
-    entrypoint: u64,
+    entrypoint: Option<u64>,
     interrupt_handle: Arc<LinuxInterruptHandle>,
     mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
@@ -342,7 +342,7 @@ impl HypervLinuxDriver {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
-        entrypoint_ptr: GuestPtr,
+        entrypoint_ptr: Option<GuestPtr>,
         rsp_ptr: GuestPtr,
         pml4_ptr: GuestPtr,
         config: &SandboxConfiguration,
@@ -375,7 +375,7 @@ impl HypervLinuxDriver {
         #[cfg(gdb)]
         let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
             let mut debug = MshvDebug::new();
-            debug.add_hw_breakpoint(&vcpu_fd, entrypoint_ptr.absolute()?)?;
+            debug.add_hw_breakpoint(&vcpu_fd, entrypoint_ptr.map(|x| x.absolute()).transpose()?)?;
 
             // The bellow intercepts make the vCPU exit with the Exception Intercept exit code
             // Check Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
@@ -448,7 +448,7 @@ impl HypervLinuxDriver {
             vcpu_fd,
             sandbox_regions: mem_regions,
             mmap_regions: Vec::new(),
-            entrypoint: entrypoint_ptr.absolute()?,
+            entrypoint: entrypoint_ptr.map(|x| x.absolute()).transpose()?,
             orig_rsp: rsp_ptr,
             interrupt_handle: interrupt_handle.clone(),
             mem_mgr: None,
@@ -588,6 +588,8 @@ impl Hypervisor for HypervLinuxDriver {
         max_guest_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
+        let Some(entrypoint) = self.entrypoint else { return Ok(()); };
+
         self.mem_mgr = Some(mem_mgr);
         self.host_funcs = Some(host_funcs);
         self.page_size = page_size as usize;
@@ -598,7 +600,7 @@ impl Hypervisor for HypervLinuxDriver {
         };
 
         let regs = StandardRegisters {
-            rip: self.entrypoint,
+            rip: entrypoint,
             rsp: self.orig_rsp.absolute()?,
             rflags: 2, //bit 1 of rlags is required to be set
 
@@ -1251,7 +1253,7 @@ mod tests {
 
         super::HypervLinuxDriver::new(
             regions.build(),
-            entrypoint_ptr,
+            Some(entrypoint_ptr),
             rsp_ptr,
             pml4_ptr,
             &config,

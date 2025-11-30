@@ -151,28 +151,52 @@ pub enum MemoryRegionType {
     Stack,
 }
 
+pub trait MemoryRegionKind {
+    type HostBaseType: Copy;
+    fn add(base: Self::HostBaseType, size: usize) -> Self::HostBaseType;
+}
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub struct HostGuestMemoryRegion {}
+impl MemoryRegionKind for HostGuestMemoryRegion {
+    type HostBaseType = usize;
+    fn add(base: Self::HostBaseType, size: usize) -> Self::HostBaseType {
+        base + size
+    }
+}
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub struct GuestMemoryRegion {}
+impl MemoryRegionKind for GuestMemoryRegion {
+    type HostBaseType = ();
+    fn add(base: Self::HostBaseType, size: usize) -> Self::HostBaseType {
+        ()
+    }
+}
+
 /// represents a single memory region inside the guest. All memory within a region has
 /// the same memory permissions
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MemoryRegion {
+pub struct MemoryRegion_<K: MemoryRegionKind> {
     /// the range of guest memory addresses
     pub guest_region: Range<usize>,
     /// the range of host memory addresses
-    pub host_region: Range<usize>,
+    ///
+    /// Note that Range<()> = () x () = ().
+    pub host_region: Range<K::HostBaseType>,
     /// memory access flags for the given region
     pub flags: MemoryRegionFlags,
     /// the type of memory region
     pub region_type: MemoryRegionType,
 }
+pub type MemoryRegion = MemoryRegion_<HostGuestMemoryRegion>;
 
-pub(crate) struct MemoryRegionVecBuilder {
+pub(crate) struct MemoryRegionVecBuilder<K: MemoryRegionKind> {
     guest_base_phys_addr: usize,
-    host_base_virt_addr: usize,
-    regions: Vec<MemoryRegion>,
+    host_base_virt_addr: K::HostBaseType,
+    regions: Vec<MemoryRegion_<K>>,
 }
 
-impl MemoryRegionVecBuilder {
-    pub(crate) fn new(guest_base_phys_addr: usize, host_base_virt_addr: usize) -> Self {
+impl<K: MemoryRegionKind> MemoryRegionVecBuilder<K> {
+    pub(crate) fn new(guest_base_phys_addr: usize, host_base_virt_addr: K::HostBaseType) -> Self {
         Self {
             guest_base_phys_addr,
             host_base_virt_addr,
@@ -188,8 +212,8 @@ impl MemoryRegionVecBuilder {
     ) -> usize {
         if self.regions.is_empty() {
             let guest_end = self.guest_base_phys_addr + size;
-            let host_end = self.host_base_virt_addr + size;
-            self.regions.push(MemoryRegion {
+            let host_end = <K as MemoryRegionKind>::add(self.host_base_virt_addr, size);
+            self.regions.push(MemoryRegion_ {
                 guest_region: self.guest_base_phys_addr..guest_end,
                 host_region: self.host_base_virt_addr..host_end,
                 flags,
@@ -201,9 +225,10 @@ impl MemoryRegionVecBuilder {
         #[allow(clippy::unwrap_used)]
         // we know this is safe because we check if the regions are empty above
         let last_region = self.regions.last().unwrap();
-        let new_region = MemoryRegion {
+        let host_end = <K as MemoryRegionKind>::add(last_region.host_region.end, size);
+        let new_region = MemoryRegion_ {
             guest_region: last_region.guest_region.end..last_region.guest_region.end + size,
-            host_region: last_region.host_region.end..last_region.host_region.end + size,
+            host_region: last_region.host_region.end..host_end,
             flags,
             region_type,
         };
@@ -228,7 +253,7 @@ impl MemoryRegionVecBuilder {
 
     /// Consumes the builder and returns a vec of memory regions. The regions are guaranteed to be a contiguous chunk
     /// of memory, in other words, there will be any memory gaps between them.
-    pub(crate) fn build(self) -> Vec<MemoryRegion> {
+    pub(crate) fn build(self) -> Vec<MemoryRegion_<K>> {
         self.regions
     }
 }

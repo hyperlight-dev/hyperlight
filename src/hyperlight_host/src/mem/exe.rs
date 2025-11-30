@@ -63,6 +63,14 @@ pub(crate) struct LoadInfo {
     #[cfg(feature = "unwind_guest")]
     pub(crate) info: Arc<dyn UnwindInfo>,
 }
+impl LoadInfo {
+    pub(crate) fn dummy() -> Self {
+        LoadInfo {
+            #[cfg(feature = "unwind_guest")]
+            info: DummyUnwindInfo {},
+        }
+    }
+}
 
 impl ExeInfo {
     pub fn from_file(path: &str) -> Result<Self> {
