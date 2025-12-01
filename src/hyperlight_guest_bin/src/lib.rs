@@ -34,7 +34,6 @@ use hyperlight_guest::exit::{halt, write_abort};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
 use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
-use spin::Once;
 
 // === Modules ===
 #[cfg(target_arch = "x86_64")]
@@ -125,8 +124,10 @@ pub(crate) static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();
 
-pub static mut MIN_STACK_ADDRESS: u64 = 0;
-
+/// The size of one page in the host OS, which may have some impacts
+/// on how buffers for host consumption should be aligned. Code only
+/// working with the guest page tables should use
+/// [`hyperlight_common::vm::PAGE_SIZE`] instead.
 pub static mut OS_PAGE_SIZE: u32 = 0;
 
 // === Panic Handler ===
@@ -179,8 +180,8 @@ unsafe extern "C" {
     fn srand(seed: u32);
 }
 
-static INIT: Once = Once::new();
-
+/// Phase 0 initialisation: make sure we are not already initialised,
+/// set up exceptions, heap, and stack, and then pivot stack to Phase 1
 #[unsafe(no_mangle)]
 #[trace_function]
 pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
@@ -188,55 +189,83 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
         panic!("PEB address is null");
     }
 
-    INIT.call_once(|| {
-        unsafe {
-            GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
-            #[allow(static_mut_refs)]
-            let peb_ptr = GUEST_HANDLE.peb().unwrap();
+    unsafe {
+        GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
+        #[allow(static_mut_refs)]
+        let peb_ptr = GUEST_HANDLE.peb().unwrap();
 
-            let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
+        let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
+        // Set the seed for the random number generator for C code using rand;
+        srand(srand_seed);
 
-            // Set the seed for the random number generator for C code using rand;
-            srand(srand_seed);
-
-            // This static is to make it easier to implement the __chkstk function in assembly.
-            // It also means that should we change the layout of the struct in the future, we
-            // don't have to change the assembly code.
-            MIN_STACK_ADDRESS = (*peb_ptr).guest_stack.min_user_stack_address;
-
-            #[cfg(target_arch = "x86_64")]
-            {
-                // Setup GDT and IDT
-                load_gdt();
-                load_idt();
-            }
-
-            let heap_start = (*peb_ptr).guest_heap.ptr as usize;
-            let heap_size = (*peb_ptr).guest_heap.size as usize;
-            #[cfg(not(feature = "mem_profile"))]
-            let heap_allocator = &HEAP_ALLOCATOR;
-            #[cfg(feature = "mem_profile")]
-            let heap_allocator = &HEAP_ALLOCATOR.0;
-            heap_allocator
-                .try_lock()
-                .expect("Failed to access HEAP_ALLOCATOR")
-                .init(heap_start, heap_size);
-
-            OS_PAGE_SIZE = ops as u32;
-
-            (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
-
-            // set up the logger
-            let max_log_level = LevelFilter::iter()
-                .nth(max_log_level as usize)
-                .expect("Invalid log level");
-            init_logger(max_log_level);
-
-            trace!("hyperlight_main",
-                hyperlight_main();
-            );
+        #[cfg(target_arch = "x86_64")]
+        {
+            // Setup GDT and IDT
+            load_gdt();
+            load_idt();
         }
-    });
+
+        let heap_start = (*peb_ptr).guest_heap.ptr as usize;
+        let heap_size = (*peb_ptr).guest_heap.size as usize;
+        #[cfg(not(feature = "mem_profile"))]
+        let heap_allocator = &HEAP_ALLOCATOR;
+        #[cfg(feature = "mem_profile")]
+        let heap_allocator = &HEAP_ALLOCATOR.0;
+        heap_allocator
+            .try_lock()
+            .expect("Failed to access HEAP_ALLOCATOR")
+            .init(heap_start, heap_size);
+
+        OS_PAGE_SIZE = ops as u32;
+
+        let stack_top_page_base = (hyperlight_guest::layout::MAIN_STACK_TOP_GVA - 1) & !0xfff;
+        paging::map_region(
+            hyperlight_guest::prim_alloc::alloc_phys_pages(1),
+            stack_top_page_base as *mut u8,
+            hyperlight_common::vm::PAGE_SIZE as u64
+        );
+
+        pivot_stack(peb_address, max_log_level, hyperlight_guest::layout::MAIN_STACK_TOP_GVA as u64);
+    };
+}
+
+unsafe extern "C" {
+    unsafe fn pivot_stack(
+        peb_ptr: *mut HyperlightPEB,
+        max_log_level: u64,
+        stack_ptr: u64,
+    ) -> !;
+}
+core::arch::global_asm!("
+    .global pivot_stack\n
+    pivot_stack:\n
+    mov rsp, rdx\n
+    jmp init_phase1\n
+");
+
+/// Phase 1 initialisation: Coordinate some addresses and
+/// configuration with the host, run user initialisation
+#[unsafe(no_mangle)]
+pub extern "C" fn init_phase1(
+    peb_ptr: *mut HyperlightPEB,
+    max_log_level: u64,
+) -> ! {
+    unsafe {
+        (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
+    }
+
+    // set up the logger
+    let max_log_level = LevelFilter::iter()
+        .nth(max_log_level as usize)
+        .expect("Invalid log level");
+    init_logger(max_log_level);
+
+    unsafe {
+        trace!("hyperlight_main",
+            hyperlight_main();
+        );
+    }
 
     halt();
+    unreachable!();
 }

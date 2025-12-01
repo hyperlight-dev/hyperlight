@@ -16,7 +16,7 @@ limitations under the License.
 
 #![no_std]
 #![no_main]
-const DEFAULT_GUEST_STACK_SIZE: i32 = 65536; // default stack size
+const DEFAULT_GUEST_SCRATCH_SIZE: i32 = 0x40000; // default stack size
 const MAX_BUFFER_SIZE: usize = 1024;
 // ^^^ arbitrary value for max buffer size
 // to support allocations when we'd get a
@@ -51,7 +51,7 @@ use hyperlight_guest_bin::host_comm::{
     read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
-use hyperlight_guest_bin::{MIN_STACK_ADDRESS, guest_logger};
+use hyperlight_guest_bin::guest_logger;
 use log::{LevelFilter, error};
 
 extern crate hyperlight_guest;
@@ -484,8 +484,8 @@ fn loop_stack_overflow(i: i32) {
 
 #[hyperlight_guest_tracing::trace_function]
 fn large_var(_: &FunctionCall) -> Result<Vec<u8>> {
-    let _buffer = black_box([0u8; (DEFAULT_GUEST_STACK_SIZE + 1) as usize]);
-    Ok(get_flatbuffer_result(DEFAULT_GUEST_STACK_SIZE + 1))
+    let _buffer = black_box([0u8; (DEFAULT_GUEST_SCRATCH_SIZE + 1) as usize]);
+    Ok(get_flatbuffer_result(DEFAULT_GUEST_SCRATCH_SIZE + 1))
 }
 
 #[hyperlight_guest_tracing::trace_function]
@@ -529,7 +529,7 @@ unsafe fn exhaust_heap(_: &FunctionCall) -> ! {
 #[hyperlight_guest_tracing::trace_function]
 fn malloc_and_free(function_call: &FunctionCall) -> Result<Vec<u8>> {
     if let ParameterValue::Int(size) = function_call.parameters.clone().unwrap()[0].clone() {
-        let alloc_length = if size < DEFAULT_GUEST_STACK_SIZE {
+        let alloc_length = if size < DEFAULT_GUEST_SCRATCH_SIZE {
             size
         } else {
             size.min(MAX_BUFFER_SIZE as i32)
@@ -610,30 +610,6 @@ fn test_guest_panic(function_call: &FunctionCall) -> Result<Vec<u8>> {
         panic!("{}", message);
     }
     Ok(get_flatbuffer_result(()))
-}
-
-#[hyperlight_guest_tracing::trace_function]
-fn test_write_raw_ptr(function_call: &FunctionCall) -> Result<Vec<u8>> {
-    if let ParameterValue::Long(offset) = function_call.parameters.clone().unwrap()[0].clone() {
-        let min_stack_addr = unsafe { MIN_STACK_ADDRESS };
-        let page_guard_start = min_stack_addr - PAGE_SIZE;
-        let addr = {
-            let abs = u64::try_from(offset.abs())
-                .map_err(|_| error!("Invalid offset"))
-                .unwrap();
-            if offset.is_negative() {
-                page_guard_start - abs
-            } else {
-                page_guard_start + abs
-            }
-        };
-        unsafe {
-            // print_output(format!("writing to {:#x}\n", addr).as_str()).unwrap();
-            write_volatile(addr as *mut u8, 0u8);
-        }
-        return Ok(get_flatbuffer_result("success"));
-    }
-    Ok(get_flatbuffer_result("fail"))
 }
 
 #[hyperlight_guest_tracing::trace_function]
@@ -1377,14 +1353,6 @@ pub extern "C" fn hyperlight_main() {
         infinite_recursion as usize,
     );
     register_function(infinite_recursion_def);
-
-    let test_write_raw_ptr_def = GuestFunctionDefinition::new(
-        "test_write_raw_ptr".to_string(),
-        Vec::from(&[ParameterType::Long]),
-        ReturnType::String,
-        test_write_raw_ptr as usize,
-    );
-    register_function(test_write_raw_ptr_def);
 
     let execute_on_stack_def = GuestFunctionDefinition::new(
         "ExecuteOnStack".to_string(),

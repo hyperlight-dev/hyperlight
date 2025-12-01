@@ -124,8 +124,19 @@ pub struct Mapping {
 ///   are being remapped, TLB invalidation may need to be performed
 ///   afterwards.
 pub use arch::map;
-/// This function is not presently used for anything, but is useful
-/// for debugging
+
+/// Return a (virtual, physical) pair for every mapped page in the
+/// region, in virtual address order
+///
+/// # Safety
+/// This function traverses page table data structures, and should not
+/// be called concurrently with any other operations that modify the
+/// page table.
+pub use arch::vtops;
+
+/// This convenience function for getting a single entire
+/// architectural page table entry for a virtual address is not
+/// presently used for anything, but is useful for debugging
 ///
 /// # Safety
 /// This function traverses page table data structures, and should not

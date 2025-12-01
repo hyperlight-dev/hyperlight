@@ -19,6 +19,8 @@ use core::arch::asm;
 use crate::OS_PAGE_SIZE;
 use hyperlight_guest::prim_alloc::alloc_phys_pages;
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 // TODO: This is not at all thread-safe atm
 // TODO: A lot of code in this file uses inline assembly to load and
 //       store page table entries. It would be nice to use pointer
@@ -27,10 +29,11 @@ use hyperlight_guest::prim_alloc::alloc_phys_pages;
 //       virtual address 0, and Rust raw pointer operations can't be
 //       used to read/write from address 0.
 
-// We get this out of CR3 the first time that we do any mapping
-// operation. In the future, if snapshot/restore changes to be able to
-// change the snapshot pt base, we will need to modify this.
-static SNAPSHOT_PT_GPA: spin::Once<u64> = spin::Once::new();
+// Whenever we do a mapping operation, we check CR3 to see if it is
+// one of ours. If it is not, we stash the old value here to use to
+// recognise page table entries in the snapshot region. If it is, we
+// rely on using the cached value here.
+static SNAPSHOT_PT_GPA: AtomicU64 = AtomicU64::new(0);
 
 struct GuestMappingOperations {
     snapshot_pt_base_gpa: u64,
@@ -40,27 +43,36 @@ struct GuestMappingOperations {
 }
 impl GuestMappingOperations {
     fn new() -> Self {
+        let scratch_base_gpa = hyperlight_guest::layout::scratch_base_gpa();
+
+        let root_table_gpa: u64;
+        unsafe {
+            asm!("mov {}, cr3", out(reg) root_table_gpa);
+        };
+        if root_table_gpa < scratch_base_gpa {
+            // It must be the snapshot root page table at the
+            // beginning of the snapshot PT region
+            SNAPSHOT_PT_GPA.store(root_table_gpa, Ordering::Relaxed);
+        }
+        let snapshot_pt_base_gpa = SNAPSHOT_PT_GPA.load(Ordering::Relaxed);
         Self {
-            snapshot_pt_base_gpa: *SNAPSHOT_PT_GPA.call_once(|| {
-                let snapshot_pt_base_gpa: u64;
-                unsafe {
-                    asm!("mov {}, cr3", out(reg) snapshot_pt_base_gpa);
-                };
-                snapshot_pt_base_gpa
-            }),
-            snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA as u64,
-            scratch_base_gpa: hyperlight_guest::layout::scratch_base_gpa(),
+            snapshot_pt_base_gpa,
+            snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64,
+            scratch_base_gpa,
             scratch_base_gva: hyperlight_guest::layout::scratch_base_gva(),
         }
     }
-    fn ptov(&self, addr: u64) -> *mut u8 {
+    fn fallible_ptov(&self, addr: u64) -> Option<*mut u8> {
         if addr >= self.scratch_base_gpa {
-            (self.scratch_base_gva + (addr - self.scratch_base_gpa)) as *mut u8
+            Some((self.scratch_base_gva + (addr - self.scratch_base_gpa)) as *mut u8)
         } else if addr >= self.snapshot_pt_base_gpa {
-            (self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)) as *mut u8
+            Some((self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)) as *mut u8)
         } else {
-            panic!("ptov encounted snapshot non-PT page")
+            None
         }
+    }
+    fn ptov(&self, addr: u64) -> *mut u8 {
+        self.fallible_ptov(addr).unwrap_or_else(|| panic!("ptov encounted snapshot non-PT page: {:x}", addr))
     }
 }
 impl hyperlight_common::vm::TableOps for GuestMappingOperations {
@@ -147,6 +159,9 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
     }
 }
 
+pub fn ptov(gpa: u64) -> Option<*mut u8> {
+    GuestMappingOperations::new().fallible_ptov(gpa)
+}
 pub fn vtop(gva: u64) -> Option<u64> {
     use hyperlight_common::vm;
     unsafe {

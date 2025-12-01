@@ -253,7 +253,10 @@ pub(crate) trait Hypervisor: Debug + Send {
     #[cfg(feature = "trace_guest")]
     fn trace_info_as_mut(&mut self) -> &mut TraceInfo;
 
+    fn update_snapshot_mapping(&mut self, gsnapshot: &GuestSharedMemory) -> Result<()>;
     fn update_scratch_mapping(&mut self, gscratch: &GuestSharedMemory) -> Result<()>;
+    fn get_root_pt(&mut self) -> Result<u64>;
+    fn set_root_pt(&mut self, gpa: u64) -> Result<()>;
 }
 
 /// Returns a Some(HyperlightExit::AccessViolation(..)) if the given gpa doesn't have

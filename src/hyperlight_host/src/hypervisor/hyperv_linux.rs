@@ -308,7 +308,7 @@ pub(crate) struct HypervLinuxDriver {
     page_size: usize,
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
-    orig_rsp: GuestPtr,
+    rsp_gva: u64,
     entrypoint: Option<u64>,
     interrupt_handle: Arc<LinuxInterruptHandle>,
     mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
@@ -343,7 +343,7 @@ impl HypervLinuxDriver {
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
         entrypoint_ptr: Option<GuestPtr>,
-        rsp_ptr: GuestPtr,
+        rsp_gva: u64,
         pml4_ptr: GuestPtr,
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -449,7 +449,7 @@ impl HypervLinuxDriver {
             sandbox_regions: mem_regions,
             mmap_regions: Vec::new(),
             entrypoint: entrypoint_ptr.map(|x| x.absolute()).transpose()?,
-            orig_rsp: rsp_ptr,
+            rsp_gva,
             interrupt_handle: interrupt_handle.clone(),
             mem_mgr: None,
             host_funcs: None,
@@ -538,7 +538,7 @@ impl Debug for HypervLinuxDriver {
         let mut f = f.debug_struct("Hyperv Linux Driver");
 
         f.field("Entrypoint", &self.entrypoint)
-            .field("Original RSP", &self.orig_rsp);
+            .field("RSP GVA", &self.rsp_gva);
 
         for region in &self.sandbox_regions {
             f.field("Sandbox Memory Region", &region);
@@ -601,7 +601,7 @@ impl Hypervisor for HypervLinuxDriver {
 
         let regs = StandardRegisters {
             rip: entrypoint,
-            rsp: self.orig_rsp.absolute()?,
+            rsp: self.rsp_gva,
             rflags: 2, //bit 1 of rlags is required to be set
 
             // function args
@@ -665,7 +665,7 @@ impl Hypervisor for HypervLinuxDriver {
         // Reset general purpose registers, then set RIP and RSP
         let regs = StandardRegisters {
             rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
+            rsp: self.rsp_gva,
             rflags: 2, //bit 1 of rlags is required to be set
             ..Default::default()
         };
@@ -1173,7 +1173,23 @@ impl Hypervisor for HypervLinuxDriver {
         &mut self.trace_info
     }
 
+    // TODO
+    fn update_snapshot_mapping(&mut self, gsnapshot: &GuestSharedMemory) -> Result<()> {
+        Ok(())
+    }
+
+    // TODO
     fn update_scratch_mapping(&mut self, gscratch: &GuestSharedMemory) -> Result<()> {
+        Ok(())
+    }
+
+    // TODO
+    fn get_root_pt(&mut self) -> Result<u64> {
+        Ok(0)
+    }
+
+    // TODO
+    fn set_root_pt(&mut self, gpa: u64) -> Result<()> {
         Ok(())
     }
 }
@@ -1236,7 +1252,7 @@ mod tests {
         }
         const MEM_SIZE: usize = 0x3000;
         let gm = shared_mem_with_code(CODE.as_slice(), MEM_SIZE, 0).unwrap();
-        let rsp_ptr = GuestPtr::try_from(0).unwrap();
+        let rsp_gva = GuestPtr::try_from(0).unwrap().absolute().unwrap();
         let pml4_ptr = GuestPtr::try_from(0).unwrap();
         let entrypoint_ptr = GuestPtr::try_from(0).unwrap();
         let mut regions = MemoryRegionVecBuilder::new(0, gm.base_addr());
@@ -1250,7 +1266,7 @@ mod tests {
         super::HypervLinuxDriver::new(
             regions.build(),
             Some(entrypoint_ptr),
-            rsp_ptr,
+            rsp_gva,
             pml4_ptr,
             &config,
             #[cfg(gdb)]

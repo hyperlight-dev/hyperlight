@@ -424,7 +424,6 @@ mod tests {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_input_data_size(0x1000);
             cfg.set_output_data_size(0x1000);
-            cfg.set_stack_size(0x1000);
             cfg.set_heap_size(0x1000);
             Some(cfg)
         };

@@ -108,10 +108,7 @@ pub(crate) fn set_up_hypervisor_partition(
     _load_info: LoadInfo,
 ) -> Result<Box<dyn Hypervisor>> {
     let base_ptr = GuestPtr::try_from(Offset::from(0))?;
-    let rsp_ptr = {
-        let rsp_offset_u64 = mgr.layout.get_rsp_offset() as u64;
-        base_ptr + Offset::from(rsp_offset_u64)
-    };
+    let rsp_gva = mgr.layout.get_rsp_gva() as u64;
     let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
     let pml4_ptr = {
         let pml4_offset_u64 = mgr.layout.get_pt_offset() as u64;
@@ -155,7 +152,7 @@ pub(crate) fn set_up_hypervisor_partition(
             let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
                 regions,
                 entrypoint_ptr,
-                rsp_ptr,
+                rsp_gva,
                 pml4_ptr,
                 config,
                 #[cfg(gdb)]
@@ -171,11 +168,10 @@ pub(crate) fn set_up_hypervisor_partition(
         #[cfg(kvm)]
         Some(HypervisorType::Kvm) => {
             let hv = crate::hypervisor::kvm::KVMDriver::new(
-                regions,
+                &mgr.shared_mem,
                 &mgr.scratch_mem,
                 pml4_ptr.absolute()?,
                 entrypoint_ptr.map(|x| x.absolute()).transpose()?,
-                rsp_ptr.absolute()?,
                 config,
                 #[cfg(gdb)]
                 gdb_conn,

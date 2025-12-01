@@ -17,7 +17,7 @@ limitations under the License.
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/layout.rs")]
 mod arch;
 
-pub use arch::MAIN_STACK_TOP_GVA;
+pub use arch::{MAIN_STACK_TOP_GVA, MAIN_STACK_LIMIT_GVA};
 pub fn scratch_size_gva() -> *mut u64 {
     use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_SIZE_OFFSET};
     (MAX_GVA as u64 - SCRATCH_TOP_SIZE_OFFSET + 1) as *mut u64

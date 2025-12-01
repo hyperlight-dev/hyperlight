@@ -122,7 +122,8 @@ impl MultiUseSandbox {
         }
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
-        let memory_snapshot = self.mem_mgr.snapshot(self.id, mapped_regions_vec)?;
+        let root_pt = self.vm.get_root_pt()?;
+        let memory_snapshot = self.mem_mgr.snapshot(self.id, mapped_regions_vec, root_pt)?;
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
@@ -172,9 +173,14 @@ impl MultiUseSandbox {
             return Err(SnapshotSandboxMismatch);
         }
 
-        if let Some(gscratch) = self.mem_mgr.restore_snapshot(&snapshot)? {
+        let (gsnapshot, gscratch) = self.mem_mgr.restore_snapshot(&snapshot)?;
+        if let Some(gsnapshot) = gsnapshot {
+            self.vm.update_snapshot_mapping(&gsnapshot)?;
+        }
+        if let Some(gscratch) = gscratch {
             self.vm.update_scratch_mapping(&gscratch)?;
         }
+        self.vm.set_root_pt(snapshot.root_pt_gpa());
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
         let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();
@@ -953,11 +959,16 @@ mod tests {
 
         // 2. Map a memory region
         let map_mem = allocate_guest_memory();
-        let guest_base = 0x200000000_usize;
+        let guest_base = 0x2_0000_0000_usize;
         let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
 
         unsafe { sbox.map_region(&region).unwrap() };
         assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+
+        let expected = b"test data for snapshot";
+        // 3. Materialize a mapping to some virtual address so that
+        // snapshotting will preserve the region
+        let _: Vec<u8> = sbox.call("ReadMappedBuffer", (guest_base as u64, expected.len() as u64)).unwrap();
 
         // 3. Take snapshot 2 with 1 region mapped
         let snapshot2 = sbox.snapshot().unwrap();
@@ -967,23 +978,13 @@ mod tests {
         sbox.restore(snapshot1).unwrap();
         assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
 
-        // 5. Restore forward to snapshot 2 (should remap the region)
+        // 5. Restore forward to snapshot 2 (should have incorporated the region into the base memory)
         sbox.restore(snapshot2).unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+        assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
 
-        // Verify the region is the same
-        let mut restored_regions = sbox.vm.get_mapped_regions();
-        assert_eq!(*restored_regions.next().unwrap(), region);
-        assert!(restored_regions.next().is_none());
-        drop(restored_regions);
+        let actual: Vec<u8> = sbox.call("ReadMappedBuffer", (guest_base as u64, expected.len() as u64)).unwrap();
 
-        // 6. Try map the region again (should fail since already mapped)
-        let err = unsafe { sbox.map_region(&region) };
-        assert!(
-            err.is_err(),
-            "Expected error when remapping existing region: {:?}",
-            err
-        );
+        assert_eq!(actual, expected);
     }
 
     #[test]

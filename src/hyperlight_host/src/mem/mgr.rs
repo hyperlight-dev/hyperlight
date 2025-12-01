@@ -116,6 +116,9 @@ impl GuestPageTableBuffer {
             phys_base
         }
     }
+    pub(crate) fn phys_base(&self) -> usize {
+        self.phys_base
+    }
     pub(crate) fn size(&self) -> usize {
         self.buffer.borrow().len() * PAGE_TABLE_SIZE
     }
@@ -171,13 +174,16 @@ where
         &mut self,
         sandbox_id: u64,
         mapped_regions: Vec<MemoryRegion>,
+        root_pt: u64,
     ) -> Result<Snapshot> {
         Snapshot::new(
             &mut self.shared_mem,
+            &mut self.scratch_mem,
             sandbox_id,
             self.layout.clone(),
             crate::mem::exe::LoadInfo::dummy(),
             mapped_regions,
+            root_pt,
         )
     }
 }
@@ -220,26 +226,26 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     ) {
         let (hshm, gshm) = self.shared_mem.build();
         let (hscratch, gscratch) = self.scratch_mem.build();
-        (
-            SandboxMemoryManager {
-                shared_mem: hshm,
-                scratch_mem: hscratch,
-                layout: self.layout,
-                load_addr: self.load_addr.clone(),
-                entrypoint_offset: self.entrypoint_offset,
-                mapped_rgns: self.mapped_rgns,
-                abort_buffer: self.abort_buffer,
-            },
-            SandboxMemoryManager {
-                shared_mem: gshm,
-                scratch_mem: gscratch,
-                layout: self.layout,
-                load_addr: self.load_addr.clone(),
-                entrypoint_offset: self.entrypoint_offset,
-                mapped_rgns: self.mapped_rgns,
-                abort_buffer: Vec::new(), // Guest doesn't need abort buffer
-            },
-        )
+        let mut host_mgr = SandboxMemoryManager {
+            shared_mem: hshm,
+            scratch_mem: hscratch,
+            layout: self.layout,
+            load_addr: self.load_addr.clone(),
+            entrypoint_offset: self.entrypoint_offset,
+            mapped_rgns: self.mapped_rgns,
+            abort_buffer: self.abort_buffer,
+        };
+        let guest_mgr = SandboxMemoryManager {
+            shared_mem: gshm,
+            scratch_mem: gscratch,
+            layout: self.layout,
+            load_addr: self.load_addr.clone(),
+            entrypoint_offset: self.entrypoint_offset,
+            mapped_rgns: self.mapped_rgns,
+            abort_buffer: Vec::new(), // Guest doesn't need abort buffer
+        };
+        host_mgr.update_scratch_bookkeeping();
+        (host_mgr, guest_mgr)
     }
 }
 
@@ -347,19 +353,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
     }
 
     /// This function restores a memory snapshot from a given snapshot.
-    pub(crate) fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<Option<GuestSharedMemory>> {
-        if self.shared_mem.mem_size() != snapshot.mem_size() {
-            return Err(new_error!(
-                "Snapshot size does not match current memory size: {} != {}",
-                self.shared_mem.raw_mem_size(),
-                snapshot.mem_size()
-            ));
-        }
+    pub(crate) fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<(Option<GuestSharedMemory>, Option<GuestSharedMemory>)> {
+        let gsnapshot = if self.shared_mem.mem_size() == snapshot.mem_size() {
+            None
+        } else {
+            let new_snapshot_mem = ExclusiveSharedMemory::new(snapshot.mem_size())?;
+            let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
+            self.shared_mem = hsnapshot;
+            Some(gsnapshot)
+        };
         self.shared_mem.restore_from_snapshot(snapshot)?;
         let new_scratch_size = snapshot.layout().get_scratch_size();
-        if new_scratch_size == self.scratch_mem.mem_size() {
+        let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
             self.scratch_mem.zero()?;
-            Ok(None)
+            None
         } else {
             // todo: make sure the old scratch memory lives long
             // enough that we don't have a period where the region is
@@ -367,7 +374,22 @@ impl SandboxMemoryManager<HostSharedMemory> {
             let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
             let (hscratch, gscratch) = new_scratch_mem.build();
             self.scratch_mem = hscratch;
-            Ok(Some(gscratch))
-        }
+            Some(gscratch)
+        };
+        self.update_scratch_bookkeeping();
+        Ok((gsnapshot, gscratch))
+    }
+
+    fn update_scratch_bookkeeping(&mut self) {
+        let scratch_size = self.scratch_mem.mem_size();
+        let size_offset = scratch_size - hyperlight_common::layout::SCRATCH_TOP_SIZE_OFFSET as usize;
+        // The only way that write can fail is if the offset is
+        // outside of the memory, which would be sufficiently much of
+        // an invariant violation that panicking is probably
+        // sensible...
+        self.scratch_mem.write::<u64>(size_offset, scratch_size as u64).unwrap();
+        let alloc_offset = scratch_size - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        // See above comment about unwrap() on write
+        self.scratch_mem.write::<u64>(alloc_offset, hyperlight_common::layout::scratch_base_gpa(scratch_size as usize)).unwrap()
     }
 }

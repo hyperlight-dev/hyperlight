@@ -14,17 +14,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use crate::exit::write_abort;
+
 pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
     let addr = crate::layout::allocator_gva();
     let nbytes = n * hyperlight_common::vm::PAGE_SIZE as u64;
     let mut x = nbytes;
-    core::arch::asm!(
-        "lock xadd qword ptr [{addr}], {x}",
-        addr = in(reg) addr,
-        x = inout(reg) x
-    );
-    if x.checked_add(nbytes).is_none() {
-        panic!("Out of physical memory!")
+    unsafe {
+        core::arch::asm!(
+            "lock xadd qword ptr [{addr}], {x}",
+            addr = in(reg) addr,
+            x = inout(reg) x
+        );
+    }
+    if x.checked_add(nbytes).map_or(true, |xx| xx > (hyperlight_common::layout::MAX_GPA - 0x1000) as u64) {
+        unsafe {
+            crate::exit::abort_with_code_and_message(
+                &[ErrorCode::MallocFailed as u8],
+                "Out of physical memory\x00".as_ptr() as *const core::ffi::c_char,
+            )
+        }
     }
     x
 }

@@ -50,10 +50,10 @@ impl IdtEntry {
         Self {
             offset_low: (handler & 0xFFFF) as u16,
             selector: 0x08,                  // Kernel Code Segment
-            interrupt_stack_table_offset: 0, // No interrupt stack table used
+            interrupt_stack_table_offset: 1,
             type_attr: 0x8E,
             // 0x8E = 10001110b
-            // 1 00 0 1110
+            // 1 00 0 1101idtr
             // 1 = Present
             // 00 = Descriptor Privilege Level (0)
             // 0 = Storage Segment (0)

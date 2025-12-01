@@ -25,10 +25,6 @@ limitations under the License.
 //! +-------------------------------------------+
 //! |              Init Data                    | (GuestBlob size)
 //! +-------------------------------------------+
-//! |             Guest (User) Stack            |
-//! +-------------------------------------------+
-//! |             Guard Page (4KiB)             |
-//! +-------------------------------------------+
 //! |             Guest Heap                    |
 //! +-------------------------------------------+
 //! |             Output Data                   |
@@ -45,12 +41,12 @@ limitations under the License.
 //! Everything except for the guest page tables is currently
 //! identity-mapped; the guest page tables themselves are mapped at
 //! [`hyperlight_common::layout::SNAPSHOT_PT_GVA`] =
-//! 0xffff_0000_0000_0000.
+//! 0xffff_ff00_0000_0000.
 
 use std::fmt::Debug;
 use std::mem::{offset_of, size_of};
 
-use hyperlight_common::mem::{GuestStack, HyperlightPEB, PAGE_SIZE_USIZE};
+use hyperlight_common::mem::{GuestMemoryRegion, HyperlightPEB, PAGE_SIZE_USIZE};
 use rand::{RngCore, rng};
 use tracing::{Span, instrument};
 
@@ -84,17 +80,10 @@ use crate::{Result, new_error};
 /// - `GuestHeap` - this is a buffer that is used for heap data in the guest. the length
 ///   of this field is returned by the `heap_size()` method of this struct
 ///
-/// - `GuestStack` - this is a buffer that is used for stack data in the guest. the length
-///   of this field is returned by the `stack_size()` method of this struct. in reality,
-///   the stack might be slightly bigger or smaller than this value since total memory
-///   size is rounded up to the nearest 4K, and there is a 16-byte stack guard written
-///   to the top of the stack. (see below for more details)
 
 #[derive(Copy, Clone)]
 pub(crate) struct SandboxMemoryLayout {
     pub(super) sandbox_memory_config: SandboxConfiguration,
-    /// The total stack size of this sandbox.
-    pub(super) stack_size: usize,
     /// The heap size of this sandbox.
     pub(super) heap_size: usize,
     init_data_size: usize,
@@ -107,15 +96,12 @@ pub(crate) struct SandboxMemoryLayout {
     peb_output_data_offset: usize,
     peb_init_data_offset: usize,
     peb_heap_data_offset: usize,
-    peb_guest_stack_data_offset: usize,
 
     // The following are the actual values
     // that are written to the PEB struct
     pub(super) input_data_buffer_offset: usize,
     pub(super) output_data_buffer_offset: usize,
     guest_heap_buffer_offset: usize,
-    guard_page_offset: usize,
-    guest_user_stack_buffer_offset: usize, // the lowest address of the user stack
     init_data_offset: usize,
     pt_offset: usize,
     pt_size: Option<usize>,
@@ -130,6 +116,9 @@ pub(crate) struct SandboxMemoryLayout {
     // The size of the scratch region in physical memory; note that
     // this will appear under the top of physical memory.
     scratch_size: usize,
+
+    // The stack pointer that the guest has set up, if it has been set up
+    rsp_gva: Option<u64>,
 }
 
 impl Debug for SandboxMemoryLayout {
@@ -139,7 +128,6 @@ impl Debug for SandboxMemoryLayout {
                 "Total Memory Size",
                 &format_args!("{:#x}", self.get_memory_size().unwrap_or(0)),
             )
-            .field("Stack Size", &format_args!("{:#x}", self.stack_size))
             .field("Heap Size", &format_args!("{:#x}", self.heap_size))
             .field(
                 "Init Data Size",
@@ -169,10 +157,6 @@ impl Debug for SandboxMemoryLayout {
                 &format_args!("{:#x}", self.peb_heap_data_offset),
             )
             .field(
-                "Guest Stack Offset",
-                &format_args!("{:#x}", self.peb_guest_stack_data_offset),
-            )
-            .field(
                 "Input Data Buffer Offset",
                 &format_args!("{:#x}", self.input_data_buffer_offset),
             )
@@ -183,14 +167,6 @@ impl Debug for SandboxMemoryLayout {
             .field(
                 "Guest Heap Buffer Offset",
                 &format_args!("{:#x}", self.guest_heap_buffer_offset),
-            )
-            .field(
-                "Guard Page Offset",
-                &format_args!("{:#x}", self.guard_page_offset),
-            )
-            .field(
-                "Guest User Stack Buffer Offset",
-                &format_args!("{:#x}", self.guest_user_stack_buffer_offset),
             )
             .field(
                 "Init Data Offset",
@@ -226,7 +202,6 @@ impl SandboxMemoryLayout {
     pub(crate) fn new(
         cfg: SandboxConfiguration,
         code_size: usize,
-        stack_size: usize,
         heap_size: usize,
         scratch_size: usize,
         init_data_size: usize,
@@ -241,14 +216,13 @@ impl SandboxMemoryLayout {
         let peb_output_data_offset = peb_offset + offset_of!(HyperlightPEB, output_stack);
         let peb_init_data_offset = peb_offset + offset_of!(HyperlightPEB, init_data);
         let peb_heap_data_offset = peb_offset + offset_of!(HyperlightPEB, guest_heap);
-        let peb_guest_stack_data_offset = peb_offset + offset_of!(HyperlightPEB, guest_stack);
 
         // The following offsets are the actual values that relate to memory layout,
         // which are written to PEB struct
         let peb_address = Self::BASE_ADDRESS + peb_offset;
         // make sure input data buffer starts at 4K boundary
         let input_data_buffer_offset = round_up_to(
-            peb_guest_stack_data_offset + size_of::<GuestStack>(),
+            peb_heap_data_offset + size_of::<GuestMemoryRegion>(),
             PAGE_SIZE_USIZE,
         );
         let output_data_buffer_offset = round_up_to(
@@ -260,12 +234,8 @@ impl SandboxMemoryLayout {
             output_data_buffer_offset + cfg.get_output_data_size(),
             PAGE_SIZE_USIZE,
         );
-        // make sure guard page starts at 4K boundary
-        let guard_page_offset = round_up_to(guest_heap_buffer_offset + heap_size, PAGE_SIZE_USIZE);
-        let guest_user_stack_buffer_offset = guard_page_offset + PAGE_SIZE_USIZE;
-        // round up stack size to page size. This is needed for MemoryRegion
-        let stack_size_rounded = round_up_to(stack_size, PAGE_SIZE_USIZE);
-        let init_data_offset = guest_user_stack_buffer_offset + stack_size_rounded;
+        // make sure init data starts at 4K boundary
+        let init_data_offset = round_up_to(guest_heap_buffer_offset + heap_size, PAGE_SIZE_USIZE);
         let pt_offset = round_up_to(
             init_data_offset + init_data_size,
             PAGE_SIZE_USIZE
@@ -273,22 +243,18 @@ impl SandboxMemoryLayout {
 
         Ok(Self {
             peb_offset,
-            stack_size: stack_size_rounded,
             heap_size,
             peb_guest_dispatch_function_ptr_offset,
             peb_input_data_offset,
             peb_output_data_offset,
             peb_init_data_offset,
             peb_heap_data_offset,
-            peb_guest_stack_data_offset,
             sandbox_memory_config: cfg,
             code_size,
             input_data_buffer_offset,
             output_data_buffer_offset,
             guest_heap_buffer_offset,
-            guest_user_stack_buffer_offset,
             peb_address,
-            guard_page_offset,
             guest_code_offset,
             init_data_offset,
             init_data_size,
@@ -296,6 +262,7 @@ impl SandboxMemoryLayout {
             pt_offset,
             pt_size: None,
             scratch_size,
+            rsp_gva: None,
         })
     }
 
@@ -313,20 +280,8 @@ impl SandboxMemoryLayout {
         self.peb_init_data_offset
     }
 
-    /// Get the offset in guest memory to the minimum guest stack address.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_min_guest_stack_address_offset(&self) -> usize {
-        // The minimum guest user stack address is the start of the guest stack
-        self.peb_guest_stack_data_offset
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_guest_stack_size(&self) -> usize {
-        self.stack_size
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_scratch_size(&self) -> usize {
+    pub(crate) fn get_scratch_size(&self) -> usize {
         self.scratch_size
     }
 
@@ -389,20 +344,6 @@ impl SandboxMemoryLayout {
         self.get_heap_size_offset() + size_of::<u64>()
     }
 
-    /// Get the offset to the top of the stack in guest memory
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_top_of_user_stack_offset(&self) -> usize {
-        self.guest_user_stack_buffer_offset
-    }
-
-    /// Get the offset of the user stack pointer in guest memory,
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_user_stack_pointer_offset(&self) -> usize {
-        // The userStackAddress is immediately after the
-        // minUserStackAddress (top of user stack) field in the `GuestStackData` struct which is a `u64`.
-        self.get_min_guest_stack_address_offset() + size_of::<u64>()
-    }
-
     /// Get the total size of guest memory in `self`'s memory
     /// layout.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
@@ -459,10 +400,33 @@ impl SandboxMemoryLayout {
     /// Get the offset into the snapshot region of the guest user stack
     /// pointer, to be used when entering the guest
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_rsp_offset(&self) -> usize {
-        self.get_top_of_user_stack_offset()
-            + self.stack_size
-            - 0x28
+    pub(crate) fn set_rsp_gva(&mut self, rsp: u64) {
+        self.rsp_gva = Some(rsp);
+    }
+
+    /// Get the offset into the snapshot region of the guest user stack
+    /// pointer, to be used when entering the guest.
+    ///
+    /// This is the raw aligned stack address, and should be adjusted
+    /// (see [`get_rsp_gva_for_entry`] when jumping to the guest
+    /// without pushing a return address.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_rsp_gva(&self) -> u64 {
+        if let Some(rsp) = self.rsp_gva {
+            rsp
+        } else {
+            (hyperlight_common::layout::MAX_GVA - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET as usize + 1) as u64
+        }
+    }
+    /// Get the aligned rsp to use when entering a guest
+    ///
+    /// This should be ≡ 8 % 16, since when we jump into the guest the
+    /// machine does not push a return address as it would on a normal
+    /// call.  For simplicity's sake, we mostly write as constants /
+    /// store the aligned versions, and do the adjustment here.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_rsp_gva_for_entry(&self) -> u64 {
+        self.get_rsp_gva() as u64 - 8
     }
 
     pub fn get_memory_regions(&self, shared_mem: &GuestSharedMemory) -> Result<Vec<MemoryRegion>> {
@@ -545,51 +509,16 @@ impl SandboxMemoryLayout {
 
         // heap
         #[cfg(feature = "executable_heap")]
-        let guard_page_offset = builder.push_page_aligned(
+        let init_data_offset = builder.push_page_aligned(
             self.heap_size,
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE,
             Heap,
         );
         #[cfg(not(feature = "executable_heap"))]
-        let guard_page_offset = builder.push_page_aligned(
+        let init_data_offset = builder.push_page_aligned(
             self.heap_size,
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
             Heap,
-        );
-
-        let expected_guard_page_offset = TryInto::<usize>::try_into(self.guard_page_offset)?;
-
-        if guard_page_offset != expected_guard_page_offset {
-            return Err(new_error!(
-                "Guard Page offset does not match expected Guard Page offset expected:  {}, actual:  {}",
-                expected_guard_page_offset,
-                guard_page_offset
-            ));
-        }
-
-        // guard page
-        let stack_offset = builder.push_page_aligned(
-            PAGE_SIZE_USIZE,
-            MemoryRegionFlags::READ | MemoryRegionFlags::STACK_GUARD,
-            GuardPage,
-        );
-
-        let expected_stack_offset =
-            TryInto::<usize>::try_into(self.guest_user_stack_buffer_offset)?;
-
-        if stack_offset != expected_stack_offset {
-            return Err(new_error!(
-                "Stack offset does not match expected Stack offset expected:  {}, actual:  {}",
-                expected_stack_offset,
-                stack_offset
-            ));
-        }
-
-        // stack
-        let init_data_offset = builder.push_page_aligned(
-            self.get_guest_stack_size(),
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            Stack,
         );
 
         let expected_init_data_offset = TryInto::<usize>::try_into(self.init_data_offset)?;
@@ -602,6 +531,7 @@ impl SandboxMemoryLayout {
             ));
         }
 
+        // init data
         let pt_offset = if self.init_data_size > 0 {
             let mem_flags = self
                 .init_data_permissions
@@ -621,6 +551,7 @@ impl SandboxMemoryLayout {
             ));
         }
 
+        // page tables
         let final_offset = if let Some(pt_size) = self.pt_size {
             builder.push_page_aligned(pt_size, MemoryRegionFlags::READ | MemoryRegionFlags::WRITE, PageTables)
         } else {
@@ -712,22 +643,6 @@ impl SandboxMemoryLayout {
         let addr = get_address!(guest_heap_buffer_offset);
         shared_mem.write_u64(self.get_heap_size_offset(), self.heap_size.try_into()?)?;
         shared_mem.write_u64(self.get_heap_pointer_offset(), addr)?;
-
-        // Set up user stack pointers
-
-        // Bottom of user stack
-
-        shared_mem.write_u64(
-            self.get_min_guest_stack_address_offset(),
-            get_address!(guest_user_stack_buffer_offset),
-        )?;
-
-        // Start of user stack
-
-        let start_of_user_stack: u64 = get_address!(guest_user_stack_buffer_offset) + self.stack_size as u64;
-
-        shared_mem.write_u64(self.get_user_stack_pointer_offset(), start_of_user_stack)?;
-
         // End of setting up the PEB
 
         // Initialize the stack pointers of input data and output data
@@ -789,10 +704,6 @@ mod tests {
 
         expected_size += round_up_to(layout.heap_size, PAGE_SIZE_USIZE);
 
-        expected_size += PAGE_SIZE_USIZE; // guard page
-
-        expected_size += round_up_to(layout.stack_size, PAGE_SIZE_USIZE);
-
         expected_size
     }
 
@@ -800,7 +711,7 @@ mod tests {
     fn test_get_memory_size() {
         let sbox_cfg = SandboxConfiguration::default();
         let sbox_mem_layout =
-            SandboxMemoryLayout::new(sbox_cfg, 4096, 2048, 4096, 0x3000, 0, None).unwrap();
+            SandboxMemoryLayout::new(sbox_cfg, 4096, 4096, 0x3000, 0, None).unwrap();
         assert_eq!(
             sbox_mem_layout.get_memory_size().unwrap(),
             get_expected_memory_size(&sbox_mem_layout)

@@ -8,7 +8,7 @@
 // Included from hyperlight_guest_bin/third_party/printf
 #include "printf.h"
 
-#define GUEST_STACK_SIZE (65536) // default stack size
+#define GUEST_SCRATCH_SIZE (0x40000) // default scratch size
 #define MAX_BUFFER_SIZE (1024)
 
 static char big_array[1024 * 1024] = {0};
@@ -74,10 +74,10 @@ int buffer_overrun(const char *String) {
 
 __attribute__((optnone)) 
 int large_var(void) {
-  char buffer[GUEST_STACK_SIZE + 1] = {0};
+  char buffer[GUEST_SCRATCH_SIZE + 1] = {0};
   (void)buffer;
 
-  return GUEST_STACK_SIZE;
+  return GUEST_SCRATCH_SIZE;
 }
 
 int small_var(void) {

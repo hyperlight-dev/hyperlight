@@ -289,13 +289,12 @@ pub(crate) struct KVMDriver {
     page_size: usize,
     vcpu_fd: VcpuFd,
     entrypoint: Option<u64>,
-    orig_rsp: GuestPtr,
     interrupt_handle: Arc<LinuxInterruptHandle>,
     mem_mgr: Option<SandboxMemoryManager<HostSharedMemory>>,
     host_funcs: Option<Arc<Mutex<FunctionRegistry>>>,
 
-    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
     mmap_regions: Vec<(MemoryRegion, u32)>, // Later mapped regions (region, slot number)
+    snapshot_slot: u32, // The slot ID used for the snapshot mapping
     scratch_slot: u32,  // The slot ID used for the scratch mapping
     next_slot: u32,                     // Monotonically increasing slot number
     freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
@@ -319,11 +318,10 @@ impl KVMDriver {
     // TODO: refactor this function to take fewer arguments. Add trace_info to rt_cfg
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn new(
-        mem_regions: Vec<MemoryRegion>,
+        snapshot_mem: &GuestSharedMemory,
         scratch_mem: &GuestSharedMemory,
         pml4_addr: u64,
         entrypoint: Option<u64>,
-        rsp: u64,
         config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
@@ -333,11 +331,10 @@ impl KVMDriver {
 
         let vm_fd = kvm.create_vm_with_type(0)?;
 
-        mem_regions.iter().enumerate().try_for_each(|(i, region)| {
-            let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
-            kvm_region.slot = i as u32;
-            unsafe { vm_fd.set_user_memory_region(kvm_region) }
-        })?;
+        let snapshot_slot = 0u32;
+        map_snapshot(&vm_fd, snapshot_mem, snapshot_slot, false)?;
+        let scratch_slot = 1u32;
+        map_scratch(&vm_fd, scratch_mem, scratch_slot)?;
 
         let mut vcpu_fd = vm_fd.create_vcpu(0)?;
         Self::setup_initial_sregs(&mut vcpu_fd, pml4_addr)?;
@@ -352,8 +349,6 @@ impl KVMDriver {
         } else {
             (None, None)
         };
-
-        let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
 
         let interrupt_handle = Arc::new(LinuxInterruptHandle {
             running: AtomicU64::new(0),
@@ -379,9 +374,6 @@ impl KVMDriver {
             sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
         });
 
-        let scratch_slot = mem_regions.len() as u32;
-        map_scratch(&vm_fd, scratch_mem, scratch_slot)?;
-
         #[allow(unused_mut)]
         let mut hv = Self {
             _kvm: kvm,
@@ -389,10 +381,9 @@ impl KVMDriver {
             page_size: 0,
             vcpu_fd,
             entrypoint,
-            orig_rsp: rsp_gp,
+            snapshot_slot,
             scratch_slot,
-            next_slot: scratch_slot + 1,
-            sandbox_regions: mem_regions,
+            next_slot: 2,
             mmap_regions: Vec::new(),
             freed_slots: Vec::new(),
             interrupt_handle: interrupt_handle.clone(),
@@ -444,9 +435,6 @@ impl Debug for KVMDriver {
         let mut f = f.debug_struct("KVM Driver");
         // Output each memory region
 
-        for region in &self.sandbox_regions {
-            f.field("Sandbox Memory Region", &region);
-        }
         for region in &self.mmap_regions {
             f.field("Mapped Memory Region", &region);
         }
@@ -467,6 +455,27 @@ impl Debug for KVMDriver {
 
         f.finish()
     }
+}
+
+fn map_snapshot(vm_fd: &VmFd, snapshot: &GuestSharedMemory, slot: u32, prev_exists: bool) -> Result<()> {
+    if prev_exists {
+        let mut rgn = kvm_userspace_memory_region {
+            slot,
+            memory_size: 0,
+            ..Default::default()
+        };
+        unsafe { vm_fd.set_user_memory_region(rgn) }
+            .map_err(|e| new_error!("Failed to remove old snapshot mapping: {:?}", e))?;
+    }
+    let mut rgn = kvm_userspace_memory_region {
+        slot,
+        guest_phys_addr: crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64,
+        memory_size: snapshot.mem_size() as u64,
+        userspace_addr: snapshot.base_addr() as u64,
+        flags: 0,
+    };
+    unsafe { vm_fd.set_user_memory_region(rgn) }
+        .map_err(|e| new_error!("Failed to add new snapshot mapping: {:?}", e))
 }
 
 fn map_scratch(vm_fd: &VmFd, scratch: &GuestSharedMemory, slot: u32) -> Result<()> {
@@ -495,6 +504,7 @@ impl Hypervisor for KVMDriver {
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         let Some(entrypoint) = self.entrypoint else { return Ok(()); };
+        let init_rsp = mem_mgr.layout.get_rsp_gva_for_entry();
         self.mem_mgr = Some(mem_mgr);
         self.host_funcs = Some(host_funcs);
         self.page_size = page_size as usize;
@@ -504,9 +514,10 @@ impl Hypervisor for KVMDriver {
             None => self.get_max_log_level().into(),
         };
 
+        let rsp_gpa = self.vcpu_fd.translate_gva(self.rsp_gva).unwrap();
         let regs = kvm_regs {
             rip: entrypoint,
-            rsp: self.orig_rsp.absolute()?,
+            rsp: init_rsp,
 
             // function args
             rdi: peb_addr.into(),
@@ -522,7 +533,11 @@ impl Hypervisor for KVMDriver {
             self.as_mut_hypervisor(),
             #[cfg(gdb)]
             dbg_mem_access_fn,
-        )
+        )?;
+
+        let regs = self.vcpu_fd.get_regs()?;
+        self.mem_mgr.as_mut().unwrap().layout.set_rsp_gva(regs.rsp);
+        Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -592,8 +607,8 @@ impl Hypervisor for KVMDriver {
     ) -> Result<()> {
         // Reset general purpose registers, then set RIP and RSP
         let regs = kvm_regs {
-            rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
+            rip: dispatch_func_addr.clone().into(),
+            rsp: self.mem_mgr.as_ref().unwrap().layout.get_rsp_gva_for_entry(),
             ..Default::default()
         };
         self.vcpu_fd.set_regs(&regs)?;
@@ -615,9 +630,7 @@ impl Hypervisor for KVMDriver {
             self.as_mut_hypervisor(),
             #[cfg(gdb)]
             dbg_mem_access_fn,
-        )?;
-
-        Ok(())
+        )
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -768,9 +781,7 @@ impl Hypervisor for KVMDriver {
 
                 match get_memory_access_violation(
                     addr as usize,
-                    self.sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
+                    self.mmap_regions.iter().map(|(r, _)| r),
                     MemoryRegionFlags::READ,
                 ) {
                     Some(access_violation_exit) => access_violation_exit,
@@ -782,9 +793,7 @@ impl Hypervisor for KVMDriver {
 
                 match get_memory_access_violation(
                     addr as usize,
-                    self.sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
+                    self.mmap_regions.iter().map(|(r, _)| r),
                     MemoryRegionFlags::WRITE,
                 ) {
                     Some(access_violation_exit) => access_violation_exit,
@@ -1071,8 +1080,23 @@ impl Hypervisor for KVMDriver {
         &mut self.trace_info
     }
 
+    fn update_snapshot_mapping(&mut self, gsnapshot: &GuestSharedMemory) -> Result<()> {
+        map_snapshot(&self.vm_fd, gsnapshot, self.snapshot_slot, true)
+    }
     fn update_scratch_mapping(&mut self, gscratch: &GuestSharedMemory) -> Result<()> {
         map_scratch(&self.vm_fd, gscratch, self.scratch_slot)
+    }
+
+    fn get_root_pt(&mut self) -> Result<u64> {
+        let sregs = self.vcpu_fd.get_sregs()?;
+        Ok(sregs.cr3)
+    }
+
+    fn set_root_pt(&mut self, gpa: u64) -> Result<()> {
+        let mut sregs = self.vcpu_fd.get_sregs()?;
+        sregs.cr3 = gpa;
+        self.vcpu_fd.set_sregs(&sregs)?;
+        Ok(())
     }
 }
 

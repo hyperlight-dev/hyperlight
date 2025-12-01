@@ -245,6 +245,38 @@ unsafe fn require_pte_exist<Op: TableOps, P: UpdateParent<Op>>(
     })
 }
 
+
+// There are no notable architecture-specific safety considerations
+// here, and the general conditions are documented in the
+// architecture-independent re-export in vm.rs
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn vtops<Op: TableOps>(op: &Op, vmin: u64, len: u64) -> impl Iterator<Item = (u64, u64)> {
+    let vmin = vmin & ((1u64 << 48) - 1);
+    let vmax = core::cmp::min(vmin + len, 1u64 << 48);
+    let len = vmax - vmin;
+    modify_ptes::<47, 39, Op, _>(MapRequest {
+        table_base: op.root_table(),
+        vmin,
+        len,
+        update_parent: UpdateParentCR3 {},
+    })
+    .filter_map(|r| unsafe { require_pte_exist(op, r) })
+    .flat_map(modify_ptes::<38, 30, Op, _>)
+    .filter_map(|r| unsafe { require_pte_exist(op, r) })
+    .flat_map(modify_ptes::<29, 21, Op, _>)
+    .filter_map(|r| unsafe { require_pte_exist(op, r) })
+    .flat_map(modify_ptes::<20, 12, Op, _>)
+    .filter_map(|r| {
+        let pte = unsafe { op.read_entry(r.entry_ptr) };
+        let present = pte & 0x1;
+        if present == 0 { return None; }
+        let phys_addr = pte & 0xf_ffff_ffff_f000;
+        let virt_addr = r.vmin;
+        Some((virt_addr, phys_addr))
+    })
+}
+
+
 // There are no notable architecture-specific safety considerations
 // here, and the general conditions are documented in the
 // architecture-independent re-export in vm.rs

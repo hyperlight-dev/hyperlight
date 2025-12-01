@@ -14,7 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-pub const MAIN_STACK_TOP_GVA: usize = 0xffff_feff_ffff_f000;
+/// Note that the x86-64 ELF psABI requires that the stack be 16-byte
+/// aligned before a call instruction; we use the aligned version
+/// here, even though this requires adjusting the pointer by 8 bytes
+/// when entering the guest without a call instruction to push a
+/// return address.
+pub const MAIN_STACK_TOP_GVA: u64 = 0xffff_ff00_0000_0000;
+pub const MAIN_STACK_LIMIT_GVA: u64 = 0xffff_fe00_0000_0000;
+
+/// On amd64, since the processor is told the VAs of control
+/// structures like the GDT/IDT/TSS, we need to map them somewhere to
+/// a VA that will survive the snapshot proces. Since we don't have a
+/// useful virtual allocator yet, we just put them here...
+pub const PROC_CONTROL_GVA: u64 = 0xffff_fd00_0000_0000;
 
 pub fn scratch_size() -> u64 {
     let addr = crate::layout::scratch_size_gva();
