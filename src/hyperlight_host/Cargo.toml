@@ -93,7 +93,7 @@ hyperlight-testing = { workspace = true }
 env_logger = "0.11.8"
 tracing-forest = { version = "0.3.0", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
 tracing = "0.1.43"
-tracing-subscriber = {version = "0.3.20", features = ["std", "env-filter"]}
+tracing-subscriber = {version = "0.3.22", features = ["std", "env-filter"]}
 tracing-opentelemetry = "0.32.0"
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "grpc-tonic"] }
