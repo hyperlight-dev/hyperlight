@@ -56,26 +56,6 @@ pub use uninitialized::UninitializedSandbox;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::windows_hypervisor_platform;
 
-// In case its not obvious why there are separate is_supported_platform and is_hypervisor_present functions its because
-// Hyperlight is designed to be able to run on a host that doesn't have a hypervisor.
-// In that case, the sandbox will be in process, we plan on making this a dev only feature and fixing up Linux support
-// so we should review the need for this function at that time.
-
-/// Determine if this is a supported platform for Hyperlight
-///
-/// Returns a boolean indicating whether this is a supported platform.
-#[instrument(skip_all, parent = Span::current())]
-pub fn is_supported_platform() -> bool {
-    #[cfg(not(target_os = "linux"))]
-    #[cfg(not(target_os = "windows"))]
-    return false;
-
-    true
-}
-
-/// Alias for the type of extra allowed syscalls.
-pub type ExtraAllowedSyscall = i64;
-
 /// Determine whether a suitable hypervisor is available to run
 /// this sandbox.
 ///

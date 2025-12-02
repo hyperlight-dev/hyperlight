@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Removed
+* Remove outdated `is_supported_platform` (use `is_hypervisor_present` instead) and unused `ExtraAllowedSyscall` by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1062
+
 
 ## [v0.11.0] - 2025-11-04
 
