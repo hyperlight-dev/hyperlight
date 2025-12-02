@@ -89,7 +89,6 @@ impl GuestHandle {
     }
 
     /// Pushes the given data onto the shared output data buffer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn push_shared_output_data(&self, data: &[u8]) -> Result<()> {
         let peb_ptr = self.peb().unwrap();
         let output_stack_size = unsafe { (*peb_ptr).output_stack.size as usize };
