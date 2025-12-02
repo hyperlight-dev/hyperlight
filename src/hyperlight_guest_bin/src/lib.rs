@@ -276,6 +276,8 @@ pub mod __private {
             impl FromResult for $ty {
                 type Output = Self;
                 fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self {
+                    // Unwrapping here is fine as this would only run in a guest
+                    // and not in the host.
                     res.unwrap()
                 }
             }

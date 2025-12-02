@@ -94,6 +94,31 @@ macro_rules! impl_host_function {
             ($($P,)*): ParameterTuple,
             R: ResultType<HyperlightGuestError>,
         {
+            // Only functions that can be coerced into a function pointer (i.e., "fn" types)
+            // can be registered as guest functions.
+            //
+            // Note that the "Fn" trait is different from "fn" types in Rust.
+            // "fn" is a type, while "Fn" is a trait.
+            // For example, closures that capture environment implement "Fn" but cannot be
+            // coerced to function pointers.
+            // This means that the closure returned by `into_guest_function` can not capture
+            // any environment, not event `self`, and we must only rely on the type system
+            // to call the correct function.
+            //
+            // Ideally we would implement IntoGuestFunction for any F that can be converted
+            // into a function pointer, but currently there's no way to express that in Rust's
+            // type system.
+            // Therefore, to ensure that F is a "fn" type, we enforce that F is zero-sized
+            // has no Drop impl (the latter is enforced by the Copy bound), and it doesn't
+            // capture any lifetimes (not even through a marker type like PhantomData).
+            //
+            // Note that implementing IntoGuestFunction for "fn($(P),*) -> R" is not an option
+            // either, "fn($(P),*) -> R" is a type that's shared for all function pointers with
+            // that signature, e.g., "fn add(a: i32, b: i32) -> i32 { a + b }" and
+            // "fn sub(a: i32, b: i32) -> i32 { a - b }" both can be coerced to the same
+            // "fn(i32, i32) -> i32" type, so we would need to capture self (a function pointer)
+            // to know exactly which function to call.
+
             #[doc(hidden)]
             const ASSERT_ZERO_SIZED: () = const {
                 assert!(core::mem::size_of::<Self>() == 0)

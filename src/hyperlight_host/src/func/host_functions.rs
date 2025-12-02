@@ -64,26 +64,26 @@ where
     Args: ParameterTuple,
     Output: SupportedReturnType,
 {
-    // This is a thin wrapper around a `Fn(Args) -> Result<Output>`.
-    // But unlike `Fn` which is a trait, this is a concrete type.
+    // This is a thin wrapper around a `Function<Output, Args, HyperlightError>`.
+    // But unlike `Function<..>` which is a trait, this is a concrete type.
     // This allows us to:
     //  1. Impose constraints on the function arguments and return type.
     //  2. Impose a single function signature.
     //
-    // This second point is important because the `Fn` trait is generic
-    // over the function arguments (with an associated return type).
-    // This means that a given type could implement `Fn` for multiple
+    // This second point is important because the `Function<..>` trait is generic
+    // over the function arguments and return type.
+    // This means that a given type could implement `Function<..>` for multiple
     // function signatures.
     // This means we can't do something like:
     // ```rust,ignore
     // impl<Args, Output, F> SomeTrait for F
     // where
-    //     F: Fn(Args) -> Result<Output>,
+    //     F: Function<Output, Args, HyperlightError>,
     // { ... }
     // ```
-    // because the concrete type F might implement `Fn` for multiple times,
-    // and that would means implementing `SomeTrait` multiple times for the
-    // same type.
+    // because the concrete type F might implement `Function<..>` for multiple
+    // arguments and return types, and that would means implementing `SomeTrait`
+    // multiple times for the same type F.
 
     // Use Arc in here instead of Box because it's useful in tests and
     // presumably in other places to be able to clone a HostFunction and

@@ -450,6 +450,8 @@ impl MultiUseSandbox {
                 Output::TYPE,
                 args.into_value(),
             );
+            // Use the ? operator to allow converting any hyperlight_common::func::Error
+            // returned by from_value into a HyperlightError
             let ret = Output::from_value(ret?)?;
             Ok(ret)
         })
