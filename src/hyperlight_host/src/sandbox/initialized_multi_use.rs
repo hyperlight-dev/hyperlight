@@ -37,7 +37,8 @@ use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
 use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::{ParameterTuple, SupportedReturnType};
-use crate::hypervisor::{Hypervisor, InterruptHandle};
+use crate::hypervisor::InterruptHandle;
+use crate::hypervisor::hyperlight_vm::HyperlightVm;
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -97,7 +98,7 @@ pub struct MultiUseSandbox {
     poisoned: bool,
     pub(super) host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
-    vm: Box<dyn Hypervisor>,
+    vm: HyperlightVm,
     dispatch_ptr: RawPtr,
     #[cfg(gdb)]
     dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
@@ -116,7 +117,7 @@ impl MultiUseSandbox {
     pub(super) fn from_uninit(
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
-        vm: Box<dyn Hypervisor>,
+        vm: HyperlightVm,
         dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
@@ -277,12 +278,16 @@ impl MultiUseSandbox {
         let regions_to_map = snapshot_regions.difference(&current_regions);
 
         for region in regions_to_unmap {
-            unsafe { self.vm.unmap_region(region)? };
+            self.vm.unmap_region(region)?;
         }
 
         for region in regions_to_map {
+            // Safety: The region has been mapped before, and at that point the caller promised that the memory region is valid
+            // in their call to `MultiUseSandbox::map_region`
             unsafe { self.vm.map_region(region)? };
         }
+
+        self.vm.reset_vcpu()?;
 
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
@@ -711,7 +716,7 @@ impl MultiUseSandbox {
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn generate_crashdump(&self) -> Result<()> {
-        crate::hypervisor::crashdump::generate_crashdump(self.vm.as_ref())
+        crate::hypervisor::crashdump::generate_crashdump(&self.vm)
     }
 
     /// Returns whether the sandbox is currently poisoned.
@@ -783,6 +788,7 @@ mod tests {
 
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
     use hyperlight_testing::simple_guest_as_string;
+    use rand::seq::IteratorRandom;
 
     #[cfg(target_os = "linux")]
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -1223,7 +1229,7 @@ mod tests {
 
         // 1. Take snapshot 1 with no additional regions mapped
         let snapshot1 = sbox.snapshot().unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 0);
 
         // 2. Map a memory region
         let map_mem = allocate_guest_memory();
@@ -1231,23 +1237,23 @@ mod tests {
         let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
 
         unsafe { sbox.map_region(&region).unwrap() };
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
 
         // 3. Take snapshot 2 with 1 region mapped
         let snapshot2 = sbox.snapshot().unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
 
         // 4. Restore to snapshot 1 (should unmap the region)
         sbox.restore(&snapshot1).unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 0);
 
         // 5. Restore forward to snapshot 2 (should remap the region)
         sbox.restore(&snapshot2).unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
 
         // Verify the region is the same
         let mut restored_regions = sbox.vm.get_mapped_regions();
-        assert_eq!(*restored_regions.next().unwrap(), region);
+        assert_eq!(restored_regions.next().unwrap(), &region);
         assert!(restored_regions.next().is_none());
         drop(restored_regions);
 
@@ -1290,5 +1296,66 @@ mod tests {
             u_sbox.evolve().unwrap()
         };
         assert_ne!(sandbox3.id, sandbox_id);
+    }
+
+    #[test]
+    fn test_read_write_msr() {
+        let value: u64 = 0x0;
+
+        const N: usize = 100;
+
+        let msr_numbers = (0x0u32..0x20u32)
+            .chain(0x40000000u32..0x40000100u32)
+            .chain(0x80000000u32..0x80002000u32)
+            .chain(0xC0000000u32..0xC0002000u32)
+            .chain(0xC0010000u32..0xC0012000u32)
+            .choose_multiple(&mut rand::rng(), N);
+
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+        for msr_number in msr_numbers {
+            let err = sbox.call::<u64>("ReadMSR", msr_number).unwrap_err();
+            assert!(
+                matches!(err, HyperlightError::MsrReadViolation(msr) if msr == msr_number),
+                "got error: {:?}",
+                err
+            );
+            sbox.restore(&snapshot).unwrap();
+            let err = sbox
+                .call::<()>("WriteMSR", (msr_number, value))
+                .unwrap_err();
+            sbox.restore(&snapshot).unwrap();
+            assert!(
+                matches!(err, HyperlightError::MsrWriteViolation(msr_idx, value) if msr_idx == msr_number && value == value),
+                "got error: {:?}",
+                err
+            );
+        }
+
+        // Also try case where MSR access is allowed below
+
+        let mut cfg = SandboxConfiguration::default();
+        unsafe { cfg.set_allow_msr(true) };
+
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            Some(cfg),
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+
+        let msr_index: u32 = 0xC0000102; // IA32_KERNEL_GS_BASE
+        let value: u64 = 0x5;
+
+        sbox.call::<()>("WriteMSR", (msr_index, value)).unwrap();
+        let read_value: u64 = sbox.call("ReadMSR", msr_index).unwrap();
+        assert_eq!(read_value, value);
     }
 }

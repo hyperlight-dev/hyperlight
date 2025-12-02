@@ -144,6 +144,14 @@ pub enum HyperlightError {
     #[error("Memory Allocation Failed with OS Error {0:?}.")]
     MemoryAllocationFailed(Option<i32>),
 
+    /// MSR Read Violation - Guest attempted to read from a Model-Specific Register
+    #[error("Guest attempted to read from MSR {0:#x}")]
+    MsrReadViolation(u32),
+
+    /// MSR Write Violation - Guest attempted to write to a Model-Specific Register
+    #[error("Guest attempted to write {1:#x} to MSR {0:#x}")]
+    MsrWriteViolation(u32, u64),
+
     /// Memory Protection Failed
     #[error("Memory Protection Failed with OS Error {0:?}.")]
     MemoryProtectionFailed(Option<i32>),
@@ -322,7 +330,9 @@ impl HyperlightError {
             | HyperlightError::PoisonedSandbox
             | HyperlightError::ExecutionAccessViolation(_)
             | HyperlightError::StackOverflow()
-            | HyperlightError::MemoryAccessViolation(_, _, _) => true,
+            | HyperlightError::MemoryAccessViolation(_, _, _)
+            | HyperlightError::MsrReadViolation(_)
+            | HyperlightError::MsrWriteViolation(_, _) => true,
 
             // All other errors do not poison the sandbox.
             HyperlightError::AnyhowError(_)
