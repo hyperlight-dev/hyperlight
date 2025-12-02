@@ -85,7 +85,7 @@ pub fn guest_function(attr: TokenStream, item: TokenStream) -> TokenStream {
             #[#crate_name::__private::linkme::distributed_slice(#crate_name::__private::GUEST_FUNCTION_INIT)]
             #[linkme(crate = #crate_name::__private::linkme)]
             static REGISTRATION: fn() = || {
-                hyperlight_guest_bin::guest_function::register::register_fn(#exported_name, #ident);
+                #crate_name::guest_function::register::register_fn(#exported_name, #ident);
             };
         };
     };
@@ -194,9 +194,9 @@ pub fn host_function(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let output = quote! {
         #(#attrs)* #vis #sig {
-            use #crate_name::__private::{ResultType, HyperlightGuestError};
+            use #crate_name::__private::FromResult;
             use #crate_name::host_comm::call_host;
-            <#ret as ResultType<HyperlightGuestError>>::from_result(call_host(#exported_name, (#(#args,)*)))
+            <#ret as FromResult>::from_result(call_host(#exported_name, (#(#args,)*)))
         }
     };
 

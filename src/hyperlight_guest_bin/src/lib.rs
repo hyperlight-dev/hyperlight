@@ -260,6 +260,36 @@ pub mod __private {
 
     #[linkme::distributed_slice]
     pub static GUEST_FUNCTION_INIT: [fn()];
+
+    pub trait FromResult {
+        type Output;
+        fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self;
+    }
+
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    use hyperlight_common::for_each_return_type;
+
+    macro_rules! impl_maybe_unwrap {
+        ($ty:ty, $enum:ident) => {
+            impl FromResult for $ty {
+                type Output = Self;
+                fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self {
+                    res.unwrap()
+                }
+            }
+
+            impl FromResult for Result<$ty, HyperlightGuestError> {
+                type Output = $ty;
+                fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self {
+                    res
+                }
+            }
+        };
+    }
+
+    for_each_return_type!(impl_maybe_unwrap);
 }
 
 #[cfg(feature = "macros")]

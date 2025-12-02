@@ -32,6 +32,8 @@ pub trait SupportedReturnType: Sized + Clone + Send + Sync + 'static {
     fn from_value(value: ReturnValue) -> Result<Self, Error>;
 }
 
+#[macro_export]
+#[doc(hidden)]
 macro_rules! for_each_return_type {
     ($macro:ident) => {
         $macro!((), Void);
@@ -76,9 +78,6 @@ pub trait ResultType<E: core::fmt::Debug> {
 
     /// Convert the return type into a `Result<impl SupportedReturnType>`
     fn into_result(self) -> Result<Self::ReturnType, E>;
-
-    /// Convert a result into this type, panicking if needed
-    fn from_result(res: Result<Self::ReturnType, E>) -> Self;
 }
 
 impl<T, E> ResultType<E> for T
@@ -91,11 +90,6 @@ where
     fn into_result(self) -> Result<Self::ReturnType, E> {
         Ok(self)
     }
-
-    fn from_result(res: Result<Self::ReturnType, E>) -> Self {
-        #![allow(clippy::unwrap_used)]
-        res.unwrap()
-    }
 }
 
 impl<T, E> ResultType<E> for Result<T, E>
@@ -107,10 +101,6 @@ where
 
     fn into_result(self) -> Result<Self::ReturnType, E> {
         self
-    }
-
-    fn from_result(res: Result<Self::ReturnType, E>) -> Self {
-        res
     }
 }
 
