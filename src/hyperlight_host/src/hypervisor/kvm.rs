@@ -514,7 +514,6 @@ impl Hypervisor for KVMDriver {
             None => self.get_max_log_level().into(),
         };
 
-        let rsp_gpa = self.vcpu_fd.translate_gva(self.rsp_gva).unwrap();
         let regs = kvm_regs {
             rip: entrypoint,
             rsp: init_rsp,

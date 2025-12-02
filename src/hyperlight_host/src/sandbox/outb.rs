@@ -463,8 +463,8 @@ mod tests {
             let log_msg = new_guest_log_data(LogLevel::Information);
 
             let guest_log_data_buffer: Vec<u8> = log_msg.try_into().unwrap();
-            let offset = mgr.layout.get_output_data_offset();
-            mgr.get_shared_mem_mut()
+            let offset = mgr.layout.get_output_data_buffer_scratch_host_offset();
+            mgr.get_scratch_mem_mut()
                 .push_buffer(
                     offset,
                     sandbox_cfg.get_output_data_size(),
@@ -501,9 +501,9 @@ mod tests {
                 let log_data = new_guest_log_data(level);
 
                 let guest_log_data_buffer: Vec<u8> = log_data.clone().try_into().unwrap();
-                mgr.get_shared_mem_mut()
+                mgr.get_scratch_mem_mut()
                     .push_buffer(
-                        layout.get_output_data_offset(),
+                        layout.get_output_data_buffer_scratch_host_offset(),
                         sandbox_cfg.get_output_data_size(),
                         guest_log_data_buffer.as_slice(),
                     )
@@ -584,9 +584,9 @@ mod tests {
                 subscriber.clear();
 
                 let guest_log_data_buffer: Vec<u8> = log_data.try_into().unwrap();
-                mgr.get_shared_mem_mut()
+                mgr.get_scratch_mem_mut()
                     .push_buffer(
-                        layout.get_output_data_offset(),
+                        layout.get_output_data_buffer_scratch_host_offset(),
                         sandbox_cfg.get_output_data_size(),
                         guest_log_data_buffer.as_slice(),
                     )

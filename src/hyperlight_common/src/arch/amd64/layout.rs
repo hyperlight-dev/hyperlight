@@ -28,3 +28,18 @@ pub const MAX_GPA: usize = 0x0000_03ff_ffff_ffff;
 /// there is no return address pushed on the stack & so we must adjust
 /// the alignment.
 pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x20;
+
+/// Compute the minimum scratch region size needed for give requested
+/// input and output data sizes. This is:
+/// - A page-aligned amount of memory for the buffers
+/// - A page for the smallest possible non-exception stack
+/// - (up to) 3 pages for PTEs for mapping that
+/// - A page for the TSS and IDT
+/// - (up to) 3 pages for PTEs for mapping that
+/// - A page for the exception stack and metadata
+pub fn min_scratch_size(input_data_size: usize, output_data_size: usize) -> usize {
+    crate::util::round_up_to(
+        input_data_size + output_data_size,
+        crate::vm::PAGE_SIZE,
+    ) + 9 * crate::vm::PAGE_SIZE
+}

@@ -163,6 +163,11 @@ pub enum HyperlightError {
     #[error("Memory requested {0} exceeds maximum size allowed {1}")]
     MemoryRequestTooBig(usize, usize),
 
+    /// The memory request is too small to contain everything that is
+    /// required
+    #[error("Memory requested {0} exceeds maximum size allowed {1}")]
+    MemoryRequestTooSmall(usize, usize),
+
     /// Metric Not Found.
     #[error("Metric Not Found {0:?}.")]
     MetricNotFound(&'static str),

@@ -169,6 +169,12 @@ where
         &mut self.shared_mem
     }
 
+    /// Get `SharedMemory` in `self` as a mutable reference
+    #[cfg(any(gdb, test))]
+    pub(crate) fn get_scratch_mem_mut(&mut self) -> &mut S {
+        &mut self.scratch_mem
+    }
+
     /// Create a snapshot with the given mapped regions
     pub(crate) fn snapshot(
         &mut self,
@@ -267,8 +273,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
-        self.shared_mem.try_pop_buffer_into::<FunctionCall>(
-            self.layout.output_data_buffer_offset,
+        self.scratch_mem.try_pop_buffer_into::<FunctionCall>(
+            self.layout.get_output_data_buffer_scratch_host_offset(),
             self.layout.sandbox_memory_config.get_output_data_size(),
         )
     }
@@ -281,8 +287,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 "write_response_from_host_method_call: failed to convert ReturnValue to Vec<u8>"
             )
         })?;
-        self.shared_mem.push_buffer(
-            self.layout.input_data_buffer_offset,
+        self.scratch_mem.push_buffer(
+            self.layout.get_input_data_buffer_scratch_host_offset(),
             self.layout.sandbox_memory_config.get_input_data_size(),
             function_call_ret_val_buffer.as_slice(),
         )
@@ -298,18 +304,19 @@ impl SandboxMemoryManager<HostSharedMemory> {
             )
         })?;
 
-        self.shared_mem.push_buffer(
-            self.layout.input_data_buffer_offset,
+        self.scratch_mem.push_buffer(
+            self.layout.get_input_data_buffer_scratch_host_offset(),
             self.layout.sandbox_memory_config.get_input_data_size(),
             buffer,
-        )
+        )?;
+        Ok(())
     }
 
     /// Reads a function call result from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_function_call_result(&mut self) -> Result<ReturnValue> {
-        self.shared_mem.try_pop_buffer_into::<ReturnValue>(
-            self.layout.output_data_buffer_offset,
+        self.scratch_mem.try_pop_buffer_into::<ReturnValue>(
+            self.layout.get_output_data_buffer_scratch_host_offset(),
             self.layout.sandbox_memory_config.get_output_data_size(),
         )
     }
@@ -317,16 +324,16 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Read guest log data from the `SharedMemory` contained within `self`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
-        self.shared_mem.try_pop_buffer_into::<GuestLogData>(
-            self.layout.output_data_buffer_offset,
+        self.scratch_mem.try_pop_buffer_into::<GuestLogData>(
+            self.layout.get_output_data_buffer_scratch_host_offset(),
             self.layout.sandbox_memory_config.get_output_data_size(),
         )
     }
 
     /// Get the guest error data
     pub(crate) fn get_guest_error(&mut self) -> Result<GuestError> {
-        self.shared_mem.try_pop_buffer_into::<GuestError>(
-            self.layout.output_data_buffer_offset,
+        self.scratch_mem.try_pop_buffer_into::<GuestError>(
+            self.layout.get_output_data_buffer_scratch_host_offset(),
             self.layout.sandbox_memory_config.get_output_data_size(),
         )
     }
@@ -334,8 +341,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
     pub(crate) fn clear_io_buffers(&mut self) {
         // Clear the output data buffer
         loop {
-            let Ok(_) = self.shared_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.output_data_buffer_offset,
+            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
+                self.layout.get_output_data_buffer_scratch_host_offset(),
                 self.layout.sandbox_memory_config.get_output_data_size(),
             ) else {
                 break;
@@ -343,8 +350,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
         }
         // Clear the input data buffer
         loop {
-            let Ok(_) = self.shared_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.input_data_buffer_offset,
+            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
+                self.layout.get_input_data_buffer_scratch_host_offset(),
                 self.layout.sandbox_memory_config.get_input_data_size(),
             ) else {
                 break;
@@ -389,7 +396,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // sensible...
         self.scratch_mem.write::<u64>(size_offset, scratch_size as u64).unwrap();
         let alloc_offset = scratch_size - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
-        // See above comment about unwrap() on write
-        self.scratch_mem.write::<u64>(alloc_offset, hyperlight_common::layout::scratch_base_gpa(scratch_size as usize)).unwrap()
+        self.scratch_mem.write::<u64>(
+            alloc_offset,
+            self.layout.get_first_free_scratch_gpa()
+        ).unwrap();
+
+        // Initialise the guest input and output data buffers in
+        // scratch memory. TODO: remove the need for this.
+        self.scratch_mem.write::<u64>(
+            self.layout.get_input_data_buffer_scratch_host_offset(),
+            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES
+        ).unwrap();
+        self.scratch_mem.write::<u64>(
+            self.layout.get_output_data_buffer_scratch_host_offset(),
+            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES
+        ).unwrap();
     }
 }

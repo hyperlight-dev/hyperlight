@@ -23,7 +23,7 @@ pub use arch::MAX_GPA;
 // offsets down from the top of scratch memory for various things
 pub const SCRATCH_TOP_SIZE_OFFSET: u64 = 0x08;
 pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 = 0x18;
-pub use arch::SCRATCH_TOP_EXN_STACK_OFFSET;
+pub use arch::{SCRATCH_TOP_EXN_STACK_OFFSET, min_scratch_size};
 
 pub fn scratch_base_gpa(size: usize) -> u64 {
     (MAX_GPA - size + 1) as u64

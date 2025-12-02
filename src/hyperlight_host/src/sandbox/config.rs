@@ -92,7 +92,7 @@ impl SandboxConfiguration {
     /// The default heap size of a hyperlight sandbox
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
     /// The default size of the scratch region
-    pub const DEFAULT_SCRATCH_SIZE: usize = 0x40000;
+    pub const DEFAULT_SCRATCH_SIZE: usize = 0x48000;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -139,6 +139,12 @@ impl SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_heap_size(&mut self, heap_size: u64) {
         self.heap_size_override = heap_size;
+    }
+
+    /// Set the heap size to use in the guest sandbox. If set to 0, the heap size will be determined from the PE file header
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_scratch_size(&mut self, scratch_size: usize) {
+        self.scratch_size = scratch_size;
     }
 
     /// Sets the interrupt retry delay
