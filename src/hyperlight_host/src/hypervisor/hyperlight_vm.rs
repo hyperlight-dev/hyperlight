@@ -91,6 +91,11 @@ pub(crate) struct HyperlightVm {
     trace_info: MemTraceInfo,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
+    // Windows does not support just "zeroing" out the xsave area - we need to preserve the XCOMP_BV.
+    // Since it varies by hardware, we can't just hardcode a value, so we save it here.
+    // Also note that windows uses compacted format for xsave.
+    #[cfg(target_os = "windows")]
+    xcomp_bv: u64,
 }
 
 impl HyperlightVm {
@@ -144,6 +149,8 @@ impl HyperlightVm {
         #[cfg(not(feature = "init-paging"))]
         vm.set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())?;
 
+        vm.set_fpu(&CommonFpu::default())?;
+
         #[cfg(gdb)]
         let gdb_conn = if let Some(gdb_conn) = gdb_conn {
             // Add breakpoint to the entry point address
@@ -186,6 +193,17 @@ impl HyperlightVm {
             dropped: AtomicBool::new(false),
         });
 
+        // get xsave header for debugging
+        #[cfg(target_os = "windows")]
+        let xsave = vm.xsave()?;
+
+        #[cfg(target_os = "windows")]
+        let xcomp_bv = if xsave.len() >= 528 {
+            u64::from_le_bytes(xsave[520..528].try_into().unwrap())
+        } else {
+            return Err(new_error!("XSAVE buffer too small to contain XCOMP_BV"));
+        };
+
         #[allow(unused_mut)] // needs to be mutable when gdb is enabled
         let mut ret = Self {
             vm,
@@ -209,6 +227,8 @@ impl HyperlightVm {
             trace_info,
             #[cfg(crashdump)]
             rt_cfg,
+            #[cfg(target_os = "windows")]
+            xcomp_bv,
         };
 
         // Send the interrupt handle to the GDB thread if debugging is enabled
@@ -580,6 +600,9 @@ impl HyperlightVm {
 
     pub(crate) fn reset_vcpu(&self) -> Result<()> {
         self.vm.set_regs(&CommonRegisters::default())?;
+        self.vm.set_fpu(&CommonFpu::default())?;
+        self.vm.set_debug_regs(&CommonDebugRegs::default())?;
+
         #[cfg(feature = "init-paging")]
         self.vm
             .set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(
@@ -588,9 +611,25 @@ impl HyperlightVm {
         #[cfg(not(feature = "init-paging"))]
         self.vm
             .set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())?;
-        self.vm.set_fpu(&CommonFpu::default())?;
+
+        // Windows does not support just "zeroing" out the xsave area - we need to preserve the XCOMP_BV.
+        #[cfg(target_os = "windows")]
+        {
+            // The XSAVE header starts at offset 512.
+            // Bytes 7:0 of the header is XSTATE_BV.
+            // Bytes 15:8 of the header is XCOMP_BV.
+            // So XCOMP_BV starts at offset 512 + 8 = 520.
+            // We are using a u32 array, so the index is 520 / 4 = 130.
+            const XCOMP_BV_OFFSET_U32: usize = 520 / std::mem::size_of::<u32>();
+
+            let mut xsave = [0u32; 1024];
+            xsave[XCOMP_BV_OFFSET_U32] = self.xcomp_bv as u32;
+            xsave[XCOMP_BV_OFFSET_U32 + 1] = (self.xcomp_bv >> 32) as u32;
+            self.vm.set_xsave(&xsave)?;
+        }
+        #[cfg(not(target_os = "windows"))]
         self.vm.set_xsave(&[0; 1024])?;
-        self.vm.set_debug_regs(&CommonDebugRegs::default())?;
+
         // MSRs don't need to be reset as they cannot be modified by guest (unless unsafely-allowed)
         Ok(())
     }

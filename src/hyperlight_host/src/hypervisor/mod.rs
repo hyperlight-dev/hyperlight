@@ -130,7 +130,7 @@ pub(crate) trait Hypervisor: Send + Sync + Debug {
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
 
     /// xsave
-    #[cfg(crashdump)]
+    #[cfg(any(crashdump, target_os = "windows"))]
     fn xsave(&self) -> Result<Vec<u8>>;
     /// Set xsave
     fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()>;
