@@ -74,54 +74,33 @@ fn main() -> hyperlight_host::Result<()> {
 #![no_main]
 extern crate alloc;
 
-use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::string::String;
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
-use hyperlight_common::flatbuffer_wrappers::function_types::{
-    ParameterType, ParameterValue, ReturnType,
-};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 
-use hyperlight_guest::error::{HyperlightGuestError, Result};
-use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
-use hyperlight_guest_bin::guest_function::register::register_function;
-use hyperlight_guest_bin::host_comm::call_host_function;
+use hyperlight_guest::bail;
+use hyperlight_guest::error::Result;
+use hyperlight_guest_bin::{guest_function, host_function};
 
-fn print_output(function_call: &FunctionCall) -> Result<Vec<u8>> {
-    if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
-        let result = call_host_function::<i32>(
-            "HostPrint",
-            Some(Vec::from(&[ParameterValue::String(message.to_string())])),
-            ReturnType::Int,
-        )?;
-        Ok(get_flatbuffer_result(result))
-    } else {
-        Err(HyperlightGuestError::new(
-            ErrorCode::GuestFunctionParameterTypeMismatch,
-            "Invalid parameters passed to simple_print_output".to_string(),
-        ))
-    }
+#[host_function("HostPrint")]
+fn host_print(message: String) -> Result<i32>;
+
+#[guest_function("PrintOutput")]
+fn print_output(message: String) -> Result<i32> {
+    let result = host_print(message)?;
+    Ok(result)
 }
 
 #[no_mangle]
 pub extern "C" fn hyperlight_main() {
-    let print_output_def = GuestFunctionDefinition::new(
-        "PrintOutput".to_string(),
-        Vec::from(&[ParameterType::String]),
-        ReturnType::Int,
-        print_output as usize,
-    );
-    register_function(print_output_def);
+    // any initialization code goes here
 }
 
 #[no_mangle]
 pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
-    let function_name = function_call.function_name.clone();
-    return Err(HyperlightGuestError::new(
-        ErrorCode::GuestFunctionNotFound,
-        function_name,
-    ));
+    let function_name = function_call.function_name;
+    bail!(ErrorCode::GuestFunctionNotFound => "{function_name}");
 }
 ```
 
