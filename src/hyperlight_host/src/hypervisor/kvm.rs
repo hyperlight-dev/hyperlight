@@ -579,78 +579,31 @@ impl Hypervisor for KVMDriver {
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(
-        &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
-    ) -> Result<HyperlightExit> {
-        #[cfg(feature = "trace_guest")]
-        tc.setup_guest_trace(Span::current().context());
-
-        let exit_reason = self.vcpu_fd.run();
-        let result = match exit_reason {
-            Ok(VcpuExit::Hlt) => {
-                crate::debug!("KVM - Halt Details : {:#?}", &self);
-                HyperlightExit::Halt()
-            }
-            Ok(VcpuExit::IoOut(port, data)) => {
-                // because vcpufd.run() mutably borrows self we cannot pass self to crate::debug! macro here
-                crate::debug!("KVM IO Details : \nPort : {}\nData : {:?}", port, data);
-                // KVM does not need to set RIP or instruction length so these are set to 0
-                HyperlightExit::IoOut(port, data.to_vec(), 0, 0)
-            }
-            Ok(VcpuExit::MmioRead(addr, _)) => {
-                crate::debug!("KVM MMIO Read -Details: Address: {} \n {:#?}", addr, &self);
-
-                match get_memory_access_violation(
-                    addr as usize,
-                    self.sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
-                    MemoryRegionFlags::READ,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
-            }
-            Ok(VcpuExit::MmioWrite(addr, _)) => {
-                crate::debug!("KVM MMIO Write -Details: Address: {} \n {:#?}", addr, &self);
-
-                match get_memory_access_violation(
-                    addr as usize,
-                    self.sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(r, _)| r)),
-                    MemoryRegionFlags::WRITE,
-                ) {
-                    Some(access_violation_exit) => access_violation_exit,
-                    None => HyperlightExit::Mmio(addr),
-                }
-            }
+    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
+        match self.vcpu_fd.run() {
+            Ok(VcpuExit::Hlt) => Ok(HyperlightExit::Halt()),
+            Ok(VcpuExit::IoOut(port, data)) => Ok(HyperlightExit::IoOut(port, data.to_vec())),
+            Ok(VcpuExit::MmioRead(addr, _)) => Ok(HyperlightExit::MmioRead(addr)),
+            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(HyperlightExit::MmioWrite(addr)),
             #[cfg(gdb)]
-            // KVM provides architecture specific information about the vCPU state when exiting
-            Ok(VcpuExit::Debug(debug_exit)) => match self.get_stop_reason(debug_exit) {
-                Ok(reason) => HyperlightExit::Debug(reason),
-                Err(e) => {
-                    log_then_return!("Error getting stop reason: {:?}", e);
-                }
-            },
+            Ok(VcpuExit::Debug(debug_exit)) => Ok(HyperlightExit::Debug {
+                dr6: debug_exit.dr6,
+                exception: debug_exit.exception,
+            }),
             Err(e) => match e.errno() {
-                // We send a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
-                libc::EINTR => HyperlightExit::Cancelled(),
-                libc::EAGAIN => HyperlightExit::Retry(),
-                _ => {
-                    crate::debug!("KVM Error -Details: Address: {} \n {:#?}", e, &self);
-                    log_then_return!("Error running VCPU {:?}", e);
-                }
+                // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
+                libc::EINTR => Ok(HyperlightExit::Cancelled()),
+                libc::EAGAIN => Ok(HyperlightExit::Retry()),
+                _ => Ok(HyperlightExit::Unknown(format!(
+                    "Unknown KVM VCPU error: {}",
+                    e
+                ))),
             },
-            Ok(other) => {
-                let err_msg = format!("Unexpected KVM Exit {:?}", other);
-                crate::debug!("KVM Other Exit Details: {:#?}", &self);
-                HyperlightExit::Unknown(err_msg)
-            }
-        };
-        Ok(result)
+            Ok(other) => Ok(HyperlightExit::Unknown(format!(
+                "Unknown KVM VCPU exit: {:?}",
+                other
+            ))),
+        }
     }
 
     fn regs(&self) -> Result<super::regs::CommonRegisters> {

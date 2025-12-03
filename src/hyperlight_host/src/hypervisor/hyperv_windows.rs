@@ -512,47 +512,39 @@ impl Hypervisor for HypervWindowsDriver {
         self.set_regs(&regs)
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(
-        &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
-    ) -> Result<super::HyperlightExit> {
-        #[cfg(feature = "trace_guest")]
-        tc.setup_guest_trace(Span::current().context());
+    #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
+    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
+        let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
 
-        let exit_context = self.processor.run()?;
+        unsafe {
+            WHvRunVirtualProcessor(
+                self.partition,
+                0,
+                &mut exit_context as *mut _ as *mut c_void,
+                std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
+            )?;
+        }
 
         let result = match exit_context.ExitReason {
-            // WHvRunVpExitReasonX64IoPortAccess
-            WHV_RUN_VP_EXIT_REASON(2i32) => {
-                // size of current instruction is in lower byte of _bitfield
-                // see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvexitcontextdatatypes)
+            WHvRunVpExitReasonX64IoPortAccess => unsafe {
                 let instruction_length = exit_context.VpContext._bitfield & 0xF;
-                unsafe {
-                    debug!(
-                        "HyperV IO Details :\n Port: {:#x} \n {:#?}",
-                        exit_context.Anonymous.IoPortAccess.PortNumber, &self
-                    );
-                    HyperlightExit::IoOut(
-                        exit_context.Anonymous.IoPortAccess.PortNumber,
-                        exit_context
-                            .Anonymous
-                            .IoPortAccess
-                            .Rax
-                            .to_le_bytes()
-                            .to_vec(),
-                        exit_context.VpContext.Rip,
-                        instruction_length as u64,
-                    )
-                }
-            }
-            // HvRunVpExitReasonX64Halt
-            WHV_RUN_VP_EXIT_REASON(8i32) => {
-                debug!("HyperV Halt Details :\n {:#?}", &self);
-                HyperlightExit::Halt()
-            }
-            // WHvRunVpExitReasonMemoryAccess
-            WHV_RUN_VP_EXIT_REASON(1i32) => {
+                let rip = exit_context.VpContext.Rip + instruction_length as u64;
+                self.set_registers(&[(
+                    WHvX64RegisterRip,
+                    Align16(WHV_REGISTER_VALUE { Reg64: rip }),
+                )])?;
+                HyperlightExit::IoOut(
+                    exit_context.Anonymous.IoPortAccess.PortNumber,
+                    exit_context
+                        .Anonymous
+                        .IoPortAccess
+                        .Rax
+                        .to_le_bytes()
+                        .to_vec(),
+                )
+            },
+            WHvRunVpExitReasonX64Halt => HyperlightExit::Halt(),
+            WHvRunVpExitReasonMemoryAccess => {
                 let gpa = unsafe { exit_context.Anonymous.MemoryAccess.Gpa };
                 let access_info = unsafe {
                     WHV_MEMORY_ACCESS_TYPE(
@@ -561,51 +553,44 @@ impl Hypervisor for HypervWindowsDriver {
                     )
                 };
                 let access_info = MemoryRegionFlags::try_from(access_info)?;
-                debug!(
-                    "HyperV Memory Access Details :\n GPA: {:#?}\n Access Info :{:#?}\n {:#?} ",
-                    gpa, access_info, &self
-                );
-
-                match get_memory_access_violation(
-                    gpa as usize,
-                    self.sandbox_regions.iter().chain(self.mmap_regions.iter()),
-                    access_info,
-                ) {
-                    Some(access_info) => access_info,
-                    None => HyperlightExit::Mmio(gpa),
+                match access_info {
+                    MemoryRegionFlags::READ => HyperlightExit::MmioRead(gpa),
+                    MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(gpa),
+                    _ => HyperlightExit::Unknown("Unknown memory access type".to_string()),
                 }
             }
-            //  WHvRunVpExitReasonCanceled
-            //  Execution was cancelled by the host.
-            WHV_RUN_VP_EXIT_REASON(8193i32) => {
-                debug!("HyperV Cancelled Details :\n {:#?}", &self);
-
-                HyperlightExit::Cancelled()
-            }
+            // Execution was cancelled by the host.
+            WHvRunVpExitReasonCanceled => HyperlightExit::Cancelled(),
             #[cfg(gdb)]
-            WHV_RUN_VP_EXIT_REASON(4098i32) => {
-                // Get information about the exception that triggered the exit
+            WHvRunVpExitReasonException => {
                 let exception = unsafe { exit_context.Anonymous.VpException };
 
-                match self.get_stop_reason(exception) {
-                    Ok(reason) => HyperlightExit::Debug(reason),
-                    Err(e) => {
-                        log_then_return!("Error getting stop reason: {}", e);
+                // Get the DR6 register to see which breakpoint was hit
+                let dr6 = {
+                    let names = [WHvX64RegisterDr6];
+                    let mut out: [Align16<WHV_REGISTER_VALUE>; 1] = unsafe { std::mem::zeroed() };
+                    unsafe {
+                        WHvGetVirtualProcessorRegisters(
+                            self.partition,
+                            0,
+                            names.as_ptr(),
+                            1,
+                            out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+                        )?;
                     }
-                }
-            }
-            WHV_RUN_VP_EXIT_REASON(_) => {
-                debug!(
-                    "HyperV Unexpected Exit Details :#nReason {:#?}\n {:#?}",
-                    exit_context.ExitReason, &self
-                );
-                match self.get_exit_details(exit_context.ExitReason) {
-                    Ok(error) => HyperlightExit::Unknown(error),
-                    Err(e) => HyperlightExit::Unknown(format!("Error getting exit details: {}", e)),
-                }
-            }
-        };
+                    unsafe { out[0].0.Reg64 }
+                };
 
+                HyperlightExit::Debug {
+                    dr6,
+                    exception: exception.ExceptionType as u32,
+                }
+            }
+            WHV_RUN_VP_EXIT_REASON(_) => HyperlightExit::Unknown(format!(
+                "Unknown exit reason '{}'",
+                exit_context.ExitReason.0
+            )),
+        };
         Ok(result)
     }
 

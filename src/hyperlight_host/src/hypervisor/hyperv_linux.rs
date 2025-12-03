@@ -588,11 +588,7 @@ impl Hypervisor for HypervLinuxDriver {
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn run(
-        &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut crate::sandbox::trace::TraceContext,
-    ) -> Result<super::HyperlightExit> {
+        fn run_vcpu(&mut self) -> Result<HyperlightExit> {
         const HALT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_HALT;
         const IO_PORT_INTERCEPT_MESSAGE: hv_message_type =
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
@@ -601,97 +597,65 @@ impl Hypervisor for HypervLinuxDriver {
         #[cfg(gdb)]
         const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
-        #[cfg(feature = "trace_guest")]
-        tc.setup_guest_trace(Span::current().context());
-
         let exit_reason = self.vcpu_fd.run();
 
         let result = match exit_reason {
             Ok(m) => match m.header.message_type {
-                HALT_MESSAGE => {
-                    crate::debug!("mshv - Halt Details : {:#?}", &self);
-                    HyperlightExit::Halt()
-                }
+                HALT_MESSAGE => HyperlightExit::Halt(),
                 IO_PORT_INTERCEPT_MESSAGE => {
                     let io_message = m.to_ioport_info().map_err(mshv_ioctls::MshvError::from)?;
                     let port_number = io_message.port_number;
                     let rip = io_message.header.rip;
                     let rax = io_message.rax;
                     let instruction_length = io_message.header.instruction_length() as u64;
-                    crate::debug!("mshv IO Details : \nPort : {}\n{:#?}", port_number, &self);
-                    HyperlightExit::IoOut(
-                        port_number,
-                        rax.to_le_bytes().to_vec(),
-                        rip,
-                        instruction_length,
-                    )
+
+                    // mshv, unlike kvm, does not automatically increment RIP
+                    self.vcpu_fd.set_reg(&[hv_register_assoc {
+                        name: hv_register_name_HV_X64_REGISTER_RIP,
+                        value: hv_register_value {
+                            reg64: rip + instruction_length,
+                        },
+                        ..Default::default()
+                    }])?;
+                    HyperlightExit::IoOut(port_number, rax.to_le_bytes().to_vec())
                 }
                 UNMAPPED_GPA_MESSAGE => {
                     let mimo_message = m.to_memory_info().map_err(mshv_ioctls::MshvError::from)?;
                     let addr = mimo_message.guest_physical_address;
-                    crate::debug!(
-                        "mshv MMIO unmapped GPA -Details: Address: {} \n {:#?}",
-                        addr,
-                        &self
-                    );
-                    HyperlightExit::Mmio(addr)
+                    match MemoryRegionFlags::try_from(mimo_message)? {
+                        MemoryRegionFlags::READ => HyperlightExit::MmioRead(addr),
+                        MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(addr),
+                        _ => HyperlightExit::Unknown("Unknown MMIO access".to_string()),
+                    }
                 }
                 INVALID_GPA_ACCESS_MESSAGE => {
                     let mimo_message = m.to_memory_info().map_err(mshv_ioctls::MshvError::from)?;
                     let gpa = mimo_message.guest_physical_address;
                     let access_info = MemoryRegionFlags::try_from(mimo_message)?;
-                    crate::debug!(
-                        "mshv MMIO invalid GPA access -Details: Address: {} \n {:#?}",
-                        gpa,
-                        &self
-                    );
-                    match get_memory_access_violation(
-                        gpa as usize,
-                        self.sandbox_regions.iter().chain(self.mmap_regions.iter()),
-                        access_info,
-                    ) {
-                        Some(access_info_violation) => access_info_violation,
-                        None => HyperlightExit::Mmio(gpa),
+                    match access_info {
+                        MemoryRegionFlags::READ => HyperlightExit::MmioRead(gpa),
+                        MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(gpa),
+                        _ => HyperlightExit::Unknown("Unknown MMIO access".to_string()),
                     }
                 }
-                // The only case an intercept exit is expected is when debugging is enabled
-                // and the intercepts are installed.
-                // Provide the extra information about the exception to accurately determine
-                // the stop reason
                 #[cfg(gdb)]
                 EXCEPTION_INTERCEPT => {
-                    // Extract exception info from the message so we can figure out
-                    // more information about the vCPU state
-                    let ex_info = match m.to_exception_info().map_err(mshv_ioctls::MshvError::from)
-                    {
-                        Ok(info) => info,
-                        Err(e) => {
-                            log_then_return!("Error converting to exception info: {:?}", e);
-                        }
-                    };
-
-                    match self.get_stop_reason(ex_info) {
-                        Ok(reason) => HyperlightExit::Debug(reason),
-                        Err(e) => {
-                            log_then_return!("Error getting stop reason: {:?}", e);
-                        }
+                    let ex_info = m
+                        .to_exception_info()
+                        .map_err(mshv_ioctls::MshvError::from)?;
+                    let DebugRegisters { dr6, .. } = self.vcpu_fd.get_debug_regs()?;
+                    HyperlightExit::Debug {
+                        dr6,
+                        exception: ex_info.exception_vector as u32,
                     }
                 }
-                other => {
-                    crate::debug!("mshv Other Exit: Exit: {:#?} \n {:#?}", other, &self);
-                    #[cfg(crashdump)]
-                    let _ = crashdump::generate_crashdump(self);
-                    log_then_return!("unknown Hyper-V run message type {:?}", other);
-                }
+                other => HyperlightExit::Unknown(format!("Unknown MSHV VCPU exit: {:?}", other)),
             },
             Err(e) => match e.errno() {
-                // We send a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
+                // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
                 libc::EINTR => HyperlightExit::Cancelled(),
                 libc::EAGAIN => HyperlightExit::Retry(),
-                _ => {
-                    crate::debug!("mshv Error - Details: Error: {} \n {:#?}", e, &self);
-                    log_then_return!("Error running VCPU {:?}", e);
-                }
+                _ => HyperlightExit::Unknown(format!("Unknown MSHV VCPU error: {}", e)),
             },
         };
         Ok(result)
