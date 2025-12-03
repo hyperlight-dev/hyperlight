@@ -121,21 +121,6 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Note: Box needed for trait to be object-safe :(
     fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_>;
 
-    /// Dispatch a call from the host to the guest using the given pointer
-    /// to the dispatch function _in the guest's address space_.
-    ///
-    /// Do this by setting the instruction pointer to `dispatch_func_addr`
-    /// and then running the execution loop until a halt instruction.
-    ///
-    /// Returns `Ok` if the call succeeded, and an `Err` if it failed
-    fn dispatch_call_from_host(
-        &mut self,
-        dispatch_func_addr: RawPtr,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()>;
-
     /// Handle an IO exit from the internally stored vCPU.
     fn handle_io(
         &mut self,
