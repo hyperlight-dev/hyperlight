@@ -66,7 +66,7 @@ mod basic_conversions {
             ExternalKind::Memory => Sort::Core(CoreSort::Memory),
             ExternalKind::Global => Sort::Core(CoreSort::Global),
             ExternalKind::Tag => panic!("core type tags are not supported"),
-            ExternalKind::FuncExact => panic!("core type exact function imports are not supported"),
+            ExternalKind::FuncExact => panic!("core type exact functions are not supported"),
         }
     }
 
@@ -197,7 +197,7 @@ impl<'p, 'a> Ctx<'p, 'a> {
                         TypeRef::Global(gt) => CoreExternDesc::Global(*gt),
                         TypeRef::Tag(_) => panic!("core type tags are not supported"),
                         TypeRef::FuncExact(_) => {
-                            panic!("core type exact function imports are not supported")
+                            panic!("core type exact functions are not supported")
                         }
                     },
                 }),
