@@ -34,12 +34,12 @@ pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x20;
 /// - A page-aligned amount of memory for the buffers
 /// - A page for the smallest possible non-exception stack
 /// - (up to) 3 pages for PTEs for mapping that
-/// - A page for the TSS and IDT
+/// - Two pages for the GDT/TSS/IDT
 /// - (up to) 3 pages for PTEs for mapping that
 /// - A page for the exception stack and metadata
 pub fn min_scratch_size(input_data_size: usize, output_data_size: usize) -> usize {
     crate::util::round_up_to(
         input_data_size + output_data_size,
         crate::vm::PAGE_SIZE,
-    ) + 9 * crate::vm::PAGE_SIZE
+    ) + 10 * crate::vm::PAGE_SIZE
 }

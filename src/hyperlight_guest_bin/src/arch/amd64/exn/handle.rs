@@ -1,5 +1,5 @@
 /*
-Copyright 2025  The Hyperlight Authors.
+Copyright 2025 The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -12,45 +12,17 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+ */
 
 use alloc::format;
 use core::ffi::c_char;
 
-use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::outb::Exception;
 use hyperlight_guest::exit::abort_with_code_and_message;
 
-/// See AMD64 Architecture Programmer's Manual, Volume 2
-///     §8.9.3 Interrupt Stack Frame, pp. 283--284
-///       Figure 8-14: Long-Mode Stack After Interrupt---Same Privilege,
-///       Figure 8-15: Long-Mode Stack After Interrupt---Higher Privilege
-/// Subject to the proviso that we push a dummy error code of 0 for exceptions
-/// for which the processor does not provide one
-#[repr(C)]
-pub struct ExceptionInfo {
-    pub error_code: u64,
-    pub rip: u64,
-    pub cs: u64,
-    pub rflags: u64,
-    pub rsp: u64,
-    pub ss: u64,
-}
-const _: () = assert!(core::mem::offset_of!(ExceptionInfo, rip) == 8);
-const _: () = assert!(core::mem::offset_of!(ExceptionInfo, rsp) == 32);
-
-#[repr(C)]
-/// Saved context, pushed onto the stack by exception entry code
-pub struct Context {
-    /// in order: gs, fs, es
-    pub segments: [u64; 3],
-    pub fxsave: [u8; 512],
-    pub ds: u64,
-    /// no `rsp`, since the processor saved it
-    /// `rax` is at the top, `r15` the bottom
-    pub gprs: [u64; 15],
-}
-const _: () = assert!(size_of::<Context>() == 152 + 512);
+use crate::ErrorCode;
+use super::super::context::Context;
+use super::super::machine::ExceptionInfo;
 
 // TODO: This will eventually need to end up in a per-thread context,
 // when there are threads.
@@ -65,6 +37,7 @@ pub extern "C" fn hl_exception_handler(
     exception_number: u64,
     page_fault_address: u64,
 ) {
+    hyperlight_guest::exit::debug_print("exn");
     crate::paging::flush_tlb();
     // When using the `trace_function` macro, it wraps the function body with create_trace_record
     // call, which generates a warning because of the `abort_with_code_and_message` call which does

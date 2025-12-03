@@ -21,8 +21,6 @@ extern crate alloc;
 use core::fmt::Write;
 
 use buddy_system_allocator::LockedHeap;
-#[cfg(target_arch = "x86_64")]
-use exceptions::{gdt::load_gdt, idtr::load_idt};
 use guest_function::call::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
@@ -36,14 +34,8 @@ use hyperlight_guest_tracing::{trace, trace_function};
 use log::LevelFilter;
 
 // === Modules ===
-#[cfg(target_arch = "x86_64")]
-pub mod exceptions {
-    pub(super) mod gdt;
-    pub mod handler;
-    mod idt;
-    pub(super) mod idtr;
-    mod interrupt_entry;
-}
+#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/mod.rs")]
+pub mod arch;
 pub mod guest_err;
 pub mod guest_function {
     pub(super) mod call;
@@ -180,30 +172,19 @@ unsafe extern "C" {
     fn srand(seed: u32);
 }
 
-/// Phase 0 initialisation: make sure we are not already initialised,
-/// set up exceptions, heap, and stack, and then pivot stack to Phase 1
-#[unsafe(no_mangle)]
-#[trace_function]
-pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
-    if peb_address == 0 {
-        panic!("PEB address is null");
-    }
-
+/// Architecture-nonspecific initialisation: set up the heap,
+/// coordinate some addresses and configuration with the host, and run
+/// user initialisation
+pub(crate) extern "C" fn generic_init(
+    peb_address: u64,
+    seed: u64,
+    ops: u64,
+    max_log_level: u64,
+) {
     unsafe {
         GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
         #[allow(static_mut_refs)]
         let peb_ptr = GUEST_HANDLE.peb().unwrap();
-
-        let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
-        // Set the seed for the random number generator for C code using rand;
-        srand(srand_seed);
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            // Setup GDT and IDT
-            load_gdt();
-            load_idt();
-        }
 
         let heap_start = (*peb_ptr).guest_heap.ptr as usize;
         let heap_size = (*peb_ptr).guest_heap.size as usize;
@@ -216,42 +197,13 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
             .expect("Failed to access HEAP_ALLOCATOR")
             .init(heap_start, heap_size);
 
-        OS_PAGE_SIZE = ops as u32;
-
-        let stack_top_page_base = (hyperlight_guest::layout::MAIN_STACK_TOP_GVA - 1) & !0xfff;
-        paging::map_region(
-            hyperlight_guest::prim_alloc::alloc_phys_pages(1),
-            stack_top_page_base as *mut u8,
-            hyperlight_common::vm::PAGE_SIZE as u64
-        );
-
-        pivot_stack(peb_address, max_log_level, hyperlight_guest::layout::MAIN_STACK_TOP_GVA as u64);
-    };
-}
-
-unsafe extern "C" {
-    unsafe fn pivot_stack(
-        peb_ptr: *mut HyperlightPEB,
-        max_log_level: u64,
-        stack_ptr: u64,
-    ) -> !;
-}
-core::arch::global_asm!("
-    .global pivot_stack\n
-    pivot_stack:\n
-    mov rsp, rdx\n
-    jmp init_phase1\n
-");
-
-/// Phase 1 initialisation: Coordinate some addresses and
-/// configuration with the host, run user initialisation
-#[unsafe(no_mangle)]
-pub extern "C" fn init_phase1(
-    peb_ptr: *mut HyperlightPEB,
-    max_log_level: u64,
-) -> ! {
-    unsafe {
         (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
+
+        let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
+        // Set the seed for the random number generator for C code using rand;
+        srand(srand_seed);
+
+        OS_PAGE_SIZE = ops as u32;
     }
 
     // set up the logger
@@ -265,7 +217,4 @@ pub extern "C" fn init_phase1(
             hyperlight_main();
         );
     }
-
-    halt();
-    unreachable!();
 }

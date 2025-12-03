@@ -704,7 +704,7 @@ mod tests {
     fn test_get_memory_size() {
         let sbox_cfg = SandboxConfiguration::default();
         let sbox_mem_layout =
-            SandboxMemoryLayout::new(sbox_cfg, 4096, 4096, 0x11000, 0, None).unwrap();
+            SandboxMemoryLayout::new(sbox_cfg, 4096, 4096, 0x12000, 0, None).unwrap();
         assert_eq!(
             sbox_mem_layout.get_memory_size().unwrap(),
             get_expected_memory_size(&sbox_mem_layout)
