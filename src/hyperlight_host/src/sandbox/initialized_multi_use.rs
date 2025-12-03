@@ -34,6 +34,7 @@ use tracing::{Span, instrument};
 use super::Callable;
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
+use crate::sandbox::snapshot::NextAction;
 use crate::HyperlightError::SnapshotSandboxMismatch;
 use crate::func::guest_err::check_for_guest_error;
 use crate::func::{ParameterTuple, SupportedReturnType};
@@ -170,6 +171,10 @@ impl MultiUseSandbox {
         }
 
         if self.id != snapshot.sandbox_id() {
+            return Err(SnapshotSandboxMismatch);
+        }
+
+        if snapshot.next_action() != NextAction::Call {
             return Err(SnapshotSandboxMismatch);
         }
 

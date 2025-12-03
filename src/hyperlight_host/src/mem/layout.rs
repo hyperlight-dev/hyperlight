@@ -104,7 +104,6 @@ pub(crate) struct SandboxMemoryLayout {
     /// The following fields are offsets to the actual PEB struct fields.
     /// They are used when writing the PEB struct itself
     peb_offset: usize,
-    peb_guest_dispatch_function_ptr_offset: usize, // set by guest in guest entrypoint
     peb_input_data_offset: usize,
     peb_output_data_offset: usize,
     peb_init_data_offset: usize,
@@ -145,10 +144,6 @@ impl Debug for SandboxMemoryLayout {
             .field("PEB Address", &format_args!("{:#x}", self.peb_address))
             .field("PEB Offset", &format_args!("{:#x}", self.peb_offset))
             .field("Code Size", &format_args!("{:#x}", self.code_size))
-            .field(
-                "Guest Dispatch Function Pointer Offset",
-                &format_args!("{:#x}", self.peb_guest_dispatch_function_ptr_offset),
-            )
             .field(
                 "Input Data Offset",
                 &format_args!("{:#x}", self.peb_input_data_offset),
@@ -227,8 +222,6 @@ impl SandboxMemoryLayout {
         let guest_code_offset = 0;
         // The following offsets are to the fields of the PEB struct itself!
         let peb_offset = round_up_to(code_size, PAGE_SIZE_USIZE);
-        let peb_guest_dispatch_function_ptr_offset =
-            peb_offset + offset_of!(HyperlightPEB, guest_function_dispatch_ptr);
         let peb_input_data_offset = peb_offset + offset_of!(HyperlightPEB, input_stack);
         let peb_output_data_offset = peb_offset + offset_of!(HyperlightPEB, output_stack);
         let peb_init_data_offset = peb_offset + offset_of!(HyperlightPEB, init_data);
@@ -252,7 +245,6 @@ impl SandboxMemoryLayout {
         Ok(Self {
             peb_offset,
             heap_size,
-            peb_guest_dispatch_function_ptr_offset,
             peb_input_data_offset,
             peb_output_data_offset,
             peb_init_data_offset,
@@ -359,13 +351,6 @@ impl SandboxMemoryLayout {
                 self.sandbox_memory_config.get_output_data_size(),
             hyperlight_common::vm::PAGE_SIZE,
         ) as u64
-    }
-
-    /// Get the offset in guest memory to where the guest dispatch function
-    /// pointer is written
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_dispatch_function_pointer_offset(&self) -> usize {
-        self.peb_guest_dispatch_function_ptr_offset
     }
 
     /// Get the offset in guest memory to the heap size
@@ -608,8 +593,6 @@ impl SandboxMemoryLayout {
         }
 
         // Start of setting up the PEB. The following are in the order of the PEB fields
-
-        // Skip guest_dispatch_function_ptr_offset because it is set by the guest
 
         // Skip code, is set when loading binary
         // skip outb and outb context, is set when running in_proc

@@ -41,6 +41,7 @@ use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::snapshot::Snapshot;
 use crate::sandbox::uninitialized::GuestBlob;
 use crate::{Result, log_then_return, new_error};
+use crate::sandbox::snapshot::NextAction;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "init-paging")] {
@@ -61,8 +62,12 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) layout: SandboxMemoryLayout,
     /// Pointer to where to load memory from
     pub(crate) load_addr: RawPtr,
-    /// Offset for the execution entrypoint from `load_addr`
-    pub(crate) entrypoint_offset: Option<Offset>,
+    /// Pointer to the next place to jump to in the guest in order to
+    /// do something in it (either initialise or dispatch)
+    pub(crate) entrypoint: RawPtr,
+    /// Whether the sandbox still needs to be initialised or is ready
+    /// to take a call
+    pub(crate) next_action: NextAction,
     /// How many memory regions were mapped after sandbox creation
     pub(crate) mapped_rgns: u64,
     /// Buffer for accumulating guest abort messages
@@ -137,22 +142,23 @@ impl GuestPageTableBuffer {
 impl<S> SandboxMemoryManager<S>
 where
     S: SharedMemory,
-{
-    /// Create a new `SandboxMemoryManager` with the given parameters
+{    /// Create a new `SandboxMemoryManager` with the given parameters
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new(
         layout: SandboxMemoryLayout,
         shared_mem: S,
         scratch_mem: S,
         load_addr: RawPtr,
-        entrypoint_offset: Option<Offset>,
+        entrypoint: RawPtr,
+        next_action: NextAction,
     ) -> Self {
         Self {
             layout,
             shared_mem,
             scratch_mem,
             load_addr,
-            entrypoint_offset,
+            entrypoint,
+            next_action,
             mapped_rgns: 0,
             abort_buffer: Vec::new(),
         }
@@ -176,6 +182,9 @@ where
     }
 
     /// Create a snapshot with the given mapped regions
+    ///
+    /// Presently, this assumes that it is always called on a manager
+    /// corresponding to an initialised sandbox
     pub(crate) fn snapshot(
         &mut self,
         sandbox_id: u64,
@@ -190,8 +199,15 @@ where
             crate::mem::exe::LoadInfo::dummy(),
             mapped_regions,
             root_pt,
+            self.entrypoint.clone().into(),
         )
     }
+
+    /// Record that the entrypoint into the snapshot memory has changed
+    pub(crate) fn set_entrypoint(&mut self, entrypoint: RawPtr) {
+        self.entrypoint = entrypoint;
+    }
+
 }
 
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
@@ -201,14 +217,13 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         shared_mem.copy_from_slice(s.memory(), 0)?;
         let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
         let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
-        let entrypoint_gva = s.preinitialise();
-        let entrypoint_offset = entrypoint_gva.map(|x| (x - u64::from(&load_addr)).into());
         Ok(Self::new(
             layout,
             shared_mem,
             scratch_mem,
             load_addr,
-            entrypoint_offset,
+            RawPtr::from(s.entrypoint()),
+            s.next_action(),
         ))
     }
 
@@ -237,7 +252,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             scratch_mem: hscratch,
             layout: self.layout,
             load_addr: self.load_addr.clone(),
-            entrypoint_offset: self.entrypoint_offset,
+            entrypoint: self.entrypoint.clone(),
+            next_action: self.next_action.clone(),
             mapped_rgns: self.mapped_rgns,
             abort_buffer: self.abort_buffer,
         };
@@ -246,7 +262,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             scratch_mem: gscratch,
             layout: self.layout,
             load_addr: self.load_addr.clone(),
-            entrypoint_offset: self.entrypoint_offset,
+            entrypoint: self.entrypoint.clone(),
+            next_action: self.next_action.clone(),
             mapped_rgns: self.mapped_rgns,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
         };
@@ -256,20 +273,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
-    /// Get the address of the dispatch function in memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_pointer_to_dispatch_function(&self) -> Result<u64> {
-        let guest_dispatch_function_ptr = self
-            .shared_mem
-            .read::<u64>(self.layout.get_dispatch_function_pointer_offset())?;
-
-        // This pointer is written by the guest library but is accessible to
-        // the guest engine so we should bounds check it before we return it.
-
-        let guest_ptr = GuestPtr::try_from(RawPtr::from(guest_dispatch_function_ptr))?;
-        guest_ptr.absolute()
-    }
-
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
@@ -384,6 +387,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             Some(gscratch)
         };
         self.update_scratch_bookkeeping();
+        self.entrypoint = RawPtr::from(snapshot.entrypoint());
         Ok((gsnapshot, gscratch))
     }
 

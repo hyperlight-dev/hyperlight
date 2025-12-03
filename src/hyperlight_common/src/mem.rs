@@ -41,7 +41,6 @@ pub struct GuestStack {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct HyperlightPEB {
-    pub guest_function_dispatch_ptr: u64,
     pub input_stack: GuestMemoryRegion,
     pub output_stack: GuestMemoryRegion,
     pub init_data: GuestMemoryRegion,

@@ -31,6 +31,26 @@ use hyperlight_common::vm::{self, Mapping, MappingKind, BasicMapping, PAGE_SIZE}
 use std::sync::atomic::{AtomicU64, Ordering};
 pub(super) static SANDBOX_CONFIGURATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Presently, a snapshot can be of a preinitialised sandbox, which
+/// still needs an initialise function called in order to determine
+/// how to call into it, or of a properly initialised sandbox which
+/// can be immediately called into. This keeps track of the difference.
+///
+/// TODO: this should not necessarily be around in the long term:
+/// ideally we would just preinitialise earlier in the snapshot
+/// creation process and never need this.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum NextAction {
+    /// A sandbox in the preinitialise state still needs to be
+    /// initialised by calling the initialise function, whose GVA is
+    /// in the entrypoint field of the snapshot
+    Initialise,
+    /// A sandbox in the ready state can immediately be called into,
+    /// using the dispatch function pointer, whose GVA is in the
+    /// entrypoint field of the snapshot.
+    Call,
+}
+
 /// A wrapper around a `SharedMemory` reference and a snapshot
 /// of the memory therein
 pub struct Snapshot {
@@ -69,15 +89,10 @@ pub struct Snapshot {
     /// The address of the root page table
     root_pt_gpa: u64,
 
-    /// TODO: this should not necessarily be around in the long term...
-    ///
-    /// When creating a snapshot directly from a guest binary, this
-    /// tracks the address that we need to call into before actually
-    /// using a sandbox from this snapshot in order to do
-    /// preinitialisation. Ideally we would either not need to do this
-    /// at all, or do it as part of the snapshot creation process and
-    /// never need this.
-    preinitialise: Option<u64>,
+    /// The entry point that should next be used to enter the sandbox
+    entrypoint: u64,
+    /// Whether the sandbox has been properly initialised yet or not
+    next_action: NextAction,
 }
 
 /// Compute a deterministic hash of a snapshot.
@@ -326,7 +341,8 @@ impl Snapshot {
             load_info,
             hash,
             root_pt_gpa: pt_base_gpa as u64,
-            preinitialise: Some(load_addr + entrypoint_offset),
+            entrypoint: load_addr + entrypoint_offset,
+            next_action: NextAction::Initialise,
         })
     }
 
@@ -341,6 +357,7 @@ impl Snapshot {
         load_info: LoadInfo,
         regions: Vec<MemoryRegion>,
         root_pt: u64,
+        entrypoint: u64,
     ) -> Result<Self> {
         let (new_root_pt_gpa, memory) = shared_mem.with_exclusivity(|snap_e| {
             scratch_mem.with_exclusivity(|scratch_e| {
@@ -354,7 +371,6 @@ impl Snapshot {
                 let pt_base_gpa = SandboxMemoryLayout::BASE_ADDRESS + live_pages.len() * PAGE_SIZE;
                 let pt_buf = GuestPageTableBuffer::new(pt_base_gpa);
                 let mut snapshot_memory: Vec<u8> = Vec::new();
-                let mut snapshot_offset = 0;
                 for (gva, gpa, contents) in live_pages {
                     let new_offset = snapshot_memory.len();
                     snapshot_memory.extend(contents);
@@ -395,7 +411,8 @@ impl Snapshot {
             load_info,
             hash,
             root_pt_gpa: new_root_pt_gpa as u64,
-            preinitialise: None,
+            entrypoint,
+            next_action: NextAction::Call,
         })
     }
 
@@ -434,8 +451,12 @@ impl Snapshot {
         self.root_pt_gpa
     }
 
-    pub(crate) fn preinitialise(&self) -> Option<u64> {
-        self.preinitialise
+    pub(crate) fn entrypoint(&self) -> u64 {
+        self.entrypoint
+    }
+
+    pub(crate) fn next_action(&self) -> NextAction {
+        self.next_action
     }
 }
 

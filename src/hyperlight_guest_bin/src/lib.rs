@@ -180,7 +180,7 @@ pub(crate) extern "C" fn generic_init(
     seed: u64,
     ops: u64,
     max_log_level: u64,
-) {
+) -> u64 {
     unsafe {
         GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
         #[allow(static_mut_refs)]
@@ -196,8 +196,6 @@ pub(crate) extern "C" fn generic_init(
             .try_lock()
             .expect("Failed to access HEAP_ALLOCATOR")
             .init(heap_start, heap_size);
-
-        (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
 
         let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
         // Set the seed for the random number generator for C code using rand;
@@ -217,4 +215,5 @@ pub(crate) extern "C" fn generic_init(
             hyperlight_main();
         );
     }
+    dispatch_function as usize as u64
 }

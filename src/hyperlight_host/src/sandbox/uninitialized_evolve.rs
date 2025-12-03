@@ -24,6 +24,7 @@ use super::SandboxConfiguration;
 use super::hypervisor::{HypervisorType, get_available_hypervisor};
 #[cfg(any(crashdump, gdb))]
 use super::uninitialized::SandboxRuntimeConfig;
+use crate::sandbox::snapshot::NextAction;
 use crate::HyperlightError::NoHypervisorFound;
 use crate::hypervisor::Hypervisor;
 use crate::mem::exe::LoadInfo;
@@ -44,7 +45,11 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    let (hshm, mut gshm) = u_sbox.mgr.build();
+    let dispatch_function_addr = match u_sbox.mgr.next_action {
+        NextAction::Initialise => None,
+        NextAction::Call => Some(u_sbox.mgr.entrypoint.clone().into()),
+    };
+    let (mut hshm, mut gshm) = u_sbox.mgr.build();
     let mut vm = set_up_hypervisor_partition(
         &mut gshm,
         &u_sbox.config,
@@ -70,23 +75,22 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
     #[cfg(target_os = "linux")]
     setup_signal_handlers(&u_sbox.config)?;
 
-    vm.initialise(
-        peb_addr,
-        seed,
-        page_size,
-        hshm.clone(),
-        u_sbox.host_funcs.clone(),
-        u_sbox.max_guest_log_level,
-        #[cfg(gdb)]
-        dbg_mem_access_hdl,
-    )?;
-
-    let dispatch_function_addr = hshm.get_pointer_to_dispatch_function()?;
-    if dispatch_function_addr == 0 {
-        return Err(new_error!("Dispatch function address is null"));
-    }
+    let dispatch_function_addr = match dispatch_function_addr {
+        Option::None => vm.initialise(
+            peb_addr,
+            seed,
+            page_size,
+            hshm.clone(),
+            u_sbox.host_funcs.clone(),
+            u_sbox.max_guest_log_level,
+            #[cfg(gdb)]
+            dbg_mem_access_hdl,
+        )?,
+        Some(x) => x,
+    };
 
     let dispatch_ptr = RawPtr::from(dispatch_function_addr);
+    hshm.set_entrypoint(dispatch_ptr.clone());
 
     #[cfg(gdb)]
     let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
@@ -114,10 +118,7 @@ pub(crate) fn set_up_hypervisor_partition(
         let pml4_offset_u64 = mgr.layout.get_pt_offset() as u64;
         base_ptr + Offset::from(pml4_offset_u64)
     };
-    let entrypoint_ptr = mgr.entrypoint_offset.map(|x| {
-        let entrypoint_total_offset = mgr.load_addr.clone() + x;
-        GuestPtr::try_from(entrypoint_total_offset)
-    }).transpose()?;
+    let entrypoint_ptr = GuestPtr::try_from(mgr.entrypoint.clone())?;
 
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
@@ -171,7 +172,7 @@ pub(crate) fn set_up_hypervisor_partition(
                 &mgr.shared_mem,
                 &mgr.scratch_mem,
                 pml4_ptr.absolute()?,
-                entrypoint_ptr.map(|x| x.absolute()).transpose()?,
+                entrypoint_ptr.absolute()?,
                 config,
                 #[cfg(gdb)]
                 gdb_conn,

@@ -135,6 +135,8 @@ pub enum TraceRegister {
 pub(crate) trait Hypervisor: Debug + Send {
     /// Initialise the internally stored vCPU with the given PEB address and
     /// random number seed, then run it until a HLT instruction.
+    ///
+    /// Returns the GVA of the guest call dispatch function
     #[allow(clippy::too_many_arguments)]
     fn initialise(
         &mut self,
@@ -145,7 +147,7 @@ pub(crate) trait Hypervisor: Debug + Send {
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()>;
+    ) -> Result<u64>;
 
     /// Map a region of host memory into the sandbox.
     ///
