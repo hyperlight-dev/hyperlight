@@ -120,6 +120,14 @@ impl HyperlightVm {
         self.vm.get_mapped_regions()
     }
 
+    /// Dispatch a call from the host to the guest using the given pointer
+    /// to the dispatch function _in the guest's address space_.
+    ///
+    /// Do this by setting the instruction pointer to `dispatch_func_addr`
+    /// and then running the execution loop until a halt instruction.
+    ///
+    /// Returns `Ok` if the call succeeded, and an `Err` if it failed
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn dispatch_call_from_host(
         &mut self,
         dispatch_func_addr: RawPtr,
@@ -127,8 +135,19 @@ impl HyperlightVm {
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
-        self.vm.dispatch_call_from_host(
-            dispatch_func_addr,
+        // set RIP and RSP, reset others
+        let regs = CommonRegisters {
+            rip: dispatch_func_addr.into(),
+            rsp: self.orig_rsp.absolute()?,
+            rflags: 1 << 1,
+            ..Default::default()
+        };
+        self.vm.set_regs(&regs)?;
+
+        // reset fpu
+        self.vm.set_fpu(&CommonFpu::default())?;
+
+        self.run(
             mem_mgr,
             host_funcs,
             #[cfg(gdb)]

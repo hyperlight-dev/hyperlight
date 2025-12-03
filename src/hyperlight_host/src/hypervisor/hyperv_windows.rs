@@ -409,37 +409,6 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn dispatch_call_from_host(
-        &mut self,
-        dispatch_func_addr: RawPtr,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()> {
-        // Reset general purpose registers, then set RIP and RSP
-        let regs = CommonRegisters {
-            rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
-            rflags: 1 << 1, // eflags bit index 1 is reserved and always needs to be 1
-            ..Default::default()
-        };
-        self.processor.set_regs(&regs)?;
-
-        // reset fpu state
-        self.processor.set_fpu(&CommonFpu::default())?;
-
-        let interrupt_handle = self.interrupt_handle.clone();
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            interrupt_handle,
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_hdl,
-        )
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn handle_io(
         &mut self,
         port: u16,
