@@ -51,6 +51,8 @@ unsafe extern "C" {
 macro_rules! context_save {
     () => {
         concat!(
+            // Push padding to match Context struct (8 bytes)
+            "    push 0\n",
             // Save general-purpose registers
             "    push rax\n",
             "    push rbx\n",
@@ -67,10 +69,6 @@ macro_rules! context_save {
             "    push r13\n",
             "    push r14\n",
             "    push r15\n",
-            // Save one of the segment registers to get 16-byte alignment for
-            // FXSAVE. TODO: consider packing the segment registers
-            "    mov rax, ds\n",
-            "    push rax\n",
             // Save floating-point/SSE registers
             // TODO: Don't do this unconditionally: get the exn
             //       handlers compiled without sse
@@ -79,7 +77,9 @@ macro_rules! context_save {
             "    sub rsp, 512\n",
             "    mov rax, rsp\n",
             "    fxsave [rax]\n",
-            // Save the rest of the segment registers
+            // Save all segment registers
+            "    mov rax, ds\n",
+            "    push rax\n",
             "    mov rax, es\n",
             "    push rax\n",
             "    mov rax, fs\n",
@@ -93,20 +93,19 @@ macro_rules! context_save {
 macro_rules! context_restore {
     () => {
         concat!(
-            // Restore most segment registers
+            // Restore all segment registers
             "    pop rax\n",
             "    mov gs, rax\n",
             "    pop rax\n",
             "    mov fs, rax\n",
             "    pop rax\n",
             "    mov es, rax\n",
+            "    pop rax\n",
+            "    mov ds, rax\n",
             // Restore floating-point/SSE registers
             "    mov rax, rsp\n",
             "    fxrstor [rax]\n",
             "    add rsp, 512\n",
-            // Restore the last segment register
-            "    pop rax\n",
-            "    mov ds, rax\n",
             // Restore general-purpose registers
             "    pop r15\n",
             "    pop r14\n",
@@ -123,6 +122,8 @@ macro_rules! context_restore {
             "    pop rcx\n",
             "    pop rbx\n",
             "    pop rax\n",
+            // Skip padding (8 bytes)
+            "    add rsp, 8\n",
         )
     };
 }
@@ -177,6 +178,42 @@ macro_rules! generate_exceptions {
 //     mov rsi, 0
 //     mov rdx, 0
 //     jmp _do_excp_common
+// ```
+//
+// Stack layout after context_save!() (from high to low addresses):
+// ```
+// +------------------+ <-- Higher addresses
+// | SS               | (Pushed by CPU on exception)
+// | RSP              | (Pushed by CPU on exception)
+// | RFLAGS           | (Pushed by CPU on exception)
+// | CS               | (Pushed by CPU on exception)
+// | RIP              | (Pushed by CPU on exception)
+// | Error Code       | (Pushed by CPU or by handler) <-- ExceptionInfo struct starts here
+// +------------------+
+// | Padding (8)      | (Pushed by context_save!)
+// +------------------+
+// | RAX              | gprs[14]
+// | RBX              | gprs[13]
+// | RCX              | gprs[12]
+// | RDX              | gprs[11]
+// | RSI              | gprs[10]
+// | RDI              | gprs[9]
+// | RBP              | gprs[8]
+// | R8               | gprs[7]
+// | R9               | gprs[6]
+// | R10              | gprs[5]
+// | R11              | gprs[4]
+// | R12              | gprs[3]
+// | R13              | gprs[2]
+// | R14              | gprs[1]
+// | R15              | gprs[0] (15 GPRs total, 120 bytes)
+// +------------------+
+// | FXSAVE area      | (512 bytes for FPU/SSE state)
+// +------------------+
+// | GS               | segments[3]
+// | FS               | segments[2]
+// | ES               | segments[1]
+// | DS               | segments[0] (4 segment registers, 32 bytes) <-- Context struct starts here
 // ```
 macro_rules! generate_excp {
     ($num:expr) => {

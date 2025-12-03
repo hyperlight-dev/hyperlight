@@ -33,6 +33,7 @@ use core::alloc::Layout;
 use core::ffi::c_char;
 use core::hint::black_box;
 use core::ptr::write_volatile;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -44,6 +45,7 @@ use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
+use hyperlight_guest_bin::exceptions::handler::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
@@ -58,6 +60,11 @@ use tracing::{Span, instrument};
 extern crate hyperlight_guest;
 
 static mut BIGARRAY: [i32; 1024 * 1024] = [0; 1024 * 1024];
+// Exception handler test state
+static HANDLER_INVOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
+const TEST_R9_VALUE: u64 = 0x1234567890ABCDEF;
+const TEST_R9_MODIFIED_VALUE: u64 = 0xBADC0FFEE;
+const TEST_R10_VALUE: u64 = 0xDEADBEEF;
 
 #[guest_function("SetStatic")]
 fn set_static() -> i32 {
@@ -72,6 +79,108 @@ fn set_static() -> i32 {
 #[guest_function("EchoDouble")]
 fn echo_double(value: f64) -> f64 {
     value
+}
+
+// Test exception handler that validates stack layout and records invocation
+// It is designed to interact with the trigger_int3 breakpoint exception function below
+fn test_exception_handler(
+    exception_number: u64,
+    _exception_info: *mut ExceptionInfo,
+    context: *mut Context,
+    _page_fault_address: u64,
+) -> bool {
+    // Record invocation
+    HANDLER_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+
+    // INT3 is exception vector 3
+    assert_eq!(exception_number, 3);
+
+    // Validate stack is 16-byte aligned by executing an SSE instruction
+    // movaps with a stack memory operand requires 16-byte alignment and will #GP if misaligned
+    unsafe {
+        core::arch::asm!(
+            "sub rsp, 16",        // Allocate space on stack
+            "movaps [rsp], xmm0", // This will #GP if stack is not 16-byte aligned
+            "add rsp, 16",        // Clean up
+            options(nostack)
+        );
+    }
+
+    // Validate we can read and write to Context registers
+    // First, read the original value from R9 register (index 6)
+    let original_r9 = unsafe { core::ptr::read_volatile(&(*context).gprs[6]) };
+    assert_eq!(
+        original_r9, TEST_R9_VALUE,
+        "R9 register should contain original test value"
+    );
+
+    // Modify R9 register directly and write R10 to context
+    unsafe {
+        // Modify R9 register directly using inline assembly
+        // this should be restored to the original value stored on the stack when the
+        // exception completes and is verified in trigger_int3
+        core::arch::asm!("mov r9, {0}", in(reg) TEST_R9_MODIFIED_VALUE);
+
+        // Write to R10 via context to verify context modification works
+        core::ptr::write_volatile(&mut (*context).gprs[5], TEST_R10_VALUE); // R10
+    }
+
+    // Return true to suppress abort and continue execution
+    true
+}
+
+/// Install handler for a specific vector
+#[guest_function("InstallHandler")]
+fn install_handler(vector: i32) {
+    hyperlight_guest_bin::exceptions::handler::HANDLERS[vector as usize]
+        .store(test_exception_handler as usize as u64, Ordering::Release);
+}
+
+/// Get how many times the handler was invoked
+#[guest_function("GetExceptionHandlerCallCount")]
+fn get_exception_handler_call_count() -> i32 {
+    let count = HANDLER_INVOCATION_COUNT.load(Ordering::SeqCst);
+    count as i32
+}
+
+/// Trigger an INT3 breakpoint exception (vector 3)
+#[guest_function("TriggerInt3")]
+fn trigger_int3() -> i32 {
+    // Set up test value in R9 before triggering exception
+    let test_value: u64 = TEST_R9_VALUE;
+
+    unsafe {
+        // Store test value in R9 register
+        core::arch::asm!(
+            "mov r9, {0}",
+            in(reg) test_value
+        );
+
+        // This will trigger exception vector 3 (#BP - Breakpoint)
+        core::arch::asm!("int3");
+
+        // After returning from exception handler, verify registers
+        let r9_result: u64;
+        let r10_result: u64;
+        core::arch::asm!(
+            "mov {0}, r9",
+            "mov {1}, r10",
+            out(reg) r9_result,
+            out(reg) r10_result
+        );
+
+        // R9 should be restored to original value (context restore working)
+        assert_eq!(
+            r9_result, test_value,
+            "R9 register was not properly restored by exception handler"
+        );
+        // R10 should have the value written to context
+        assert_eq!(
+            r10_result, TEST_R10_VALUE,
+            "R10 register was not modified via context by exception handler"
+        );
+    }
+    0
 }
 
 #[guest_function("EchoFloat")]
