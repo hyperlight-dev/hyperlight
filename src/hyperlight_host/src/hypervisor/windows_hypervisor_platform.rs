@@ -553,23 +553,6 @@ impl VMProcessor {
             })
         }
     }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn run(&mut self) -> Result<WHV_RUN_VP_EXIT_CONTEXT> {
-        let partition_handle = self.get_partition_hdl();
-        let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
-
-        unsafe {
-            WHvRunVirtualProcessor(
-                partition_handle,
-                0,
-                &mut exit_context as *mut _ as *mut c_void,
-                std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
-            )?;
-        }
-
-        Ok(exit_context)
-    }
 }
 
 impl Drop for VMProcessor {
