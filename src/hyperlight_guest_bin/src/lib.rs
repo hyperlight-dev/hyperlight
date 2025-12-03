@@ -165,6 +165,22 @@ fn _panic_handler(info: &core::panic::PanicInfo) -> ! {
     unreachable!();
 }
 
+macro_rules! abort {
+    ($($code:expr),*; $($arg:tt)*) => {
+        use core::fmt::Write;
+        let mut w = $crate::HyperlightAbortWriter;
+        ::hyperlight_guest::exit::write_abort(&[$($code as u8),*]);
+        let write_res = write!(w, $($arg)*);
+        if write_res.is_err() {
+            ::hyperlight_guest::exit::write_abort("abort: message format failed".as_bytes());
+        }
+        // write abort terminator to finish the abort
+        // and signal to the host that the message can now be read
+        ::hyperlight_guest::exit::write_abort(&[0xFF]);
+    }
+}
+pub(crate) use abort;
+
 // === Entrypoint ===
 
 unsafe extern "C" {

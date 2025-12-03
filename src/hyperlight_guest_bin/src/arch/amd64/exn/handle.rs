@@ -18,7 +18,7 @@ use alloc::format;
 use core::ffi::c_char;
 
 use hyperlight_common::outb::Exception;
-use hyperlight_guest::exit::abort_with_code_and_message;
+use crate::abort;
 
 use crate::ErrorCode;
 use super::super::context::Context;
@@ -37,13 +37,15 @@ pub extern "C" fn hl_exception_handler(
     exception_number: u64,
     page_fault_address: u64,
 ) {
-    hyperlight_guest::exit::debug_print("exn");
-    crate::paging::flush_tlb();
     // When using the `trace_function` macro, it wraps the function body with create_trace_record
     // call, which generates a warning because of the `abort_with_code_and_message` call which does
     // not return.
     // This is manually added to avoid the warning.
-    hyperlight_guest_tracing::trace!("> hl_exception_handler");
+    //
+    // To make tracing work in the exception handler, we will need to
+    // move the trace buffer into the scratch region (coordinated with
+    // the host appropriately for snapshots)
+    // hyperlight_guest_tracing::trace!("> hl_exception_handler");
 
     let ctx = stack_pointer as *mut Context;
     let exn_info = (stack_pointer + size_of::<Context>() as u64) as *mut ExceptionInfo;
@@ -67,19 +69,30 @@ pub extern "C" fn hl_exception_handler(
                     (page_fault_address & !0xfff) as *mut u8,
                     hyperlight_common::vm::PAGE_SIZE as u64,
                 );
-                hyperlight_guest_tracing::trace!("< hl_exception_handler");
                 return;
             }
         }
 
-    let msg = format!(
-        "Exception vector: {:#}\n\
-         Faulting Instruction: {:#x}\n\
-         Page Fault Address: {:#x}\n\
-         Error code: {:#x}\n\
-         Stack Pointer: {:#x}",
-        exception_number, saved_rip, page_fault_address, error_code, stack_pointer
-    );
+    /* Handle page faults in the snapshot region via CoW */
+    if exception_number == 14 &&
+        page_fault_address <= unsafe { hyperlight_guest::layout::snapshot_pt_gpa_base_gva().read_volatile() } {
+            unsafe {
+                let new_page = hyperlight_guest::prim_alloc::alloc_phys_pages(1);
+                let target_virt = (page_fault_address & !0xfff) as *mut u8;
+                core::ptr::copy(
+                    target_virt,
+                    crate::paging::ptov(new_page).unwrap(),
+                    hyperlight_common::vm::PAGE_SIZE,
+                );
+                crate::paging::map_region(
+                    new_page,
+                    target_virt,
+                    hyperlight_common::vm::PAGE_SIZE as u64,
+                );
+                core::arch::asm!("invlpg [{}]", in(reg) target_virt, options(readonly, nostack, preserves_flags));
+                return;
+            }
+        }
 
     // We don't presently have any need for user-defined interrupts,
     // so we only support handlers for the architecture-defined
@@ -94,15 +107,17 @@ pub extern "C" fn hl_exception_handler(
                 )(exception_number, exn_info, ctx, page_fault_address)
             }
         {
-            hyperlight_guest_tracing::trace!("< hl_exception_handler");
+            //hyperlight_guest_tracing::trace!("< hl_exception_handler");
             return;
         }
     }
 
-    unsafe {
-        abort_with_code_and_message(
-            &[ErrorCode::GuestError as u8, exception as u8],
-            msg.as_ptr() as *const c_char,
+    abort!(ErrorCode::GuestError, exception;
+        "Exception vector: {:#}\n\
+         Faulting Instruction: {:#x}\n\
+         Page Fault Address: {:#x}\n\
+         Error code: {:#x}\n\
+         Stack Pointer: {:#x}",
+        exception_number, saved_rip, page_fault_address, error_code, stack_pointer
         );
-    }
 }

@@ -561,7 +561,7 @@ mod tests {
             cfg.get_input_data_size(),
             cfg.get_output_data_size(),
         );
-        cfg.set_scratch_size(min_scratch + 0x5000);
+        cfg.set_scratch_size(min_scratch + 0x10000);
 
         let mut sbox1: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();

@@ -318,7 +318,7 @@ impl Snapshot {
                 len: rgn.guest_region.len() as u64,
                 kind: MappingKind::BasicMapping(BasicMapping {
                     readable,
-                    writable,
+                    writable: false,
                     executable,
                 }),
             };
@@ -383,7 +383,7 @@ impl Snapshot {
                             // TODO: copy the permission flags from
                             // the previous mapping
                             readable: true,
-                            writable: true,
+                            writable: false,
                             executable: true,
                         })
                     };

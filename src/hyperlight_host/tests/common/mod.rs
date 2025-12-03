@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use hyperlight_host::func::HostFunction;
+use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, Result, UninitializedSandbox};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 
@@ -35,6 +36,27 @@ pub fn new_uninit_rust() -> Result<UninitializedSandbox> {
     )
 }
 
+pub fn get_simpleguest_sandboxes_with_cfg(
+    writer: Option<HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
+    cfg: SandboxConfiguration
+) -> Vec<MultiUseSandbox> {
+    let elf_path = get_c_or_rust_simpleguest_path();
+
+    let sandboxes = [
+        // in hypervisor elf
+        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), Some(cfg)).unwrap(),
+    ];
+
+    sandboxes
+        .into_iter()
+        .map(|mut sandbox| {
+            if let Some(writer) = writer.clone() {
+                sandbox.register_print(writer).unwrap();
+            }
+            sandbox.evolve().unwrap()
+        })
+        .collect()
+}
 pub fn get_simpleguest_sandboxes(
     writer: Option<HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
 ) -> Vec<MultiUseSandbox> {
