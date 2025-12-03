@@ -875,6 +875,158 @@ fn get_memory_access_violation<'a>(
     None
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::is_hypervisor_present;
+    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::mem::mgr::SandboxMemoryManager;
+    use crate::mem::ptr::RawPtr;
+    use crate::mem::ptr_offset::Offset;
+    use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+    use crate::sandbox::SandboxConfiguration;
+    use crate::sandbox::host_funcs::FunctionRegistry;
+    #[cfg(feature = "mem_profile")]
+    use crate::sandbox::trace::DummyUnwindInfo;
+    #[cfg(feature = "mem_profile")]
+    use crate::sandbox::trace::MemTraceInfo;
+    #[cfg(crashdump)]
+    use crate::sandbox::uninitialized::SandboxRuntimeConfig;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn test_reset_vcpu() -> Result<()> {
+        if !is_hypervisor_present() {
+            return Ok(());
+        }
+
+        #[cfg(target_os = "windows")]
+        return Ok(());
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut code = Vec::new();
+            // mov rax, 0x1111111111111111
+            code.extend_from_slice(&[0x48, 0xb8, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11]);
+            // mov rbx, 0x2222222222222222
+            code.extend_from_slice(&[0x48, 0xbb, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22]);
+            // mov rcx, 0x3333333333333333
+            code.extend_from_slice(&[0x48, 0xb9, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33]);
+
+            // hlt
+            code.extend_from_slice(&[0xf4]);
+
+            let config: SandboxConfiguration = Default::default();
+            #[cfg(crashdump)]
+            let rt_cfg: SandboxRuntimeConfig = Default::default();
+            #[cfg(feature = "mem_profile")]
+            let trace_info = MemTraceInfo::new(Arc::new(DummyUnwindInfo {})).unwrap();
+
+            let layout = SandboxMemoryLayout::new(
+                config.clone(),
+                code.len(), // code size
+                0,          // stack
+                0,          // heap
+                0,          // init data
+                None,
+            )?;
+
+            let mem_size = layout.get_memory_size()?;
+            let eshm = ExclusiveSharedMemory::new(mem_size)?;
+
+            let stack_cookie = [0u8; 16];
+            let mem_mgr = SandboxMemoryManager::new(
+                layout.clone(),
+                eshm,
+                RawPtr::from(0),
+                Offset::from(0),
+                stack_cookie,
+            );
+
+            let (mut mem_mgr_hshm, mut mem_mgr_gshm) = mem_mgr.build();
+
+            // Set up shared memory (page tables)
+            #[cfg(feature = "init-paging")]
+            let rsp = {
+                let mut regions = layout.get_memory_regions(&mem_mgr_gshm.shared_mem)?;
+                let mem_size = mem_mgr_gshm.shared_mem.mem_size() as u64;
+                mem_mgr_gshm.set_up_shared_memory(mem_size, &mut regions)?
+            };
+            #[cfg(not(feature = "init-paging"))]
+            let rsp = 0;
+
+            // Write code
+            let code_offset = layout.get_guest_code_offset();
+            mem_mgr_hshm
+                .shared_mem
+                .copy_from_slice(&code, code_offset)?;
+
+            // Get regions for VM
+            let regions = layout
+                .get_memory_regions(&mem_mgr_gshm.shared_mem)?
+                .into_iter()
+                .filter(|r| r.guest_region.len() > 0)
+                .collect();
+
+            // Calculate pml4_addr
+            #[cfg(feature = "init-paging")]
+            let pml4_addr = SandboxMemoryLayout::PML4_OFFSET as u64;
+            #[cfg(not(feature = "init-paging"))]
+            let pml4_addr = 0;
+
+            // Entrypoint
+            let entrypoint = layout.get_guest_code_address() as u64;
+
+            let mut vm = HyperlightVm::new(
+                regions,
+                pml4_addr,
+                entrypoint,
+                rsp,
+                &config,
+                #[cfg(gdb)]
+                None,
+                #[cfg(crashdump)]
+                rt_cfg,
+                #[cfg(feature = "mem_profile")]
+                trace_info,
+            )?;
+
+            let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
+            #[cfg(gdb)]
+            let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr_hshm.clone()));
+
+            // Run the VM
+            vm.initialise(
+                RawPtr::from(0), // peb_addr
+                0,               // seed
+                4096,            // page_size
+                &mut mem_mgr_hshm,
+                &host_funcs,
+                None,
+                #[cfg(gdb)]
+                dbg_mem_access_fn.clone(),
+            )?;
+
+            // After run, check registers
+            let regs = vm.vm.regs()?;
+            assert_eq!(regs.rax, 0x1111111111111111);
+            assert_eq!(regs.rbx, 0x2222222222222222);
+            assert_eq!(regs.rcx, 0x3333333333333333);
+
+            // Reset vcpu
+            vm.reset_vcpu()?;
+
+            // Check registers again
+            let regs = vm.vm.regs()?;
+            assert_eq!(regs.rax, 0);
+            assert_eq!(regs.rbx, 0);
+            assert_eq!(regs.rcx, 0);
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(gdb)]
 mod debug {
     use hyperlight_common::mem::PAGE_SIZE;
