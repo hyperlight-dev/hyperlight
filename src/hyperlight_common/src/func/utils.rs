@@ -31,6 +31,8 @@ limitations under the License.
 ///
 /// for_each_tuple!(my_macro);
 /// ```
+#[doc(hidden)]
+#[macro_export]
 macro_rules! for_each_tuple {
     (@
         $macro:ident

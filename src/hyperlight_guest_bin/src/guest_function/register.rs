@@ -17,8 +17,11 @@ limitations under the License.
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 
+use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
+
 use super::definition::GuestFunctionDefinition;
 use crate::REGISTERED_GUEST_FUNCTIONS;
+use crate::guest_function::definition::AsGuestFunctionDefinition;
 
 /// Represents the functions that the guest exposes to the host.
 #[derive(Debug, Default, Clone)]
@@ -47,6 +50,18 @@ impl GuestFunctionRegister {
             .insert(guest_function.function_name.clone(), guest_function)
     }
 
+    pub fn register_fn<Output, Args>(
+        &mut self,
+        name: impl Into<String>,
+        f: impl AsGuestFunctionDefinition<Output, Args>,
+    ) where
+        Args: ParameterTuple,
+        Output: SupportedReturnType,
+    {
+        let gfd = f.as_guest_function_definition(name);
+        self.register(gfd);
+    }
+
     /// Gets a `GuestFunctionDefinition` by its `name` field.
     pub fn get(&self, function_name: &str) -> Option<&GuestFunctionDefinition> {
         self.guest_functions.get(function_name)
@@ -60,5 +75,21 @@ pub fn register_function(function_definition: GuestFunctionDefinition) {
         #[allow(static_mut_refs)]
         let gfd = &mut REGISTERED_GUEST_FUNCTIONS;
         gfd.register(function_definition);
+    }
+}
+
+pub fn register_fn<Output, Args>(
+    name: impl Into<String>,
+    f: impl AsGuestFunctionDefinition<Output, Args>,
+) where
+    Args: ParameterTuple,
+    Output: SupportedReturnType,
+{
+    unsafe {
+        // This is currently safe, because we are single threaded, but we
+        // should find a better way to do this, see issue #808
+        #[allow(static_mut_refs)]
+        let gfd = &mut REGISTERED_GUEST_FUNCTIONS;
+        gfd.register_fn(name, f);
     }
 }

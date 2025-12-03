@@ -261,6 +261,7 @@ clippy-exhaustive target=default-target: (witguest-wit)
     ./hack/clippy-package-features.sh hyperlight-host {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-guest {{ target }} 
     ./hack/clippy-package-features.sh hyperlight-guest-bin {{ target }}
+    ./hack/clippy-package-features.sh hyperlight-guest-macro {{ target }}
     ./hack/clippy-package-features.sh hyperlight-common {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-testing {{ target }} {{ target-triple }}
     ./hack/clippy-package-features.sh hyperlight-component-macro  {{ target }} {{ target-triple }}

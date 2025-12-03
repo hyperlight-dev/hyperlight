@@ -239,9 +239,60 @@ pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_leve
                 hyperlight_guest_tracing::init_guest_tracing(guest_start_tsc);
             }
 
+            #[cfg(feature = "macros")]
+            for registration in __private::GUEST_FUNCTION_INIT {
+                registration();
+            }
+
             hyperlight_main();
         }
     });
 
     halt();
 }
+
+#[cfg(feature = "macros")]
+#[doc(hidden)]
+pub mod __private {
+    pub use hyperlight_common::func::ResultType;
+    pub use hyperlight_guest::error::HyperlightGuestError;
+    pub use linkme;
+
+    #[linkme::distributed_slice]
+    pub static GUEST_FUNCTION_INIT: [fn()];
+
+    pub trait FromResult {
+        type Output;
+        fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self;
+    }
+
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    use hyperlight_common::for_each_return_type;
+
+    macro_rules! impl_maybe_unwrap {
+        ($ty:ty, $enum:ident) => {
+            impl FromResult for $ty {
+                type Output = Self;
+                fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self {
+                    // Unwrapping here is fine as this would only run in a guest
+                    // and not in the host.
+                    res.unwrap()
+                }
+            }
+
+            impl FromResult for Result<$ty, HyperlightGuestError> {
+                type Output = $ty;
+                fn from_result(res: Result<Self::Output, HyperlightGuestError>) -> Self {
+                    res
+                }
+            }
+        };
+    }
+
+    for_each_return_type!(impl_maybe_unwrap);
+}
+
+#[cfg(feature = "macros")]
+pub use hyperlight_guest_macro::{guest_function, host_function};

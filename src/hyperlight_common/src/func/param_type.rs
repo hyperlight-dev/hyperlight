@@ -14,12 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ParameterValue};
-use tracing::{Span, instrument};
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
+use super::error::Error;
 use super::utils::for_each_tuple;
-use crate::HyperlightError::{ParameterValueConversionFailure, UnexpectedNoOfArguments};
-use crate::{Result, log_then_return};
+use crate::flatbuffer_wrappers::function_types::{ParameterType, ParameterValue};
 
 /// This is a marker trait that is used to indicate that a type is a
 /// valid Hyperlight parameter type.
@@ -34,7 +35,7 @@ pub trait SupportedParameterType: Sized + Clone + Send + Sync + 'static {
     /// `SupportedParameterType`
     fn into_value(self) -> ParameterValue;
     /// Get the actual inner value of this `SupportedParameterType`
-    fn from_value(value: ParameterValue) -> Result<Self>;
+    fn from_value(value: ParameterValue) -> Result<Self, Error>;
 }
 
 // We can then implement these traits for each type that Hyperlight supports as a parameter or return type
@@ -57,21 +58,17 @@ macro_rules! impl_supported_param_type {
         impl SupportedParameterType for $type {
             const TYPE: ParameterType = ParameterType::$enum;
 
-            #[instrument(skip_all, parent = Span::current(), level= "Trace")]
             fn into_value(self) -> ParameterValue {
                 ParameterValue::$enum(self)
             }
 
-            #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-            fn from_value(value: ParameterValue) -> Result<Self> {
+            fn from_value(value: ParameterValue) -> Result<Self, Error> {
                 match value {
                     ParameterValue::$enum(i) => Ok(i),
-                    other => {
-                        log_then_return!(ParameterValueConversionFailure(
-                            other.clone(),
-                            stringify!($type)
-                        ));
-                    }
+                    other => Err(Error::ParameterValueConversionFailure(
+                        other.clone(),
+                        stringify!($type),
+                    )),
                 }
             }
         }
@@ -93,7 +90,7 @@ pub trait ParameterTuple: Sized + Clone + Send + Sync + 'static {
     fn into_value(self) -> Vec<ParameterValue>;
 
     /// Get the actual inner value of this `SupportedParameterType`
-    fn from_value(value: Vec<ParameterValue>) -> Result<Self>;
+    fn from_value(value: Vec<ParameterValue>) -> Result<Self, Error>;
 }
 
 impl<T: SupportedParameterType> ParameterTuple for T {
@@ -101,18 +98,14 @@ impl<T: SupportedParameterType> ParameterTuple for T {
 
     const TYPE: &[ParameterType] = &[T::TYPE];
 
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn into_value(self) -> Vec<ParameterValue> {
         vec![self.into_value()]
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    fn from_value(value: Vec<ParameterValue>) -> Result<Self> {
+    fn from_value(value: Vec<ParameterValue>) -> Result<Self, Error> {
         match <[ParameterValue; 1]>::try_from(value) {
             Ok([val]) => Ok(T::from_value(val)?),
-            Err(value) => {
-                log_then_return!(UnexpectedNoOfArguments(value.len(), 1));
-            }
+            Err(value) => Err(Error::UnexpectedNoOfArguments(value.len(), 1)),
         }
     }
 }
@@ -126,17 +119,15 @@ macro_rules! impl_param_tuple {
                 $($param::TYPE),*
             ];
 
-            #[instrument(skip_all, parent = Span::current(), level= "Trace")]
             fn into_value(self) -> Vec<ParameterValue> {
                 let ($($name,)*) = self;
                 vec![$($name.into_value()),*]
             }
 
-            #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-            fn from_value(value: Vec<ParameterValue>) -> Result<Self> {
+            fn from_value(value: Vec<ParameterValue>) -> Result<Self, Error> {
                 match <[ParameterValue; $N]>::try_from(value) {
                     Ok([$($name,)*]) => Ok(($($param::from_value($name)?,)*)),
-                    Err(value) => { log_then_return!(UnexpectedNoOfArguments(value.len(), $N)); }
+                    Err(value) => Err(Error::UnexpectedNoOfArguments(value.len(), $N))
                 }
             }
         }
