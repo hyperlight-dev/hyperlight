@@ -43,22 +43,10 @@ struct GuestMappingOperations {
 }
 impl GuestMappingOperations {
     fn new() -> Self {
-        let scratch_base_gpa = hyperlight_guest::layout::scratch_base_gpa();
-
-        let root_table_gpa: u64;
-        unsafe {
-            asm!("mov {}, cr3", out(reg) root_table_gpa);
-        };
-        if root_table_gpa < scratch_base_gpa {
-            // It must be the snapshot root page table at the
-            // beginning of the snapshot PT region
-            SNAPSHOT_PT_GPA.store(root_table_gpa, Ordering::Relaxed);
-        }
-        let snapshot_pt_base_gpa = SNAPSHOT_PT_GPA.load(Ordering::Relaxed);
         Self {
-            snapshot_pt_base_gpa,
+            snapshot_pt_base_gpa: unsafe { hyperlight_guest::layout::snapshot_pt_gpa_base_gva().read_volatile() },
             snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64,
-            scratch_base_gpa,
+            scratch_base_gpa: hyperlight_guest::layout::scratch_base_gpa(),
             scratch_base_gva: hyperlight_guest::layout::scratch_base_gva(),
         }
     }

@@ -267,7 +267,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             mapped_rgns: self.mapped_rgns,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
         };
-        host_mgr.update_scratch_bookkeeping();
+        host_mgr.update_scratch_bookkeeping((SandboxMemoryLayout::BASE_ADDRESS + self.layout.get_pt_offset()) as u64);
         (host_mgr, guest_mgr)
     }
 }
@@ -386,12 +386,12 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.scratch_mem = hscratch;
             Some(gscratch)
         };
-        self.update_scratch_bookkeeping();
+        self.update_scratch_bookkeeping(snapshot.root_pt_gpa());
         self.entrypoint = RawPtr::from(snapshot.entrypoint());
         Ok((gsnapshot, gscratch))
     }
 
-    fn update_scratch_bookkeeping(&mut self) {
+    fn update_scratch_bookkeeping(&mut self, snapshot_pt_base_gpa: u64) {
         let scratch_size = self.scratch_mem.mem_size();
         let size_offset = scratch_size - hyperlight_common::layout::SCRATCH_TOP_SIZE_OFFSET as usize;
         // The only way that write can fail is if the offset is
@@ -404,6 +404,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
             alloc_offset,
             self.layout.get_first_free_scratch_gpa()
         ).unwrap();
+        let snapshot_pt_base_gpa_offset = scratch_size - hyperlight_common::layout::SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET as usize;
+        self.scratch_mem.write::<u64>(snapshot_pt_base_gpa_offset, snapshot_pt_base_gpa).unwrap();
 
         // Initialise the guest input and output data buffers in
         // scratch memory. TODO: remove the need for this.

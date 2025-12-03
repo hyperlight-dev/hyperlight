@@ -26,4 +26,8 @@ pub fn allocator_gva() -> *mut u64 {
     use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_ALLOCATOR_OFFSET};
     (MAX_GVA as u64 - SCRATCH_TOP_ALLOCATOR_OFFSET + 1) as *mut u64
 }
+pub fn snapshot_pt_gpa_base_gva() -> *mut u64 {
+    use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET};
+    (MAX_GVA as u64 - SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET + 1) as *mut u64
+}
 pub use arch::{scratch_base_gpa, scratch_base_gva};
