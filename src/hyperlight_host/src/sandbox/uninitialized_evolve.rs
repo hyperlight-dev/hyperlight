@@ -21,11 +21,8 @@ use rand::Rng;
 use tracing::{Span, instrument};
 
 use super::SandboxConfiguration;
-use super::hypervisor::{HypervisorType, get_available_hypervisor};
 #[cfg(any(crashdump, gdb))]
 use super::uninitialized::SandboxRuntimeConfig;
-use crate::HyperlightError::NoHypervisorFound;
-use crate::hypervisor::Hypervisor;
 use crate::hypervisor::hyperlight_vm::HyperlightVm;
 use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
@@ -168,73 +165,33 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(feature = "mem_profile")]
     let trace_info = MemTraceInfo::new(_load_info)?;
 
-    let vm: Box<dyn Hypervisor> = match *get_available_hypervisor() {
-        #[cfg(mshv3)]
-        Some(HypervisorType::Mshv) => {
-            let hv = crate::hypervisor::hyperv_linux::HypervLinuxDriver::new(
-                regions,
-                entrypoint_ptr,
-                rsp_ptr,
-                pml4_ptr,
-                config,
-                #[cfg(gdb)]
-                gdb_conn,
-                #[cfg(crashdump)]
-                rt_cfg.clone(),
-                #[cfg(feature = "mem_profile")]
-                trace_info,
-            )?;
-            Box::new(hv)
-        }
-
-        #[cfg(kvm)]
-        Some(HypervisorType::Kvm) => {
-            let hv = crate::hypervisor::kvm::KVMDriver::new(
-                regions,
-                pml4_ptr.absolute()?,
-                entrypoint_ptr.absolute()?,
-                rsp_ptr.absolute()?,
-                config,
-                #[cfg(gdb)]
-                gdb_conn,
-                #[cfg(crashdump)]
-                rt_cfg.clone(),
-                #[cfg(feature = "mem_profile")]
-                trace_info,
-            )?;
-            Box::new(hv)
-        }
-
+    HyperlightVm::new(
+        regions,
+        pml4_ptr.absolute()?,
+        entrypoint_ptr.absolute()?,
+        rsp_ptr.absolute()?,
+        config,
         #[cfg(target_os = "windows")]
-        Some(HypervisorType::Whp) => {
+        {
             use crate::hypervisor::wrappers::HandleWrapper;
-
-            let mmap_file_handle = mgr
-                .shared_mem
-                .with_exclusivity(|e| e.get_mmap_file_handle())?;
-            let hv = crate::hypervisor::hyperv_windows::HypervWindowsDriver::new(
-                regions,
-                mgr.shared_mem.raw_mem_size(), // we use raw_* here because windows driver requires 64K aligned addresses,
-                pml4_ptr.absolute()?,
-                entrypoint_ptr.absolute()?,
-                rsp_ptr.absolute()?,
-                HandleWrapper::from(mmap_file_handle),
-                #[cfg(gdb)]
-                gdb_conn,
-                #[cfg(crashdump)]
-                rt_cfg.clone(),
-                #[cfg(feature = "mem_profile")]
-                trace_info,
-            )?;
-            Box::new(hv)
-        }
-
-        _ => {
-            log_then_return!(NoHypervisorFound());
-        }
-    };
-
-    Ok(HyperlightVm::new(vm))
+            use crate::mem::shared_mem::SharedMemory;
+            HandleWrapper::from(
+                mgr.shared_mem
+                    .with_exclusivity(|s| s.get_mmap_file_handle())?,
+            )
+        },
+        #[cfg(target_os = "windows")]
+        {
+            use crate::mem::shared_mem::SharedMemory;
+            mgr.shared_mem.raw_mem_size()
+        },
+        #[cfg(gdb)]
+        gdb_conn,
+        #[cfg(crashdump)]
+        rt_cfg.clone(),
+        #[cfg(feature = "mem_profile")]
+        trace_info,
+    )
 }
 
 #[cfg(test)]
