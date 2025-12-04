@@ -33,7 +33,28 @@ use std::sync::{Arc, Mutex};
 /// - Memory management, including initial sandbox regions and dynamic mappings.
 /// - The vCPU execution loop and handling of VM exits (I/O, MMIO, interrupts).
 pub(crate) struct HyperlightVm {
-    pub(crate) vm: Box<dyn Hypervisor>,
+    #[cfg(gdb)]
+    vm: Box<dyn DebuggableVm>,
+    #[cfg(not(gdb))]
+    vm: Box<dyn Hypervisor>,
+    page_size: usize,
+    entrypoint: u64,
+    orig_rsp: GuestPtr,
+    interrupt_handle: Arc<dyn InterruptHandleImpl>,
+
+    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
+    mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
+    next_slot: u32,                     // Monotonically increasing slot number
+    freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
+
+    #[cfg(gdb)]
+    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+    #[cfg(gdb)]
+    sw_breakpoints: HashMap<u64, u8>, // addr -> original instruction
+    #[cfg(feature = "mem_profile")]
+    trace_info: MemTraceInfo,
+    #[cfg(crashdump)]
+    rt_cfg: SandboxRuntimeConfig,
 }
 
 impl HyperlightVm {

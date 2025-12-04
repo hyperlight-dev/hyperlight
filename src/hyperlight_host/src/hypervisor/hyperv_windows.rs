@@ -256,25 +256,19 @@ mod debug {
     }
 }
 
-/// A Hypervisor driver for HyperV-on-Windows.
-pub(crate) struct HypervWindowsDriver {
-    processor: VMProcessor,
-    _surrogate_process: SurrogateProcess, // we need to keep a reference to the SurrogateProcess for the duration of the driver since otherwise it will dropped and the memory mapping will be unmapped and the surrogate process will be returned to the pool
-    entrypoint: u64,
-    orig_rsp: GuestPtr,
-    interrupt_handle: Arc<dyn InterruptHandleImpl>,
-
-    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
-    mmap_regions: Vec<MemoryRegion>,    // Later mapped regions
-
-    #[cfg(gdb)]
-    debug: Option<HypervDebug>,
-    #[cfg(gdb)]
-    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-    #[cfg(crashdump)]
-    rt_cfg: SandboxRuntimeConfig,
-    #[cfg(feature = "mem_profile")]
-    trace_info: MemTraceInfo,
+/// A Windows Hypervisor Platform implementation of a single-vcpu VM
+#[derive(Debug)]
+pub(crate) struct WhpVm {
+    partition: WHV_PARTITION_HANDLE,
+    // Surrogate process for memory mapping
+    surrogate_process: SurrogateProcess,
+    // Offset between surrogate process and host process addresses (accounting for guard page)
+    // Calculated lazily on first map_memory call
+    surrogate_offset: Option<isize>,
+    // Track if initial memory setup is complete.
+    // Used to reject later memory mapping since it's not supported  on windows.
+    // TODO remove this flag once memory mapping is supported on windows.
+    initial_memory_setup_done: bool,
 }
 /* This does not automatically impl Send because the host
  * address of the shared memory region is a raw pointer, which are
