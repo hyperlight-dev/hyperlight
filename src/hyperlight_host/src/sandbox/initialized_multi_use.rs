@@ -37,8 +37,8 @@ use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
 use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::{ParameterTuple, SupportedReturnType};
+use crate::hypervisor::InterruptHandle;
 use crate::hypervisor::hyperlight_vm::HyperlightVm;
-use crate::hypervisor::{Hypervisor, InterruptHandle};
 #[cfg(unix)]
 use crate::mem::memory_region::MemoryRegionType;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
@@ -278,10 +278,12 @@ impl MultiUseSandbox {
         let regions_to_map = snapshot_regions.difference(&current_regions);
 
         for region in regions_to_unmap {
-            unsafe { self.vm.unmap_region(region)? };
+            self.vm.unmap_region(region)?;
         }
 
         for region in regions_to_map {
+            // Safety: The region has been mapped before, and at that point the caller promised that the memory region is valid
+            // in their call to `MultiUseSandbox::map_region`
             unsafe { self.vm.map_region(region)? };
         }
 
@@ -715,7 +717,7 @@ impl MultiUseSandbox {
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn generate_crashdump(&self) -> Result<()> {
-        crate::hypervisor::crashdump::generate_crashdump(self.vm.vm.as_ref() as &dyn Hypervisor)
+        crate::hypervisor::crashdump::generate_crashdump(&self.vm)
     }
 
     /// Returns whether the sandbox is currently poisoned.
@@ -1227,7 +1229,7 @@ mod tests {
 
         // 1. Take snapshot 1 with no additional regions mapped
         let snapshot1 = sbox.snapshot().unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 0);
 
         // 2. Map a memory region
         let map_mem = allocate_guest_memory();
@@ -1235,23 +1237,23 @@ mod tests {
         let region = region_for_memory(&map_mem, guest_base, MemoryRegionFlags::READ);
 
         unsafe { sbox.map_region(&region).unwrap() };
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
 
         // 3. Take snapshot 2 with 1 region mapped
         let snapshot2 = sbox.snapshot().unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
 
         // 4. Restore to snapshot 1 (should unmap the region)
         sbox.restore(&snapshot1).unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 0);
 
         // 5. Restore forward to snapshot 2 (should remap the region)
         sbox.restore(&snapshot2).unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
 
         // Verify the region is the same
         let mut restored_regions = sbox.vm.get_mapped_regions();
-        assert_eq!(*restored_regions.next().unwrap(), region);
+        assert_eq!(restored_regions.next().unwrap(), &region);
         assert!(restored_regions.next().is_none());
         drop(restored_regions);
 
