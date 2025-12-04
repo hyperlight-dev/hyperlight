@@ -32,8 +32,8 @@ use crate::flatbuffers::hyperlight::generated::{
     EditSpanType as FbEditSpanType, EditSpanTypeArgs as FbEditSpanTypeArgs,
     GuestEventEnvelopeType as FbGuestEventEnvelopeType,
     GuestEventEnvelopeTypeArgs as FbGuestEventEnvelopeTypeArgs, GuestEventType as FbGuestEventType,
-    GuestTraceDataType as FbGuestTraceDataType, GuestTraceDataTypeArgs as FbGuestTraceDataTypeArgs,
-    EventKeyValue as FbKeyValue, KeyValueArgs as FbKeyValueArgs, LogEventType as FbLogEventType,
+    GuestStartType as FbGuestStartType, GuestStartTypeArgs as FbGuestStartTypeArgs,
+    KeyValue as FbKeyValue, KeyValueArgs as FbKeyValueArgs, LogEventType as FbLogEventType,
     LogEventTypeArgs as FbLogEventTypeArgs, OpenSpanType as FbOpenSpanType,
     OpenSpanTypeArgs as FbOpenSpanTypeArgs,
 };
@@ -575,10 +575,8 @@ mod tests {
     use super::*;
 
     /// Utility function to check an original GuestTraceData against a deserialized one
-    fn check_fb_guest_trace_data(orig: &GuestTraceData, deserialized: &GuestTraceData) {
-        assert_eq!(orig.start_tsc, deserialized.start_tsc);
-        assert_eq!(orig.events.len(), deserialized.events.len());
-        for (original, deserialized) in orig.events.iter().zip(deserialized.events.iter()) {
+    fn check_fb_guest_trace_data(orig: &[GuestEvent], deserialized: &[GuestEvent]) {
+        for (original, deserialized) in orig.iter().zip(deserialized.iter()) {
             match (original, deserialized) {
                 (
                     GuestEvent::OpenSpan {
@@ -639,6 +637,26 @@ mod tests {
                     assert_eq!(oid, did);
                     assert_eq!(otsc, dtsc);
                 }
+                (GuestEvent::GuestStart { tsc: otsc }, GuestEvent::GuestStart { tsc: dtsc }) => {
+                    assert_eq!(otsc, dtsc);
+                }
+                (
+                    GuestEvent::EditSpan {
+                        id: oid,
+                        fields: ofields,
+                    },
+                    GuestEvent::EditSpan {
+                        id: did,
+                        fields: dfields,
+                    },
+                ) => {
+                    assert_eq!(oid, did);
+                    assert_eq!(ofields.len(), dfields.len());
+                    for (o_field, d_field) in ofields.iter().zip(dfields.iter()) {
+                        assert_eq!(o_field.key, d_field.key);
+                        assert_eq!(o_field.value, d_field.value);
+                    }
+                }
                 _ => panic!("Mismatched event types"),
             }
         }
@@ -661,6 +679,7 @@ mod tests {
 
     #[test]
     fn test_fb_guest_trace_data_open_span_serialization() {
+        let mut serializer = EventsBatchEncoder::new(1024, |_| {});
         let kv1 = EventKeyValue {
             key: "test_key1".to_string(),
             value: "test_value1".to_string(),
@@ -670,41 +689,46 @@ mod tests {
             value: "test_value2".to_string(),
         };
 
-        let open_span = GuestEvent::OpenSpan {
-            id: 1,
-            parent_id: None,
-            name: "span_name".to_string(),
-            target: "span_target".to_string(),
-            tsc: 100,
-            fields: Vec::from([kv1, kv2]),
-        };
+        let events = [
+            GuestEvent::GuestStart { tsc: 50 },
+            GuestEvent::OpenSpan {
+                id: 1,
+                parent_id: None,
+                name: "span_name".to_string(),
+                target: "span_target".to_string(),
+                tsc: 100,
+                fields: Vec::from([kv1, kv2]),
+            },
+        ];
 
-        let guest_trace_data = GuestTraceData {
-            start_tsc: 50,
-            events: Vec::from([open_span]),
-        };
+        for event in &events {
+            serializer.encode(event);
+        }
 
-        let serialized: Vec<u8> = Vec::from(&guest_trace_data);
-        let deserialized: GuestTraceData =
-            GuestTraceData::try_from(serialized.as_slice()).expect("Deserialization failed");
+        let serialized = serializer.finish();
 
-        check_fb_guest_trace_data(&guest_trace_data, &deserialized);
+        let deserialized: Vec<GuestEvent> = EventsBatchDecoder {}
+            .decode(serialized)
+            .expect("Deserialization failed");
+
+        check_fb_guest_trace_data(&events, &deserialized);
     }
 
     #[test]
     fn test_fb_guest_trace_data_close_span_serialization() {
-        let close_span = GuestEvent::CloseSpan { id: 1, tsc: 200 };
+        let events = [GuestEvent::CloseSpan { id: 1, tsc: 200 }];
 
-        let guest_trace_data = GuestTraceData {
-            start_tsc: 150,
-            events: Vec::from([close_span]),
-        };
+        let mut serializer = EventsBatchEncoder::new(1024, |_| {});
+        for event in &events {
+            serializer.encode(event);
+        }
+        let serialized = serializer.finish();
 
-        let serialized: Vec<u8> = Vec::from(&guest_trace_data);
-        let deserialized: GuestTraceData =
-            GuestTraceData::try_from(serialized.as_slice()).expect("Deserialization failed");
+        let deserialized = EventsBatchDecoder {}
+            .decode(serialized)
+            .expect("Deserialization failed");
 
-        check_fb_guest_trace_data(&guest_trace_data, &deserialized);
+        check_fb_guest_trace_data(&events, &deserialized);
     }
 
     #[test]
@@ -718,23 +742,24 @@ mod tests {
             value: "log_value2".to_string(),
         };
 
-        let log_event = GuestEvent::LogEvent {
+        let events = [GuestEvent::LogEvent {
             parent_id: 2,
             name: "log_name".to_string(),
             tsc: 300,
             fields: Vec::from([kv1, kv2]),
-        };
+        }];
 
-        let guest_trace_data = GuestTraceData {
-            start_tsc: 250,
-            events: Vec::from([log_event]),
-        };
+        let mut serializer = EventsBatchEncoder::new(1024, |_| {});
+        for event in &events {
+            serializer.encode(event);
+        }
+        let serialized = serializer.finish();
 
-        let serialized: Vec<u8> = Vec::from(&guest_trace_data);
-        let deserialized: GuestTraceData =
-            GuestTraceData::try_from(serialized.as_slice()).expect("Deserialization failed");
+        let deserialized = EventsBatchDecoder {}
+            .decode(serialized)
+            .expect("Deserialization failed");
 
-        check_fb_guest_trace_data(&guest_trace_data, &deserialized);
+        check_fb_guest_trace_data(&events, &deserialized);
     }
 
     /// Test serialization and deserialization of GuestTraceData with multiple events
@@ -750,34 +775,34 @@ mod tests {
             value: "log_value1".to_string(),
         };
 
-        let open_span = GuestEvent::OpenSpan {
-            id: 1,
-            parent_id: None,
-            name: "span_name".to_string(),
-            target: "span_target".to_string(),
-            tsc: 100,
-            fields: Vec::from([kv1]),
-        };
+        let events = [
+            GuestEvent::OpenSpan {
+                id: 1,
+                parent_id: None,
+                name: "span_name".to_string(),
+                target: "span_target".to_string(),
+                tsc: 100,
+                fields: Vec::from([kv1]),
+            },
+            GuestEvent::LogEvent {
+                parent_id: 1,
+                name: "log_name".to_string(),
+                tsc: 150,
+                fields: Vec::from([kv2]),
+            },
+            GuestEvent::CloseSpan { id: 1, tsc: 200 },
+        ];
 
-        let log_event = GuestEvent::LogEvent {
-            parent_id: 1,
-            name: "log_name".to_string(),
-            tsc: 150,
-            fields: Vec::from([kv2]),
-        };
+        let mut serializer = EventsBatchEncoder::new(2048, |_| {});
+        for event in &events {
+            serializer.encode(event);
+        }
+        let serialized = serializer.finish();
+        let deserialized = EventsBatchDecoder {}
+            .decode(serialized)
+            .expect("Deserialization failed");
 
-        let close_span = GuestEvent::CloseSpan { id: 1, tsc: 200 };
-
-        let guest_trace_data = GuestTraceData {
-            start_tsc: 50,
-            events: Vec::from([open_span, log_event, close_span]),
-        };
-
-        let serialized: Vec<u8> = Vec::from(&guest_trace_data);
-        let deserialized: GuestTraceData =
-            GuestTraceData::try_from(serialized.as_slice()).expect("Deserialization failed");
-
-        check_fb_guest_trace_data(&guest_trace_data, &deserialized);
+        check_fb_guest_trace_data(&events, &deserialized);
     }
 
     /// Test serialization and deserialization of GuestTraceData with multiple events
@@ -793,47 +818,165 @@ mod tests {
             value: "log_value1".to_string(),
         };
 
-        let open_span1 = GuestEvent::OpenSpan {
+        let events = [
+            GuestEvent::OpenSpan {
+                id: 1,
+                parent_id: None,
+                name: "span_name_1".to_string(),
+                target: "span_target_1".to_string(),
+                tsc: 100,
+                fields: Vec::from([kv1]),
+            },
+            GuestEvent::OpenSpan {
+                id: 2,
+                parent_id: Some(1),
+                name: "span_name_2".to_string(),
+                target: "span_target_2".to_string(),
+                tsc: 1000,
+                fields: Vec::from([kv2.clone()]),
+            },
+            GuestEvent::LogEvent {
+                parent_id: 1,
+                name: "log_name_1".to_string(),
+                tsc: 150,
+                fields: Vec::from([kv2.clone()]),
+            },
+            GuestEvent::LogEvent {
+                parent_id: 2,
+                name: "log_name".to_string(),
+                tsc: 1050,
+                fields: Vec::from([kv2]),
+            },
+            GuestEvent::CloseSpan { id: 2, tsc: 2000 },
+        ];
+
+        let mut serializer = EventsBatchEncoder::new(4096, |_| {});
+        for event in &events {
+            serializer.encode(event);
+        }
+        let serialized = serializer.finish();
+        let deserialized = EventsBatchDecoder {}
+            .decode(serialized)
+            .expect("Deserialization failed");
+
+        check_fb_guest_trace_data(&events, &deserialized);
+    }
+
+    /// Test serialization and deserialization of GuestTraceData with EditSpan event
+    #[test]
+    fn test_fb_guest_trace_data_edit_span_serialization_00() {
+        let kv1 = EventKeyValue {
+            key: "edit_key1".to_string(),
+            value: "edit_value1".to_string(),
+        };
+        let kv2 = EventKeyValue {
+            key: "edit_key2".to_string(),
+            value: "edit_value2".to_string(),
+        };
+        let events = [GuestEvent::EditSpan {
             id: 1,
-            parent_id: None,
-            name: "span_name_1".to_string(),
-            target: "span_target_1".to_string(),
-            tsc: 100,
-            fields: Vec::from([kv1]),
+            fields: Vec::from([kv1, kv2]),
+        }];
+        let mut serializer = EventsBatchEncoder::new(1024, |_| {});
+        for event in &events {
+            serializer.encode(event);
+        }
+        let serialized = serializer.finish();
+        let deserialized = EventsBatchDecoder {}
+            .decode(serialized)
+            .expect("Deserialization failed");
+
+        check_fb_guest_trace_data(&events, &deserialized);
+    }
+
+    /// Test serialization and deserialization of GuestTraceData with GuestStart event
+    /// open span and edit span
+    #[test]
+    fn test_fb_guest_trace_data_edit_span_with_guest_start_serialization() {
+        let kv1 = EventKeyValue {
+            key: "span_field1".to_string(),
+            value: "span_value1".to_string(),
         };
-        let open_span2 = GuestEvent::OpenSpan {
-            id: 2,
-            parent_id: Some(1),
-            name: "span_name_2".to_string(),
-            target: "span_target_2".to_string(),
-            tsc: 1000,
-            fields: Vec::from([kv2.clone()]),
+        let kv2 = EventKeyValue {
+            key: "edit_key1".to_string(),
+            value: "edit_value1".to_string(),
+        };
+        let events = [
+            GuestEvent::GuestStart { tsc: 50 },
+            GuestEvent::OpenSpan {
+                id: 1,
+                parent_id: None,
+                name: "span_name".to_string(),
+                target: "span_target".to_string(),
+                tsc: 100,
+                fields: Vec::from([kv1]),
+            },
+            GuestEvent::EditSpan {
+                id: 1,
+                fields: Vec::from([kv2]),
+            },
+        ];
+        let mut serializer = EventsBatchEncoder::new(2048, |_| {});
+        for event in &events {
+            serializer.encode(event);
+        }
+        let serialized = serializer.finish();
+        let deserialized = EventsBatchDecoder {}
+            .decode(serialized)
+            .expect("Deserialization failed");
+
+        check_fb_guest_trace_data(&events, &deserialized);
+    }
+
+    /// Test serialization and deserialization of GuestTraceData with GuestStart event,
+    /// open span, log event, open span, edit span, and close span
+    #[test]
+    fn test_fb_guest_trace_data_edit_span_with_others_serialization() {
+        let kv1 = EventKeyValue {
+            key: "span_field1".to_string(),
+            value: "span_value1".to_string(),
+        };
+        let kv2 = EventKeyValue {
+            key: "log_field1".to_string(),
+            value: "log_value1".to_string(),
+        };
+        let kv3 = EventKeyValue {
+            key: "edit_key1".to_string(),
+            value: "edit_value1".to_string(),
         };
 
-        let log_event1 = GuestEvent::LogEvent {
-            parent_id: 1,
-            name: "log_name_1".to_string(),
-            tsc: 150,
-            fields: Vec::from([kv2.clone()]),
-        };
-        let log_event2 = GuestEvent::LogEvent {
-            parent_id: 2,
-            name: "log_name".to_string(),
-            tsc: 1050,
-            fields: Vec::from([kv2]),
-        };
+        let events = [
+            GuestEvent::GuestStart { tsc: 50 },
+            GuestEvent::OpenSpan {
+                id: 1,
+                parent_id: None,
+                name: "span_name".to_string(),
+                target: "span_target".to_string(),
+                tsc: 100,
+                fields: Vec::from([kv1]),
+            },
+            GuestEvent::LogEvent {
+                parent_id: 1,
+                name: "log_name".to_string(),
+                tsc: 150,
+                fields: Vec::from([kv2]),
+            },
+            GuestEvent::EditSpan {
+                id: 1,
+                fields: Vec::from([kv3]),
+            },
+            GuestEvent::CloseSpan { id: 1, tsc: 200 },
+        ];
 
-        let close_span = GuestEvent::CloseSpan { id: 2, tsc: 2000 };
+        let mut serializer = EventsBatchEncoder::new(4096, |_| {});
+        for event in &events {
+            serializer.encode(event);
+        }
+        let serialized = serializer.finish();
+        let deserialized = EventsBatchDecoder {}
+            .decode(serialized)
+            .expect("Deserialization failed");
 
-        let guest_trace_data = GuestTraceData {
-            start_tsc: 50,
-            events: Vec::from([open_span1, log_event1, open_span2, log_event2, close_span]),
-        };
-
-        let serialized: Vec<u8> = Vec::from(&guest_trace_data);
-        let deserialized: GuestTraceData =
-            GuestTraceData::try_from(serialized.as_slice()).expect("Deserialization failed");
-
-        check_fb_guest_trace_data(&guest_trace_data, &deserialized);
+        check_fb_guest_trace_data(&events, &deserialized);
     }
 }
