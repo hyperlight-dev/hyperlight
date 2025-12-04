@@ -395,64 +395,56 @@ impl Hypervisor for HypervWindowsDriver {
     }
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>> {
-        if self.rt_cfg.guest_core_dump {
-            let mut regs = [0; 27];
+    fn xsave(&self) -> Result<Vec<u8>> {
+        use crate::HyperlightError;
 
-            let vcpu_regs = self.processor.regs()?;
-            let sregs = self.processor.sregs()?;
-            let xsave = self.processor.get_xsave()?;
+        // Get the required buffer size by calling with NULL buffer.
+        // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns
+        // WHV_E_INSUFFICIENT_BUFFER and sets buffer_size_needed to the required size.
+        let mut buffer_size_needed: u32 = 0;
 
-            // Set the registers in the order expected by the crashdump context
-            regs[0] = vcpu_regs.r15; // r15
-            regs[1] = vcpu_regs.r14; // r14
-            regs[2] = vcpu_regs.r13; // r13
-            regs[3] = vcpu_regs.r12; // r12
-            regs[4] = vcpu_regs.rbp; // rbp
-            regs[5] = vcpu_regs.rbx; // rbx
-            regs[6] = vcpu_regs.r11; // r11
-            regs[7] = vcpu_regs.r10; // r10
-            regs[8] = vcpu_regs.r9; // r9
-            regs[9] = vcpu_regs.r8; // r8
-            regs[10] = vcpu_regs.rax; // rax
-            regs[11] = vcpu_regs.rcx; // rcx
-            regs[12] = vcpu_regs.rdx; // rdx
-            regs[13] = vcpu_regs.rsi; // rsi
-            regs[14] = vcpu_regs.rdi; // rdi
-            regs[15] = 0; // orig rax
-            regs[16] = vcpu_regs.rip; // rip
-            regs[17] = sregs.cs.selector as u64; // cs
-            regs[18] = vcpu_regs.rflags; // eflags
-            regs[19] = vcpu_regs.rsp; // rsp
-            regs[20] = sregs.ss.selector as u64; // ss
-            regs[21] = sregs.fs.base; // fs_base
-            regs[22] = sregs.gs.base; // gs_base
-            regs[23] = sregs.ds.selector as u64; // ds
-            regs[24] = sregs.es.selector as u64; // es
-            regs[25] = sregs.fs.selector as u64; // fs
-            regs[26] = sregs.gs.selector as u64; // gs
+        let result = unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut buffer_size_needed,
+            )
+        };
 
-            // Get the filename from the config
-            let filename = self.rt_cfg.binary_path.clone().and_then(|path| {
-                Path::new(&path)
-                    .file_name()
-                    .and_then(|name| name.to_os_string().into_string().ok())
-            });
-
-            // Include both initial sandbox regions and dynamically mapped regions
-            let mut regions: Vec<MemoryRegion> = self.sandbox_regions.clone();
-            regions.extend(self.mmap_regions.iter().cloned());
-            Ok(Some(crashdump::CrashDumpContext::new(
-                regions,
-                regs,
-                xsave,
-                self.entrypoint,
-                self.rt_cfg.binary_path.clone(),
-                filename,
-            )))
-        } else {
-            Ok(None)
+        // Expect insufficient buffer error; any other error is unexpected
+        if let Err(e) = result
+            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
+        {
+            return Err(HyperlightError::WindowsAPIError(e));
         }
+
+        // Allocate buffer with the required size
+        let mut xsave_buffer = vec![0u8; buffer_size_needed as usize];
+        let mut written_bytes = 0;
+
+        // Get the actual Xsave state
+        unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                xsave_buffer.as_mut_ptr() as *mut std::ffi::c_void,
+                buffer_size_needed,
+                &mut written_bytes,
+            )
+        }?;
+
+        // Verify the number of written bytes matches the expected size
+        if written_bytes != buffer_size_needed {
+            return Err(new_error!(
+                "Failed to get Xsave state: expected {} bytes, got {}",
+                buffer_size_needed,
+                written_bytes
+            ));
+        }
+
+        Ok(xsave_buffer)
     }
 
     #[cfg(feature = "mem_profile")]
