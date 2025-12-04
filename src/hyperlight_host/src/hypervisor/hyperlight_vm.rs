@@ -406,6 +406,40 @@ impl HyperlightVm {
             }
         }
     }
+
+    /// Handle an IO exit
+    fn handle_io(
+        &mut self,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<Mutex<FunctionRegistry>>,
+        port: u16,
+        data: Vec<u8>,
+    ) -> Result<()> {
+        if data.is_empty() {
+            log_then_return!("no data was given in IO interrupt");
+        }
+
+        #[allow(clippy::get_first)]
+        let val = u32::from_le_bytes([
+            data.get(0).copied().unwrap_or(0),
+            data.get(1).copied().unwrap_or(0),
+            data.get(2).copied().unwrap_or(0),
+            data.get(3).copied().unwrap_or(0),
+        ]);
+
+        #[cfg(feature = "mem_profile")]
+        {
+            let regs = self.vm.regs()?;
+            handle_outb(mem_mgr, host_funcs, port, val, &regs, &mut self.trace_info)?;
+        }
+
+        #[cfg(not(feature = "mem_profile"))]
+        {
+            handle_outb(mem_mgr, host_funcs, port, val)?;
+        }
+
+        Ok(())
+    }
 }
 
 /// The vCPU tried to access the given addr
