@@ -107,20 +107,6 @@ pub(crate) enum HyperlightExit {
 
 /// A common set of hypervisor functionality
 pub(crate) trait Hypervisor: Debug + Send {
-    /// Initialise the internally stored vCPU with the given PEB address and
-    /// random number seed, then run it until a HLT instruction.
-    #[allow(clippy::too_many_arguments)]
-    fn initialise(
-        &mut self,
-        peb_addr: RawPtr,
-        seed: u64,
-        page_size: u32,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        guest_max_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()>;
-
     /// Map a region of host memory into the sandbox.
     ///
     /// Depending on the host platform, there are likely alignment

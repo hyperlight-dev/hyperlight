@@ -439,51 +439,6 @@ impl Debug for HypervLinuxDriver {
 
 impl Hypervisor for HypervLinuxDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn initialise(
-        &mut self,
-        peb_addr: RawPtr,
-        seed: u64,
-        page_size: u32,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        max_guest_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()> {
-        self.page_size = page_size as usize;
-
-        let max_guest_log_level: u64 = match max_guest_log_level {
-            Some(level) => level as u64,
-            None => self.get_max_log_level().into(),
-        };
-
-        let regs = StandardRegisters {
-            rip: self.entrypoint,
-            rsp: self.orig_rsp.absolute()?,
-            rflags: 2, //bit 1 of rlags is required to be set
-
-            // function args
-            rdi: peb_addr.into(),
-            rsi: seed,
-            rdx: page_size.into(),
-            rcx: max_guest_log_level,
-
-            ..Default::default()
-        };
-        self.vcpu_fd.set_regs(&regs)?;
-
-        let interrupt_handle = self.interrupt_handle.clone();
-
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            interrupt_handle,
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
         if [
             rgn.guest_region.start,
