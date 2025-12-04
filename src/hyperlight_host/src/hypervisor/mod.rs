@@ -203,7 +203,7 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor;
 
     #[cfg(crashdump)]
-    fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>>;
+    fn xsave(&self) -> Result<Vec<u8>>;
 
     /// Get a mutable reference of the trace info for the guest
     #[cfg(feature = "mem_profile")]
