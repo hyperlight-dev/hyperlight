@@ -134,14 +134,26 @@ pub enum GuestEvent {
     },
 }
 
-/// Guest trace data structure containing a sequence of guest events
-/// and the starting TSC (Timestamp Counter) for the guest.
-#[derive(Debug)]
-pub struct GuestTraceData {
-    /// The starting TSC value for the guest environment.
-    pub start_tsc: u64,
-    /// A vector of guest events recorded during execution.
-    pub events: Vec<GuestEvent>,
+/// Trait defining the interface for encoding guest events.
+/// Implementors of this trait should provide methods for encoding events,
+/// finishing the encoding process, flushing the buffer, and resetting the encoder.
+pub trait EventsEncoder {
+    /// Encode a single guest event into the encoder's buffer.
+    fn encode(&mut self, event: &GuestEvent);
+    /// Finalize the encoding process and return the serialized buffer.
+    fn finish(&self) -> &[u8];
+    /// Flush the encoder's buffer, typically sending or processing the data.
+    fn flush(&mut self);
+    /// Reset the encoder's internal state, clearing any buffered data.
+    fn reset(&mut self);
+}
+
+/// Trait defining the interface for decoding guest events.
+/// Implementors of this trait should provide methods for decoding a buffer
+/// of bytes into a collection of guest events.
+pub trait EventsDecoder {
+    /// Decode a buffer of bytes into guest events.
+    fn decode(&self, buffer: &[u8]) -> Result<Vec<GuestEvent>, Error>;
 }
 
 impl TryFrom<&[u8]> for GuestTraceData {
