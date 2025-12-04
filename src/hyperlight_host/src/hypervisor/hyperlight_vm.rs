@@ -610,3 +610,262 @@ fn get_memory_access_violation<'a>(
     // Treat as a generic access violation for now, unsure if this is reachable.
     None
 }
+
+#[cfg(gdb)]
+mod debug {
+    use hyperlight_common::mem::PAGE_SIZE;
+
+    use super::HyperlightVm;
+    use crate::hypervisor::gdb::arch::{SW_BP, SW_BP_SIZE};
+    use crate::hypervisor::gdb::{DebugMemoryAccess, DebugMsg, DebugResponse};
+    use crate::{Result, new_error};
+
+    impl HyperlightVm {
+        pub(crate) fn process_dbg_request(
+            &mut self,
+            req: DebugMsg,
+            mem_access: &DebugMemoryAccess,
+        ) -> Result<DebugResponse> {
+            if self.gdb_conn.is_some() {
+                match req {
+                    DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
+                        self.vm
+                            .add_hw_breakpoint(addr)
+                            .map_err(|e| {
+                                log::error!("Failed to add hw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
+                    )),
+                    DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
+                        self.add_sw_breakpoint(addr, mem_access)
+                            .map_err(|e| {
+                                log::error!("Failed to add sw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
+                    )),
+                    DebugMsg::Continue => {
+                        self.vm.set_single_step(false).map_err(|e| {
+                            log::error!("Failed to continue execution: {:?}", e);
+
+                            e
+                        })?;
+
+                        Ok(DebugResponse::Continue)
+                    }
+                    DebugMsg::DisableDebug => {
+                        self.vm.set_debug(false).map_err(|e| {
+                            log::error!("Failed to disable debugging: {:?}", e);
+                            e
+                        })?;
+
+                        Ok(DebugResponse::DisableDebug)
+                    }
+                    DebugMsg::GetCodeSectionOffset => {
+                        let offset = mem_access
+                            .dbg_mem_access_fn
+                            .try_lock()
+                            .map_err(|e| {
+                                new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
+                            })?
+                            .layout
+                            .get_guest_code_address();
+
+                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
+                    }
+                    DebugMsg::ReadAddr(addr, len) => {
+                        let mut data = vec![0u8; len];
+
+                        self.read_addrs(addr, &mut data, mem_access).map_err(|e| {
+                            log::error!("Failed to read from address: {:?}", e);
+
+                            e
+                        })?;
+
+                        Ok(DebugResponse::ReadAddr(data))
+                    }
+                    DebugMsg::ReadRegisters => {
+                        let regs = self.vm.regs()?;
+                        let fpu = self.vm.fpu()?;
+                        Ok(DebugResponse::ReadRegisters(Box::new((regs, fpu))))
+                    }
+                    DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
+                        self.vm
+                            .remove_hw_breakpoint(addr)
+                            .map_err(|e| {
+                                log::error!("Failed to remove hw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
+                    )),
+                    DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
+                        self.remove_sw_breakpoint(addr, mem_access)
+                            .map_err(|e| {
+                                log::error!("Failed to remove sw breakpoint: {:?}", e);
+
+                                e
+                            })
+                            .is_ok(),
+                    )),
+                    DebugMsg::Step => {
+                        self.vm.set_single_step(true).map_err(|e| {
+                            log::error!("Failed to enable step instruction: {:?}", e);
+
+                            e
+                        })?;
+
+                        Ok(DebugResponse::Step)
+                    }
+                    DebugMsg::WriteAddr(addr, data) => {
+                        self.write_addrs(addr, &data, mem_access).map_err(|e| {
+                            log::error!("Failed to write to address: {:?}", e);
+
+                            e
+                        })?;
+
+                        Ok(DebugResponse::WriteAddr)
+                    }
+                    DebugMsg::WriteRegisters(boxed_regs) => {
+                        let (regs, fpu) = boxed_regs.as_ref();
+                        self.vm.set_regs(regs)?;
+                        self.vm.set_fpu(fpu)?;
+
+                        Ok(DebugResponse::WriteRegisters)
+                    }
+                }
+            } else {
+                Err(new_error!("Debugging is not enabled"))
+            }
+        }
+
+        pub(crate) fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
+            let gdb_conn = self
+                .gdb_conn
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            gdb_conn.recv().map_err(|e| {
+                new_error!(
+                    "Got an error while waiting to receive a message from the gdb thread: {:?}",
+                    e
+                )
+            })
+        }
+
+        pub(crate) fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
+            log::debug!("Sending {:?}", cmd);
+
+            let gdb_conn = self
+                .gdb_conn
+                .as_mut()
+                .ok_or_else(|| new_error!("Debug is not enabled"))?;
+
+            gdb_conn.send(cmd).map_err(|e| {
+                new_error!(
+                    "Got an error while sending a response message to the gdb thread: {:?}",
+                    e
+                )
+            })
+        }
+
+        fn read_addrs(
+            &mut self,
+            mut gva: u64,
+            mut data: &mut [u8],
+            mem_access: &DebugMemoryAccess,
+        ) -> crate::Result<()> {
+            let data_len = data.len();
+            log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
+
+            while !data.is_empty() {
+                let gpa = self.vm.translate_gva(gva)?;
+
+                let read_len = std::cmp::min(
+                    data.len(),
+                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                );
+
+                mem_access.read(&mut data[..read_len], gpa)?;
+
+                data = &mut data[read_len..];
+                gva += read_len as u64;
+            }
+
+            Ok(())
+        }
+
+        /// Copies the data from the provided slice to the guest memory address
+        /// The address is checked to be a valid guest address
+        fn write_addrs(
+            &mut self,
+            mut gva: u64,
+            mut data: &[u8],
+            mem_access: &DebugMemoryAccess,
+        ) -> crate::Result<()> {
+            let data_len = data.len();
+            log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
+
+            while !data.is_empty() {
+                let gpa = self.vm.translate_gva(gva)?;
+
+                let write_len = std::cmp::min(
+                    data.len(),
+                    (PAGE_SIZE - (gpa & (PAGE_SIZE - 1))).try_into().unwrap(),
+                );
+
+                // Use the memory access to write to guest memory
+                mem_access.write(&data[..write_len], gpa)?;
+
+                data = &data[write_len..];
+                gva += write_len as u64;
+            }
+
+            Ok(())
+        }
+
+        // Must be idempotent!
+        fn add_sw_breakpoint(
+            &mut self,
+            addr: u64,
+            mem_access: &DebugMemoryAccess,
+        ) -> crate::Result<()> {
+            let addr = self.vm.translate_gva(addr)?;
+
+            // Check if breakpoint already exists
+            if self.sw_breakpoints.contains_key(&addr) {
+                return Ok(());
+            }
+
+            // Write breakpoint OP code to write to guest memory
+            let mut save_data = [0; SW_BP_SIZE];
+            self.read_addrs(addr, &mut save_data[..], mem_access)?;
+            self.write_addrs(addr, &SW_BP, mem_access)?;
+
+            // Save guest memory to restore when breakpoint is removed
+            self.sw_breakpoints.insert(addr, save_data[0]);
+
+            Ok(())
+        }
+
+        fn remove_sw_breakpoint(
+            &mut self,
+            addr: u64,
+            mem_access: &DebugMemoryAccess,
+        ) -> crate::Result<()> {
+            let addr = self.vm.translate_gva(addr)?;
+
+            if let Some(saved_data) = self.sw_breakpoints.remove(&addr) {
+                // Restore saved data to the guest's memory
+                self.write_addrs(addr, &[saved_data], mem_access)?;
+
+                Ok(())
+            } else {
+                Err(new_error!("The address: {:?} is not a sw breakpoint", addr))
+            }
+        }
+    }
+}

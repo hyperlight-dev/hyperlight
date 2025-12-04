@@ -73,195 +73,6 @@ pub(crate) fn is_hypervisor_present() -> bool {
     }
 }
 
-#[cfg(gdb)]
-mod debug {
-    use kvm_bindings::kvm_debug_exit_arch;
-
-    use super::KVMDriver;
-    use crate::hypervisor::gdb::{
-        DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, KvmDebug, VcpuStopReason,
-    };
-    use crate::{Result, new_error};
-
-    impl KVMDriver {
-        /// Resets the debug information to disable debugging
-        fn disable_debug(&mut self) -> Result<()> {
-            let mut debug = KvmDebug::default();
-
-            debug.set_single_step(&self.vcpu_fd, false)?;
-
-            self.debug = Some(debug);
-
-            Ok(())
-        }
-
-        /// Get the reason the vCPU has stopped
-        pub(crate) fn get_stop_reason(
-            &mut self,
-            debug_exit: kvm_debug_exit_arch,
-        ) -> Result<VcpuStopReason> {
-            let debug = self
-                .debug
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            debug.get_stop_reason(&self.vcpu_fd, debug_exit, self.entrypoint)
-        }
-
-        pub(crate) fn process_dbg_request(
-            &mut self,
-            req: DebugMsg,
-            mem_access: &DebugMemoryAccess,
-        ) -> Result<DebugResponse> {
-            if let Some(debug) = self.debug.as_mut() {
-                match req {
-                    DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
-                        debug
-                            .add_hw_breakpoint(&self.vcpu_fd, addr)
-                            .map_err(|e| {
-                                log::error!("Failed to add hw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
-                        debug
-                            .add_sw_breakpoint(&self.vcpu_fd, addr, mem_access)
-                            .map_err(|e| {
-                                log::error!("Failed to add sw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::Continue => {
-                        debug.set_single_step(&self.vcpu_fd, false).map_err(|e| {
-                            log::error!("Failed to continue execution: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::Continue)
-                    }
-                    DebugMsg::DisableDebug => {
-                        self.disable_debug().map_err(|e| {
-                            log::error!("Failed to disable debugging: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::DisableDebug)
-                    }
-                    DebugMsg::GetCodeSectionOffset => {
-                        let offset = mem_access
-                            .dbg_mem_access_fn
-                            .try_lock()
-                            .map_err(|e| {
-                                new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
-                            })?
-                            .layout
-                            .get_guest_code_address();
-
-                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
-                    }
-                    DebugMsg::ReadAddr(addr, len) => {
-                        let mut data = vec![0u8; len];
-
-                        debug.read_addrs(&self.vcpu_fd, addr, &mut data, mem_access)?;
-
-                        Ok(DebugResponse::ReadAddr(data))
-                    }
-                    DebugMsg::ReadRegisters => debug
-                        .read_regs(&self.vcpu_fd)
-                        .map_err(|e| {
-                            log::error!("Failed to read registers: {:?}", e);
-
-                            e
-                        })
-                        .map(|(regs, fpu)| DebugResponse::ReadRegisters(Box::new((regs, fpu)))),
-                    DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
-                        debug
-                            .remove_hw_breakpoint(&self.vcpu_fd, addr)
-                            .map_err(|e| {
-                                log::error!("Failed to remove hw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
-                        debug
-                            .remove_sw_breakpoint(&self.vcpu_fd, addr, mem_access)
-                            .map_err(|e| {
-                                log::error!("Failed to remove sw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::Step => {
-                        debug.set_single_step(&self.vcpu_fd, true).map_err(|e| {
-                            log::error!("Failed to enable step instruction: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::Step)
-                    }
-                    DebugMsg::WriteAddr(addr, data) => {
-                        debug.write_addrs(&self.vcpu_fd, addr, &data, mem_access)?;
-
-                        Ok(DebugResponse::WriteAddr)
-                    }
-                    DebugMsg::WriteRegisters(boxed_regs) => {
-                        let (regs, fpu) = boxed_regs.as_ref();
-                        debug
-                            .write_regs(&self.vcpu_fd, regs, fpu)
-                            .map_err(|e| {
-                                log::error!("Failed to write registers: {:?}", e);
-
-                                e
-                            })
-                            .map(|_| DebugResponse::WriteRegisters)
-                    }
-                }
-            } else {
-                Err(new_error!("Debugging is not enabled"))
-            }
-        }
-
-        pub(crate) fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
-            let gdb_conn = self
-                .gdb_conn
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            gdb_conn.recv().map_err(|e| {
-                new_error!(
-                    "Got an error while waiting to receive a message from the gdb thread: {:?}",
-                    e
-                )
-            })
-        }
-
-        pub(crate) fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
-            log::debug!("Sending {:?}", cmd);
-
-            let gdb_conn = self
-                .gdb_conn
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            gdb_conn.send(cmd).map_err(|e| {
-                new_error!(
-                    "Got an error while sending a response message to the gdb thread: {:?}",
-                    e
-                )
-            })
-        }
-    }
-}
 
 /// A KVM implementation of a single-vcpu VM
 #[derive(Debug)]
@@ -570,5 +381,96 @@ impl Hypervisor for KVMDriver {
 impl Drop for KVMDriver {
     fn drop(&mut self) {
         self.interrupt_handle.set_dropped();
+    }
+}
+
+#[cfg(gdb)]
+impl DebuggableVm for KvmVm {
+    fn translate_gva(&self, gva: u64) -> Result<u64> {
+        use crate::HyperlightError;
+
+        let gpa = self.vcpu_fd.translate_gva(gva)?;
+        if gpa.valid == 0 {
+            Err(HyperlightError::TranslateGuestAddress(gva))
+        } else {
+            Ok(gpa.physical_address)
+        }
+    }
+
+    fn set_debug(&mut self, enable: bool) -> Result<()> {
+        use kvm_bindings::{KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP};
+
+        log::info!("Setting debug to {}", enable);
+        if enable {
+            self.debug_regs.control |=
+                KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP | KVM_GUESTDBG_USE_SW_BP;
+        } else {
+            self.debug_regs.control &=
+                !(KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP | KVM_GUESTDBG_USE_SW_BP);
+        }
+        self.vcpu_fd.set_guest_debug(&self.debug_regs)?;
+        Ok(())
+    }
+
+    fn set_single_step(&mut self, enable: bool) -> Result<()> {
+        use kvm_bindings::KVM_GUESTDBG_SINGLESTEP;
+
+        log::info!("Setting single step to {}", enable);
+        if enable {
+            self.debug_regs.control |= KVM_GUESTDBG_SINGLESTEP;
+        } else {
+            self.debug_regs.control &= !KVM_GUESTDBG_SINGLESTEP;
+        }
+        self.vcpu_fd.set_guest_debug(&self.debug_regs)?;
+
+        // Set TF Flag to enable Traps
+        let mut regs = self.regs()?;
+        if enable {
+            regs.rflags |= 1 << 8;
+        } else {
+            regs.rflags &= !(1 << 8);
+        }
+        self.set_regs(&regs)?;
+        Ok(())
+    }
+
+    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
+
+        // Check if breakpoint already exists
+        if self.debug_regs.arch.debugreg[..4].contains(&addr) {
+            return Ok(());
+        }
+
+        // Find the first available LOCAL (L0–L3) slot
+        let i = (0..MAX_NO_OF_HW_BP)
+            .position(|i| self.debug_regs.arch.debugreg[7] & (1 << (i * 2)) == 0)
+            .ok_or_else(|| new_error!("Tried to add more than 4 hardware breakpoints"))?;
+
+        // Assign to corresponding debug register
+        self.debug_regs.arch.debugreg[i] = addr;
+
+        // Enable LOCAL bit
+        self.debug_regs.arch.debugreg[7] |= 1 << (i * 2);
+
+        self.vcpu_fd.set_guest_debug(&self.debug_regs)?;
+        Ok(())
+    }
+
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        // Find the index of the breakpoint
+        let index = self.debug_regs.arch.debugreg[..4]
+            .iter()
+            .position(|&a| a == addr)
+            .ok_or_else(|| new_error!("Tried to remove non-existing hw-breakpoint"))?;
+
+        // Clear the address
+        self.debug_regs.arch.debugreg[index] = 0;
+
+        // Disable LOCAL bit
+        self.debug_regs.arch.debugreg[7] &= !(1 << (index * 2));
+
+        self.vcpu_fd.set_guest_debug(&self.debug_regs)?;
+        Ok(())
     }
 }
