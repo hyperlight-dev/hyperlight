@@ -29,31 +29,15 @@ use tracing::instrument;
 pub fn halt() {
     #[cfg(feature = "trace_guest")]
     {
-        // End any ongoing trace before halting
-        hyperlight_guest_tracing::end_trace();
-        // If tracing is enabled, we need to pass the trace batch info
-        // along with the halt instruction so the host can retrieve it
-        if let Some(tbi) = hyperlight_guest_tracing::guest_trace_info() {
-            unsafe {
-                asm!("hlt",
-                    in("r8") OutBAction::TraceBatch as u64,
-                    in("r9") tbi.serialized_data.as_ptr() as u64,
-                    in("r10") tbi.serialized_data.len() as u64,
-                    options(nostack)
-                )
-            };
-            hyperlight_guest_tracing::clean_trace_state();
-        } else {
-            // If tracing is not enabled, we can directly halt
-            unsafe { asm!("hlt", options(nostack)) };
-        }
+        // Send data before halting
+        // If there is no data, this doesn't do anything
+        // The reason we do this here instead of in `hlt` asm function
+        // is to avoid allocating before halting, which leaks memory
+        // because the guest is not expected to resume execution after halting.
+        hyperlight_guest_tracing::flush();
     }
 
-    #[cfg(not(feature = "trace_guest"))]
-    {
-        // If tracing is not enabled, we can directly halt
-        unsafe { asm!("hlt", options(nostack)) };
-    }
+    unsafe { asm!("hlt", options(nostack)) };
 }
 
 /// Exits the VM with an Abort OUT action and code 0.
@@ -134,20 +118,23 @@ pub(crate) fn outb(port: u16, data: &[u8]) {
 pub(crate) unsafe fn out32(port: u16, val: u32) {
     #[cfg(feature = "trace_guest")]
     {
-        if let Some(tbi) = hyperlight_guest_tracing::guest_trace_info() {
-            // If tracing is enabled, send the trace batch info along with the OUT action
+        if let Some((ptr, len)) = hyperlight_guest_tracing::serialized_data() {
+            // If tracing is enabled and there is data to send, send it along with the OUT action
             unsafe {
                 asm!("out dx, eax",
                     in("dx") port,
                     in("eax") val,
                     in("r8") OutBAction::TraceBatch as u64,
-                    in("r9") tbi.serialized_data.as_ptr() as u64,
-                    in("r10") tbi.serialized_data.len() as u64,
+                    in("r9") ptr,
+                    in("r10") len,
                     options(preserves_flags, nomem, nostack)
                 )
             };
 
-            hyperlight_guest_tracing::clean_trace_state();
+            // Reset the trace state after sending the batch
+            // This clears all existing spans/events ensuring a clean state for the next operations
+            // The trace state is expected to be flushed before this call
+            hyperlight_guest_tracing::reset();
         } else {
             // If tracing is not enabled, just send the value
             unsafe {
