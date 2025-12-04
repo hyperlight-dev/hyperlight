@@ -32,44 +32,44 @@ use crate::flatbuffers::hyperlight::generated::{
     GuestEventEnvelopeType as FbGuestEventEnvelopeType,
     GuestEventEnvelopeTypeArgs as FbGuestEventEnvelopeTypeArgs, GuestEventType as FbGuestEventType,
     GuestTraceDataType as FbGuestTraceDataType, GuestTraceDataTypeArgs as FbGuestTraceDataTypeArgs,
-    KeyValue as FbKeyValue, KeyValueArgs as FbKeyValueArgs, LogEventType as FbLogEventType,
+    EventKeyValue as FbKeyValue, KeyValueArgs as FbKeyValueArgs, LogEventType as FbLogEventType,
     LogEventTypeArgs as FbLogEventTypeArgs, OpenSpanType as FbOpenSpanType,
     OpenSpanTypeArgs as FbOpenSpanTypeArgs,
 };
 
 /// Key-Value pair structure used in tracing spans/events
 #[derive(Debug, Clone)]
-pub struct KeyValue {
+pub struct EventKeyValue {
     /// Key of the key-value pair
     pub key: String,
     /// Value of the key-value pair
     pub value: String,
 }
 
-impl From<FbKeyValue<'_>> for KeyValue {
+impl From<FbKeyValue<'_>> for EventKeyValue {
     fn from(value: FbKeyValue<'_>) -> Self {
         let key = value.key().to_string();
         let value = value.value().to_string();
 
-        KeyValue { key, value }
+        EventKeyValue { key, value }
     }
 }
 
-impl TryFrom<&[u8]> for KeyValue {
+impl TryFrom<&[u8]> for EventKeyValue {
     type Error = Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         let gld_gen = size_prefixed_root::<FbKeyValue>(value)
-            .map_err(|e| anyhow!("Error while reading KeyValue: {:?}", e))?;
+            .map_err(|e| anyhow!("Error while reading EventKeyValue: {:?}", e))?;
         let key = gld_gen.key().to_string();
         let value = gld_gen.value().to_string();
 
-        Ok(KeyValue { key, value })
+        Ok(EventKeyValue { key, value })
     }
 }
 
-impl From<&KeyValue> for Vec<u8> {
-    fn from(value: &KeyValue) -> Self {
+impl From<&EventKeyValue> for Vec<u8> {
+    fn from(value: &EventKeyValue) -> Self {
         let mut builder = flatbuffers::FlatBufferBuilder::new();
 
         let key_offset = builder.create_string(&value.key);
@@ -87,8 +87,8 @@ impl From<&KeyValue> for Vec<u8> {
     }
 }
 
-impl From<KeyValue> for Vec<u8> {
-    fn from(value: KeyValue) -> Self {
+impl From<EventKeyValue> for Vec<u8> {
+    fn from(value: EventKeyValue) -> Self {
         Vec::from(&value)
     }
 }
@@ -112,7 +112,7 @@ pub enum GuestEvent {
         /// Timestamp Counter (TSC) value when the span was opened.
         tsc: u64,
         /// Additional key-value fields associated with the span.
-        fields: Vec<KeyValue>,
+        fields: Vec<EventKeyValue>,
     },
     /// Event representing the closing of a tracing span.
     CloseSpan {
@@ -130,7 +130,7 @@ pub enum GuestEvent {
         /// Timestamp Counter (TSC) value when the log event occurred.
         tsc: u64,
         /// Additional key-value fields associated with the log event.
-        fields: Vec<KeyValue>,
+        fields: Vec<EventKeyValue>,
     },
 }
 
@@ -183,7 +183,7 @@ impl TryFrom<&[u8]> for GuestTraceData {
                         let mut fields = Vec::new();
                         if let Some(fb_fields) = ost_fb.fields() {
                             for j in 0..fb_fields.len() {
-                                let kv: KeyValue = KeyValue::from(fb_fields.get(j));
+                                let kv: EventKeyValue = EventKeyValue::from(fb_fields.get(j));
                                 fields.push(kv);
                             }
                         }
@@ -225,7 +225,7 @@ impl TryFrom<&[u8]> for GuestTraceData {
                         let mut fields = Vec::new();
                         if let Some(fb_fields) = le_fb.fields() {
                             for j in 0..fb_fields.len() {
-                                let kv: KeyValue = KeyValue::from(fb_fields.get(j));
+                                let kv: EventKeyValue = EventKeyValue::from(fb_fields.get(j));
                                 fields.push(kv);
                             }
                         }
@@ -477,14 +477,14 @@ mod tests {
 
     #[test]
     fn test_fb_key_value_serialization() {
-        let kv = KeyValue {
+        let kv = EventKeyValue {
             key: "test_key".to_string(),
             value: "test_value".to_string(),
         };
 
         let serialized: Vec<u8> = Vec::from(&kv);
-        let deserialized: KeyValue =
-            KeyValue::try_from(serialized.as_slice()).expect("Deserialization failed");
+        let deserialized: EventKeyValue =
+            EventKeyValue::try_from(serialized.as_slice()).expect("Deserialization failed");
 
         assert_eq!(kv.key, deserialized.key);
         assert_eq!(kv.value, deserialized.value);
@@ -492,11 +492,11 @@ mod tests {
 
     #[test]
     fn test_fb_guest_trace_data_open_span_serialization() {
-        let kv1 = KeyValue {
+        let kv1 = EventKeyValue {
             key: "test_key1".to_string(),
             value: "test_value1".to_string(),
         };
-        let kv2 = KeyValue {
+        let kv2 = EventKeyValue {
             key: "test_key1".to_string(),
             value: "test_value2".to_string(),
         };
@@ -540,11 +540,11 @@ mod tests {
 
     #[test]
     fn test_fb_guest_trace_data_log_event_serialization() {
-        let kv1 = KeyValue {
+        let kv1 = EventKeyValue {
             key: "log_key1".to_string(),
             value: "log_value1".to_string(),
         };
-        let kv2 = KeyValue {
+        let kv2 = EventKeyValue {
             key: "log_key2".to_string(),
             value: "log_value2".to_string(),
         };
@@ -572,11 +572,11 @@ mod tests {
     /// [OpenSpan, LogEvent, CloseSpan]
     #[test]
     fn test_fb_guest_trace_data_multiple_events_serialization_0() {
-        let kv1 = KeyValue {
+        let kv1 = EventKeyValue {
             key: "span_field1".to_string(),
             value: "span_value1".to_string(),
         };
-        let kv2 = KeyValue {
+        let kv2 = EventKeyValue {
             key: "log_field1".to_string(),
             value: "log_value1".to_string(),
         };
@@ -615,11 +615,11 @@ mod tests {
     /// [OpenSpan, LogEvent, OpenSpan, LogEvent, CloseSpan]
     #[test]
     fn test_fb_guest_trace_data_multiple_events_serialization_1() {
-        let kv1 = KeyValue {
+        let kv1 = EventKeyValue {
             key: "span_field1".to_string(),
             value: "span_value1".to_string(),
         };
-        let kv2 = KeyValue {
+        let kv2 = EventKeyValue {
             key: "log_field1".to_string(),
             value: "log_value1".to_string(),
         };
