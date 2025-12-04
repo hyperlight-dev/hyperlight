@@ -127,14 +127,17 @@ echo "$dependabot_prs" | jq -c '.[]' | while read -r pr; do
         
         if [ "$merge_status" != "CLEAN" ]; then
             echo "  ⚠️ PR #$pr_number is not up to date (status: $merge_status)"
+            # Enable auto-merge to merge once checks pass
+            echo "  ✅ Enabling auto-merge (squash strategy) for PR #$pr_number"
+            gh pr merge "$pr_number" -R "$REPO" --auto --squash
+            echo "  ✅ Auto-merge enabled for PR #$pr_number"
         else
             echo "  ✅ PR #$pr_number is up to date with base branch"
+            # PR is already clean/mergeable - merge directly instead of enabling auto-merge
+            echo "  ✅ Merging PR #$pr_number directly (squash strategy)"
+            gh pr merge "$pr_number" -R "$REPO" --squash
+            echo "  ✅ PR #$pr_number merged successfully"
         fi
-        
-        # Enable auto-merge with squash strategy
-        echo "  ✅ Enabling auto-merge (squash strategy) for PR #$pr_number"
-        gh pr merge "$pr_number" -R "$REPO" --auto --squash
-        echo "  ✅ Auto-merge enabled for PR #$pr_number"
     fi
     
 done
