@@ -120,17 +120,6 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Unmap memory region from this VM that has previously been mapped using `map_memory`.
     fn unmap_memory(&mut self, region: (u32, &MemoryRegion)) -> Result<()>;
 
-    /// Handle an IO exit from the internally stored vCPU.
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        rip: u64,
-        instruction_length: u64,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-    ) -> Result<()>;
-
     /// Runs the vCPU until it exits.
     /// Note: this function should not emit any traces or spans as it is called after guest span is setup
     fn run_vcpu(&mut self) -> Result<HyperlightExit>;

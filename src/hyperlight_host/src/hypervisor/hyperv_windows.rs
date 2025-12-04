@@ -468,37 +468,6 @@ impl Hypervisor for HypervWindowsDriver {
         log_then_return!("Mapping host memory into the guest not yet supported on this platform");
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        rip: u64,
-        instruction_length: u64,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-    ) -> Result<()> {
-        let mut padded = [0u8; 4];
-        let copy_len = data.len().min(4);
-        padded[..copy_len].copy_from_slice(&data[..copy_len]);
-        let val = u32::from_le_bytes(padded);
-
-        #[cfg(feature = "mem_profile")]
-        {
-            let regs = self.regs()?;
-            let trace_info = self.trace_info_mut();
-            handle_outb(mem_mgr, host_funcs, port, val, &regs, trace_info)?;
-        }
-        #[cfg(not(feature = "mem_profile"))]
-        {
-            handle_outb(mem_mgr, host_funcs, port, val)?;
-        }
-
-        let mut regs = self.regs()?;
-        regs.rip = rip + instruction_length;
-        self.set_regs(&regs)
-    }
-
     #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
     fn run_vcpu(&mut self) -> Result<HyperlightExit> {
         let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();

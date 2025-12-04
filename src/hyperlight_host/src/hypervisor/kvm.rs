@@ -421,44 +421,6 @@ impl Hypervisor for KVMDriver {
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn handle_io(
-        &mut self,
-        port: u16,
-        data: Vec<u8>,
-        _rip: u64,
-        _instruction_length: u64,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-    ) -> Result<()> {
-        // KVM does not need RIP or instruction length, as it automatically sets the RIP
-
-        // The payload param for the outb_handle_fn is the first byte
-        // of the data array cast to an u64. Thus, we need to make sure
-        // the data array has at least one u8, then convert that to an u64
-        if data.is_empty() {
-            log_then_return!("no data was given in IO interrupt");
-        } else {
-            let mut padded = [0u8; 4];
-            let copy_len = data.len().min(4);
-            padded[..copy_len].copy_from_slice(&data[..copy_len]);
-            let value = u32::from_le_bytes(padded);
-
-            #[cfg(feature = "mem_profile")]
-            {
-                let regs = self.regs()?;
-                let trace_info = self.trace_info_mut();
-                handle_outb(mem_mgr, host_funcs, port, value, &regs, trace_info)?;
-            }
-            #[cfg(not(feature = "mem_profile"))]
-            {
-                handle_outb(mem_mgr, host_funcs, port, value)?;
-            }
-        }
-
-        Ok(())
-    }
-
     fn run_vcpu(&mut self) -> Result<HyperlightExit> {
         match self.vcpu_fd.run() {
             Ok(VcpuExit::Hlt) => Ok(HyperlightExit::Halt()),
