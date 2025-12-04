@@ -58,204 +58,6 @@ use crate::sandbox::trace::MemTraceInfo;
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 use crate::{Result, debug, log_then_return};
 
-#[cfg(gdb)]
-mod debug {
-    use windows::Win32::System::Hypervisor::WHV_VP_EXCEPTION_CONTEXT;
-
-    use super::{HypervWindowsDriver, *};
-    use crate::Result;
-    use crate::hypervisor::gdb::{DebugMemoryAccess, DebugMsg, DebugResponse, VcpuStopReason};
-
-    impl HypervWindowsDriver {
-        /// Resets the debug information to disable debugging
-        fn disable_debug(&mut self) -> Result<()> {
-            let mut debug = HypervDebug::default();
-
-            debug.set_single_step(&self.processor, false)?;
-
-            self.debug = Some(debug);
-
-            Ok(())
-        }
-
-        /// Get the reason the vCPU has stopped
-        pub(crate) fn get_stop_reason(
-            &mut self,
-            exception: WHV_VP_EXCEPTION_CONTEXT,
-        ) -> Result<VcpuStopReason> {
-            let debug = self
-                .debug
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            debug.get_stop_reason(&self.processor, exception, self.entrypoint)
-        }
-
-        pub(crate) fn process_dbg_request(
-            &mut self,
-            req: DebugMsg,
-            mem_access: &DebugMemoryAccess,
-        ) -> Result<DebugResponse> {
-            if let Some(debug) = self.debug.as_mut() {
-                match req {
-                    DebugMsg::AddHwBreakpoint(addr) => Ok(DebugResponse::AddHwBreakpoint(
-                        debug
-                            .add_hw_breakpoint(&self.processor, addr)
-                            .map_err(|e| {
-                                log::error!("Failed to add hw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
-                        debug
-                            .add_sw_breakpoint(&self.processor, addr, mem_access)
-                            .map_err(|e| {
-                                log::error!("Failed to add sw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::Continue => {
-                        debug.set_single_step(&self.processor, false).map_err(|e| {
-                            log::error!("Failed to continue execution: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::Continue)
-                    }
-                    DebugMsg::DisableDebug => {
-                        self.disable_debug().map_err(|e| {
-                            log::error!("Failed to disable debugging: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::DisableDebug)
-                    }
-                    DebugMsg::GetCodeSectionOffset => {
-                        let offset = mem_access
-                            .dbg_mem_access_fn
-                            .try_lock()
-                            .map_err(|e| {
-                                new_error!("Error locking at {}:{}: {}", file!(), line!(), e)
-                            })?
-                            .layout
-                            .get_guest_code_address();
-
-                        Ok(DebugResponse::GetCodeSectionOffset(offset as u64))
-                    }
-                    DebugMsg::ReadAddr(addr, len) => {
-                        let mut data = vec![0u8; len];
-
-                        debug
-                            .read_addrs(&self.processor, addr, &mut data, mem_access)
-                            .map_err(|e| {
-                                log::error!("Failed to read from address: {:?}", e);
-
-                                e
-                            })?;
-
-                        Ok(DebugResponse::ReadAddr(data))
-                    }
-                    DebugMsg::ReadRegisters => debug
-                        .read_regs(&self.processor)
-                        .map_err(|e| {
-                            log::error!("Failed to read registers: {:?}", e);
-
-                            e
-                        })
-                        .map(|(regs, fpu)| DebugResponse::ReadRegisters(Box::new((regs, fpu)))),
-                    DebugMsg::RemoveHwBreakpoint(addr) => Ok(DebugResponse::RemoveHwBreakpoint(
-                        debug
-                            .remove_hw_breakpoint(&self.processor, addr)
-                            .map_err(|e| {
-                                log::error!("Failed to remove hw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
-                        debug
-                            .remove_sw_breakpoint(&self.processor, addr, mem_access)
-                            .map_err(|e| {
-                                log::error!("Failed to remove sw breakpoint: {:?}", e);
-
-                                e
-                            })
-                            .is_ok(),
-                    )),
-                    DebugMsg::Step => {
-                        debug.set_single_step(&self.processor, true).map_err(|e| {
-                            log::error!("Failed to enable step instruction: {:?}", e);
-
-                            e
-                        })?;
-
-                        Ok(DebugResponse::Step)
-                    }
-                    DebugMsg::WriteAddr(addr, data) => {
-                        debug
-                            .write_addrs(&self.processor, addr, &data, mem_access)
-                            .map_err(|e| {
-                                log::error!("Failed to write to address: {:?}", e);
-
-                                e
-                            })?;
-
-                        Ok(DebugResponse::WriteAddr)
-                    }
-                    DebugMsg::WriteRegisters(boxed_regs) => {
-                        let (regs, fpu) = boxed_regs.as_ref();
-                        debug
-                            .write_regs(&self.processor, regs, fpu)
-                            .map_err(|e| {
-                                log::error!("Failed to write registers: {:?}", e);
-
-                                e
-                            })
-                            .map(|_| DebugResponse::WriteRegisters)
-                    }
-                }
-            } else {
-                Err(new_error!("Debugging is not enabled"))
-            }
-        }
-
-        pub(crate) fn recv_dbg_msg(&mut self) -> Result<DebugMsg> {
-            let gdb_conn = self
-                .gdb_conn
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            gdb_conn.recv().map_err(|e| {
-                new_error!(
-                    "Got an error while waiting to receive a
-                    message: {:?}",
-                    e
-                )
-            })
-        }
-
-        pub(crate) fn send_dbg_msg(&mut self, cmd: DebugResponse) -> Result<()> {
-            log::debug!("Sending {:?}", cmd);
-
-            let gdb_conn = self
-                .gdb_conn
-                .as_mut()
-                .ok_or_else(|| new_error!("Debug is not enabled"))?;
-
-            gdb_conn
-                .send(cmd)
-                .map_err(|e| new_error!("Got an error while sending a response message {:?}", e))
-        }
-    }
-}
-
 /// A Windows Hypervisor Platform implementation of a single-vcpu VM
 #[derive(Debug)]
 pub(crate) struct WhpVm {
@@ -653,10 +455,225 @@ impl Hypervisor for HypervWindowsDriver {
         }
     }
 
-
     #[cfg(feature = "mem_profile")]
     fn trace_info_mut(&mut self) -> &mut MemTraceInfo {
         &mut self.trace_info
+    }
+}
+
+#[cfg(gdb)]
+impl DebuggableVm for WhpVm {
+    fn translate_gva(&self, gva: u64) -> Result<u64> {
+        let mut gpa = 0;
+        let mut result = WHV_TRANSLATE_GVA_RESULT::default();
+
+        // Only validate read access because the write access is handled through the
+        // host memory mapping
+        let translateflags = WHvTranslateGvaFlagValidateRead;
+
+        unsafe {
+            WHvTranslateGva(
+                self.partition,
+                0,
+                gva,
+                translateflags,
+                &mut result,
+                &mut gpa,
+            )?;
+        }
+
+        Ok(gpa)
+    }
+
+    fn set_debug(&mut self, enable: bool) -> Result<()> {
+        let extended_vm_exits = if enable { 1 << 2 } else { 0 };
+        let exception_exit_bitmap = if enable {
+            (1 << WHvX64ExceptionTypeDebugTrapOrFault.0)
+                | (1 << WHvX64ExceptionTypeBreakpointTrap.0)
+        } else {
+            0
+        };
+
+        let properties = [
+            (
+                WHvPartitionPropertyCodeExtendedVmExits,
+                WHV_PARTITION_PROPERTY {
+                    ExtendedVmExits: WHV_EXTENDED_VM_EXITS {
+                        AsUINT64: extended_vm_exits,
+                    },
+                },
+            ),
+            (
+                WHvPartitionPropertyCodeExceptionExitBitmap,
+                WHV_PARTITION_PROPERTY {
+                    ExceptionExitBitmap: exception_exit_bitmap,
+                },
+            ),
+        ];
+
+        for (code, property) in properties {
+            unsafe {
+                WHvSetPartitionProperty(
+                    self.partition,
+                    code,
+                    &property as *const _ as *const c_void,
+                    std::mem::size_of::<WHV_PARTITION_PROPERTY>() as u32,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn set_single_step(&mut self, enable: bool) -> Result<()> {
+        let mut regs = self.regs()?;
+        if enable {
+            regs.rflags |= 1 << 8;
+        } else {
+            regs.rflags &= !(1 << 8);
+        }
+        self.set_regs(&regs)?;
+        Ok(())
+    }
+
+    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
+
+        // Get current debug registers
+        const LEN: usize = 6;
+        let names: [WHV_REGISTER_NAME; LEN] = [
+            WHvX64RegisterDr0,
+            WHvX64RegisterDr1,
+            WHvX64RegisterDr2,
+            WHvX64RegisterDr3,
+            WHvX64RegisterDr6,
+            WHvX64RegisterDr7,
+        ];
+
+        let mut out: [Align16<WHV_REGISTER_VALUE>; LEN] = unsafe { std::mem::zeroed() };
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                names.as_ptr(),
+                LEN as u32,
+                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        let mut dr0 = unsafe { out[0].0.Reg64 };
+        let mut dr1 = unsafe { out[1].0.Reg64 };
+        let mut dr2 = unsafe { out[2].0.Reg64 };
+        let mut dr3 = unsafe { out[3].0.Reg64 };
+        let mut dr7 = unsafe { out[5].0.Reg64 };
+
+        // Check if breakpoint already exists
+        if [dr0, dr1, dr2, dr3].contains(&addr) {
+            return Ok(());
+        }
+
+        // Find the first available LOCAL (L0–L3) slot
+        let i = (0..MAX_NO_OF_HW_BP)
+            .position(|i| dr7 & (1 << (i * 2)) == 0)
+            .ok_or_else(|| new_error!("Tried to add more than 4 hardware breakpoints"))?;
+
+        // Assign to corresponding debug register
+        *[&mut dr0, &mut dr1, &mut dr2, &mut dr3][i] = addr;
+
+        // Enable LOCAL bit
+        dr7 |= 1 << (i * 2);
+
+        // Set the debug registers
+        let registers = vec![
+            (
+                WHvX64RegisterDr0,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr0 }),
+            ),
+            (
+                WHvX64RegisterDr1,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr1 }),
+            ),
+            (
+                WHvX64RegisterDr2,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr2 }),
+            ),
+            (
+                WHvX64RegisterDr3,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr3 }),
+            ),
+            (
+                WHvX64RegisterDr7,
+                Align16(WHV_REGISTER_VALUE { Reg64: dr7 }),
+            ),
+        ];
+        self.set_registers(&registers)?;
+        Ok(())
+    }
+
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+        // Get current debug registers
+        const LEN: usize = 6;
+        let names: [WHV_REGISTER_NAME; LEN] = [
+            WHvX64RegisterDr0,
+            WHvX64RegisterDr1,
+            WHvX64RegisterDr2,
+            WHvX64RegisterDr3,
+            WHvX64RegisterDr6,
+            WHvX64RegisterDr7,
+        ];
+
+        let mut out: [Align16<WHV_REGISTER_VALUE>; LEN] = unsafe { std::mem::zeroed() };
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                names.as_ptr(),
+                LEN as u32,
+                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        let mut dr0 = unsafe { out[0].0.Reg64 };
+        let mut dr1 = unsafe { out[1].0.Reg64 };
+        let mut dr2 = unsafe { out[2].0.Reg64 };
+        let mut dr3 = unsafe { out[3].0.Reg64 };
+        let mut dr7 = unsafe { out[5].0.Reg64 };
+
+        let regs = [&mut dr0, &mut dr1, &mut dr2, &mut dr3];
+
+        if let Some(i) = regs.iter().position(|&&mut reg| reg == addr) {
+            // Clear the address
+            *regs[i] = 0;
+            // Disable LOCAL bit
+            dr7 &= !(1 << (i * 2));
+
+            // Set the debug registers
+            let registers = vec![
+                (
+                    WHvX64RegisterDr0,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr0 }),
+                ),
+                (
+                    WHvX64RegisterDr1,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr1 }),
+                ),
+                (
+                    WHvX64RegisterDr2,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr2 }),
+                ),
+                (
+                    WHvX64RegisterDr3,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr3 }),
+                ),
+                (
+                    WHvX64RegisterDr7,
+                    Align16(WHV_REGISTER_VALUE { Reg64: dr7 }),
+                ),
+            ];
+            self.set_registers(&registers)?;
+            Ok(())
+        } else {
+            Err(new_error!("Tried to remove non-existing hw-breakpoint"))
+        }
     }
 }
 
