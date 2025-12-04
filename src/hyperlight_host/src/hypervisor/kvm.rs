@@ -14,42 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::fmt::Debug;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
-use std::sync::{Arc, Mutex};
+use std::sync::LazyLock;
 
+#[cfg(gdb)]
+use kvm_bindings::kvm_guest_debug;
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use log::LevelFilter;
 use tracing::{Span, instrument};
-#[cfg(feature = "trace_guest")]
-use tracing_opentelemetry::OpenTelemetrySpanExt;
-#[cfg(crashdump)]
-use {super::crashdump, std::path::Path};
 
 #[cfg(gdb)]
-use super::gdb::{
-    DebugCommChannel, DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, KvmDebug,
-    VcpuStopReason,
-};
-use super::{HyperlightExit, Hypervisor, LinuxInterruptHandle, VirtualCPU};
-#[cfg(gdb)]
-use crate::HyperlightError;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
-use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_memory_access_violation};
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::shared_mem::HostSharedMemory;
-use crate::sandbox::SandboxConfiguration;
-use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::outb::handle_outb;
-#[cfg(feature = "mem_profile")]
-use crate::sandbox::trace::MemTraceInfo;
-#[cfg(crashdump)]
-use crate::sandbox::uninitialized::SandboxRuntimeConfig;
-use crate::{Result, log_then_return, new_error};
+use crate::hypervisor::gdb::DebuggableVm;
+use crate::hypervisor::{HyperlightExit, Hypervisor};
+use crate::mem::memory_region::MemoryRegion;
+use crate::{Result, new_error};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -73,7 +51,6 @@ pub(crate) fn is_hypervisor_present() -> bool {
     }
 }
 
-
 /// A KVM implementation of a single-vcpu VM
 #[derive(Debug)]
 pub(crate) struct KvmVm {
@@ -85,135 +62,29 @@ pub(crate) struct KvmVm {
     debug_regs: kvm_guest_debug,
 }
 
-impl KVMDriver {
-    /// Create a new instance of a `KVMDriver`, with only control registers
-    /// set. Standard registers will not be set, and `initialise` must
-    /// be called to do so.
-    #[allow(clippy::too_many_arguments)]
-    // TODO: refactor this function to take fewer arguments. Add trace_info to rt_cfg
+static KVM: LazyLock<Result<Kvm>> =
+    LazyLock::new(|| Kvm::new().map_err(|e| new_error!("Failed to open /dev/kvm: {}", e)));
+
+impl KvmVm {
+    /// Create a new instance of a `KvmVm`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn new(
-        mem_regions: Vec<MemoryRegion>,
-        pml4_addr: u64,
-        entrypoint: u64,
-        rsp: u64,
-        config: &SandboxConfiguration,
-        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-        #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
-        #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
-    ) -> Result<Self> {
-        let kvm = Kvm::new()?;
-
-        let vm_fd = kvm.create_vm_with_type(0)?;
-
-        mem_regions.iter().enumerate().try_for_each(|(i, region)| {
-            let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
-            kvm_region.slot = i as u32;
-            unsafe { vm_fd.set_user_memory_region(kvm_region) }
-        })?;
-
+    pub(crate) fn new() -> Result<Self> {
+        let hv = KVM
+            .as_ref()
+            .map_err(|e| new_error!("Failed to create KVM instance: {}", e))?;
+        let vm_fd = hv.create_vm_with_type(0)?;
         let vcpu_fd = vm_fd.create_vcpu(0)?;
 
-        #[cfg(gdb)]
-        let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
-            let mut debug = KvmDebug::new();
-            // Add breakpoint to the entry point address
-            debug.add_hw_breakpoint(&vcpu_fd, entrypoint)?;
-
-            (Some(debug), Some(gdb_conn))
-        } else {
-            (None, None)
-        };
-
-        let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
-
-        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
-            state: AtomicU8::new(0),
-            #[cfg(all(
-                target_arch = "x86_64",
-                target_vendor = "unknown",
-                target_os = "linux",
-                target_env = "musl"
-            ))]
-            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
-            #[cfg(not(all(
-                target_arch = "x86_64",
-                target_vendor = "unknown",
-                target_os = "linux",
-                target_env = "musl"
-            )))]
-            tid: AtomicU64::new(unsafe { libc::pthread_self() }),
-            retry_delay: config.get_interrupt_retry_delay(),
-            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
-            dropped: AtomicBool::new(false),
-        });
-
-        let mut kvm = Self {
-            _kvm: kvm,
+        Ok(Self {
             vm_fd,
-            page_size: 0,
             vcpu_fd,
-            entrypoint,
-            orig_rsp: rsp_gp,
-            next_slot: mem_regions.len() as u32,
-            sandbox_regions: mem_regions,
-            mmap_regions: Vec::new(),
-            freed_slots: Vec::new(),
-            interrupt_handle: interrupt_handle.clone(),
             #[cfg(gdb)]
-            debug,
-            #[cfg(gdb)]
-            gdb_conn,
-            #[cfg(crashdump)]
-            rt_cfg,
-            #[cfg(feature = "mem_profile")]
-            trace_info,
-        };
-
-        kvm.setup_initial_sregs(pml4_addr)?;
-
-        // Send the interrupt handle to the GDB thread if debugging is enabled
-        // This is used to allow the GDB thread to stop the vCPU
-        #[cfg(gdb)]
-        if kvm.debug.is_some() {
-            kvm.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
-        }
-
-        Ok(kvm)
+            debug_regs: kvm_guest_debug::default(),
+        })
     }
 }
 
-impl Debug for KVMDriver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut f = f.debug_struct("KVM Driver");
-        // Output each memory region
-
-        for region in &self.sandbox_regions {
-            f.field("Sandbox Memory Region", &region);
-        }
-        for region in &self.mmap_regions {
-            f.field("Mapped Memory Region", &region);
-        }
-        let regs = self.vcpu_fd.get_regs();
-        // check that regs is OK and then set field in debug struct
-
-        if let Ok(regs) = regs {
-            f.field("Registers", &regs);
-        }
-
-        let sregs = self.vcpu_fd.get_sregs();
-
-        // check that sregs is OK and then set field in debug struct
-
-        if let Ok(sregs) = sregs {
-            f.field("Special Registers", &sregs);
-        }
-
-        f.finish()
-    }
-}
-
-impl Hypervisor for KVMDriver {
+impl Hypervisor for KvmVm {
     unsafe fn map_memory(&mut self, (slot, region): (u32, &MemoryRegion)) -> Result<()> {
         let mut kvm_region: kvm_userspace_memory_region = region.into();
         kvm_region.slot = slot;
@@ -264,7 +135,7 @@ impl Hypervisor for KVMDriver {
         Ok((&kvm_regs).into())
     }
 
-    fn set_regs(&mut self, regs: &super::regs::CommonRegisters) -> Result<()> {
+    fn set_regs(&self, regs: &super::regs::CommonRegisters) -> Result<()> {
         let kvm_regs: kvm_regs = regs.into();
         self.vcpu_fd.set_regs(&kvm_regs)?;
         Ok(())
@@ -275,7 +146,7 @@ impl Hypervisor for KVMDriver {
         Ok((&kvm_fpu).into())
     }
 
-    fn set_fpu(&mut self, fpu: &super::regs::CommonFpu) -> Result<()> {
+    fn set_fpu(&self, fpu: &super::regs::CommonFpu) -> Result<()> {
         let kvm_fpu: kvm_fpu = fpu.into();
         self.vcpu_fd.set_fpu(&kvm_fpu)?;
         Ok(())
@@ -286,23 +157,10 @@ impl Hypervisor for KVMDriver {
         Ok((&kvm_sregs).into())
     }
 
-    fn set_sregs(&mut self, sregs: &super::regs::CommonSpecialRegisters) -> Result<()> {
+    fn set_sregs(&self, sregs: &super::regs::CommonSpecialRegisters) -> Result<()> {
         let kvm_sregs: kvm_sregs = sregs.into();
         self.vcpu_fd.set_sregs(&kvm_sregs)?;
         Ok(())
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
-    }
-
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
-        self.interrupt_handle.clone()
-    }
-
-    fn clear_cancel(&self) {
-        self.interrupt_handle.clear_cancel();
     }
 
     #[cfg(crashdump)]
@@ -313,17 +171,6 @@ impl Hypervisor for KVMDriver {
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect())
-    }
-
-    #[cfg(feature = "mem_profile")]
-    fn trace_info_mut(&mut self) -> &mut MemTraceInfo {
-        &mut self.trace_info
-    }
-}
-
-impl Drop for KVMDriver {
-    fn drop(&mut self) {
-        self.interrupt_handle.set_dropped();
     }
 }
 

@@ -14,17 +14,56 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use crate::Result;
-
-use crate::hypervisor::{Hypervisor, InterruptHandle};
-use crate::mem::memory_region::MemoryRegion;
-use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
-use crate::mem::shared_mem::HostSharedMemory;
-use crate::sandbox::host_funcs::FunctionRegistry;
+#[cfg(gdb)]
+use std::collections::HashMap;
+#[cfg(crashdump)]
+use std::path::Path;
+#[cfg(any(kvm, mshv3))]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU8};
+use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
-use std::sync::{Arc, Mutex};
+use tracing::{Span, instrument};
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+#[cfg(target_os = "windows")]
+use super::WindowsInterruptHandle;
+#[cfg(gdb)]
+use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, DebuggableVm, VcpuStopReason, arch};
+use super::regs::{CommonFpu, CommonRegisters};
+use crate::HyperlightError::{ExecutionCanceledByHost, NoHypervisorFound};
+#[cfg(not(gdb))]
+use crate::hypervisor::Hypervisor;
+#[cfg(any(kvm, mshv3))]
+use crate::hypervisor::LinuxInterruptHandle;
+#[cfg(crashdump)]
+use crate::hypervisor::crashdump;
+#[cfg(mshv3)]
+use crate::hypervisor::hyperv_linux::MshvVm;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::hyperv_windows::WhpVm;
+#[cfg(kvm)]
+use crate::hypervisor::kvm::KvmVm;
+use crate::hypervisor::regs::CommonSpecialRegisters;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::wrappers::HandleWrapper;
+use crate::hypervisor::{HyperlightExit, InterruptHandle, InterruptHandleImpl, get_max_log_level};
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
+use crate::mem::mgr::SandboxMemoryManager;
+use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::mem::shared_mem::HostSharedMemory;
+use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
+use crate::sandbox::SandboxConfiguration;
+use crate::sandbox::host_funcs::FunctionRegistry;
+use crate::sandbox::hypervisor::{HypervisorType, get_available_hypervisor};
+use crate::sandbox::outb::handle_outb;
+#[cfg(feature = "mem_profile")]
+use crate::sandbox::trace::MemTraceInfo;
+#[cfg(crashdump)]
+use crate::sandbox::uninitialized::SandboxRuntimeConfig;
+use crate::{HyperlightError, Result, log_then_return, new_error};
 
 /// Represents a Hyperlight Virtual Machine instance.
 ///
@@ -58,8 +97,115 @@ pub(crate) struct HyperlightVm {
 }
 
 impl HyperlightVm {
-    pub(crate) fn new(inner: Box<dyn Hypervisor>) -> Self {
-        Self { vm: inner }
+    /// Create a new HyperlightVm instance (will not run vm until calling `initialise`)
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        mem_regions: Vec<MemoryRegion>,
+        _pml4_addr: u64,
+        entrypoint: u64,
+        rsp: u64,
+        #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
+        #[cfg(target_os = "windows")] handle: HandleWrapper,
+        #[cfg(target_os = "windows")] raw_size: usize,
+        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+        #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
+        #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
+    ) -> Result<Self> {
+        #[cfg(gdb)]
+        type VmType = Box<dyn DebuggableVm>;
+        #[cfg(not(gdb))]
+        type VmType = Box<dyn Hypervisor>;
+
+        #[cfg_attr(not(gdb), allow(unused_mut))]
+        let mut vm: VmType = match get_available_hypervisor() {
+            #[cfg(kvm)]
+            Some(HypervisorType::Kvm) => Box::new(KvmVm::new()?),
+            #[cfg(mshv3)]
+            Some(HypervisorType::Mshv) => Box::new(MshvVm::new()?),
+            #[cfg(target_os = "windows")]
+            Some(HypervisorType::Whp) => Box::new(WhpVm::new(handle, raw_size)?),
+            None => return Err(NoHypervisorFound()),
+        };
+
+        for (i, region) in mem_regions.iter().enumerate() {
+            // Safety: slots are unique and region points to valid memory since we created the regions
+            unsafe { vm.map_memory((i as u32, region))? };
+        }
+
+        // Mark initial setup as complete for Windows - subsequent map_memory calls will fail
+        #[cfg(target_os = "windows")]
+        vm.complete_initial_memory_setup();
+
+        #[cfg(feature = "init-paging")]
+        vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(_pml4_addr))?;
+        #[cfg(not(feature = "init-paging"))]
+        vm.set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())?;
+        let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))?;
+
+        #[cfg(any(kvm, mshv3))]
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
+            state: AtomicU8::new(0),
+            #[cfg(all(
+                target_arch = "x86_64",
+                target_vendor = "unknown",
+                target_os = "linux",
+                target_env = "musl"
+            ))]
+            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
+            #[cfg(not(all(
+                target_arch = "x86_64",
+                target_vendor = "unknown",
+                target_os = "linux",
+                target_env = "musl"
+            )))]
+            tid: AtomicU64::new(unsafe { libc::pthread_self() }),
+            retry_delay: config.get_interrupt_retry_delay(),
+            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+            dropped: AtomicBool::new(false),
+        });
+
+        #[cfg(target_os = "windows")]
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(WindowsInterruptHandle {
+            state: AtomicU8::new(0),
+            partition_handle: vm.partition_handle(),
+            dropped: AtomicBool::new(false),
+        });
+
+        #[cfg_attr(not(gdb), allow(unused_mut))]
+        let mut ret = Self {
+            vm,
+            entrypoint,
+            orig_rsp: rsp_gp,
+            interrupt_handle,
+            page_size: 0, // Will be set in `initialise`
+
+            next_slot: mem_regions.len() as u32,
+            sandbox_regions: mem_regions,
+            mmap_regions: Vec::new(),
+            freed_slots: Vec::new(),
+
+            #[cfg(gdb)]
+            gdb_conn,
+            #[cfg(gdb)]
+            sw_breakpoints: HashMap::new(),
+            #[cfg(feature = "mem_profile")]
+            trace_info,
+            #[cfg(crashdump)]
+            rt_cfg,
+        };
+
+        // Send the interrupt handle to the GDB thread if debugging is enabled
+        // This is used to allow the GDB thread to stop the vCPU
+        #[cfg(gdb)]
+        if ret.gdb_conn.is_some() {
+            ret.send_dbg_msg(DebugResponse::InterruptHandle(ret.interrupt_handle.clone()))?;
+            // Add breakpoint to the entry point address
+            ret.vm.set_debug(true)?;
+            ret.vm.add_hw_breakpoint(entrypoint)?;
+        }
+
+        Ok(ret)
     }
 
     /// Initialise the internally stored vCPU with the given PEB address and
@@ -198,14 +344,14 @@ impl HyperlightVm {
     }
 
     pub(crate) fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
-        self.vm.interrupt_handle()
+        self.interrupt_handle.clone()
     }
 
     pub(crate) fn clear_cancel(&self) {
-        self.vm.clear_cancel()
+        self.interrupt_handle.clear_cancel();
     }
 
-     fn run(
+    fn run(
         &mut self,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
@@ -644,7 +790,11 @@ impl HyperlightVm {
         }
     }
 }
-}
+
+impl Drop for HyperlightVm {
+    fn drop(&mut self) {
+        self.interrupt_handle.set_dropped();
+    }
 }
 
 /// The vCPU tried to access the given addr
