@@ -205,16 +205,6 @@ pub(crate) trait Hypervisor: Debug + Send {
     #[cfg(crashdump)]
     fn crashdump_context(&self) -> Result<Option<crashdump::CrashDumpContext>>;
 
-    #[cfg(gdb)]
-    /// handles the cases when the vCPU stops due to a Debug event
-    fn handle_debug(
-        &mut self,
-        _dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-        _stop_reason: VcpuStopReason,
-    ) -> Result<()> {
-        unimplemented!()
-    }
-
     /// Get a mutable reference of the trace info for the guest
     #[cfg(feature = "mem_profile")]
     fn trace_info_mut(&mut self) -> &mut MemTraceInfo;
