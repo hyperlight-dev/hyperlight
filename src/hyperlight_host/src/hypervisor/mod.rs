@@ -14,23 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use log::{LevelFilter, debug};
-use tracing::{Span, instrument};
+use log::LevelFilter;
 
-use crate::HyperlightError::StackOverflow;
-use crate::error::HyperlightError::ExecutionCanceledByHost;
+use crate::Result;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
-#[cfg(feature = "mem_profile")]
-use crate::sandbox::trace::MemTraceInfo;
-use crate::{HyperlightError, Result, log_then_return};
+use crate::mem::memory_region::MemoryRegion;
 
 /// HyperV-on-linux functionality
 #[cfg(mshv3)]
-pub mod hyperv_linux;
+pub(crate) mod hyperv_linux;
 #[cfg(target_os = "windows")]
-/// Hyperv-on-windows functionality
 pub(crate) mod hyperv_windows;
 
 /// GDB debugging support
@@ -42,16 +35,14 @@ pub(crate) mod regs;
 
 #[cfg(kvm)]
 /// Functionality to manipulate KVM-based virtual machines
-pub mod kvm;
+pub(crate) mod kvm;
+
 #[cfg(target_os = "windows")]
 /// Hyperlight Surrogate Process
 pub(crate) mod surrogate_process;
 #[cfg(target_os = "windows")]
 /// Hyperlight Surrogate Process
 pub(crate) mod surrogate_process_manager;
-/// WindowsHypervisorPlatform utilities
-#[cfg(target_os = "windows")]
-pub(crate) mod windows_hypervisor_platform;
 /// Safe wrappers around windows types like `PSTR`
 #[cfg(target_os = "windows")]
 pub(crate) mod wrappers;
@@ -64,19 +55,11 @@ pub(crate) mod hyperlight_vm;
 use std::fmt::Debug;
 use std::str::FromStr;
 #[cfg(any(kvm, mshv3))]
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+#[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
 #[cfg(any(kvm, mshv3))]
 use std::time::Duration;
-
-#[cfg(gdb)]
-use gdb::VcpuStopReason;
-
-use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
-use crate::mem::shared_mem::HostSharedMemory;
-use crate::sandbox::host_funcs::FunctionRegistry;
 
 pub(crate) enum HyperlightExit {
     /// The vCPU has exited due to a debug event (usually breakpoint)
@@ -105,7 +88,8 @@ pub(crate) enum HyperlightExit {
     Retry(),
 }
 
-/// A common set of hypervisor functionality
+/// Trait for single-vCPU VMs. Provides a common interface for basic VM operations.
+/// Abstracts over differences between KVM, MSHV and WHP implementations.
 pub(crate) trait Hypervisor: Debug + Send {
     /// Map memory region into this VM
     ///
@@ -124,90 +108,71 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Note: this function should not emit any traces or spans as it is called after guest span is setup
     fn run_vcpu(&mut self) -> Result<HyperlightExit>;
 
-    /// Get InterruptHandle to underlying VM (returns internal trait)
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle>;
-
-    /// Clear the cancellation flag
-    fn clear_cancel(&self);
-
     /// Get regs
     #[allow(dead_code)]
     fn regs(&self) -> Result<CommonRegisters>;
     /// Set regs
-    #[allow(dead_code)]
-    fn set_regs(&mut self, regs: &CommonRegisters) -> Result<()>;
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()>;
     /// Get fpu regs
     #[allow(dead_code)]
     fn fpu(&self) -> Result<CommonFpu>;
     /// Set fpu regs
-    #[allow(dead_code)]
-    fn set_fpu(&mut self, fpu: &CommonFpu) -> Result<()>;
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()>;
     /// Get special regs
     #[allow(dead_code)]
     fn sregs(&self) -> Result<CommonSpecialRegisters>;
     /// Set special regs
-    #[allow(dead_code)]
-    fn set_sregs(&mut self, sregs: &CommonSpecialRegisters) -> Result<()>;
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
 
-    /// Setup initial special registers for the hypervisor
-    /// This is a default implementation that works for all hypervisors
-    fn setup_initial_sregs(&mut self, _pml4_addr: u64) -> Result<()> {
-        #[cfg(feature = "init-paging")]
-        let sregs = CommonSpecialRegisters::standard_64bit_defaults(_pml4_addr);
-
-        #[cfg(not(feature = "init-paging"))]
-        let sregs = CommonSpecialRegisters::standard_real_mode_defaults();
-
-        self.set_sregs(&sregs)?;
-        Ok(())
-    }
-
-    /// Get the logging level to pass to the guest entrypoint
-    fn get_max_log_level(&self) -> u32 {
-        // Check to see if the RUST_LOG environment variable is set
-        // and if so, parse it to get the log_level for hyperlight_guest
-        // if that is not set get the log level for the hyperlight_host
-
-        // This is done as the guest will produce logs based on the log level returned here
-        // producing those logs is expensive and we don't want to do it if the host is not
-        // going to process them
-
-        let val = std::env::var("RUST_LOG").unwrap_or_default();
-
-        let level = if val.contains("hyperlight_guest") {
-            val.split(',')
-                .find(|s| s.contains("hyperlight_guest"))
-                .unwrap_or("")
-                .split('=')
-                .nth(1)
-                .unwrap_or("")
-        } else if val.contains("hyperlight_host") {
-            val.split(',')
-                .find(|s| s.contains("hyperlight_host"))
-                .unwrap_or("")
-                .split('=')
-                .nth(1)
-                .unwrap_or("")
-        } else {
-            // look for a value string that does not contain "="
-            val.split(',').find(|s| !s.contains("=")).unwrap_or("")
-        };
-
-        log::info!("Determined guest log level: {}", level);
-        // Convert the log level string to a LevelFilter
-        // If no value is found, default to Error
-        LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
-    }
-
-    /// get a mutable trait object from self
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor;
-
+    /// xsave
     #[cfg(crashdump)]
     fn xsave(&self) -> Result<Vec<u8>>;
 
-    /// Get a mutable reference of the trace info for the guest
-    #[cfg(feature = "mem_profile")]
-    fn trace_info_mut(&mut self) -> &mut MemTraceInfo;
+    /// Get partition handle
+    #[cfg(target_os = "windows")]
+    fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
+
+    /// Mark that initial memory setup is complete. After this, map_memory will fail.
+    /// This is only needed on Windows where dynamic memory mapping is not yet supported.
+    #[cfg(target_os = "windows")]
+    fn complete_initial_memory_setup(&mut self);
+}
+
+/// Get the logging level to pass to the guest entrypoint
+fn get_max_log_level() -> u32 {
+    // Check to see if the RUST_LOG environment variable is set
+    // and if so, parse it to get the log_level for hyperlight_guest
+    // if that is not set get the log level for the hyperlight_host
+
+    // This is done as the guest will produce logs based on the log level returned here
+    // producing those logs is expensive and we don't want to do it if the host is not
+    // going to process them
+
+    let val = std::env::var("RUST_LOG").unwrap_or_default();
+
+    let level = if val.contains("hyperlight_guest") {
+        val.split(',')
+            .find(|s| s.contains("hyperlight_guest"))
+            .unwrap_or("")
+            .split('=')
+            .nth(1)
+            .unwrap_or("")
+    } else if val.contains("hyperlight_host") {
+        val.split(',')
+            .find(|s| s.contains("hyperlight_host"))
+            .unwrap_or("")
+            .split('=')
+            .nth(1)
+            .unwrap_or("")
+    } else {
+        // look for a value string that does not contain "="
+        val.split(',').find(|s| !s.contains("=")).unwrap_or("")
+    };
+
+    log::info!("Determined guest log level: {}", level);
+    // Convert the log level string to a LevelFilter
+    // If no value is found, default to Error
+    LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
 }
 
 /// A trait for platform-specific interrupt handle implementation details

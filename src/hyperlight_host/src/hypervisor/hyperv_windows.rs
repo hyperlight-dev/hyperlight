@@ -14,49 +14,49 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::string::String;
-use std::sync::atomic::{AtomicBool, AtomicU8};
-use std::sync::{Arc, Mutex};
+use std::os::raw::c_void;
 
-use log::LevelFilter;
-use tracing::{Span, instrument};
-#[cfg(feature = "trace_guest")]
-use tracing_opentelemetry::OpenTelemetrySpanExt;
-use windows::Win32::System::Hypervisor::{WHV_MEMORY_ACCESS_TYPE, WHV_RUN_VP_EXIT_REASON};
-#[cfg(crashdump)]
-use {super::crashdump, std::path::Path};
-#[cfg(gdb)]
-use {
-    super::gdb::{
-        DebugCommChannel, DebugMemoryAccess, DebugMsg, DebugResponse, GuestDebug, HypervDebug,
-        VcpuStopReason,
-    },
-    crate::HyperlightError,
+use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use windows::Win32::Foundation::{FreeLibrary, HANDLE};
+use windows::Win32::System::Hypervisor::*;
+use windows::Win32::System::LibraryLoader::*;
+use windows::core::s;
+use windows_result::HRESULT;
+
+use super::regs::{
+    Align16, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES,
+    WHP_SREGS_NAMES_LEN,
 };
-
-use super::regs::CommonSpecialRegisters;
 use super::surrogate_process::SurrogateProcess;
-use super::surrogate_process_manager::*;
-use super::windows_hypervisor_platform::{VMPartition, VMProcessor};
+use super::surrogate_process_manager::get_surrogate_process_manager;
 use super::wrappers::HandleWrapper;
-use super::{HyperlightExit, Hypervisor, InterruptHandle, VirtualCPU};
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters};
-use crate::hypervisor::{InterruptHandleImpl, WindowsInterruptHandle, get_memory_access_violation};
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::shared_mem::HostSharedMemory;
 #[cfg(gdb)]
-use crate::new_error;
-use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::outb::handle_outb;
-#[cfg(feature = "mem_profile")]
-use crate::sandbox::trace::MemTraceInfo;
-#[cfg(crashdump)]
-use crate::sandbox::uninitialized::SandboxRuntimeConfig;
-use crate::{Result, debug, log_then_return};
+use crate::hypervisor::gdb::DebuggableVm;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::{HyperlightExit, Hypervisor};
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::{Result, log_then_return, new_error};
+
+#[allow(dead_code)] // Will be used for runtime hypervisor detection
+pub(crate) fn is_hypervisor_present() -> bool {
+    let mut capability: WHV_CAPABILITY = Default::default();
+    let written_size: Option<*mut u32> = None;
+
+    match unsafe {
+        WHvGetCapability(
+            WHvCapabilityCodeHypervisorPresent,
+            &mut capability as *mut _ as *mut c_void,
+            std::mem::size_of::<WHV_CAPABILITY>() as u32,
+            written_size,
+        )
+    } {
+        Ok(_) => unsafe { capability.HypervisorPresent.as_bool() },
+        Err(_) => {
+            log::info!("Windows Hypervisor Platform is not available on this system");
+            false
+        }
+    }
+}
 
 /// A Windows Hypervisor Platform implementation of a single-vcpu VM
 #[derive(Debug)]
@@ -72,130 +72,65 @@ pub(crate) struct WhpVm {
     // TODO remove this flag once memory mapping is supported on windows.
     initial_memory_setup_done: bool,
 }
-/* This does not automatically impl Send because the host
- * address of the shared memory region is a raw pointer, which are
- * marked as !Send (and !Sync). However, the access patterns used
- * here are safe.
- */
-unsafe impl Send for HypervWindowsDriver {}
 
-impl HypervWindowsDriver {
-    #[allow(clippy::too_many_arguments)]
-    // TODO: refactor this function to take fewer arguments. Add trace_info to rt_cfg
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn new(
-        mem_regions: Vec<MemoryRegion>,
-        raw_size: usize,
-        pml4_address: u64,
-        entrypoint: u64,
-        rsp: u64,
-        mmap_file_handle: HandleWrapper,
-        #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-        #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
-        #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
-    ) -> Result<Self> {
-        // create and setup hypervisor partition
-        let mut partition = VMPartition::new(1)?;
+// Safety: `WhpVm` is !Send because it holds `SurrogateProcess` which contains a raw pointer
+// `allocated_address` (*mut c_void). This pointer represents a memory mapped view address
+// in the surrogate process. It is never dereferenced, only used for address arithmetic and
+// resource management (unmapping). This is a system resource that is not bound to the creating
+// thread and can be safely transferred between threads.
+unsafe impl Send for WhpVm {}
 
-        // get a surrogate process with preallocated memory of size SharedMemory::raw_mem_size()
-        // with guard pages setup
-        let surrogate_process = {
-            let mgr = get_surrogate_process_manager()?;
-            mgr.get_surrogate_process(raw_size, mmap_file_handle)
-        }?;
-
-        partition.map_gpa_range(&mem_regions, &surrogate_process)?;
-
-        let proc = VMProcessor::new(partition)?;
-        let partition_handle = proc.get_partition_hdl();
-
-        #[cfg(gdb)]
-        let (debug, gdb_conn) = if let Some(gdb_conn) = gdb_conn {
-            let mut debug = HypervDebug::new();
-            debug.add_hw_breakpoint(&proc, entrypoint)?;
-
-            (Some(debug), Some(gdb_conn))
-        } else {
-            (None, None)
+impl WhpVm {
+    pub(crate) fn new(mmap_file_handle: HandleWrapper, raw_size: usize) -> Result<Self> {
+        const NUM_CPU: u32 = 1;
+        let partition = unsafe {
+            let partition = WHvCreatePartition()?;
+            WHvSetPartitionProperty(
+                partition,
+                WHvPartitionPropertyCodeProcessorCount,
+                &NUM_CPU as *const _ as *const _,
+                std::mem::size_of_val(&NUM_CPU) as _,
+            )?;
+            WHvSetupPartition(partition)?;
+            WHvCreateVirtualProcessor(partition, 0, 0)?;
+            partition
         };
 
-        let interrupt_handle = Arc::new(WindowsInterruptHandle {
-            state: AtomicU8::new(0),
-            partition_handle,
-            dropped: AtomicBool::new(false),
-        });
+        // Create the surrogate process with the total memory size
+        let mgr = get_surrogate_process_manager()?;
+        let surrogate_process = mgr.get_surrogate_process(raw_size, mmap_file_handle)?;
 
-        let mut hv = Self {
-            processor: proc,
-            _surrogate_process: surrogate_process,
-            entrypoint,
-            orig_rsp: GuestPtr::try_from(RawPtr::from(rsp))?,
-            interrupt_handle: interrupt_handle.clone(),
-            sandbox_regions: mem_regions,
-            mmap_regions: Vec::new(),
-            #[cfg(gdb)]
-            debug,
-            #[cfg(gdb)]
-            gdb_conn,
-            #[cfg(crashdump)]
-            rt_cfg,
-            #[cfg(feature = "mem_profile")]
-            trace_info,
-        };
-
-        hv.setup_initial_sregs(pml4_address)?;
-
-        // Send the interrupt handle to the GDB thread if debugging is enabled
-        // This is used to allow the GDB thread to stop the vCPU
-        #[cfg(gdb)]
-        if hv.debug.is_some() {
-            hv.send_dbg_msg(DebugResponse::InterruptHandle(interrupt_handle))?;
-        }
-
-        Ok(hv)
+        Ok(WhpVm {
+            partition,
+            surrogate_process,
+            surrogate_offset: None,
+            initial_memory_setup_done: false,
+        })
     }
 
-    #[inline]
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn get_exit_details(&self, exit_reason: WHV_RUN_VP_EXIT_REASON) -> Result<String> {
-        let mut error = String::new();
-        error.push_str(&format!(
-            "Did not receive a halt from Hypervisor as expected - Received {exit_reason:?}!\n"
-        ));
-        error.push_str(&format!("Registers: \n{:#?}", self.processor.regs()?));
-        Ok(error)
+    /// Helper for setting arbitrary registers. Makes sure the same number
+    /// of names and values are passed (at the expense of some performance).
+    fn set_registers(
+        &self,
+        registers: &[(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)],
+    ) -> Result<()> {
+        let (names, values): (Vec<_>, Vec<_>) = registers.iter().copied().unzip();
+
+        unsafe {
+            WHvSetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                names.as_ptr(),
+                names.len() as u32,
+                values.as_ptr() as *const WHV_REGISTER_VALUE, // Casting Align16 away
+            )?;
+        }
+
+        Ok(())
     }
 }
 
-impl Debug for HypervWindowsDriver {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut fs = f.debug_struct("HyperV Driver");
-
-        fs.field("Entrypoint", &self.entrypoint)
-            .field("Original RSP", &self.orig_rsp);
-
-        for region in &self.sandbox_regions {
-            fs.field("Sandbox Memory Region", &region);
-        }
-        for region in &self.mmap_regions {
-            fs.field("Mapped Memory Region", &region);
-        }
-
-        // Get the registers
-        if let Ok(regs) = self.processor.regs() {
-            fs.field("Registers", &regs);
-        }
-
-        // Get the special registers
-        if let Ok(special_regs) = self.processor.sregs() {
-            fs.field("SpecialRegisters", &special_regs);
-        }
-
-        fs.finish()
-    }
-}
-
-impl Hypervisor for HypervWindowsDriver {
+impl Hypervisor for WhpVm {
     unsafe fn map_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
         // Only allow memory mapping during initial setup (the first batch of regions).
         // After the initial setup is complete, subsequent calls should fail,
@@ -352,46 +287,104 @@ impl Hypervisor for HypervWindowsDriver {
         Ok(result)
     }
 
-    /// Get regs
-    #[allow(dead_code)]
     fn regs(&self) -> Result<CommonRegisters> {
-        self.processor.regs()
+        let mut whv_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_REGS_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_REGS_NAMES.as_ptr(),
+                whv_regs_values.len() as u32,
+                whv_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        WHP_REGS_NAMES
+            .into_iter()
+            .zip(whv_regs_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonRegisters: {:?}",
+                    e
+                )
+            })
     }
-    /// Set regs
-    fn set_regs(&mut self, regs: &CommonRegisters) -> Result<()> {
-        self.processor.set_regs(regs)
+
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_REGS_NAMES_LEN] =
+            regs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
     }
-    /// Get fpu regs
-    #[allow(dead_code)]
+
     fn fpu(&self) -> Result<CommonFpu> {
-        self.processor.fpu()
+        let mut whp_fpu_values: [Align16<WHV_REGISTER_VALUE>; WHP_FPU_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_FPU_NAMES.as_ptr(),
+                whp_fpu_values.len() as u32,
+                whp_fpu_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        WHP_FPU_NAMES
+            .into_iter()
+            .zip(whp_fpu_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| new_error!("Failed to convert WHP registers to CommonFpu: {:?}", e))
     }
-    /// Set fpu regs
-    fn set_fpu(&mut self, fpu: &CommonFpu) -> Result<()> {
-        self.processor.set_fpu(fpu)
+
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
+        let whp_fpu: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_FPU_NAMES_LEN] =
+            fpu.into();
+        self.set_registers(&whp_fpu)?;
+        Ok(())
     }
-    /// Get special regs
-    #[allow(dead_code)]
+
     fn sregs(&self) -> Result<CommonSpecialRegisters> {
-        self.processor.sregs()
-    }
-    /// Set special regs
-    #[allow(dead_code)]
-    fn set_sregs(&mut self, sregs: &CommonSpecialRegisters) -> Result<()> {
-        self.processor.set_sregs(sregs)
+        let mut whp_sregs_values: [Align16<WHV_REGISTER_VALUE>; WHP_SREGS_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_SREGS_NAMES.as_ptr(),
+                whp_sregs_values.len() as u32,
+                whp_sregs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        WHP_SREGS_NAMES
+            .into_iter()
+            .zip(whp_sregs_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonSpecialRegisters: {:?}",
+                    e
+                )
+            })
     }
 
-    fn interrupt_handle(&self) -> Arc<dyn InterruptHandle> {
-        self.interrupt_handle.clone()
-    }
-
-    fn clear_cancel(&self) {
-        self.interrupt_handle.clear_cancel();
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    fn as_mut_hypervisor(&mut self) -> &mut dyn Hypervisor {
-        self as &mut dyn Hypervisor
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
+            sregs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
     }
 
     #[cfg(crashdump)]
@@ -447,9 +440,14 @@ impl Hypervisor for HypervWindowsDriver {
         Ok(xsave_buffer)
     }
 
-    #[cfg(feature = "mem_profile")]
-    fn trace_info_mut(&mut self) -> &mut MemTraceInfo {
-        &mut self.trace_info
+    /// Mark that initial memory setup is complete. After this, map_memory will fail.
+    fn complete_initial_memory_setup(&mut self) {
+        self.initial_memory_setup_done = true;
+    }
+
+    /// Get the partition handle for this VM
+    fn partition_handle(&self) -> WHV_PARTITION_HANDLE {
+        self.partition
     }
 }
 
@@ -669,8 +667,55 @@ impl DebuggableVm for WhpVm {
     }
 }
 
-impl Drop for HypervWindowsDriver {
+impl Drop for WhpVm {
     fn drop(&mut self) {
-        self.interrupt_handle.set_dropped();
+        if let Err(e) = unsafe { WHvDeletePartition(self.partition) } {
+            log::error!("Failed to delete partition: {}", e);
+        }
     }
+}
+
+// This function dynamically loads the WHvMapGpaRange2 function from the winhvplatform.dll
+// WHvMapGpaRange2 only available on Windows 11 or Windows Server 2022 and later
+// we do things this way to allow a user trying to load hyperlight on an older version of windows to
+// get an error message saying that hyperlight requires a newer version of windows, rather than just failing
+// with an error about a missing entrypoint
+// This function should always succeed since before we get here we have already checked that the hypervisor is present and
+// that we are on a supported version of windows.
+type WHvMapGpaRange2Func = unsafe extern "C" fn(
+    WHV_PARTITION_HANDLE,
+    HANDLE,
+    *const c_void,
+    u64,
+    u64,
+    WHV_MAP_GPA_RANGE_FLAGS,
+) -> HRESULT;
+
+unsafe fn try_load_whv_map_gpa_range2() -> Result<WHvMapGpaRange2Func> {
+    let library = unsafe {
+        LoadLibraryExA(
+            s!("winhvplatform.dll"),
+            None,
+            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+        )
+    };
+
+    if let Err(e) = library {
+        return Err(new_error!("{}", e));
+    }
+
+    #[allow(clippy::unwrap_used)]
+    // We know this will succeed because we just checked for an error above
+    let library = library.unwrap();
+
+    let address = unsafe { GetProcAddress(library, s!("WHvMapGpaRange2")) };
+
+    if address.is_none() {
+        unsafe { FreeLibrary(library)? };
+        return Err(new_error!(
+            "Failed to find WHvMapGpaRange2 in winhvplatform.dll"
+        ));
+    }
+
+    unsafe { Ok(std::mem::transmute_copy(&address)) }
 }
