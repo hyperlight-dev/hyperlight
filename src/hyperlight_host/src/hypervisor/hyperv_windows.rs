@@ -395,48 +395,6 @@ impl Debug for HypervWindowsDriver {
 
 impl Hypervisor for HypervWindowsDriver {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    fn initialise(
-        &mut self,
-        peb_address: RawPtr,
-        seed: u64,
-        page_size: u32,
-        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        host_funcs: &Arc<Mutex<FunctionRegistry>>,
-        max_guest_log_level: Option<LevelFilter>,
-        #[cfg(gdb)] dbg_mem_access_hdl: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
-    ) -> Result<()> {
-        let max_guest_log_level: u64 = match max_guest_log_level {
-            Some(level) => level as u64,
-            None => self.get_max_log_level().into(),
-        };
-
-        let regs = CommonRegisters {
-            rip: self.entrypoint,
-            rsp: self.orig_rsp.absolute()?,
-
-            // function args
-            rdi: peb_address.into(),
-            rsi: seed,
-            rdx: page_size.into(),
-            rcx: max_guest_log_level,
-            rflags: 1 << 1, // eflags bit index 1 is reserved and always needs to be 1
-
-            ..Default::default()
-        };
-        self.set_regs(&regs)?;
-
-        let interrupt_handle = self.interrupt_handle.clone();
-        VirtualCPU::run(
-            self.as_mut_hypervisor(),
-            interrupt_handle,
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_hdl,
-        )
-    }
-
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     unsafe fn map_region(&mut self, _region: &MemoryRegion) -> Result<()> {
         log_then_return!("Mapping host memory into the guest not yet supported on this platform");
     }

@@ -62,6 +62,9 @@ impl HyperlightVm {
         Self { vm: inner }
     }
 
+    /// Initialise the internally stored vCPU with the given PEB address and
+    /// random number seed, then run it until a HLT instruction.
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn initialise(
         &mut self,
@@ -73,13 +76,31 @@ impl HyperlightVm {
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
-        self.vm.initialise(
-            peb_addr,
-            seed,
-            page_size,
+        self.page_size = page_size as usize;
+
+        let guest_max_log_level: u64 = match guest_max_log_level {
+            Some(level) => level as u64,
+            None => get_max_log_level().into(),
+        };
+
+        let regs = CommonRegisters {
+            rip: self.entrypoint,
+            rsp: self.orig_rsp.absolute()?,
+
+            // function args
+            rdi: peb_addr.into(),
+            rsi: seed,
+            rdx: page_size.into(),
+            rcx: guest_max_log_level,
+            rflags: 1 << 1,
+
+            ..Default::default()
+        };
+        self.vm.set_regs(&regs)?;
+
+        self.run(
             mem_mgr,
             host_funcs,
-            guest_max_log_level,
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )
