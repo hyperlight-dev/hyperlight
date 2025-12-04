@@ -29,6 +29,7 @@ use flatbuffers::size_prefixed_root;
 
 use crate::flatbuffers::hyperlight::generated::{
     CloseSpanType as FbCloseSpanType, CloseSpanTypeArgs as FbCloseSpanTypeArgs,
+    EditSpanType as FbEditSpanType, EditSpanTypeArgs as FbEditSpanTypeArgs,
     GuestEventEnvelopeType as FbGuestEventEnvelopeType,
     GuestEventEnvelopeTypeArgs as FbGuestEventEnvelopeTypeArgs, GuestEventType as FbGuestEventType,
     GuestTraceDataType as FbGuestTraceDataType, GuestTraceDataTypeArgs as FbGuestTraceDataTypeArgs,
@@ -132,6 +133,19 @@ pub enum GuestEvent {
         /// Additional key-value fields associated with the log event.
         fields: Vec<EventKeyValue>,
     },
+    /// Event representing an edit to an existing span.
+    /// Corresponds to the `record` method in the tracing subscriber trait.
+    EditSpan {
+        /// Unique identifier for the span to edit.
+        id: u64,
+        /// Fields to add or modify in the span.
+        fields: Vec<EventKeyValue>,
+    },
+    /// Event representing the start of the guest environment.
+    GuestStart {
+        /// Timestamp Counter (TSC) value when the guest started.
+        tsc: u64,
+    },
 }
 
 /// Trait defining the interface for encoding guest events.
@@ -156,260 +170,403 @@ pub trait EventsDecoder {
     fn decode(&self, buffer: &[u8]) -> Result<Vec<GuestEvent>, Error>;
 }
 
-impl TryFrom<&[u8]> for GuestTraceData {
+impl TryFrom<&[u8]> for GuestEvent {
     type Error = Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let gtd_gen = size_prefixed_root::<FbGuestTraceDataType>(value)
+        let envelope = size_prefixed_root::<FbGuestEventEnvelopeType>(value)
             .map_err(|e| anyhow!("Error while reading GuestTraceData: {:?}", e))?;
-        // Extract start_tsc
-        let start_tsc = gtd_gen.start_tsc();
+        let event_type = envelope.event_type();
 
-        // Extract events
-        let mut events = Vec::new();
+        // Match on the event type to extract the appropriate event data
+        let event = match event_type {
+            FbGuestEventType::OpenSpan => {
+                // Extract OpenSpanType event data
+                let ost_fb = envelope
+                    .event_as_open_span()
+                    .ok_or_else(|| anyhow!("Failed to cast to OpenSpanType"))?;
 
-        // Iterate over each event in the FlatBuffer and convert to GuestEvent
-        if let Some(fb_events) = gtd_gen.events() {
-            for i in 0..fb_events.len() {
-                // Get the event envelope and determine its type
-                // to extract the specific event data from the union.
-                let envelope = fb_events.get(i);
-                let event_type = envelope.event_type();
+                // Extract fields
+                let id = ost_fb.id();
+                let parent = ost_fb.parent();
+                let name = ost_fb.name().to_string();
+                let target = ost_fb.target().to_string();
+                let tsc = ost_fb.tsc();
 
-                // Match on the event type to extract the appropriate event data
-                let event = match event_type {
-                    FbGuestEventType::OpenSpanType => {
-                        // Extract OpenSpanType event data
-                        let ost_fb = envelope
-                            .event_as_open_span_type()
-                            .ok_or_else(|| anyhow!("Failed to cast to OpenSpanType"))?;
-
-                        // Extract fields
-                        let id = ost_fb.id();
-                        let parent = ost_fb.parent();
-                        let name = ost_fb.name().to_string();
-                        let target = ost_fb.target().to_string();
-                        let tsc = ost_fb.tsc();
-
-                        // Extract key-value fields
-                        let mut fields = Vec::new();
-                        if let Some(fb_fields) = ost_fb.fields() {
-                            for j in 0..fb_fields.len() {
-                                let kv: EventKeyValue = EventKeyValue::from(fb_fields.get(j));
-                                fields.push(kv);
-                            }
-                        }
-
-                        // Construct OpenSpan event
-                        GuestEvent::OpenSpan {
-                            id,
-                            parent_id: parent,
-                            name,
-                            target,
-                            tsc,
-                            fields,
-                        }
+                // Extract key-value fields
+                let mut fields = Vec::new();
+                if let Some(fb_fields) = ost_fb.fields() {
+                    for j in 0..fb_fields.len() {
+                        let kv: EventKeyValue = EventKeyValue::from(fb_fields.get(j));
+                        fields.push(kv);
                     }
-                    FbGuestEventType::CloseSpanType => {
-                        // Extract CloseSpanType event data
-                        let cst_fb = envelope
-                            .event_as_close_span_type()
-                            .ok_or_else(|| anyhow!("Failed to cast to CloseSpanType"))?;
-                        // Extract fields
-                        let id = cst_fb.id();
-                        let tsc = cst_fb.tsc();
+                }
 
-                        // Construct CloseSpan event
-                        GuestEvent::CloseSpan { id, tsc }
-                    }
-                    FbGuestEventType::LogEventType => {
-                        // Extract LogEventType event data
-                        let le_fb = envelope
-                            .event_as_log_event_type()
-                            .ok_or_else(|| anyhow!("Failed to cast to LogEventType"))?;
-
-                        // Extract fields
-                        let parent_id = le_fb.parent_id();
-                        let name = le_fb.name().to_string();
-                        let tsc = le_fb.tsc();
-
-                        // Extract key-value fields
-                        let mut fields = Vec::new();
-                        if let Some(fb_fields) = le_fb.fields() {
-                            for j in 0..fb_fields.len() {
-                                let kv: EventKeyValue = EventKeyValue::from(fb_fields.get(j));
-                                fields.push(kv);
-                            }
-                        }
-
-                        // Construct LogEvent
-                        GuestEvent::LogEvent {
-                            parent_id,
-                            name,
-                            tsc,
-                            fields,
-                        }
-                    }
-                    _ => {
-                        return Err(anyhow!("Unknown GuestEventType variant at index {}", i));
-                    }
-                };
-                events.push(event);
-            }
-        }
-        Ok(GuestTraceData { start_tsc, events })
-    }
-}
-
-impl From<&GuestTraceData> for Vec<u8> {
-    fn from(value: &GuestTraceData) -> Self {
-        // Create a FlatBuffer builder
-        let mut builder = flatbuffers::FlatBufferBuilder::new();
-
-        // Serialize each GuestEvent into its corresponding FlatBuffer representation
-        let mut event_offsets = Vec::new();
-        for event in &value.events {
-            // Serialize the event based on its type
-            let event_offset: flatbuffers::WIPOffset<FbGuestEventEnvelopeType> = match event {
+                // Construct OpenSpan event
                 GuestEvent::OpenSpan {
                     id,
-                    parent_id,
+                    parent_id: parent,
                     name,
                     target,
                     tsc,
                     fields,
-                } => {
-                    // Serialize strings
-                    let name_offset = builder.create_string(name);
-                    let target_offset = builder.create_string(target);
+                }
+            }
+            FbGuestEventType::CloseSpan => {
+                // Extract CloseSpanType event data
+                let cst_fb = envelope
+                    .event_as_close_span()
+                    .ok_or_else(|| anyhow!("Failed to cast to CloseSpanType"))?;
+                // Extract fields
+                let id = cst_fb.id();
+                let tsc = cst_fb.tsc();
 
-                    // Serialize key-value fields
-                    let mut field_offsets = Vec::new();
-                    for field in fields {
-                        let field_offset: flatbuffers::WIPOffset<FbKeyValue> = {
-                            let key_offset = builder.create_string(&field.key);
-                            let value_offset = builder.create_string(&field.value);
-                            let kv_args = FbKeyValueArgs {
-                                key: Some(key_offset),
-                                value: Some(value_offset),
-                            };
-                            FbKeyValue::create(&mut builder, &kv_args)
-                        };
-                        field_offsets.push(field_offset);
+                // Construct CloseSpan event
+                GuestEvent::CloseSpan { id, tsc }
+            }
+            FbGuestEventType::LogEvent => {
+                // Extract LogEventType event data
+                let le_fb = envelope
+                    .event_as_log_event()
+                    .ok_or_else(|| anyhow!("Failed to cast to LogEventType"))?;
+
+                // Extract fields
+                let parent_id = le_fb.parent_id();
+                let name = le_fb.name().to_string();
+                let tsc = le_fb.tsc();
+
+                // Extract key-value fields
+                let mut fields = Vec::new();
+                if let Some(fb_fields) = le_fb.fields() {
+                    for j in 0..fb_fields.len() {
+                        let kv: EventKeyValue = EventKeyValue::from(fb_fields.get(j));
+                        fields.push(kv);
                     }
-
-                    // Create fields vector
-                    let fields_vector = if !field_offsets.is_empty() {
-                        Some(builder.create_vector(&field_offsets))
-                    } else {
-                        None
-                    };
-
-                    let ost_args = FbOpenSpanTypeArgs {
-                        id: *id,
-                        parent: *parent_id,
-                        name: Some(name_offset),
-                        target: Some(target_offset),
-                        tsc: *tsc,
-                        fields: fields_vector,
-                    };
-
-                    // Create the OpenSpanType FlatBuffer object
-                    let ost_fb = FbOpenSpanType::create(&mut builder, &ost_args);
-
-                    // Create the GuestEventEnvelopeType
-                    let guest_event_fb = FbGuestEventType::OpenSpanType;
-                    let envelope_args = FbGuestEventEnvelopeTypeArgs {
-                        event_type: guest_event_fb,
-                        event: Some(ost_fb.as_union_value()),
-                    };
-
-                    // Create the envelope using the union value
-                    FbGuestEventEnvelopeType::create(&mut builder, &envelope_args)
                 }
-                GuestEvent::CloseSpan { id, tsc } => {
-                    // Create CloseSpanType FlatBuffer object
-                    let cst_args = FbCloseSpanTypeArgs { id: *id, tsc: *tsc };
-                    let cst_fb = FbCloseSpanType::create(&mut builder, &cst_args);
 
-                    // Create the GuestEventEnvelopeType
-                    let guest_event_fb = FbGuestEventType::CloseSpanType;
-                    let envelope_args = FbGuestEventEnvelopeTypeArgs {
-                        event_type: guest_event_fb,
-                        event: Some(cst_fb.as_union_value()),
-                    };
-                    // Create the envelope using the union value
-                    FbGuestEventEnvelopeType::create(&mut builder, &envelope_args)
-                }
+                // Construct LogEvent
                 GuestEvent::LogEvent {
                     parent_id,
                     name,
                     tsc,
                     fields,
-                } => {
-                    // Serialize strings
-                    let name_offset = builder.create_string(name);
-
-                    // Serialize key-value fields
-                    let mut field_offsets = Vec::new();
-                    for field in fields {
-                        let field_offset: flatbuffers::WIPOffset<FbKeyValue> = {
-                            let key_offset = builder.create_string(&field.key);
-                            let value_offset = builder.create_string(&field.value);
-                            let kv_args = FbKeyValueArgs {
-                                key: Some(key_offset),
-                                value: Some(value_offset),
-                            };
-                            FbKeyValue::create(&mut builder, &kv_args)
-                        };
-                        field_offsets.push(field_offset);
-                    }
-
-                    let fields_vector = if !field_offsets.is_empty() {
-                        Some(builder.create_vector(&field_offsets))
-                    } else {
-                        None
-                    };
-
-                    let le_args = FbLogEventTypeArgs {
-                        parent_id: *parent_id,
-                        name: Some(name_offset),
-                        tsc: *tsc,
-                        fields: fields_vector,
-                    };
-
-                    let le_fb = FbLogEventType::create(&mut builder, &le_args);
-
-                    // Create the GuestEventEnvelopeType
-                    let guest_event_fb = FbGuestEventType::LogEventType;
-                    let envelope_args = FbGuestEventEnvelopeTypeArgs {
-                        event_type: guest_event_fb,
-                        event: Some(le_fb.as_union_value()),
-                    };
-                    // Create the envelope using the union value
-                    FbGuestEventEnvelopeType::create(&mut builder, &envelope_args)
                 }
-            };
+            }
+            FbGuestEventType::EditSpan => {
+                let est_fb = envelope
+                    .event_as_edit_span()
+                    .ok_or_else(|| anyhow!("Failed to cast to EditSpanType"))?;
+                // Extract fields
+                let id = est_fb.id();
+                let mut fields = Vec::new();
+                if let Some(fb_fields) = est_fb.fields() {
+                    for j in 0..fb_fields.len() {
+                        let kv: EventKeyValue = EventKeyValue::from(fb_fields.get(j));
+                        fields.push(kv);
+                    }
+                }
 
-            // Collect the event offset
-            event_offsets.push(event_offset);
+                // Construct EditSpan event
+                GuestEvent::EditSpan { id, fields }
+            }
+            FbGuestEventType::GuestStart => {
+                let gst_fb = envelope
+                    .event_as_guest_start()
+                    .ok_or_else(|| anyhow!("Failed to cast to GuestStartType"))?;
+
+                // Extract fields
+                let tsc = gst_fb.tsc();
+
+                // Construct GuestStart event
+                GuestEvent::GuestStart { tsc }
+            }
+
+            _ => {
+                return Err(anyhow!("Unknown GuestEventType={}", event_type.0));
+            }
+        };
+
+        Ok(event)
+    }
+}
+
+pub struct EventsBatchDecoder;
+
+impl EventsDecoder for EventsBatchDecoder {
+    fn decode(&self, data: &[u8]) -> Result<Vec<GuestEvent>, Error> {
+        let mut cursor = 0;
+        let mut events = Vec::new();
+
+        while data.len() - cursor >= 4 {
+            let size_bytes = &data[cursor..cursor + 4];
+            // The size_bytes is in little-endian format and the while condition ensures there are
+            // at least 4 bytes to read.
+            let payload_size = u32::from_le_bytes(size_bytes.try_into()?) as usize;
+            let event_size = 4 + payload_size;
+            if data.len() - cursor < event_size {
+                return Err(anyhow!(
+                    "The serialized buffer does not contain a full set of events",
+                ));
+            }
+
+            let event_slice = &data[cursor..cursor + event_size];
+            let event = GuestEvent::try_from(event_slice)?;
+            events.push(event);
+
+            cursor += event_size;
         }
 
-        let events_vector = if !event_offsets.is_empty() {
-            Some(builder.create_vector(&event_offsets))
-        } else {
-            None
+        Ok(events)
+    }
+}
+
+pub type EventsBatchEncoder = EventsBatchEncoderGeneric<fn(&[u8])>;
+
+/// Encoder for batching and serializing guest events into a buffer.
+/// When the buffer reaches its capacity, the provided `report_full` callback
+/// is invoked with the current buffer contents.
+///
+/// This encoder uses FlatBuffers for serialization.
+/// This encoder is a lossless encoder; no events are dropped.
+pub struct EventsBatchEncoderGeneric<T: Fn(&[u8])> {
+    /// Internal buffer for serialized events
+    buffer: Vec<u8>,
+    /// Maximum capacity of the buffer
+    capacity: usize,
+    /// Callback function to report when the buffer is full
+    report_full: T,
+    /// Current used capacity of the buffer
+    used_capacity: usize,
+}
+
+impl<T: Fn(&[u8])> EventsBatchEncoderGeneric<T> {
+    /// Create a new EventsBatchEncoder with the specified initial capacity
+    pub fn new(initial_capacity: usize, report_full: T) -> Self {
+        Self {
+            buffer: Vec::with_capacity(initial_capacity),
+            capacity: initial_capacity,
+            report_full,
+            used_capacity: 0,
+        }
+    }
+}
+
+impl<T: Fn(&[u8])> EventsEncoder for EventsBatchEncoderGeneric<T> {
+    /// Serialize a single GuestEvent and append it to the internal buffer.
+    /// If the appending of the serialized data exceeds buffer capacity, the
+    /// `report_full` callback is invoked with the current buffer contents,
+    /// and the buffer is cleared for new data.
+    fn encode(&mut self, event: &GuestEvent) {
+        // TODO: Estimate size more accurately
+        let estimated_size = 1024;
+        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(estimated_size);
+
+        // Serialize the event based on its type
+        let ev = match event {
+            GuestEvent::OpenSpan {
+                id,
+                parent_id,
+                name,
+                target,
+                tsc,
+                fields,
+            } => {
+                // Serialize strings
+                let name_offset = builder.create_string(name);
+                let target_offset = builder.create_string(target);
+
+                // Serialize key-value fields
+                let mut field_offsets = Vec::new();
+                for field in fields {
+                    let field_offset: flatbuffers::WIPOffset<FbKeyValue> = {
+                        let key_offset = builder.create_string(&field.key);
+                        let value_offset = builder.create_string(&field.value);
+                        let kv_args = FbKeyValueArgs {
+                            key: Some(key_offset),
+                            value: Some(value_offset),
+                        };
+                        FbKeyValue::create(&mut builder, &kv_args)
+                    };
+                    field_offsets.push(field_offset);
+                }
+
+                // Create fields vector
+                let fields_vector = if !field_offsets.is_empty() {
+                    Some(builder.create_vector(&field_offsets))
+                } else {
+                    None
+                };
+
+                let ost_args = FbOpenSpanTypeArgs {
+                    id: *id,
+                    parent: *parent_id,
+                    name: Some(name_offset),
+                    target: Some(target_offset),
+                    tsc: *tsc,
+                    fields: fields_vector,
+                };
+
+                // Create the OpenSpanType FlatBuffer object
+                let ost_fb = FbOpenSpanType::create(&mut builder, &ost_args);
+
+                // Create the GuestEventEnvelopeType
+                let guest_event_fb = FbGuestEventType::OpenSpan;
+                let envelope_args = FbGuestEventEnvelopeTypeArgs {
+                    event_type: guest_event_fb,
+                    event: Some(ost_fb.as_union_value()),
+                };
+
+                // Create the envelope using the union value
+                FbGuestEventEnvelopeType::create(&mut builder, &envelope_args)
+            }
+            GuestEvent::CloseSpan { id, tsc } => {
+                // Create CloseSpanType FlatBuffer object
+                let cst_args = FbCloseSpanTypeArgs { id: *id, tsc: *tsc };
+                let cst_fb = FbCloseSpanType::create(&mut builder, &cst_args);
+
+                // Create the GuestEventEnvelopeType
+                let guest_event_fb = FbGuestEventType::CloseSpan;
+                let envelope_args = FbGuestEventEnvelopeTypeArgs {
+                    event_type: guest_event_fb,
+                    event: Some(cst_fb.as_union_value()),
+                };
+                // Create the envelope using the union value
+                FbGuestEventEnvelopeType::create(&mut builder, &envelope_args)
+            }
+            GuestEvent::LogEvent {
+                parent_id,
+                name,
+                tsc,
+                fields,
+            } => {
+                // Serialize strings
+                let name_offset = builder.create_string(name);
+
+                // Serialize key-value fields
+                let mut field_offsets = Vec::new();
+                for field in fields {
+                    let field_offset: flatbuffers::WIPOffset<FbKeyValue> = {
+                        let key_offset = builder.create_string(&field.key);
+                        let value_offset = builder.create_string(&field.value);
+                        let kv_args = FbKeyValueArgs {
+                            key: Some(key_offset),
+                            value: Some(value_offset),
+                        };
+                        FbKeyValue::create(&mut builder, &kv_args)
+                    };
+                    field_offsets.push(field_offset);
+                }
+
+                let fields_vector = if !field_offsets.is_empty() {
+                    Some(builder.create_vector(&field_offsets))
+                } else {
+                    None
+                };
+
+                let le_args = FbLogEventTypeArgs {
+                    parent_id: *parent_id,
+                    name: Some(name_offset),
+                    tsc: *tsc,
+                    fields: fields_vector,
+                };
+
+                let le_fb = FbLogEventType::create(&mut builder, &le_args);
+
+                // Create the GuestEventEnvelopeType
+                let guest_event_fb = FbGuestEventType::LogEvent;
+                let envelope_args = FbGuestEventEnvelopeTypeArgs {
+                    event_type: guest_event_fb,
+                    event: Some(le_fb.as_union_value()),
+                };
+                // Create the envelope using the union value
+                FbGuestEventEnvelopeType::create(&mut builder, &envelope_args)
+            }
+            GuestEvent::EditSpan { id, fields } => {
+                // Serialize key-value fields
+                let mut field_offsets = Vec::new();
+                for field in fields {
+                    let field_offset: flatbuffers::WIPOffset<FbKeyValue> = {
+                        let key_offset = builder.create_string(&field.key);
+                        let value_offset = builder.create_string(&field.value);
+                        let kv_args = FbKeyValueArgs {
+                            key: Some(key_offset),
+                            value: Some(value_offset),
+                        };
+                        FbKeyValue::create(&mut builder, &kv_args)
+                    };
+                    field_offsets.push(field_offset);
+                }
+
+                // Create fields vector
+                let fields_vector = if !field_offsets.is_empty() {
+                    Some(builder.create_vector(&field_offsets))
+                } else {
+                    None
+                };
+
+                let est_args = FbEditSpanTypeArgs {
+                    id: *id,
+                    fields: fields_vector,
+                };
+
+                let es_fb = FbEditSpanType::create(&mut builder, &est_args);
+
+                // Create the GuestEventEnvelopeType
+                let guest_event_fb = FbGuestEventType::EditSpan;
+                let envelope_args = FbGuestEventEnvelopeTypeArgs {
+                    event_type: guest_event_fb,
+                    event: Some(es_fb.as_union_value()),
+                };
+
+                FbGuestEventEnvelopeType::create(&mut builder, &envelope_args)
+            }
+            GuestEvent::GuestStart { tsc } => {
+                let gst_args = FbGuestStartTypeArgs { tsc: *tsc };
+                let gs_fb = FbGuestStartType::create(&mut builder, &gst_args);
+                // Create the GuestEventEnvelopeType
+                let guest_event_fb = FbGuestEventType::GuestStart;
+                let envelope_args = FbGuestEventEnvelopeTypeArgs {
+                    event_type: guest_event_fb,
+                    event: Some(gs_fb.as_union_value()),
+                };
+
+                FbGuestEventEnvelopeType::create(&mut builder, &envelope_args)
+            }
         };
 
-        let gtd_args = FbGuestTraceDataTypeArgs {
-            start_tsc: value.start_tsc,
-            events: events_vector,
-        };
+        builder.finish_size_prefixed(ev, None);
+        let serialized = builder.finished_data();
 
-        // Create the GuestTraceDataType FlatBuffer object
-        let gtd_fb = FbGuestTraceDataType::create(&mut builder, &gtd_args);
-        builder.finish_size_prefixed(gtd_fb, None);
-        builder.finished_data().to_vec()
+        // Check if adding this event would exceed capacity
+        if self.used_capacity + serialized.len() > self.capacity {
+            (self.report_full)(&self.buffer);
+            self.buffer.clear();
+            self.used_capacity = 0;
+        }
+        // Append serialized data to buffer
+        self.buffer.extend_from_slice(serialized);
+        self.used_capacity += serialized.len();
+    }
+
+    /// Get a reference to the internal buffer containing serialized events.
+    /// This buffer can be sent or processed as needed.
+    fn finish(&self) -> &[u8] {
+        &self.buffer
+    }
+
+    /// Flush the internal buffer by invoking the `report_full` callback
+    /// with the current buffer contents, then resetting the buffer.
+    fn flush(&mut self) {
+        if !self.buffer.is_empty() {
+            (self.report_full)(&self.buffer);
+            self.reset();
+        }
+    }
+    /// Reset the internal buffer, clearing all serialized data.
+    /// This prepares the encoder for new events.
+    fn reset(&mut self) {
+        self.buffer.clear();
+        self.used_capacity = 0;
     }
 }
 
