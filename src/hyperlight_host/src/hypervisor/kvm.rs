@@ -263,29 +263,15 @@ mod debug {
     }
 }
 
-/// A Hypervisor driver for KVM on Linux
-pub(crate) struct KVMDriver {
-    _kvm: Kvm,
+/// A KVM implementation of a single-vcpu VM
+#[derive(Debug)]
+pub(crate) struct KvmVm {
     vm_fd: VmFd,
-    page_size: usize,
     vcpu_fd: VcpuFd,
-    entrypoint: u64,
-    orig_rsp: GuestPtr,
-    interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
-    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
-    mmap_regions: Vec<(MemoryRegion, u32)>, // Later mapped regions (region, slot number)
-    next_slot: u32,                     // Monotonically increasing slot number
-    freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
-
+    // KVM as opposed to mshv/whp has no way to get current debug regs, so need to keep a copy here
     #[cfg(gdb)]
-    debug: Option<KvmDebug>,
-    #[cfg(gdb)]
-    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-    #[cfg(crashdump)]
-    rt_cfg: SandboxRuntimeConfig,
-    #[cfg(feature = "mem_profile")]
-    trace_info: MemTraceInfo,
+    debug_regs: kvm_guest_debug,
 }
 
 impl KVMDriver {

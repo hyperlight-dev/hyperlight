@@ -262,28 +262,11 @@ pub(crate) fn is_hypervisor_present() -> bool {
     }
 }
 
-/// A Hypervisor driver for HyperV-on-Linux. This hypervisor is often
-/// called the Microsoft Hypervisor (MSHV)
-pub(crate) struct HypervLinuxDriver {
-    _mshv: Mshv,
-    page_size: usize,
+/// A MSHV implementation of a single-vcpu VM
+#[derive(Debug)]
+pub(crate) struct MshvVm {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
-    orig_rsp: GuestPtr,
-    entrypoint: u64,
-    interrupt_handle: Arc<dyn InterruptHandleImpl>,
-
-    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
-    mmap_regions: Vec<MemoryRegion>,    // Later mapped regions
-
-    #[cfg(gdb)]
-    debug: Option<MshvDebug>,
-    #[cfg(gdb)]
-    gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-    #[cfg(crashdump)]
-    rt_cfg: SandboxRuntimeConfig,
-    #[cfg(feature = "mem_profile")]
-    trace_info: MemTraceInfo,
 }
 
 impl HypervLinuxDriver {
