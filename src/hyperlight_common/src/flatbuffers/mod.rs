@@ -64,10 +64,12 @@ pub mod hyperlight {
         pub use self::close_span_type_generated::*;
         mod log_event_type_generated;
         pub use self::log_event_type_generated::*;
+        mod edit_span_type_generated;
+        pub use self::edit_span_type_generated::*;
+        mod guest_start_type_generated;
+        pub use self::guest_start_type_generated::*;
         mod guest_event_envelope_type_generated;
         pub use self::guest_event_envelope_type_generated::*;
-        mod guest_trace_data_type_generated;
-        pub use self::guest_trace_data_type_generated::*;
         mod host_function_definition_generated;
         pub use self::host_function_definition_generated::*;
         mod host_function_details_generated;
