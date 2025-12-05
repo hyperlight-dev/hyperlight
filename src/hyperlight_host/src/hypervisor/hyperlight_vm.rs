@@ -436,10 +436,7 @@ impl HyperlightVm {
                     self.handle_io(mem_mgr, host_funcs, port, data)?
                 }
                 Ok(HyperlightExit::MmioRead(addr)) => {
-                    let all_regions = self
-                        .sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(_, r)| r));
+                    let all_regions = self.sandbox_regions.iter().chain(self.get_mapped_regions());
                     match get_memory_access_violation(
                         addr as usize,
                         MemoryRegionFlags::WRITE,
@@ -465,10 +462,7 @@ impl HyperlightVm {
                     }
                 }
                 Ok(HyperlightExit::MmioWrite(addr)) => {
-                    let all_regions = self
-                        .sandbox_regions
-                        .iter()
-                        .chain(self.mmap_regions.iter().map(|(_, r)| r));
+                    let all_regions = self.sandbox_regions.iter().chain(self.get_mapped_regions());
                     match get_memory_access_violation(
                         addr as usize,
                         MemoryRegionFlags::WRITE,
@@ -602,7 +596,7 @@ impl HyperlightVm {
 
         let mem_access = DebugMemoryAccess {
             dbg_mem_access_fn,
-            guest_mmap_regions: self.mmap_regions.iter().map(|(_, r)| r.clone()).collect(),
+            guest_mmap_regions: self.get_mapped_regions().cloned().collect(),
         };
 
         match stop_reason {
@@ -776,7 +770,7 @@ impl HyperlightVm {
 
             // Include both initial sandbox regions and dynamically mapped regions
             let mut regions: Vec<MemoryRegion> = self.sandbox_regions.clone();
-            regions.extend(self.mmap_regions.iter().map(|(_, r)| r).cloned());
+            regions.extend(self.get_mapped_regions().cloned());
             Ok(Some(crashdump::CrashDumpContext::new(
                 regions,
                 regs,
