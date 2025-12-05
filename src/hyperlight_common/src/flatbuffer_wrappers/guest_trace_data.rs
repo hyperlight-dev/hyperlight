@@ -25,6 +25,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use anyhow::{Error, Result, anyhow};
+/// Estimate the serialized byte length for a size-prefixed `GuestEvent` buffer.
+pub use estimate::estimate_event;
 use flatbuffers::size_prefixed_root;
 
 use crate::flatbuffers::hyperlight::generated::{
@@ -39,7 +41,7 @@ use crate::flatbuffers::hyperlight::generated::{
 };
 
 /// Key-Value pair structure used in tracing spans/events
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventKeyValue {
     /// Key of the key-value pair
     pub key: String,
@@ -96,7 +98,7 @@ impl From<EventKeyValue> for Vec<u8> {
 
 /// Enum representing different types of guest events for tracing
 /// such as opening/closing spans and logging events.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum GuestEvent {
     /// Event representing the opening of a new tracing span.
     OpenSpan {
@@ -357,8 +359,13 @@ impl<T: Fn(&[u8])> EventsEncoder for EventsBatchEncoderGeneric<T> {
     /// `report_full` callback is invoked with the current buffer contents,
     /// and the buffer is cleared for new data.
     fn encode(&mut self, event: &GuestEvent) {
-        // TODO: Estimate size more accurately
-        let estimated_size = 1024;
+        // Optimization heuristic that helps minimize reallocations during FlatBuffer building.
+        // The estimate is not exact but should be an upper bound.
+        // The following behavior can happen:
+        // - If the estimate is accurate or slightly over, the builder uses the preallocated
+        // space.
+        // - If the estimate is too low, the FlatBuffer builder reallocates as needed.
+        let estimated_size = estimate::estimate_event(event);
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(estimated_size);
 
         // Serialize the event based on its type
@@ -570,11 +577,287 @@ impl<T: Fn(&[u8])> EventsEncoder for EventsBatchEncoderGeneric<T> {
     }
 }
 
+mod estimate {
+    use super::{EventKeyValue, GuestEvent};
+
+    const SIZE_PREFIX: usize = 4;
+    const ENVELOPE_TABLE_OVERHEAD: usize = 20;
+    /// Bytes needed for the data section of the `KeyValue` table (offset + slots).
+    const KV_TABLE_DATA_BYTES: usize = 12;
+    /// Vtables are deduplicated by the FlatBuffers builder; pay for it at most once.
+    const KV_VTABLE_BYTES: usize = 8;
+    const OPEN_TABLE_OVERHEAD: usize = 72;
+    const CLOSE_TABLE_OVERHEAD: usize = 32;
+    const LOG_TABLE_OVERHEAD: usize = 52;
+    const EDIT_TABLE_OVERHEAD: usize = 40;
+    const GUEST_START_TABLE_OVERHEAD: usize = 24;
+
+    /// Round up to next multiple of 4.
+    fn pad4(x: usize) -> usize {
+        (4 - (x & 3)) & 3
+    }
+
+    /// Size of a FlatBuffers string object with `len` UTF-8 bytes.
+    fn size_str(len: usize) -> usize {
+        let size = 4 + len + 1;
+        size + pad4(size)
+    }
+
+    fn size_kv_entry(k_len: usize, v_len: usize) -> usize {
+        KV_TABLE_DATA_BYTES + size_str(k_len) + size_str(v_len)
+    }
+
+    fn size_kv_vec(fields: &[EventKeyValue]) -> usize {
+        if fields.is_empty() {
+            return 0;
+        }
+
+        let head = 4 + 4 * fields.len();
+        let entries = fields
+            .iter()
+            .map(|kv| size_kv_entry(kv.key.len(), kv.value.len()))
+            .sum::<usize>();
+
+        // The vtable for `KeyValue` tables is shared across entries, so only account for
+        // it once even if multiple fields are present.
+        head + pad4(head) + entries + KV_VTABLE_BYTES
+    }
+
+    fn base_envelope() -> usize {
+        SIZE_PREFIX + ENVELOPE_TABLE_OVERHEAD
+    }
+
+    fn open_span_size(name_len: usize, target_len: usize, fields: &[EventKeyValue]) -> usize {
+        OPEN_TABLE_OVERHEAD + size_str(name_len) + size_str(target_len) + size_kv_vec(fields)
+    }
+
+    fn log_event_size(name_len: usize, fields: &[EventKeyValue]) -> usize {
+        LOG_TABLE_OVERHEAD + size_str(name_len) + size_kv_vec(fields)
+    }
+
+    fn edit_span_size(fields: &[EventKeyValue]) -> usize {
+        EDIT_TABLE_OVERHEAD + size_kv_vec(fields)
+    }
+
+    /// Estimate the serialized byte length for a size-prefixed `GuestEvent` buffer.
+    /// The estimate is designed to be an upper bound on the actual serialized size,
+    /// with some reasonable slack to account for FlatBuffers overhead.
+    /// The maximum slack is approximately 10% of the actual size or 128 bytes,
+    /// whichever is larger.
+    /// NOTE: This is only an estimate and may not be exact.
+    ///   The estimation upper bound is not guaranteed to be strict, it has been
+    ///   empirically verified to be reasonable in practice.
+    pub fn estimate_event(event: &GuestEvent) -> usize {
+        base_envelope()
+            + match event {
+                GuestEvent::OpenSpan {
+                    name,
+                    target,
+                    fields,
+                    ..
+                } => open_span_size(name.len(), target.len(), fields),
+                GuestEvent::CloseSpan { .. } => CLOSE_TABLE_OVERHEAD,
+                GuestEvent::LogEvent { name, fields, .. } => log_event_size(name.len(), fields),
+                GuestEvent::EditSpan { fields, .. } => edit_span_size(fields),
+                GuestEvent::GuestStart { .. } => GUEST_START_TABLE_OVERHEAD,
+            }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use alloc::string::String;
+        use alloc::vec::Vec;
+        use alloc::{format, vec};
+
+        use super::estimate_event;
+        use crate::flatbuffer_wrappers::guest_trace_data::{
+            EventKeyValue, EventsBatchEncoder, EventsEncoder, GuestEvent,
+        };
+
+        fn encoded_size(event: &GuestEvent) -> usize {
+            let mut encoder = EventsBatchEncoder::new(2048, |_| {});
+            encoder.encode(event);
+            encoder.finish().len()
+        }
+
+        fn assert_estimate_bounds(actual: usize, estimate: usize) {
+            assert!(
+                estimate >= actual,
+                "estimated size {} must be at least actual {}",
+                estimate,
+                actual,
+            );
+
+            let slack = (actual / 10).max(128);
+            let upper_bound = actual + slack;
+            assert!(
+                estimate <= upper_bound,
+                "estimated size {} exceeds reasonable bound {} for actual {}",
+                estimate,
+                upper_bound,
+                actual,
+            );
+        }
+
+        #[test]
+        fn test_estimate_open_span_reasonable() {
+            let event = GuestEvent::OpenSpan {
+                id: 1,
+                parent_id: None,
+                name: String::from("span"),
+                target: String::from("target"),
+                tsc: 10,
+                fields: vec![EventKeyValue {
+                    key: String::from("k"),
+                    value: String::from("v"),
+                }],
+            };
+
+            let estimate = estimate_event(&event);
+            let actual = encoded_size(&event);
+            assert_estimate_bounds(actual, estimate);
+        }
+
+        #[test]
+        fn test_estimate_open_span_large_payload() {
+            let long_field_value = "v".repeat(4096);
+            let long_name = "span".repeat(256);
+            let event = GuestEvent::OpenSpan {
+                id: 42,
+                parent_id: Some(5),
+                name: long_name.clone(),
+                target: "target".repeat(256),
+                tsc: 1234,
+                fields: vec![EventKeyValue {
+                    key: "key".repeat(64),
+                    value: long_field_value,
+                }],
+            };
+
+            let estimate = estimate_event(&event);
+            let actual = encoded_size(&event);
+            assert_estimate_bounds(actual, estimate);
+        }
+
+        #[test]
+        fn test_estimate_close_span_reasonable() {
+            let event = GuestEvent::CloseSpan { id: 7, tsc: 99 };
+            let estimate = estimate_event(&event);
+            let actual = encoded_size(&event);
+            assert_estimate_bounds(actual, estimate);
+        }
+
+        #[test]
+        fn test_estimate_log_event_reasonable() {
+            let event = GuestEvent::LogEvent {
+                parent_id: 5,
+                name: String::from("log"),
+                tsc: 55,
+                fields: vec![
+                    EventKeyValue {
+                        key: String::from("kk"),
+                        value: String::from("vv"),
+                    },
+                    EventKeyValue {
+                        key: String::from("m"),
+                        value: String::from("n"),
+                    },
+                ],
+            };
+            let estimate = estimate_event(&event);
+            let actual = encoded_size(&event);
+            assert_estimate_bounds(actual, estimate);
+        }
+
+        #[test]
+        fn test_estimate_log_event_many_fields() {
+            let fields = (0..64)
+                .map(|i| EventKeyValue {
+                    key: format!("k{}", i),
+                    value: "value".repeat(i + 1),
+                })
+                .collect::<Vec<_>>();
+
+            let event = GuestEvent::LogEvent {
+                parent_id: 77,
+                name: "logname".repeat(64),
+                tsc: 9876,
+                fields,
+            };
+
+            let estimate = estimate_event(&event);
+            let actual = encoded_size(&event);
+            assert_estimate_bounds(actual, estimate);
+        }
+
+        #[test]
+        fn test_estimate_edit_span_reasonable() {
+            let event = GuestEvent::EditSpan {
+                id: 9,
+                fields: vec![EventKeyValue {
+                    key: String::from("field"),
+                    value: String::from("value"),
+                }],
+            };
+            let estimate = estimate_event(&event);
+            let actual = encoded_size(&event);
+            assert_estimate_bounds(actual, estimate);
+        }
+
+        #[test]
+        fn test_estimate_guest_start_reasonable() {
+            let event = GuestEvent::GuestStart { tsc: 0 };
+            let estimate = estimate_event(&event);
+            let actual = encoded_size(&event);
+            assert_estimate_bounds(actual, estimate);
+        }
+
+        #[test]
+        fn test_estimate_guest_start_corner_cases() {
+            let very_large = GuestEvent::GuestStart { tsc: u64::MAX };
+            let zero = GuestEvent::GuestStart { tsc: 0 };
+
+            for event in [&very_large, &zero] {
+                let estimate = estimate_event(event);
+                let actual = encoded_size(event);
+                assert_estimate_bounds(actual, estimate);
+            }
+        }
+
+        #[test]
+        fn test_estimate_edit_span_empty_fields() {
+            let event = GuestEvent::EditSpan {
+                id: 999,
+                fields: Vec::new(),
+            };
+
+            let estimate = estimate_event(&event);
+            let actual = encoded_size(&event);
+            assert_estimate_bounds(actual, estimate);
+        }
+
+        #[test]
+        fn test_estimate_edit_span_large() {
+            let fields = (0..32)
+                .map(|i| EventKeyValue {
+                    key: format!("long_key_{}", i).repeat(4),
+                    value: "Z".repeat(8192),
+                })
+                .collect::<Vec<_>>();
+
+            let event = GuestEvent::EditSpan { id: 10, fields };
+            let estimate = estimate_event(&event);
+            let actual = encoded_size(&event);
+            assert_estimate_bounds(actual, estimate);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use flatbuffers::FlatBufferBuilder;
 
+    use super::*;
     use crate::flatbuffers::hyperlight::generated::{
         GuestEventEnvelopeType as FbGuestEventEnvelopeType,
         GuestEventEnvelopeTypeArgs as FbGuestEventEnvelopeTypeArgs,
@@ -1001,7 +1284,10 @@ mod tests {
             serializer.encode(event);
         }
         let mut truncated = serializer.finish().to_vec();
-        assert!(truncated.pop().is_some(), "serialized buffer must be non-empty");
+        assert!(
+            truncated.pop().is_some(),
+            "serialized buffer must be non-empty"
+        );
 
         let err = EventsBatchDecoder {}
             .decode(&truncated)
@@ -1042,7 +1328,8 @@ mod tests {
         let err = EventKeyValue::try_from(buffer.as_slice())
             .expect_err("Deserialization must fail for undersized buffer");
         assert!(
-            err.to_string().contains("Error while reading EventKeyValue"),
+            err.to_string()
+                .contains("Error while reading EventKeyValue"),
             "unexpected error: {}",
             err,
         );

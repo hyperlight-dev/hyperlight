@@ -14,6 +14,13 @@ hyperlight-host = { workspace = true, default-features = true, features = ["fuzz
 hyperlight-common = {workspace = true}
 
 [[bin]]
+name = "fuzz_guest_estimate_trace_event"
+path = "fuzz_targets/guest_estimate_trace_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_guest_call"
 path = "fuzz_targets/guest_call.rs"
 test = false
