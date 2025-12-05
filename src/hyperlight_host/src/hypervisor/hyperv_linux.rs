@@ -438,40 +438,18 @@ impl Debug for HypervLinuxDriver {
 }
 
 impl Hypervisor for HypervLinuxDriver {
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
-        if [
-            rgn.guest_region.start,
-            rgn.guest_region.end,
-            rgn.host_region.start,
-            rgn.host_region.end,
-        ]
-        .iter()
-        .any(|x| x % self.page_size != 0)
-        {
-            log_then_return!("region is not page-aligned");
-        }
-        let mshv_region: mshv_user_mem_region = rgn.to_owned().into();
+    unsafe fn map_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
+        let mshv_region: mshv_user_mem_region = region.into();
         self.vm_fd.map_user_memory(mshv_region)?;
-        self.mmap_regions.push(rgn.to_owned());
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn unmap_region(&mut self, region: &MemoryRegion) -> Result<()> {
-        if let Some(pos) = self.mmap_regions.iter().position(|r| r == region) {
-            let removed_region = self.mmap_regions.remove(pos);
-            let mshv_region: mshv_user_mem_region = removed_region.into();
-            self.vm_fd.unmap_user_memory(mshv_region)?;
-            Ok(())
-        } else {
-            Err(new_error!("Tried to unmap region that is not mapped"))
-        }
+    fn unmap_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
+        let mshv_region: mshv_user_mem_region = region.into();
+        self.vm_fd.unmap_user_memory(mshv_region)?;
+        Ok(())
     }
 
-    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
-        Box::new(self.mmap_regions.iter())
-    }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     fn handle_io(

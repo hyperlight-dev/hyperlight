@@ -106,18 +106,60 @@ impl HyperlightVm {
         )
     }
 
-    pub(crate) unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
-        unsafe { self.vm.map_region(rgn) }
+    /// Map a region of host memory into the sandbox.
+    ///
+    /// Safety: The caller must ensure that the region points to valid memory and
+    /// that the memory is valid for the duration of Self's lifetime.
+    /// Depending on the host platform, there are likely alignment
+    /// requirements of at least one page for base and len.
+    pub(crate) unsafe fn map_region(&mut self, region: &MemoryRegion) -> Result<()> {
+        if [
+            region.guest_region.start,
+            region.guest_region.end,
+            region.host_region.start,
+            region.host_region.end,
+        ]
+        .iter()
+        .any(|x| x % self.page_size != 0)
+        {
+            log_then_return!(
+                "region is not page-aligned {:x}, {region:?}",
+                self.page_size
+            );
+        }
+
+        // Try to reuse a freed slot first, otherwise use next_slot
+        let slot = if let Some(freed_slot) = self.freed_slots.pop() {
+            freed_slot
+        } else {
+            let slot = self.next_slot;
+            self.next_slot += 1;
+            slot
+        };
+
+        // Safety: slots are unique. It's up to caller to ensure that the region is valid
+        unsafe { self.vm.map_memory((slot, region))? };
+        self.mmap_regions.push((slot, region.clone()));
+        Ok(())
     }
 
-    pub(crate) unsafe fn unmap_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
-        unsafe { self.vm.unmap_region(rgn) }
+    /// Unmap a memory region from the sandbox
+    pub(crate) fn unmap_region(&mut self, region: &MemoryRegion) -> Result<()> {
+        let pos = self
+            .mmap_regions
+            .iter()
+            .position(|(_, r)| r == region)
+            .ok_or_else(|| new_error!("Region not found in mapped regions"))?;
+
+        let (slot, _) = self.mmap_regions.remove(pos);
+        self.freed_slots.push(slot);
+        self.vm.unmap_memory((slot, region))?;
+        Ok(())
     }
 
-    pub(crate) fn get_mapped_regions(
-        &self,
-    ) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
-        self.vm.get_mapped_regions()
+    /// Get the currently mapped dynamic memory regions (not including initial sandbox region)
+    pub(crate) fn get_mapped_regions(&self) -> impl Iterator<Item = &MemoryRegion> {
+        self.mmap_regions.iter().map(|(_, region)| region)
     }
 
     /// Dispatch a call from the host to the guest using the given pointer

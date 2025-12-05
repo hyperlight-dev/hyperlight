@@ -394,18 +394,78 @@ impl Debug for HypervWindowsDriver {
 }
 
 impl Hypervisor for HypervWindowsDriver {
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn map_region(&mut self, _region: &MemoryRegion) -> Result<()> {
-        log_then_return!("Mapping host memory into the guest not yet supported on this platform");
+    unsafe fn map_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
+        // Only allow memory mapping during initial setup (the first batch of regions).
+        // After the initial setup is complete, subsequent calls should fail,
+        // since it's not yet implemented.
+        if self.initial_memory_setup_done {
+            // Initial setup already completed - reject this mapping
+            log_then_return!(
+                "Mapping host memory into the guest not yet supported on this platform"
+            );
+        }
+
+        // Calculate the offset on first call. The offset accounts for the guard page
+        // at the start of the surrogate process memory.
+        let offset = if let Some(offset) = self.surrogate_offset {
+            offset
+        } else {
+            // surrogate_address points to the start of the guard page, so add PAGE_SIZE
+            // to get to the actual shared memory start
+            let surrogate_address =
+                self.surrogate_process.allocated_address as usize + PAGE_SIZE_USIZE;
+            let host_address = region.host_region.start;
+            let offset = isize::try_from(surrogate_address)? - isize::try_from(host_address)?;
+            self.surrogate_offset = Some(offset);
+            offset
+        };
+
+        let process_handle: HANDLE = self.surrogate_process.process_handle.into();
+
+        let whvmapgparange2_func = unsafe {
+            match try_load_whv_map_gpa_range2() {
+                Ok(func) => func,
+                Err(e) => return Err(new_error!("Can't find API: {}", e)),
+            }
+        };
+
+        let flags = region
+            .flags
+            .iter()
+            .map(|flag| match flag {
+                MemoryRegionFlags::NONE => Ok(WHvMapGpaRangeFlagNone),
+                MemoryRegionFlags::READ => Ok(WHvMapGpaRangeFlagRead),
+                MemoryRegionFlags::WRITE => Ok(WHvMapGpaRangeFlagWrite),
+                MemoryRegionFlags::EXECUTE => Ok(WHvMapGpaRangeFlagExecute),
+                MemoryRegionFlags::STACK_GUARD => Ok(WHvMapGpaRangeFlagNone),
+                _ => Err(new_error!("Invalid Memory Region Flag")),
+            })
+            .collect::<Result<Vec<WHV_MAP_GPA_RANGE_FLAGS>>>()?
+            .iter()
+            .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag);
+
+        // Calculate the surrogate process address for this region
+        let surrogate_addr = (isize::try_from(region.host_region.start)? + offset) as *const c_void;
+
+        let res = unsafe {
+            whvmapgparange2_func(
+                self.partition,
+                process_handle,
+                surrogate_addr,
+                region.guest_region.start as u64,
+                region.guest_region.len() as u64,
+                flags,
+            )
+        };
+        if res.is_err() {
+            return Err(new_error!("Call to WHvMapGpaRange2 failed"));
+        }
+
+        Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn unmap_region(&mut self, _region: &MemoryRegion) -> Result<()> {
+    fn unmap_memory(&mut self, (_slot, _region): (u32, &MemoryRegion)) -> Result<()> {
         log_then_return!("Mapping host memory into the guest not yet supported on this platform");
-    }
-
-    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
-        Box::new(self.mmap_regions.iter())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
