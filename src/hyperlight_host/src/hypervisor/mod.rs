@@ -107,19 +107,18 @@ pub(crate) enum HyperlightExit {
 
 /// A common set of hypervisor functionality
 pub(crate) trait Hypervisor: Debug + Send {
-    /// Map a region of host memory into the sandbox.
+    /// Map memory region into this VM
     ///
-    /// Depending on the host platform, there are likely alignment
-    /// requirements of at least one page for base and len.
-    unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()>;
+    /// # Safety
+    /// The caller must ensure that the memory region is valid and points to valid memory,
+    /// and lives long enough for the VM to use it.
+    /// The caller must ensure that the given u32 is not already mapped, otherwise previously mapped
+    /// memory regions may be overwritten.
+    /// The memory region must not overlap with an existing region, and depending on platform, must be aligned to page boundaries.
+    unsafe fn map_memory(&mut self, region: (u32, &MemoryRegion)) -> Result<()>;
 
-    /// Unmap a memory region from the sandbox
-    unsafe fn unmap_region(&mut self, rgn: &MemoryRegion) -> Result<()>;
-
-    /// Get the currently mapped dynamic memory regions (not including sandbox regions)
-    ///
-    /// Note: Box needed for trait to be object-safe :(
-    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_>;
+    /// Unmap memory region from this VM that has previously been mapped using `map_memory`.
+    fn unmap_memory(&mut self, region: (u32, &MemoryRegion)) -> Result<()>;
 
     /// Handle an IO exit from the internally stored vCPU.
     fn handle_io(

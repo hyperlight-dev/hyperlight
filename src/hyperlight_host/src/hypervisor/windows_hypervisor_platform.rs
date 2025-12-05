@@ -148,66 +148,7 @@ impl VMPartition {
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn map_gpa_range(
-        &mut self,
-        regions: &[MemoryRegion],
-        surrogate_process: &SurrogateProcess,
-    ) -> Result<()> {
-        let process_handle: HANDLE = surrogate_process.process_handle.into();
-        // this is the address in the surrogate process where shared memory starts.
-        // We add page-size because we don't care about the first guard page
-        let surrogate_address = surrogate_process.allocated_address as usize + PAGE_SIZE_USIZE;
-        if regions.is_empty() {
-            return Err(new_error!("No memory regions to map"));
-        }
-        // this is the address in the main process where the shared memory starts
-        let host_address = regions[0].host_region.start;
-
-        // offset between the surrogate process and the host process address of start of shared memory
-        let offset = isize::try_from(surrogate_address)? - isize::try_from(host_address)?;
-
-        // The function pointer to WHvMapGpaRange2 is resolved dynamically to allow us to detect
-        // when we are running on older versions of windows that do not support this API and
-        // return a more informative error message, rather than failing with an error about a missing entrypoint
-        let whvmapgparange2_func = unsafe {
-            match try_load_whv_map_gpa_range2() {
-                Ok(func) => func,
-                Err(e) => return Err(new_error!("Can't find API: {}", e)),
-            }
-        };
-
-        regions.iter().try_for_each(|region| unsafe {
-            let flags = region
-                .flags
-                .iter()
-                .map(|flag| match flag {
-                    MemoryRegionFlags::NONE => Ok(WHvMapGpaRangeFlagNone),
-                    MemoryRegionFlags::READ => Ok(WHvMapGpaRangeFlagRead),
-                    MemoryRegionFlags::WRITE => Ok(WHvMapGpaRangeFlagWrite),
-                    MemoryRegionFlags::EXECUTE => Ok(WHvMapGpaRangeFlagExecute),
-                    MemoryRegionFlags::STACK_GUARD => Ok(WHvMapGpaRangeFlagNone),
-                    _ => Err(new_error!("Invalid Memory Region Flag")),
-                })
-                .collect::<Result<Vec<WHV_MAP_GPA_RANGE_FLAGS>>>()?
-                .iter()
-                .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag); // collect using bitwise OR
-
-            let res = whvmapgparange2_func(
-                self.0,
-                process_handle,
-                (isize::try_from(region.host_region.start)? + offset) as *const c_void,
-                region.guest_region.start as u64,
-                region.guest_region.len() as u64,
-                flags,
-            );
-            if res.is_err() {
-                return Err(new_error!("Call to WHvMapGpaRange2 failed"));
-            }
-            Ok(())
-        })?;
-        Ok(())
-    }
+   
 }
 
 // This function dynamically loads the WHvMapGpaRange2 function from the winhvplatform.dll

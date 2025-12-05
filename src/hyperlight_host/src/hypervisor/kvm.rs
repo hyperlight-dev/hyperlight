@@ -403,63 +403,22 @@ impl Debug for KVMDriver {
 }
 
 impl Hypervisor for KVMDriver {
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn map_region(&mut self, region: &MemoryRegion) -> Result<()> {
-        if [
-            region.guest_region.start,
-            region.guest_region.end,
-            region.host_region.start,
-            region.host_region.end,
-        ]
-        .iter()
-        .any(|x| x % self.page_size != 0)
-        {
-            log_then_return!(
-                "region is not page-aligned {:x}, {region:?}",
-                self.page_size
-            );
-        }
-
-        let mut kvm_region: kvm_userspace_memory_region = region.clone().into();
-
-        // Try to reuse a freed slot first, otherwise use next_slot
-        let slot = if let Some(freed_slot) = self.freed_slots.pop() {
-            freed_slot
-        } else {
-            let slot = self.next_slot;
-            self.next_slot += 1;
-            slot
-        };
-
+    unsafe fn map_memory(&mut self, (slot, region): (u32, &MemoryRegion)) -> Result<()> {
+        let mut kvm_region: kvm_userspace_memory_region = region.into();
         kvm_region.slot = slot;
-        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
-        self.mmap_regions.push((region.to_owned(), slot));
+        unsafe { self.vm_fd.set_user_memory_region(kvm_region)? };
         Ok(())
     }
 
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    unsafe fn unmap_region(&mut self, region: &MemoryRegion) -> Result<()> {
-        if let Some(idx) = self.mmap_regions.iter().position(|(r, _)| r == region) {
-            let (region, slot) = self.mmap_regions.remove(idx);
-            let mut kvm_region: kvm_userspace_memory_region = region.into();
-            kvm_region.slot = slot;
-            // Setting memory_size to 0 unmaps the slot's region
-            // From https://docs.kernel.org/virt/kvm/api.html
-            // > Deleting a slot is done by passing zero for memory_size.
-            kvm_region.memory_size = 0;
-            unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
-
-            // Add the freed slot to the reuse list
-            self.freed_slots.push(slot);
-
-            Ok(())
-        } else {
-            Err(new_error!("Tried to unmap region that is not mapped"))
-        }
-    }
-
-    fn get_mapped_regions(&self) -> Box<dyn ExactSizeIterator<Item = &MemoryRegion> + '_> {
-        Box::new(self.mmap_regions.iter().map(|(region, _)| region))
+    fn unmap_memory(&mut self, (slot, region): (u32, &MemoryRegion)) -> Result<()> {
+        let mut kvm_region: kvm_userspace_memory_region = region.into();
+        kvm_region.slot = slot;
+        // Setting memory_size to 0 unmaps the slot's region
+        // From https://docs.kernel.org/virt/kvm/api.html
+        // > Deleting a slot is done by passing zero for memory_size.
+        kvm_region.memory_size = 0;
+        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }?;
+        Ok(())
     }
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
