@@ -59,7 +59,7 @@ build-rust-guests target=default-target features="": (witguest-wit)
 build-and-move-rust-guests: (build-rust-guests "debug") (move-rust-guests "debug") (build-rust-guests "release") (move-rust-guests "release")
 build-and-move-c-guests: (build-c-guests "debug") (move-c-guests "debug") (build-c-guests "release") (move-c-guests "release")
 
-clean: clean-rust
+clean: clean-rust clean-c
 
 clean-rust: 
     cargo clean
@@ -67,7 +67,11 @@ clean-rust:
     cd src/tests/rust_guests/dummyguest && cargo clean
     {{ if os() == "windows" { "cd src/tests/rust_guests/witguest -ErrorAction SilentlyContinue; cargo clean" } else { "[ -d src/tests/rust_guests/witguest ] && cd src/tests/rust_guests/witguest && cargo clean || true" } }}
     {{ if os() == "windows" { "Remove-Item src/tests/rust_guests/witguest/interface.wasm -Force -ErrorAction SilentlyContinue" } else { "rm -f src/tests/rust_guests/witguest/interface.wasm" } }}
+
+clean-c:
     git clean -fdx src/tests/c_guests/bin src/tests/rust_guests/bin
+    git clean -fdx src/tests/c_guests/c_simpleguest/out src/tests/c_guests/c_callbackguest/out
+
 
 ################
 ### TESTING ####

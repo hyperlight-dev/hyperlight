@@ -121,6 +121,30 @@ jobs:
         run: (Get-Service actions.runner.*) | Foreach { $_.Name, $_.UserName, $_.ServiceType }
         shell: pwsh
 
+      # If exact key match is found, it will be restored and the below `just build-rust-guests` step will be much faster
+      # If a partial key match is found (restore-keys), it will be restored but `just build-rust-guests` will perform an incremental build
+      # If neither, `just build-rust-guests` will perform a full build
+      - name: Cache Guest Binaries
+        id: cache-guests
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/tests/rust_guests/simpleguest/target/x86_64-unknown-none/${{ inputs.config }}
+            src/tests/rust_guests/dummyguest/target/x86_64-unknown-none/${{ inputs.config }}
+            src/tests/rust_guests/witguest/target/x86_64-unknown-none/${{ inputs.config }}
+            src/tests/rust_guests/simpleguest/target/${{ inputs.config }}
+            src/tests/rust_guests/dummyguest/target/${{ inputs.config }}
+            src/tests/rust_guests/witguest/target/${{ inputs.config }}
+            src/tests/c_guests/c_simpleguest/out/${{ inputs.config }}
+          key: guest-binaries-${{ runner.os }}-${{ inputs.config }}-${{ hashFiles('src/tests/rust_guests/**/*', 'src/tests/c_guests/**/*') }} # cargo.lock is not sufficent as it is not always up to date due to dependabot PRs
+          restore-keys: |
+            guest-binaries-${{ runner.os }}-${{ inputs.config }}-
+          enableCrossOsArchive: false # binaries are compatible but build artifacts contain absolute paths
+
+      - name: Display cache hit info
+        run: |
+          echo "Cache hit: ${{ steps.cache-guests.outputs.cache-hit }}"
+
       - name: Build and move Rust guests
         run: |
           # use these commands in favor of build-and-move-rust-guests to avoid building both configs
