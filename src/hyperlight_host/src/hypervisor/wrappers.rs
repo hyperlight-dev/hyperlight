@@ -56,18 +56,6 @@ impl From<&PSTRWrapper> for PSTR {
     }
 }
 
-/// only used on widos for handling debug registers with the VMProcessor
-#[cfg(gdb)]
-#[derive(Debug, Default, Copy, Clone, PartialEq)]
-pub(super) struct WHvDebugRegisters {
-    pub dr0: u64,
-    pub dr1: u64,
-    pub dr2: u64,
-    pub dr3: u64,
-    pub dr6: u64,
-    pub dr7: u64,
-}
-
 /// Wrapper for HANDLE, required since HANDLE is no longer Send.
 #[derive(Debug, Copy, Clone)]
 pub struct HandleWrapper(HANDLE);
