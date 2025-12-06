@@ -138,6 +138,13 @@ jobs:
         env: 
           TARGET_TRIPLE: ${{ inputs.target_triple }}
 
+      - name: Run Miri tests
+        if: ${{ (runner.os == 'Linux' )}}
+        env:
+          CARGO_TERM_COLOR: always
+          TARGET_TRIPLE: ${{ inputs.target_triple }}
+        run: just miri-tests
+
       - name: Run Rust tests
         env:
           CARGO_TERM_COLOR: always

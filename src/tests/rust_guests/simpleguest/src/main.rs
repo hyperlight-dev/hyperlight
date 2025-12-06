@@ -741,6 +741,22 @@ fn call_host_then_spin(host_func_name: String) -> Result<()> {
     loop {}
 }
 
+#[instrument(skip_all, parent = Span::current(), level= "Trace")]
+fn fuzz_traced_function(depth: u32, max_depth: u32, msg: &str) -> u32 {
+    if depth < max_depth {
+        log::info!("{}", msg);
+
+        fuzz_traced_function(depth + 1, max_depth, msg) + 1
+    } else {
+        0
+    }
+}
+
+#[guest_function("FuzzGuestTrace")]
+fn fuzz_guest_trace(max_depth: u32, msg: String) -> u32 {
+    fuzz_traced_function(0, max_depth, &msg)
+}
+
 // Interprets the given guest function call as a host function call and dispatches it to the host.
 fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
     let mut params = func.parameters.unwrap();

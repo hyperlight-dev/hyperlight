@@ -26,20 +26,26 @@ table LogEventType {
     fields: [KeyValue];
 }
 
+table EditSpanType {
+    id: ulong;
+    fields: [KeyValue];
+}
+
+table GuestStartType {
+    tsc: ulong;
+}
+
 // Result-like union
 union GuestEventType {
-    OpenSpanType,
-    CloseSpanType,
-    LogEventType,
+    OpenSpan:OpenSpanType,
+    CloseSpan:CloseSpanType,
+    LogEvent:LogEventType,
+    EditSpan:EditSpanType,
+    GuestStart:GuestStartType,
 }
 
 table GuestEventEnvelopeType {
     event: GuestEventType;
 }
 
-table GuestTraceDataType {
-    start_tsc: ulong;
-    events: [GuestEventEnvelopeType];
-}
-
-root_type GuestTraceDataType;
+root_type GuestEventEnvelopeType;

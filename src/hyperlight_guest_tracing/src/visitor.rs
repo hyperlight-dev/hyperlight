@@ -19,12 +19,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use hyperlight_common::flatbuffer_wrappers::guest_trace_data::KeyValue;
+use hyperlight_common::flatbuffer_wrappers::guest_trace_data::EventKeyValue;
 use tracing_core::field::{Field, Visit};
 
 /// Visitor implementation to collect fields into a vector of key-value pairs
 pub(crate) struct FieldsVisitor<'a> {
-    pub out: &'a mut Vec<KeyValue>,
+    pub out: &'a mut Vec<EventKeyValue>,
 }
 
 impl<'a> Visit for FieldsVisitor<'a> {
@@ -35,7 +35,7 @@ impl<'a> Visit for FieldsVisitor<'a> {
     fn record_bytes(&mut self, f: &Field, v: &[u8]) {
         let k = String::from(f.name());
         let val = alloc::format!("{v:?}");
-        self.out.push(KeyValue { key: k, value: val });
+        self.out.push(EventKeyValue { key: k, value: val });
     }
 
     /// Record a string field
@@ -45,7 +45,7 @@ impl<'a> Visit for FieldsVisitor<'a> {
     fn record_str(&mut self, f: &Field, v: &str) {
         let k = String::from(f.name());
         let val = String::from(v);
-        self.out.push(KeyValue { key: k, value: val });
+        self.out.push(EventKeyValue { key: k, value: val });
     }
 
     /// Record a debug field
@@ -55,6 +55,6 @@ impl<'a> Visit for FieldsVisitor<'a> {
     fn record_debug(&mut self, f: &Field, v: &dyn Debug) {
         let k = String::from(f.name());
         let val = alloc::format!("{v:?}");
-        self.out.push(KeyValue { key: k, value: val });
+        self.out.push(EventKeyValue { key: k, value: val });
     }
 }
