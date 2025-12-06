@@ -426,3 +426,26 @@ mod wit_test {
         drop(guard);
     }
 }
+
+mod pick_world_bindings {
+    hyperlight_component_macro::host_bindgen!({path: "../tests/rust_guests/witguest/twoworlds.wasm", world_name: "firstworld"});
+}
+
+mod pick_world_binding_test {
+    use crate::pick_world_bindings::r#twoworlds::r#wit::r#first_import::RecFirstImport;
+
+    impl crate::pick_world_bindings::r#twoworlds::r#wit::r#first_import::RecFirstImport {
+        fn new() -> Option<Self> {
+            Some(Self {
+                r#key: String::from("dummyKey"),
+                r#value: String::from("dummyValue"),
+            })
+        }
+    }
+
+    #[test]
+    fn test_first_import_instance() {
+        let first_import = RecFirstImport::new();
+        assert!(first_import.is_some());
+    }
+}
