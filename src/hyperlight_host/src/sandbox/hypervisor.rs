@@ -51,9 +51,9 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
                     None
                 }
             } else if #[cfg(target_os = "windows")] {
-                use crate::sandbox::windows_hypervisor_platform;
+                use crate::hypervisor::hyperv_windows;
 
-                if windows_hypervisor_platform::is_hypervisor_present() {
+                if hyperv_windows::is_hypervisor_present() {
                     Some(HypervisorType::Whp)
                 } else {
                     None

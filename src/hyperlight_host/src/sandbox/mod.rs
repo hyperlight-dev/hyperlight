@@ -53,9 +53,6 @@ pub use uninitialized::GuestBinary;
 /// Re-export for `UninitializedSandbox` type
 pub use uninitialized::UninitializedSandbox;
 
-#[cfg(target_os = "windows")]
-use crate::hypervisor::windows_hypervisor_platform;
-
 /// Determine whether a suitable hypervisor is available to run
 /// this sandbox.
 ///
