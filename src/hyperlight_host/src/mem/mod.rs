@@ -32,6 +32,8 @@ pub mod ptr;
 pub(super) mod ptr_addr_space;
 /// Structures to represent an offset into a memory space
 pub mod ptr_offset;
+/// A ring buffer implementation for communication between host and guest
+pub(crate) mod ring;
 /// A wrapper around unsafe functionality to create and initialize
 /// a memory region for a guest running in a sandbox.
 pub mod shared_mem;
