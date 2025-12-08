@@ -77,8 +77,8 @@ impl<'a> GuestEventEnvelopeType<'a> {
     }
     #[inline]
     #[allow(non_snake_case)]
-    pub fn event_as_open_span_type(&self) -> Option<OpenSpanType<'a>> {
-        if self.event_type() == GuestEventType::OpenSpanType {
+    pub fn event_as_open_span(&self) -> Option<OpenSpanType<'a>> {
+        if self.event_type() == GuestEventType::OpenSpan {
             self.event().map(|t| {
                 // Safety:
                 // Created from a valid Table for this object
@@ -92,8 +92,8 @@ impl<'a> GuestEventEnvelopeType<'a> {
 
     #[inline]
     #[allow(non_snake_case)]
-    pub fn event_as_close_span_type(&self) -> Option<CloseSpanType<'a>> {
-        if self.event_type() == GuestEventType::CloseSpanType {
+    pub fn event_as_close_span(&self) -> Option<CloseSpanType<'a>> {
+        if self.event_type() == GuestEventType::CloseSpan {
             self.event().map(|t| {
                 // Safety:
                 // Created from a valid Table for this object
@@ -107,13 +107,43 @@ impl<'a> GuestEventEnvelopeType<'a> {
 
     #[inline]
     #[allow(non_snake_case)]
-    pub fn event_as_log_event_type(&self) -> Option<LogEventType<'a>> {
-        if self.event_type() == GuestEventType::LogEventType {
+    pub fn event_as_log_event(&self) -> Option<LogEventType<'a>> {
+        if self.event_type() == GuestEventType::LogEvent {
             self.event().map(|t| {
                 // Safety:
                 // Created from a valid Table for this object
                 // Which contains a valid union in this slot
                 unsafe { LogEventType::init_from_table(t) }
+            })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    #[allow(non_snake_case)]
+    pub fn event_as_edit_span(&self) -> Option<EditSpanType<'a>> {
+        if self.event_type() == GuestEventType::EditSpan {
+            self.event().map(|t| {
+                // Safety:
+                // Created from a valid Table for this object
+                // Which contains a valid union in this slot
+                unsafe { EditSpanType::init_from_table(t) }
+            })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    #[allow(non_snake_case)]
+    pub fn event_as_guest_start(&self) -> Option<GuestStartType<'a>> {
+        if self.event_type() == GuestEventType::GuestStart {
+            self.event().map(|t| {
+                // Safety:
+                // Created from a valid Table for this object
+                // Which contains a valid union in this slot
+                unsafe { GuestStartType::init_from_table(t) }
             })
         } else {
             None
@@ -136,19 +166,29 @@ impl flatbuffers::Verifiable for GuestEventEnvelopeType<'_> {
                 Self::VT_EVENT,
                 false,
                 |key, v, pos| match key {
-                    GuestEventType::OpenSpanType => v
+                    GuestEventType::OpenSpan => v
                         .verify_union_variant::<flatbuffers::ForwardsUOffset<OpenSpanType>>(
-                            "GuestEventType::OpenSpanType",
+                            "GuestEventType::OpenSpan",
                             pos,
                         ),
-                    GuestEventType::CloseSpanType => v
+                    GuestEventType::CloseSpan => v
                         .verify_union_variant::<flatbuffers::ForwardsUOffset<CloseSpanType>>(
-                            "GuestEventType::CloseSpanType",
+                            "GuestEventType::CloseSpan",
                             pos,
                         ),
-                    GuestEventType::LogEventType => v
+                    GuestEventType::LogEvent => v
                         .verify_union_variant::<flatbuffers::ForwardsUOffset<LogEventType>>(
-                            "GuestEventType::LogEventType",
+                            "GuestEventType::LogEvent",
+                            pos,
+                        ),
+                    GuestEventType::EditSpan => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<EditSpanType>>(
+                            "GuestEventType::EditSpan",
+                            pos,
+                        ),
+                    GuestEventType::GuestStart => v
+                        .verify_union_variant::<flatbuffers::ForwardsUOffset<GuestStartType>>(
+                            "GuestEventType::GuestStart",
                             pos,
                         ),
                     _ => Ok(()),
@@ -212,8 +252,8 @@ impl core::fmt::Debug for GuestEventEnvelopeType<'_> {
         let mut ds = f.debug_struct("GuestEventEnvelopeType");
         ds.field("event_type", &self.event_type());
         match self.event_type() {
-            GuestEventType::OpenSpanType => {
-                if let Some(x) = self.event_as_open_span_type() {
+            GuestEventType::OpenSpan => {
+                if let Some(x) = self.event_as_open_span() {
                     ds.field("event", &x)
                 } else {
                     ds.field(
@@ -222,8 +262,8 @@ impl core::fmt::Debug for GuestEventEnvelopeType<'_> {
                     )
                 }
             }
-            GuestEventType::CloseSpanType => {
-                if let Some(x) = self.event_as_close_span_type() {
+            GuestEventType::CloseSpan => {
+                if let Some(x) = self.event_as_close_span() {
                     ds.field("event", &x)
                 } else {
                     ds.field(
@@ -232,8 +272,28 @@ impl core::fmt::Debug for GuestEventEnvelopeType<'_> {
                     )
                 }
             }
-            GuestEventType::LogEventType => {
-                if let Some(x) = self.event_as_log_event_type() {
+            GuestEventType::LogEvent => {
+                if let Some(x) = self.event_as_log_event() {
+                    ds.field("event", &x)
+                } else {
+                    ds.field(
+                        "event",
+                        &"InvalidFlatbuffer: Union discriminant does not match value.",
+                    )
+                }
+            }
+            GuestEventType::EditSpan => {
+                if let Some(x) = self.event_as_edit_span() {
+                    ds.field("event", &x)
+                } else {
+                    ds.field(
+                        "event",
+                        &"InvalidFlatbuffer: Union discriminant does not match value.",
+                    )
+                }
+            }
+            GuestEventType::GuestStart => {
+                if let Some(x) = self.event_as_guest_start() {
                     ds.field("event", &x)
                 } else {
                     ds.field(

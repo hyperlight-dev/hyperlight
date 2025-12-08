@@ -562,7 +562,9 @@ mod tests {
         );
     }
 
+    /// When running under Miri, this test takes too long due to large allocations
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_estimate_megabyte_parameters() {
         assert_estimation_accuracy(
             "process_megabyte_data",

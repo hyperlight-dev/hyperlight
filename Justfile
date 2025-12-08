@@ -214,6 +214,12 @@ test-doc target=default-target features="":
 ### LINTING ####
 ################
 
+miri-tests:
+    rustup component add miri --toolchain nightly
+    # For now only run miri tests on hyperlight-common with trace_guest feature
+    # We can add more as needed
+    cargo +nightly miri test -p hyperlight-common -F trace_guest
+
 check:
     {{ cargo-cmd }} check  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features crashdump  {{ target-triple-flag }}
@@ -342,12 +348,14 @@ bench features="":
 fuzz_memory_limit := "4096"
 
 # Fuzzes the given target
+# Uses *case* for compatibility to determine if the target is a tracing fuzzer or not
 fuzz fuzz-target:
-    cargo +nightly fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }}
+    case "{{ fuzz-target }}" in *trace*) just fuzz-trace {{ fuzz-target }} ;; *) cargo +nightly fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} ;; esac
 
 # Fuzzes the given target. Stops after `max_time` seconds
+# Uses *case* for compatibility to determine if the target is a tracing fuzzer or not
 fuzz-timed fuzz-target max_time:
-    cargo +nightly fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }}
+    case "{{ fuzz-target }}" in *trace*) just fuzz-trace-timed {{ max_time }} {{ fuzz-target }} ;; *) cargo +nightly fuzz run {{ fuzz-target }} --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }} ;; esac
 
 # Builds fuzzers for submission to external fuzzing services
 build-fuzzers: (build-fuzzer "fuzz_guest_call") (build-fuzzer "fuzz_host_call") (build-fuzzer "fuzz_host_print")
@@ -356,6 +364,28 @@ build-fuzzers: (build-fuzzer "fuzz_guest_call") (build-fuzzer "fuzz_host_call") 
 build-fuzzer fuzz-target:
     cargo +nightly fuzz build {{ fuzz-target }}
 
+# Fuzzes the guest with tracing enabled
+fuzz-trace fuzz-target="fuzz_guest_trace":
+    # We need to build the trace guest with the trace feature enabled
+    just build-rust-guests release trace_guest
+    just move-rust-guests release
+    RUST_LOG="trace,hyperlight_guest=trace,hyperlight_guest_bin=trace" cargo +nightly fuzz run {{ fuzz-target }} --features trace --release -- -rss_limit_mb={{ fuzz_memory_limit }}
+    # Rebuild the trace guest without the trace feature to avoid affecting other tests
+    just build-rust-guests release
+    just move-rust-guests release
+
+# Fuzzes the guest with tracing enabled. Stops after `max_time` seconds
+fuzz-trace-timed max_time fuzz-target="fuzz_guest_trace":
+    # We need to build the trace guest with the trace feature enabled
+    just build-rust-guests release trace_guest
+    just move-rust-guests release
+    RUST_LOG="trace,hyperlight_guest=trace,hyperlight_guest_bin=trace" cargo +nightly fuzz run {{ fuzz-target }} --features trace --release -- -rss_limit_mb={{ fuzz_memory_limit }} -max_total_time={{ max_time }}
+    # Rebuild the trace guest without the trace feature to avoid affecting other tests
+    just build-rust-guests release
+    just move-rust-guests release
+
+build-trace-fuzzers:
+    cargo +nightly fuzz build fuzz_guest_trace --features trace
 
 ###################
 ### FLATBUFFERS ###

@@ -14,31 +14,31 @@ use super::*;
     since = "2.0.0",
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
-pub const ENUM_MIN_GUEST_EVENT_TYPE: u8 = 0;
+pub const ENUM_MIN_GUEST_EVENT_UNION_TYPE: u8 = 0;
 #[deprecated(
     since = "2.0.0",
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
-pub const ENUM_MAX_GUEST_EVENT_TYPE: u8 = 5;
+pub const ENUM_MAX_GUEST_EVENT_UNION_TYPE: u8 = 5;
 #[deprecated(
     since = "2.0.0",
     note = "Use associated constants instead. This will no longer be generated in 2021."
 )]
 #[allow(non_camel_case_types)]
-pub const ENUM_VALUES_GUEST_EVENT_TYPE: [GuestEventType; 6] = [
-    GuestEventType::NONE,
-    GuestEventType::OpenSpan,
-    GuestEventType::CloseSpan,
-    GuestEventType::LogEvent,
-    GuestEventType::EditSpan,
-    GuestEventType::GuestStart,
+pub const ENUM_VALUES_GUEST_EVENT_UNION_TYPE: [GuestEventUnionType; 6] = [
+    GuestEventUnionType::NONE,
+    GuestEventUnionType::OpenSpan,
+    GuestEventUnionType::CloseSpan,
+    GuestEventUnionType::LogEvent,
+    GuestEventUnionType::EditSpan,
+    GuestEventUnionType::GuestStart,
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
-pub struct GuestEventType(pub u8);
+pub struct GuestEventUnionType(pub u8);
 #[allow(non_upper_case_globals)]
-impl GuestEventType {
+impl GuestEventUnionType {
     pub const NONE: Self = Self(0);
     pub const OpenSpan: Self = Self(1);
     pub const CloseSpan: Self = Self(2);
@@ -69,7 +69,7 @@ impl GuestEventType {
         }
     }
 }
-impl core::fmt::Debug for GuestEventType {
+impl core::fmt::Debug for GuestEventUnionType {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         if let Some(name) = self.variant_name() {
             f.write_str(name)
@@ -78,7 +78,7 @@ impl core::fmt::Debug for GuestEventType {
         }
     }
 }
-impl<'a> flatbuffers::Follow<'a> for GuestEventType {
+impl<'a> flatbuffers::Follow<'a> for GuestEventUnionType {
     type Inner = Self;
     #[inline]
     unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
@@ -87,8 +87,8 @@ impl<'a> flatbuffers::Follow<'a> for GuestEventType {
     }
 }
 
-impl flatbuffers::Push for GuestEventType {
-    type Output = GuestEventType;
+impl flatbuffers::Push for GuestEventUnionType {
+    type Output = GuestEventUnionType;
     #[inline]
     unsafe fn push(&self, dst: &mut [u8], _written_len: usize) {
         unsafe {
@@ -97,7 +97,7 @@ impl flatbuffers::Push for GuestEventType {
     }
 }
 
-impl flatbuffers::EndianScalar for GuestEventType {
+impl flatbuffers::EndianScalar for GuestEventUnionType {
     type Scalar = u8;
     #[inline]
     fn to_little_endian(self) -> u8 {
@@ -111,7 +111,7 @@ impl flatbuffers::EndianScalar for GuestEventType {
     }
 }
 
-impl<'a> flatbuffers::Verifiable for GuestEventType {
+impl<'a> flatbuffers::Verifiable for GuestEventUnionType {
     #[inline]
     fn run_verifier(
         v: &mut flatbuffers::Verifier,
@@ -122,5 +122,5 @@ impl<'a> flatbuffers::Verifiable for GuestEventType {
     }
 }
 
-impl flatbuffers::SimpleToVerifyInSlice for GuestEventType {}
-pub struct GuestEventTypeUnionTableOffset {}
+impl flatbuffers::SimpleToVerifyInSlice for GuestEventUnionType {}
+pub struct GuestEventUnionTypeUnionTableOffset {}

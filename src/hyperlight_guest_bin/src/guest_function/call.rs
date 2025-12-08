@@ -138,7 +138,9 @@ pub(crate) extern "C" fn dispatch_function() {
     #[cfg(feature = "trace_guest")]
     {
         let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
-        hyperlight_guest_tracing::set_start_tsc(guest_start_tsc);
+        // Reset the trace state for the new guest function call with the new start TSC
+        // This clears any existing spans/events from previous calls ensuring a clean state
+        hyperlight_guest_tracing::new_call(guest_start_tsc);
     }
 
     internal_dispatch_function();
