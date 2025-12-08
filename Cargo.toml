@@ -48,6 +48,7 @@ hyperlight-component-macro = { path = "src/hyperlight_component_macro", version 
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = [ 'cfg(loom)' ] }
 
 # this will generate symbols for release builds
 # so is handy for debugging issues in release builds
