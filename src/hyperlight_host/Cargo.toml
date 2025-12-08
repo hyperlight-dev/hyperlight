@@ -100,7 +100,7 @@ opentelemetry-otlp = { version = "0.31.0", default-features = false, features = 
 opentelemetry-semantic-conventions = "0.31"
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 tokio = { version = "1.48.0", features = ["full"] }
-criterion = "0.8.0"
+criterion = "0.8.1"
 tracing-chrome = "0.7.2"
 metrics-util = "0.20.1"
 metrics-exporter-prometheus = { version = "0.18.1", default-features = false }
