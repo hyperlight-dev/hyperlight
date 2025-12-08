@@ -272,7 +272,7 @@ pub fn estimate_flatbuffer_capacity(function_name: &str, args: &[ParameterValue]
     estimated_capacity.next_power_of_two()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use alloc::string::ToString;
     use alloc::vec;
