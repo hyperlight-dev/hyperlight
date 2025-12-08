@@ -552,6 +552,40 @@ fn add(a: i32, b: i32) -> Result<i32> {
     host_add(a, b)
 }
 
+#[guest_function("ReadMSR")]
+fn read_msr(msr: u32) -> u64 {
+    let (read_eax, read_edx): (u32, u32);
+    unsafe {
+        core::arch::asm!(
+        "rdmsr",
+            in("ecx") msr,
+            out("eax") read_eax,
+            out("edx") read_edx,
+            options(nostack, nomem)
+        );
+    }
+
+    let read_value = ((read_edx as u64) << 32) | (read_eax as u64);
+    read_value
+}
+
+#[guest_function("WriteMSR")]
+fn write_msr(msr: u32, value: u64) {
+    // Split 64-bit value into EDX:EAX format for WRMSR
+    let eax = (value & 0xFFFFFFFF) as u32;
+    let edx = ((value >> 32) & 0xFFFFFFFF) as u32;
+
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") eax,
+            in("edx") edx,
+            options(nostack, nomem)
+        );
+    }
+}
+
 // Does nothing, but used for testing large parameters
 #[guest_function("LargeParameters")]
 fn large_parameters(v: Vec<u8>, s: String) {

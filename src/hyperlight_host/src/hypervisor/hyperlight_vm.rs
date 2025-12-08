@@ -46,7 +46,7 @@ use crate::hypervisor::hyperv_linux::MshvVm;
 use crate::hypervisor::hyperv_windows::WhpVm;
 #[cfg(kvm)]
 use crate::hypervisor::kvm::KvmVm;
-use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::hypervisor::regs::{CommonDebugRegs, CommonSpecialRegisters};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::{HyperlightExit, InterruptHandle, InterruptHandleImpl, get_max_log_level};
@@ -86,6 +86,9 @@ pub(crate) struct HyperlightVm {
     next_slot: u32,                     // Monotonically increasing slot number
     freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
 
+    // pml4 saved to be able to restore it if needed
+    #[cfg(feature = "init-paging")]
+    pml4_addr: u64,
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(gdb)]
@@ -94,6 +97,11 @@ pub(crate) struct HyperlightVm {
     trace_info: MemTraceInfo,
     #[cfg(crashdump)]
     rt_cfg: SandboxRuntimeConfig,
+    // Windows does not support just "zeroing" out the xsave area - we need to preserve the XCOMP_BV.
+    // Since it varies by hardware, we can't just hardcode a value, so we save it here.
+    // Also note that windows uses compacted format for xsave.
+    #[cfg(target_os = "windows")]
+    xcomp_bv: u64,
 }
 
 impl HyperlightVm {
@@ -127,6 +135,11 @@ impl HyperlightVm {
             Some(HypervisorType::Whp) => Box::new(WhpVm::new(handle, raw_size)?),
             None => return Err(NoHypervisorFound()),
         };
+
+        // Enable MSR intercepts unless explicitly allowed
+        if !config.get_allow_msr() {
+            vm.enable_msr_intercept()?;
+        }
 
         for (i, region) in mem_regions.iter().enumerate() {
             // Safety: slots are unique and region points to valid memory since we created the regions
@@ -172,6 +185,18 @@ impl HyperlightVm {
             dropped: AtomicBool::new(false),
         });
 
+        // get xsave header for debugging
+        #[cfg(target_os = "windows")]
+        {
+            let xsave = vm.xsave()?;
+
+            let xcomp_bv = if xsave.len() >= 528 {
+                u64::from_le_bytes(xsave[520..528].try_into().unwrap())
+            } else {
+                return Err(new_error!("XSAVE buffer too small to contain XCOMP_BV"));
+            };
+        }
+
         #[cfg_attr(not(gdb), allow(unused_mut))]
         let mut ret = Self {
             vm,
@@ -185,6 +210,8 @@ impl HyperlightVm {
             mmap_regions: Vec::new(),
             freed_slots: Vec::new(),
 
+            #[cfg(feature = "init-paging")]
+            pml4_addr: _pml4_addr,
             #[cfg(gdb)]
             gdb_conn,
             #[cfg(gdb)]
@@ -193,6 +220,8 @@ impl HyperlightVm {
             trace_info,
             #[cfg(crashdump)]
             rt_cfg,
+            #[cfg(target_os = "windows")]
+            xcomp_bv,
         };
 
         // Send the interrupt handle to the GDB thread if debugging is enabled
@@ -487,6 +516,12 @@ impl HyperlightVm {
                         }
                     }
                 }
+                Ok(HyperlightExit::MsrRead(msr_index)) => {
+                    break Err(HyperlightError::MsrReadViolation(msr_index));
+                }
+                Ok(HyperlightExit::MsrWrite { msr_index, value }) => {
+                    break Err(HyperlightError::MsrWriteViolation(msr_index, value));
+                }
                 Ok(HyperlightExit::Cancelled()) => {
                     // If cancellation was not requested for this specific guest function call,
                     // the vcpu was interrupted by a stale cancellation. This can occur when:
@@ -578,6 +613,48 @@ impl HyperlightVm {
             handle_outb(mem_mgr, host_funcs, port, val)?;
         }
 
+        Ok(())
+    }
+
+    // Resets the following vCPU state:
+    // - General purpose registers
+    // - FPU registers
+    // - Debug registers
+    // - Special registers
+    // - XSAVE area
+    pub(crate) fn reset_vcpu(&self) -> Result<()> {
+        self.vm.set_regs(&CommonRegisters::default())?;
+        self.vm.set_fpu(&CommonFpu::default())?;
+        self.vm.set_debug_regs(&CommonDebugRegs::default())?;
+
+        #[cfg(feature = "init-paging")]
+        self.vm
+            .set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(
+                self.pml4_addr,
+            ))?;
+        #[cfg(not(feature = "init-paging"))]
+        self.vm
+            .set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())?;
+
+        // Windows does not support just "zeroing" out the xsave area - we need to preserve the XCOMP_BV.
+        #[cfg(target_os = "windows")]
+        {
+            // The XSAVE header starts at offset 512.
+            // Bytes 7:0 of the header is XSTATE_BV.
+            // Bytes 15:8 of the header is XCOMP_BV.
+            // So XCOMP_BV starts at offset 512 + 8 = 520.
+            // We are using a u32 array, so the index is 520 / 4 = 130.
+            const XCOMP_BV_OFFSET_U32: usize = 520 / std::mem::size_of::<u32>();
+
+            let mut xsave = [0u32; 1024];
+            xsave[XCOMP_BV_OFFSET_U32] = self.xcomp_bv as u32;
+            xsave[XCOMP_BV_OFFSET_U32 + 1] = (self.xcomp_bv >> 32) as u32;
+            self.vm.set_xsave(&xsave)?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        self.vm.set_xsave(&[0; 1024])?;
+
+        // MSRs don't need to be reset as they cannot be modified by guest (unless unsafely-allowed)
         Ok(())
     }
 
@@ -816,6 +893,158 @@ fn get_memory_access_violation<'a>(
     // gpa is in `region`, and region allows the tried access, but we got here anyway.
     // Treat as a generic access violation for now, unsure if this is reachable.
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::is_hypervisor_present;
+    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::mem::mgr::SandboxMemoryManager;
+    use crate::mem::ptr::RawPtr;
+    use crate::mem::ptr_offset::Offset;
+    use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+    use crate::sandbox::SandboxConfiguration;
+    use crate::sandbox::host_funcs::FunctionRegistry;
+    #[cfg(feature = "mem_profile")]
+    use crate::sandbox::trace::DummyUnwindInfo;
+    #[cfg(feature = "mem_profile")]
+    use crate::sandbox::trace::MemTraceInfo;
+    #[cfg(crashdump)]
+    use crate::sandbox::uninitialized::SandboxRuntimeConfig;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn test_reset_vcpu() -> Result<()> {
+        if !is_hypervisor_present() {
+            return Ok(());
+        }
+
+        #[cfg(target_os = "windows")]
+        return Ok(());
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut code = Vec::new();
+            // mov rax, 0x1111111111111111
+            code.extend_from_slice(&[0x48, 0xb8, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11]);
+            // mov rbx, 0x2222222222222222
+            code.extend_from_slice(&[0x48, 0xbb, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22]);
+            // mov rcx, 0x3333333333333333
+            code.extend_from_slice(&[0x48, 0xb9, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33]);
+
+            // hlt
+            code.extend_from_slice(&[0xf4]);
+
+            let config: SandboxConfiguration = Default::default();
+            #[cfg(crashdump)]
+            let rt_cfg: SandboxRuntimeConfig = Default::default();
+            #[cfg(feature = "mem_profile")]
+            let trace_info = MemTraceInfo::new(Arc::new(DummyUnwindInfo {})).unwrap();
+
+            let layout = SandboxMemoryLayout::new(
+                config.clone(),
+                code.len(), // code size
+                0,          // stack
+                0,          // heap
+                0,          // init data
+                None,
+            )?;
+
+            let mem_size = layout.get_memory_size()?;
+            let eshm = ExclusiveSharedMemory::new(mem_size)?;
+
+            let stack_cookie = [0u8; 16];
+            let mem_mgr = SandboxMemoryManager::new(
+                layout.clone(),
+                eshm,
+                RawPtr::from(0),
+                Offset::from(0),
+                stack_cookie,
+            );
+
+            let (mut mem_mgr_hshm, mut mem_mgr_gshm) = mem_mgr.build();
+
+            // Set up shared memory (page tables)
+            #[cfg(feature = "init-paging")]
+            let rsp = {
+                let mut regions = layout.get_memory_regions(&mem_mgr_gshm.shared_mem)?;
+                let mem_size = mem_mgr_gshm.shared_mem.mem_size() as u64;
+                mem_mgr_gshm.set_up_shared_memory(mem_size, &mut regions)?
+            };
+            #[cfg(not(feature = "init-paging"))]
+            let rsp = 0;
+
+            // Write code
+            let code_offset = layout.get_guest_code_offset();
+            mem_mgr_hshm
+                .shared_mem
+                .copy_from_slice(&code, code_offset)?;
+
+            // Get regions for VM
+            let regions = layout
+                .get_memory_regions(&mem_mgr_gshm.shared_mem)?
+                .into_iter()
+                .filter(|r| r.guest_region.len() > 0)
+                .collect();
+
+            // Calculate pml4_addr
+            #[cfg(feature = "init-paging")]
+            let pml4_addr = SandboxMemoryLayout::PML4_OFFSET as u64;
+            #[cfg(not(feature = "init-paging"))]
+            let pml4_addr = 0;
+
+            // Entrypoint
+            let entrypoint = layout.get_guest_code_address() as u64;
+
+            let mut vm = HyperlightVm::new(
+                regions,
+                pml4_addr,
+                entrypoint,
+                rsp,
+                &config,
+                #[cfg(gdb)]
+                None,
+                #[cfg(crashdump)]
+                rt_cfg,
+                #[cfg(feature = "mem_profile")]
+                trace_info,
+            )?;
+
+            let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
+            #[cfg(gdb)]
+            let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr_hshm.clone()));
+
+            // Run the VM
+            vm.initialise(
+                RawPtr::from(0), // peb_addr
+                0,               // seed
+                4096,            // page_size
+                &mut mem_mgr_hshm,
+                &host_funcs,
+                None,
+                #[cfg(gdb)]
+                dbg_mem_access_fn.clone(),
+            )?;
+
+            // After run, check registers
+            let regs = vm.vm.regs()?;
+            assert_eq!(regs.rax, 0x1111111111111111);
+            assert_eq!(regs.rbx, 0x2222222222222222);
+            assert_eq!(regs.rcx, 0x3333333333333333);
+
+            // Reset vcpu
+            vm.reset_vcpu()?;
+
+            // Check registers again
+            let regs = vm.vm.regs()?;
+            assert_eq!(regs.rax, 0);
+            assert_eq!(regs.rbx, 0);
+            assert_eq!(regs.rcx, 0);
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(gdb)]
