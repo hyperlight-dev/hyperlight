@@ -257,7 +257,7 @@ impl SandboxMemoryLayout {
     /// Create a new `SandboxMemoryLayout` with the given
     /// `SandboxConfiguration`, code size and stack/heap size.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn new(
+    pub(crate) fn new(
         cfg: SandboxConfiguration,
         code_size: usize,
         stack_size: usize,
@@ -476,7 +476,7 @@ impl SandboxMemoryLayout {
     /// get the code offset
     /// This is the offset in the sandbox memory where the code starts
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_guest_code_offset(&self) -> usize {
+    pub(crate) fn get_guest_code_offset(&self) -> usize {
         self.guest_code_offset
     }
 
@@ -541,7 +541,7 @@ impl SandboxMemoryLayout {
     /// Get the total size of guest memory in `self`'s memory
     /// layout aligned to page size boundaries.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_memory_size(&self) -> Result<usize> {
+    pub(crate) fn get_memory_size(&self) -> Result<usize> {
         let total_memory = self.get_unaligned_memory_size();
 
         // Size should be a multiple of page size.
