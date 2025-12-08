@@ -23,9 +23,9 @@ export CROSS_CONTAINER_GID := if path_exists("/dev/kvm") == "true" { kvm-gid } e
 root := justfile_directory()
 
 default-target := "debug"
-simpleguest_source := "src/tests/rust_guests/simpleguest/target/x86_64-unknown-none"
-dummyguest_source := "src/tests/rust_guests/dummyguest/target/x86_64-unknown-none"
-witguest_source := "src/tests/rust_guests/witguest/target/x86_64-unknown-none"
+simpleguest_source := "src/tests/rust_guests/simpleguest/target/x86_64-hyperlight-none"
+dummyguest_source := "src/tests/rust_guests/dummyguest/target/x86_64-hyperlight-none"
+witguest_source := "src/tests/rust_guests/witguest/target/x86_64-hyperlight-none"
 rust_guests_bin_dir := "src/tests/rust_guests/bin"
 
 ################
@@ -47,9 +47,10 @@ witguest-wit:
     cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
 
 build-rust-guests target=default-target features="": (witguest-wit)
-    cd src/tests/rust_guests/simpleguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
-    cd src/tests/rust_guests/dummyguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
-    cd src/tests/rust_guests/witguest && cargo build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
+    cargo install --locked cargo-hyperlight
+    cd src/tests/rust_guests/simpleguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
+    cd src/tests/rust_guests/dummyguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
+    cd src/tests/rust_guests/witguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
 
 @move-rust-guests target=default-target:
     cp {{ simpleguest_source }}/{{ target }}/simpleguest* {{ rust_guests_bin_dir }}/{{ target }}/
@@ -253,8 +254,9 @@ clippyw target=default-target: (witguest-wit)
     {{ cargo-cmd }} clippy --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
 
 clippy-guests target=default-target: (witguest-wit)
-    cd src/tests/rust_guests/simpleguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
-    cd src/tests/rust_guests/witguest && cargo clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    cargo install --locked cargo-hyperlight
+    cd src/tests/rust_guests/simpleguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
+    cd src/tests/rust_guests/witguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
 clippy-apply-fix-unix:
     cargo clippy --fix --all 
