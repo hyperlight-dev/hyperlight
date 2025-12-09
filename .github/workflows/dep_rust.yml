@@ -93,6 +93,12 @@ jobs:
       - name: Verify MSRV
         run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
 
+      - name: Check hyperlight-guest builds for 32-bit (Nanvix compatibility)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          rustup target add i686-unknown-linux-gnu
+          just check-guest-i686 ${{ inputs.config }}
+
   build:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 60
