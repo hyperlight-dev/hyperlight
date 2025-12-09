@@ -70,6 +70,7 @@ jobs:
           
           needs_publish hyperlight-common
           needs_publish hyperlight-guest
+          needs_publish hyperlight-guest-macro
           needs_publish hyperlight-guest-bin
           needs_publish hyperlight-component-util
           needs_publish hyperlight-component-macro
@@ -96,6 +97,13 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
         if: env.PUBLISH_HYPERLIGHT_GUEST != 'false'
+
+      - name: Publish hyperlight-guest-macro
+        continue-on-error: ${{ inputs.dry_run }}
+        run: cargo publish --manifest-path ./src/hyperlight_guest_macro/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+        if: env.PUBLISH_HYPERLIGHT_GUEST_MACRO != 'false'
 
       - name: Publish hyperlight-guest-bin
         continue-on-error: ${{ inputs.dry_run }}
