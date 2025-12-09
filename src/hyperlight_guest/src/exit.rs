@@ -27,7 +27,7 @@ use tracing::instrument;
 #[inline(never)]
 #[instrument(skip_all, level = "Trace")]
 pub fn halt() {
-    #[cfg(feature = "trace_guest")]
+    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
     {
         // Send data before halting
         // If there is no data, this doesn't do anything
@@ -49,7 +49,7 @@ pub extern "C" fn abort() -> ! {
 /// Exits the VM with an Abort OUT action and a specific code.
 pub fn abort_with_code(code: &[u8]) -> ! {
     // End any ongoing trace before aborting
-    #[cfg(feature = "trace_guest")]
+    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
     hyperlight_guest_tracing::end_trace();
     outb(OutBAction::Abort as u16, code);
     outb(OutBAction::Abort as u16, &[0xFF]); // send abort terminator (if not included in code)
@@ -62,7 +62,7 @@ pub fn abort_with_code(code: &[u8]) -> ! {
 /// This function is unsafe because it dereferences a raw pointer.
 pub unsafe fn abort_with_code_and_message(code: &[u8], message_ptr: *const c_char) -> ! {
     // End any ongoing trace before aborting
-    #[cfg(feature = "trace_guest")]
+    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
     hyperlight_guest_tracing::end_trace();
     unsafe {
         // Step 1: Send abort code (typically 1 byte, but `code` allows flexibility)
@@ -116,7 +116,7 @@ pub(crate) fn outb(port: u16, data: &[u8]) {
 /// in exception contexts. Because if the trace state is already locked, trying to create a span
 /// would cause a panic, which is undesirable in exception handling.
 pub(crate) unsafe fn out32(port: u16, val: u32) {
-    #[cfg(feature = "trace_guest")]
+    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
     {
         if let Some((ptr, len)) = hyperlight_guest_tracing::serialized_data() {
             // If tracing is enabled and there is data to send, send it along with the OUT action
@@ -142,7 +142,7 @@ pub(crate) unsafe fn out32(port: u16, val: u32) {
             };
         }
     }
-    #[cfg(not(feature = "trace_guest"))]
+    #[cfg(not(all(feature = "trace_guest", target_arch = "x86_64")))]
     unsafe {
         asm!("out dx, eax", in("dx") port, in("eax") val, options(preserves_flags, nomem, nostack));
     }

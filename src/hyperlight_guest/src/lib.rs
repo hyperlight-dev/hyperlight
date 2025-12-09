@@ -15,7 +15,8 @@ limitations under the License.
 */
 
 #![no_std]
-// Deps
+#[cfg(all(feature = "trace_guest", not(target_arch = "x86_64")))]
+compile_error!("trace_guest feature is only supported on x86_64 architecture");
 
 extern crate alloc;
 

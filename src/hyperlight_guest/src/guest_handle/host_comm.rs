@@ -179,7 +179,7 @@ impl GuestHandle {
         line: u32,
     ) {
         // Closure to send log message to host
-        let send_to_host = || {
+        let _send_to_host = || {
             let guest_log_data = GuestLogData::new(
                 message.to_string(),
                 source.to_string(),
@@ -201,7 +201,7 @@ impl GuestHandle {
             }
         };
 
-        #[cfg(feature = "trace_guest")]
+        #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
         if hyperlight_guest_tracing::is_trace_enabled() {
             // If the "trace_guest" feature is enabled and tracing is initialized, log using tracing
             tracing::trace!(
@@ -213,11 +213,11 @@ impl GuestHandle {
                 code.lineno = line,
             );
         } else {
-            send_to_host();
+            _send_to_host();
         }
-        #[cfg(not(feature = "trace_guest"))]
+        #[cfg(not(all(feature = "trace_guest", target_arch = "x86_64")))]
         {
-            send_to_host();
+            _send_to_host();
         }
     }
 }
