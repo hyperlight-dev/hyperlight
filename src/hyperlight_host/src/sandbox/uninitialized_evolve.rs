@@ -30,8 +30,6 @@ use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
 use crate::mem::shared_mem::GuestSharedMemory;
-#[cfg(target_os = "windows")]
-use crate::mem::shared_mem::SharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 #[cfg(feature = "mem_profile")]
