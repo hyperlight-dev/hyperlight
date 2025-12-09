@@ -4,9 +4,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.12.0] - 2025-12-09
+
+### Fixed
+* Fix guest tracing deadlock when exception happens during tracing data serialization by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/1066
+* Fix StackOverflow produced by guest logging by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/1067
+* Fix guest call to `halt` not dropping allocated trace data leading to memory leak  by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/1072
+* Update the interrupt handler for 16byte alignment by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1037
+
+### Added
+* Guest function improvements and macros by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/851
+* Add metric for erroneous vCPU kicks from stale cancellations by @Copilot in https://github.com/hyperlight-dev/hyperlight/pull/1034
+
 ### Removed
 * Remove outdated `is_supported_platform` (use `is_hypervisor_present` instead) and unused `ExtraAllowedSyscall` by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1062
-
 
 ## [v0.11.0] - 2025-11-04
 
@@ -225,7 +236,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.11.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.12.0..HEAD>
+[v0.12.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0...v0.12.0>
 [v0.11.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0...v0.11.0>
 [v0.10.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.9.0...v0.10.0>
 [v0.9.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.8.0...v0.9.0>
