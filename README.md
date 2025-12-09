@@ -107,8 +107,8 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
 Build the guest using [cargo-hyperlight](https://github.com/hyperlight-dev/cargo-hyperlight):
 
 ```
-cargo install -locked cargo-hyperlight
-Cargo hyperlight build
+cargo install --locked cargo-hyperlight
+cargo hyperlight build
 ```
 
 For additional examples of using the Hyperlight host Rust library, see
