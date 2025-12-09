@@ -55,6 +55,7 @@ After the previous CI job runs to create the new release branch, go to the ["Cre
 When this job is done, a new [GitHub release](https://github.com/hyperlight-dev/hyperlight/releases) will be created for you. This job also publishes the following rust packages to the crates.io:
 - `hyperlight-common`
 - `hyperlight-guest`
+- `hyperlight-guest-macro`
 - `hyperlight-guest-bin`
 - `hyperlight-component-util`
 - `hyperlight-component-macro`
