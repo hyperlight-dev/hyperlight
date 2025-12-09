@@ -56,7 +56,10 @@ When this job is done, a new [GitHub release](https://github.com/hyperlight-dev/
 - `hyperlight-common`
 - `hyperlight-guest`
 - `hyperlight-guest-bin`
+- `hyperlight-component-util`
+- `hyperlight-component-macro`
 - `hyperlight-host`
+- `hyperlight-guest-tracing`
 
 ## Patching a release
 > Note: for this example we'll assume `v0.4.0` is already released, and you want to release a `v0.4.1` patch for it.
