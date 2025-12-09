@@ -19,13 +19,13 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build: [windows-2022-debug, windows-2022-release]
+        build: [hyperlight-kvm-debug, hyperlight-kvm-release]
         include:
-          - build: windows-2022-debug
-            os: windows-2022
+          - build: hyperlight-kvm-debug
+            os: hyperlight-kvm
             config: debug
-          - build: windows-2022-release
-            os: windows-2022
+          - build: hyperlight-kvm-release
+            os: hyperlight-kvm
             config: release
 
     steps:
