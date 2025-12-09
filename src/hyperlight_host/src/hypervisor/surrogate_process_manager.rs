@@ -38,7 +38,7 @@ use windows::Win32::System::SystemServices::NUMA_NO_PREFERRED_NODE;
 use windows::Win32::System::Threading::{
     CREATE_SUSPENDED, CreateProcessA, PROCESS_INFORMATION, STARTUPINFOA,
 };
-use windows::core::{PCSTR, s};
+use windows::core::PCSTR;
 
 use super::surrogate_process::SurrogateProcess;
 use super::wrappers::{HandleWrapper, PSTRWrapper};
@@ -285,12 +285,7 @@ pub(crate) fn get_surrogate_process_manager() -> Result<&'static SurrogateProces
 fn create_job_object() -> Result<HandleWrapper> {
     let security_attributes: SECURITY_ATTRIBUTES = Default::default();
 
-    let job_object = unsafe {
-        CreateJobObjectA(
-            Some(&security_attributes),
-            s!("HyperlightSurrogateJobObject"),
-        )?
-    };
+    let job_object = unsafe { CreateJobObjectA(Some(&security_attributes), PCSTR::null())? };
 
     let mut job_object_information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
         BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
