@@ -68,7 +68,7 @@ fn interrupt_host_call() {
     assert!(sandbox.poisoned());
 
     // Restore from snapshot to clear poison
-    sandbox.restore(&snapshot).unwrap();
+    sandbox.restore(snapshot.clone()).unwrap();
     assert!(!sandbox.poisoned());
 
     thread.join().unwrap();
@@ -98,7 +98,7 @@ fn interrupt_in_progress_guest_call() {
     assert!(sbox1.poisoned());
 
     // Restore from snapshot to clear poison
-    sbox1.restore(&snapshot).unwrap();
+    sbox1.restore(snapshot.clone()).unwrap();
     assert!(!sbox1.poisoned());
 
     barrier.wait();
@@ -191,7 +191,7 @@ fn interrupt_same_thread() {
             _ => panic!("Unexpected return"),
         };
         if sbox2.poisoned() {
-            sbox2.restore(&snapshot2).unwrap();
+            sbox2.restore(snapshot2.clone()).unwrap();
         }
         sbox3
             .call::<String>("Echo", "hello".to_string())
@@ -238,7 +238,7 @@ fn interrupt_same_thread_no_barrier() {
             _ => panic!("Unexpected return"),
         };
         if sbox2.poisoned() {
-            sbox2.restore(&snapshot2).unwrap();
+            sbox2.restore(snapshot2.clone()).unwrap();
         }
         sbox3
             .call::<String>("Echo", "hello".to_string())
@@ -267,7 +267,7 @@ fn interrupt_moved_sandbox() {
         let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
         assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
         assert!(sbox1.poisoned());
-        sbox1.restore(&snapshot1).unwrap();
+        sbox1.restore(snapshot1.clone()).unwrap();
         assert!(!sbox1.poisoned());
     });
 
@@ -327,7 +327,7 @@ fn interrupt_custom_signal_no_and_retry_delay() {
         assert!(sbox1.poisoned());
         // immediately reenter another guest function call after having being cancelled,
         // so that the vcpu is running again before the interruptor-thread has a chance to see that the vcpu is not running
-        sbox1.restore(&snapshot1).unwrap();
+        sbox1.restore(snapshot1.clone()).unwrap();
         assert!(!sbox1.poisoned());
     }
     thread.join().expect("Thread should finish");
@@ -906,7 +906,7 @@ fn interrupt_random_kill_stress_test() {
     // Wrapper to hold a sandbox and its snapshot together
     struct SandboxWithSnapshot {
         sandbox: MultiUseSandbox,
-        snapshot: Snapshot,
+        snapshot: Arc<Snapshot>,
     }
 
     use std::collections::VecDeque;
@@ -1128,7 +1128,10 @@ fn interrupt_random_kill_stress_test() {
                         assert!(sandbox_wrapper.sandbox.poisoned());
 
                         // Try to restore the snapshot
-                        if let Err(e) = sandbox_wrapper.sandbox.restore(&sandbox_wrapper.snapshot) {
+                        if let Err(e) = sandbox_wrapper
+                            .sandbox
+                            .restore(sandbox_wrapper.snapshot.clone())
+                        {
                             error!(
                                 "CRITICAL: Thread {} iteration {}: Failed to restore snapshot: {:?}",
                                 thread_id, iteration, e
@@ -1442,7 +1445,7 @@ fn interrupt_infinite_loop_stress_test() {
                 }
 
                 // Restore the sandbox for the next iteration
-                sandbox.restore(&snapshot).unwrap();
+                sandbox.restore(snapshot.clone()).unwrap();
             }
         }));
     }

@@ -365,7 +365,7 @@ fn host_function_error() -> Result<()> {
             );
             // C guest panics in rust guest lib when host function returns error, which will poison the sandbox
             if init_sandbox.poisoned() {
-                init_sandbox.restore(&snapshot)?;
+                init_sandbox.restore(snapshot.clone())?;
             }
         }
     }

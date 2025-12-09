@@ -245,7 +245,7 @@ impl MultiUseSandbox {
     /// if result.is_err() {
     ///     if sandbox.poisoned() {
     ///         // Restore from snapshot to clear poison
-    ///         sandbox.restore(&snapshot)?;
+    ///         sandbox.restore(snapshot.clone())?;
     ///         assert!(!sandbox.poisoned());
     ///         
     ///         // Sandbox is now usable again
@@ -429,7 +429,7 @@ impl MultiUseSandbox {
     ///     
     ///     if sandbox.poisoned() {
     ///         eprintln!("Sandbox was poisoned, restoring from snapshot");
-    ///         sandbox.restore(&snapshot)?;
+    ///         sandbox.restore(snapshot.clone())?;
     ///     }
     /// }
     /// # Ok(())
@@ -856,7 +856,7 @@ mod tests {
         assert!(matches!(res, HyperlightError::PoisonedSandbox));
 
         // restore to non-poisoned snapshot should work and clear poison
-        sbox.restore(&snapshot).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
         assert!(!sbox.poisoned());
 
         // guest calls should work again after restore
@@ -874,7 +874,7 @@ mod tests {
         assert!(sbox.poisoned());
 
         // restore to non-poisoned snapshot should work again
-        sbox.restore(&snapshot).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
         assert!(!sbox.poisoned());
 
         // guest calls should work again
@@ -1243,12 +1243,12 @@ mod tests {
         assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
 
         // 4. Restore to snapshot 1 (should unmap the region)
-        sbox.restore(snapshot1).unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 0);
+        sbox.restore(snapshot1.clone()).unwrap();
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 0);
 
         // 5. Restore forward to snapshot 2 (should remap the region)
-        sbox.restore(snapshot2).unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().len(), 1);
+        sbox.restore(snapshot2.clone()).unwrap();
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
 
         // Verify the region is the same
         let mut restored_regions = sbox.vm.get_mapped_regions();
