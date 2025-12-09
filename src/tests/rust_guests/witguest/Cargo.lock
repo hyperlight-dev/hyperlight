@@ -237,6 +237,7 @@ dependencies = [
  "hyperlight-common",
  "hyperlight-guest",
  "hyperlight-guest-tracing",
+ "log",
  "spin 0.10.0",
  "tracing",
 ]

@@ -52,7 +52,7 @@ use hyperlight_guest_bin::host_comm::{
 };
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{MIN_STACK_ADDRESS, guest_logger};
-use tracing::log::{LevelFilter, error};
+use log::{LevelFilter, error};
 use tracing::{Span, instrument};
 
 extern crate hyperlight_guest;
@@ -687,7 +687,7 @@ fn log_message(function_call: &FunctionCall) -> Result<Vec<u8>> {
         let level = LevelFilter::iter().nth(level as usize).unwrap().to_level();
 
         match level {
-            Some(level) => tracing::log::log!(level, "{}", &message),
+            Some(level) => log::log!(level, "{}", &message),
             None => {
                 // was passed LevelFilter::Off, do nothing
             }
