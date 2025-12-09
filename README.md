@@ -104,26 +104,11 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
 }
 ```
 
-**Note**: Guest applications require a specific build configuration. Create a `.cargo/config.toml` file in your guest project with the following content:
+Build the guest using [cargo-hyperlight](https://github.com/hyperlight-dev/cargo-hyperlight):
 
-```toml
-[build]
-target = "x86_64-unknown-none"
-
-[target.x86_64-unknown-none]
-rustflags = [
-  "-C",
-  "code-model=small",
-  "-C",
-  "link-args=-e entrypoint",
-]
-linker = "rust-lld"
-
-[profile.release]
-panic = "abort"
-
-[profile.dev]
-panic = "abort"
+```
+cargo install --locked cargo-hyperlight
+cargo hyperlight build
 ```
 
 For additional examples of using the Hyperlight host Rust library, see
