@@ -32,8 +32,8 @@ use hyperlight_common::mem::HyperlightPEB;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_guest::exit::{halt, write_abort};
 use hyperlight_guest::guest_handle::handle::GuestHandle;
-use log::LevelFilter;
 use spin::Once;
+use tracing::log::LevelFilter;
 
 // === Modules ===
 #[cfg(target_arch = "x86_64")]

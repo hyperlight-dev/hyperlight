@@ -17,7 +17,7 @@ limitations under the License.
 use alloc::format;
 
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
-use log::{LevelFilter, Metadata, Record};
+use tracing::log::{LevelFilter, Metadata, Record};
 
 use crate::GUEST_HANDLE;
 
@@ -27,11 +27,11 @@ struct GuestLogger {}
 pub(crate) fn init_logger(level: LevelFilter) {
     // if this `expect` fails we have no way to recover anyway, so we actually prefer a panic here
     // below temporary guest logger is promoted to static by the compiler.
-    log::set_logger(&GuestLogger {}).expect("unable to setup guest logger");
-    log::set_max_level(level);
+    tracing::log::set_logger(&GuestLogger {}).expect("unable to setup guest logger");
+    tracing::log::set_max_level(level);
 }
 
-impl log::Log for GuestLogger {
+impl tracing::log::Log for GuestLogger {
     // The various macros like `info!` and `error!` will call the global log::max_level()
     // before calling our `log`. This means that we should log every message we get, because
     // we won't even see the ones that are above the set max level.

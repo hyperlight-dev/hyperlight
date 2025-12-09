@@ -1432,7 +1432,6 @@ dependencies = [
  "hyperlight-common",
  "hyperlight-guest",
  "hyperlight-guest-tracing",
- "log",
  "spin 0.10.0",
  "tracing",
 ]
@@ -1541,7 +1540,7 @@ dependencies = [
  "hyperlight-common",
  "hyperlight-guest",
  "hyperlight-guest-bin",
- "log",
+ "tracing",
 ]
 
 [[package]]

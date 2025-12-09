@@ -90,7 +90,7 @@ fn internal_dispatch_function() {
     let handle = unsafe { GUEST_HANDLE };
 
     #[cfg(debug_assertions)]
-    log::trace!("internal_dispatch_function");
+    tracing::trace!("internal_dispatch_function");
 
     let function_call = handle
         .try_pop_shared_input_data_into::<FunctionCall>()

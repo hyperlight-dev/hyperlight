@@ -17,7 +17,7 @@ workspace = true
 [dependencies]
 flatbuffers = { version = "25.9.23", default-features = false }
 anyhow = { version = "1.0.100", default-features = false }
-tracing = { version = "0.1.41" }
+tracing = { version = "0.1.41", default-features = false, features = [ "attributes", "log" ] }
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 spin = "0.10.0"
 

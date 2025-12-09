@@ -8,8 +8,7 @@ hyperlight-guest = { path = "../../../hyperlight_guest" }
 hyperlight-guest-bin = { path = "../../../hyperlight_guest_bin" }
 hyperlight-common = { path = "../../../hyperlight_common", default-features = false }
 hyperlight-guest-tracing = { path = "../../../hyperlight_guest_tracing" }
-log = {version = "0.4", default-features = false }
-tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
+tracing = { version = "0.1.41", default-features = false, features = ["attributes", "log"] }
 
 [features]
 default = []
