@@ -20,12 +20,6 @@ use crate::Result;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::memory_region::MemoryRegion;
 
-/// HyperV-on-linux functionality
-#[cfg(mshv3)]
-pub(crate) mod hyperv_linux;
-#[cfg(target_os = "windows")]
-pub(crate) mod hyperv_windows;
-
 /// GDB debugging support
 #[cfg(gdb)]
 pub(crate) mod gdb;
@@ -33,9 +27,7 @@ pub(crate) mod gdb;
 /// Abstracts over different hypervisor register representations
 pub(crate) mod regs;
 
-#[cfg(kvm)]
-/// Functionality to manipulate KVM-based virtual machines
-pub(crate) mod kvm;
+pub(crate) mod virtual_machine;
 
 #[cfg(target_os = "windows")]
 /// Hyperlight Surrogate Process

@@ -42,13 +42,13 @@ use crate::hypervisor::Hypervisor;
 use crate::hypervisor::LinuxInterruptHandle;
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
-#[cfg(mshv3)]
-use crate::hypervisor::hyperv_linux::MshvVm;
-#[cfg(target_os = "windows")]
-use crate::hypervisor::hyperv_windows::WhpVm;
-#[cfg(kvm)]
-use crate::hypervisor::kvm::KvmVm;
 use crate::hypervisor::regs::CommonSpecialRegisters;
+#[cfg(kvm)]
+use crate::hypervisor::virtual_machine::kvm::KvmVm;
+#[cfg(mshv3)]
+use crate::hypervisor::virtual_machine::mshv::MshvVm;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::virtual_machine::whp::WhpVm;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::{HyperlightExit, InterruptHandle, InterruptHandleImpl, get_max_log_level};

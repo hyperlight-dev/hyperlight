@@ -33,6 +33,7 @@ use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::{HyperlightExit, Hypervisor};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
@@ -175,34 +176,34 @@ impl Hypervisor for MshvVm {
         Ok(result)
     }
 
-    fn regs(&self) -> Result<super::regs::CommonRegisters> {
+    fn regs(&self) -> Result<CommonRegisters> {
         let mshv_regs = self.vcpu_fd.get_regs()?;
         Ok((&mshv_regs).into())
     }
 
-    fn set_regs(&self, regs: &super::regs::CommonRegisters) -> Result<()> {
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
         let mshv_regs: StandardRegisters = regs.into();
         self.vcpu_fd.set_regs(&mshv_regs)?;
         Ok(())
     }
 
-    fn fpu(&self) -> Result<super::regs::CommonFpu> {
+    fn fpu(&self) -> Result<CommonFpu> {
         let mshv_fpu = self.vcpu_fd.get_fpu()?;
         Ok((&mshv_fpu).into())
     }
 
-    fn set_fpu(&self, fpu: &super::regs::CommonFpu) -> Result<()> {
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
         let mshv_fpu: FloatingPointUnit = fpu.into();
         self.vcpu_fd.set_fpu(&mshv_fpu)?;
         Ok(())
     }
 
-    fn sregs(&self) -> Result<super::regs::CommonSpecialRegisters> {
+    fn sregs(&self) -> Result<CommonSpecialRegisters> {
         let mshv_sregs = self.vcpu_fd.get_sregs()?;
         Ok((&mshv_sregs).into())
     }
 
-    fn set_sregs(&self, sregs: &super::regs::CommonSpecialRegisters) -> Result<()> {
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
         let mshv_sregs: SpecialRegisters = sregs.into();
         self.vcpu_fd.set_sregs(&mshv_sregs)?;
         Ok(())
