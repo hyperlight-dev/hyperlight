@@ -34,7 +34,7 @@ use tracing::{Span, instrument};
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use crate::hypervisor::vm::{VmExit, Vm};
+use crate::hypervisor::vm::{Vm, VmExit};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
 

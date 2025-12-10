@@ -26,7 +26,7 @@ use tracing::{Span, instrument};
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use crate::hypervisor::vm::{VmExit, Vm};
+use crate::hypervisor::vm::{Vm, VmExit};
 use crate::mem::memory_region::MemoryRegion;
 use crate::{Result, new_error};
 
@@ -119,10 +119,7 @@ impl Vm for KvmVm {
                 // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
                 libc::EINTR => Ok(VmExit::Cancelled()),
                 libc::EAGAIN => Ok(VmExit::Retry()),
-                _ => Ok(VmExit::Unknown(format!(
-                    "Unknown KVM VCPU error: {}",
-                    e
-                ))),
+                _ => Ok(VmExit::Unknown(format!("Unknown KVM VCPU error: {}", e))),
             },
             Ok(other) => Ok(VmExit::Unknown(format!(
                 "Unknown KVM VCPU exit: {:?}",

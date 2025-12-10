@@ -31,7 +31,7 @@ use crate::hypervisor::regs::{
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
-use crate::hypervisor::vm::{VmExit, Vm};
+use crate::hypervisor::vm::{Vm, VmExit};
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, log_then_return, new_error};

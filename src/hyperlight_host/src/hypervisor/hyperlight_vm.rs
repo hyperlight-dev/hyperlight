@@ -41,19 +41,18 @@ use crate::hypervisor::LinuxInterruptHandle;
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
 use crate::hypervisor::regs::CommonSpecialRegisters;
-use crate::hypervisor::vm::HypervisorType;
 #[cfg(not(gdb))]
 use crate::hypervisor::vm::Vm;
-use crate::hypervisor::vm::get_available_hypervisor;
 #[cfg(kvm)]
 use crate::hypervisor::vm::kvm::KvmVm;
 #[cfg(mshv3)]
 use crate::hypervisor::vm::mshv::MshvVm;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::vm::whp::WhpVm;
+use crate::hypervisor::vm::{HypervisorType, VmExit, get_available_hypervisor};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_max_log_level, vm::VmExit};
+use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_max_log_level};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
