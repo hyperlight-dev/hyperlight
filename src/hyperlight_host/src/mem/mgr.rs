@@ -327,8 +327,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         let layout = SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
-            usize::try_from(cfg.get_stack_size(&exe_info))?,
-            usize::try_from(cfg.get_heap_size(&exe_info))?,
+            usize::try_from(cfg.get_stack_size())?,
+            usize::try_from(cfg.get_heap_size())?,
             guest_blob_size,
             guest_blob_mem_flags,
         )?;
