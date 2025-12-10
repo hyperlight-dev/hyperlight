@@ -18,7 +18,6 @@ on:
         default: "false"
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
@@ -38,17 +37,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up nightly rust
-        uses: dtolnay/rust-toolchain@nightly
-
-      - name: Build rust binaries
-        run: |
-          # use these commands in favor of build-and-move-rust-guests to avoid building debug
-          just build-rust-guests release
-          just move-rust-guests release
+      - name: Download Rust guests
+        uses: actions/download-artifact@v6
+        with:
+          name: rust-guests-release
+          path: src/tests/rust_guests/bin/release/
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        run: command -v cargo-fuzz >/dev/null 2>&1 || cargo install cargo-fuzz
 
       - name: Run Fuzzing
         run: just fuzz-timed ${{ matrix.target }} ${{ inputs.max_total_time }}

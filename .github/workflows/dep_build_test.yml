@@ -1,0 +1,122 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Build and Test
+
+on:
+  workflow_call:
+    inputs:
+      docs_only:
+        description: Skip building if docs only
+        required: false
+        type: string
+        default: "false"
+      hypervisor:
+        description: Hypervisor for this run (passed from caller matrix)
+        required: true
+        type: string
+      config:
+        description: Build configuration for this run (passed from caller matrix)
+        required: true
+        type: string
+      cpu:
+        description: CPU architecture for the build (passed from caller matrix)
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-and-test:
+    if: ${{ inputs.docs_only == 'false' }}
+    timeout-minutes: 45
+    runs-on: ${{ fromJson(
+        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
+          (inputs.hypervisor == 'hyperv' || inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
+          inputs.hypervisor == 'hyperv' && 'win2022' || inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
+          inputs.cpu)) }} 
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+        with:
+          rust-toolchain: "1.89"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix cargo home permissions
+        if: runner.os == 'Linux'
+        run: |
+          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "${{ runner.os }}-${{ inputs.config }}"
+          cache-on-failure: "true"
+
+      - name: Download Rust guests
+        uses: actions/download-artifact@v6
+        with:
+          name: rust-guests-${{ inputs.config }}
+          path: src/tests/rust_guests/bin/${{ inputs.config }}/
+
+      - name: Download C guests
+        uses: actions/download-artifact@v6
+        with:
+          name: c-guests-${{ inputs.config }}
+          path: src/tests/c_guests/bin/${{ inputs.config }}/
+
+      - name: Download interface.wasm
+        uses: actions/download-artifact@v6
+        with:
+          name: interface-wasm
+          path: src/tests/rust_guests/witguest/
+
+      - name: Download twoworlds.wasm
+        uses: actions/download-artifact@v6
+        with:
+          name: twoworlds-wasm
+          path: src/tests/rust_guests/witguest/
+
+      - name: Build
+        run: just build ${{ inputs.config }}
+
+      - name: Run Miri tests
+        if: runner.os == 'Linux'
+        run: just miri-tests
+
+      - name: Run Rust tests
+        run: |
+          # with default features
+          just test ${{ inputs.config }}
+
+      - name: Run Rust tests with single driver
+        if: runner.os == 'Linux'
+        run: |
+          # with only one driver enabled (kvm/mshv3 features are unix-only, no-op on Windows)
+          just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
+
+      - name: Run Rust Gdb tests
+        env:
+          RUST_LOG: debug
+        run: just test-rust-gdb-debugging ${{ inputs.config }}
+
+      - name: Run Rust Crashdump tests
+        env:
+          RUST_LOG: debug
+        run: just test-rust-crashdump ${{ inputs.config }}
+
+      - name: Run Rust Tracing tests
+        if: runner.os == 'Linux'
+        env:
+          RUST_LOG: debug
+        run: just test-rust-tracing ${{ inputs.config }}

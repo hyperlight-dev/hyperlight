@@ -1,0 +1,84 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Run Benchmarks
+
+on:
+  workflow_call:
+    inputs:
+      docs_only:
+        description: Skip building if docs only
+        required: false
+        type: string
+        default: "false"
+      hypervisor:
+        description: Hypervisor for this run (passed from caller matrix)
+        required: true
+        type: string
+      cpu:
+        description: CPU architecture for the build (passed from caller matrix)
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  run-benchmarks:
+    if: ${{ inputs.docs_only == 'false' }}
+    timeout-minutes: 30
+    runs-on: ${{ fromJson(
+        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
+          (inputs.hypervisor == 'hyperv' || inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
+          inputs.hypervisor == 'hyperv' && 'win2022' || inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
+          inputs.cpu)) }} 
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+        with:
+          rust-toolchain: "1.89"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix cargo home permissions
+        if: runner.os == 'Linux'
+        run: |
+          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "${{ runner.os }}-release"
+          save-if: "false"
+
+      - name: Download Rust guests
+        uses: actions/download-artifact@v6
+        with:
+          name: rust-guests-release
+          path: src/tests/rust_guests/bin/release/
+
+      - name: Download C guests
+        uses: actions/download-artifact@v6
+        with:
+          name: c-guests-release
+          path: src/tests/c_guests/bin/release/
+
+      - name: Build
+        run: just build release
+
+      - name: Download benchmarks from "latest"
+        run: just bench-download ${{ runner.os }} ${{ inputs.hypervisor }} ${{ inputs.cpu }} dev-latest # compare to prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Run benchmarks
+        run: just bench-ci main

@@ -9,24 +9,119 @@ on:
     - cron: '0 0 */2 * *'
 
 permissions:
-  id-token: write
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  # Nightly musl cross-compilation builds
+  # This is a self-contained job since musl builds are a special case
+  # that require TARGET_TRIPLE for cross-compilation
   musl:
+    timeout-minutes: 60
     strategy:
       fail-fast: true
       matrix:
         hypervisor: [kvm, mshv3]
         cpu: [amd, intel]
         config: [debug, release]
-    uses: ./.github/workflows/dep_rust.yml
-    secrets: inherit
-    with: 
-      hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
-      config: ${{ matrix.config }}
-      target_triple: x86_64-unknown-linux-musl
+    runs-on: ${{ fromJson(
+        format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}"]', 
+          matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, 
+          matrix.cpu)) }}
+    env:
+      TARGET_TRIPLE: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+        with:
+          rust-toolchain: "1.89"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix cargo home permissions
+        run: |
+          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
+
+      # cargo-hyperlight builds a custom sysroot for x86_64-hyperlight-none target.
+      # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
+      # We cache sysroot separately to avoid rebuilding it (~10s) on every run.
+      - name: Sysroot cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/tests/rust_guests/simpleguest/target/sysroot
+            src/tests/rust_guests/dummyguest/target/sysroot
+            src/tests/rust_guests/witguest/target/sysroot
+          key: sysroot-linux-${{ matrix.config }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nightly-${{ matrix.config }}"
+          cache-on-failure: "true"
+          workspaces: |
+            . -> target
+            src/tests/rust_guests/simpleguest -> target
+            src/tests/rust_guests/dummyguest -> target
+            src/tests/rust_guests/witguest -> target
+
+      - name: Build and move Rust guests
+        run: |
+          just build-rust-guests ${{ matrix.config }}
+          just move-rust-guests ${{ matrix.config }}
+
+      - name: Build C guests
+        run: |
+          just build-c-guests ${{ matrix.config }}
+          just move-c-guests ${{ matrix.config }}
+
+      - name: Build
+        run: just build ${{ matrix.config }}
+
+      - name: Run Miri tests
+        run: just miri-tests
+
+      - name: Run Rust tests
+        run: |
+          # with default features
+          just test ${{ matrix.config }}
+
+          # with only one driver enabled
+          just test ${{ matrix.config }} ${{ matrix.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
+
+          # make sure certain cargo features compile
+          just check
+
+          # without any features
+          just test-compilation-no-default-features ${{ matrix.config }}
+
+      - name: Run Rust examples
+        env:
+          RUST_LOG: debug
+        run: just run-rust-examples-linux ${{ matrix.config }}
+
+      - name: Run Rust Gdb tests
+        env:
+          RUST_LOG: debug
+        run: just test-rust-gdb-debugging ${{ matrix.config }}
+
+      - name: Run Rust Crashdump tests
+        env:
+          RUST_LOG: debug
+        run: just test-rust-crashdump ${{ matrix.config }}
+
+      - name: Run Rust Tracing tests
+        env:
+          RUST_LOG: debug
+        run: just test-rust-tracing ${{ matrix.config }}
 
   notify-failure:
     runs-on: ubuntu-latest

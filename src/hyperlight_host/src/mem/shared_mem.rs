@@ -1247,21 +1247,26 @@ mod tests {
                 } else {
                     vec![]
                 };
-                let status = std::process::Command::new("cargo")
-                    .args(["test", "-p", "hyperlight-host"])
+                let output = std::process::Command::new("cargo")
+                    .args(["test", "-p", "hyperlight-host", "--lib"])
                     .args(target_args)
                     .args(["--", "--ignored", test])
                     .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
+                    .output()
                     .expect("Unable to launch tests");
-                assert_eq!(
-                    status.code(),
-                    Some(TEST_EXIT_CODE.into()),
-                    "Guard Page test failed: {}",
-                    test
-                );
+                let exit_code = output.status.code();
+                if exit_code != Some(TEST_EXIT_CODE.into()) {
+                    eprintln!("=== Guard Page test '{}' failed ===", test);
+                    eprintln!("Exit code: {:?} (expected {})", exit_code, TEST_EXIT_CODE);
+                    eprintln!("=== STDOUT ===");
+                    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+                    eprintln!("=== STDERR ===");
+                    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+                    panic!(
+                        "Guard Page test failed: {} (exit code {:?}, expected {})",
+                        test, exit_code, TEST_EXIT_CODE
+                    );
+                }
             }
         }
     }

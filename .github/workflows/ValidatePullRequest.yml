@@ -14,7 +14,6 @@ concurrency:
   cancel-in-progress: true    
 
 permissions:
-  id-token: write
   contents: write
 
 jobs:
@@ -41,31 +40,91 @@ jobs:
             return all_file_count === docs_file_count;
           result-encoding: string
 
-  rust:
+  # Build guests once, upload as artifacts for other jobs to download
+  build-guests:
+    needs: docs-pr
+    strategy:
+      fail-fast: true
+      matrix:
+        config: [debug, release]
+    uses: ./.github/workflows/dep_build_guests.yml
+    secrets: inherit
+    with:
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+      config: ${{ matrix.config }}
+
+  # Code checks (fmt, clippy, MSRV) - runs in parallel with build-guests
+  code-checks:
+    needs: docs-pr
+    uses: ./.github/workflows/dep_code_checks.yml
+    secrets: inherit
+    with:
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+
+  # Build and test - needs guest artifacts
+  build-test:
     needs:
       - docs-pr
+      - build-guests
     strategy:
       fail-fast: true
       matrix:
         hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
         cpu: [amd, intel]
         config: [debug, release]
-    uses: ./.github/workflows/dep_rust.yml
+    uses: ./.github/workflows/dep_build_test.yml
     secrets: inherit
     with: 
-      docs_only: ${{needs.docs-pr.outputs.docs-only}}
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
       hypervisor: ${{ matrix.hypervisor }}
       cpu: ${{ matrix.cpu }}
       config: ${{ matrix.config }}
 
+  # Run examples - needs guest artifacts, runs in parallel with build-test
+  run-examples:
+    needs:
+      - docs-pr
+      - build-guests
+    strategy:
+      fail-fast: true
+      matrix:
+        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
+        cpu: [amd, intel]
+        config: [debug, release]
+    uses: ./.github/workflows/dep_run_examples.yml
+    secrets: inherit
+    with: 
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+      hypervisor: ${{ matrix.hypervisor }}
+      cpu: ${{ matrix.cpu }}
+      config: ${{ matrix.config }}
+
+  # Run benchmarks - release only, needs guest artifacts, runs in parallel with build-test
+  benchmarks:
+    needs:
+      - docs-pr
+      - build-guests
+    strategy:
+      fail-fast: true
+      matrix:
+        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
+        cpu: [amd, intel]
+    uses: ./.github/workflows/dep_benchmarks.yml
+    secrets: inherit
+    with: 
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+      hypervisor: ${{ matrix.hypervisor }}
+      cpu: ${{ matrix.cpu }}
+
   fuzzing:
     needs:
       - docs-pr
+      - build-guests
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
       targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call", "fuzz_guest_estimate_trace_event", "fuzz_guest_trace"]' # Pass as a JSON array
       max_total_time: 300 # 5 minutes in seconds
-      docs_only: ${{needs.docs-pr.outputs.docs-only}}
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
     secrets: inherit
 
   spelling:
@@ -85,21 +144,20 @@ jobs:
       run: ./dev/check-license-headers.sh
 
   # Gate PR merges on this specific "join-job" which requires all other
-  # jobs to run first. We need this job since we cannot gate on particular jobs
-  # in the workflow, since they can sometimes be skipped (e.g. if the PR only touches docs).
-  # This step fixes this issue by always running.
+  # jobs to run first.
   report-ci-status:
     needs:
       - docs-pr
-      - rust
+      - build-guests
+      - code-checks
+      - build-test
+      - run-examples
+      - benchmarks
       - fuzzing
       - spelling
       - license-headers
     if: always()
     runs-on: ubuntu-latest
     steps:
-      # Calculate the exit status of the whole CI workflow.
-      # If all dependent jobs were successful, this exits with 0 (and the outcome job continues successfully).
-      # If a some dependent job has failed, this exits with 1.
       - name: calculate the correct exit status
         run: jq --exit-status 'all(.result == "success" or .result == "skipped")' <<< '${{ toJson(needs) }}'

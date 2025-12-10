@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
   issues: read
 
 jobs:
@@ -64,17 +63,18 @@ jobs:
       - name: Build Release
         run: cargo build --verbose --release
 
-  build-guest-binaries:
-    uses: ./.github/workflows/dep_build_guest_binaries.yml
+  build-guests:
+    uses: ./.github/workflows/dep_build_guests.yml
     secrets: inherit
     needs: [release-blocker-check]
+    with:
+      config: release
 
   benchmarks:
-    needs: [build-guest-binaries]
+    needs: [build-guests]
     uses: ./.github/workflows/Benchmarks.yml
     secrets: inherit
     permissions:
-      id-token: write
       contents: read
 
   cargo-publish:
@@ -84,7 +84,6 @@ jobs:
       dry_run: false
     secrets: inherit
     permissions:
-      id-token: write
       contents: read
 
   publish:
@@ -140,9 +139,11 @@ jobs:
 
       - name: Archive benchmarks
         run: |
-          # windows
+          # windows (hyperv = Server 2022, hyperv-ws2025 = Server 2025)
           tar -zcvf benchmarks_Windows_hyperv_amd.tar.gz benchmarks_Windows_hyperv_amd
           tar -zcvf benchmarks_Windows_hyperv_intel.tar.gz benchmarks_Windows_hyperv_intel
+          tar -zcvf benchmarks_Windows_hyperv-ws2025_amd.tar.gz benchmarks_Windows_hyperv-ws2025_amd
+          tar -zcvf benchmarks_Windows_hyperv-ws2025_intel.tar.gz benchmarks_Windows_hyperv-ws2025_intel
           # kvm
           tar -zcvf benchmarks_Linux_kvm_amd.tar.gz benchmarks_Linux_kvm_amd
           tar -zcvf benchmarks_Linux_kvm_intel.tar.gz benchmarks_Linux_kvm_intel
@@ -168,6 +169,8 @@ jobs:
             gh release create v${{ env.HYPERLIGHT_VERSION }} -t "Release v${{ env.HYPERLIGHT_VERSION }}" --notes-file RELEASE_NOTES.md \
             benchmarks_Windows_hyperv_amd.tar.gz \
             benchmarks_Windows_hyperv_intel.tar.gz \
+            benchmarks_Windows_hyperv-ws2025_amd.tar.gz \
+            benchmarks_Windows_hyperv-ws2025_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \
             benchmarks_Linux_kvm_intel.tar.gz \
             benchmarks_Linux_mshv3_amd.tar.gz \
@@ -184,6 +187,8 @@ jobs:
             gh release create dev-latest -t "Latest prerelease from main branch" --notes-file RELEASE_NOTES.md --latest=false -p \
             benchmarks_Windows_hyperv_amd.tar.gz \
             benchmarks_Windows_hyperv_intel.tar.gz \
+            benchmarks_Windows_hyperv-ws2025_amd.tar.gz \
+            benchmarks_Windows_hyperv-ws2025_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \
             benchmarks_Linux_kvm_intel.tar.gz \
             benchmarks_Linux_mshv3_amd.tar.gz \
