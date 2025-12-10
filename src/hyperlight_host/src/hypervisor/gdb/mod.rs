@@ -34,7 +34,7 @@ use x86_64_target::HyperlightSandboxTarget;
 use super::InterruptHandle;
 use super::regs::CommonRegisters;
 use crate::hypervisor::regs::CommonFpu;
-use crate::hypervisor::vm::Vm;
+use crate::hypervisor::virtual_machine::VirtualMachine;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
@@ -277,7 +277,7 @@ pub(crate) enum DebugResponse {
 
 /// Trait for VMs that support debugging capabilities.
 /// This extends the base Hypervisor trait with GDB-specific functionality.
-pub(crate) trait DebuggableVm: Vm {
+pub(crate) trait DebuggableVm: VirtualMachine {
     /// Translates a guest virtual address to a guest physical address
     fn translate_gva(&self, gva: u64) -> crate::Result<u64>;
 

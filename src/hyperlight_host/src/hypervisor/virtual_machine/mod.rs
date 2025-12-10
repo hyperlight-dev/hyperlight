@@ -1,9 +1,27 @@
+/*
+Copyright 2025 The Hyperlight Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+use std::fmt::Debug;
+use std::sync::OnceLock;
+
 use tracing::{Span, instrument};
 
 use crate::Result;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::memory_region::MemoryRegion;
-use std::fmt::Debug;
 
 #[cfg(kvm)]
 /// Functionality to manipulate KVM-based virtual machines
@@ -13,8 +31,6 @@ pub(crate) mod kvm;
 pub(crate) mod mshv;
 #[cfg(target_os = "windows")]
 pub(crate) mod whp;
-
-use std::sync::OnceLock;
 
 static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 
