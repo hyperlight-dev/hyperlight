@@ -15,7 +15,7 @@ permissions:
 jobs:
   # this job has no dependencies
   build-guest-binaries:
-    runs-on: ${{ matrix.os }}
+    runs-on: [self-hosted, linux, x64, "1ES.Pool=hld-kvm-amd"]
     strategy:
       fail-fast: true
       matrix:
