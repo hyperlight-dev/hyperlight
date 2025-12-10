@@ -57,7 +57,7 @@ use std::str::FromStr;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 #[cfg(target_os = "windows")]
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 #[cfg(any(kvm, mshv3))]
 use std::time::Duration;
 
@@ -413,8 +413,34 @@ pub(super) struct WindowsInterruptHandle {
     /// (e.g., during host function calls), but is cleared at the start of each new `VirtualCPU::run()` call.
     state: AtomicU8,
 
-    partition_handle: windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE,
-    dropped: AtomicBool,
+    /// RwLock protecting the partition handle and dropped state.
+    ///
+    /// This lock prevents a race condition between `kill()` calling `WHvCancelRunVirtualProcessor`
+    /// and `WhpVm::drop()` calling `WHvDeletePartition`. These two Windows Hypervisor Platform APIs
+    /// must not execute concurrently - if `WHvDeletePartition` frees the partition while
+    /// `WHvCancelRunVirtualProcessor` is still accessing it, the result is a use-after-free
+    /// causing STATUS_ACCESS_VIOLATION or STATUS_HEAP_CORRUPTION.
+    ///
+    /// The synchronization works as follows:
+    /// - `kill()` takes a read lock before calling `WHvCancelRunVirtualProcessor`
+    /// - `set_dropped()` takes a write lock, which blocks until all in-flight `kill()` calls complete,
+    ///   then sets `dropped = true`. This is called from `HyperlightVm::drop()` before `WhpVm::drop()`
+    ///   runs, ensuring no `kill()` is accessing the partition when `WHvDeletePartition` is called.
+    partition_state: std::sync::RwLock<PartitionState>,
+}
+
+/// State protected by the RwLock in `WindowsInterruptHandle`.
+///
+/// Contains a copy of the partition handle from `WhpVm` (not an owning reference).
+/// The RwLock and `dropped` flag ensure this handle is never used after `WhpVm`
+/// deletes the partition.
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+pub(super) struct PartitionState {
+    /// Copy of partition handle from `WhpVm`. Only valid while `dropped` is false.
+    pub(super) handle: windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE,
+    /// Set true before partition deletion; prevents further use of `handle`.
+    pub(super) dropped: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -468,9 +494,20 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
     }
 
     fn set_dropped(&self) {
-        // Release ordering to ensure all VM cleanup operations are visible
-        // to any thread that checks dropped() via Acquire
-        self.dropped.store(true, Ordering::Release);
+        // Take write lock to:
+        // 1. Wait for any in-flight kill() calls (holding read locks) to complete
+        // 2. Block new kill() calls from starting while we hold the write lock
+        // 3. Set dropped=true so no future kill() calls will use the handle
+        // After this returns, no WHvCancelRunVirtualProcessor calls are in progress
+        // or will ever be made, so WHvDeletePartition can safely be called.
+        match self.partition_state.write() {
+            Ok(mut guard) => {
+                guard.dropped = true;
+            }
+            Err(e) => {
+                log::error!("Failed to acquire partition_state write lock: {}", e);
+            }
+        }
     }
 }
 
@@ -486,11 +523,26 @@ impl InterruptHandle for WindowsInterruptHandle {
         // Acquire ordering to synchronize with the Release in set_running()
         // This ensures we see the running state set by the vcpu thread
         let state = self.state.load(Ordering::Acquire);
-        if state & Self::RUNNING_BIT != 0 {
-            unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
-        } else {
-            false
+        if state & Self::RUNNING_BIT == 0 {
+            return false;
         }
+
+        // Take read lock to prevent race with WHvDeletePartition in set_dropped().
+        // Multiple kill() calls can proceed concurrently (read locks don't block each other),
+        // but set_dropped() will wait for all kill() calls to complete before proceeding.
+        let guard = match self.partition_state.read() {
+            Ok(guard) => guard,
+            Err(e) => {
+                log::error!("Failed to acquire partition_state read lock: {}", e);
+                return false;
+            }
+        };
+
+        if guard.dropped {
+            return false;
+        }
+
+        unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0).is_ok() }
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
@@ -498,19 +550,38 @@ impl InterruptHandle for WindowsInterruptHandle {
 
         self.state
             .fetch_or(Self::DEBUG_INTERRUPT_BIT, Ordering::Release);
+
         // Acquire ordering to synchronize with the Release in set_running()
         let state = self.state.load(Ordering::Acquire);
-        if state & Self::RUNNING_BIT != 0 {
-            unsafe { WHvCancelRunVirtualProcessor(self.partition_handle, 0, 0).is_ok() }
-        } else {
-            false
+        if state & Self::RUNNING_BIT == 0 {
+            return false;
         }
+
+        // Take read lock to prevent race with WHvDeletePartition in set_dropped()
+        let guard = match self.partition_state.read() {
+            Ok(guard) => guard,
+            Err(e) => {
+                log::error!("Failed to acquire partition_state read lock: {}", e);
+                return false;
+            }
+        };
+
+        if guard.dropped {
+            return false;
+        }
+
+        unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0).is_ok() }
     }
 
     fn dropped(&self) -> bool {
-        // Acquire ordering to synchronize with the Release in set_dropped()
-        // This ensures we see all VM cleanup operations that happened before drop
-        self.dropped.load(Ordering::Acquire)
+        // Take read lock to check dropped state consistently
+        match self.partition_state.read() {
+            Ok(guard) => guard.dropped,
+            Err(e) => {
+                log::error!("Failed to acquire partition_state read lock: {}", e);
+                true // Assume dropped if we can't acquire lock
+            }
+        }
     }
 }
 

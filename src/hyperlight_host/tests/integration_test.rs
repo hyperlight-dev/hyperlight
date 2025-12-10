@@ -1664,3 +1664,58 @@ fn exception_handler_installation_and_validation() {
     let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
     assert_eq!(count, 2, "Handler should have been called twice");
 }
+
+/// This test is "likely" to catch a race condition where WHvCancelRunVirtualProcessor runs halfway, then the partition is deleted (by drop calling WHvDeletePartition),
+/// and WHvCancelRunVirtualProcessor continues, and tries to access freed memory.
+///
+/// Based on local observations, "likely" means that if the bug exist, running this test 5 times will catch it at least once.
+#[test]
+#[cfg(target_os = "windows")]
+fn interrupt_cancel_delete_race() {
+    const NUM_THREADS: usize = 8;
+    const NUM_KILL_THREADS: usize = 4;
+    const ITERATIONS_PER_THREAD: usize = 1000;
+
+    let mut handles = vec![];
+
+    for _ in 0..NUM_THREADS {
+        handles.push(thread::spawn(move || {
+            for _ in 0..ITERATIONS_PER_THREAD {
+                let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
+                let interrupt_handle = sandbox.interrupt_handle();
+
+                let stop_flag = Arc::new(AtomicBool::new(false));
+
+                let kill_handles: Vec<_> = (0..NUM_KILL_THREADS)
+                    .map(|_| {
+                        let handle = interrupt_handle.clone();
+                        let stop = stop_flag.clone();
+                        thread::spawn(move || {
+                            while !stop.load(Ordering::Relaxed) {
+                                handle.kill();
+                            }
+                        })
+                    })
+                    .collect();
+
+                // Makes sure RUNNING_BIT is set when kill() is called
+                let _ = sandbox.call::<String>("Echo", "test".to_string());
+
+                // Drop the sandbox while kill threads are spamming
+                drop(sandbox);
+
+                // Signal kill threads to stop
+                stop_flag.store(true, Ordering::Relaxed);
+
+                // Wait for kill threads
+                for kill_handle in kill_handles {
+                    kill_handle.join().expect("Kill thread panicked!");
+                }
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}

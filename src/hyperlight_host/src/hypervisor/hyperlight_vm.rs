@@ -19,8 +19,10 @@ use std::collections::HashMap;
 #[cfg(crashdump)]
 use std::path::Path;
 #[cfg(any(kvm, mshv3))]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
+#[cfg(any(kvm, mshv3))]
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
@@ -28,11 +30,11 @@ use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-#[cfg(target_os = "windows")]
-use super::WindowsInterruptHandle;
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, DebuggableVm, VcpuStopReason, arch};
 use super::regs::{CommonFpu, CommonRegisters};
+#[cfg(target_os = "windows")]
+use super::{PartitionState, WindowsInterruptHandle};
 use crate::HyperlightError::{ExecutionCanceledByHost, NoHypervisorFound};
 #[cfg(not(gdb))]
 use crate::hypervisor::Hypervisor;
@@ -168,8 +170,10 @@ impl HyperlightVm {
         #[cfg(target_os = "windows")]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(WindowsInterruptHandle {
             state: AtomicU8::new(0),
-            partition_handle: vm.partition_handle(),
-            dropped: AtomicBool::new(false),
+            partition_state: std::sync::RwLock::new(PartitionState {
+                handle: vm.partition_handle(),
+                dropped: false,
+            }),
         });
 
         #[cfg_attr(not(gdb), allow(unused_mut))]
