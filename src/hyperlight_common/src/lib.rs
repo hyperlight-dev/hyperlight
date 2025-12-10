@@ -39,4 +39,5 @@ pub mod resource;
 /// cbindgen:ignore
 pub mod func;
 // cbindgen:ignore
+#[cfg(feature = "init-paging")]
 pub mod vm;
