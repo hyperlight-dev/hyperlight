@@ -26,7 +26,7 @@ use tracing::{Span, instrument};
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
-use crate::hypervisor::{HyperlightExit, Hypervisor};
+use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::mem::memory_region::MemoryRegion;
 use crate::{Result, new_error};
 
@@ -85,7 +85,7 @@ impl KvmVm {
     }
 }
 
-impl Hypervisor for KvmVm {
+impl VirtualMachine for KvmVm {
     unsafe fn map_memory(&mut self, (slot, region): (u32, &MemoryRegion)) -> Result<()> {
         let mut kvm_region: kvm_userspace_memory_region = region.into();
         kvm_region.slot = slot;
@@ -104,27 +104,24 @@ impl Hypervisor for KvmVm {
         Ok(())
     }
 
-    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
+    fn run_vcpu(&mut self) -> Result<VmExit> {
         match self.vcpu_fd.run() {
-            Ok(VcpuExit::Hlt) => Ok(HyperlightExit::Halt()),
-            Ok(VcpuExit::IoOut(port, data)) => Ok(HyperlightExit::IoOut(port, data.to_vec())),
-            Ok(VcpuExit::MmioRead(addr, _)) => Ok(HyperlightExit::MmioRead(addr)),
-            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(HyperlightExit::MmioWrite(addr)),
+            Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
+            Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
+            Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
+            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
             #[cfg(gdb)]
-            Ok(VcpuExit::Debug(debug_exit)) => Ok(HyperlightExit::Debug {
+            Ok(VcpuExit::Debug(debug_exit)) => Ok(VmExit::Debug {
                 dr6: debug_exit.dr6,
                 exception: debug_exit.exception,
             }),
             Err(e) => match e.errno() {
                 // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
-                libc::EINTR => Ok(HyperlightExit::Cancelled()),
-                libc::EAGAIN => Ok(HyperlightExit::Retry()),
-                _ => Ok(HyperlightExit::Unknown(format!(
-                    "Unknown KVM VCPU error: {}",
-                    e
-                ))),
+                libc::EINTR => Ok(VmExit::Cancelled()),
+                libc::EAGAIN => Ok(VmExit::Retry()),
+                _ => Ok(VmExit::Unknown(format!("Unknown KVM VCPU error: {}", e))),
             },
-            Ok(other) => Ok(HyperlightExit::Unknown(format!(
+            Ok(other) => Ok(VmExit::Unknown(format!(
                 "Unknown KVM VCPU exit: {:?}",
                 other
             ))),

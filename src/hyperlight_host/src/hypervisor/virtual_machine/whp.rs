@@ -31,8 +31,8 @@ use crate::hypervisor::regs::{
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
+use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::hypervisor::{HyperlightExit, Hypervisor};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, log_then_return, new_error};
 
@@ -129,7 +129,7 @@ impl WhpVm {
     }
 }
 
-impl Hypervisor for WhpVm {
+impl VirtualMachine for WhpVm {
     unsafe fn map_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
         // Only allow memory mapping during initial setup (the first batch of regions).
         // After the initial setup is complete, subsequent calls should fail,
@@ -205,7 +205,7 @@ impl Hypervisor for WhpVm {
     }
 
     #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
-    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
+    fn run_vcpu(&mut self) -> Result<VmExit> {
         let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
 
         unsafe {
@@ -225,7 +225,7 @@ impl Hypervisor for WhpVm {
                     WHvX64RegisterRip,
                     Align16(WHV_REGISTER_VALUE { Reg64: rip }),
                 )])?;
-                HyperlightExit::IoOut(
+                VmExit::IoOut(
                     exit_context.Anonymous.IoPortAccess.PortNumber,
                     exit_context
                         .Anonymous
@@ -235,7 +235,7 @@ impl Hypervisor for WhpVm {
                         .to_vec(),
                 )
             },
-            WHvRunVpExitReasonX64Halt => HyperlightExit::Halt(),
+            WHvRunVpExitReasonX64Halt => VmExit::Halt(),
             WHvRunVpExitReasonMemoryAccess => {
                 let gpa = unsafe { exit_context.Anonymous.MemoryAccess.Gpa };
                 let access_info = unsafe {
@@ -246,13 +246,13 @@ impl Hypervisor for WhpVm {
                 };
                 let access_info = MemoryRegionFlags::try_from(access_info)?;
                 match access_info {
-                    MemoryRegionFlags::READ => HyperlightExit::MmioRead(gpa),
-                    MemoryRegionFlags::WRITE => HyperlightExit::MmioWrite(gpa),
-                    _ => HyperlightExit::Unknown("Unknown memory access type".to_string()),
+                    MemoryRegionFlags::READ => VmExit::MmioRead(gpa),
+                    MemoryRegionFlags::WRITE => VmExit::MmioWrite(gpa),
+                    _ => VmExit::Unknown("Unknown memory access type".to_string()),
                 }
             }
             // Execution was cancelled by the host.
-            WHvRunVpExitReasonCanceled => HyperlightExit::Cancelled(),
+            WHvRunVpExitReasonCanceled => VmExit::Cancelled(),
             #[cfg(gdb)]
             WHvRunVpExitReasonException => {
                 let exception = unsafe { exit_context.Anonymous.VpException };
@@ -273,12 +273,12 @@ impl Hypervisor for WhpVm {
                     unsafe { out[0].0.Reg64 }
                 };
 
-                HyperlightExit::Debug {
+                VmExit::Debug {
                     dr6,
                     exception: exception.ExceptionType as u32,
                 }
             }
-            WHV_RUN_VP_EXIT_REASON(_) => HyperlightExit::Unknown(format!(
+            WHV_RUN_VP_EXIT_REASON(_) => VmExit::Unknown(format!(
                 "Unknown exit reason '{}'",
                 exit_context.ExitReason.0
             )),
