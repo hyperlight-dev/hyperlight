@@ -16,6 +16,7 @@ limitations under the License.
 
 use tracing::{Span, instrument};
 
+use crate::HyperlightError::MemoryRegionSizeMismatch;
 use crate::Result;
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::shared_mem::SharedMemory;
@@ -39,19 +40,21 @@ pub struct Snapshot {
     hash: [u8; 32],
 }
 
-fn hash(memory: &[u8], regions: &[MemoryRegion]) -> [u8; 32] {
+fn hash(memory: &[u8], regions: &[MemoryRegion]) -> Result<[u8; 32]> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(memory);
     for rgn in regions {
         hasher.update(&usize::to_le_bytes(rgn.guest_region.start));
         let guest_len = rgn.guest_region.end - rgn.guest_region.start;
-        hasher.update(&usize::to_le_bytes(rgn.guest_region.start));
+        hasher.update(&usize::to_le_bytes(rgn.host_region.start));
         let host_len = rgn.host_region.end - rgn.host_region.start;
-        assert!(guest_len == host_len);
+        if guest_len != host_len {
+            return Err(MemoryRegionSizeMismatch(host_len, guest_len, rgn.clone()));
+        }
         hasher.update(&usize::to_le_bytes(guest_len));
         hasher.update(&u32::to_le_bytes(rgn.flags.bits()));
     }
-    hasher.finalize().into()
+    Ok(hasher.finalize().into())
 }
 
 impl Snapshot {
@@ -65,7 +68,7 @@ impl Snapshot {
     ) -> Result<Self> {
         // TODO: Track dirty pages instead of copying entire memory
         let memory = shared_mem.with_exclusivity(|e| e.copy_all_to_vec())??;
-        let hash = hash(&memory, &regions);
+        let hash = hash(&memory, &regions)?;
         Ok(Self {
             sandbox_id,
             memory,

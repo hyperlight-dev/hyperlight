@@ -291,13 +291,6 @@ where
 
     /// This function restores a memory snapshot from a given snapshot.
     pub(crate) fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
-        if self.shared_mem.mem_size() != snapshot.mem_size() {
-            return Err(new_error!(
-                "Snapshot size does not match current memory size: {} != {}",
-                self.shared_mem.raw_mem_size(),
-                snapshot.mem_size()
-            ));
-        }
         self.shared_mem.restore_from_snapshot(snapshot)?;
         Ok(())
     }

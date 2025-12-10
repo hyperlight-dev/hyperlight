@@ -32,7 +32,7 @@ use thiserror::Error;
 
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::mem::memory_region::MemoryRegionFlags;
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::ptr::RawPtr;
 
 /// The error type for Hyperlight operations
@@ -148,6 +148,10 @@ pub enum HyperlightError {
     #[error("Memory Protection Failed with OS Error {0:?}.")]
     MemoryProtectionFailed(Option<i32>),
 
+    /// Memory region size mismatch
+    #[error("Memory region size mismatch: host size {0:?}, guest size {1:?} region {2:?}")]
+    MemoryRegionSizeMismatch(usize, usize, MemoryRegion),
+
     /// The memory request exceeds the maximum size allowed
     #[error("Memory requested {0} exceeds maximum size allowed {1}")]
     MemoryRequestTooBig(usize, usize),
@@ -221,6 +225,10 @@ pub enum HyperlightError {
     /// Failed to get value from return value
     #[error("Failed To Convert Return Value {0:?} to {1:?}")]
     ReturnValueConversionFailure(ReturnValue, &'static str),
+
+    /// Attempted to process a snapshot but the snapshot size does not match the current memory size
+    #[error("Snapshot Size Mismatch: Memory Size {0:?} Snapshot Size {1:?}")]
+    SnapshotSizeMismatch(usize, usize),
 
     /// Stack overflow detected in guest
     #[error("Stack overflow detected")]
@@ -322,7 +330,9 @@ impl HyperlightError {
             | HyperlightError::PoisonedSandbox
             | HyperlightError::ExecutionAccessViolation(_)
             | HyperlightError::StackOverflow()
-            | HyperlightError::MemoryAccessViolation(_, _, _) => true,
+            | HyperlightError::MemoryAccessViolation(_, _, _)
+            | HyperlightError::SnapshotSizeMismatch(_, _)
+            | HyperlightError::MemoryRegionSizeMismatch(_, _, _) => true,
 
             // All other errors do not poison the sandbox.
             HyperlightError::AnyhowError(_)
