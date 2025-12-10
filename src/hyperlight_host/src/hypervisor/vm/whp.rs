@@ -23,16 +23,15 @@ use windows::Win32::System::LibraryLoader::*;
 use windows::core::s;
 use windows_result::HRESULT;
 
-use super::regs::{
-    Align16, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES,
-    WHP_SREGS_NAMES_LEN,
-};
-use super::surrogate_process::SurrogateProcess;
-use super::surrogate_process_manager::get_surrogate_process_manager;
-use super::wrappers::HandleWrapper;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::regs::{
+    Align16, CommonFpu, CommonRegisters, CommonSpecialRegisters, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN,
+    WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES, WHP_SREGS_NAMES_LEN,
+};
+use crate::hypervisor::surrogate_process::SurrogateProcess;
+use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
+use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::{HyperlightExit, Hypervisor};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, log_then_return, new_error};

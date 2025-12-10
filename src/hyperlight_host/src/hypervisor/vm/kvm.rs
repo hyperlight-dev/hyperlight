@@ -25,6 +25,7 @@ use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::{HyperlightExit, Hypervisor};
 use crate::mem::memory_region::MemoryRegion;
 use crate::{Result, new_error};
@@ -130,34 +131,34 @@ impl Hypervisor for KvmVm {
         }
     }
 
-    fn regs(&self) -> Result<super::regs::CommonRegisters> {
+    fn regs(&self) -> Result<CommonRegisters> {
         let kvm_regs = self.vcpu_fd.get_regs()?;
         Ok((&kvm_regs).into())
     }
 
-    fn set_regs(&self, regs: &super::regs::CommonRegisters) -> Result<()> {
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
         let kvm_regs: kvm_regs = regs.into();
         self.vcpu_fd.set_regs(&kvm_regs)?;
         Ok(())
     }
 
-    fn fpu(&self) -> Result<super::regs::CommonFpu> {
+    fn fpu(&self) -> Result<CommonFpu> {
         let kvm_fpu = self.vcpu_fd.get_fpu()?;
         Ok((&kvm_fpu).into())
     }
 
-    fn set_fpu(&self, fpu: &super::regs::CommonFpu) -> Result<()> {
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
         let kvm_fpu: kvm_fpu = fpu.into();
         self.vcpu_fd.set_fpu(&kvm_fpu)?;
         Ok(())
     }
 
-    fn sregs(&self) -> Result<super::regs::CommonSpecialRegisters> {
+    fn sregs(&self) -> Result<CommonSpecialRegisters> {
         let kvm_sregs = self.vcpu_fd.get_sregs()?;
         Ok((&kvm_sregs).into())
     }
 
-    fn set_sregs(&self, sregs: &super::regs::CommonSpecialRegisters) -> Result<()> {
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
         let kvm_sregs: kvm_sregs = sregs.into();
         self.vcpu_fd.set_sregs(&kvm_sregs)?;
         Ok(())
