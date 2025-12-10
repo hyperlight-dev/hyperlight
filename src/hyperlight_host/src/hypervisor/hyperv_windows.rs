@@ -669,6 +669,11 @@ impl DebuggableVm for WhpVm {
 
 impl Drop for WhpVm {
     fn drop(&mut self) {
+        // HyperlightVm::drop() calls set_dropped() before this runs.
+        // set_dropped() ensures no WHvCancelRunVirtualProcessor calls are in progress
+        // or will be made in the future, so it's safe to delete the partition.
+        // (HyperlightVm::drop() runs before its fields are dropped, so
+        // set_dropped() completes before this Drop impl runs.)
         if let Err(e) = unsafe { WHvDeletePartition(self.partition) } {
             log::error!("Failed to delete partition: {}", e);
         }
