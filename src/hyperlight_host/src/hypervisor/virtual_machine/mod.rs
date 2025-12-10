@@ -1,3 +1,5 @@
+use tracing::{Span, instrument};
+
 use crate::Result;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::memory_region::MemoryRegion;
@@ -12,6 +14,77 @@ pub(crate) mod mshv;
 #[cfg(target_os = "windows")]
 pub(crate) mod whp;
 
+use std::sync::OnceLock;
+
+static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
+
+/// Returns which type of hypervisor is available, if any
+pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
+    AVAILABLE_HYPERVISOR.get_or_init(|| {
+        cfg_if::cfg_if! {
+            if #[cfg(all(kvm, mshv3))] {
+                // If both features are enabled, we need to determine hypervisor at runtime.
+                // Currently /dev/kvm and /dev/mshv cannot exist on the same machine, so the first one
+                // that works is guaranteed to be correct.
+                if mshv::is_hypervisor_present() {
+                    Some(HypervisorType::Mshv)
+                } else if kvm::is_hypervisor_present() {
+                    Some(HypervisorType::Kvm)
+                } else {
+                    None
+                }
+            } else if #[cfg(kvm)] {
+                if kvm::is_hypervisor_present() {
+                    Some(HypervisorType::Kvm)
+                } else {
+                    None
+                }
+            } else if #[cfg(mshv3)] {
+                if mshv::is_hypervisor_present() {
+                    Some(HypervisorType::Mshv)
+                } else {
+                    None
+                }
+            } else if #[cfg(target_os = "windows")] {
+                if whp::is_hypervisor_present() {
+                    Some(HypervisorType::Whp)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    })
+}
+
+/// Returns `true` if a suitable hypervisor is available.
+/// If this returns `false`, no hypervisor-backed sandboxes can be created.
+#[instrument(skip_all, parent = Span::current())]
+pub fn is_hypervisor_present() -> bool {
+    get_available_hypervisor().is_some()
+}
+
+/// The hypervisor types available for the current platform
+#[derive(PartialEq, Eq, Debug)]
+pub(crate) enum HypervisorType {
+    #[cfg(kvm)]
+    Kvm,
+
+    #[cfg(mshv3)]
+    Mshv,
+
+    #[cfg(target_os = "windows")]
+    Whp,
+}
+
+// Compiler error if no hypervisor type is available
+#[cfg(not(any(kvm, mshv3, target_os = "windows")))]
+compile_error!(
+    "No hypervisor type is available for the current platform. Please enable either the `kvm` or `mshv3` cargo feature."
+);
+
+/// The various reasons a VM's vCPU can exit
 pub(crate) enum VmExit {
     /// The vCPU has exited due to a debug event (usually breakpoint)
     #[cfg(gdb)]
@@ -87,4 +160,27 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// This is only needed on Windows where dynamic memory mapping is not yet supported.
     #[cfg(target_os = "windows")]
     fn complete_initial_memory_setup(&mut self);
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    // TODO: add support for testing on WHP
+    #[cfg(target_os = "linux")]
+    fn is_hypervisor_present() {
+        use std::path::Path;
+
+        cfg_if::cfg_if! {
+            if #[cfg(all(kvm, mshv3))] {
+                assert_eq!(Path::new("/dev/kvm").exists() || Path::new("/dev/mshv").exists(), super::is_hypervisor_present());
+            } else if #[cfg(kvm)] {
+                assert_eq!(Path::new("/dev/kvm").exists(), super::is_hypervisor_present());
+            } else if #[cfg(mshv3)] {
+                assert_eq!(Path::new("/dev/mshv").exists(), super::is_hypervisor_present());
+            } else {
+                assert!(!super::is_hypervisor_present());
+            }
+        }
+    }
 }

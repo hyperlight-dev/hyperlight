@@ -85,13 +85,13 @@ pub(crate) mod testing;
 
 /// The re-export for the `HyperlightError` type
 pub use error::HyperlightError;
+/// The re-export for the `is_hypervisor_present` type
+pub use hypervisor::virtual_machine::is_hypervisor_present;
 /// A sandbox that can call be used to make multiple calls to guest functions,
 /// and otherwise reused multiple times
 pub use sandbox::MultiUseSandbox;
 /// The re-export for the `UninitializedSandbox` type
 pub use sandbox::UninitializedSandbox;
-/// The re-export for the `is_hypervisor_present` type
-pub use sandbox::is_hypervisor_present;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
 

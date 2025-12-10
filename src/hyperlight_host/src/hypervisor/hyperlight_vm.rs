@@ -41,8 +41,10 @@ use crate::hypervisor::LinuxInterruptHandle;
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
 use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::hypervisor::virtual_machine::HypervisorType;
 #[cfg(not(gdb))]
 use crate::hypervisor::virtual_machine::VirtualMachine;
+use crate::hypervisor::virtual_machine::get_available_hypervisor;
 #[cfg(kvm)]
 use crate::hypervisor::virtual_machine::kvm::KvmVm;
 #[cfg(mshv3)]
@@ -61,7 +63,6 @@ use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::hypervisor::{HypervisorType, get_available_hypervisor};
 use crate::sandbox::outb::handle_outb;
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;

@@ -18,8 +18,6 @@ limitations under the License.
 pub mod config;
 /// Functionality for reading, but not modifying host functions
 pub(crate) mod host_funcs;
-/// Functionality for dealing with `Sandbox`es that contain Hypervisors
-pub(crate) mod hypervisor;
 /// Functionality for dealing with initialized sandboxes that can
 /// call 0 or more guest functions
 pub mod initialized_multi_use;
@@ -47,20 +45,10 @@ pub use callable::Callable;
 pub use config::SandboxConfiguration;
 /// Re-export for the `MultiUseSandbox` type
 pub use initialized_multi_use::MultiUseSandbox;
-use tracing::{Span, instrument};
 /// Re-export for `GuestBinary` type
 pub use uninitialized::GuestBinary;
 /// Re-export for `UninitializedSandbox` type
 pub use uninitialized::UninitializedSandbox;
-
-/// Determine whether a suitable hypervisor is available to run
-/// this sandbox.
-///
-///  Returns a boolean indicating whether a suitable hypervisor is present.
-#[instrument(skip_all, parent = Span::current())]
-pub fn is_hypervisor_present() -> bool {
-    hypervisor::get_available_hypervisor().is_some()
-}
 
 #[cfg(test)]
 mod tests {
@@ -72,25 +60,6 @@ mod tests {
 
     use crate::sandbox::uninitialized::GuestBinary;
     use crate::{MultiUseSandbox, UninitializedSandbox, new_error};
-
-    #[test]
-    // TODO: add support for testing on WHP
-    #[cfg(target_os = "linux")]
-    fn is_hypervisor_present() {
-        use std::path::Path;
-
-        cfg_if::cfg_if! {
-            if #[cfg(all(kvm, mshv3))] {
-                assert_eq!(Path::new("/dev/kvm").exists() || Path::new("/dev/mshv").exists(), super::is_hypervisor_present());
-            } else if #[cfg(kvm)] {
-                assert_eq!(Path::new("/dev/kvm").exists(), super::is_hypervisor_present());
-            } else if #[cfg(mshv3)] {
-                assert_eq!(Path::new("/dev/mshv").exists(), super::is_hypervisor_present());
-            } else {
-                assert!(!super::is_hypervisor_present());
-            }
-        }
-    }
 
     #[test]
     fn check_create_and_use_sandbox_on_different_threads() {
