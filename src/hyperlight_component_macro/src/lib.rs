@@ -50,6 +50,8 @@ limitations under the License.
 extern crate proc_macro;
 
 use hyperlight_component_util::*;
+use syn::parse::{Parse, ParseStream};
+use syn::{Ident, LitStr, Result, Token};
 
 /// Create host bindings for the wasm component type in the file
 /// passed in (or `$WIT_WORLD`, if nothing is passed in). This will
@@ -66,11 +68,14 @@ use hyperlight_component_util::*;
 #[proc_macro]
 pub fn host_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let _ = env_logger::try_init();
-    let path: Option<syn::LitStr> = syn::parse_macro_input!(input as Option<syn::LitStr>);
-    let path = path
-        .map(|x| x.value().into())
-        .unwrap_or_else(|| std::env::var_os("WIT_WORLD").unwrap());
-    util::read_wit_type_from_file(path, |kebab_name, ct| {
+    let parsed_bindgen_input = syn::parse_macro_input!(input as BindgenInputParams);
+    let path = match parsed_bindgen_input.path {
+        Some(path_env) => path_env.into_os_string(),
+        None => std::env::var_os("WIT_WORLD").unwrap(),
+    };
+    let world_name = parsed_bindgen_input.world_name;
+
+    util::read_wit_type_from_file(path, world_name, |kebab_name, ct| {
         let decls = emit::run_state(false, false, |s| {
             rtypes::emit_toplevel(s, &kebab_name, ct);
             host::emit_toplevel(s, &kebab_name, ct);
@@ -89,11 +94,14 @@ pub fn host_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 #[proc_macro]
 pub fn guest_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let _ = env_logger::try_init();
-    let path: Option<syn::LitStr> = syn::parse_macro_input!(input as Option<syn::LitStr>);
-    let path = path
-        .map(|x| x.value().into())
-        .unwrap_or_else(|| std::env::var_os("WIT_WORLD").unwrap());
-    util::read_wit_type_from_file(path, |kebab_name, ct| {
+    let parsed_bindgen_input = syn::parse_macro_input!(input as BindgenInputParams);
+    let path = match parsed_bindgen_input.path {
+        Some(path_env) => path_env.into_os_string(),
+        None => std::env::var_os("WIT_WORLD").unwrap(),
+    };
+    let world_name = parsed_bindgen_input.world_name;
+
+    util::read_wit_type_from_file(path, world_name, |kebab_name, ct| {
         let decls = emit::run_state(true, false, |s| {
             // Emit type/trait definitions for all instances in the world
             rtypes::emit_toplevel(s, &kebab_name, ct);
@@ -106,4 +114,58 @@ pub fn guest_bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream 
         // a debug temporary file be created.
         util::emit_decls(decls).into()
     })
+}
+
+#[derive(Debug)]
+struct BindgenInputParams {
+    world_name: Option<String>,
+    path: Option<std::path::PathBuf>,
+}
+
+impl Parse for BindgenInputParams {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut path = None;
+        let mut world_name = None;
+
+        if input.peek(syn::token::Brace) {
+            let content;
+            syn::braced!(content in input);
+
+            // Parse key-value pairs inside the braces
+            while !content.is_empty() {
+                let key: Ident = content.parse()?;
+                content.parse::<Token![:]>()?;
+
+                match key.to_string().as_str() {
+                    "world_name" => {
+                        let value: LitStr = content.parse()?;
+                        world_name = Some(value.value());
+                    }
+                    "path" => {
+                        let value: LitStr = content.parse()?;
+                        path = Some(std::path::PathBuf::from(value.value()));
+                    }
+                    _ => {
+                        return Err(syn::Error::new(
+                            key.span(),
+                            format!(
+                                "unknown parameter '{}'; expected 'path' or 'world_name'",
+                                key
+                            ),
+                        ));
+                    }
+                }
+                // Parse optional comma
+                if content.peek(Token![,]) {
+                    content.parse::<Token![,]>()?;
+                }
+            }
+        } else {
+            let option_path_litstr = input.parse::<Option<syn::LitStr>>()?;
+            if let Some(concrete_path) = option_path_litstr {
+                path = Some(std::path::PathBuf::from(concrete_path.value()));
+            }
+        }
+        Ok(Self { world_name, path })
+    }
 }

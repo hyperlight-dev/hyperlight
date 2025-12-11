@@ -82,9 +82,10 @@ fn raw_type_export_type<'p, 'a, 'c>(
 /// export.
 pub fn read_component_single_exported_type<'a>(
     items: impl Iterator<Item = wasmparser::Result<Payload<'a>>>,
+    world_name: Option<String>,
 ) -> Component<'a> {
     let mut ctx = Ctx::new(None, false);
-    let mut last_idx = None;
+    let mut selected_type_idx = None;
     for x in items {
         match x {
             Ok(Version { num, encoding, .. }) => {
@@ -112,8 +113,18 @@ pub fn read_component_single_exported_type<'a>(
                         Err(_) => panic!("invalid export section"),
                         Ok(ce) => {
                             if ce.kind == ComponentExternalKind::Type {
-                                last_idx = Some(ctx.types.len());
                                 ctx.types.push(raw_type_export_type(&ctx, &ce).clone());
+
+                                // picks the world index if world_name is passed in the proc_macro
+                                // else picks the index of last type, exported by core module
+                                if let Some(world) = world_name.as_ref() {
+                                    let name = ce.name.0;
+                                    if name.eq_ignore_ascii_case(world) {
+                                        selected_type_idx = Some(ctx.types.len() - 1);
+                                    }
+                                } else {
+                                    selected_type_idx = Some(ctx.types.len() - 1);
+                                }
                             }
                         }
                     }
@@ -149,11 +160,15 @@ pub fn read_component_single_exported_type<'a>(
             _ => {}
         }
     }
-    match last_idx {
-        None => panic!("no exported type"),
+
+    match selected_type_idx {
         Some(n) => match ctx.types.into_iter().nth(n) {
             Some(Defined::Component(c)) => c,
             _ => panic!("final export is not component"),
+        },
+        None => match &world_name {
+            Some(name) => panic!("world '{}' not found in component", name),
+            None => panic!("no exported type"),
         },
     }
 }

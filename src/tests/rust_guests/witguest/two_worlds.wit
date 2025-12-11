@@ -1,0 +1,23 @@
+package twoworlds:wit;
+
+world secondworld {
+  export second-export;
+}
+
+world firstworld {
+  import first-import;
+}
+
+interface second-export {
+  record rec-second-export {
+    key: string,
+    value: string
+  }
+}
+
+interface first-import {
+    record rec-first-import {
+        key: string,
+        value : string
+    }
+}

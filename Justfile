@@ -45,6 +45,7 @@ guests: build-and-move-rust-guests build-and-move-c-guests
 witguest-wit:
     cargo install --locked wasm-tools
     cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
+    cd src/tests/rust_guests/witguest && wasm-tools component wit two_worlds.wit -w -o twoworlds.wasm
 
 build-rust-guests target=default-target features="": (witguest-wit)
     cargo install --locked cargo-hyperlight
