@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   publish-hyperlight-packages:
@@ -34,6 +35,7 @@ jobs:
       - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
         with:
           rust-toolchain: "1.89"
+
       - name: Check crate versions
         shell: bash
         run: |
@@ -76,60 +78,64 @@ jobs:
           needs_publish hyperlight-host
           needs_publish hyperlight-guest-tracing
 
+      - name: Authenticate with crates.io
+        uses: rust-lang/crates-io-auth-action@v1
+        id: crates-io-auth
+        
       - name: Publish hyperlight-common
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_common/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         if: env.PUBLISH_HYPERLIGHT_COMMON != 'false'
       
       - name: Publish hyperlight-guest-tracing
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_guest_tracing/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         if: env.PUBLISH_HYPERLIGHT_GUEST_TRACING != 'false'
 
       - name: Publish hyperlight-guest
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_guest/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         if: env.PUBLISH_HYPERLIGHT_GUEST != 'false'
 
       - name: Publish hyperlight-guest-macro
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_guest_macro/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         if: env.PUBLISH_HYPERLIGHT_GUEST_MACRO != 'false'
 
       - name: Publish hyperlight-guest-bin
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_guest_bin/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         if: env.PUBLISH_HYPERLIGHT_GUEST_BIN != 'false'
         
       - name: Publish hyperlight-component-util
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_component_util/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         if: env.PUBLISH_HYPERLIGHT_COMPONENT_UTIL != 'false'
 
       - name: Publish hyperlight-component-macro
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_component_macro/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         if: env.PUBLISH_HYPERLIGHT_COMPONENT_MACRO != 'false'
          
       - name: Publish hyperlight-host
         continue-on-error: ${{ inputs.dry_run }}
         run: cargo publish --manifest-path ./src/hyperlight_host/Cargo.toml ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUBLISH_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
         if: env.PUBLISH_HYPERLIGHT_HOST != 'false'
 
 
