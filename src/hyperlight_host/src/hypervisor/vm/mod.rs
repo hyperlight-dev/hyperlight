@@ -23,12 +23,13 @@ use crate::Result;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::memory_region::MemoryRegion;
 
+/// KVM (Kernel-based Virtual Machine) functionality (linux)
 #[cfg(kvm)]
-/// Functionality to manipulate KVM-based virtual machines
 pub(crate) mod kvm;
-/// HyperV-on-linux functionality
+/// MSHV (Microsoft Hypervisor) functionality (linux)
 #[cfg(mshv3)]
 pub(crate) mod mshv;
+/// WHP (Windows Hypervisor Platform) functionality (windows)
 #[cfg(target_os = "windows")]
 pub(crate) mod whp;
 
