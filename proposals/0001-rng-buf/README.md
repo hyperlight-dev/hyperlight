@@ -154,7 +154,7 @@ struct Descriptor {
 }
 ```
 
-![layout](https://hackmd.io/_uploads/rkK5HKEZ-g.png)
+<img width="768" height="935" alt="layout" src="https://github.com/user-attachments/assets/e39d1b4e-c00a-4776-98a1-ceaf485d82e0" />
 
 #### Request-Response Flow
 
@@ -170,11 +170,11 @@ The typical flow for a request-response interaction works as follows:
 
 **Step 1:** Driver submits request with read buffer (request) and write buffer (response)
 
-![submit](https://hackmd.io/_uploads/SJzTrYNb-g.png)
+<img width="1324" height="726" alt="submit" src="https://github.com/user-attachments/assets/a3ee2dea-a55b-4d50-8b96-1702617a21f0" />
 
 **Step 2:** Device processes and writes response
 
-![process](https://hackmd.io/_uploads/rJclUYEWWx.png)
+<img width="1375" height="714" alt="process" src="https://github.com/user-attachments/assets/6ae27a64-29c6-47a4-80a9-f8bd4ad0c161" />
 
 Note how the driver pre-allocates the response buffer and provides it to the device via a write
 descriptor. The device then writes its response directly into this buffer. The `len` field in the
@@ -246,7 +246,7 @@ makes asynchronous constructs with out-of-order completion impossible to impleme
 suggests we replace current implementation with ring buffer approach because the virtio-queue can
 support both sync and async work completion.
 
-![hl-model](https://hackmd.io/_uploads/ryKXGhab-x.png)
+<img width="921" height="772" alt="hl-model" src="https://github.com/user-attachments/assets/0ee9cf15-200d-4ef4-8c9b-6ffaac05d4c0" />
 
 ### Performance Optimizations
 
