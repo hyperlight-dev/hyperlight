@@ -70,7 +70,7 @@ in performance degradation. A ring buffer can mitigate this overhead by:
 ### Non-Goals
 
 - 100% virtio specification compliance
-- Indirect descriptor table support (deffered to future work if needed)
+- Indirect descriptor table support (deferred to future work if needed)
 - Immediate async/await integration (deferred to future work)
 
 ## Proposal
@@ -140,7 +140,7 @@ in the picture below. The `addr` field contains an offset (or physical address, 
 implementation) pointing to where the actual buffer data lives in the shared memory region. The
 descriptor itself only contains metadata about the buffer and is agnostic to where the address
 points. The only requirements for the address is that both host and guest can translate it to
-referencable pointer to the buffer memory. The `addr` field does not preserve Rust's notion of
+referenceable pointer to the buffer memory. The `addr` field does not preserve Rust's notion of
 pointer provenance.
 
 Each descriptor is 16 bytes and has the following layout:
@@ -239,7 +239,7 @@ Popping from the stack mirrors this process. The guest reads stack pointer from 
 header. It then reads the 8-byte back-pointer located just before stack pointer to get last element
 offset in the buffer. It treats the slice starting at that offset as the flatbuffer-serialized
 payload. The last step is to deserialize the slice, rewind the stack pointer to just consumed
-paylaod offset.
+payload offset.
 
 This model is a natural fit for synchronous, in-order communication, but the LIFO stack semantics
 makes asynchronous constructs with out-of-order completion impossible to implement. This proposal
@@ -268,7 +268,7 @@ host needs to transfer data as stream to the guest and each stream chunk trigger
 **1. Notification Suppression**
 
 The virtio queue defines event suppression mechanism that allow both sides to control when they want
-to be notified about the submissions or completions in the queue. Notification supression allow for
+to be notified about the submissions or completions in the queue. Notification suppression allow for
 different batching strategies. For example:
 
 - A driver can queue multiple requests, suppress notifications, and only notify the device once when
@@ -325,7 +325,7 @@ When the `INLINE` flag is set, the `addr` is unused. This optimization, inspired
 eliminates memory indirection for common small messages, improving both latency and cache behavior.
 The tradeof is the increased size of descriptor table. Alternatively we could repurpose the `addr`
 and `len` as raw bytes providing 12 bytes of inline storage. We should asses if any of flatbuffer
-schema serialized data can actualy fit into small inline data.
+schema serialized data can actually fit into small inline data.
 
 **4. Descriptor Chaining - scatter gather list**
 
@@ -333,7 +333,7 @@ Descriptors can be chained using the `NEXT` flag. This enables zero-copy scatter
 patterns. Imagine again the stream running on the host. We want to gather few chunks before sending
 it to the guest. For each incoming chunk we can grab the buffer from the buffer pool and write data
 to it. After reaching some threshold we want to present all the buffers to guest. scatter-gather
-list allow us to represent the chunks as descriptor chain without need to copy it to contigous
+list allow us to represent the chunks as descriptor chain without need to copy it to contiguous
 memory.
 
 ### Dynamic Response Sizing
@@ -357,7 +357,7 @@ attempt to snapshot a sandbox with such pending requests will result in a snapsh
 
 ### Difference from spec
 
-- Do not support indirect descriptor table (can be deffered to future work if needed),
+- Do not support indirect descriptor table (can be deferred to future work if needed),
 - Do not support feature negotiation, set of features is fixed for driver and device,
 - Only support packed queue,
 - Introduce inline data optimization in descriptor (only if benchmarks support the claim)
