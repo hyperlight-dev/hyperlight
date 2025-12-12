@@ -206,9 +206,9 @@ with atomic publishing of flags ensure that the other side will never observe a 
 - Driver: Write descriptor fields ? memory barrier ? atomic Release-store flags
 - Device: Atomic Acquire-load flags ? memory barrier ? read descriptor fields
 
-Because the packed ring reuses the same descriptor slot for both available and used states and both
-sides only poll a single next slot, each side needs to differentiate between this change belongs to
-the current lap in the ring and this is an old value from the previous lap. This is done using
+Because the packed ring reuses the same descriptor slot for both `available` and `used` states and both
+sides only poll a single next slot, each side needs to differentiate between "this change belongs to
+the current lap in the ring" and "this is an old value from the previous lap." This is done using
 "wrap" counters:
 
 - Each side keeps a boolean "wrap" flag that toggles when it passes the last descriptor in the ring,
@@ -230,12 +230,12 @@ Each of these memory regions begins with an 8-byte header that stores a relative
 the next free byte in the stack.
 
 When pushing, the payload which is flatbuffer-serialized message is written at the current stack
-pointer, followed by the 8-byte footer that containins just written payloads starting offset.
+pointer, followed by the 8-byte footer that containins just written payload's starting offset.
 Finally, the header is advanced to point past the footer. This makes each item a pair of
 `payload + back-pointer`, so the top of the stack can always be found in O(1) without extra
 metadata.
 
-Popping from the stack mirrors this process. The guest reads stack pointer from the input stacks
+Popping from the stack mirrors this process. The guest reads stack pointer from the input stack's
 header. It then reads the 8-byte back-pointer located just before stack pointer to get last element
 offset in the buffer. It treats the slice starting at that offset as the flatbuffer-serialized
 payload. The last step is to deserialize the slice, rewind the stack pointer to just consumed
@@ -360,7 +360,7 @@ attempt to snapshot a sandbox with such pending requests will result in a snapsh
 - Do not support indirect descriptor table (can be deffered to future work if needed),
 - Do not support feature negotiation, set of features is fixed for driver and device,
 - Only support packed queue,
-- Introduce inline data optimization in descriptor (only if benchmarks supports the claim)
+- Introduce inline data optimization in descriptor (only if benchmarks support the claim)
 
 ### Type System Design
 
