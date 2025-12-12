@@ -1,0 +1,113 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Build Guests
+
+on:
+  workflow_call:
+    inputs:
+      docs_only:
+        description: Skip building if docs only
+        required: false
+        type: string
+        default: "false"
+      config:
+        description: Build configuration (debug or release)
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-guests:
+    if: ${{ inputs.docs_only == 'false' }}
+    timeout-minutes: 15
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+        with:
+          rust-toolchain: "1.89"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix cargo home permissions
+        if: runner.os == 'Linux'
+        run: |
+          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
+
+      # cargo-hyperlight builds a custom sysroot for x86_64-hyperlight-none target.
+      # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
+      # We cache sysroot separately to avoid rebuilding it (~10s) on every run.
+      - name: Sysroot cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/tests/rust_guests/simpleguest/target/sysroot
+            src/tests/rust_guests/dummyguest/target/sysroot
+            src/tests/rust_guests/witguest/target/sysroot
+          key: sysroot-linux-${{ inputs.config }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "guests-${{ inputs.config }}"
+          cache-on-failure: "true"
+          workspaces: |
+            . -> target
+            src/tests/rust_guests/simpleguest -> target
+            src/tests/rust_guests/dummyguest -> target
+            src/tests/rust_guests/witguest -> target
+
+      - name: Build Rust guests
+        run: |
+          just build-rust-guests ${{ inputs.config }}
+          just move-rust-guests ${{ inputs.config }}
+
+      - name: Build C guests
+        run: |
+          just build-c-guests ${{ inputs.config }}
+          just move-c-guests ${{ inputs.config }}
+
+      - name: Upload Rust guests
+        uses: actions/upload-artifact@v5
+        with:
+          name: rust-guests-${{ inputs.config }}
+          path: |
+            src/tests/rust_guests/bin/${{ inputs.config }}/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload C guests
+        uses: actions/upload-artifact@v5
+        with:
+          name: c-guests-${{ inputs.config }}
+          path: src/tests/c_guests/bin/${{ inputs.config }}/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload interface.wasm
+        if: inputs.config == 'debug'
+        uses: actions/upload-artifact@v5
+        with:
+          name: interface-wasm
+          path: src/tests/rust_guests/witguest/interface.wasm
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload twoworlds.wasm
+        if: inputs.config == 'debug'
+        uses: actions/upload-artifact@v5
+        with:
+          name: twoworlds-wasm
+          path: src/tests/rust_guests/witguest/twoworlds.wasm
+          retention-days: 1
+          if-no-files-found: error

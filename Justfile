@@ -43,12 +43,12 @@ build target=default-target:
 guests: build-and-move-rust-guests build-and-move-c-guests
 
 witguest-wit:
-    cargo install --locked wasm-tools
+    command -v wasm-tools >/dev/null 2>&1 || cargo install --locked wasm-tools
     cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
     cd src/tests/rust_guests/witguest && wasm-tools component wit two_worlds.wit -w -o twoworlds.wasm
 
 build-rust-guests target=default-target features="": (witguest-wit)
-    cargo install --locked cargo-hyperlight
+    command -v cargo-hyperlight >/dev/null 2>&1 || cargo install --locked cargo-hyperlight
     cd src/tests/rust_guests/simpleguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
     cd src/tests/rust_guests/dummyguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
     cd src/tests/rust_guests/witguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
@@ -209,15 +209,15 @@ check-guest-i686 target=default-target:
 test-doc target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} {{ if features =="" {''} else { "--features " + features } }} --doc
 
-################
-### LINTING ####
-################
-
 miri-tests:
-    rustup component add miri --toolchain nightly
+    rustup +nightly component list | grep -q "miri.*installed" || rustup component add miri --toolchain nightly
     # For now only run miri tests on hyperlight-common with trace_guest feature
     # We can add more as needed
     cargo +nightly miri test -p hyperlight-common -F trace_guest
+
+################
+### LINTING ####
+################
 
 check:
     {{ cargo-cmd }} check  {{ target-triple-flag }}
@@ -227,6 +227,7 @@ check:
     {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,mem_profile  {{ target-triple-flag }}
 
 fmt-check:
+    rustup +nightly component list | grep -q "rustfmt.*installed" || rustup component add rustfmt --toolchain nightly
     cargo +nightly fmt --all -- --check
     cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml -- --check
@@ -237,6 +238,7 @@ check-license-headers:
     ./dev/check-license-headers.sh
 
 fmt-apply:
+    rustup +nightly component list | grep -q "rustfmt.*installed" || rustup component add rustfmt --toolchain nightly
     cargo +nightly fmt --all
     cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
     cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml
@@ -252,7 +254,7 @@ clippyw target=default-target: (witguest-wit)
     {{ cargo-cmd }} clippy --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
 
 clippy-guests target=default-target: (witguest-wit)
-    cargo install --locked cargo-hyperlight
+    command -v cargo-hyperlight >/dev/null 2>&1 || cargo install --locked cargo-hyperlight
     cd src/tests/rust_guests/simpleguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
     cd src/tests/rust_guests/witguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
@@ -324,7 +326,7 @@ tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
 # If tag is not given, defaults to latest release
 # Options for os: "Windows", or "Linux"
 # Options for Linux hypervisor: "kvm", "mshv3"
-# Options for Windows hypervisor: "hyperv"
+# Options for Windows hypervisor: "hyperv", "hyperv-ws2025"
 # Options for cpu: "amd", "intel"
 bench-download os hypervisor cpu tag="":
     gh release download {{ tag }} -D ./target/ -p benchmarks_{{ os }}_{{ hypervisor }}_{{ cpu }}.tar.gz
