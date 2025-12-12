@@ -85,6 +85,7 @@ jobs:
     secrets: inherit
     permissions:
       contents: read
+      id-token: write
 
   publish:
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
