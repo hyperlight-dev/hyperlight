@@ -44,7 +44,7 @@ jobs:
       # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
       # We cache sysroot separately to avoid rebuilding it (~10s) on every run.
       - name: Sysroot cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             src/tests/rust_guests/simpleguest/target/sysroot
@@ -108,7 +108,7 @@ jobs:
       # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
       # We cache sysroot separately to avoid rebuilding it (~10s) on every run.
       - name: Sysroot cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             src/tests/rust_guests/simpleguest/target/sysroot
