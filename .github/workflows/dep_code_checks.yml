@@ -78,10 +78,10 @@ jobs:
       - name: Verify MSRV
         run: ./dev/verify-msrv.sh hyperlight-host hyperlight-guest hyperlight-guest-bin hyperlight-common
 
-      - name: Check hyperlight-guest builds for 32-bit (Nanvix compatibility)
+      - name: Check 32-bit builds (Nanvix compatibility)
         run: |
           rustup target add i686-unknown-linux-gnu
-          just check-guest-i686 debug
+          just check-i686 debug
 
       - name: Check cargo features compile
         run: just check
