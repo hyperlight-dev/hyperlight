@@ -787,6 +787,7 @@ mod tests {
     use std::thread;
 
     use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+    use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_string;
 
     #[cfg(target_os = "linux")]
@@ -1295,5 +1296,28 @@ mod tests {
             u_sbox.evolve().unwrap()
         };
         assert_ne!(sandbox3.id, sandbox_id);
+    }
+
+    /// Test that sandboxes can be created and evolved with different heap sizes
+    #[test]
+    fn test_sandbox_creation_various_sizes() {
+        let test_cases: [(&str, u64); 3] = [
+            ("small (8MB heap)", SMALL_HEAP_SIZE),
+            ("medium (64MB heap)", MEDIUM_HEAP_SIZE),
+            ("large (256MB heap)", LARGE_HEAP_SIZE),
+        ];
+
+        for (name, heap_size) in test_cases {
+            let mut cfg = SandboxConfiguration::default();
+            cfg.set_heap_size(heap_size);
+
+            let path = simple_guest_as_string().unwrap();
+            let sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg))
+                .unwrap_or_else(|e| panic!("Failed to create {} sandbox: {}", name, e))
+                .evolve()
+                .unwrap_or_else(|e| panic!("Failed to evolve {} sandbox: {}", name, e));
+
+            drop(sbox);
+        }
     }
 }
