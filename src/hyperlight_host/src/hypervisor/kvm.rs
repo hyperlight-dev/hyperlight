@@ -18,13 +18,16 @@ use std::sync::LazyLock;
 
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
+use kvm_bindings::{
+    kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region, kvm_xsave,
+};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
+use crate::hypervisor::regs::{CommonDebugRegs, FP_CONTROL_WORD_DEFAULT, MXCSR_DEFAULT};
 use crate::hypervisor::{HyperlightExit, Hypervisor};
 use crate::mem::memory_region::MemoryRegion;
 use crate::{Result, new_error};
@@ -142,12 +145,16 @@ impl Hypervisor for KvmVm {
     }
 
     fn fpu(&self) -> Result<super::regs::CommonFpu> {
+        // Note: On KVM this ignores MXCSR.
+        // See https://github.com/torvalds/linux/blob/d358e5254674b70f34c847715ca509e46eb81e6f/arch/x86/kvm/x86.c#L12554-L12599
         let kvm_fpu = self.vcpu_fd.get_fpu()?;
         Ok((&kvm_fpu).into())
     }
 
     fn set_fpu(&self, fpu: &super::regs::CommonFpu) -> Result<()> {
         let kvm_fpu: kvm_fpu = fpu.into();
+        // Note: On KVM this ignores MXCSR.
+        // See https://github.com/torvalds/linux/blob/d358e5254674b70f34c847715ca509e46eb81e6f/arch/x86/kvm/x86.c#L12554-L12599
         self.vcpu_fd.set_fpu(&kvm_fpu)?;
         Ok(())
     }
@@ -163,7 +170,17 @@ impl Hypervisor for KvmVm {
         Ok(())
     }
 
-    #[cfg(crashdump)]
+    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+        let kvm_debug_regs = self.vcpu_fd.get_debug_regs()?;
+        Ok(kvm_debug_regs.into())
+    }
+
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+        let kvm_debug_regs: kvm_debugregs = drs.into();
+        self.vcpu_fd.set_debug_regs(&kvm_debug_regs)?;
+        Ok(())
+    }
+
     fn xsave(&self) -> Result<Vec<u8>> {
         let xsave = self.vcpu_fd.get_xsave()?;
         Ok(xsave
@@ -171,6 +188,35 @@ impl Hypervisor for KvmVm {
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect())
+    }
+
+    fn reset_xsave(&self) -> Result<()> {
+        let mut xsave = kvm_xsave::default(); // default is zeroed 4KB buffer with no FAM
+
+        // XSAVE area layout from Intel SDM Vol. 1 Section 13.4.1:
+        // - Bytes 0-1: FCW (x87 FPU Control Word)
+        // - Bytes 24-27: MXCSR
+        xsave.region[0] = FP_CONTROL_WORD_DEFAULT as u32;
+        xsave.region[6] = MXCSR_DEFAULT;
+
+        // SAFETY: No dynamic features enabled, 4KB is sufficient
+        unsafe { self.vcpu_fd.set_xsave(&xsave)? };
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[cfg(feature = "init-paging")]
+    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()> {
+        let xsave = kvm_xsave {
+            region: *xsave,
+            ..Default::default() // zeroed 4KB buffer with no FAM
+        };
+        // Safety: Safe because we only copy 4096 bytes
+        // and have not enabled any dynamic xsave features
+        unsafe { self.vcpu_fd.set_xsave(&xsave)? };
+
+        Ok(())
     }
 }
 

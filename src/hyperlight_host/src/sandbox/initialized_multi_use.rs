@@ -286,6 +286,8 @@ impl MultiUseSandbox {
             unsafe { self.vm.map_region(region)? };
         }
 
+        self.vm.reset_vcpu()?;
+
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
 

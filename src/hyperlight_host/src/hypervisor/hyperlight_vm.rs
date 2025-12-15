@@ -48,7 +48,7 @@ use crate::hypervisor::hyperv_linux::MshvVm;
 use crate::hypervisor::hyperv_windows::WhpVm;
 #[cfg(kvm)]
 use crate::hypervisor::kvm::KvmVm;
-use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::hypervisor::regs::{CommonDebugRegs, CommonSpecialRegisters};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::{HyperlightExit, InterruptHandle, InterruptHandleImpl, get_max_log_level};
@@ -88,6 +88,9 @@ pub(crate) struct HyperlightVm {
     next_slot: u32,                     // Monotonically increasing slot number
     freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
 
+    // pml4 saved to be able to restore it if needed
+    #[cfg(feature = "init-paging")]
+    pml4_addr: u64,
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(gdb)]
@@ -189,6 +192,8 @@ impl HyperlightVm {
             mmap_regions: Vec::new(),
             freed_slots: Vec::new(),
 
+            #[cfg(feature = "init-paging")]
+            pml4_addr: _pml4_addr,
             #[cfg(gdb)]
             gdb_conn,
             #[cfg(gdb)]
@@ -581,6 +586,36 @@ impl HyperlightVm {
         {
             handle_outb(mem_mgr, host_funcs, port, val)?;
         }
+
+        Ok(())
+    }
+
+    // Resets the following vCPU state:
+    // - General purpose registers
+    // - Debug registers
+    // - XSAVE (overlaps with FPU)
+    // - FPU registers (to set default FPU state)
+    // - Special registers (with saved PML4 if feature enabled)
+    // TODO: check if we can't avoid calling set_fpu and only use reset_xsave
+    // TODO: check if other state needs to be reset
+    pub(crate) fn reset_vcpu(&self) -> Result<()> {
+        self.vm.set_regs(&CommonRegisters {
+            rflags: 1 << 1, // Reserved bit always set
+            ..Default::default()
+        })?;
+        self.vm.set_debug_regs(&CommonDebugRegs::default())?;
+        // Note: On KVM this ignores MXCSR so it's being set as part of reset_xsave.
+        // See https://github.com/torvalds/linux/blob/d358e5254674b70f34c847715ca509e46eb81e6f/arch/x86/kvm/x86.c#L12554-L12599
+        self.vm.set_fpu(&CommonFpu::default())?;
+        self.vm.reset_xsave()?;
+        #[cfg(feature = "init-paging")]
+        self.vm
+            .set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(
+                self.pml4_addr,
+            ))?;
+        #[cfg(not(feature = "init-paging"))]
+        self.vm
+            .set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())?;
 
         Ok(())
     }
@@ -1077,6 +1112,914 @@ mod debug {
             } else {
                 Err(new_error!("The address: {:?} is not a sw breakpoint", addr))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "init-paging")]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    #[cfg(kvm)]
+    use crate::hypervisor::regs::FP_CONTROL_WORD_DEFAULT;
+    use crate::hypervisor::regs::{CommonSegmentRegister, CommonTableRegister, MXCSR_DEFAULT};
+    #[cfg(target_os = "windows")]
+    use crate::hypervisor::wrappers::HandleWrapper;
+    #[cfg(feature = "mem_profile")]
+    use crate::mem::exe::DummyUnwindInfo;
+    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::mem::mgr::SandboxMemoryManager;
+    use crate::mem::ptr::RawPtr;
+    use crate::mem::ptr_offset::Offset;
+    use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+    use crate::sandbox::SandboxConfiguration;
+    use crate::sandbox::host_funcs::FunctionRegistry;
+    #[cfg(feature = "mem_profile")]
+    use crate::sandbox::trace::MemTraceInfo;
+    #[cfg(crashdump)]
+    use crate::sandbox::uninitialized::SandboxRuntimeConfig;
+
+    /// Build dirty general purpose registers for testing reset_vcpu.
+    fn dirty_regs() -> CommonRegisters {
+        CommonRegisters {
+            rax: 0x1111111111111111,
+            rbx: 0x2222222222222222,
+            rcx: 0x3333333333333333,
+            rdx: 0x4444444444444444,
+            rsi: 0x5555555555555555,
+            rdi: 0x6666666666666666,
+            rsp: 0x7777777777777777,
+            rbp: 0x8888888888888888,
+            r8: 0x9999999999999999,
+            r9: 0xAAAAAAAAAAAAAAAA,
+            r10: 0xBBBBBBBBBBBBBBBB,
+            r11: 0xCCCCCCCCCCCCCCCC,
+            r12: 0xDDDDDDDDDDDDDDDD,
+            r13: 0xEEEEEEEEEEEEEEEE,
+            r14: 0xFFFFFFFFFFFFFFFF,
+            r15: 0x0123456789ABCDEF,
+            rip: 0xFEDCBA9876543210,
+            rflags: 0x202, // IF + reserved bit 1
+        }
+    }
+
+    /// Build dirty FPU state for testing reset_vcpu.
+    fn dirty_fpu() -> CommonFpu {
+        CommonFpu {
+            fpr: [[0xAB; 16]; 8],
+            fcw: 0x0F7F, // Different from default 0x037F
+            fsw: 0x1234,
+            ftwx: 0xAB,
+            last_opcode: 0x0123,
+            last_ip: 0xDEADBEEF00000000,
+            last_dp: 0xCAFEBABE00000000,
+            xmm: [[0xCD; 16]; 16],
+            mxcsr: 0x3F80, // Different from default 0x1F80
+        }
+    }
+
+    /// Build dirty special registers for testing reset_vcpu.
+    /// Must be consistent for 64-bit long mode (CR0/CR4/EFER).
+    fn dirty_sregs(_pml4_addr: u64) -> CommonSpecialRegisters {
+        let segment = CommonSegmentRegister {
+            base: 0x1000,
+            limit: 0xFFFF,
+            selector: 0x10,
+            type_: 3, // data segment, read/write, accessed
+            present: 1,
+            dpl: 0,
+            db: 1,
+            s: 1,
+            l: 0,
+            g: 1,
+            avl: 1,
+            unusable: 0,
+            padding: 0,
+        };
+        // CS segment - 64-bit code segment
+        let cs_segment = CommonSegmentRegister {
+            base: 0,
+            limit: 0xFFFF,
+            selector: 0x08,
+            type_: 0b1011, // code segment, execute/read, accessed
+            present: 1,
+            dpl: 0,
+            db: 0, // must be 0 in 64-bit mode
+            s: 1,
+            l: 1, // 64-bit mode
+            g: 1,
+            avl: 0,
+            unusable: 0,
+            padding: 0,
+        };
+        let table = CommonTableRegister {
+            base: 0xDEAD0000,
+            limit: 0xFFFF,
+        };
+        CommonSpecialRegisters {
+            cs: cs_segment,
+            ds: segment,
+            es: segment,
+            fs: segment,
+            gs: segment,
+            ss: segment,
+            tr: CommonSegmentRegister {
+                type_: 0b1011, // busy TSS
+                present: 1,
+                ..segment
+            },
+            ldt: segment,
+            gdt: table,
+            idt: table,
+            cr0: 0x80000011, // PE + ET + PG
+            cr2: 0xBADC0DE,
+            // MSHV validates cr3 and rejects bogus values; use valid _pml4_addr for MSHV
+            cr3: match get_available_hypervisor() {
+                #[cfg(mshv3)]
+                Some(HypervisorType::Mshv) => _pml4_addr,
+                _ => 0x12345000,
+            },
+            cr4: 0x20, // PAE
+            cr8: 0x5,
+            efer: 0x500, // LME + LMA
+            apic_base: 0xFEE00900,
+            // interrupt_bitmap: [0xFFFFFFFF; 4],
+            interrupt_bitmap: [0; 4], // fails if non-zero on MSHV
+        }
+    }
+
+    /// Build dirty debug registers for testing reset_vcpu.
+    ///
+    /// DR6 bit layout (Intel SDM / AMD APM):
+    ///   Bits 0-3 (B0-B3): Breakpoint condition detected - software writable/clearable
+    ///   Bits 4-10: Reserved, read as 1s on modern processors (read-only)
+    ///   Bit 11 (BLD): Bus Lock Trap - cleared by processor, read-only on older CPUs
+    ///   Bit 12: Reserved, always 0
+    ///   Bit 13 (BD): Debug Register Access Detected - software clearable
+    ///   Bit 14 (BS): Single-Step - software clearable
+    ///   Bit 15 (BT): Task Switch breakpoint - software clearable
+    ///   Bit 16 (RTM): TSX-related, read-only (1 if no TSX)
+    ///   Bits 17-31: Reserved, read as 1s on modern processors (read-only)
+    ///   Bits 32-63: Reserved, must be 0
+    ///
+    /// Writable bits: 0-3, 13, 14, 15 = mask 0xE00F
+    /// Reserved 1s: 4-10, 11 (if no BLD), 16 (if no TSX), 17-31 = ~0xE00F on lower 32 bits
+    const DR6_WRITABLE_MASK: u64 = 0xE00F; // B0-B3, BD, BS, BT
+
+    /// DR7 bit layout:
+    ///   Bits 0-7 (L0-L3, G0-G3): Local/global breakpoint enables - writable
+    ///   Bits 8-9 (LE, GE): Local/Global Exact (386 only, ignored on modern) - writable
+    ///   Bit 10: Reserved, must be 1 (read-only)
+    ///   Bits 11-12: Reserved (RTM/TSX on some CPUs), must be 0 (read-only)
+    ///   Bit 13 (GD): General Detect Enable - writable
+    ///   Bits 14-15: Reserved, must be 0 (read-only)
+    ///   Bits 16-31 (R/W0-3, LEN0-3): Breakpoint conditions and lengths - writable
+    ///   Bits 32-63: Reserved, must be 0 (read-only)
+    ///
+    /// Writable bits: 0-9, 13, 16-31 = mask 0xFFFF23FF
+    const DR7_WRITABLE_MASK: u64 = 0xFFFF_23FF;
+
+    fn dirty_debug_regs() -> CommonDebugRegs {
+        CommonDebugRegs {
+            dr0: 0xDEADBEEF00001000,
+            dr1: 0xDEADBEEF00002000,
+            dr2: 0xDEADBEEF00003000,
+            dr3: 0xDEADBEEF00004000,
+            // Set all writable bits: B0-B3 (0-3), BD (13), BS (14), BT (15)
+            dr6: DR6_WRITABLE_MASK,
+            // Set writable bits: L0-L3, G0-G3 (0-7), LE/GE (8-9), GD (13), conditions (16-31)
+            dr7: DR7_WRITABLE_MASK,
+        }
+    }
+
+    /// Build a dirty XSAVE area for testing reset_vcpu.
+    /// Can't use all 1s because XSAVE has reserved fields that must be zero
+    /// (header at 512-575, MXCSR reserved bits, etc.)
+    ///
+    /// Takes the current xsave state to preserve hypervisor-specific header fields
+    /// like XCOMP_BV which MSHV/WHP require to be set correctly.
+    ///
+    /// Layout (from Intel SDM Table 13-1):
+    ///   Bytes 0-1: FCW, 2-3: FSW, 4: FTW, 5: reserved, 6-7: FOP
+    ///   Bytes 8-15: FIP, 16-23: FDP
+    ///   Bytes 24-27: MXCSR, 28-31: MXCSR_MASK (don't touch)
+    ///   Bytes 32-159: ST0-ST7/MM0-MM7 (8 regs × 16 bytes, only 10 bytes used per reg)
+    ///   Bytes 160-415: XMM0-XMM15 (16 regs × 16 bytes)
+    ///   Bytes 416-511: Reserved
+    ///   Bytes 512-575: XSAVE header (preserve XCOMP_BV at 520-527)
+    fn dirty_xsave(current_xsave: &[u8]) -> [u32; 1024] {
+        let mut xsave = [0u32; 1024];
+
+        // FCW (bytes 0-1) + FSW (bytes 2-3) - pack into xsave[0]
+        // FCW = 0x0F7F (different from default 0x037F), FSW = 0x1234
+        xsave[0] = 0x0F7F | (0x1234 << 16);
+        // FTW (byte 4) + reserved (byte 5) + FOP (bytes 6-7) - pack into xsave[1]
+        // FTW = 0xAB, FOP = 0x0123
+        xsave[1] = 0xAB | (0x0123 << 16);
+        // FIP (bytes 8-15) - xsave[2] and xsave[3]
+        xsave[2] = 0xDEAD0001;
+        xsave[3] = 0xBEEF0002;
+        // FDP (bytes 16-23) - xsave[4] and xsave[5]
+        xsave[4] = 0xCAFE0003;
+        xsave[5] = 0xBABE0004;
+        // MXCSR (bytes 24-27) - xsave[6], use valid value different from default
+        xsave[6] = 0x3F80;
+        // xsave[7] is MXCSR_MASK - preserve from current
+        if current_xsave.len() >= 32 {
+            xsave[7] = u32::from_le_bytes(current_xsave[28..32].try_into().unwrap());
+        }
+
+        // ST0-ST7/MM0-MM7 (bytes 32-159, indices 8-39)
+        for item in xsave.iter_mut().take(40).skip(8) {
+            *item = 0xCAFEBABE;
+        }
+        // XMM0-XMM15 (bytes 160-415, indices 40-103)
+        for item in xsave.iter_mut().take(104).skip(40) {
+            *item = 0xDEADBEEF;
+        }
+
+        // Preserve entire XSAVE header (bytes 512-575, indices 128-143) from current state
+        // This includes XSTATE_BV (512-519) and XCOMP_BV (520-527) which
+        // MSHV/WHP require to be set correctly for compacted format.
+        // Failure to do this will cause set_xsave to fail on MSHV.
+        if current_xsave.len() >= 576 {
+            #[allow(clippy::needless_range_loop)]
+            for i in 128..144 {
+                let byte_offset = i * 4;
+                xsave[i] = u32::from_le_bytes(
+                    current_xsave[byte_offset..byte_offset + 4]
+                        .try_into()
+                        .unwrap(),
+                );
+            }
+        }
+
+        xsave
+    }
+
+    fn hyperlight_vm(code: &[u8]) -> Result<HyperlightVm> {
+        let config: SandboxConfiguration = Default::default();
+        #[cfg(crashdump)]
+        let rt_cfg: SandboxRuntimeConfig = Default::default();
+        #[cfg(feature = "mem_profile")]
+        let trace_info = MemTraceInfo::new(Arc::new(DummyUnwindInfo {})).unwrap();
+
+        let layout = SandboxMemoryLayout::new(config, code.len(), 4096, 0, 0, None)?;
+
+        let mem_size = layout.get_memory_size()?;
+        let eshm = ExclusiveSharedMemory::new(mem_size)?;
+
+        let stack_cookie = [0u8; 16];
+        let mem_mgr =
+            SandboxMemoryManager::new(layout, eshm, RawPtr::from(0), Offset::from(0), stack_cookie);
+
+        let (mut mem_mgr_hshm, mut mem_mgr_gshm) = mem_mgr.build();
+
+        // Set up shared memory (page tables)
+        let rsp = {
+            let mut regions = layout.get_memory_regions(&mem_mgr_gshm.shared_mem)?;
+            let mem_size = mem_mgr_gshm.shared_mem.mem_size() as u64;
+            mem_mgr_gshm.set_up_shared_memory(mem_size, &mut regions)?
+        };
+
+        // Write code
+        let code_offset = layout.get_guest_code_offset();
+        mem_mgr_hshm.shared_mem.copy_from_slice(code, code_offset)?;
+
+        // Get regions for VM
+        let regions = layout
+            .get_memory_regions(&mem_mgr_gshm.shared_mem)?
+            .into_iter()
+            .filter(|r| !r.guest_region.is_empty())
+            .collect();
+
+        // Calculate pml4_addr
+        let pml4_addr = SandboxMemoryLayout::PML4_OFFSET as u64;
+
+        // Entrypoint
+        let entrypoint = layout.get_guest_code_address() as u64;
+
+        let mut vm = HyperlightVm::new(
+            regions,
+            pml4_addr,
+            entrypoint,
+            rsp,
+            &config,
+            #[cfg(target_os = "windows")]
+            HandleWrapper::from(
+                mem_mgr_hshm
+                    .shared_mem
+                    .with_exclusivity(|s| s.get_mmap_file_handle())?,
+            ),
+            #[cfg(target_os = "windows")]
+            mem_mgr_hshm.shared_mem.raw_mem_size(),
+            #[cfg(gdb)]
+            None,
+            #[cfg(crashdump)]
+            rt_cfg,
+            #[cfg(feature = "mem_profile")]
+            trace_info,
+        )?;
+
+        let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
+        #[cfg(gdb)]
+        let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr_hshm.clone()));
+
+        // Run the VM
+        vm.initialise(
+            RawPtr::from(0),
+            0,
+            4096,
+            &mut mem_mgr_hshm,
+            &host_funcs,
+            None,
+            #[cfg(gdb)]
+            dbg_mem_access_fn.clone(),
+        )?;
+        Ok(vm)
+    }
+
+    #[test]
+    fn reset_vcpu_simple() {
+        const CODE: [u8; 1] = [0xf4]; // hlt
+        let hyperlight_vm = hyperlight_vm(&CODE).unwrap();
+        let available_hv = *get_available_hypervisor().as_ref().unwrap();
+
+        // Set all vCPU state to dirty values
+        let regs = dirty_regs();
+        let fpu = dirty_fpu();
+        let sregs = dirty_sregs(hyperlight_vm.pml4_addr);
+        let current_xsave = hyperlight_vm.vm.xsave().unwrap();
+        let xsave = dirty_xsave(&current_xsave);
+        let debug_regs = dirty_debug_regs();
+
+        hyperlight_vm.vm.set_xsave(&xsave).unwrap();
+        hyperlight_vm.vm.set_regs(&regs).unwrap();
+        hyperlight_vm.vm.set_fpu(&fpu).unwrap();
+        hyperlight_vm.vm.set_sregs(&sregs).unwrap();
+        hyperlight_vm.vm.set_debug_regs(&debug_regs).unwrap();
+
+        // Verify state was set
+        assert_eq!(hyperlight_vm.vm.regs().unwrap(), regs);
+        #[cfg_attr(not(kvm), allow(unused_mut))]
+        let mut got_fpu = hyperlight_vm.vm.fpu().unwrap();
+        let mut expected_fpu = fpu;
+        // KVM doesn't preserve mxcsr via set_fpu/fpu()
+        #[cfg(kvm)]
+        if available_hv == HypervisorType::Kvm {
+            got_fpu.mxcsr = fpu.mxcsr;
+        }
+        // fpr only uses 80 bits per register. Normalize upper bits for comparison.
+        for i in 0..8 {
+            expected_fpu.fpr[i][10..16].copy_from_slice(&got_fpu.fpr[i][10..16]);
+        }
+        assert_eq!(got_fpu, expected_fpu);
+
+        // Verify debug regs
+        let got_debug_regs = hyperlight_vm.vm.debug_regs().unwrap();
+        let mut expected_debug_regs = debug_regs;
+        // DR6: writable bits are B0-B3 (0-3), BD (13), BS (14), BT (15) = 0xE00F
+        // Reserved bits (4-12, 16-31) are read-only and set by CPU, copy from actual
+        expected_debug_regs.dr6 =
+            (debug_regs.dr6 & DR6_WRITABLE_MASK) | (got_debug_regs.dr6 & !DR6_WRITABLE_MASK);
+        // DR7: writable bits are 0-9, 13, 16-31 = 0xFFFF23FF
+        // Reserved bits (10-12, 14-15) have fixed values, copy from actual
+        expected_debug_regs.dr7 =
+            (debug_regs.dr7 & DR7_WRITABLE_MASK) | (got_debug_regs.dr7 & !DR7_WRITABLE_MASK);
+        assert_eq!(got_debug_regs, expected_debug_regs);
+
+        // Verify sregs were set
+        let got_sregs = hyperlight_vm.vm.sregs().unwrap();
+        let mut expected_sregs = sregs;
+        // ss.db (stack segment default size) may differ by hypervisor; ignored in 64-bit mode
+        expected_sregs.ss.db = got_sregs.ss.db;
+        // unusable and g are hypervisor implementation details (see comment below for details)
+        expected_sregs.cs.unusable = got_sregs.cs.unusable;
+        expected_sregs.cs.g = got_sregs.cs.g;
+        expected_sregs.ds.unusable = got_sregs.ds.unusable;
+        expected_sregs.ds.g = got_sregs.ds.g;
+        expected_sregs.es.unusable = got_sregs.es.unusable;
+        expected_sregs.es.g = got_sregs.es.g;
+        expected_sregs.fs.unusable = got_sregs.fs.unusable;
+        expected_sregs.fs.g = got_sregs.fs.g;
+        expected_sregs.gs.unusable = got_sregs.gs.unusable;
+        expected_sregs.gs.g = got_sregs.gs.g;
+        expected_sregs.ss.unusable = got_sregs.ss.unusable;
+        expected_sregs.ss.g = got_sregs.ss.g;
+        expected_sregs.tr.unusable = got_sregs.tr.unusable;
+        expected_sregs.tr.g = got_sregs.tr.g;
+        expected_sregs.ldt.unusable = got_sregs.ldt.unusable;
+        expected_sregs.ldt.g = got_sregs.ldt.g;
+        assert_eq!(got_sregs, expected_sregs);
+
+        // Reset the vCPU
+        hyperlight_vm.reset_vcpu().unwrap();
+
+        // Verify the fpu was reset to defaults
+        assert_eq!(
+            hyperlight_vm.vm.regs().unwrap(),
+            CommonRegisters {
+                rflags: 1 << 1, // Reserved bit 1 is always set
+                ..Default::default()
+            }
+        );
+
+        #[cfg_attr(not(kvm), allow(unused_mut))]
+        let mut reset_fpu = hyperlight_vm.vm.fpu().unwrap();
+        // KVM ignores mxcsr in its set_fpu/fpu()
+        #[cfg(kvm)]
+        if available_hv == HypervisorType::Kvm {
+            reset_fpu.mxcsr = MXCSR_DEFAULT;
+        }
+        assert_eq!(reset_fpu, CommonFpu::default());
+
+        // Verify debug registers are reset to defaults
+        // Reserved bits in DR6/DR7 are read-only (set by CPU), copy from actual
+        // Writable bits should be cleared to 0 after reset
+        let reset_debug_regs = hyperlight_vm.vm.debug_regs().unwrap();
+        let expected_reset_debug_regs = CommonDebugRegs {
+            dr6: reset_debug_regs.dr6 & !DR6_WRITABLE_MASK,
+            dr7: reset_debug_regs.dr7 & !DR7_WRITABLE_MASK,
+            ..Default::default()
+        };
+        assert_eq!(reset_debug_regs, expected_reset_debug_regs);
+
+        // Verify xsave is reset - should be zeroed except for hypervisor-specific fields
+        let reset_xsave = hyperlight_vm.vm.xsave().unwrap();
+        // Build expected xsave: all zeros with fpu specific defaults. Then copy hypervisor-specific fields from actual
+        let mut expected_xsave = vec![0u8; reset_xsave.len()];
+        #[cfg(mshv3)]
+        if available_hv == HypervisorType::Mshv {
+            // FCW (offset 0-1): When XSTATE_BV.LegacyX87 = 0 (init state), the hypervisor
+            // skips copying the FPU legacy region entirely, leaving zeros in the buffer.
+            // The actual guest FCW register is 0x037F (verified via fpu() assertion above),
+            // but xsave() doesn't report it because XSTATE_BV=0 means "init state, buffer
+            // contents undefined." We copy from actual to handle this.
+            expected_xsave[0..2].copy_from_slice(&reset_xsave[0..2]);
+        }
+        #[cfg(target_os = "windows")]
+        if available_hv == HypervisorType::Whp {
+            // FCW (offset 0-1): When XSTATE_BV.LegacyX87 = 0 (init state), the hypervisor
+            // skips copying the FPU legacy region entirely, leaving zeros in the buffer.
+            // The actual guest FCW register is 0x037F (verified via fpu() assertion above),
+            // but xsave() doesn't report it because XSTATE_BV=0 means "init state, buffer
+            // contents undefined." We copy from actual to handle this.
+            expected_xsave[0..2].copy_from_slice(&reset_xsave[0..2]);
+        }
+        #[cfg(kvm)]
+        if available_hv == HypervisorType::Kvm {
+            expected_xsave[0..2].copy_from_slice(&FP_CONTROL_WORD_DEFAULT.to_le_bytes());
+        }
+
+        // - MXCSR at offset 24-27: default FPU state set by hypervisor
+        expected_xsave[24..28].copy_from_slice(&MXCSR_DEFAULT.to_le_bytes());
+        // - MXCSR_MASK at offset 28-31: hardware-defined, read-only
+        expected_xsave[28..32].copy_from_slice(&reset_xsave[28..32]);
+        // - Reserved bytes at offset 464-511: These are in the reserved/padding area of the legacy
+        //   FXSAVE region (after XMM registers which end at byte 416). On KVM/Intel, these bytes
+        //   may contain hypervisor-specific metadata that isn't cleared during vCPU reset.
+        //   Since this is not guest-visible computational state, we copy from actual to expected.
+        expected_xsave[464..512].copy_from_slice(&reset_xsave[464..512]);
+        // - XSAVE header at offset 512-575: contains XSTATE_BV and XCOMP_BV (hypervisor-managed)
+        //   XSTATE_BV (512-519): Bitmap indicating which state components have valid data in the
+        //   buffer. When a bit is 0, the hypervisor uses the architectural init value for that
+        //   component. After reset, xsave() may still return non-zero XSTATE_BV since the
+        //   hypervisor reports which components it manages, not which have been modified.
+        //   XCOMP_BV (520-527): Compaction bitmap. Bit 63 indicates compacted format (used by MSHV/WHP).
+        //   When set, the XSAVE area uses a compact layout where only enabled components are stored
+        //   contiguously. This is a format indicator, not state data, so it's preserved across reset.
+        //   Both fields are managed by the hypervisor to describe the XSAVE area format and capabilities,
+        //   not guest-visible computational state, so they don't need to be zeroed on reset.
+        if reset_xsave.len() >= 576 {
+            expected_xsave[512..576].copy_from_slice(&reset_xsave[512..576]);
+        }
+        assert_eq!(
+            reset_xsave, expected_xsave,
+            "xsave should be zeroed except for hypervisor-specific fields"
+        );
+
+        // Verify sregs are reset to defaults
+        let defaults = CommonSpecialRegisters::standard_64bit_defaults(hyperlight_vm.pml4_addr);
+        let reset_sregs = hyperlight_vm.vm.sregs().unwrap();
+        let mut expected_reset_sregs = defaults;
+        // ss.db (stack segment default size) may differ by hypervisor; ignored in 64-bit mode
+        expected_reset_sregs.ss.db = reset_sregs.ss.db;
+        // unusable, type_, and g (granularity) for segments are hypervisor implementation details.
+        // These fields are part of the hidden descriptor cache. While guests can write them
+        // indirectly (by loading segments from a crafted GDT), guests cannot read them back
+        // (e.g., `mov ax, ds` only returns the selector, not the hidden cache).
+        // KVM and MSHV reset to different default values, but both properly reset so there's
+        // no information leakage between tenants. g=0 means byte granularity, g=1 means 4KB pages.
+        expected_reset_sregs.cs.unusable = reset_sregs.cs.unusable;
+        expected_reset_sregs.cs.g = reset_sregs.cs.g;
+        expected_reset_sregs.ds.unusable = reset_sregs.ds.unusable;
+        expected_reset_sregs.ds.type_ = reset_sregs.ds.type_;
+        expected_reset_sregs.ds.g = reset_sregs.ds.g;
+        expected_reset_sregs.es.unusable = reset_sregs.es.unusable;
+        expected_reset_sregs.es.type_ = reset_sregs.es.type_;
+        expected_reset_sregs.es.g = reset_sregs.es.g;
+        expected_reset_sregs.fs.unusable = reset_sregs.fs.unusable;
+        expected_reset_sregs.fs.type_ = reset_sregs.fs.type_;
+        expected_reset_sregs.fs.g = reset_sregs.fs.g;
+        expected_reset_sregs.gs.unusable = reset_sregs.gs.unusable;
+        expected_reset_sregs.gs.type_ = reset_sregs.gs.type_;
+        expected_reset_sregs.gs.g = reset_sregs.gs.g;
+        expected_reset_sregs.ss.unusable = reset_sregs.ss.unusable;
+        expected_reset_sregs.ss.type_ = reset_sregs.ss.type_;
+        expected_reset_sregs.ss.g = reset_sregs.ss.g;
+        expected_reset_sregs.tr.unusable = reset_sregs.tr.unusable;
+        expected_reset_sregs.tr.g = reset_sregs.tr.g;
+        expected_reset_sregs.ldt.unusable = reset_sregs.ldt.unusable;
+        expected_reset_sregs.ldt.g = reset_sregs.ldt.g;
+        assert_eq!(reset_sregs, expected_reset_sregs);
+    }
+
+    /// Tests that actually runs code, as opposed to just setting vCPU state.
+    mod run_tests {
+        use super::*;
+
+        #[test]
+        fn reset_vcpu_regs() {
+            #[rustfmt::skip]
+            const CODE: [u8; 151] = [
+                0x48, 0xb8, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, // mov rax, 0x1111111111111111
+                0x48, 0xbb, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, // mov rbx, 0x2222222222222222
+                0x48, 0xb9, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, // mov rcx, 0x3333333333333333
+                0x48, 0xba, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, // mov rdx, 0x4444444444444444
+                0x48, 0xbe, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, // mov rsi, 0x5555555555555555
+                0x48, 0xbf, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, // mov rdi, 0x6666666666666666
+                0x48, 0xbd, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, // mov rbp, 0x7777777777777777
+                0x49, 0xb8, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, // mov r8,  0x8888888888888888
+                0x49, 0xb9, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, // mov r9,  0x9999999999999999
+                0x49, 0xba, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, // mov r10, 0xAAAAAAAAAAAAAAAA
+                0x49, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, // mov r11, 0xBBBBBBBBBBBBBBBB
+                0x49, 0xbc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, // mov r12, 0xCCCCCCCCCCCCCCCC
+                0x49, 0xbd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd, // mov r13, 0xDDDDDDDDDDDDDDDD
+                0x49, 0xbe, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, // mov r14, 0xEEEEEEEEEEEEEEEE
+                0x49, 0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // mov r15, 0xFFFFFFFFFFFFFFFF
+                0xf4, // hlt
+            ];
+
+            let hyperlight_vm = hyperlight_vm(&CODE).unwrap();
+
+            // After run, check registers match expected dirty state
+            let regs = hyperlight_vm.vm.regs().unwrap();
+            let mut expected_dirty = CommonRegisters {
+                rax: 0x1111111111111111,
+                rbx: 0x2222222222222222,
+                rcx: 0x3333333333333333,
+                rdx: 0x4444444444444444,
+                rsi: 0x5555555555555555,
+                rdi: 0x6666666666666666,
+                rsp: 0,
+                rbp: 0x7777777777777777,
+                r8: 0x8888888888888888,
+                r9: 0x9999999999999999,
+                r10: 0xAAAAAAAAAAAAAAAA,
+                r11: 0xBBBBBBBBBBBBBBBB,
+                r12: 0xCCCCCCCCCCCCCCCC,
+                r13: 0xDDDDDDDDDDDDDDDD,
+                r14: 0xEEEEEEEEEEEEEEEE,
+                r15: 0xFFFFFFFFFFFFFFFF,
+                rip: 0,
+                rflags: 0,
+            };
+            // rip, rsp, and rflags are set by the CPU, we don't expect those to match our expected values
+            expected_dirty.rip = regs.rip;
+            expected_dirty.rsp = regs.rsp;
+            expected_dirty.rflags = regs.rflags;
+            assert_eq!(regs, expected_dirty);
+
+            // Reset vcpu
+            hyperlight_vm.reset_vcpu().unwrap();
+
+            // Check registers are reset to defaults
+            let regs = hyperlight_vm.vm.regs().unwrap();
+            let expected_reset = CommonRegisters {
+                rax: 0,
+                rbx: 0,
+                rcx: 0,
+                rdx: 0,
+                rsi: 0,
+                rdi: 0,
+                rsp: 0,
+                rbp: 0,
+                r8: 0,
+                r9: 0,
+                r10: 0,
+                r11: 0,
+                r12: 0,
+                r13: 0,
+                r14: 0,
+                r15: 0,
+                rip: 0,
+                rflags: 1 << 1, // Reserved bit 1 is always set
+            };
+            assert_eq!(regs, expected_reset);
+        }
+
+        #[test]
+        fn reset_vcpu_fpu() {
+            #[cfg(kvm)]
+            use crate::hypervisor::regs::MXCSR_DEFAULT;
+
+            #[cfg(kvm)]
+            let available_hv = *get_available_hypervisor().as_ref().unwrap();
+
+            #[rustfmt::skip]
+            const CODE: [u8; 289] = [
+                // xmm0-xmm7: use movd + pshufd to fill with pattern
+                0xb8, 0x11, 0x11, 0x11, 0x11,       // mov eax, 0x11111111
+                0x66, 0x0f, 0x6e, 0xc0,             // movd xmm0, eax
+                0x66, 0x0f, 0x70, 0xc0, 0x00,       // pshufd xmm0, xmm0, 0
+                0xb8, 0x22, 0x22, 0x22, 0x22,       // mov eax, 0x22222222
+                0x66, 0x0f, 0x6e, 0xc8,             // movd xmm1, eax
+                0x66, 0x0f, 0x70, 0xc9, 0x00,       // pshufd xmm1, xmm1, 0
+                0xb8, 0x33, 0x33, 0x33, 0x33,       // mov eax, 0x33333333
+                0x66, 0x0f, 0x6e, 0xd0,             // movd xmm2, eax
+                0x66, 0x0f, 0x70, 0xd2, 0x00,       // pshufd xmm2, xmm2, 0
+                0xb8, 0x44, 0x44, 0x44, 0x44,       // mov eax, 0x44444444
+                0x66, 0x0f, 0x6e, 0xd8,             // movd xmm3, eax
+                0x66, 0x0f, 0x70, 0xdb, 0x00,       // pshufd xmm3, xmm3, 0
+                0xb8, 0x55, 0x55, 0x55, 0x55,       // mov eax, 0x55555555
+                0x66, 0x0f, 0x6e, 0xe0,             // movd xmm4, eax
+                0x66, 0x0f, 0x70, 0xe4, 0x00,       // pshufd xmm4, xmm4, 0
+                0xb8, 0x66, 0x66, 0x66, 0x66,       // mov eax, 0x66666666
+                0x66, 0x0f, 0x6e, 0xe8,             // movd xmm5, eax
+                0x66, 0x0f, 0x70, 0xed, 0x00,       // pshufd xmm5, xmm5, 0
+                0xb8, 0x77, 0x77, 0x77, 0x77,       // mov eax, 0x77777777
+                0x66, 0x0f, 0x6e, 0xf0,             // movd xmm6, eax
+                0x66, 0x0f, 0x70, 0xf6, 0x00,       // pshufd xmm6, xmm6, 0
+                0xb8, 0x88, 0x88, 0x88, 0x88,       // mov eax, 0x88888888
+                0x66, 0x0f, 0x6e, 0xf8,             // movd xmm7, eax
+                0x66, 0x0f, 0x70, 0xff, 0x00,       // pshufd xmm7, xmm7, 0
+                // xmm8-xmm15: REX prefix versions
+                0xb8, 0x99, 0x99, 0x99, 0x99,       // mov eax, 0x99999999
+                0x66, 0x44, 0x0f, 0x6e, 0xc0,       // movd xmm8, eax
+                0x66, 0x45, 0x0f, 0x70, 0xc0, 0x00, // pshufd xmm8, xmm8, 0
+                0xb8, 0xaa, 0xaa, 0xaa, 0xaa,       // mov eax, 0xAAAAAAAA
+                0x66, 0x44, 0x0f, 0x6e, 0xc8,       // movd xmm9, eax
+                0x66, 0x45, 0x0f, 0x70, 0xc9, 0x00, // pshufd xmm9, xmm9, 0
+                0xb8, 0xbb, 0xbb, 0xbb, 0xbb,       // mov eax, 0xBBBBBBBB
+                0x66, 0x44, 0x0f, 0x6e, 0xd0,       // movd xmm10, eax
+                0x66, 0x45, 0x0f, 0x70, 0xd2, 0x00, // pshufd xmm10, xmm10, 0
+                0xb8, 0xcc, 0xcc, 0xcc, 0xcc,       // mov eax, 0xCCCCCCCC
+                0x66, 0x44, 0x0f, 0x6e, 0xd8,       // movd xmm11, eax
+                0x66, 0x45, 0x0f, 0x70, 0xdb, 0x00, // pshufd xmm11, xmm11, 0
+                0xb8, 0xdd, 0xdd, 0xdd, 0xdd,       // mov eax, 0xDDDDDDDD
+                0x66, 0x44, 0x0f, 0x6e, 0xe0,       // movd xmm12, eax
+                0x66, 0x45, 0x0f, 0x70, 0xe4, 0x00, // pshufd xmm12, xmm12, 0
+                0xb8, 0xee, 0xee, 0xee, 0xee,       // mov eax, 0xEEEEEEEE
+                0x66, 0x44, 0x0f, 0x6e, 0xe8,       // movd xmm13, eax
+                0x66, 0x45, 0x0f, 0x70, 0xed, 0x00, // pshufd xmm13, xmm13, 0
+                0xb8, 0xff, 0xff, 0xff, 0xff,       // mov eax, 0xFFFFFFFF
+                0x66, 0x44, 0x0f, 0x6e, 0xf0,       // movd xmm14, eax
+                0x66, 0x45, 0x0f, 0x70, 0xf6, 0x00, // pshufd xmm14, xmm14, 0
+                0xb8, 0x78, 0x56, 0x34, 0x12,       // mov eax, 0x12345678
+                0x66, 0x44, 0x0f, 0x6e, 0xf8,       // movd xmm15, eax
+                0x66, 0x45, 0x0f, 0x70, 0xff, 0x00, // pshufd xmm15, xmm15, 0
+
+                // Use 7 FLDs so TOP=1 after execution, different from default TOP=0.
+                // This ensures reset properly clears TOP, not just register contents.
+                0xd9, 0xee,                         // fldz   (0.0)
+                0xd9, 0xea,                         // fldl2e (log2(e))
+                0xd9, 0xe9,                         // fldl2t (log2(10))
+                0xd9, 0xec,                         // fldlg2 (log10(2))
+                0xd9, 0xed,                         // fldln2 (ln(2))
+                0xd9, 0xeb,                         // fldpi  (pi)
+                // Push a memory value to also dirty last_dp
+                0x48, 0xb8, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // mov rax, 0xDEADBEEF
+                0x50,                               // push rax
+                0xdd, 0x04, 0x24,                   // fld qword [rsp] - dirties last_dp
+                0x58,                               // pop rax
+
+                // Dirty FCW (0x0F7F, different from default 0x037F)
+                0xb8, 0x7f, 0x0f, 0x00, 0x00,       // mov eax, 0x0F7F
+                0x50,                               // push rax
+                0xd9, 0x2c, 0x24,                   // fldcw [rsp]
+                0x58,                               // pop rax
+
+                // Dirty MXCSR (0x3F80, different from default 0x1F80)
+                0xb8, 0x80, 0x3f, 0x00, 0x00,       // mov eax, 0x3F80
+                0x50,                               // push rax
+                0x0f, 0xae, 0x14, 0x24,             // ldmxcsr [rsp]
+                0x58,                               // pop rax
+
+                0xf4, // hlt
+            ];
+
+            let hyperlight_vm = hyperlight_vm(&CODE).unwrap();
+
+            // After run, check FPU state matches expected dirty values
+            let fpu = hyperlight_vm.vm.fpu().unwrap();
+
+            #[cfg_attr(not(kvm), allow(unused_mut))]
+            let mut expected_dirty = CommonFpu {
+                fcw: 0x0F7F,
+                ftwx: 0xFE, // 7 registers valid (bit 0 empty after 7 pushes with TOP=1)
+                xmm: [
+                    0x11111111111111111111111111111111_u128.to_le_bytes(),
+                    0x22222222222222222222222222222222_u128.to_le_bytes(),
+                    0x33333333333333333333333333333333_u128.to_le_bytes(),
+                    0x44444444444444444444444444444444_u128.to_le_bytes(),
+                    0x55555555555555555555555555555555_u128.to_le_bytes(),
+                    0x66666666666666666666666666666666_u128.to_le_bytes(),
+                    0x77777777777777777777777777777777_u128.to_le_bytes(),
+                    0x88888888888888888888888888888888_u128.to_le_bytes(),
+                    0x99999999999999999999999999999999_u128.to_le_bytes(),
+                    0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_u128.to_le_bytes(),
+                    0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB_u128.to_le_bytes(),
+                    0xCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC_u128.to_le_bytes(),
+                    0xDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD_u128.to_le_bytes(),
+                    0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE_u128.to_le_bytes(),
+                    0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF_u128.to_le_bytes(),
+                    0x12345678123456781234567812345678_u128.to_le_bytes(),
+                ],
+                mxcsr: 0x3F80,
+                fsw: 0x0802, // TOP=1 after 7 pushes (bits 11-13), DE flag from denormal load
+                // fpr: 80-bit values with 6 bytes padding; may vary between CPU vendors
+                fpr: fpu.fpr,
+                // last_opcode: FPU Opcode update varies by CPU (may only update on unmasked exceptions)
+                last_opcode: fpu.last_opcode,
+                // last_ip: code is loaded at runtime-determined address
+                last_ip: fpu.last_ip,
+                // last_dp: points to stack (rsp) which is runtime-determined
+                last_dp: fpu.last_dp,
+            };
+            // KVM doesn't preserve mxcsr via fpu()
+            #[cfg(kvm)]
+            if available_hv == HypervisorType::Kvm {
+                expected_dirty.mxcsr = fpu.mxcsr;
+            }
+            assert_eq!(fpu, expected_dirty);
+
+            // Verify MXCSR via xsave on KVM (since fpu() doesn't return it)
+            #[cfg(kvm)]
+            if available_hv == HypervisorType::Kvm {
+                let xsave = hyperlight_vm.vm.xsave().unwrap();
+                let mxcsr = u32::from_le_bytes(xsave[24..28].try_into().unwrap());
+                assert_eq!(mxcsr, 0x3F80, "MXCSR in XSAVE should be dirty");
+            }
+
+            // Reset vcpu
+            hyperlight_vm.reset_vcpu().unwrap();
+
+            // Check FPU is reset to defaults
+            #[cfg_attr(not(kvm), allow(unused_mut))]
+            let mut fpu = hyperlight_vm.vm.fpu().unwrap();
+            // KVM doesn't preserve mxcsr via fpu(), set to expected default
+            #[cfg(kvm)]
+            if available_hv == HypervisorType::Kvm {
+                fpu.mxcsr = MXCSR_DEFAULT;
+            }
+            assert_eq!(fpu, CommonFpu::default());
+
+            // Verify MXCSR via xsave on KVM
+            #[cfg(kvm)]
+            if available_hv == HypervisorType::Kvm {
+                let xsave = hyperlight_vm.vm.xsave().unwrap();
+                let mxcsr = u32::from_le_bytes(xsave[24..28].try_into().unwrap());
+                assert_eq!(mxcsr, MXCSR_DEFAULT, "MXCSR in XSAVE should be reset");
+            }
+        }
+
+        #[test]
+        fn reset_vcpu_debug_regs() {
+            // Code that sets debug registers and halts
+            // In real mode (ring 0), we can access debug registers directly
+            #[rustfmt::skip]
+            let code: &[u8] = &[
+                0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, // mov rax, 0xDEADBEEF00000000
+                0x0f, 0x23, 0xc0,                                           // mov dr0, rax
+                0x48, 0xb8, 0x01, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, // mov rax, 0xDEADBEEF00000001
+                0x0f, 0x23, 0xc8,                                           // mov dr1, rax
+                0x48, 0xb8, 0x02, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, // mov rax, 0xDEADBEEF00000002
+                0x0f, 0x23, 0xd0,                                           // mov dr2, rax
+                0x48, 0xb8, 0x03, 0x00, 0x00, 0x00, 0xef, 0xbe, 0xad, 0xde, // mov rax, 0xDEADBEEF00000003
+                0x0f, 0x23, 0xd8,                                           // mov dr3, rax
+                0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,                   // mov rax, 1
+                0x0f, 0x23, 0xf0,                                           // mov dr6, rax
+                0x48, 0xc7, 0xc0, 0xff, 0x00, 0x00, 0x00,                   // mov rax, 0xFF
+                0x0f, 0x23, 0xf8,                                           // mov dr7, rax
+                0xf4,                                                       // hlt
+            ];
+
+            let hyperlight_vm = hyperlight_vm(code).unwrap();
+
+            // Verify debug registers are dirty
+            let debug_regs = hyperlight_vm.vm.debug_regs().unwrap();
+            let expected_dirty = CommonDebugRegs {
+                dr0: 0xDEAD_BEEF_0000_0000,
+                dr1: 0xDEAD_BEEF_0000_0001,
+                dr2: 0xDEAD_BEEF_0000_0002,
+                dr3: 0xDEAD_BEEF_0000_0003,
+                // dr6: guest set B0 (bit 0) = 1, reserved bits vary by CPU
+                dr6: (debug_regs.dr6 & !DR6_WRITABLE_MASK) | 0x1,
+                // dr7: guest set lower byte = 0xFF, reserved bits vary by CPU
+                dr7: (debug_regs.dr7 & !DR7_WRITABLE_MASK) | 0xFF,
+            };
+            assert_eq!(debug_regs, expected_dirty);
+
+            // Reset vcpu
+            hyperlight_vm.reset_vcpu().unwrap();
+
+            // Check debug registers are reset to default values
+            let debug_regs = hyperlight_vm.vm.debug_regs().unwrap();
+            let expected_reset = CommonDebugRegs {
+                dr0: 0,
+                dr1: 0,
+                dr2: 0,
+                dr3: 0,
+                // dr6: reserved bits preserved, writable bits (B0-B3, BD, BS, BT) cleared
+                dr6: debug_regs.dr6 & !DR6_WRITABLE_MASK,
+                // dr7: reserved bits preserved, writable bits cleared
+                dr7: debug_regs.dr7 & !DR7_WRITABLE_MASK,
+            };
+            assert_eq!(debug_regs, expected_reset);
+        }
+
+        #[test]
+        fn reset_vcpu_sregs() {
+            // Code that modifies special registers and halts
+            // We can modify CR0.WP, CR2, CR4.TSD, and CR8 from guest code in ring 0
+            #[rustfmt::skip]
+            let code: &[u8] = &[
+                // Set CR0.WP (Write Protect, bit 16)
+                0x0f, 0x20, 0xc0,                                           // mov rax, cr0
+                0x48, 0x0d, 0x00, 0x00, 0x01, 0x00,                         // or rax, 0x10000
+                0x0f, 0x22, 0xc0,                                           // mov cr0, rax
+                // Set CR2
+                0x48, 0xb8, 0xef, 0xbe, 0xad, 0xde, 0x00, 0x00, 0x00, 0x00, // mov rax, 0xDEADBEEF
+                0x0f, 0x22, 0xd0,                                           // mov cr2, rax
+                // Set CR4.TSD (Time Stamp Disable, bit 2)
+                0x0f, 0x20, 0xe0,                                           // mov rax, cr4
+                0x48, 0x83, 0xc8, 0x04,                                     // or rax, 0x4
+                0x0f, 0x22, 0xe0,                                           // mov cr4, rax
+                // Set CR8
+                0x48, 0xc7, 0xc0, 0x05, 0x00, 0x00, 0x00,                   // mov rax, 5
+                0x44, 0x0f, 0x22, 0xc0,                                     // mov cr8, rax
+                0xf4,                                                       // hlt
+            ];
+
+            let hyperlight_vm = hyperlight_vm(code).unwrap();
+
+            // Get the expected defaults
+            let defaults = CommonSpecialRegisters::standard_64bit_defaults(hyperlight_vm.pml4_addr);
+
+            // Verify registers are dirty (CR0.WP, CR2, CR4.TSD and CR8 modified by our code)
+            let sregs = hyperlight_vm.vm.sregs().unwrap();
+            let mut expected_dirty = CommonSpecialRegisters {
+                cr0: defaults.cr0 | 0x10000, // WP bit set
+                cr2: 0xDEADBEEF,
+                cr4: defaults.cr4 | 0x4, // TSD bit set
+                cr8: 0x5,
+                ..defaults
+            };
+            // ss.db (stack segment default size) may differ by hypervisor; ignored in 64-bit mode
+            expected_dirty.ss.db = sregs.ss.db;
+            // unusable and type_ for non-present segments are hypervisor implementation details
+            // KVM returns type_=1, WHP returns type_=0 for non-present segments
+            expected_dirty.cs.unusable = sregs.cs.unusable;
+            expected_dirty.ds.unusable = sregs.ds.unusable;
+            expected_dirty.ds.type_ = sregs.ds.type_;
+            expected_dirty.es.unusable = sregs.es.unusable;
+            expected_dirty.es.type_ = sregs.es.type_;
+            expected_dirty.fs.unusable = sregs.fs.unusable;
+            expected_dirty.fs.type_ = sregs.fs.type_;
+            expected_dirty.gs.unusable = sregs.gs.unusable;
+            expected_dirty.gs.type_ = sregs.gs.type_;
+            expected_dirty.ss.unusable = sregs.ss.unusable;
+            expected_dirty.ss.type_ = sregs.ss.type_;
+            expected_dirty.tr.unusable = sregs.tr.unusable;
+            expected_dirty.ldt.unusable = sregs.ldt.unusable;
+            assert_eq!(sregs, expected_dirty);
+
+            // Reset vcpu
+            hyperlight_vm.reset_vcpu().unwrap();
+
+            // Check registers are reset to defaults
+            let sregs = hyperlight_vm.vm.sregs().unwrap();
+            let mut expected_reset = defaults;
+            // ss.db (stack segment default size) may differ by hypervisor; ignored in 64-bit mode
+            expected_reset.ss.db = sregs.ss.db;
+            // unusable and type_ for non-present segments are hypervisor implementation details
+            // KVM returns type_=1, WHP returns type_=0 for non-present segments
+            expected_reset.cs.unusable = sregs.cs.unusable;
+            expected_reset.ds.unusable = sregs.ds.unusable;
+            expected_reset.ds.type_ = sregs.ds.type_;
+            expected_reset.es.unusable = sregs.es.unusable;
+            expected_reset.es.type_ = sregs.es.type_;
+            expected_reset.fs.unusable = sregs.fs.unusable;
+            expected_reset.fs.type_ = sregs.fs.type_;
+            expected_reset.gs.unusable = sregs.gs.unusable;
+            expected_reset.gs.type_ = sregs.gs.type_;
+            expected_reset.ss.unusable = sregs.ss.unusable;
+            expected_reset.ss.type_ = sregs.ss.type_;
+            expected_reset.tr.unusable = sregs.tr.unusable;
+            expected_reset.ldt.unusable = sregs.ldt.unusable;
+            assert_eq!(sregs, expected_reset);
         }
     }
 }

@@ -17,7 +17,9 @@ limitations under the License.
 use log::LevelFilter;
 
 use crate::Result;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::regs::{
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+};
 use crate::mem::memory_region::MemoryRegion;
 
 /// HyperV-on-linux functionality
@@ -124,9 +126,21 @@ pub(crate) trait Hypervisor: Debug + Send {
     /// Set special regs
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
 
-    /// xsave
-    #[cfg(crashdump)]
+    /// Get xsave
+    #[allow(dead_code)]
     fn xsave(&self) -> Result<Vec<u8>>;
+    /// Reset xsave to default state
+    fn reset_xsave(&self) -> Result<()>;
+    /// Set xsave - only used for tests
+    #[cfg(test)]
+    #[cfg(feature = "init-paging")]
+    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()>;
+
+    /// Get the debug registers of the vCPU
+    #[allow(dead_code)]
+    fn debug_regs(&self) -> Result<CommonDebugRegs>;
+    /// Set the debug registers of the vCPU
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()>;
 
     /// Get partition handle
     #[cfg(target_os = "windows")]
