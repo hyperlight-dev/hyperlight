@@ -30,6 +30,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, Ret
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
+use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 
 /// Sandbox heap size configurations for benchmarking.
@@ -54,17 +55,17 @@ impl SandboxSize {
             Self::Default => None,
             Self::Small => {
                 let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(8 * 1024 * 1024); // 8 MB
+                cfg.set_heap_size(SMALL_HEAP_SIZE);
                 Some(cfg)
             }
             Self::Medium => {
                 let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(64 * 1024 * 1024); // 64 MB
+                cfg.set_heap_size(MEDIUM_HEAP_SIZE);
                 Some(cfg)
             }
             Self::Large => {
                 let mut cfg = SandboxConfiguration::default();
-                cfg.set_heap_size(256 * 1024 * 1024); // 256 MB
+                cfg.set_heap_size(LARGE_HEAP_SIZE);
                 Some(cfg)
             }
         }

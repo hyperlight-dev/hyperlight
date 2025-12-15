@@ -559,3 +559,202 @@ impl SandboxMemoryManager<HostSharedMemory> {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "init-paging")]
+mod tests {
+    use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
+    use hyperlight_testing::simple_guest_as_string;
+
+    use super::*;
+    use crate::GuestBinary;
+    use crate::mem::shared_mem::GuestSharedMemory;
+    use crate::sandbox::SandboxConfiguration;
+    use crate::sandbox::uninitialized::UninitializedSandbox;
+
+    /// Helper to create a sandbox with page tables set up and return the manager
+    fn create_sandbox_with_page_tables(
+        config: Option<SandboxConfiguration>,
+    ) -> Result<SandboxMemoryManager<GuestSharedMemory>> {
+        let path = simple_guest_as_string().expect("failed to get simple guest path");
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), config)
+            .expect("failed to create sandbox");
+
+        let mem_size = sandbox.mgr.layout.get_memory_size()?;
+
+        // Build the shared memory to get GuestSharedMemory
+        let (_host_mem, guest_mem) = sandbox.mgr.shared_mem.build();
+        let mut mgr = SandboxMemoryManager {
+            shared_mem: guest_mem,
+            layout: sandbox.mgr.layout,
+            load_addr: sandbox.mgr.load_addr,
+            entrypoint_offset: sandbox.mgr.entrypoint_offset,
+            mapped_rgns: sandbox.mgr.mapped_rgns,
+            stack_cookie: sandbox.mgr.stack_cookie,
+            abort_buffer: sandbox.mgr.abort_buffer,
+        };
+
+        // Get regions and set up page tables
+        let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
+        let mem_size_u64 = u64::try_from(mem_size)?;
+        // set_up_shared_memory builds the page tables in shared memory
+        mgr.set_up_shared_memory(mem_size_u64, &mut regions)?;
+
+        Ok(mgr)
+    }
+
+    /// Verify a range of pages all have the same expected flags
+    fn verify_page_range(
+        excl_mem: &mut ExclusiveSharedMemory,
+        start_addr: usize,
+        end_addr: usize,
+        expected_flags: u64,
+        region_name: &str,
+    ) -> Result<()> {
+        let mut addr = start_addr;
+
+        while addr < end_addr {
+            let p = addr >> 21;
+            let i = (addr >> 12) & 0x1ff;
+            let pte_idx = p * 512 + i;
+            let offset = SandboxMemoryLayout::PT_OFFSET + (pte_idx * 8);
+
+            let pte_val = excl_mem.read_u64(offset)?;
+            let expected_pte = (addr as u64) | expected_flags;
+
+            if pte_val != expected_pte {
+                return Err(new_error!(
+                    "{} region: addr 0x{:x}: expected PTE 0x{:x}, got 0x{:x}",
+                    region_name,
+                    addr,
+                    expected_pte,
+                    pte_val
+                ));
+            }
+
+            addr += 0x1000;
+        }
+
+        Ok(())
+    }
+
+    /// Get expected flags for a memory region type
+    fn get_expected_flags(region: &MemoryRegion) -> u64 {
+        match region.region_type {
+            MemoryRegionType::Code => PAGE_PRESENT | PAGE_RW | PAGE_USER,
+            MemoryRegionType::Stack => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
+            #[cfg(feature = "executable_heap")]
+            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER,
+            #[cfg(not(feature = "executable_heap"))]
+            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
+            MemoryRegionType::GuardPage => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
+            MemoryRegionType::InputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+            MemoryRegionType::OutputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+            MemoryRegionType::Peb => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+            MemoryRegionType::HostFunctionDefinitions => PAGE_PRESENT | PAGE_NX,
+            MemoryRegionType::PageTables => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+            MemoryRegionType::InitData => region.flags.translate_flags(),
+        }
+    }
+
+    /// Verify the complete paging structure for a sandbox configuration
+    fn verify_paging_structure(name: &str, config: Option<SandboxConfiguration>) -> Result<()> {
+        let mut mgr = create_sandbox_with_page_tables(config)?;
+
+        let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
+
+        mgr.shared_mem.with_exclusivity(|excl_mem| {
+            // Verify PML4 entry (single entry pointing to PDPT)
+            let pml4_val = excl_mem.read_u64(SandboxMemoryLayout::PML4_OFFSET)?;
+            let expected_pml4 =
+                SandboxMemoryLayout::PDPT_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW;
+            if pml4_val != expected_pml4 {
+                return Err(new_error!(
+                    "{}: PML4[0] incorrect: expected 0x{:x}, got 0x{:x}",
+                    name,
+                    expected_pml4,
+                    pml4_val
+                ));
+            }
+
+            // Verify PDPT entry (single entry pointing to PD)
+            let pdpt_val = excl_mem.read_u64(SandboxMemoryLayout::PDPT_OFFSET)?;
+            let expected_pdpt =
+                SandboxMemoryLayout::PD_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW;
+            if pdpt_val != expected_pdpt {
+                return Err(new_error!(
+                    "{}: PDPT[0] incorrect: expected 0x{:x}, got 0x{:x}",
+                    name,
+                    expected_pdpt,
+                    pdpt_val
+                ));
+            }
+
+            // Verify all 512 PD entries (each pointing to a PT)
+            for i in 0..512 {
+                let offset = SandboxMemoryLayout::PD_OFFSET + (i * 8);
+                let pd_val = excl_mem.read_u64(offset)?;
+                let expected_pt_addr =
+                    SandboxMemoryLayout::PT_GUEST_ADDRESS as u64 + (i as u64 * 4096);
+                let expected_pd = expected_pt_addr | PAGE_PRESENT | PAGE_RW;
+                if pd_val != expected_pd {
+                    return Err(new_error!(
+                        "{}: PD[{}] incorrect: expected 0x{:x}, got 0x{:x}",
+                        name,
+                        i,
+                        expected_pd,
+                        pd_val
+                    ));
+                }
+            }
+
+            // Verify PTEs for each memory region
+            for region in &regions {
+                let start = region.guest_region.start;
+                let end = region.guest_region.end;
+                let expected_flags = get_expected_flags(region);
+
+                verify_page_range(
+                    excl_mem,
+                    start,
+                    end,
+                    expected_flags,
+                    &format!("{} {:?}", name, region.region_type),
+                )?;
+            }
+
+            Ok(())
+        })??;
+
+        Ok(())
+    }
+
+    /// Test the complete paging structure (PML4, PDPT, PD, and all PTEs) for
+    /// sandboxes of different sizes: default, small (8MB), medium (64MB), and large (256MB)
+    #[test]
+    fn test_page_table_contents() {
+        let test_cases: [(&str, Option<SandboxConfiguration>); 4] = [
+            ("default", None),
+            ("small (8MB heap)", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_heap_size(SMALL_HEAP_SIZE);
+                Some(cfg)
+            }),
+            ("medium (64MB heap)", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_heap_size(MEDIUM_HEAP_SIZE);
+                Some(cfg)
+            }),
+            ("large (256MB heap)", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_heap_size(LARGE_HEAP_SIZE);
+                Some(cfg)
+            }),
+        ];
+
+        for (name, config) in test_cases {
+            verify_paging_structure(name, config)
+                .unwrap_or_else(|e| panic!("Page table verification failed for {}: {}", name, e));
+        }
+    }
+}
