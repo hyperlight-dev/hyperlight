@@ -52,7 +52,7 @@ jobs:
 
       - name: Upload Crash Artifacts
         if: failure() # This ensures artifacts are only uploaded on failure
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: fuzz-crash-artifacts
           path: fuzz/artifacts/

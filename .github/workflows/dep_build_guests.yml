@@ -78,7 +78,7 @@ jobs:
           just move-c-guests ${{ inputs.config }}
 
       - name: Upload Rust guests
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: rust-guests-${{ inputs.config }}
           path: |
@@ -87,7 +87,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload C guests
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: c-guests-${{ inputs.config }}
           path: src/tests/c_guests/bin/${{ inputs.config }}/
@@ -96,7 +96,7 @@ jobs:
 
       - name: Upload interface.wasm
         if: inputs.config == 'debug'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: interface-wasm
           path: src/tests/rust_guests/witguest/interface.wasm
@@ -105,7 +105,7 @@ jobs:
 
       - name: Upload twoworlds.wasm
         if: inputs.config == 'debug'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: twoworlds-wasm
           path: src/tests/rust_guests/witguest/twoworlds.wasm
