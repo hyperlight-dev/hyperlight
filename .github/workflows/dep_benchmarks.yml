@@ -60,13 +60,13 @@ jobs:
           save-if: "false"
 
       - name: Download Rust guests
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: rust-guests-release
           path: src/tests/rust_guests/bin/release/
 
       - name: Download C guests
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: c-guests-release
           path: src/tests/c_guests/bin/release/
