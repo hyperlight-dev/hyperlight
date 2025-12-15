@@ -52,11 +52,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fix cargo home permissions
-        if: runner.os == 'Linux'
-        run: |
-          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
-
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:

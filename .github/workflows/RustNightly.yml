@@ -46,10 +46,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fix cargo home permissions
-        run: |
-          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
-
       # cargo-hyperlight builds a custom sysroot for x86_64-hyperlight-none target.
       # rust-cache cleans "anything not a dependency" from target dirs, removing the sysroot.
       # We cache sysroot separately to avoid rebuilding it (~10s) on every run.
