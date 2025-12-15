@@ -200,8 +200,9 @@ test-rust-tracing target=default-target features="":
     {{ cargo-cmd }} test -p hyperlight-common -F trace_guest --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }}
     {{ cargo-cmd }} test -p hyperlight-host --profile={{ if target == "debug" { "dev" } else { target } }} {{ if features =="" {'--features trace_guest'} else { "--features trace_guest," + features } }} {{ target-triple-flag }}
 
-# verify hyperlight-guest builds for 32-bit (for Nanvix compatibility - uses i686 as proxy for Nanvix's custom 32-bit x86 target)
-check-guest-i686 target=default-target:
+# verify hyperlight-common and hyperlight-guest build for 32-bit (for Nanvix compatibility - uses i686 as proxy for Nanvix's custom 32-bit x86 target)
+check-i686 target=default-target:
+    cargo check -p hyperlight-common --target i686-unknown-linux-gnu --profile={{ if target == "debug" { "dev" } else { target } }}
     cargo check -p hyperlight-guest --target i686-unknown-linux-gnu --profile={{ if target == "debug" { "dev" } else { target } }}
     # Verify that trace_guest correctly fails on i686 (compile_error should trigger)
     ! cargo check -p hyperlight-guest --target i686-unknown-linux-gnu --features trace_guest --profile={{ if target == "debug" { "dev" } else { target } }} 2>/dev/null
