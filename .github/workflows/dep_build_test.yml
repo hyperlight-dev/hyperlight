@@ -64,25 +64,25 @@ jobs:
           cache-on-failure: "true"
 
       - name: Download Rust guests
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: rust-guests-${{ inputs.config }}
           path: src/tests/rust_guests/bin/${{ inputs.config }}/
 
       - name: Download C guests
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: c-guests-${{ inputs.config }}
           path: src/tests/c_guests/bin/${{ inputs.config }}/
 
       - name: Download interface.wasm
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: interface-wasm
           path: src/tests/rust_guests/witguest/
 
       - name: Download twoworlds.wasm
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: twoworlds-wasm
           path: src/tests/rust_guests/witguest/
