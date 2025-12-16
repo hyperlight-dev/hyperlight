@@ -40,4 +40,4 @@ pub mod resource;
 pub mod func;
 // cbindgen:ignore
 #[cfg(feature = "init-paging")]
-pub mod vm;
+pub mod vmem;

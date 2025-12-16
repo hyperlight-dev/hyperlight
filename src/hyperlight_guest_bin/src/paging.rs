@@ -39,11 +39,11 @@ pub fn ptov(x: u64) -> *mut u8 {
 //       used to read/write from address 0.
 
 struct GuestMappingOperations {}
-impl hyperlight_common::vm::TableOps for GuestMappingOperations {
+impl hyperlight_common::vmem::TableOps for GuestMappingOperations {
     type TableAddr = u64;
     unsafe fn alloc_table(&self) -> u64 {
         let page_addr = unsafe { alloc_phys_pages(1) };
-        unsafe { ptov(page_addr).write_bytes(0u8, hyperlight_common::vm::PAGE_TABLE_SIZE) };
+        unsafe { ptov(page_addr).write_bytes(0u8, hyperlight_common::vmem::PAGE_TABLE_SIZE) };
         page_addr
     }
     fn entry_addr(addr: u64, offset: u64) -> u64 {
@@ -56,9 +56,9 @@ impl hyperlight_common::vm::TableOps for GuestMappingOperations {
         }
         ret
     }
-    unsafe fn write_entry(&self, addr: u64, x: u64) {
+    unsafe fn write_entry(&self, addr: u64, entry: u64) {
         unsafe {
-            asm!("mov qword ptr [{}], {}", in(reg) addr, in(reg) x);
+            asm!("mov qword ptr [{}], {}", in(reg) addr, in(reg) entry);
         }
     }
     fn to_phys(addr: u64) -> u64 {
@@ -87,15 +87,15 @@ impl hyperlight_common::vm::TableOps for GuestMappingOperations {
 ///   if previously-unmapped ranges are not being mapped, TLB invalidation may need to be performed afterwards.
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
-    use hyperlight_common::vm;
+    use hyperlight_common::vmem;
     unsafe {
-        vm::map::<GuestMappingOperations>(
+        vmem::map(
             &GuestMappingOperations {},
-            vm::Mapping {
+            vmem::Mapping {
                 phys_base,
                 virt_base: virt_base as u64,
                 len,
-                kind: vm::MappingKind::BasicMapping(vm::BasicMapping {
+                kind: vmem::MappingKind::BasicMapping(vmem::BasicMapping {
                     readable: true,
                     writable: true,
                     executable: true,

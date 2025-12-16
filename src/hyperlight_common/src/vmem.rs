@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vm.rs")]
-mod arch;
+#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vmem.rs")]
+pub mod arch;
 
 pub use arch::{PAGE_SIZE, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
 pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
@@ -45,7 +45,16 @@ pub trait TableOps {
     /// - Memory allocation fails
     unsafe fn alloc_table(&self) -> Self::TableAddr;
 
-    /// Offset the table address by the u64 entry offset
+    /// Offset the table address by the given offset in bytes.
+    ///
+    /// # Parameters
+    /// - `addr`: The base address of the table.
+    /// - `entry_offset`: The offset in **bytes** within the page table. This is
+    ///   not an entry index; callers must multiply the entry index by the size
+    ///   of a page table entry (typically 8 bytes) to obtain the correct byte offset.
+    ///
+    /// # Returns
+    /// The address of the entry at the given byte offset from the base address.
     fn entry_addr(addr: Self::TableAddr, entry_offset: u64) -> Self::TableAddr;
 
     /// Read a u64 from the given address, used to read existing page
@@ -72,14 +81,14 @@ pub trait TableOps {
     /// invariants. The implementor of the trait should ensure that
     /// nothing else will be reading/writing the address at the same
     /// time as mapping code using the trait.
-    unsafe fn write_entry(&self, addr: Self::TableAddr, x: PageTableEntry);
+    unsafe fn write_entry(&self, addr: Self::TableAddr, entry: PageTableEntry);
 
-    /// Convert an abstract physical address to a concrete u64 which
-    /// can be e.g. written into a table
+    /// Convert an abstract table address to a concrete physical address (u64)
+    /// which can be e.g. written into a page table entry
     fn to_phys(addr: Self::TableAddr) -> PhysAddr;
 
-    /// Convert a concrete u64 which may have been e.g. read from a
-    /// table back into an abstract physical address
+    /// Convert a concrete physical address (u64) which may have been e.g. read
+    /// from a page table entry back into an abstract table address
     fn from_phys(addr: PhysAddr) -> Self::TableAddr;
 
     /// Return the address of the root page table
@@ -128,4 +137,4 @@ pub use arch::map;
 /// This function traverses page table data structures, and should not
 /// be called concurrently with any other operations that modify the
 /// page table.
-pub use arch::vtop;
+pub use arch::virt_to_phys;
