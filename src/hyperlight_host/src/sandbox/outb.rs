@@ -213,7 +213,7 @@ mod tests {
     use tracing_log::log::{Level, LevelFilter};
     use tracing_core::callsite::rebuild_interest_cache;
 
-    use super::outb_log;
+    use super::{outb_log, guest_level_to_log_level};
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::SharedMemory;
@@ -317,7 +317,7 @@ mod tests {
                 outb_log(&mut mgr).unwrap();
 
                 LOGGER.test_log_records(|log_calls| {
-                    let expected_level: Level = (&level).into();
+                    let expected_level: Level = guest_level_to_log_level((&level).into());
 
                     assert!(
                         log_calls
