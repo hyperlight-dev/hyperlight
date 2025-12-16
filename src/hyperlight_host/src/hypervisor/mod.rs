@@ -208,9 +208,15 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
 pub trait InterruptHandle: Send + Sync + Debug {
     /// Interrupt the corresponding sandbox from running.
     ///
-    /// This method sets a cancellation flag that prevents or stops the execution of guest code:
-    /// - If called while the sandbox is currently executing a guest function, it will interrupt the vCPU.
-    /// - If called before the sandbox starts executing (e.g., before a guest function call), it will prevent execution from starting.
+    /// This method sets a cancellation flag that prevents or stops the execution of guest code.
+    /// The effectiveness of this call depends on timing relative to the guest function call lifecycle:
+    ///
+    /// - **Before guest call starts** (before `clear_cancel()` in `MultiUseSandbox::call()`):
+    ///   The cancellation request will be cleared and ignored.
+    /// - **After guest call starts but before entering guest code** (after `clear_cancel()`, before `run_vcpu()`):
+    ///   Will prevent the guest from executing.
+    /// - **While executing guest code**: Will interrupt the vCPU.
+    /// - **After guest call completes**: Has no effect (cancellation is cleared at the start of the next call).
     ///
     /// # Note
     /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
