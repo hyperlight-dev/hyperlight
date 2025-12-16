@@ -1455,6 +1455,7 @@ dependencies = [
  "hyperlight-guest-macro",
  "hyperlight-guest-tracing",
  "linkme",
+ "log",
  "spin 0.10.0",
  "tracing",
 ]

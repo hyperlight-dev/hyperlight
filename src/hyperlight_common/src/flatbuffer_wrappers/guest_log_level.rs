@@ -18,6 +18,9 @@ use anyhow::{Error, Result, bail};
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
+#[cfg(feature = "std")]
+extern crate log;
+
 use crate::flatbuffers::hyperlight::generated::LogLevel as FbLogLevel;
 
 // Define a minimal Level enum for conversions.
@@ -119,6 +122,21 @@ impl From<Level> for LogLevel {
             Level::Info => LogLevel::Information,
             Level::Warn => LogLevel::Warning,
             Level::Error => LogLevel::Error,
+        }
+    }
+}
+
+// Conversion from log::Level (which guest logger uses) to LogLevel
+// Only available when std feature is enabled (for guest environments)
+#[cfg(feature = "std")]
+impl From<log::Level> for LogLevel {
+    fn from(val: log::Level) -> LogLevel {
+        match val {
+            log::Level::Trace => LogLevel::Trace,
+            log::Level::Debug => LogLevel::Debug,
+            log::Level::Info => LogLevel::Information,
+            log::Level::Warn => LogLevel::Warning,
+            log::Level::Error => LogLevel::Error,
         }
     }
 }
