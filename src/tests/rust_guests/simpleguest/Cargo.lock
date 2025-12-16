@@ -78,6 +78,7 @@ version = "0.12.0"
 dependencies = [
  "anyhow",
  "flatbuffers",
+ "log",
  "spin 0.10.0",
  "thiserror",
 ]

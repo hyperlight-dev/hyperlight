@@ -21,6 +21,7 @@ tracing = { version = "0.1.43", optional = true }
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 spin = "0.10.0"
 thiserror = { version = "2.0.16", default-features = false }
+log = { version = "0.4.29", default-features = false }
 
 [features]
 default = ["tracing"]
@@ -28,7 +29,7 @@ tracing = ["dep:tracing"]
 fuzzing = ["dep:arbitrary"]
 trace_guest = []
 mem_profile = []
-std = ["thiserror/std", "tracing/std"]
+std = ["thiserror/std", "tracing/std", "log/std"]
 
 [lib]
 bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
