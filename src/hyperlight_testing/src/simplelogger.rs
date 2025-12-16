@@ -21,7 +21,7 @@ limitations under the License.
 use std::sync::Once;
 use std::thread::current;
 
-use log::{Level, Log, Metadata, Record, set_logger, set_max_level};
+use tracing_log::log::{Level, Log, Metadata, Record, set_logger, set_max_level};
 
 pub static LOGGER: SimpleLogger = SimpleLogger {};
 static INITLOGGER: Once = Once::new();
@@ -44,7 +44,7 @@ impl SimpleLogger {
     pub fn initialize_test_logger() {
         INITLOGGER.call_once(|| {
             set_logger(&LOGGER).unwrap();
-            set_max_level(log::LevelFilter::Trace);
+            set_max_level(tracing_log::log::LevelFilter::Trace);
         });
     }
 
@@ -86,7 +86,7 @@ impl Log for SimpleLogger {
             if metadata.target() == "hyperlight_guest" {
                 NUMBER_OF_ENABLED_CALLS += 1;
             }
-            metadata.target() == "hyperlight_guest" && metadata.level() <= log::max_level()
+            metadata.target() == "hyperlight_guest" && metadata.level() <= tracing_log::log::max_level()
         }
     }
     fn log(&self, record: &Record) {

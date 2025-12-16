@@ -19,10 +19,23 @@ use std::sync::{Arc, Mutex};
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterValue};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::flatbuffer_wrappers::guest_log_level::Level as GuestLevel;
 use hyperlight_common::outb::{Exception, OutBAction};
-use log::{Level, Record};
 use tracing::{Span, instrument};
-use tracing_log::format_trace;
+use tracing_log::{format_trace, log};
+
+use log::{Level, Record};
+
+// Convert from guest Level to log Level
+fn guest_level_to_log_level(guest_level: GuestLevel) -> Level {
+    match guest_level {
+        GuestLevel::Trace => Level::Trace,
+        GuestLevel::Debug => Level::Debug,
+        GuestLevel::Info => Level::Info,
+        GuestLevel::Warn => Level::Warn,
+        GuestLevel::Error => Level::Error,
+    }
+}
 
 use super::host_funcs::FunctionRegistry;
 #[cfg(feature = "mem_profile")]
@@ -44,7 +57,7 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
 
     let log_data: GuestLogData = mgr.read_guest_log_data()?;
 
-    let record_level: Level = (&log_data.level).into();
+    let record_level: Level = guest_level_to_log_level((&log_data.level).into());
 
     // Work out if we need to log or trace
     // this API is marked as follows but it is the easiest way to work out if we should trace or log
@@ -197,10 +210,10 @@ pub(crate) fn handle_outb(
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
     use hyperlight_testing::logger::{LOGGER, Logger};
-    use log::Level;
+    use tracing_log::log::{Level, LevelFilter};
     use tracing_core::callsite::rebuild_interest_cache;
 
-    use super::outb_log;
+    use super::{outb_log, guest_level_to_log_level};
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::SharedMemory;
@@ -224,7 +237,7 @@ mod tests {
     #[ignore]
     fn test_log_outb_log() {
         Logger::initialize_test_logger();
-        LOGGER.set_max_level(log::LevelFilter::Off);
+        LOGGER.set_max_level(LevelFilter::Off);
 
         let sandbox_cfg = SandboxConfiguration::default();
 
@@ -271,7 +284,7 @@ mod tests {
         }
         {
             // now, test logging
-            LOGGER.set_max_level(log::LevelFilter::Trace);
+            LOGGER.set_max_level(LevelFilter::Trace);
             let mut mgr = new_mgr();
             LOGGER.clear_log_calls();
 
@@ -304,7 +317,7 @@ mod tests {
                 outb_log(&mut mgr).unwrap();
 
                 LOGGER.test_log_records(|log_calls| {
-                    let expected_level: Level = (&level).into();
+                    let expected_level: Level = guest_level_to_log_level((&level).into());
 
                     assert!(
                         log_calls

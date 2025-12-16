@@ -19,7 +19,7 @@ use std::option::Option;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use log::LevelFilter;
+use tracing::level_filters::LevelFilter;
 use tracing::{Span, instrument};
 
 use super::host_funcs::{FunctionRegistry, default_writer_func};
@@ -906,12 +906,12 @@ mod tests {
         use std::path::PathBuf;
 
         use hyperlight_testing::logger::{LOGGER as TEST_LOGGER, Logger as TestLogger};
-        use log::Level;
+        use tracing_log::log::Level;
         use tracing_core::callsite::rebuild_interest_cache;
 
         {
             TestLogger::initialize_test_logger();
-            TEST_LOGGER.set_max_level(log::LevelFilter::Trace);
+            TEST_LOGGER.set_max_level(tracing_log::log::LevelFilter::Trace);
 
             // This makes sure that the metadata interest cache is rebuilt so that
             // the log records are emitted for the trace records
@@ -983,7 +983,7 @@ mod tests {
         {
             // test to ensure an invalid binary logs & traces properly
             TEST_LOGGER.clear_log_calls();
-            TEST_LOGGER.set_max_level(log::LevelFilter::Info);
+            TEST_LOGGER.set_max_level(tracing_log::log::LevelFilter::Info);
 
             let mut valid_binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             valid_binary_path.push("src");
@@ -1022,7 +1022,7 @@ mod tests {
         }
         {
             TEST_LOGGER.clear_log_calls();
-            TEST_LOGGER.set_max_level(log::LevelFilter::Error);
+            TEST_LOGGER.set_max_level(tracing_log::log::LevelFilter::Error);
 
             let sbox = {
                 let res = UninitializedSandbox::new(

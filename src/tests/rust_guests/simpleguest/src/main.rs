@@ -440,7 +440,7 @@ fn test_write_raw_ptr(offset: i64) -> String {
     let page_guard_start = min_stack_addr - PAGE_SIZE;
     let addr = {
         let abs = u64::try_from(offset.abs())
-            .map_err(|_| error!("Invalid offset"))
+            .map_err(|_| tracing::error!("Invalid offset"))
             .unwrap();
         if offset.is_negative() {
             page_guard_start - abs
@@ -564,7 +564,7 @@ fn read_from_user_memory(num: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
 
     // verify that the user memory contains the expected data
     if bytes != expected {
-        error!("User memory does not contain the expected data");
+        tracing::error!("User memory does not contain the expected data");
         return Err(HyperlightGuestError::new(
             ErrorCode::GuestError,
             "User memory does not contain the expected data".to_string(),

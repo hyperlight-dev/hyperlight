@@ -15,11 +15,21 @@ limitations under the License.
 */
 
 use anyhow::{Error, Result, bail};
-use log::Level;
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
 use crate::flatbuffers::hyperlight::generated::LogLevel as FbLogLevel;
+
+// Define a minimal Level enum for conversions.
+// This mirrors log::Level/tracing::Level but is no_std compatible.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum Level {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
 
 #[repr(u8)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -109,6 +119,19 @@ impl From<Level> for LogLevel {
             Level::Info => LogLevel::Information,
             Level::Warn => LogLevel::Warning,
             Level::Error => LogLevel::Error,
+        }
+    }
+}
+
+// Conversion from log::Level (which guest logger uses) to LogLevel
+impl From<log::Level> for LogLevel {
+    fn from(val: log::Level) -> LogLevel {
+        match val {
+            log::Level::Trace => LogLevel::Trace,
+            log::Level::Debug => LogLevel::Debug,
+            log::Level::Info => LogLevel::Information,
+            log::Level::Warn => LogLevel::Warning,
+            log::Level::Error => LogLevel::Error,
         }
     }
 }

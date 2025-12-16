@@ -344,7 +344,7 @@ fn emit_component<'a, 'b, 'c>(
 /// - functions when given a type that implements the `Guest` trait
 pub fn emit_toplevel<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, n: &str, ct: &'c Component<'b>) {
     s.is_impl = true;
-    log::debug!("\n\n=== starting guest emit ===\n");
+    tracing::debug!("\n\n=== starting guest emit ===\n");
     let wn = split_wit_name(n);
 
     let ns = wn.namespace_path();
