@@ -175,7 +175,7 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// Set xsave - only used for tests
     #[cfg(test)]
     #[cfg(feature = "init-paging")]
-    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()>;
+    fn set_xsave(&self, xsave: &[u32]) -> Result<()>;
 
     /// Get the debug registers of the vCPU
     #[allow(dead_code)]

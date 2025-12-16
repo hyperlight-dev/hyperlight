@@ -255,14 +255,26 @@ impl VirtualMachine for MshvVm {
 
     #[cfg(test)]
     #[cfg(feature = "init-paging")]
-    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()> {
-        let mut buf = XSave::default();
+    fn set_xsave(&self, xsave: &[u32]) -> Result<()> {
+        const MSHV_XSAVE_SIZE: usize = 4096;
+        if std::mem::size_of_val(xsave) != MSHV_XSAVE_SIZE {
+            return Err(new_error!(
+                "Provided xsave size {} does not match MSHV supported size {}",
+                std::mem::size_of_val(xsave),
+                MSHV_XSAVE_SIZE
+            ));
+        }
+
         // Safety: all valid u32 values are 4 valid u8 values
         let (prefix, bytes, suffix) = unsafe { xsave.align_to() };
         if !prefix.is_empty() || !suffix.is_empty() {
             return Err(new_error!("Invalid xsave buffer alignment"));
         }
-        buf.buffer.copy_from_slice(bytes);
+        let buf = XSave {
+            buffer: bytes
+                .try_into()
+                .map_err(|_| new_error!("mshv xsave must be 4096 u8s"))?,
+        };
         self.vcpu_fd.set_xsave(&buf)?;
         Ok(())
     }

@@ -554,7 +554,7 @@ impl VirtualMachine for WhpVm {
 
     #[cfg(test)]
     #[cfg(feature = "init-paging")]
-    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()> {
+    fn set_xsave(&self, xsave: &[u32]) -> Result<()> {
         use crate::HyperlightError;
 
         // Get the required buffer size by calling with NULL buffer.

@@ -207,10 +207,21 @@ impl VirtualMachine for KvmVm {
 
     #[cfg(test)]
     #[cfg(feature = "init-paging")]
-    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()> {
+    fn set_xsave(&self, xsave: &[u32]) -> Result<()> {
+        const KVM_XSAVE_SIZE: usize = 4096;
+
+        if std::mem::size_of_val(xsave) != KVM_XSAVE_SIZE {
+            return Err(new_error!(
+                "Provided xsave size {} does not match KVM supported size {}",
+                std::mem::size_of_val(xsave),
+                KVM_XSAVE_SIZE
+            ));
+        }
         let xsave = kvm_xsave {
-            region: *xsave,
-            ..Default::default() // zeroed 4KB buffer with no FAM
+            region: xsave
+                .try_into()
+                .map_err(|_| new_error!("kvm xsave must be 1024 u32s"))?,
+            ..Default::default()
         };
         // Safety: Safe because we only copy 4096 bytes
         // and have not enabled any dynamic xsave features

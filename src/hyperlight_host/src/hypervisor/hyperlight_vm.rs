@@ -1116,6 +1116,7 @@ mod debug {
 
 #[cfg(test)]
 #[cfg(feature = "init-paging")]
+#[allow(clippy::needless_range_loop)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
@@ -1292,24 +1293,108 @@ mod tests {
         }
     }
 
-    /// Build a dirty XSAVE area for testing reset_vcpu.
-    /// Can't use all 1s because XSAVE has reserved fields that must be zero
-    /// (header at 512-575, MXCSR reserved bits, etc.)
-    ///
-    /// Takes the current xsave state to preserve hypervisor-specific header fields
-    /// like XCOMP_BV which MSHV/WHP require to be set correctly.
+    /// Query CPUID.0DH.n for XSAVE component info.
+    /// Returns (size, offset, align_64) for the given component:
+    /// - size: CPUID.0DH.n:EAX - size in bytes
+    /// - offset: CPUID.0DH.n:EBX - offset from XSAVE base (standard format only)
+    /// - align_64: CPUID.0DH.n:ECX bit 1 - true if 64-byte aligned (compacted format)
+    fn xsave_component_info(comp_id: u32) -> (usize, usize, bool) {
+        let result = unsafe { std::arch::x86_64::__cpuid_count(0xD, comp_id) };
+        let size = result.eax as usize;
+        let offset = result.ebx as usize;
+        let align_64 = (result.ecx & 0b10) != 0;
+        (size, offset, align_64)
+    }
+
+    /// Query CPUID.0DH.00H for the bitmap of supported user state components.
+    /// EDX:EAX forms a 64-bit bitmap where bit i indicates support for component i.
+    fn xsave_supported_components() -> u64 {
+        let result = unsafe { std::arch::x86_64::__cpuid_count(0xD, 0) };
+        (result.edx as u64) << 32 | (result.eax as u64)
+    }
+
+    /// Dirty extended state components using compacted XSAVE format (MSHV/WHP).
+    /// Components are stored contiguously starting at byte 576, with alignment
+    /// requirements from CPUID.0DH.n:ECX[1].
+    /// Returns a bitmask of components that were actually dirtied.
+    fn dirty_xsave_extended_compacted(
+        xsave: &mut [u32],
+        xcomp_bv: u64,
+        supported_components: u64,
+    ) -> u64 {
+        let mut dirtied_mask = 0u64;
+        let mut offset = 576usize;
+
+        for comp_id in 2..63u32 {
+            // Skip if component not supported by CPU or not enabled in XCOMP_BV
+            if (supported_components & (1u64 << comp_id)) == 0 {
+                continue;
+            }
+            if (xcomp_bv & (1u64 << comp_id)) == 0 {
+                continue;
+            }
+
+            let (size, _, align_64) = xsave_component_info(comp_id);
+
+            // ECX[1]=1 means 64-byte aligned; ECX[1]=0 means immediately after previous
+            if align_64 {
+                offset = offset.next_multiple_of(64);
+            }
+
+            // Dirty this component's data area (only if it fits in the buffer)
+            let start_idx = offset / 4;
+            let end_idx = (offset + size) / 4;
+            if end_idx <= xsave.len() {
+                for i in start_idx..end_idx {
+                    xsave[i] = 0x12345678 ^ comp_id.wrapping_mul(0x11111111);
+                }
+                dirtied_mask |= 1u64 << comp_id;
+            }
+
+            offset += size;
+        }
+
+        dirtied_mask
+    }
+
+    /// Dirty extended state components using standard XSAVE format (KVM).
+    /// Components are at fixed offsets from CPUID.0DH.n:EBX.
+    /// Returns a bitmask of components that were actually dirtied.
+    fn dirty_xsave_extended_standard(xsave: &mut [u32], supported_components: u64) -> u64 {
+        let mut dirtied_mask = 0u64;
+
+        for comp_id in 2..63u32 {
+            // Skip if component not supported by CPU
+            if (supported_components & (1u64 << comp_id)) == 0 {
+                continue;
+            }
+
+            let (size, fixed_offset, _) = xsave_component_info(comp_id);
+
+            let start_idx = fixed_offset / 4;
+            let end_idx = (fixed_offset + size) / 4;
+            if end_idx <= xsave.len() {
+                for i in start_idx..end_idx {
+                    xsave[i] = 0x12345678 ^ comp_id.wrapping_mul(0x11111111);
+                }
+                dirtied_mask |= 1u64 << comp_id;
+            }
+        }
+
+        dirtied_mask
+    }
+
+    /// Dirty the legacy XSAVE region (bytes 0-511) for testing reset_vcpu.
+    /// This includes FPU/x87 state, SSE state, and reserved areas.
     ///
     /// Layout (from Intel SDM Table 13-1):
     ///   Bytes 0-1: FCW, 2-3: FSW, 4: FTW, 5: reserved, 6-7: FOP
     ///   Bytes 8-15: FIP, 16-23: FDP
-    ///   Bytes 24-27: MXCSR, 28-31: MXCSR_MASK (don't touch)
-    ///   Bytes 32-159: ST0-ST7/MM0-MM7 (8 regs × 16 bytes, only 10 bytes used per reg)
+    ///   Bytes 24-27: MXCSR, 28-31: MXCSR_MASK (preserve - hardware defined)
+    ///   Bytes 32-159: ST0-ST7/MM0-MM7 (8 regs × 16 bytes)
     ///   Bytes 160-415: XMM0-XMM15 (16 regs × 16 bytes)
     ///   Bytes 416-511: Reserved
-    ///   Bytes 512-575: XSAVE header (preserve XCOMP_BV at 520-527)
-    fn dirty_xsave(current_xsave: &[u8]) -> [u32; 1024] {
-        let mut xsave = [0u32; 1024];
-
+    fn dirty_xsave_legacy(xsave: &mut [u32], current_xsave: &[u8]) {
         // FCW (bytes 0-1) + FSW (bytes 2-3) - pack into xsave[0]
         // FCW = 0x0F7F (different from default 0x037F), FSW = 0x1234
         xsave[0] = 0x0F7F | (0x1234 << 16);
@@ -1324,35 +1409,66 @@ mod tests {
         xsave[5] = 0xBABE0004;
         // MXCSR (bytes 24-27) - xsave[6], use valid value different from default
         xsave[6] = 0x3F80;
-        // xsave[7] is MXCSR_MASK - preserve from current
+        // xsave[7] is MXCSR_MASK - preserve from current (hardware defined, read-only)
         if current_xsave.len() >= 32 {
             xsave[7] = u32::from_le_bytes(current_xsave[28..32].try_into().unwrap());
         }
 
         // ST0-ST7/MM0-MM7 (bytes 32-159, indices 8-39)
-        for item in xsave.iter_mut().take(40).skip(8) {
-            *item = 0xCAFEBABE;
+        for i in 8..40 {
+            xsave[i] = 0xCAFEBABE;
         }
         // XMM0-XMM15 (bytes 160-415, indices 40-103)
-        for item in xsave.iter_mut().take(104).skip(40) {
-            *item = 0xDEADBEEF;
+        for i in 40..104 {
+            xsave[i] = 0xDEADBEEF;
         }
 
-        // Preserve entire XSAVE header (bytes 512-575, indices 128-143) from current state
-        // This includes XSTATE_BV (512-519) and XCOMP_BV (520-527) which
-        // MSHV/WHP require to be set correctly for compacted format.
-        // Failure to do this will cause set_xsave to fail on MSHV.
-        if current_xsave.len() >= 576 {
-            #[allow(clippy::needless_range_loop)]
-            for i in 128..144 {
-                let byte_offset = i * 4;
-                xsave[i] = u32::from_le_bytes(
-                    current_xsave[byte_offset..byte_offset + 4]
-                        .try_into()
-                        .unwrap(),
-                );
-            }
+        // Reserved area (bytes 416-511, indices 104-127)
+        for i in 104..128 {
+            xsave[i] = 0xABCDEF12;
         }
+    }
+
+    /// Preserve XSAVE header (bytes 512-575) from current state.
+    /// This includes XSTATE_BV and XCOMP_BV which hypervisors require.
+    fn preserve_xsave_header(xsave: &mut [u32], current_xsave: &[u8]) {
+        for i in 128..144 {
+            let byte_offset = i * 4;
+            xsave[i] = u32::from_le_bytes(
+                current_xsave[byte_offset..byte_offset + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+        }
+    }
+
+    fn dirty_xsave(current_xsave: &[u8]) -> Vec<u32> {
+        let mut xsave = vec![0u32; current_xsave.len() / 4];
+
+        dirty_xsave_legacy(&mut xsave, current_xsave);
+        preserve_xsave_header(&mut xsave, current_xsave);
+
+        let xcomp_bv = u64::from_le_bytes(current_xsave[520..528].try_into().unwrap());
+        let supported_components = xsave_supported_components();
+
+        // Dirty extended components and get mask of what was actually dirtied
+        let extended_mask = if (xcomp_bv & (1u64 << 63)) != 0 {
+            // Compacted format (MSHV/WHP)
+            dirty_xsave_extended_compacted(&mut xsave, xcomp_bv, supported_components)
+        } else {
+            // Standard format (KVM)
+            dirty_xsave_extended_standard(&mut xsave, supported_components)
+        };
+
+        // UPDATE XSTATE_BV to indicate dirtied components have valid data.
+        // WHP validates consistency between XSTATE_BV and actual data in the buffer.
+        // Bits 0,1 = legacy x87/SSE (always set after dirty_xsave_legacy)
+        // Bits 2+ = extended components that we actually dirtied
+        let xstate_bv = 0x3 | extended_mask;
+
+        // Write XSTATE_BV to bytes 512-519 (u32 indices 128-129)
+        xsave[128] = (xstate_bv & 0xFFFFFFFF) as u32;
+        xsave[129] = (xstate_bv >> 32) as u32;
 
         xsave
     }
