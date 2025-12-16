@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use log::LevelFilter;
+use tracing::level_filters::LevelFilter;
 
 use crate::Result;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
@@ -628,7 +628,7 @@ pub(crate) mod tests {
         let seed = 12345u64; // Random seed
         let page_size = 4096u32; // Standard page size
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
-        let guest_max_log_level = Some(log::LevelFilter::Error);
+        let guest_max_log_level = Some(tracing::level_filters::LevelFilter::ERROR);
 
         #[cfg(gdb)]
         let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr.clone()));

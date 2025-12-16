@@ -21,7 +21,7 @@ limitations under the License.
 use std::sync::Once;
 use std::thread::current;
 
-use log::{Level, Log, Metadata, Record, set_logger, set_max_level};
+use tracing_log::log::{Level, Log, Metadata, Record, set_logger, set_max_level};
 
 pub static LOGGER: SimpleLogger = SimpleLogger {};
 static INITLOGGER: Once = Once::new();

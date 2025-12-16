@@ -145,7 +145,7 @@ static LOG_ONCE: Once = Once::new();
 
 #[cfg(feature = "build-metadata")]
 pub(crate) fn log_build_details() {
-    use log::info;
+    use tracing::info;
     LOG_ONCE.call_once(|| {
         info!("Package name: {}", built_info::PKG_NAME);
         info!("Package version: {}", built_info::PKG_VERSION);

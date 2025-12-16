@@ -25,7 +25,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use log::LevelFilter;
+use tracing::level_filters::LevelFilter;
 use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;

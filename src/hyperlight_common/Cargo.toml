@@ -17,7 +17,6 @@ workspace = true
 [dependencies]
 flatbuffers = { version = "25.9.23", default-features = false }
 anyhow = { version = "1.0.100", default-features = false }
-log = "0.4.29"
 tracing = { version = "0.1.43", optional = true }
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 spin = "0.10.0"
@@ -29,7 +28,7 @@ tracing = ["dep:tracing"]
 fuzzing = ["dep:arbitrary"]
 trace_guest = []
 mem_profile = []
-std = ["thiserror/std", "log/std", "tracing/std"]
+std = ["thiserror/std", "tracing/std"]
 
 [lib]
 bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options

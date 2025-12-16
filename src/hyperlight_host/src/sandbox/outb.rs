@@ -20,9 +20,10 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult,
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::outb::{Exception, OutBAction};
-use log::{Level, Record};
 use tracing::{Span, instrument};
-use tracing_log::format_trace;
+use tracing_log::{LogTracer, format_trace, log};
+
+use log::{Level, Record};
 
 use super::host_funcs::FunctionRegistry;
 #[cfg(feature = "mem_profile")]
@@ -197,7 +198,7 @@ pub(crate) fn handle_outb(
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
     use hyperlight_testing::logger::{LOGGER, Logger};
-    use log::Level;
+    use tracing_log::log::{Level, LevelFilter};
     use tracing_core::callsite::rebuild_interest_cache;
 
     use super::outb_log;
@@ -224,7 +225,7 @@ mod tests {
     #[ignore]
     fn test_log_outb_log() {
         Logger::initialize_test_logger();
-        LOGGER.set_max_level(log::LevelFilter::Off);
+        LOGGER.set_max_level(LevelFilter::Off);
 
         let sandbox_cfg = SandboxConfiguration::default();
 
@@ -271,7 +272,7 @@ mod tests {
         }
         {
             // now, test logging
-            LOGGER.set_max_level(log::LevelFilter::Trace);
+            LOGGER.set_max_level(LevelFilter::Trace);
             let mut mgr = new_mgr();
             LOGGER.clear_log_calls();
 

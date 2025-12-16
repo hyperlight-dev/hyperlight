@@ -17,7 +17,7 @@ hyperlight-guest-bin = { workspace = true, default-features = true }
 hyperlight-common = { workspace = true, default-features = false }
 
 flatbuffers = { version = "25.2.10", default-features = false }
-log = { version = "0.4", default-features = false }
+tracing = { version = "0.1.43", default-features = false }
 
 [build-dependencies]
 cbindgen = "0.29.2"
