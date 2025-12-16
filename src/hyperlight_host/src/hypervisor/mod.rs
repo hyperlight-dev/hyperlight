@@ -131,10 +131,11 @@ pub(crate) trait Hypervisor: Debug + Send {
     fn xsave(&self) -> Result<Vec<u8>>;
     /// Reset xsave to default state
     fn reset_xsave(&self) -> Result<()>;
-    /// Set xsave - only used for tests
+    /// Set xsave - only used for tests.
+    /// Note: On MSHV/WHP, XCOMP_BV must be preserved.
     #[cfg(test)]
     #[cfg(feature = "init-paging")]
-    fn set_xsave(&self, xsave: &[u32; 1024]) -> Result<()>;
+    fn set_xsave(&self, xsave: &[u32]) -> Result<()>;
 
     /// Get the debug registers of the vCPU
     #[allow(dead_code)]
