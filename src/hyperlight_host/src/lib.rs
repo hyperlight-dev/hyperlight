@@ -109,33 +109,33 @@ macro_rules! log_then_return {
             None => std::format!($msg),
         };
         let __err = $crate::HyperlightError::Error(__err_msg);
-        log::error!("{}", __err);
+        tracing::error!("{}", __err);
         return Err(__err);
     }};
     ($err:expr $(,)?) => {
-        log::error!("{}", $err);
+        tracing::error!("{}", $err);
         return Err($err);
     };
     ($err:stmt $(,)?) => {
-        log::error!("{}", $err);
+        tracing::error!("{}", $err);
         return Err($err);
     };
     ($fmtstr:expr, $($arg:tt)*) => {
            let __err_msg = std::format!($fmtstr, $($arg)*);
            let __err = $crate::error::HyperlightError::Error(__err_msg);
-           log::error!("{}", __err);
+           tracing::error!("{}", __err);
            return Err(__err);
     };
 }
 
-/// Same as log::debug!, but will additionally print to stdout if the print_debug feature is enabled
+/// Same as tracing::debug!, but will additionally print to stdout if the print_debug feature is enabled
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)+) =>
     {
         #[cfg(print_debug)]
         println!($($arg)+);
-        log::debug!($($arg)+);
+        tracing::debug!($($arg)+);
     }
 }
 

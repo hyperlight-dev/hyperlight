@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use tracing::level_filters::LevelFilter;
 
 use crate::Result;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
@@ -53,7 +52,6 @@ pub(crate) mod crashdump;
 pub(crate) mod hyperlight_vm;
 
 use std::fmt::Debug;
-use std::str::FromStr;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 #[cfg(target_os = "windows")]
@@ -169,10 +167,19 @@ fn get_max_log_level() -> u32 {
         val.split(',').find(|s| !s.contains("=")).unwrap_or("")
     };
 
-    log::info!("Determined guest log level: {}", level);
+    tracing::info!("Determined guest log level: {}", level);
     // Convert the log level string to a LevelFilter
     // If no value is found, default to Error
-    LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
+    // tracing::LevelFilter doesn't implement FromStr or as u32, so we need to convert via string matching
+    let level_filter = match level.to_lowercase().as_str() {
+        "trace" => 0u32,
+        "debug" => 1u32,
+        "info" => 2u32,
+        "warn" => 3u32,
+        "error" => 4u32,
+        _ => 4u32, // Default to Error
+    };
+    level_filter
 }
 
 /// A trait for platform-specific interrupt handle implementation details
@@ -299,7 +306,7 @@ impl LinuxInterruptHandle {
                 break;
             }
 
-            log::info!("Sending signal to kill vcpu thread...");
+            tracing::info!("Sending signal to kill vcpu thread...");
             sent_signal = true;
             // Acquire ordering to synchronize with the Release store in set_tid()
             // This ensures we see the correct tid value for the currently running vcpu

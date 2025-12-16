@@ -44,7 +44,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
     match Mshv::new() {
         Ok(_) => true,
         Err(_) => {
-            log::info!("MSHV is not available on this system");
+            tracing::info!("MSHV is not available on this system");
             false
         }
     }

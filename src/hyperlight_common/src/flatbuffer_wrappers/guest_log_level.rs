@@ -15,11 +15,21 @@ limitations under the License.
 */
 
 use anyhow::{Error, Result, bail};
-use log::Level;
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
 use crate::flatbuffers::hyperlight::generated::LogLevel as FbLogLevel;
+
+// Define a minimal Level enum for conversions.
+// This mirrors log::Level/tracing::Level but is no_std compatible.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum Level {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
 
 #[repr(u8)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

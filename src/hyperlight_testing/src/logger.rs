@@ -46,14 +46,14 @@ impl Logger {
     pub fn initialize_test_logger() {
         INITLOGGER.call_once(|| {
             set_logger(&LOGGER).unwrap();
-            set_max_level(log::LevelFilter::Trace);
+            set_max_level(LevelFilter::Trace);
         });
     }
 
     pub fn initialize_log_tracer() {
         INITLOGGER.call_once(|| {
             set_logger(&*LOG_TRACER).unwrap();
-            set_max_level(log::LevelFilter::Trace);
+            set_max_level(LevelFilter::Trace);
         });
     }
 

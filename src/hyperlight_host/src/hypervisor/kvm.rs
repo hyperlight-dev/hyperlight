@@ -37,16 +37,16 @@ pub(crate) fn is_hypervisor_present() -> bool {
         match api_version {
             version if version == 12 && kvm.check_extension(UserMemory) => true,
             12 => {
-                log::info!("KVM does not have KVM_CAP_USER_MEMORY capability");
+                tracing::info!("KVM does not have KVM_CAP_USER_MEMORY capability");
                 false
             }
             version => {
-                log::info!("KVM GET_API_VERSION returned {}, expected 12", version);
+                tracing::info!("KVM GET_API_VERSION returned {}, expected 12", version);
                 false
             }
         }
     } else {
-        log::info!("KVM is not available on this system");
+        tracing::info!("KVM is not available on this system");
         false
     }
 }
@@ -190,7 +190,7 @@ impl DebuggableVm for KvmVm {
     fn set_debug(&mut self, enable: bool) -> Result<()> {
         use kvm_bindings::{KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_HW_BP, KVM_GUESTDBG_USE_SW_BP};
 
-        log::info!("Setting debug to {}", enable);
+        tracing::info!("Setting debug to {}", enable);
         if enable {
             self.debug_regs.control |=
                 KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP | KVM_GUESTDBG_USE_SW_BP;
@@ -205,7 +205,7 @@ impl DebuggableVm for KvmVm {
     fn set_single_step(&mut self, enable: bool) -> Result<()> {
         use kvm_bindings::KVM_GUESTDBG_SINGLESTEP;
 
-        log::info!("Setting single step to {}", enable);
+        tracing::info!("Setting single step to {}", enable);
         if enable {
             self.debug_regs.control |= KVM_GUESTDBG_SINGLESTEP;
         } else {

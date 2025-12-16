@@ -19,11 +19,23 @@ use std::sync::{Arc, Mutex};
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterValue};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::flatbuffer_wrappers::guest_log_level::Level as GuestLevel;
 use hyperlight_common::outb::{Exception, OutBAction};
 use tracing::{Span, instrument};
-use tracing_log::{LogTracer, format_trace, log};
+use tracing_log::{format_trace, log};
 
 use log::{Level, Record};
+
+// Convert from guest Level to log Level
+fn guest_level_to_log_level(guest_level: GuestLevel) -> Level {
+    match guest_level {
+        GuestLevel::Trace => Level::Trace,
+        GuestLevel::Debug => Level::Debug,
+        GuestLevel::Info => Level::Info,
+        GuestLevel::Warn => Level::Warn,
+        GuestLevel::Error => Level::Error,
+    }
+}
 
 use super::host_funcs::FunctionRegistry;
 #[cfg(feature = "mem_profile")]
@@ -45,7 +57,7 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
 
     let log_data: GuestLogData = mgr.read_guest_log_data()?;
 
-    let record_level: Level = (&log_data.level).into();
+    let record_level: Level = guest_level_to_log_level((&log_data.level).into());
 
     // Work out if we need to log or trace
     // this API is marked as follows but it is the easiest way to work out if we should trace or log

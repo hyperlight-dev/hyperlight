@@ -1387,7 +1387,6 @@ dependencies = [
  "anyhow",
  "arbitrary",
  "flatbuffers",
- "log",
  "spin 0.10.0",
  "thiserror 2.0.17",
  "tracing",
@@ -1412,11 +1411,11 @@ name = "hyperlight-component-util"
 version = "0.12.0"
 dependencies = [
  "itertools 0.14.0",
- "log",
  "prettyplease",
  "proc-macro2",
  "quote",
  "syn",
+ "tracing",
  "wasmparser",
 ]
 
@@ -1456,7 +1455,6 @@ dependencies = [
  "hyperlight-guest-macro",
  "hyperlight-guest-tracing",
  "linkme",
- "log",
  "spin 0.10.0",
  "tracing",
 ]
@@ -1511,7 +1509,6 @@ dependencies = [
  "kvm-ioctls",
  "lazy_static",
  "libc",
- "log",
  "metrics",
  "metrics-exporter-prometheus",
  "metrics-util",
@@ -1557,7 +1554,6 @@ name = "hyperlight-testing"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "log",
  "once_cell",
  "serde",
  "serde_json",
@@ -1576,7 +1572,7 @@ dependencies = [
  "hyperlight-common",
  "hyperlight-guest",
  "hyperlight-guest-bin",
- "log",
+ "tracing",
 ]
 
 [[package]]

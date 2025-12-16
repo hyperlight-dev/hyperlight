@@ -30,6 +30,23 @@ use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+// Helper function to convert LevelFilter to u64 for guest
+fn level_filter_to_u64(filter: LevelFilter) -> u64 {
+    // Map LevelFilter to numeric values matching the guest expectations
+    // OFF = 5, ERROR = 4, WARN = 3, INFO = 2, DEBUG = 1, TRACE = 0
+    if filter >= LevelFilter::ERROR {
+        4
+    } else if filter >= LevelFilter::WARN {
+        3
+    } else if filter >= LevelFilter::INFO {
+        2
+    } else if filter >= LevelFilter::DEBUG {
+        1
+    } else {
+        0
+    }
+}
+
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, DebuggableVm, VcpuStopReason, arch};
 use super::regs::{CommonFpu, CommonRegisters};
@@ -229,7 +246,7 @@ impl HyperlightVm {
         self.page_size = page_size as usize;
 
         let guest_max_log_level: u64 = match guest_max_log_level {
-            Some(level) => level as u64,
+            Some(level) => level_filter_to_u64(level),
             None => get_max_log_level().into(),
         };
 
