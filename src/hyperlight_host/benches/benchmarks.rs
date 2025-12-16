@@ -245,7 +245,7 @@ fn bench_guest_call_interrupt_latency(b: &mut criterion::Bencher, size: SandboxS
                 // Small delay to ensure the guest function is running in VM before interrupting
                 thread::sleep(std::time::Duration::from_millis(10));
                 let kill_start = Instant::now();
-                assert!(interrupt_handle.kill());
+                interrupt_handle.kill();
                 kill_start
             });
 

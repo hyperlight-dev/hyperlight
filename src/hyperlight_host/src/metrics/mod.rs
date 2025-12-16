@@ -118,7 +118,7 @@ mod tests {
             // interrupt the guest function call to "Spin" after 1 second
             let thread = thread::spawn(move || {
                 thread::sleep(Duration::from_secs(1));
-                assert!(interrupt_handle.kill());
+                interrupt_handle.kill();
             });
 
             multi

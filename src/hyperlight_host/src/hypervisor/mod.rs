@@ -208,12 +208,13 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
 pub trait InterruptHandle: Send + Sync + Debug {
     /// Interrupt the corresponding sandbox from running.
     ///
-    /// - If this is called while the the sandbox currently executing a guest function call, it will interrupt the sandbox and return `true`.
-    /// - If this is called while the sandbox is not running (for example before or after calling a guest function), it will do nothing and return `false`.
+    /// This method sets a cancellation flag that prevents or stops the execution of guest code:
+    /// - If called while the sandbox is currently executing a guest function, it will interrupt the vCPU.
+    /// - If called before the sandbox starts executing (e.g., before a guest function call), it will prevent execution from starting.
     ///
     /// # Note
     /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
-    fn kill(&self) -> bool;
+    fn kill(&self);
 
     /// Used by a debugger to interrupt the corresponding sandbox from running.
     ///
@@ -374,13 +375,13 @@ impl InterruptHandleImpl for LinuxInterruptHandle {
 
 #[cfg(any(kvm, mshv3))]
 impl InterruptHandle for LinuxInterruptHandle {
-    fn kill(&self) -> bool {
+    fn kill(&self) {
         // Release ordering ensures that any writes before kill() are visible to the vcpu thread
         // when it checks is_cancelled() with Acquire ordering
         self.state.fetch_or(Self::CANCEL_BIT, Ordering::Release);
 
         // Send signals to interrupt the vcpu if it's currently running
-        self.send_signal()
+        self.send_signal();
     }
 
     #[cfg(gdb)]
@@ -513,7 +514,7 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
 
 #[cfg(target_os = "windows")]
 impl InterruptHandle for WindowsInterruptHandle {
-    fn kill(&self) -> bool {
+    fn kill(&self) {
         use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
 
         // Release ordering ensures that any writes before kill() are visible to the vcpu thread
@@ -524,7 +525,7 @@ impl InterruptHandle for WindowsInterruptHandle {
         // This ensures we see the running state set by the vcpu thread
         let state = self.state.load(Ordering::Acquire);
         if state & Self::RUNNING_BIT == 0 {
-            return false;
+            return;
         }
 
         // Take read lock to prevent race with WHvDeletePartition in set_dropped().
@@ -534,15 +535,15 @@ impl InterruptHandle for WindowsInterruptHandle {
             Ok(guard) => guard,
             Err(e) => {
                 log::error!("Failed to acquire partition_state read lock: {}", e);
-                return false;
+                return;
             }
         };
 
         if guard.dropped {
-            return false;
+            return;
         }
 
-        unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0).is_ok() }
+        unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0).ok() };
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
