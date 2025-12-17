@@ -66,7 +66,7 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
 }
 
 /// The hypervisor types available for the current platform
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub(crate) enum HypervisorType {
     #[cfg(kvm)]
     Kvm,
