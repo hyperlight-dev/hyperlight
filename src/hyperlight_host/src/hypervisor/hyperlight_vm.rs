@@ -36,22 +36,23 @@ use super::regs::{CommonFpu, CommonRegisters};
 #[cfg(target_os = "windows")]
 use super::{PartitionState, WindowsInterruptHandle};
 use crate::HyperlightError::{ExecutionCanceledByHost, NoHypervisorFound};
-#[cfg(not(gdb))]
-use crate::hypervisor::Hypervisor;
 #[cfg(any(kvm, mshv3))]
 use crate::hypervisor::LinuxInterruptHandle;
 #[cfg(crashdump)]
 use crate::hypervisor::crashdump;
-#[cfg(mshv3)]
-use crate::hypervisor::hyperv_linux::MshvVm;
-#[cfg(target_os = "windows")]
-use crate::hypervisor::hyperv_windows::WhpVm;
-#[cfg(kvm)]
-use crate::hypervisor::kvm::KvmVm;
 use crate::hypervisor::regs::CommonSpecialRegisters;
+#[cfg(not(gdb))]
+use crate::hypervisor::virtual_machine::VirtualMachine;
+#[cfg(kvm)]
+use crate::hypervisor::virtual_machine::kvm::KvmVm;
+#[cfg(mshv3)]
+use crate::hypervisor::virtual_machine::mshv::MshvVm;
+#[cfg(target_os = "windows")]
+use crate::hypervisor::virtual_machine::whp::WhpVm;
+use crate::hypervisor::virtual_machine::{HypervisorType, VmExit, get_available_hypervisor};
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::hypervisor::{HyperlightExit, InterruptHandle, InterruptHandleImpl, get_max_log_level};
+use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_max_log_level};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -59,7 +60,6 @@ use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
-use crate::sandbox::hypervisor::{HypervisorType, get_available_hypervisor};
 use crate::sandbox::outb::handle_outb;
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
@@ -77,7 +77,7 @@ pub(crate) struct HyperlightVm {
     #[cfg(gdb)]
     vm: Box<dyn DebuggableVm>,
     #[cfg(not(gdb))]
-    vm: Box<dyn Hypervisor>,
+    vm: Box<dyn VirtualMachine>,
     page_size: usize,
     entrypoint: u64,
     orig_rsp: GuestPtr,
@@ -117,7 +117,7 @@ impl HyperlightVm {
         #[cfg(gdb)]
         type VmType = Box<dyn DebuggableVm>;
         #[cfg(not(gdb))]
-        type VmType = Box<dyn Hypervisor>;
+        type VmType = Box<dyn VirtualMachine>;
 
         #[cfg_attr(not(gdb), allow(unused_mut))]
         let mut vm: VmType = match get_available_hypervisor() {
@@ -368,7 +368,7 @@ impl HyperlightVm {
         let result = loop {
             // ===== KILL() TIMING POINT 2: Before set_tid() =====
             // If kill() is called and ran to completion BEFORE this line executes:
-            //    - CANCEL_BIT will be set and we will return an early HyperlightExit::Cancelled()
+            //    - CANCEL_BIT will be set and we will return an early VmExit::Cancelled()
             //      without sending any signals/WHV api calls
             #[cfg(any(kvm, mshv3))]
             self.interrupt_handle.set_tid();
@@ -379,7 +379,7 @@ impl HyperlightVm {
             let exit_reason = if self.interrupt_handle.is_cancelled()
                 || self.interrupt_handle.is_debug_interrupted()
             {
-                Ok(HyperlightExit::Cancelled())
+                Ok(VmExit::Cancelled())
             } else {
                 #[cfg(feature = "trace_guest")]
                 tc.setup_guest_trace(Span::current().context());
@@ -424,7 +424,7 @@ impl HyperlightVm {
             //    - Signals will not be sent
             match exit_reason {
                 #[cfg(gdb)]
-                Ok(HyperlightExit::Debug { dr6, exception }) => {
+                Ok(VmExit::Debug { dr6, exception }) => {
                     // Handle debug event (breakpoints)
                     let stop_reason =
                         arch::vcpu_stop_reason(self.vm.as_mut(), dr6, self.entrypoint, exception)?;
@@ -433,13 +433,11 @@ impl HyperlightVm {
                     }
                 }
 
-                Ok(HyperlightExit::Halt()) => {
+                Ok(VmExit::Halt()) => {
                     break Ok(());
                 }
-                Ok(HyperlightExit::IoOut(port, data)) => {
-                    self.handle_io(mem_mgr, host_funcs, port, data)?
-                }
-                Ok(HyperlightExit::MmioRead(addr)) => {
+                Ok(VmExit::IoOut(port, data)) => self.handle_io(mem_mgr, host_funcs, port, data)?,
+                Ok(VmExit::MmioRead(addr)) => {
                     let all_regions = self.sandbox_regions.iter().chain(self.get_mapped_regions());
                     match get_memory_access_violation(
                         addr as usize,
@@ -465,7 +463,7 @@ impl HyperlightVm {
                         }
                     }
                 }
-                Ok(HyperlightExit::MmioWrite(addr)) => {
+                Ok(VmExit::MmioWrite(addr)) => {
                     let all_regions = self.sandbox_regions.iter().chain(self.get_mapped_regions());
                     match get_memory_access_violation(
                         addr as usize,
@@ -491,7 +489,7 @@ impl HyperlightVm {
                         }
                     }
                 }
-                Ok(HyperlightExit::Cancelled()) => {
+                Ok(VmExit::Cancelled()) => {
                     // If cancellation was not requested for this specific guest function call,
                     // the vcpu was interrupted by a stale cancellation. This can occur when:
                     // - Linux: A signal from a previous call arrives late
@@ -499,7 +497,7 @@ impl HyperlightVm {
                     if !cancel_requested && !debug_interrupted {
                         // Track that an erroneous vCPU kick occurred
                         metrics::counter!(METRIC_ERRONEOUS_VCPU_KICKS).increment(1);
-                        // treat this the same as a HyperlightExit::Retry, the cancel was not meant for this call
+                        // treat this the same as a VmExit::Retry, the cancel was not meant for this call
                         continue;
                     }
 
@@ -517,10 +515,10 @@ impl HyperlightVm {
                     metrics::counter!(METRIC_GUEST_CANCELLATION).increment(1);
                     break Err(ExecutionCanceledByHost());
                 }
-                Ok(HyperlightExit::Unknown(reason)) => {
+                Ok(VmExit::Unknown(reason)) => {
                     break Err(new_error!("Unexpected VM Exit: {:?}", reason));
                 }
-                Ok(HyperlightExit::Retry()) => continue,
+                Ok(VmExit::Retry()) => continue,
                 Err(e) => {
                     break Err(e);
                 }

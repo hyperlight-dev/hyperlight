@@ -25,7 +25,8 @@ use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
-use crate::hypervisor::{HyperlightExit, Hypervisor};
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::mem::memory_region::MemoryRegion;
 use crate::{Result, new_error};
 
@@ -84,7 +85,7 @@ impl KvmVm {
     }
 }
 
-impl Hypervisor for KvmVm {
+impl VirtualMachine for KvmVm {
     unsafe fn map_memory(&mut self, (slot, region): (u32, &MemoryRegion)) -> Result<()> {
         let mut kvm_region: kvm_userspace_memory_region = region.into();
         kvm_region.slot = slot;
@@ -103,61 +104,58 @@ impl Hypervisor for KvmVm {
         Ok(())
     }
 
-    fn run_vcpu(&mut self) -> Result<HyperlightExit> {
+    fn run_vcpu(&mut self) -> Result<VmExit> {
         match self.vcpu_fd.run() {
-            Ok(VcpuExit::Hlt) => Ok(HyperlightExit::Halt()),
-            Ok(VcpuExit::IoOut(port, data)) => Ok(HyperlightExit::IoOut(port, data.to_vec())),
-            Ok(VcpuExit::MmioRead(addr, _)) => Ok(HyperlightExit::MmioRead(addr)),
-            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(HyperlightExit::MmioWrite(addr)),
+            Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
+            Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
+            Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
+            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
             #[cfg(gdb)]
-            Ok(VcpuExit::Debug(debug_exit)) => Ok(HyperlightExit::Debug {
+            Ok(VcpuExit::Debug(debug_exit)) => Ok(VmExit::Debug {
                 dr6: debug_exit.dr6,
                 exception: debug_exit.exception,
             }),
             Err(e) => match e.errno() {
                 // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
-                libc::EINTR => Ok(HyperlightExit::Cancelled()),
-                libc::EAGAIN => Ok(HyperlightExit::Retry()),
-                _ => Ok(HyperlightExit::Unknown(format!(
-                    "Unknown KVM VCPU error: {}",
-                    e
-                ))),
+                libc::EINTR => Ok(VmExit::Cancelled()),
+                libc::EAGAIN => Ok(VmExit::Retry()),
+                _ => Ok(VmExit::Unknown(format!("Unknown KVM VCPU error: {}", e))),
             },
-            Ok(other) => Ok(HyperlightExit::Unknown(format!(
+            Ok(other) => Ok(VmExit::Unknown(format!(
                 "Unknown KVM VCPU exit: {:?}",
                 other
             ))),
         }
     }
 
-    fn regs(&self) -> Result<super::regs::CommonRegisters> {
+    fn regs(&self) -> Result<CommonRegisters> {
         let kvm_regs = self.vcpu_fd.get_regs()?;
         Ok((&kvm_regs).into())
     }
 
-    fn set_regs(&self, regs: &super::regs::CommonRegisters) -> Result<()> {
+    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
         let kvm_regs: kvm_regs = regs.into();
         self.vcpu_fd.set_regs(&kvm_regs)?;
         Ok(())
     }
 
-    fn fpu(&self) -> Result<super::regs::CommonFpu> {
+    fn fpu(&self) -> Result<CommonFpu> {
         let kvm_fpu = self.vcpu_fd.get_fpu()?;
         Ok((&kvm_fpu).into())
     }
 
-    fn set_fpu(&self, fpu: &super::regs::CommonFpu) -> Result<()> {
+    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
         let kvm_fpu: kvm_fpu = fpu.into();
         self.vcpu_fd.set_fpu(&kvm_fpu)?;
         Ok(())
     }
 
-    fn sregs(&self) -> Result<super::regs::CommonSpecialRegisters> {
+    fn sregs(&self) -> Result<CommonSpecialRegisters> {
         let kvm_sregs = self.vcpu_fd.get_sregs()?;
         Ok((&kvm_sregs).into())
     }
 
-    fn set_sregs(&self, sregs: &super::regs::CommonSpecialRegisters) -> Result<()> {
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
         let kvm_sregs: kvm_sregs = sregs.into();
         self.vcpu_fd.set_sregs(&kvm_sregs)?;
         Ok(())
