@@ -14,12 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use alloc::format;
-use core::ffi::c_char;
+use core::fmt::Write;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::outb::Exception;
-use hyperlight_guest::exit::abort_with_code_and_message;
+use hyperlight_guest::exit::write_abort;
+
+use crate::HyperlightAbortWriter;
 
 /// Exception information pushed onto the stack by the CPU during an excpection.
 ///
@@ -125,15 +126,6 @@ pub(crate) extern "C" fn hl_exception_handler(
     let saved_rip = unsafe { (&raw const (*exn_info).rip).read_volatile() };
     let error_code = unsafe { (&raw const (*exn_info).error_code).read_volatile() };
 
-    let msg = format!(
-        "Exception vector: {:#}\n\
-         Faulting Instruction: {:#x}\n\
-         Page Fault Address: {:#x}\n\
-         Error code: {:#x}\n\
-         Stack Pointer: {:#x}",
-        exception_number, saved_rip, page_fault_address, error_code, stack_pointer
-    );
-
     // Check for registered user handlers (only for architecture-defined vectors 0-30)
     if exception_number < 31 {
         let handler =
@@ -149,10 +141,24 @@ pub(crate) extern "C" fn hl_exception_handler(
         }
     }
 
-    unsafe {
-        abort_with_code_and_message(
-            &[ErrorCode::GuestError as u8, exception as u8],
-            msg.as_ptr() as *const c_char,
-        );
+    // begin abort sequence by writing the error code
+    let mut w = HyperlightAbortWriter;
+    write_abort(&[ErrorCode::GuestError as u8, exception as u8]);
+    let write_res = write!(
+        w,
+        "Exception vector: {}\n\
+         Faulting Instruction: {:#x}\n\
+         Page Fault Address: {:#x}\n\
+         Error code: {:#x}\n\
+         Stack Pointer: {:#x}",
+        exception_number, saved_rip, page_fault_address, error_code, stack_pointer
+    );
+    if write_res.is_err() {
+        write_abort("exception message format failed".as_bytes());
     }
+
+    write_abort(&[0xFF]);
+    // At this point, write_abort with the 0xFF terminator is expected to terminate guest execution,
+    // so control should never reach beyond this call.
+    unreachable!();
 }

@@ -1668,6 +1668,44 @@ fn exception_handler_installation_and_validation() {
     assert_eq!(count, 2, "Handler should have been called twice");
 }
 
+/// Tests that an exception can be properly handled even when the heap is exhausted.
+/// The guest function fills the heap completely, then triggers a ud2 exception.
+/// This validates that the exception handling path does not require heap allocations.
+#[test]
+fn fill_heap_and_cause_exception() {
+    let mut sandbox: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let result = sandbox.call::<()>("FillHeapAndCauseException", ());
+
+    // The call should fail with an exception error since there's no handler installed
+    assert!(result.is_err(), "Expected an error from ud2 exception");
+
+    let err = result.unwrap_err();
+    match &err {
+        HyperlightError::GuestAborted(code, message) => {
+            assert_eq!(*code, ErrorCode::GuestError as u8, "Full error: {:?}", err);
+
+            // Verify the message was properly formatted (proves no-allocation path worked)
+            // Exception vector 6 is #UD (Invalid Opcode from ud2 instruction)
+            assert!(
+                message.contains("Exception vector: 6"),
+                "Message should contain 'Exception vector: 6'\nFull error: {:?}",
+                err
+            );
+            assert!(
+                message.contains("Faulting Instruction:"),
+                "Message should contain 'Faulting Instruction:'\nFull error: {:?}",
+                err
+            );
+            assert!(
+                message.contains("Stack Pointer:"),
+                "Message should contain 'Stack Pointer:'\nFull error: {:?}",
+                err
+            );
+        }
+        _ => panic!("Expected GuestAborted error, got: {:?}", err),
+    }
+}
+
 /// This test is "likely" to catch a race condition where WHvCancelRunVirtualProcessor runs halfway, then the partition is deleted (by drop calling WHvDeletePartition),
 /// and WHvCancelRunVirtualProcessor continues, and tries to access freed memory.
 ///
