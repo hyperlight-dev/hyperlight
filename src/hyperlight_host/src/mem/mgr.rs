@@ -90,18 +90,17 @@ impl vmem::TableOps for GuestPageTableBuffer {
     unsafe fn read_entry(&self, addr: (usize, usize)) -> PageTableEntry {
         let b = self.buffer.borrow();
         let byte_offset = addr.0 * PAGE_TABLE_SIZE + addr.1 * 8;
-        unsafe {
-            let ptr = b.as_ptr().add(byte_offset) as *const PageTableEntry;
-            ptr.read_unaligned()
-        }
+        b.get(byte_offset..byte_offset + 8)
+            .and_then(|s| <[u8; 8]>::try_from(s).ok())
+            .map(u64::from_ne_bytes)
+            .unwrap_or(0)
     }
 
     unsafe fn write_entry(&self, addr: (usize, usize), x: PageTableEntry) {
         let mut b = self.buffer.borrow_mut();
         let byte_offset = addr.0 * PAGE_TABLE_SIZE + addr.1 * 8;
-        unsafe {
-            let ptr = b.as_mut_ptr().add(byte_offset) as *mut PageTableEntry;
-            ptr.write_unaligned(x);
+        if let Some(slice) = b.get_mut(byte_offset..byte_offset + 8) {
+            slice.copy_from_slice(&x.to_ne_bytes());
         }
     }
 
