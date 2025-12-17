@@ -28,8 +28,6 @@ use super::memory_region::MemoryRegionType::{
 use super::memory_region::{
     DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegionFlags, MemoryRegionVecBuilder,
 };
-#[cfg(feature = "init-paging")]
-use super::mgr::AMOUNT_OF_MEMORY_PER_PT;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory};
 use crate::error::HyperlightError::{GuestOffsetIsInvalid, MemoryRequestTooBig};
 use crate::sandbox::SandboxConfiguration;
@@ -82,7 +80,10 @@ use crate::{Result, new_error};
 ///   of this field is returned by the `stack_size()` method of this struct. in reality,
 ///   the stack might be slightly bigger or smaller than this value since total memory
 ///   size is rounded up to the nearest 4K, and there is a 16-byte stack guard written
-///   to the top of the stack. (see below for more details)
+///   to the top of the stack. (see below for more details
+// The amount of memory that can be mapped per page table
+#[cfg(feature = "init-paging")]
+const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200_000;
 
 #[derive(Copy, Clone)]
 pub(crate) struct SandboxMemoryLayout {
@@ -217,27 +218,6 @@ impl SandboxMemoryLayout {
     /// The offset into the sandbox's memory where the PML4 Table is located.
     /// See https://www.pagetable.com/?p=14 for more information.
     pub(crate) const PML4_OFFSET: usize = 0x0000;
-    /// The offset into the sandbox's memory where the Page Directory Pointer
-    /// Table starts.
-    #[cfg(feature = "init-paging")]
-    pub(super) const PDPT_OFFSET: usize = 0x1000;
-    /// The offset into the sandbox's memory where the Page Directory starts.
-    #[cfg(feature = "init-paging")]
-    pub(super) const PD_OFFSET: usize = 0x2000;
-    /// The offset into the sandbox's memory where the Page Tables start.
-    #[cfg(feature = "init-paging")]
-    pub(super) const PT_OFFSET: usize = 0x3000;
-    /// The address (not the offset) to the start of the page directory
-    #[cfg(feature = "init-paging")]
-    pub(super) const PD_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PD_OFFSET;
-    /// The address (not the offset) into sandbox memory where the Page
-    /// Directory Pointer Table starts
-    #[cfg(feature = "init-paging")]
-    pub(super) const PDPT_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PDPT_OFFSET;
-    /// The address (not the offset) into sandbox memory where the Page
-    /// Tables start
-    #[cfg(feature = "init-paging")]
-    pub(super) const PT_GUEST_ADDRESS: usize = Self::BASE_ADDRESS + Self::PT_OFFSET;
     /// The maximum amount of memory a single sandbox will be allowed.
     /// The addressable virtual memory with current paging setup is virtual address 0x0 - 0x40000000 (excl.),
     /// However, the memory up to Self::BASE_ADDRESS is not used.
@@ -481,13 +461,18 @@ impl SandboxMemoryLayout {
     // This function calculates the page table size for the sandbox
     // We need enough memory to store the PML4, PDPT, PD and PTs
     // The size of a single table is 4K, we can map up to 1GB total memory which requires 1 PML4, 1 PDPT, 1 PD and 512 PTs
-    // but we only need enough PTs to map the memory we are using. (In other words we only need 512 PTs to map the memory if the memory size is 1GB)
+    // but we only need enough PTs to map the memory we are using. (In other words we only up to 512 PTs to map the memory if the memory size is 1GB)
     //
     // We can calculate the amount of memory needed for the PTs by calculating how much memory is needed for the sandbox configuration in total,
     // and then add 3 * 4K (for the PML4, PDPT and PD)  to that,
     // then add 2MB to that (the maximum size of memory required for the PTs themselves is 2MB when we map 1GB of memory in 4K pages),
     // then divide that by 0x200_000 (as we can map 2MB in each PT).
     // This will give us the total size of the PTs required for the sandbox to which we can add the size of the PML4, PDPT and PD.
+    // TODO: This over-counts on small sandboxes (because not all 512
+    // PTs may be required), under-counts on sandboxes with more than
+    // 1GiB memory - which are not currently supported as we only support MAX_MEMORY_SIZE, and would get unreasonably complicated if we
+    // needed to support hugepages.
+
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     #[cfg(feature = "init-paging")]
     fn get_total_page_table_size(

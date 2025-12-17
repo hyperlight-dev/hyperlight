@@ -23,13 +23,17 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+#[cfg(feature = "init-paging")]
+use hyperlight_common::vmem::{
+    self, BasicMapping, Mapping, MappingKind, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr,
+};
 use tracing::{Span, instrument};
 
 use super::exe::ExeInfo;
 use super::layout::SandboxMemoryLayout;
 use super::memory_region::MemoryRegion;
 #[cfg(feature = "init-paging")]
-use super::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionType};
+use super::memory_region::MemoryRegionFlags;
 use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
@@ -38,25 +42,6 @@ use crate::sandbox::snapshot::Snapshot;
 use crate::sandbox::uninitialized::GuestBlob;
 use crate::{Result, log_then_return, new_error};
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "init-paging")] {
-        /// Paging Flags
-        ///
-        /// See the following links explaining paging, also see paging-development-notes.md in docs:
-        ///
-        /// * Very basic description: https://stackoverflow.com/a/26945892
-        /// * More in-depth descriptions: https://wiki.osdev.org/Paging
-        pub(crate) const PAGE_PRESENT: u64 = 1; // Page is Present
-        pub(crate) const PAGE_RW: u64 = 1 << 1; // Page is Read/Write (if not set page is read only so long as the WP bit in CR0 is set to 1 - which it is in Hyperlight)
-        pub(crate) const PAGE_USER: u64 = 1 << 2; // User/Supervisor (if this bit is set then the page is accessible by user mode code)
-        pub(crate) const PAGE_NX: u64 = 1 << 63; // Execute Disable (if this bit is set then data in the page cannot be executed)`
-        // The amount of memory that can be mapped per page table
-        pub(super) const AMOUNT_OF_MEMORY_PER_PT: usize = 0x200_000;
-    }
-}
-
-/// Read/write permissions flag for the 64-bit PDE
-/// The page size for the 64-bit PDE
 /// The size of stack guard cookies
 pub(crate) const STACK_COOKIE_LEN: usize = 16;
 
@@ -78,6 +63,74 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) stack_cookie: [u8; STACK_COOKIE_LEN],
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
+}
+
+#[cfg(feature = "init-paging")]
+struct GuestPageTableBuffer {
+    buffer: std::cell::RefCell<Vec<u8>>,
+}
+
+#[cfg(feature = "init-paging")]
+impl vmem::TableOps for GuestPageTableBuffer {
+    type TableAddr = (usize, usize); // (table_index, entry_index)
+
+    unsafe fn alloc_table(&self) -> (usize, usize) {
+        let mut b = self.buffer.borrow_mut();
+        let table_index = b.len() / PAGE_TABLE_SIZE;
+        let new_len = b.len() + PAGE_TABLE_SIZE;
+        b.resize(new_len, 0);
+        (table_index, 0)
+    }
+
+    fn entry_addr(addr: (usize, usize), offset: u64) -> (usize, usize) {
+        let phys = Self::to_phys(addr) + offset;
+        Self::from_phys(phys)
+    }
+
+    unsafe fn read_entry(&self, addr: (usize, usize)) -> PageTableEntry {
+        let b = self.buffer.borrow();
+        let byte_offset = addr.0 * PAGE_TABLE_SIZE + addr.1 * 8;
+        b.get(byte_offset..byte_offset + 8)
+            .and_then(|s| <[u8; 8]>::try_from(s).ok())
+            .map(u64::from_ne_bytes)
+            .unwrap_or(0)
+    }
+
+    unsafe fn write_entry(&self, addr: (usize, usize), x: PageTableEntry) {
+        let mut b = self.buffer.borrow_mut();
+        let byte_offset = addr.0 * PAGE_TABLE_SIZE + addr.1 * 8;
+        if let Some(slice) = b.get_mut(byte_offset..byte_offset + 8) {
+            slice.copy_from_slice(&x.to_ne_bytes());
+        }
+    }
+
+    fn to_phys(addr: (usize, usize)) -> PhysAddr {
+        (addr.0 as u64 * PAGE_TABLE_SIZE as u64) + (addr.1 as u64 * 8)
+    }
+
+    fn from_phys(addr: PhysAddr) -> (usize, usize) {
+        (
+            addr as usize / PAGE_TABLE_SIZE,
+            (addr as usize % PAGE_TABLE_SIZE) / 8,
+        )
+    }
+
+    fn root_table(&self) -> (usize, usize) {
+        (0, 0)
+    }
+}
+
+#[cfg(feature = "init-paging")]
+impl GuestPageTableBuffer {
+    fn new() -> Self {
+        GuestPageTableBuffer {
+            buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
+        }
+    }
+
+    pub(crate) fn into_bytes(self) -> Box<[u8]> {
+        self.buffer.into_inner().into_boxed_slice()
+    }
 }
 
 impl<S> SandboxMemoryManager<S>
@@ -121,17 +174,13 @@ where
         &mut self.shared_mem
     }
 
-    /// Set up the hypervisor partition in the given `SharedMemory` parameter
-    /// `shared_mem`, with the given memory size `mem_size`
+    /// Set up the guest page tables in the given `SharedMemory` parameter
+    /// `shared_mem`
     // TODO: This should perhaps happen earlier and use an
     // ExclusiveSharedMemory from the beginning.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     #[cfg(feature = "init-paging")]
-    pub(crate) fn set_up_shared_memory(
-        &mut self,
-        mem_size: u64,
-        regions: &mut [MemoryRegion],
-    ) -> Result<u64> {
+    pub(crate) fn set_up_shared_memory(&mut self, regions: &mut [MemoryRegion]) -> Result<u64> {
         let rsp: u64 = self.layout.get_top_of_user_stack_offset() as u64
             + SandboxMemoryLayout::BASE_ADDRESS as u64
             + self.layout.stack_size as u64
@@ -142,142 +191,35 @@ where
             - 0x28;
 
         self.shared_mem.with_exclusivity(|shared_mem| {
-            // Create PDL4 table with only 1 PML4E
-            shared_mem.write_u64(
-                SandboxMemoryLayout::PML4_OFFSET,
-                SandboxMemoryLayout::PDPT_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW,
-            )?;
-
-            // Create PDPT with only 1 PDPTE
-            shared_mem.write_u64(
-                SandboxMemoryLayout::PDPT_OFFSET,
-                SandboxMemoryLayout::PD_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW,
-            )?;
-
-            for i in 0..512 {
-                let offset = SandboxMemoryLayout::PD_OFFSET + (i * 8);
-                let val_to_write: u64 = (SandboxMemoryLayout::PT_GUEST_ADDRESS as u64
-                    + (i * 4096) as u64)
-                    | PAGE_PRESENT
-                    | PAGE_RW;
-                shared_mem.write_u64(offset, val_to_write)?;
+            let buffer = GuestPageTableBuffer::new();
+            for region in regions.iter() {
+                let readable = region.flags.contains(MemoryRegionFlags::READ);
+                let writable = region.flags.contains(MemoryRegionFlags::WRITE)
+                    // Temporary hack: the stack guard page is
+                    // currently checked for in the host, rather than
+                    // the guest, so we need to mark it writable in
+                    // the Stage 1 translation so that the fault
+                    // exception on a write is taken to the
+                    // hypervisor, rather than the guest kernel
+                    || region.flags.contains(MemoryRegionFlags::STACK_GUARD);
+                let executable = region.flags.contains(MemoryRegionFlags::EXECUTE);
+                let mapping = Mapping {
+                    phys_base: region.guest_region.start as u64,
+                    virt_base: region.guest_region.start as u64,
+                    len: region.guest_region.len() as u64,
+                    kind: MappingKind::BasicMapping(BasicMapping {
+                        readable,
+                        writable,
+                        executable,
+                    }),
+                };
+                unsafe { vmem::map(&buffer, mapping) };
             }
-
-            // We only need to create enough PTEs to map the amount of memory we have
-            // We need one PT for every 2MB of memory that is mapped
-            // We can use the memory size to calculate the number of PTs we need
-            // We round up mem_size/2MB
-
-            let mem_size = usize::try_from(mem_size)?;
-
-            let num_pages: usize = mem_size.div_ceil(AMOUNT_OF_MEMORY_PER_PT);
-
-            // Create num_pages PT with 512 PTEs
-            // Pre-allocate buffer for all page table entries to minimize shared memory writes
-            let total_ptes = num_pages * 512;
-            let mut pte_buffer = vec![0u64; total_ptes]; // Pre-allocate u64 buffer directly
-            let mut cached_region_idx: Option<usize> = None; // Cache for optimized region lookup
-            let mut pte_index = 0;
-
-            for p in 0..num_pages {
-                for i in 0..512 {
-                    // Each PTE maps a 4KB page
-                    let flags = match Self::get_page_flags(p, i, regions, &mut cached_region_idx) {
-                        Ok(region_type) => match region_type {
-                            // TODO: We parse and load the exe according to its sections and then
-                            // have the correct flags set rather than just marking the entire binary as executable
-                            MemoryRegionType::Code => PAGE_PRESENT | PAGE_RW | PAGE_USER,
-                            MemoryRegionType::InitData => self
-                                .layout
-                                .init_data_permissions
-                                .map(|perm| perm.translate_flags())
-                                .unwrap_or(DEFAULT_GUEST_BLOB_MEM_FLAGS.translate_flags()),
-                            MemoryRegionType::Stack => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
-                            #[cfg(feature = "executable_heap")]
-                            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER,
-                            #[cfg(not(feature = "executable_heap"))]
-                            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
-                            // The guard page is marked RW and User so that if it gets written to we can detect it in the host
-                            // If/When we implement an interrupt handler for page faults in the guest then we can remove this access and handle things properly there
-                            MemoryRegionType::GuardPage => {
-                                PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX
-                            }
-                            MemoryRegionType::InputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                            MemoryRegionType::OutputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                            MemoryRegionType::Peb => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                            // Host Function Definitions are readonly in the guest
-                            MemoryRegionType::HostFunctionDefinitions => PAGE_PRESENT | PAGE_NX,
-                            MemoryRegionType::PageTables => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-                        },
-                        // If there is an error then the address isn't mapped so mark it as not present
-                        Err(_) => 0,
-                    };
-                    let val_to_write = ((p << 21) as u64 | (i << 12) as u64) | flags;
-                    // Write u64 directly to buffer - more efficient than converting to bytes
-                    pte_buffer[pte_index] = val_to_write.to_le();
-                    pte_index += 1;
-                }
-            }
-
-            // Write the entire PTE buffer to shared memory in a single operation
-            // Convert u64 buffer to bytes for writing to shared memory
-            let pte_bytes = unsafe {
-                std::slice::from_raw_parts(pte_buffer.as_ptr() as *const u8, pte_buffer.len() * 8)
-            };
-            shared_mem.copy_from_slice(pte_bytes, SandboxMemoryLayout::PT_OFFSET)?;
+            shared_mem.copy_from_slice(&buffer.into_bytes(), SandboxMemoryLayout::PML4_OFFSET)?;
             Ok::<(), crate::HyperlightError>(())
         })??;
 
         Ok(rsp)
-    }
-
-    /// Optimized page flags getter that maintains state for sequential access patterns
-    #[cfg(feature = "init-paging")]
-    fn get_page_flags(
-        p: usize,
-        i: usize,
-        regions: &[MemoryRegion],
-        cached_region_idx: &mut Option<usize>,
-    ) -> Result<MemoryRegionType> {
-        let addr = (p << 21) + (i << 12);
-
-        // First check if we're still in the cached region
-        if let Some(cached_idx) = *cached_region_idx
-            && cached_idx < regions.len()
-            && regions[cached_idx].guest_region.contains(&addr)
-        {
-            return Ok(regions[cached_idx].region_type);
-        }
-
-        // If not in cached region, try adjacent regions first (common for sequential access)
-        if let Some(cached_idx) = *cached_region_idx {
-            // Check next region
-            if cached_idx + 1 < regions.len()
-                && regions[cached_idx + 1].guest_region.contains(&addr)
-            {
-                *cached_region_idx = Some(cached_idx + 1);
-                return Ok(regions[cached_idx + 1].region_type);
-            }
-        }
-
-        // Fall back to binary search for non-sequential access
-        let idx = regions.binary_search_by(|region| {
-            if region.guest_region.contains(&addr) {
-                std::cmp::Ordering::Equal
-            } else if region.guest_region.start > addr {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Less
-            }
-        });
-
-        match idx {
-            Ok(index) => {
-                *cached_region_idx = Some(index);
-                Ok(regions[index].region_type)
-            }
-            Err(_) => Err(new_error!("Could not find region for address: {}", addr)),
-        }
     }
 
     /// Create a snapshot with the given mapped regions
@@ -561,16 +503,26 @@ impl SandboxMemoryManager<HostSharedMemory> {
 }
 
 #[cfg(test)]
-#[cfg(feature = "init-paging")]
+#[cfg(all(feature = "init-paging", target_arch = "x86_64"))]
 mod tests {
+    use hyperlight_common::vmem::arch::{PAGE_NX, PAGE_PRESENT, PAGE_RW};
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_string;
 
     use super::*;
     use crate::GuestBinary;
+    use crate::mem::memory_region::MemoryRegionType;
     use crate::mem::shared_mem::GuestSharedMemory;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::uninitialized::UninitializedSandbox;
+
+    pub(crate) const PML4_OFFSET: usize = 0x0000;
+    pub(super) const PDPT_OFFSET: usize = 0x1000;
+    pub(super) const PD_OFFSET: usize = 0x2000;
+    pub(super) const PT_OFFSET: usize = 0x3000;
+    pub(super) const PD_GUEST_ADDRESS: usize = SandboxMemoryLayout::BASE_ADDRESS + PD_OFFSET;
+    pub(super) const PDPT_GUEST_ADDRESS: usize = SandboxMemoryLayout::BASE_ADDRESS + PDPT_OFFSET;
+    pub(super) const PT_GUEST_ADDRESS: usize = SandboxMemoryLayout::BASE_ADDRESS + PT_OFFSET;
 
     /// Helper to create a sandbox with page tables set up and return the manager
     fn create_sandbox_with_page_tables(
@@ -579,8 +531,6 @@ mod tests {
         let path = simple_guest_as_string().expect("failed to get simple guest path");
         let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), config)
             .expect("failed to create sandbox");
-
-        let mem_size = sandbox.mgr.layout.get_memory_size()?;
 
         // Build the shared memory to get GuestSharedMemory
         let (_host_mem, guest_mem) = sandbox.mgr.shared_mem.build();
@@ -596,9 +546,8 @@ mod tests {
 
         // Get regions and set up page tables
         let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-        let mem_size_u64 = u64::try_from(mem_size)?;
         // set_up_shared_memory builds the page tables in shared memory
-        mgr.set_up_shared_memory(mem_size_u64, &mut regions)?;
+        mgr.set_up_shared_memory(&mut regions)?;
 
         Ok(mgr)
     }
@@ -617,7 +566,7 @@ mod tests {
             let p = addr >> 21;
             let i = (addr >> 12) & 0x1ff;
             let pte_idx = p * 512 + i;
-            let offset = SandboxMemoryLayout::PT_OFFSET + (pte_idx * 8);
+            let offset = PT_OFFSET + (pte_idx * 8);
 
             let pte_val = excl_mem.read_u64(offset)?;
             let expected_pte = (addr as u64) | expected_flags;
@@ -639,22 +588,35 @@ mod tests {
     }
 
     /// Get expected flags for a memory region type
+    /// we dont set User RW flag since (at present) we do not run code in user mode.
     fn get_expected_flags(region: &MemoryRegion) -> u64 {
         match region.region_type {
-            MemoryRegionType::Code => PAGE_PRESENT | PAGE_RW | PAGE_USER,
-            MemoryRegionType::Stack => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
+            MemoryRegionType::Code => PAGE_PRESENT | PAGE_RW,
+            MemoryRegionType::Stack => PAGE_PRESENT | PAGE_RW | PAGE_NX,
             #[cfg(feature = "executable_heap")]
-            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER,
+            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW,
             #[cfg(not(feature = "executable_heap"))]
-            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
-            MemoryRegionType::GuardPage => PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_NX,
+            MemoryRegionType::Heap => PAGE_PRESENT | PAGE_RW | PAGE_NX,
+            MemoryRegionType::GuardPage => PAGE_PRESENT | PAGE_RW | PAGE_NX,
             MemoryRegionType::InputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
             MemoryRegionType::OutputData => PAGE_PRESENT | PAGE_RW | PAGE_NX,
             MemoryRegionType::Peb => PAGE_PRESENT | PAGE_RW | PAGE_NX,
             MemoryRegionType::HostFunctionDefinitions => PAGE_PRESENT | PAGE_NX,
             MemoryRegionType::PageTables => PAGE_PRESENT | PAGE_RW | PAGE_NX,
-            MemoryRegionType::InitData => region.flags.translate_flags(),
+            MemoryRegionType::InitData => translate_flags(region.flags),
         }
+    }
+
+    fn translate_flags(flags: MemoryRegionFlags) -> u64 {
+        let mut page_flags = 0;
+
+        page_flags |= PAGE_PRESENT | PAGE_RW; // Mark page as present and writeable
+
+        if !flags.contains(MemoryRegionFlags::EXECUTE) {
+            page_flags |= PAGE_NX; // Mark as non-executable if EXECUTE is not set
+        }
+
+        page_flags
     }
 
     /// Verify the complete paging structure for a sandbox configuration
@@ -662,12 +624,18 @@ mod tests {
         let mut mgr = create_sandbox_with_page_tables(config)?;
 
         let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
+        let mem_size = mgr.layout.get_memory_size()?;
+
+        // Calculate how many PD entries should exist based on memory size
+        // Each PD entry covers 2MB (0x200000 bytes)
+        // we write enough PD entries to cover all memory, so we need
+        // enough entries to cover the actual memory size.
+        let num_pd_entries_needed = mem_size.div_ceil(0x200000);
 
         mgr.shared_mem.with_exclusivity(|excl_mem| {
             // Verify PML4 entry (single entry pointing to PDPT)
-            let pml4_val = excl_mem.read_u64(SandboxMemoryLayout::PML4_OFFSET)?;
-            let expected_pml4 =
-                SandboxMemoryLayout::PDPT_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW;
+            let pml4_val = excl_mem.read_u64(PML4_OFFSET)?;
+            let expected_pml4 = PDPT_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW;
             if pml4_val != expected_pml4 {
                 return Err(new_error!(
                     "{}: PML4[0] incorrect: expected 0x{:x}, got 0x{:x}",
@@ -678,9 +646,8 @@ mod tests {
             }
 
             // Verify PDPT entry (single entry pointing to PD)
-            let pdpt_val = excl_mem.read_u64(SandboxMemoryLayout::PDPT_OFFSET)?;
-            let expected_pdpt =
-                SandboxMemoryLayout::PD_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW;
+            let pdpt_val = excl_mem.read_u64(PDPT_OFFSET)?;
+            let expected_pdpt = PD_GUEST_ADDRESS as u64 | PAGE_PRESENT | PAGE_RW;
             if pdpt_val != expected_pdpt {
                 return Err(new_error!(
                     "{}: PDPT[0] incorrect: expected 0x{:x}, got 0x{:x}",
@@ -690,12 +657,11 @@ mod tests {
                 ));
             }
 
-            // Verify all 512 PD entries (each pointing to a PT)
-            for i in 0..512 {
-                let offset = SandboxMemoryLayout::PD_OFFSET + (i * 8);
+            // Verify PD entries that should be present (based on memory size)
+            for i in 0..num_pd_entries_needed {
+                let offset = PD_OFFSET + (i * 8);
                 let pd_val = excl_mem.read_u64(offset)?;
-                let expected_pt_addr =
-                    SandboxMemoryLayout::PT_GUEST_ADDRESS as u64 + (i as u64 * 4096);
+                let expected_pt_addr = PT_GUEST_ADDRESS as u64 + (i as u64 * 4096);
                 let expected_pd = expected_pt_addr | PAGE_PRESENT | PAGE_RW;
                 if pd_val != expected_pd {
                     return Err(new_error!(
@@ -703,6 +669,20 @@ mod tests {
                         name,
                         i,
                         expected_pd,
+                        pd_val
+                    ));
+                }
+            }
+
+            // Verify remaining PD entries are not present (0)
+            for i in num_pd_entries_needed..512 {
+                let offset = PD_OFFSET + (i * 8);
+                let pd_val = excl_mem.read_u64(offset)?;
+                if pd_val != 0 {
+                    return Err(new_error!(
+                        "{}: PD[{}] should be 0 (not present), got 0x{:x}",
+                        name,
+                        i,
                         pd_val
                     ));
                 }
