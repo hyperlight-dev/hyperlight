@@ -551,13 +551,12 @@ impl InterruptHandle for WindowsInterruptHandle {
             return false;
         }
 
-        unsafe {
-            match WHvCancelRunVirtualProcessor(guard.handle, 0, 0) {
-                Ok(_) => true,
-                Err(e) => {
-                    log::error!("Failed to cancel running virtual processor: {}", e);
-                    false
-                }
+        let result = unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0) };
+        match result {
+            Ok(_) => true,
+            Err(e) => {
+                log::error!("Failed to cancel running virtual processor: {}", e);
+                false
             }
         }
     }
