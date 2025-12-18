@@ -27,6 +27,9 @@ pub mod flatbuffer_wrappers;
 /// FlatBuffers-related utilities and (mostly) generated code
 #[allow(clippy::all, warnings)]
 mod flatbuffers;
+// cbindgen:ignore
+pub mod layout;
+
 /// cbindgen:ignore
 pub mod mem;
 

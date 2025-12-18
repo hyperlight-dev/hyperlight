@@ -197,17 +197,18 @@ pub(crate) fn handle_outb(
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
     use hyperlight_testing::logger::{LOGGER, Logger};
+    use hyperlight_testing::simple_guest_as_string;
     use log::Level;
     use tracing_core::callsite::rebuild_interest_cache;
 
     use super::outb_log;
+    use crate::GuestBinary;
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::mgr::SandboxMemoryManager;
     use crate::mem::shared_mem::SharedMemory;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::outb::GuestLogData;
     use crate::testing::log_values::test_value_as_str;
-    use crate::testing::simple_guest_exe_info;
 
     fn new_guest_log_data(level: LogLevel) -> GuestLogData {
         GuestLogData::new(
@@ -229,10 +230,9 @@ mod tests {
         let sandbox_cfg = SandboxConfiguration::default();
 
         let new_mgr = || {
-            let exe_info = simple_guest_exe_info().unwrap();
-            let (mut mgr, _) =
-                SandboxMemoryManager::load_guest_binary_into_memory(sandbox_cfg, exe_info, None)
-                    .unwrap();
+            let bin = GuestBinary::FilePath(simple_guest_as_string().unwrap());
+            let snapshot = crate::sandbox::snapshot::Snapshot::from_env(bin, sandbox_cfg).unwrap();
+            let mut mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
             let mem_size = mgr.get_shared_mem_mut().mem_size();
             let layout = mgr.layout;
             let shared_mem = mgr.get_shared_mem_mut();
@@ -341,13 +341,10 @@ mod tests {
         let sandbox_cfg = SandboxConfiguration::default();
         tracing::subscriber::with_default(subscriber.clone(), || {
             let new_mgr = || {
-                let exe_info = simple_guest_exe_info().unwrap();
-                let (mut mgr, _) = SandboxMemoryManager::load_guest_binary_into_memory(
-                    sandbox_cfg,
-                    exe_info,
-                    None,
-                )
-                .unwrap();
+                let bin = GuestBinary::FilePath(simple_guest_as_string().unwrap());
+                let snapshot =
+                    crate::sandbox::snapshot::Snapshot::from_env(bin, sandbox_cfg).unwrap();
+                let mut mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
                 let mem_size = mgr.get_shared_mem_mut().mem_size();
                 let layout = mgr.layout;
                 let shared_mem = mgr.get_shared_mem_mut();

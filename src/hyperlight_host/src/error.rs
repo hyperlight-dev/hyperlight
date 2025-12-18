@@ -32,7 +32,7 @@ use thiserror::Error;
 
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::MemoryRegionFlags;
 use crate::mem::ptr::RawPtr;
 
 /// The error type for Hyperlight operations
@@ -150,7 +150,7 @@ pub enum HyperlightError {
 
     /// Memory region size mismatch
     #[error("Memory region size mismatch: host size {0:?}, guest size {1:?} region {2:?}")]
-    MemoryRegionSizeMismatch(usize, usize, MemoryRegion),
+    MemoryRegionSizeMismatch(usize, usize, String),
 
     /// The memory request exceeds the maximum size allowed
     #[error("Memory requested {0} exceeds maximum size allowed {1}")]

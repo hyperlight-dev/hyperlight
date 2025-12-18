@@ -64,6 +64,15 @@ pub(crate) struct LoadInfo {
     pub(crate) info: Arc<dyn UnwindInfo>,
 }
 
+impl LoadInfo {
+    pub(crate) fn dummy() -> Self {
+        LoadInfo {
+            #[cfg(feature = "mem_profile")]
+            info: Arc::new(DummyUnwindInfo {}),
+        }
+    }
+}
+
 impl ExeInfo {
     pub fn from_file(path: &str) -> Result<Self> {
         let mut file = File::open(path)?;

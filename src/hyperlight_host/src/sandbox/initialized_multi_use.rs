@@ -20,7 +20,7 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::linux::fs::MetadataExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use flatbuffers::FlatBufferBuilder;
@@ -39,9 +39,9 @@ use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::InterruptHandle;
 use crate::hypervisor::hyperlight_vm::HyperlightVm;
+use crate::mem::memory_region::MemoryRegion;
 #[cfg(unix)]
-use crate::mem::memory_region::MemoryRegionType;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::mem::memory_region::{MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -49,9 +49,6 @@ use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
 use crate::{Result, log_then_return};
-
-/// Global counter for assigning unique IDs to sandboxes
-static SANDBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A fully initialized sandbox that can execute guest functions multiple times.
 ///
@@ -122,7 +119,7 @@ impl MultiUseSandbox {
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
-            id: SANDBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            id: super::snapshot::SANDBOX_CONFIGURATION_COUNTER.fetch_add(1, Ordering::Relaxed),
             poisoned: false,
             host_funcs,
             mem_mgr: mgr,
@@ -475,7 +472,8 @@ impl MultiUseSandbox {
     /// The caller must ensure the host memory region remains valid and unmodified
     /// for the lifetime of `self`.
     #[instrument(err(Debug), skip(self, rgn), parent = Span::current())]
-    pub unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
         if self.poisoned {
             return Err(crate::HyperlightError::PoisonedSandbox);
         }

@@ -25,7 +25,6 @@ use super::SandboxConfiguration;
 use super::uninitialized::SandboxRuntimeConfig;
 use crate::hypervisor::hyperlight_vm::HyperlightVm;
 use crate::mem::exe::LoadInfo;
-use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
@@ -36,7 +35,7 @@ use crate::sandbox::config::DebugInfo;
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
-use crate::{MultiUseSandbox, Result, UninitializedSandbox, log_then_return, new_error};
+use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
@@ -103,40 +102,29 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
+    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
     #[cfg(feature = "init-paging")]
     let rsp_ptr = {
-        let mut regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-        let rsp_u64 = mgr.set_up_shared_memory(&mut regions)?;
-        let rsp_raw = RawPtr::from(rsp_u64);
-        GuestPtr::try_from(rsp_raw)
-    }?;
+        let rsp_offset_u64 = mgr.layout.get_rsp_offset() as u64;
+        base_ptr + Offset::from(rsp_offset_u64)
+    };
+
     #[cfg(not(feature = "init-paging"))]
     let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
+
     let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
+
     let pml4_ptr = {
-        let pml4_offset_u64 = u64::try_from(SandboxMemoryLayout::PML4_OFFSET)?;
+        let pml4_offset_u64 = mgr.layout.get_pt_offset() as u64;
         base_ptr + Offset::from(pml4_offset_u64)
     };
-    let entrypoint_ptr = {
-        let entrypoint_total_offset = mgr.load_addr.clone() + mgr.entrypoint_offset;
-        GuestPtr::try_from(entrypoint_total_offset)
-    }?;
-
-    if base_ptr != pml4_ptr {
-        log_then_return!(
-            "Error: base_ptr ({:#?}) does not equal pml4_ptr ({:#?})",
-            base_ptr,
-            pml4_ptr
-        );
-    }
-    if entrypoint_ptr <= pml4_ptr {
-        log_then_return!(
-            "Error: entrypoint_ptr ({:#?}) is not greater than pml4_ptr ({:#?})",
-            entrypoint_ptr,
-            pml4_ptr
-        );
-    }
+    let entrypoint_ptr = mgr
+        .entrypoint_offset
+        .map(|x| {
+            let entrypoint_total_offset = mgr.load_addr.clone() + x;
+            GuestPtr::try_from(entrypoint_total_offset)
+        })
+        .ok_or(new_error!("Failed to create entrypoint pointer"))??;
 
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]

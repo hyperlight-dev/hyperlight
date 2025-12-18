@@ -12,5 +12,13 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
-pub(crate) mod log_values;
+ */
+
+// The constraint on the feature is temporary and will be removed when other arch i686 is added
+#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/layout.rs")]
+#[cfg(feature = "init-paging")]
+mod arch;
+
+// The constraint on the feature is temporary and will be removed when other arch i686 is added
+#[cfg(feature = "init-paging")]
+pub use arch::SNAPSHOT_PT_GVA;

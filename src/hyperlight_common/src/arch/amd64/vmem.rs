@@ -54,7 +54,7 @@ pub const PAGE_RW: u64 = 1 << 1;
 pub const PAGE_NX: u64 = 1 << 63;
 /// Mask to extract the physical address from a PTE (bits 51:12)
 /// This masks out the lower 12 flag bits AND the upper bits including NX (bit 63)
-pub(crate) const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+pub const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 const PAGE_USER_ACCESS_DISABLED: u64 = 0 << 2; // U/S bit not set - supervisor mode only (no code runs in user mode for now)
 const PAGE_DIRTY_CLEAR: u64 = 0 << 6; // D - dirty bit cleared (set by CPU when written)
 const PAGE_ACCESSED_CLEAR: u64 = 0 << 5; // A - accessed bit cleared (set by CPU when accessed)
