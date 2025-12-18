@@ -88,6 +88,8 @@ pub enum GuestBinary<'a> {
 impl<'a> GuestBinary<'a> {
     /// If the guest binary is identified by a file, canonicalise the path
     ///
+    /// For [`GuestBinary::FilePath`], this resolves the path to its canonical
+    /// form. For [`GuestBinary::Buffer`], this method is a no-op.
     /// TODO: Maybe we should make the GuestEnvironment or
     ///       GuestBinary constructors crate-private and turn this
     ///       into an invariant on one of those types.
@@ -161,7 +163,7 @@ impl UninitializedSandbox {
     // that can be changed (from the original snapshot) is the configuration defines the behaviour of
     // `InterruptHandler` on Linux.
     //
-    // This is ok for now as this is not a public
+    // This is ok for now as this is not a public function
     fn from_snapshot(
         snapshot: Arc<Snapshot>,
         cfg: Option<SandboxConfiguration>,

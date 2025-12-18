@@ -13,6 +13,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+#[cfg(feature = "init-paging")]
+use std::cmp::Ordering;
 
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
@@ -127,7 +129,7 @@ impl GuestPageTableBuffer {
     }
 
     pub(crate) fn size(&self) -> usize {
-        self.buffer.borrow().len() * PAGE_TABLE_SIZE
+        self.buffer.borrow().len()
     }
 
     pub(crate) fn into_bytes(self) -> Box<[u8]> {
@@ -308,6 +310,16 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// documentation at the bottom `set_stack_guard` for description
     /// of why it isn't.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    #[cfg(feature = "init-paging")]
+    pub(crate) fn check_stack_guard(&self) -> Result<bool> {
+        let expected = self.stack_cookie;
+        let offset = self.layout.get_top_of_user_stack_offset();
+        let actual: [u8; STACK_COOKIE_LEN] = self.shared_mem.read(offset)?;
+        let cmp_res = expected.iter().cmp(actual.iter());
+        Ok(cmp_res == Ordering::Equal)
+    }
+
+    #[cfg(not(feature = "init-paging"))]
     pub(crate) fn check_stack_guard(&self) -> Result<bool> {
         Ok(true)
     }
@@ -408,8 +420,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
         }
     }
 }
-
-// ...existing code...
 
 #[cfg(test)]
 #[cfg(all(feature = "init-paging", target_arch = "x86_64"))]

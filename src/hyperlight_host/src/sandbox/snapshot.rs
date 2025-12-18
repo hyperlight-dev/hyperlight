@@ -62,14 +62,19 @@ pub struct Snapshot {
     /// require constant-time equality checking
     hash: [u8; 32],
 
-    /// TODO: this should not necessarily be around in the long term...
+    /// Preinitialisation entry point for snapshots created directly from a
+    /// guest binary.
     ///
-    /// When creating a snapshot directly from a guest binary, this
-    /// tracks the address that we need to call into before actually
-    /// using a sandbox from this snapshot in order to do
-    /// preinitialisation. Ideally we would either not need to do this
-    /// at all, or do it as part of the snapshot creation process and
-    /// never need this.
+    /// When creating a snapshot directly from a guest binary, this tracks
+    /// the address that we need to call into before actually using a
+    /// sandbox from this snapshot in order to perform guest-side
+    /// preinitialisation.
+    ///
+    /// Long-term, the intention is to run this preinitialisation eagerly as
+    /// part of the snapshot creation process so that restored sandboxes can
+    /// begin executing from their normal entry point without requiring this
+    /// field. Until that refactoring happens, this remains part of the
+    /// snapshot format and must be preserved.
     preinitialise: Option<u64>,
 }
 
@@ -105,7 +110,8 @@ fn hash(memory: &[u8], regions: &[MemoryRegion]) -> Result<[u8; 32]> {
 }
 
 impl Snapshot {
-    /// Create a new snapshot that runs the guest binary identified by env
+    /// Create a new snapshot from the guest binary identified by `env`. With the configuration
+    /// specified in `cfg`.
     pub(crate) fn from_env<'a, 'b>(
         env: impl Into<GuestEnvironment<'a, 'b>>,
         cfg: SandboxConfiguration,

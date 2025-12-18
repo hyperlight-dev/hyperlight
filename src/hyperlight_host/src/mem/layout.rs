@@ -225,7 +225,10 @@ impl SandboxMemoryLayout {
     const MAX_MEMORY_SIZE: usize = 0x40000000 - Self::BASE_ADDRESS;
 
     /// The base address of the sandbox's memory.
+    #[cfg(feature = "init-paging")]
     pub(crate) const BASE_ADDRESS: usize = 0x1000;
+    #[cfg(not(feature = "init-paging"))]
+    pub(crate) const BASE_ADDRESS: usize = 0x0;
 
     // the offset into a sandbox's input/output buffer where the stack starts
     const STACK_POINTER_SIZE_BYTES: u64 = 8;
@@ -478,7 +481,7 @@ impl SandboxMemoryLayout {
         self.pt_offset
     }
 
-    /// Get the offset into the snapshot region of the page tables
+    /// Sets the size of the memory region used for page tables
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     #[cfg(feature = "init-paging")]
     pub(crate) fn set_pt_size(&mut self, size: usize) {
@@ -668,8 +671,8 @@ impl SandboxMemoryLayout {
             if after_init_offset != expected_pt_offset {
                 return Err(new_error!(
                     "Page table offset does not match expected:  {}, actual:  {}",
-                    expected_init_data_offset,
-                    init_data_offset
+                    expected_pt_offset,
+                    after_init_offset
                 ));
             }
 
