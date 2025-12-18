@@ -166,6 +166,7 @@ sequenceDiagram
     end
     
     deactivate IH
+    IH-->>Caller: sent_signal
     deactivate IH
 ```
 

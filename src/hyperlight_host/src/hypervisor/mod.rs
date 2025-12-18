@@ -209,18 +209,20 @@ pub trait InterruptHandle: Send + Sync + Debug {
     /// Interrupt the corresponding sandbox from running.
     ///
     /// This method sets a cancellation flag that prevents or stops the execution of guest code.
-    /// The effectiveness of this call depends on timing relative to the guest function call lifecycle:
     ///
-    /// - **Before guest call starts** (before `clear_cancel()` in `MultiUseSandbox::call()`):
-    ///   The cancellation request will be cleared and ignored.
-    /// - **After guest call starts but before entering guest code** (after `clear_cancel()`, before `run_vcpu()`):
-    ///   Will prevent the guest from executing.
-    /// - **While executing guest code**: Will interrupt the vCPU.
-    /// - **After guest call completes**: Has no effect (cancellation is cleared at the start of the next call).
+    /// # Return Value
+    ///
+    /// The return value indicates whether a signal was sent to interrupt a running vCPU:
+    /// - On Linux: Returns `true` if a signal was sent to the vCPU thread, `false` if the vCPU was not running.
+    /// - On Windows: Returns `true` if `WHvCancelRunVirtualProcessor` was called successfully, `false` otherwise.
+    ///
+    /// **Important**: A return value of `false` does not mean the cancellation failed. The cancellation flag is
+    /// always set, which will prevent or stop execution. A `false` return simply means no signal was sent because
+    /// the vCPU was not actively running at that moment.
     ///
     /// # Note
     /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
-    fn kill(&self);
+    fn kill(&self) -> bool;
 
     /// Used by a debugger to interrupt the corresponding sandbox from running.
     ///
@@ -381,13 +383,13 @@ impl InterruptHandleImpl for LinuxInterruptHandle {
 
 #[cfg(any(kvm, mshv3))]
 impl InterruptHandle for LinuxInterruptHandle {
-    fn kill(&self) {
+    fn kill(&self) -> bool {
         // Release ordering ensures that any writes before kill() are visible to the vcpu thread
         // when it checks is_cancelled() with Acquire ordering
         self.state.fetch_or(Self::CANCEL_BIT, Ordering::Release);
 
         // Send signals to interrupt the vcpu if it's currently running
-        self.send_signal();
+        self.send_signal()
     }
 
     #[cfg(gdb)]
@@ -520,7 +522,7 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
 
 #[cfg(target_os = "windows")]
 impl InterruptHandle for WindowsInterruptHandle {
-    fn kill(&self) {
+    fn kill(&self) -> bool {
         use windows::Win32::System::Hypervisor::WHvCancelRunVirtualProcessor;
 
         // Release ordering ensures that any writes before kill() are visible to the vcpu thread
@@ -531,7 +533,7 @@ impl InterruptHandle for WindowsInterruptHandle {
         // This ensures we see the running state set by the vcpu thread
         let state = self.state.load(Ordering::Acquire);
         if state & Self::RUNNING_BIT == 0 {
-            return;
+            return false;
         }
 
         // Take read lock to prevent race with WHvDeletePartition in set_dropped().
@@ -541,19 +543,23 @@ impl InterruptHandle for WindowsInterruptHandle {
             Ok(guard) => guard,
             Err(e) => {
                 log::error!("Failed to acquire partition_state read lock: {}", e);
-                return;
+                return false;
             }
         };
 
         if guard.dropped {
-            return;
+            return false;
         }
 
         unsafe {
-            if let Err(e) = WHvCancelRunVirtualProcessor(guard.handle, 0, 0) {
-                log::error!("Failed to cancel running virtual processor: {}", e);
+            match WHvCancelRunVirtualProcessor(guard.handle, 0, 0) {
+                Ok(_) => true,
+                Err(e) => {
+                    log::error!("Failed to cancel running virtual processor: {}", e);
+                    false
+                }
             }
-        };
+        }
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {

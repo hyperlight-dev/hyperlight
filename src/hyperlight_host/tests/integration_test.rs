@@ -87,7 +87,7 @@ fn interrupt_in_progress_guest_call() {
     // kill vm after 1 second
     let thread = thread::spawn(move || {
         thread::sleep(Duration::from_secs(1));
-        interrupt_handle.kill();
+        assert!(interrupt_handle.kill());
         barrier2.wait(); // wait here until main thread has returned from the interrupted guest call
         barrier2.wait(); // wait here until main thread has dropped the sandbox
         assert!(interrupt_handle.dropped());
@@ -122,7 +122,7 @@ fn interrupt_guest_call_in_advance() {
 
     // kill vm before the guest call has started
     let thread = thread::spawn(move || {
-        interrupt_handle.kill();
+        assert!(!interrupt_handle.kill()); // should return false since vcpu is not running yet
         barrier2.wait();
         barrier2.wait(); // wait here until main thread has dropped the sandbox
         assert!(interrupt_handle.dropped());
@@ -274,9 +274,10 @@ fn interrupt_moved_sandbox() {
     let thread2 = thread::spawn(move || {
         barrier.wait();
         thread::sleep(Duration::from_secs(1));
-        interrupt_handle.kill();
+        assert!(interrupt_handle.kill());
 
-        interrupt_handle2.kill();
+        // make sure this returns true, which means the sandbox wasn't killed incorrectly before
+        assert!(interrupt_handle2.kill());
     });
 
     let res = sbox2.call::<i32>("Spin", ()).unwrap_err();
