@@ -551,14 +551,7 @@ impl InterruptHandle for WindowsInterruptHandle {
             return false;
         }
 
-        let result = unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0) };
-        match result {
-            Ok(_) => true,
-            Err(e) => {
-                log::error!("Failed to cancel running virtual processor: {}", e);
-                false
-            }
-        }
+        unsafe { WHvCancelRunVirtualProcessor(guard.handle, 0, 0).is_ok() }
     }
     #[cfg(gdb)]
     fn kill_from_debugger(&self) -> bool {
