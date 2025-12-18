@@ -85,7 +85,7 @@ pub(crate) fn vcpu_stop_reason(
     }
 
     // Log an error and provide internal debugging info
-    log::error!(
+    tracing::error!(
         r"The vCPU exited because of an unknown reason:
         rip: {:?}
         dr6: {:?}

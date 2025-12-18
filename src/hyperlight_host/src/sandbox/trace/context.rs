@@ -130,7 +130,7 @@ impl TraceContext {
         if !hyperlight_guest_tracing::invariant_tsc::has_invariant_tsc() {
             // If the platform does not support invariant TSC, warn the user.
             // On Azure nested virtualization, the TSC invariant bit is not correctly reported, this is a known issue.
-            log::warn!(
+            tracing::warn!(
                 "Invariant TSC is not supported on this platform, trace timestamps may be inaccurate"
             );
         }
@@ -170,7 +170,7 @@ impl TraceContext {
                 // This is a fallback mechanism to ensure that we can still calculate, however it
                 // should be noted that this may lead to inaccuracies in the TSC frequency.
                 // The start time should be already set before running the guest for each sandbox.
-                log::error!(
+                tracing::error!(
                     "Guest start TSC and time are not set. Calculating TSC frequency will use current time and TSC."
                 );
                 (
@@ -186,7 +186,7 @@ impl TraceContext {
         let elapsed = end_time.duration_since(start_time).as_secs_f64();
         let tsc_freq = ((end - start) as f64 / elapsed) as u64;
 
-        log::info!("Calculated TSC frequency: {} Hz", tsc_freq);
+        tracing::info!("Calculated TSC frequency: {} Hz", tsc_freq);
         self.tsc_freq = Some(tsc_freq);
 
         Ok(())
@@ -400,7 +400,7 @@ impl Drop for TraceContext {
     fn drop(&mut self) {
         for (k, mut v) in self.guest_spans.drain() {
             v.end();
-            log::debug!("Dropped guest span with id {}", k);
+            tracing::debug!("Dropped guest span with id {}", k);
         }
         while let Some(entered) = self.host_spans.pop() {
             entered.exit();

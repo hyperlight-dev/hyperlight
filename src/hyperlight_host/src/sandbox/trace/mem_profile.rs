@@ -62,7 +62,7 @@ impl MemTraceInfo {
         path.push(uuid::Uuid::new_v4().to_string());
         path.set_extension("trace");
 
-        log::info!("Creating trace file at: {}", path.display());
+        tracing::info!("Creating trace file at: {}", path.display());
         println!("Creating trace file at: {}", path.display());
 
         let hash = unwind_module.hash();

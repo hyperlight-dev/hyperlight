@@ -54,7 +54,7 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
         loop {
             match target.try_recv() {
                 Ok(DebugResponse::VcpuStopped(stop_reason)) => {
-                    log::debug!("VcpuStopped with reason {:?}", stop_reason);
+                    tracing::debug!("VcpuStopped with reason {:?}", stop_reason);
 
                     // Resume execution if unknown reason for stop
                     let stop_response = match stop_reason {
@@ -73,7 +73,7 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                             signal: Signal(signals::SIGSEGV as u8),
                         },
                         VcpuStopReason::Unknown => {
-                            log::warn!("Unknown stop reason received");
+                            tracing::warn!("Unknown stop reason received");
 
                             // Marking as a SwBreak so the gdb inspect where/why it stopped
                             BaseStopReason::SwBreak(())
@@ -83,7 +83,7 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
                     return Ok(run_blocking::Event::TargetStopped(stop_response));
                 }
                 Ok(msg) => {
-                    log::error!("Unexpected message received {:?}", msg);
+                    tracing::error!("Unexpected message received {:?}", msg);
                 }
                 Err(crossbeam_channel::TryRecvError::Empty) => (),
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
@@ -112,13 +112,13 @@ impl run_blocking::BlockingEventLoop for GdbBlockingEventLoop {
     fn on_interrupt(
         target: &mut Self::Target,
     ) -> Result<Option<Self::StopReason>, <Self::Target as gdbstub::target::Target>::Error> {
-        log::info!("Received interrupt from GDB client - sending signal to target thread");
+        tracing::info!("Received interrupt from GDB client - sending signal to target thread");
 
         // Send a signal to the target thread to interrupt it
         let res = target.interrupt_vcpu();
 
         if !res {
-            log::error!("Failed to send signal to target thread");
+            tracing::error!("Failed to send signal to target thread");
             return Err(GdbTargetError::SendSignalError);
         }
 
@@ -133,21 +133,21 @@ pub(crate) fn event_loop_thread(
     match debugger.run_blocking::<GdbBlockingEventLoop>(target) {
         Ok(disconnect_reason) => match disconnect_reason {
             DisconnectReason::Disconnect => {
-                log::info!("Gdb client disconnected");
+                tracing::info!("Gdb client disconnected");
                 if let Err(e) = target.disable_debug() {
-                    log::error!("Cannot disable debugging: {:?}", e);
+                    tracing::error!("Cannot disable debugging: {:?}", e);
                 }
             }
             DisconnectReason::TargetExited(_) => {
-                log::info!("Guest finalized execution and disconnected");
+                tracing::info!("Guest finalized execution and disconnected");
             }
             DisconnectReason::TargetTerminated(sig) => {
-                log::info!("Gdb target terminated with signal {}", sig)
+                tracing::info!("Gdb target terminated with signal {}", sig)
             }
-            DisconnectReason::Kill => log::info!("Gdb sent a kill command"),
+            DisconnectReason::Kill => tracing::info!("Gdb sent a kill command"),
         },
         Err(e) => {
-            log::error!("fatal error encountered: {e:?}");
+            tracing::error!("fatal error encountered: {e:?}");
         }
     }
 }

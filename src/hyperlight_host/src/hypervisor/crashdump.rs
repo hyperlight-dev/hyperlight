@@ -285,10 +285,10 @@ pub(crate) fn generate_crashdump(hv: &HyperlightVm) -> Result<()> {
     if let Ok(nbytes) = checked_core_dump(ctx, create_dump_file) {
         if nbytes > 0 {
             println!("Core dump created successfully: {}", file_path);
-            log::error!("Core dump file: {}", file_path);
+            tracing::error!("Core dump file: {}", file_path);
         }
     } else {
-        log::error!("Failed to create core dump file");
+        tracing::error!("Failed to create core dump file");
     }
 
     Ok(())
@@ -321,7 +321,7 @@ fn core_dump_file_path(dump_dir: Option<String>) -> String {
         if std::path::Path::new(&dump_dir).exists() {
             std::path::PathBuf::from(dump_dir)
         } else {
-            log::warn!(
+            tracing::warn!(
                 "Directory \"{}\" does not exist, falling back to temp directory",
                 dump_dir
             );
@@ -356,7 +356,7 @@ fn checked_core_dump(
     // If the HV returned a context it means we can create a core dump
     // This is the case when the sandbox has been configured at runtime to allow core dumps
     if let Some(ctx) = ctx {
-        log::info!("Creating core dump file...");
+        tracing::info!("Creating core dump file...");
 
         // Set up data sources for the core dump
         let guest_view = GuestView::new(&ctx);

@@ -100,7 +100,7 @@ impl DebugMemoryAccess {
         let mem_offset = (gpa as usize)
             .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
             .ok_or_else(|| {
-                log::warn!(
+                tracing::warn!(
                     "gpa={:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
                     gpa,
                     gpa,
@@ -113,11 +113,11 @@ impl DebugMemoryAccess {
         let mut region_found = false;
         for reg in self.guest_mmap_regions.iter() {
             if reg.guest_region.contains(&mem_offset) {
-                log::debug!("Found mapped region containing {:X}: {:#?}", gpa, reg);
+                tracing::debug!("Found mapped region containing {:X}: {:#?}", gpa, reg);
 
                 // Region found - calculate the offset within the region
                 let region_offset = mem_offset.checked_sub(reg.guest_region.start).ok_or_else(|| {
-                    log::warn!(
+                    tracing::warn!(
                         "Cannot calculate offset in memory region: mem_offset={:#X}, base={:#X}",
                         mem_offset,
                         reg.guest_region.start,
@@ -136,7 +136,7 @@ impl DebugMemoryAccess {
         }
 
         if !region_found {
-            log::debug!(
+            tracing::debug!(
                 "No mapped region found containing {:X}. Trying shared memory ...",
                 gpa
             );
@@ -165,7 +165,7 @@ impl DebugMemoryAccess {
         let mem_offset = (gpa as usize)
             .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
             .ok_or_else(|| {
-                log::warn!(
+                tracing::warn!(
                     "gpa={:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
                     gpa,
                     gpa,
@@ -178,11 +178,11 @@ impl DebugMemoryAccess {
         let mut region_found = false;
         for reg in self.guest_mmap_regions.iter() {
             if reg.guest_region.contains(&mem_offset) {
-                log::debug!("Found mapped region containing {:X}: {:#?}", gpa, reg);
+                tracing::debug!("Found mapped region containing {:X}: {:#?}", gpa, reg);
 
                 // Region found - calculate the offset within the region
                 let region_offset = mem_offset.checked_sub(reg.guest_region.start).ok_or_else(|| {
-                    log::warn!(
+                    tracing::warn!(
                         "Cannot calculate offset in memory region: mem_offset={:#X}, base={:#X}",
                         mem_offset,
                         reg.guest_region.start,
@@ -204,7 +204,7 @@ impl DebugMemoryAccess {
         }
 
         if !region_found {
-            log::debug!(
+            tracing::debug!(
                 "No mapped region found containing {:X}. Trying shared memory at offset {:X} ...",
                 gpa,
                 mem_offset
@@ -344,14 +344,14 @@ pub(crate) fn create_gdb_thread(
     let (gdb_conn, hyp_conn) = DebugCommChannel::unbounded();
     let socket = format!("localhost:{}", port);
 
-    log::info!("Listening on {:?}", socket);
+    tracing::info!("Listening on {:?}", socket);
     let listener = TcpListener::bind(socket)?;
 
-    log::info!("Starting GDB thread");
+    tracing::info!("Starting GDB thread");
     let _handle = thread::Builder::new()
         .name("GDB handler".to_string())
         .spawn(move || -> Result<(), GdbTargetError> {
-            log::info!("Waiting for GDB connection ... ");
+            tracing::info!("Waiting for GDB connection ... ");
             let (conn, _) = listener.accept()?;
 
             let conn: Box<dyn ConnectionExt<Error = io::Error>> = Box::new(conn);
@@ -362,7 +362,7 @@ pub(crate) fn create_gdb_thread(
             // Waits for vCPU to stop at entrypoint breakpoint
             let msg = target.recv()?;
             if let DebugResponse::InterruptHandle(handle) = msg {
-                log::info!("Received interrupt handle: {:?}", handle);
+                tracing::info!("Received interrupt handle: {:?}", handle);
                 target.set_interrupt_handle(handle);
             } else {
                 return Err(GdbTargetError::UnexpectedMessage);

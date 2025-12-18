@@ -742,12 +742,12 @@ fn log_message() {
     };
 
     let tests = vec![
-        (LevelFilter::Trace, 5 + num_fixed_trace_log),
-        (LevelFilter::Debug, 4),
-        (LevelFilter::Info, 3),
-        (LevelFilter::Warn, 2),
-        (LevelFilter::Error, 1),
-        (LevelFilter::Off, 0),
+        (LevelFilter::TRACE, 5 + num_fixed_trace_log),
+        (LevelFilter::DEBUG, 4),
+        (LevelFilter::INFO, 3),
+        (LevelFilter::WARN, 2),
+        (LevelFilter::ERROR, 1),
+        (LevelFilter::OFF, 0),
     ];
 
     // init
@@ -785,10 +785,19 @@ fn log_message() {
     assert_eq!(1, LOGGER.num_log_calls());
 }
 
-fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
+fn log_test_messages(levelfilter: Option<LevelFilter>) {
     LOGGER.clear_log_calls();
     assert_eq!(0, LOGGER.num_log_calls());
-    for level in log::LevelFilter::iter() {
+    let all_level_filters: Vec<(LevelFilter, i32)> = vec![
+        (LevelFilter::OFF, 6),
+        (LevelFilter::ERROR, 4),
+        (LevelFilter::WARN, 3),
+        (LevelFilter::INFO, 2),
+        (LevelFilter::DEBUG, 1),
+        (LevelFilter::TRACE, 0),
+    ];
+
+    for (level, level_i32) in all_level_filters {
         let mut sbox = new_uninit().unwrap();
         if let Some(levelfilter) = levelfilter {
             sbox.set_max_guest_log_level(levelfilter);
@@ -796,9 +805,9 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
 
         let mut sbox1 = sbox.evolve().unwrap();
 
-        let message = format!("Hello from log_message level {}", level as i32);
+        let message = format!("Hello from log_message level {}", level_i32);
         sbox1
-            .call::<()>("LogMessage", (message.to_string(), level as i32))
+            .call::<()>("LogMessage", (message.to_string(), level_i32))
             .unwrap();
     }
 }
@@ -914,7 +923,7 @@ fn interrupt_random_kill_stress_test() {
     use std::sync::atomic::AtomicUsize;
 
     use hyperlight_host::sandbox::snapshot::Snapshot;
-    use log::{error, trace};
+    use tracing::{error, trace};
 
     const POOL_SIZE: usize = 100;
     const NUM_THREADS: usize = 100;

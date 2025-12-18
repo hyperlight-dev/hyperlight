@@ -512,7 +512,7 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
                 guard.dropped = true;
             }
             Err(e) => {
-                log::error!("Failed to acquire partition_state write lock: {}", e);
+                tracing::error!("Failed to acquire partition_state write lock: {}", e);
             }
         }
     }
@@ -540,7 +540,7 @@ impl InterruptHandle for WindowsInterruptHandle {
         let guard = match self.partition_state.read() {
             Ok(guard) => guard,
             Err(e) => {
-                log::error!("Failed to acquire partition_state read lock: {}", e);
+                tracing::error!("Failed to acquire partition_state read lock: {}", e);
                 return false;
             }
         };
@@ -568,7 +568,7 @@ impl InterruptHandle for WindowsInterruptHandle {
         let guard = match self.partition_state.read() {
             Ok(guard) => guard,
             Err(e) => {
-                log::error!("Failed to acquire partition_state read lock: {}", e);
+                tracing::error!("Failed to acquire partition_state read lock: {}", e);
                 return false;
             }
         };
@@ -585,7 +585,7 @@ impl InterruptHandle for WindowsInterruptHandle {
         match self.partition_state.read() {
             Ok(guard) => guard.dropped,
             Err(e) => {
-                log::error!("Failed to acquire partition_state read lock: {}", e);
+                tracing::error!("Failed to acquire partition_state read lock: {}", e);
                 true // Assume dropped if we can't acquire lock
             }
         }

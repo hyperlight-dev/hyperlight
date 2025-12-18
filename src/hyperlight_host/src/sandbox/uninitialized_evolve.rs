@@ -153,7 +153,7 @@ pub(crate) fn set_up_hypervisor_partition(
         match gdb_conn {
             Ok(gdb_conn) => Some(gdb_conn),
             Err(e) => {
-                log::error!("Could not create gdb connection: {:#}", e);
+                tracing::error!("Could not create gdb connection: {:#}", e);
 
                 None
             }
