@@ -336,6 +336,19 @@ fn call_malloc(size: i32) -> i32 {
     size
 }
 
+#[guest_function("FillHeapAndCauseException")]
+fn fill_heap_and_cause_exception() {
+    let layout: Layout = Layout::new::<u8>();
+    let mut ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    while !ptr.is_null() {
+        black_box(ptr);
+        ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    }
+
+    // trigger an undefined instruction exception
+    unsafe { core::arch::asm!("ud2") };
+}
+
 #[guest_function("ExhaustHeap")]
 fn exhaust_heap() {
     let layout: Layout = Layout::new::<u8>();
