@@ -206,22 +206,21 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
 
 /// A trait for handling interrupts to a sandbox's vcpu
 pub trait InterruptHandle: Send + Sync + Debug {
-    /// Interrupt the corresponding sandbox from running.
+    /// Cancel guest execution in the corresponding sandbox.
     ///
-    /// This method sets a cancellation flag that prevents or stops the execution of guest code.
+    /// If a guest call is in progress, it will be cancelled and the guest function call
+    /// will return an error. If called before a guest call is made, it has no effect on
+    /// future guest calls.
     ///
-    /// # Return Value
+    /// # Returns
+    /// - `true` if a guest call was in progress and the vcpu was actively running.
+    /// - `false` otherwise (no guest call in progress, or guest call in progress but vcpu
+    ///   not yet running). Any in-progress guest call will still be cancelled.
     ///
-    /// The return value indicates whether a signal was sent to interrupt a running vCPU:
-    /// - On Linux: Returns `true` if a signal was sent to the vCPU thread, `false` if the vCPU was not running.
-    /// - On Windows: Returns `true` if `WHvCancelRunVirtualProcessor` was called successfully, `false` otherwise.
-    ///
-    /// **Important**: A return value of `false` does not mean the cancellation failed. The cancellation flag is
-    /// always set, which will prevent or stop execution. A `false` return simply means no signal was sent because
-    /// the vCPU was not actively running at that moment.
-    ///
-    /// # Note
-    /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
+    /// # Platform behavior
+    /// - **Linux**: If the vcpu is running, this function will block for the duration of
+    ///   the time it takes for the vcpu thread to be interrupted.
+    /// - **Windows**: This function returns immediately after requesting cancellation.
     fn kill(&self) -> bool;
 
     /// Used by a debugger to interrupt the corresponding sandbox from running.
