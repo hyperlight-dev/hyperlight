@@ -31,7 +31,7 @@ log = { version = "0.4", default-features = false }
 linkme = { version = "0.3.35", optional = true }
 spin = "0.10.0"
 flatbuffers = { version = "25.2.10", default-features = false }
-tracing = { version = "0.1.43", default-features = false, features = ["attributes"] }
+tracing = { version = "0.1.44", default-features = false, features = ["attributes"] }
 
 [lints]
 workspace = true
