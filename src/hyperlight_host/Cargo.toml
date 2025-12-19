@@ -38,7 +38,7 @@ log = "0.4.29"
 opentelemetry = { version = "0.31.0", optional = true }
 tracing = { version = "0.1.43", features = ["log"] }
 tracing-log = "0.2.0"
-tracing-core = "0.1.35"
+tracing-core = "0.1.36"
 tracing-opentelemetry = { version = "0.32.0", optional = true }
 hyperlight-common = { workspace = true, default-features = true, features = [ "std", "init-paging" ] }
 hyperlight-guest-tracing = { workspace = true, default-features = true, optional = true }
