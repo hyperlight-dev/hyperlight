@@ -15,7 +15,7 @@ Provides only the essential building blocks for interacting with the host enviro
 anyhow = { version = "1.0.100", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 hyperlight-common = { workspace = true, default-features = false }
-flatbuffers = { version= "25.9.23", default-features = false }
+flatbuffers = { version= "25.12.19", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["attributes"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

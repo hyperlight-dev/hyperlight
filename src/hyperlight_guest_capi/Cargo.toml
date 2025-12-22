@@ -16,7 +16,7 @@ hyperlight-guest = { workspace = true, default-features = false }
 hyperlight-guest-bin = { workspace = true, default-features = true }
 hyperlight-common = { workspace = true, default-features = false }
 
-flatbuffers = { version = "25.2.10", default-features = false }
+flatbuffers = { version = "25.12.19", default-features = false }
 log = { version = "0.4", default-features = false }
 
 [build-dependencies]
