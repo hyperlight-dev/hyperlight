@@ -82,7 +82,7 @@ mshv-ioctls = { version = "0.6", optional = true}
 
 [dev-dependencies]
 uuid = { version = "1.19.0", features = ["v4"] }
-signal-hook-registry = "1.4.7"
+signal-hook-registry = "1.4.8"
 serde = "1.0"
 proptest = "1.9.0"
 tempfile = "3.24.0"
