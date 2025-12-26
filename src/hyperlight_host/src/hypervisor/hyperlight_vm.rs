@@ -1039,41 +1039,37 @@ mod debug {
         // Must be idempotent!
         fn add_sw_breakpoint(
             &mut self,
-            addr: u64,
+            gva: u64,
             mem_access: &DebugMemoryAccess,
         ) -> crate::Result<()> {
-            let addr = self.vm.translate_gva(addr)?;
-
             // Check if breakpoint already exists
-            if self.sw_breakpoints.contains_key(&addr) {
+            if self.sw_breakpoints.contains_key(&gva) {
                 return Ok(());
             }
 
             // Write breakpoint OP code to write to guest memory
             let mut save_data = [0; SW_BP_SIZE];
-            self.read_addrs(addr, &mut save_data[..], mem_access)?;
-            self.write_addrs(addr, &SW_BP, mem_access)?;
+            self.read_addrs(gva, &mut save_data[..], mem_access)?;
+            self.write_addrs(gva, &SW_BP, mem_access)?;
 
             // Save guest memory to restore when breakpoint is removed
-            self.sw_breakpoints.insert(addr, save_data[0]);
+            self.sw_breakpoints.insert(gva, save_data[0]);
 
             Ok(())
         }
 
         fn remove_sw_breakpoint(
             &mut self,
-            addr: u64,
+            gva: u64,
             mem_access: &DebugMemoryAccess,
         ) -> crate::Result<()> {
-            let addr = self.vm.translate_gva(addr)?;
-
-            if let Some(saved_data) = self.sw_breakpoints.remove(&addr) {
+            if let Some(saved_data) = self.sw_breakpoints.remove(&gva) {
                 // Restore saved data to the guest's memory
-                self.write_addrs(addr, &[saved_data], mem_access)?;
+                self.write_addrs(gva, &[saved_data], mem_access)?;
 
                 Ok(())
             } else {
-                Err(new_error!("The address: {:?} is not a sw breakpoint", addr))
+                Err(new_error!("The address: {:?} is not a sw breakpoint", gva))
             }
         }
     }
