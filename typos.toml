@@ -9,3 +9,5 @@ extend-exclude = ["**/*.patch", "src/hyperlight_guest_bin/third_party/**/*", "NO
 typ="typ"
 mmaped="mmapped"
 fpr="fpr"
+readables="readables"
+writables="writables"
