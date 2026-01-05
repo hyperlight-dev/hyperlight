@@ -6,8 +6,8 @@ on: workflow_dispatch
 jobs:
   # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
   copilot-setup-steps:
-    # run on AMD when the run_id is even, Intel when the run_id is odd
-    runs-on: ${{ (github.run_id % 2 == 0) && fromJSON('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-amd"]') || fromJSON('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-intel"]') }}
+    # run on AMD when the run_id ends in 0,2,4,6,8, Intel when it ends in 1,3,5,7,9 so as not to over use one pool too much
+    runs-on: ${{ (endsWith(github.run_id, '0') || endsWith(github.run_id, '2') || endsWith(github.run_id, '4') || endsWith(github.run_id, '6') || endsWith(github.run_id, '8')) && fromJSON('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-amd"]') || fromJSON('["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-intel"]') }}
 
     # Set the permissions to the lowest permissions possible needed for your steps.
     # Copilot will be given its own token for its operations.
