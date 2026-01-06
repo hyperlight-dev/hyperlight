@@ -9,7 +9,15 @@ permissions:
   contents: read
   
 jobs:
+  # Build guests first - fuzzing needs the release guest artifacts
+  build-guests:
+    uses: ./.github/workflows/dep_build_guests.yml
+    secrets: inherit
+    with:
+      config: release
+
   fuzzing:
+    needs: build-guests
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
       targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call", "fuzz_guest_estimate_trace_event", "fuzz_guest_trace"]' # Pass as a JSON array
@@ -18,8 +26,8 @@ jobs:
 
   notify-failure:
     runs-on: ubuntu-latest
-    needs: fuzzing
-    if: always() && needs.fuzzing.result == 'failure'
+    needs: [build-guests, fuzzing]
+    if: always() && (needs.build-guests.result == 'failure' || needs.fuzzing.result == 'failure')
     permissions:
       issues: write
     steps:
