@@ -17,7 +17,7 @@ name = "hyperlight_component_util"
 [dependencies]
 wasmparser = { version = "0.243.0" }
 quote = { version = "1.0.43" }
-proc-macro2 = { version = "1.0.104" }
+proc-macro2 = { version = "1.0.105" }
 syn = { version = "2.0.113" }
 itertools = { version = "0.14.0" }
 prettyplease = { version = "0.2.37" }
