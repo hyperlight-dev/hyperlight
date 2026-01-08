@@ -25,9 +25,8 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
-use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::flatbuffer_wrappers::util::{
-    decode, encode, encode_extend, estimate_flatbuffer_capacity,
+    encode, encode_extend, estimate_flatbuffer_capacity,
 };
 use hyperlight_common::outb::OutBAction;
 use tracing::instrument;

@@ -24,6 +24,7 @@ use crate::func::ReturnValue;
 /// Flatbuffer-encodes the given value
 pub fn get_flatbuffer_result<T: Into<ReturnValue>>(val: T) -> Vec<u8> {
     let result = FunctionCallResult::new(Ok(val.into()));
+    #[allow(clippy::unwrap_used)]
     encode(&result).unwrap()
 }
 
@@ -79,6 +80,7 @@ pub fn estimate_flatbuffer_capacity(function_name: &str, args: &[ParameterValue]
         crate::flatbuffer_wrappers::function_types::ReturnType::Void,
     );
 
+    #[allow(clippy::unwrap_used)]
     let estimated_capacity = encoded_size(&dummy).unwrap();
 
     /*
