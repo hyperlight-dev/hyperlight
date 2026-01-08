@@ -15,12 +15,13 @@ Hyperlight's components common to host and guest.
 workspace = true
 
 [dependencies]
-arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 anyhow = { version = "1.0.102", default-features = false }
+arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 bitflags = "2.10.0"
 bytemuck = { version = "1.24", features = ["derive"] }
-flatbuffers = { version = "25.12.19", default-features = false }
 log = "0.4.29"
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
+serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
 smallvec = "1.15.1"
 spin = "0.11.0"
 thiserror = { version = "2.0.18", default-features = false }
