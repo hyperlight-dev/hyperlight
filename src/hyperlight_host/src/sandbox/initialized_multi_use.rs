@@ -592,6 +592,7 @@ impl MultiUseSandbox {
             );
 
             let buffer = Vec::with_capacity(estimated_capacity);
+            #[allow(clippy::unwrap_used)]
             let buffer = encode_extend(&fc, buffer).unwrap();
 
             self.mem_mgr.write_guest_function_call(&buffer)?;

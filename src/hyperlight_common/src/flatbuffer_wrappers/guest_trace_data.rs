@@ -177,6 +177,7 @@ impl<T: Fn(&[u8])> EventsEncoder for EventsBatchEncoderGeneric<T> {
         // - If the estimate is too low, the FlatBuffer builder reallocates as needed.
         let estimated_size = estimate_event(event);
         let serialized = Vec::with_capacity(estimated_size);
+        #[allow(clippy::unwrap_used)]
         let serialized = encode_extend(event, serialized).unwrap();
 
         // Check if adding this event would exceed capacity
@@ -213,6 +214,7 @@ impl<T: Fn(&[u8])> EventsEncoder for EventsBatchEncoderGeneric<T> {
 }
 
 pub fn estimate_event(event: &GuestEvent) -> usize {
+    #[allow(clippy::unwrap_used)]
     encoded_size(event).unwrap()
 }
 
