@@ -16,12 +16,12 @@ limitations under the License.
 #[cfg(feature = "nanvix-unstable")]
 use std::mem::offset_of;
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
 };
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::flatbuffer_wrappers::util::encode;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
@@ -451,13 +451,16 @@ impl SandboxMemoryManager<HostSharedMemory> {
         &mut self,
         res: &FunctionCallResult,
     ) -> Result<()> {
-        let mut builder = FlatBufferBuilder::new();
-        let data = res.encode(&mut builder);
+        let data = encode(res).map_err(|_| {
+            new_error!(
+                "write_response_from_host_function_call: failed to convert FunctionCallResult to Vec<u8>"
+            )
+        })?;
 
         self.scratch_mem.push_buffer(
             self.layout.get_input_data_buffer_scratch_host_offset(),
             self.layout.input_data_size,
-            data,
+            &data,
         )
     }
 

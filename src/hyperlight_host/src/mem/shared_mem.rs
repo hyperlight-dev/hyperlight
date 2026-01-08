@@ -22,6 +22,7 @@ use std::mem::{align_of, size_of};
 use std::ptr::null_mut;
 use std::sync::{Arc, RwLock};
 
+use hyperlight_common::flatbuffer_wrappers::util::{Deserialize, decode};
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{Span, instrument};
 #[cfg(target_os = "windows")]
@@ -1130,17 +1131,11 @@ impl HostSharedMemory {
         Ok(())
     }
 
-    /// Pops the given given buffer into a `T` and returns it.
-    /// NOTE! the data must be a size-prefixed flatbuffer, and
-    /// buffer_start_offset must point to the beginning of the buffer
-    pub fn try_pop_buffer_into<T>(
+    fn try_pop_buffer_raw(
         &mut self,
         buffer_start_offset: usize,
         buffer_size: usize,
-    ) -> Result<T>
-    where
-        T: for<'b> TryFrom<&'b [u8]>,
-    {
+    ) -> Result<Vec<u8>> {
         // get the stackpointer
         let stack_pointer_rel = self.read::<u64>(buffer_start_offset)? as usize;
 
@@ -1180,17 +1175,15 @@ impl HostSharedMemory {
 
         // Get the size of the flatbuffer buffer from memory
         let fb_buffer_size = {
-            let raw_prefix = self.read::<u32>(last_element_offset_abs)?;
-            // flatbuffer byte arrays are prefixed by 4 bytes indicating
-            // the remaining size; add 4 for the prefix itself.
-            let total = raw_prefix.checked_add(4).ok_or_else(|| {
-                new_error!(
-                    "Corrupt buffer size prefix: value {} overflows when adding 4-byte header.",
-                    raw_prefix
-                )
-            })?;
-            usize::try_from(total)
-        }?;
+            stack_pointer_rel - last_element_offset_rel - 8
+            /*
+            let size_i32 = self.read::<u32>(last_element_offset_abs)? + 4;
+            // ^^^ flatbuffer byte arrays are prefixed by 4 bytes
+            // indicating its size, so, to get the actual size, we need
+            // to add 4.
+            usize::try_from(size_i32)
+            */
+        };
 
         if fb_buffer_size > max_element_size {
             return Err(new_error!(
@@ -1203,12 +1196,6 @@ impl HostSharedMemory {
         let mut result_buffer = vec![0; fb_buffer_size];
 
         self.copy_to_slice(&mut result_buffer, last_element_offset_abs)?;
-        let to_return = T::try_from(result_buffer.as_slice()).map_err(|_e| {
-            new_error!(
-                "pop_buffer_into: failed to convert buffer to {}",
-                type_name::<T>()
-            )
-        })?;
 
         // update the stack pointer to point to the element we just popped off since that is now free
         self.write::<u64>(buffer_start_offset, last_element_offset_rel as u64)?;
@@ -1217,6 +1204,27 @@ impl HostSharedMemory {
         let num_bytes_to_zero = stack_pointer_rel - last_element_offset_rel;
         self.fill(0, last_element_offset_abs, num_bytes_to_zero)?;
 
+        Ok(result_buffer)
+    }
+
+    /// Pops the given given buffer into a `T` and returns it.
+    /// NOTE! the data must be a size-prefixed flatbuffer, and
+    /// buffer_start_offset must point to the beginning of the buffer
+    pub fn try_pop_buffer_into<T>(
+        &mut self,
+        buffer_start_offset: usize,
+        buffer_size: usize,
+    ) -> Result<T>
+    where
+        T: for<'b> Deserialize<'b>,
+    {
+        let result_buffer = self.try_pop_buffer_raw(buffer_start_offset, buffer_size)?;
+        let to_return: T = decode(result_buffer.as_slice()).map_err(|_e| {
+            new_error!(
+                "pop_buffer_into: failed to convert buffer to {}",
+                type_name::<T>()
+            )
+        })?;
         Ok(to_return)
     }
 }
@@ -1730,16 +1738,6 @@ mod tests {
     mod try_pop_buffer_bounds {
         use super::*;
 
-        #[derive(Debug, PartialEq)]
-        struct RawBytes(Vec<u8>);
-
-        impl TryFrom<&[u8]> for RawBytes {
-            type Error = String;
-            fn try_from(value: &[u8]) -> std::result::Result<Self, Self::Error> {
-                Ok(RawBytes(value.to_vec()))
-            }
-        }
-
         /// Create a buffer with stack pointer initialized to 8 (empty).
         fn make_buffer(mem_size: usize) -> super::super::HostSharedMemory {
             let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
@@ -1760,8 +1758,8 @@ mod tests {
             data.extend_from_slice(payload);
 
             hshm.push_buffer(0, mem_size, &data).unwrap();
-            let result: RawBytes = hshm.try_pop_buffer_into(0, mem_size).unwrap();
-            assert_eq!(result.0, data);
+            let result = hshm.try_pop_buffer_raw(0, mem_size).unwrap();
+            assert_eq!(result, data);
         }
 
         #[test]
@@ -1778,7 +1776,7 @@ mod tests {
             // Corrupt size prefix at element start (offset 8) to near u32::MAX.
             hshm.write::<u32>(8, 0xFFFF_FFFBu32).unwrap(); // +4 = 0xFFFF_FFFF
 
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
+            let result = hshm.try_pop_buffer_raw(0, mem_size);
             let err_msg = format!("{}", result.unwrap_err());
             assert!(
                 err_msg.contains("Corrupt buffer size prefix: flatbuffer claims 4294967295 bytes but the element slot is only 9 bytes"),
@@ -1801,7 +1799,7 @@ mod tests {
             // Corrupt back-pointer (offset 16) to 0 (before valid range).
             hshm.write::<u64>(16, 0u64).unwrap();
 
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
+            let result = hshm.try_pop_buffer_raw(0, mem_size);
             let err_msg = format!("{}", result.unwrap_err());
             assert!(
                 err_msg.contains(
@@ -1826,7 +1824,7 @@ mod tests {
             // Corrupt back-pointer (offset 16) to 9999 (past stack pointer 24).
             hshm.write::<u64>(16, 9999u64).unwrap();
 
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
+            let result = hshm.try_pop_buffer_raw(0, mem_size);
             let err_msg = format!("{}", result.unwrap_err());
             assert!(
                 err_msg.contains(
@@ -1851,7 +1849,7 @@ mod tests {
             // Corrupt size prefix: claim 5 bytes (total 9), exceeding the 8-byte slot.
             hshm.write::<u32>(8, 5u32).unwrap(); // fb_buffer_size = 5 + 4 = 9
 
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
+            let result = hshm.try_pop_buffer_raw(0, mem_size);
             let err_msg = format!("{}", result.unwrap_err());
             assert!(
                 err_msg.contains("Corrupt buffer size prefix: flatbuffer claims 9 bytes but the element slot is only 8 bytes"),
@@ -1876,7 +1874,7 @@ mod tests {
             // stack_pointer_rel = 24. Set back-pointer to 23 (> 24 - 16 = 8, so rejected).
             hshm.write::<u64>(16, 23u64).unwrap();
 
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
+            let result = hshm.try_pop_buffer_raw(0, mem_size);
             let err_msg = format!("{}", result.unwrap_err());
             assert!(
                 err_msg.contains(
@@ -1902,7 +1900,7 @@ mod tests {
             // Write 0xFFFF_FFFD as size prefix: checked_add(4) returns None.
             hshm.write::<u32>(8, 0xFFFF_FFFDu32).unwrap();
 
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
+            let result = hshm.try_pop_buffer_raw(0, mem_size);
             let err_msg = format!("{}", result.unwrap_err());
             assert!(
                 err_msg.contains("Corrupt buffer size prefix: value 4294967293 overflows when adding 4-byte header"),
