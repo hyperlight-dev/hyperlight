@@ -23,10 +23,7 @@ limitations under the License.
 extern crate alloc;
 
 pub mod flatbuffer_wrappers;
-/// cbindgen:ignore
-/// FlatBuffers-related utilities and (mostly) generated code
-#[allow(clippy::all, warnings)]
-mod flatbuffers;
+
 // cbindgen:ignore
 pub mod layout;
 
