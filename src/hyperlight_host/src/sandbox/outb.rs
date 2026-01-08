@@ -196,6 +196,7 @@ pub(crate) fn handle_outb(
 #[cfg(test)]
 mod tests {
     use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
+    use hyperlight_common::flatbuffer_wrappers::util::encode;
     use hyperlight_testing::logger::{LOGGER, Logger};
     use hyperlight_testing::simple_guest_as_string;
     use log::Level;
@@ -254,7 +255,7 @@ mod tests {
             let mut mgr = new_mgr();
             let log_msg = new_guest_log_data(LogLevel::Information);
 
-            let guest_log_data_buffer: Vec<u8> = log_msg.try_into().unwrap();
+            let guest_log_data_buffer: Vec<u8> = encode(&log_msg).unwrap();
             let offset = mgr.layout.get_output_data_offset();
             mgr.get_shared_mem_mut()
                 .push_buffer(
@@ -292,7 +293,7 @@ mod tests {
                 let layout = mgr.layout;
                 let log_data = new_guest_log_data(level);
 
-                let guest_log_data_buffer: Vec<u8> = log_data.clone().try_into().unwrap();
+                let guest_log_data_buffer: Vec<u8> = encode(&log_data).unwrap();
                 mgr.get_shared_mem_mut()
                     .push_buffer(
                         layout.get_output_data_offset(),
@@ -374,7 +375,7 @@ mod tests {
                 let log_data: GuestLogData = new_guest_log_data(level);
                 subscriber.clear();
 
-                let guest_log_data_buffer: Vec<u8> = log_data.try_into().unwrap();
+                let guest_log_data_buffer: Vec<u8> = encode(&log_data).unwrap();
                 mgr.get_shared_mem_mut()
                     .push_buffer(
                         layout.get_output_data_offset(),
