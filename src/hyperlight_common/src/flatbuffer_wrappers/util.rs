@@ -16,220 +16,43 @@ limitations under the License.
 
 use alloc::vec::Vec;
 
-use flatbuffers::FlatBufferBuilder;
+pub use serde::{Deserialize, Serialize};
 
-use crate::flatbuffer_wrappers::function_types::ParameterValue;
-use crate::flatbuffers::hyperlight::generated::{
-    FunctionCallResult as FbFunctionCallResult, FunctionCallResultArgs as FbFunctionCallResultArgs,
-    FunctionCallResultType as FbFunctionCallResultType, ReturnValue as FbReturnValue,
-    ReturnValueBox, ReturnValueBoxArgs, hlbool as Fbhlbool, hlboolArgs as FbhlboolArgs,
-    hldouble as Fbhldouble, hldoubleArgs as FbhldoubleArgs, hlfloat as Fbhlfloat,
-    hlfloatArgs as FbhlfloatArgs, hlint as Fbhlint, hlintArgs as FbhlintArgs, hllong as Fbhllong,
-    hllongArgs as FbhllongArgs, hlsizeprefixedbuffer as Fbhlsizeprefixedbuffer,
-    hlsizeprefixedbufferArgs as FbhlsizeprefixedbufferArgs, hlstring as Fbhlstring,
-    hlstringArgs as FbhlstringArgs, hluint as Fbhluint, hluintArgs as FbhluintArgs,
-    hlulong as Fbhlulong, hlulongArgs as FbhlulongArgs, hlvoid as Fbhlvoid,
-    hlvoidArgs as FbhlvoidArgs,
-};
+use crate::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterValue};
+use crate::func::ReturnValue;
 
 /// Flatbuffer-encodes the given value
-pub fn get_flatbuffer_result<T: FlatbufferSerializable>(val: T) -> Vec<u8> {
-    let mut builder = FlatBufferBuilder::new();
-    let res = T::serialize(&val, &mut builder);
-    let result_offset = FbFunctionCallResult::create(&mut builder, &res);
-
-    builder.finish_size_prefixed(result_offset, None);
-
-    builder.finished_data().to_vec()
+pub fn get_flatbuffer_result<T: Into<ReturnValue>>(val: T) -> Vec<u8> {
+    let result = FunctionCallResult::new(Ok(val.into()));
+    encode(&result).unwrap()
 }
 
-pub trait FlatbufferSerializable {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs;
+pub fn encode(value: &impl Serialize) -> anyhow::Result<Vec<u8>> {
+    Ok(postcard::to_allocvec(value)?)
 }
 
-// Implementations for basic types below
-
-impl FlatbufferSerializable for () {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let void_off = Fbhlvoid::create(builder, &FbhlvoidArgs {});
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hlvoid,
-                value: Some(void_off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
+pub fn decode<'de, T: Deserialize<'de>>(buf: &'de [u8]) -> anyhow::Result<T> {
+    Ok(postcard::from_bytes(buf)?)
 }
 
-impl FlatbufferSerializable for &str {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let string_offset = builder.create_string(self);
-        let str_off = Fbhlstring::create(
-            builder,
-            &FbhlstringArgs {
-                value: Some(string_offset),
-            },
-        );
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hlstring,
-                value: Some(str_off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
+pub fn decode_rest<'de, T: Deserialize<'de>>(buf: &'de [u8]) -> anyhow::Result<(T, &'de [u8])> {
+    Ok(postcard::take_from_bytes(buf)?)
 }
 
-impl FlatbufferSerializable for &[u8] {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let vec_off = builder.create_vector(self);
-        let buf_off = Fbhlsizeprefixedbuffer::create(
-            builder,
-            &FbhlsizeprefixedbufferArgs {
-                size: self.len() as i32,
-                value: Some(vec_off),
-            },
-        );
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hlsizeprefixedbuffer,
-                value: Some(buf_off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
+pub fn encoded_size(value: &impl Serialize) -> anyhow::Result<usize> {
+    let storage = postcard::ser_flavors::Size::default();
+    Ok(postcard::serialize_with_flavor(value, storage)?)
 }
 
-impl FlatbufferSerializable for f32 {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let off = Fbhlfloat::create(builder, &FbhlfloatArgs { value: *self });
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hlfloat,
-                value: Some(off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
+pub fn encode_in<'a>(value: &impl Serialize, slice: &'a mut [u8]) -> anyhow::Result<&'a mut [u8]> {
+    Ok(postcard::to_slice(value, slice)?)
 }
 
-impl FlatbufferSerializable for f64 {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let off = Fbhldouble::create(builder, &FbhldoubleArgs { value: *self });
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hldouble,
-                value: Some(off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
-}
-
-impl FlatbufferSerializable for i32 {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let off = Fbhlint::create(builder, &FbhlintArgs { value: *self });
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hlint,
-                value: Some(off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
-}
-
-impl FlatbufferSerializable for i64 {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let off = Fbhllong::create(builder, &FbhllongArgs { value: *self });
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hllong,
-                value: Some(off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
-}
-
-impl FlatbufferSerializable for u32 {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let off = Fbhluint::create(builder, &FbhluintArgs { value: *self });
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hluint,
-                value: Some(off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
-}
-
-impl FlatbufferSerializable for u64 {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let off = Fbhlulong::create(builder, &FbhlulongArgs { value: *self });
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hlulong,
-                value: Some(off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
-}
-
-impl FlatbufferSerializable for bool {
-    fn serialize(&self, builder: &mut FlatBufferBuilder) -> FbFunctionCallResultArgs {
-        let off = Fbhlbool::create(builder, &FbhlboolArgs { value: *self });
-        let rv_box = ReturnValueBox::create(
-            builder,
-            &ReturnValueBoxArgs {
-                value_type: FbReturnValue::hlbool,
-                value: Some(off.as_union_value()),
-            },
-        );
-        FbFunctionCallResultArgs {
-            result_type: FbFunctionCallResultType::ReturnValueBox,
-            result: Some(rv_box.as_union_value()),
-        }
-    }
+pub fn encode_extend<W: core::iter::Extend<u8>>(
+    value: &impl Serialize,
+    writer: W,
+) -> anyhow::Result<W> {
+    Ok(postcard::to_extend(value, writer)?)
 }
 
 /// Estimates the required buffer capacity for encoding a FunctionCall with the given parameters.
@@ -246,27 +69,52 @@ impl FlatbufferSerializable for bool {
 /// on https://flatbuffers.dev/internals/ and https://github.com/dvidelabs/flatcc/blob/f064cefb2034d1e7407407ce32a6085c322212a7/doc/binary-format.md#flatbuffers-binary-format
 #[inline] // allow cross-crate inlining (for hyperlight-host calls)
 pub fn estimate_flatbuffer_capacity(function_name: &str, args: &[ParameterValue]) -> usize {
-    let mut estimated_capacity = 20;
+    // A tuple with the same data as a FunctionCall to estimate size
+    // we use this tuple instead of FunctionCall directly to avoid having to clone
+    // function_name and args into a FunctionCall struct
+    let dummy = (
+        function_name,
+        Some(args),
+        crate::flatbuffer_wrappers::function_call::FunctionCallType::Guest,
+        crate::flatbuffer_wrappers::function_types::ReturnType::Void,
+    );
 
-    // Function name overhead
-    estimated_capacity += function_name.len() + 12;
+    let estimated_capacity = encoded_size(&dummy).unwrap();
 
-    // Parameters vector overhead
-    estimated_capacity += 12 + args.len() * 6;
+    /*
+    #[cfg(test)]
+    {
+        let mut old_estimated_capacity = 20;
 
-    // Per-parameter overhead
-    for arg in args {
-        estimated_capacity += 16; // Base parameter structure
-        estimated_capacity += match arg {
-            ParameterValue::String(s) => s.len() + 20,
-            ParameterValue::VecBytes(v) => v.len() + 20,
-            ParameterValue::Int(_) | ParameterValue::UInt(_) => 16,
-            ParameterValue::Long(_) | ParameterValue::ULong(_) => 20,
-            ParameterValue::Float(_) => 16,
-            ParameterValue::Double(_) => 20,
-            ParameterValue::Bool(_) => 12,
-        };
+        // Function name overhead
+        old_estimated_capacity += function_name.len() + 12;
+
+        // Parameters vector overhead
+        old_estimated_capacity += 12 + args.len() * 6;
+
+        // Per-parameter overhead
+        for arg in args {
+            old_estimated_capacity += 16; // Base parameter structure
+            old_estimated_capacity += match arg {
+                ParameterValue::String(s) => s.len() + 20,
+                ParameterValue::VecBytes(v) => v.len() + 20,
+                ParameterValue::Int(_) | ParameterValue::UInt(_) => 16,
+                ParameterValue::Long(_) | ParameterValue::ULong(_) => 20,
+                ParameterValue::Float(_) => 16,
+                ParameterValue::Double(_) => 20,
+                ParameterValue::Bool(_) => 12,
+            };
+        }
+
+        use std::io::Write;
+        let _ = write!(
+            std::io::stdout(),
+            "Estimated capacity: {}, Old estimated capacity: {}\n",
+            estimated_capacity,
+            old_estimated_capacity
+        );
     }
+    */
 
     // match how vec grows
     estimated_capacity.next_power_of_two()
@@ -297,10 +145,9 @@ mod tests {
             call_type.clone(),
             return_type,
         );
-        // Important that this FlatBufferBuilder is created with capacity 0 so it grows to its needed capacity
-        let mut builder = FlatBufferBuilder::new();
-        let _buffer = fc.encode(&mut builder);
-        let actual = builder.collapse().0.capacity();
+
+        let encoded = encode(&fc).unwrap();
+        let actual = encoded.capacity();
 
         let lower_bound = (actual as f64 * 0.75) as usize;
         let upper_bound = (actual as f64 * 1.25) as usize;
