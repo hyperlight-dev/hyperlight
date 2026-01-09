@@ -554,7 +554,8 @@ pub(crate) mod tests {
             guest_max_log_level,
             #[cfg(gdb)]
             dbg_mem_access_fn,
-        )?;
+        )
+        .unwrap();
 
         Ok(())
     }

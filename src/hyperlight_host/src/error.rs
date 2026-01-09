@@ -30,6 +30,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, Ret
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use thiserror::Error;
 
+use crate::hypervisor::hyperlight_vm::HyperlightVmError;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::MemoryRegionFlags;
@@ -111,6 +112,10 @@ pub enum HyperlightError {
     #[error("HostFunction {0} was not found")]
     HostFunctionNotFound(String),
 
+    /// Hyperlight VM error
+    #[error("Hyperlight VM error: {0}")]
+    HyperlightVmError(#[from] HyperlightVmError),
+
     /// Reading Writing or Seeking data failed.
     #[error("Reading Writing or Seeking data failed {0:?}")]
     IOError(#[from] std::io::Error),
@@ -126,11 +131,6 @@ pub enum HyperlightError {
     /// Conversion of str to Json failed
     #[error("Conversion of str data to json failed")]
     JsonConversionFailure(#[from] serde_json::Error),
-
-    /// KVM Error Occurred
-    #[error("KVM Error {0:?}")]
-    #[cfg(kvm)]
-    KVMError(#[from] kvm_ioctls::Error),
 
     /// An attempt to get a lock from a Mutex failed.
     #[error("Unable to lock resource")]
@@ -167,11 +167,6 @@ pub enum HyperlightError {
     /// mprotect Failed.
     #[error("mprotect failed with os error {0:?}")]
     MprotectFailed(Option<i32>),
-
-    /// mshv Error Occurred
-    #[error("mshv Error {0:?}")]
-    #[cfg(mshv3)]
-    MSHVError(#[from] mshv_ioctls::MshvError),
 
     /// No Hypervisor was found for Sandbox.
     #[error("No Hypervisor was found for Sandbox")]
@@ -241,11 +236,6 @@ pub enum HyperlightError {
     /// SystemTimeError
     #[error("SystemTimeError {0:?}")]
     SystemTimeError(#[from] SystemTimeError),
-
-    /// Error occurred when translating guest address
-    #[error("An error occurred when translating guest address: {0:?}")]
-    #[cfg(gdb)]
-    TranslateGuestAddress(u64),
 
     /// Error occurred converting a slice to an array
     #[error("TryFromSliceError {0:?}")]
@@ -334,6 +324,11 @@ impl HyperlightError {
             | HyperlightError::SnapshotSizeMismatch(_, _)
             | HyperlightError::MemoryRegionSizeMismatch(_, _, _) => true,
 
+            // HyperlightVmError::DispatchGuestCall may poison the sandbox
+            HyperlightError::HyperlightVmError(HyperlightVmError::DispatchGuestCall(e)) => {
+                e.is_poison_error()
+            }
+
             // All other errors do not poison the sandbox.
             HyperlightError::AnyhowError(_)
             | HyperlightError::BoundsCheckFailed(_, _)
@@ -348,6 +343,10 @@ impl HyperlightError {
             | HyperlightError::GuestInterfaceUnsupportedType(_)
             | HyperlightError::GuestOffsetIsInvalid(_)
             | HyperlightError::HostFunctionNotFound(_)
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Create(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Initialize(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::MapRegion(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::UnmapRegion(_))
             | HyperlightError::IOError(_)
             | HyperlightError::IntConversionFailure(_)
             | HyperlightError::InvalidFlatBuffer(_)
@@ -384,12 +383,6 @@ impl HyperlightError {
             HyperlightError::WindowsAPIError(_) => false,
             #[cfg(target_os = "linux")]
             HyperlightError::VmmSysError(_) => false,
-            #[cfg(kvm)]
-            HyperlightError::KVMError(_) => false,
-            #[cfg(mshv3)]
-            HyperlightError::MSHVError(_) => false,
-            #[cfg(gdb)]
-            HyperlightError::TranslateGuestAddress(_) => false,
         }
     }
 }
