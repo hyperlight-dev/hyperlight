@@ -1480,6 +1480,7 @@ dependencies = [
  "criterion",
  "crossbeam-channel",
  "crossbeam-queue",
+ "displaydoc",
  "elfcore",
  "env_logger",
  "fallible-iterator",
