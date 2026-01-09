@@ -7,7 +7,7 @@ edition = "2021"
 [dependencies]
 addr2line = "0.25.1"
 piet-common = { version = "0.8.0", features = [ "png" ] }
-blake3 = { version = "1.5.5" }
+blake3 = { version = "1.8.3" }
 
 [[bin]]
 name = "trace_dump"

@@ -30,7 +30,7 @@ libc = { version = "0.2.179" }
 flatbuffers = "25.12.19"
 framehop = { version = "0.15.0", optional = true }
 fallible-iterator = { version = "0.3.0", optional = true }
-blake3 = "1.8.2"
+blake3 = "1.8.3"
 page_size = "0.6.0"
 termcolor = "1.2.0"
 bitflags = "2.10.0"
