@@ -23,13 +23,12 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
+use hyperlight_common::flatbuffer_wrappers::util::{encode_extend, estimate_flatbuffer_capacity};
 use tracing::{Span, instrument};
 
 use super::Callable;
@@ -592,10 +591,11 @@ impl MultiUseSandbox {
                 return_type,
             );
 
-            let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-            let buffer = fc.encode(&mut builder);
+            let buffer = Vec::with_capacity(estimated_capacity);
+            #[allow(clippy::unwrap_used)]
+            let buffer = encode_extend(&fc, buffer).unwrap();
 
-            self.mem_mgr.write_guest_function_call(buffer)?;
+            self.mem_mgr.write_guest_function_call(&buffer)?;
 
             self.vm.dispatch_call_from_host(
                 self.dispatch_ptr.clone(),

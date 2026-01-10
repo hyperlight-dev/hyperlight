@@ -22,6 +22,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 };
 use hyperlight_common::flatbuffer_wrappers::host_function_definition::HostFunctionDefinition;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use hyperlight_common::flatbuffer_wrappers::util::encode;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use tracing::{Span, instrument};
 
@@ -74,7 +75,7 @@ impl FunctionRegistry {
 
         let hfd = HostFunctionDetails::from(self);
 
-        let buffer: Vec<u8> = (&hfd).try_into().map_err(|e| {
+        let buffer: Vec<u8> = encode(&hfd).map_err(|e| {
             new_error!(
                 "Error serializing host function details to flatbuffer: {}",
                 e

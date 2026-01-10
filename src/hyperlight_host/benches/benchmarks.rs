@@ -24,10 +24,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
-use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
+use hyperlight_common::flatbuffer_wrappers::util::{
+    decode, encode, encode_extend, estimate_flatbuffer_capacity,
+};
 use hyperlight_host::GuestBinary;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
@@ -436,18 +437,17 @@ fn function_call_serialization_benchmark(c: &mut Criterion) {
                 function_call.function_name.as_str(),
                 function_call.parameters.as_deref().unwrap_or(&[]),
             );
-            let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-            let serialized: &[u8] = function_call.encode(&mut builder);
+            let serialized = Vec::with_capacity(estimated_capacity);
+            let serialized = encode_extend(&function_call, serialized).unwrap();
             std::hint::black_box(serialized);
         });
     });
 
     group.bench_function("deserialize_function_call", |b| {
-        let mut builder = FlatBufferBuilder::new();
-        let bytes = function_call.clone().encode(&mut builder);
+        let bytes = encode(&function_call).unwrap();
 
         b.iter(|| {
-            let deserialized: FunctionCall = bytes.try_into().unwrap();
+            let deserialized: FunctionCall = decode(&bytes).unwrap();
             std::hint::black_box(deserialized);
         });
     });

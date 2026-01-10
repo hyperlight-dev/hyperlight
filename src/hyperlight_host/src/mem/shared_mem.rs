@@ -21,6 +21,7 @@ use std::io::Error;
 use std::ptr::null_mut;
 use std::sync::{Arc, RwLock};
 
+use hyperlight_common::flatbuffer_wrappers::util::{Deserialize, decode};
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use tracing::{Span, instrument};
 #[cfg(target_os = "windows")]
@@ -887,7 +888,7 @@ impl HostSharedMemory {
         buffer_size: usize,
     ) -> Result<T>
     where
-        T: for<'b> TryFrom<&'b [u8]>,
+        T: for<'b> Deserialize<'b>,
     {
         // get the stackpointer
         let stack_pointer_rel = self.read::<u64>(buffer_start_offset)? as usize;
@@ -912,17 +913,20 @@ impl HostSharedMemory {
 
         // Get the size of the flatbuffer buffer from memory
         let fb_buffer_size = {
+            stack_pointer_rel - last_element_offset_rel - 8
+            /*
             let size_i32 = self.read::<u32>(last_element_offset_abs)? + 4;
             // ^^^ flatbuffer byte arrays are prefixed by 4 bytes
             // indicating its size, so, to get the actual size, we need
             // to add 4.
             usize::try_from(size_i32)
-        }?;
+            */
+        };
 
         let mut result_buffer = vec![0; fb_buffer_size];
 
         self.copy_to_slice(&mut result_buffer, last_element_offset_abs)?;
-        let to_return = T::try_from(result_buffer.as_slice()).map_err(|_e| {
+        let to_return: T = decode(result_buffer.as_slice()).map_err(|_e| {
             new_error!(
                 "pop_buffer_into: failed to convert buffer to {}",
                 type_name::<T>()

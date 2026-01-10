@@ -14,16 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-extern crate flatbuffers;
-
 use alloc::string::{String, ToString};
 
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
-use crate::flatbuffers::hyperlight::generated::ErrorCode as FbErrorCode;
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[repr(C)]
 /// `ErrorCode` represents an error that occurred in the Hyperlight Guest.
 pub enum ErrorCode {
@@ -44,62 +41,6 @@ pub enum ErrorCode {
     GuestError = 15,
     ArrayLengthParamIsMissing = 16,
     HostFunctionError = 17,
-}
-
-impl From<ErrorCode> for FbErrorCode {
-    fn from(error_code: ErrorCode) -> Self {
-        match error_code {
-            ErrorCode::NoError => Self::NoError,
-            ErrorCode::UnsupportedParameterType => Self::UnsupportedParameterType,
-            ErrorCode::GuestFunctionNameNotProvided => Self::GuestFunctionNameNotProvided,
-            ErrorCode::GuestFunctionNotFound => Self::GuestFunctionNotFound,
-            ErrorCode::GuestFunctionIncorrecNoOfParameters => {
-                Self::GuestFunctionIncorrecNoOfParameters
-            }
-            ErrorCode::GispatchFunctionPointerNotSet => Self::GispatchFunctionPointerNotSet,
-            ErrorCode::OutbError => Self::OutbError,
-            ErrorCode::UnknownError => Self::UnknownError,
-            ErrorCode::StackOverflow => Self::StackOverflow,
-            ErrorCode::GsCheckFailed => Self::GsCheckFailed,
-            ErrorCode::TooManyGuestFunctions => Self::TooManyGuestFunctions,
-            ErrorCode::FailureInDlmalloc => Self::FailureInDlmalloc,
-            ErrorCode::MallocFailed => Self::MallocFailed,
-            ErrorCode::GuestFunctionParameterTypeMismatch => {
-                Self::GuestFunctionParameterTypeMismatch
-            }
-            ErrorCode::GuestError => Self::GuestError,
-            ErrorCode::ArrayLengthParamIsMissing => Self::ArrayLengthParamIsMissing,
-            ErrorCode::HostFunctionError => Self::HostError,
-        }
-    }
-}
-
-impl From<FbErrorCode> for ErrorCode {
-    fn from(error_code: FbErrorCode) -> Self {
-        match error_code {
-            FbErrorCode::NoError => Self::NoError,
-            FbErrorCode::UnsupportedParameterType => Self::UnsupportedParameterType,
-            FbErrorCode::GuestFunctionNameNotProvided => Self::GuestFunctionNameNotProvided,
-            FbErrorCode::GuestFunctionNotFound => Self::GuestFunctionNotFound,
-            FbErrorCode::GuestFunctionIncorrecNoOfParameters => {
-                Self::GuestFunctionIncorrecNoOfParameters
-            }
-            FbErrorCode::GispatchFunctionPointerNotSet => Self::GispatchFunctionPointerNotSet,
-            FbErrorCode::OutbError => Self::OutbError,
-            FbErrorCode::StackOverflow => Self::StackOverflow,
-            FbErrorCode::GsCheckFailed => Self::GsCheckFailed,
-            FbErrorCode::TooManyGuestFunctions => Self::TooManyGuestFunctions,
-            FbErrorCode::FailureInDlmalloc => Self::FailureInDlmalloc,
-            FbErrorCode::MallocFailed => Self::MallocFailed,
-            FbErrorCode::GuestFunctionParameterTypeMismatch => {
-                Self::GuestFunctionParameterTypeMismatch
-            }
-            FbErrorCode::GuestError => Self::GuestError,
-            FbErrorCode::ArrayLengthParamIsMissing => Self::ArrayLengthParamIsMissing,
-            FbErrorCode::HostError => Self::HostFunctionError,
-            _ => Self::UnknownError,
-        }
-    }
 }
 
 impl From<u64> for ErrorCode {
@@ -180,7 +121,7 @@ impl From<ErrorCode> for String {
 }
 
 /// `GuestError` represents an error that occurred in the Hyperlight Guest.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuestError {
     /// The error code.
     pub code: ErrorCode,

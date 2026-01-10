@@ -20,6 +20,7 @@ use core::any::type_name;
 use core::slice::from_raw_parts_mut;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::flatbuffer_wrappers::util::{Deserialize, decode};
 use tracing::{Span, instrument};
 
 use super::handle::GuestHandle;
@@ -30,7 +31,7 @@ impl GuestHandle {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn try_pop_shared_input_data_into<T>(&self) -> Result<T>
     where
-        T: for<'a> TryFrom<&'a [u8]>,
+        T: for<'a> Deserialize<'a>,
     {
         let peb_ptr = self.peb().unwrap();
         let input_stack_size = unsafe { (*peb_ptr).input_stack.size as usize };
@@ -69,7 +70,7 @@ impl GuestHandle {
         let buffer = &idb[last_element_offset_rel as usize..];
 
         // convert the buffer to T
-        let type_t = match T::try_from(buffer) {
+        let type_t = match decode::<T>(buffer) {
             Ok(t) => Ok(t),
             Err(_e) => {
                 return Err(HyperlightGuestError::new(

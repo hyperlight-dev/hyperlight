@@ -14,15 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use anyhow::{Error, Result, bail};
 use log::Level;
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "tracing")]
 use tracing::{Span, instrument};
 
-use crate::flatbuffers::hyperlight::generated::LogLevel as FbLogLevel;
-
 #[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum LogLevel {
     Trace = 0,
     Debug = 1,
@@ -44,40 +42,6 @@ impl From<u8> for LogLevel {
             4 => LogLevel::Error,
             5 => LogLevel::Critical,
             _ => LogLevel::None,
-        }
-    }
-}
-
-impl TryFrom<&FbLogLevel> for LogLevel {
-    type Error = Error;
-    #[cfg_attr(feature = "tracing", instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace"))]
-    fn try_from(val: &FbLogLevel) -> Result<LogLevel> {
-        match *val {
-            FbLogLevel::Trace => Ok(LogLevel::Trace),
-            FbLogLevel::Debug => Ok(LogLevel::Debug),
-            FbLogLevel::Information => Ok(LogLevel::Information),
-            FbLogLevel::Warning => Ok(LogLevel::Warning),
-            FbLogLevel::Error => Ok(LogLevel::Error),
-            FbLogLevel::Critical => Ok(LogLevel::Critical),
-            FbLogLevel::None => Ok(LogLevel::None),
-            _ => {
-                bail!("Unsupported Flatbuffers log level: {:?}", val);
-            }
-        }
-    }
-}
-
-impl From<&LogLevel> for FbLogLevel {
-    #[cfg_attr(feature = "tracing", instrument(skip_all, parent = Span::current(), level= "Trace"))]
-    fn from(val: &LogLevel) -> FbLogLevel {
-        match val {
-            LogLevel::Critical => FbLogLevel::Critical,
-            LogLevel::Debug => FbLogLevel::Debug,
-            LogLevel::Error => FbLogLevel::Error,
-            LogLevel::Information => FbLogLevel::Information,
-            LogLevel::None => FbLogLevel::None,
-            LogLevel::Trace => FbLogLevel::Trace,
-            LogLevel::Warning => FbLogLevel::Warning,
         }
     }
 }
