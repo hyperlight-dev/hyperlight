@@ -20,7 +20,9 @@ use std::sync::OnceLock;
 use tracing::{Span, instrument};
 
 use crate::Result;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::regs::{
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+};
 use crate::mem::memory_region::MemoryRegion;
 
 /// KVM (Kernel-based Virtual Machine) functionality (linux)
@@ -83,7 +85,7 @@ pub fn is_hypervisor_present() -> bool {
 }
 
 /// The hypervisor types available for the current platform
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub(crate) enum HypervisorType {
     #[cfg(kvm)]
     Kvm,
@@ -165,9 +167,21 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// Set special regs
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
 
-    /// xsave
-    #[cfg(crashdump)]
+    /// Get xsave
+    #[allow(dead_code)]
     fn xsave(&self) -> Result<Vec<u8>>;
+    /// Reset xsave to default state
+    fn reset_xsave(&self) -> Result<()>;
+    /// Set xsave - only used for tests
+    #[cfg(test)]
+    #[cfg(feature = "init-paging")]
+    fn set_xsave(&self, xsave: &[u32]) -> Result<()>;
+
+    /// Get the debug registers of the vCPU
+    #[allow(dead_code)]
+    fn debug_regs(&self) -> Result<CommonDebugRegs>;
+    /// Set the debug registers of the vCPU
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()>;
 
     /// Get partition handle
     #[cfg(target_os = "windows")]

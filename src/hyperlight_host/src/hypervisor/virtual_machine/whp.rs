@@ -34,7 +34,7 @@ use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
 use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::{Result, log_then_return, new_error};
+use crate::{HyperlightError, Result, log_then_return, new_error};
 
 #[allow(dead_code)] // Will be used for runtime hypervisor detection
 pub(crate) fn is_hypervisor_present() -> bool {
@@ -386,10 +386,42 @@ impl VirtualMachine for WhpVm {
         Ok(())
     }
 
-    #[cfg(crashdump)]
-    fn xsave(&self) -> Result<Vec<u8>> {
-        use crate::HyperlightError;
+    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+        let mut whp_debug_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_DEBUG_REGS_NAMES_LEN] =
+            unsafe { std::mem::zeroed() };
 
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_DEBUG_REGS_NAMES.as_ptr(),
+                whp_debug_regs_values.len() as u32,
+                whp_debug_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        WHP_DEBUG_REGS_NAMES
+            .into_iter()
+            .zip(whp_debug_regs_values)
+            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
+            .as_slice()
+            .try_into()
+            .map_err(|e| {
+                new_error!(
+                    "Failed to convert WHP registers to CommonDebugRegs: {:?}",
+                    e
+                )
+            })
+    }
+
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_DEBUG_REGS_NAMES_LEN] =
+            drs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
+    }
+
+    fn xsave(&self) -> Result<Vec<u8>> {
         // Get the required buffer size by calling with NULL buffer.
         // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns
         // WHV_E_INSUFFICIENT_BUFFER and sets buffer_size_needed to the required size.
@@ -437,6 +469,136 @@ impl VirtualMachine for WhpVm {
         }
 
         Ok(xsave_buffer)
+    }
+
+    fn reset_xsave(&self) -> Result<()> {
+        // WHP uses compacted XSAVE format (bit 63 of XCOMP_BV set).
+        // We cannot just zero out the xsave area - we need to preserve the XCOMP_BV.
+
+        // Get the required buffer size by calling with NULL buffer.
+        let mut buffer_size_needed: u32 = 0;
+
+        let result = unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut buffer_size_needed,
+            )
+        };
+
+        // Expect insufficient buffer error; any other error is unexpected
+        if let Err(e) = result
+            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
+        {
+            return Err(HyperlightError::WindowsAPIError(e));
+        }
+
+        // Minimum: 512 legacy + 64 header = 576 bytes
+        if buffer_size_needed < 576 {
+            return Err(new_error!("Unexpected xsave length {}", buffer_size_needed));
+        }
+
+        // Create a buffer to hold the current state (to get the correct XCOMP_BV)
+        let mut current_state = vec![0u8; buffer_size_needed as usize];
+        let mut written_bytes = 0;
+        unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                current_state.as_mut_ptr() as *mut std::ffi::c_void,
+                buffer_size_needed,
+                &mut written_bytes,
+            )
+        }?;
+
+        // Setting XSTATE_BV=0 resets all XSAVE-managed registers to their architectural
+        // init values (FCW=0x037F, MXCSR=0x1F80, XMM/YMM/ZMM=0, etc.). From the guest's
+        // perspective, these registers will contain the init values when execution
+        // resumes. The hypervisor updates its internal vCPU state immediately, so a
+        // subsequent xsave() call also returns the init values.
+        //
+        // When XSTATE_BV=0, the hypervisor ignores the legacy and extended region bytes
+        // entirely and it uses the architectural init values regardless of buffer contents.
+        //
+        // We zero these regions anyway as a defensive measure, in case of hypervisor
+        // bugs or implementation differences. This is probably unnecessary.
+        //
+        // - Legacy region (0-512): x87 FPU + SSE state
+        // - XSTATE_BV (512-520): Feature bitmap (0 = use init values)
+        // - XCOMP_BV (520-528): Compaction bitmap + format bit (KEEP)
+        // - Reserved (528-576): Header padding
+        // - Extended (576+): AVX, AVX-512, MPX, PKRU, AMX, etc.
+        current_state[0..520].fill(0);
+        current_state[528..].fill(0);
+
+        // XSAVE area layout from Intel SDM Vol. 1 Section 13.4.1:
+        // - Bytes 0-1: FCW (x87 FPU Control Word)
+        // - Bytes 24-27: MXCSR
+        current_state[0..2].copy_from_slice(&FP_CONTROL_WORD_DEFAULT.to_le_bytes());
+        current_state[24..28].copy_from_slice(&MXCSR_DEFAULT.to_le_bytes());
+
+        unsafe {
+            WHvSetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                current_state.as_ptr() as *const std::ffi::c_void,
+                buffer_size_needed,
+            )
+            .map_err(|e| new_error!("Failed to reset Xsave state: {:?}", e))?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[cfg(feature = "init-paging")]
+    fn set_xsave(&self, xsave: &[u32]) -> Result<()> {
+        use crate::HyperlightError;
+
+        // Get the required buffer size by calling with NULL buffer.
+        // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns
+        // WHV_E_INSUFFICIENT_BUFFER and sets buffer_size_needed to the required size.
+        let mut buffer_size_needed: u32 = 0;
+
+        let result = unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut buffer_size_needed,
+            )
+        };
+
+        // Expect insufficient buffer error; any other error is unexpected
+        if let Err(e) = result
+            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
+        {
+            return Err(HyperlightError::WindowsAPIError(e));
+        }
+
+        let provided_size = std::mem::size_of_val(xsave) as u32;
+        if buffer_size_needed > provided_size {
+            return Err(new_error!(
+                "Xsave buffer too small: needed {} bytes, provided {} bytes",
+                buffer_size_needed,
+                provided_size
+            ));
+        }
+
+        unsafe {
+            WHvSetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                xsave.as_ptr() as *const std::ffi::c_void,
+                buffer_size_needed,
+            )
+            .map_err(|e| new_error!("Failed to set Xsave state: {:?}", e))?;
+        }
+
+        Ok(())
     }
 
     /// Mark that initial memory setup is complete. After this, map_memory will fail.
@@ -528,137 +690,46 @@ impl DebuggableVm for WhpVm {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
 
         // Get current debug registers
-        const LEN: usize = 6;
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterDr0,
-            WHvX64RegisterDr1,
-            WHvX64RegisterDr2,
-            WHvX64RegisterDr3,
-            WHvX64RegisterDr6,
-            WHvX64RegisterDr7,
-        ];
-
-        let mut out: [Align16<WHV_REGISTER_VALUE>; LEN] = unsafe { std::mem::zeroed() };
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
-        }
-
-        let mut dr0 = unsafe { out[0].0.Reg64 };
-        let mut dr1 = unsafe { out[1].0.Reg64 };
-        let mut dr2 = unsafe { out[2].0.Reg64 };
-        let mut dr3 = unsafe { out[3].0.Reg64 };
-        let mut dr7 = unsafe { out[5].0.Reg64 };
+        let mut regs = self.debug_regs()?;
 
         // Check if breakpoint already exists
-        if [dr0, dr1, dr2, dr3].contains(&addr) {
+        if [regs.dr0, regs.dr1, regs.dr2, regs.dr3].contains(&addr) {
             return Ok(());
         }
 
         // Find the first available LOCAL (L0–L3) slot
         let i = (0..MAX_NO_OF_HW_BP)
-            .position(|i| dr7 & (1 << (i * 2)) == 0)
+            .position(|i| regs.dr7 & (1 << (i * 2)) == 0)
             .ok_or_else(|| new_error!("Tried to add more than 4 hardware breakpoints"))?;
 
         // Assign to corresponding debug register
-        *[&mut dr0, &mut dr1, &mut dr2, &mut dr3][i] = addr;
+        *[&mut regs.dr0, &mut regs.dr1, &mut regs.dr2, &mut regs.dr3][i] = addr;
 
         // Enable LOCAL bit
-        dr7 |= 1 << (i * 2);
+        regs.dr7 |= 1 << (i * 2);
 
-        // Set the debug registers
-        let registers = vec![
-            (
-                WHvX64RegisterDr0,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr0 }),
-            ),
-            (
-                WHvX64RegisterDr1,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr1 }),
-            ),
-            (
-                WHvX64RegisterDr2,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr2 }),
-            ),
-            (
-                WHvX64RegisterDr3,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr3 }),
-            ),
-            (
-                WHvX64RegisterDr7,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr7 }),
-            ),
-        ];
-        self.set_registers(&registers)?;
+        self.set_debug_regs(&regs)?;
         Ok(())
     }
 
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         // Get current debug registers
-        const LEN: usize = 6;
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterDr0,
-            WHvX64RegisterDr1,
-            WHvX64RegisterDr2,
-            WHvX64RegisterDr3,
-            WHvX64RegisterDr6,
-            WHvX64RegisterDr7,
+        let mut debug_regs = self.debug_regs()?;
+
+        let regs = [
+            &mut debug_regs.dr0,
+            &mut debug_regs.dr1,
+            &mut debug_regs.dr2,
+            &mut debug_regs.dr3,
         ];
-
-        let mut out: [Align16<WHV_REGISTER_VALUE>; LEN] = unsafe { std::mem::zeroed() };
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
-        }
-
-        let mut dr0 = unsafe { out[0].0.Reg64 };
-        let mut dr1 = unsafe { out[1].0.Reg64 };
-        let mut dr2 = unsafe { out[2].0.Reg64 };
-        let mut dr3 = unsafe { out[3].0.Reg64 };
-        let mut dr7 = unsafe { out[5].0.Reg64 };
-
-        let regs = [&mut dr0, &mut dr1, &mut dr2, &mut dr3];
 
         if let Some(i) = regs.iter().position(|&&mut reg| reg == addr) {
             // Clear the address
             *regs[i] = 0;
             // Disable LOCAL bit
-            dr7 &= !(1 << (i * 2));
+            debug_regs.dr7 &= !(1 << (i * 2));
 
-            // Set the debug registers
-            let registers = vec![
-                (
-                    WHvX64RegisterDr0,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr0 }),
-                ),
-                (
-                    WHvX64RegisterDr1,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr1 }),
-                ),
-                (
-                    WHvX64RegisterDr2,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr2 }),
-                ),
-                (
-                    WHvX64RegisterDr3,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr3 }),
-                ),
-                (
-                    WHvX64RegisterDr7,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr7 }),
-                ),
-            ];
-            self.set_registers(&registers)?;
+            self.set_debug_regs(&debug_regs)?;
             Ok(())
         } else {
             Err(new_error!("Tried to remove non-existing hw-breakpoint"))

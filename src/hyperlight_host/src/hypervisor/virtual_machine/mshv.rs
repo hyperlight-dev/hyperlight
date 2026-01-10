@@ -21,7 +21,7 @@ use std::sync::LazyLock;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
-    FloatingPointUnit, SpecialRegisters, StandardRegisters, hv_message_type,
+    FloatingPointUnit, SpecialRegisters, StandardRegisters, XSave, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
@@ -33,7 +33,10 @@ use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::regs::{
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
+    MXCSR_DEFAULT,
+};
 use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
@@ -209,10 +212,71 @@ impl VirtualMachine for MshvVm {
         Ok(())
     }
 
-    #[cfg(crashdump)]
+    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+        let debug_regs = self.vcpu_fd.get_debug_regs()?;
+        Ok(debug_regs.into())
+    }
+
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+        let mshv_debug_regs = drs.into();
+        self.vcpu_fd.set_debug_regs(&mshv_debug_regs)?;
+        Ok(())
+    }
+
     fn xsave(&self) -> Result<Vec<u8>> {
         let xsave = self.vcpu_fd.get_xsave()?;
         Ok(xsave.buffer.to_vec())
+    }
+
+    fn reset_xsave(&self) -> Result<()> {
+        let current_xsave = self.vcpu_fd.get_xsave()?;
+        if current_xsave.buffer.len() < 576 {
+            // Minimum: 512 legacy + 64 header
+            return Err(new_error!(
+                "Unexpected xsave length {}",
+                current_xsave.buffer.len()
+            ));
+        }
+
+        let mut buf = XSave::default(); // default is zeroed 4KB buffer
+
+        // Copy XCOMP_BV (offset 520-527) - preserves feature mask + compacted bit
+        buf.buffer[520..528].copy_from_slice(&current_xsave.buffer[520..528]);
+
+        // XSAVE area layout from Intel SDM Vol. 1 Section 13.4.1:
+        // - Bytes 0-1: FCW (x87 FPU Control Word)
+        // - Bytes 24-27: MXCSR
+        buf.buffer[0..2].copy_from_slice(&FP_CONTROL_WORD_DEFAULT.to_le_bytes());
+        buf.buffer[24..28].copy_from_slice(&MXCSR_DEFAULT.to_le_bytes());
+
+        self.vcpu_fd.set_xsave(&buf)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[cfg(feature = "init-paging")]
+    fn set_xsave(&self, xsave: &[u32]) -> Result<()> {
+        const MSHV_XSAVE_SIZE: usize = 4096;
+        if std::mem::size_of_val(xsave) != MSHV_XSAVE_SIZE {
+            return Err(new_error!(
+                "Provided xsave size {} does not match MSHV supported size {}",
+                std::mem::size_of_val(xsave),
+                MSHV_XSAVE_SIZE
+            ));
+        }
+
+        // Safety: all valid u32 values are 4 valid u8 values
+        let (prefix, bytes, suffix) = unsafe { xsave.align_to() };
+        if !prefix.is_empty() || !suffix.is_empty() {
+            return Err(new_error!("Invalid xsave buffer alignment"));
+        }
+        let buf = XSave {
+            buffer: bytes
+                .try_into()
+                .map_err(|_| new_error!("mshv xsave must be 4096 u8s"))?,
+        };
+        self.vcpu_fd.set_xsave(&buf)?;
+        Ok(())
     }
 }
 

@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+mod debug_regs;
 mod fpu;
 mod special_regs;
 mod standard_regs;
@@ -21,6 +22,7 @@ mod standard_regs;
 #[cfg(target_os = "windows")]
 use std::collections::HashSet;
 
+pub(crate) use debug_regs::*;
 pub(crate) use fpu::*;
 pub(crate) use special_regs::*;
 pub(crate) use standard_regs::*;
