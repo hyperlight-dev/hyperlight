@@ -16,13 +16,13 @@ limitations under the License.
 #[cfg(feature = "init-paging")]
 use std::cmp::Ordering;
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
 };
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use hyperlight_common::flatbuffer_wrappers::util::{decode, encode};
 #[cfg(feature = "init-paging")]
 use hyperlight_common::vmem;
 #[cfg(feature = "init-paging")]
@@ -221,14 +221,14 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     /// Writes host function details to memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn write_buffer_host_function_details(&mut self, buffer: &[u8]) -> Result<()> {
-        let host_function_details = HostFunctionDetails::try_from(buffer).map_err(|e| {
+        let host_function_details: HostFunctionDetails = decode(buffer).map_err(|e| {
             new_error!(
                 "write_buffer_host_function_details: failed to convert buffer to HostFunctionDetails: {}",
                 e
             )
         })?;
 
-        let host_function_call_buffer: Vec<u8> = (&host_function_details).try_into().map_err(|_| {
+        let host_function_call_buffer: Vec<u8> = encode(&host_function_details).map_err(|_| {
             new_error!(
                 "write_buffer_host_function_details: failed to convert HostFunctionDetails to Vec<u8>"
             )
@@ -353,13 +353,16 @@ impl SandboxMemoryManager<HostSharedMemory> {
         &mut self,
         res: &FunctionCallResult,
     ) -> Result<()> {
-        let mut builder = FlatBufferBuilder::new();
-        let data = res.encode(&mut builder);
+        let data = encode(res).map_err(|_| {
+            new_error!(
+                "write_response_from_host_function_call: failed to convert FunctionCallResult to Vec<u8>"
+            )
+        })?;
 
         self.shared_mem.push_buffer(
             self.layout.input_data_buffer_offset,
             self.layout.sandbox_memory_config.get_input_data_size(),
-            data,
+            &data,
         )
     }
 

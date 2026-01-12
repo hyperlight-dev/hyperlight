@@ -19,7 +19,6 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::slice::from_raw_parts;
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     FunctionCallResult, ParameterValue, ReturnType, ReturnValue,
@@ -28,7 +27,9 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
-use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
+use hyperlight_common::flatbuffer_wrappers::util::{
+    decode, encode, encode_extend, estimate_flatbuffer_capacity,
+};
 use hyperlight_common::outb::OutBAction;
 use tracing::instrument;
 
@@ -124,10 +125,15 @@ impl GuestHandle {
             return_type,
         );
 
-        let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-
-        let host_function_call_buffer = host_function_call.encode(&mut builder);
-        self.push_shared_output_data(host_function_call_buffer)?;
+        let host_function_call_buffer = Vec::with_capacity(estimated_capacity);
+        let host_function_call_buffer =
+            encode_extend(&host_function_call, host_function_call_buffer).map_err(|e| {
+                HyperlightGuestError::new(
+                    ErrorCode::GuestError,
+                    format!("Error serializing host function call to flatbuffer: {}", e),
+                )
+            })?;
+        self.push_shared_output_data(&host_function_call_buffer)?;
 
         unsafe {
             out32(OutBAction::CallFunction as u16, 0);
@@ -163,8 +169,7 @@ impl GuestHandle {
         let host_function_details_slice: &[u8] =
             unsafe { from_raw_parts(host_function_details_buffer, host_function_details_size) };
 
-        host_function_details_slice
-            .try_into()
+        decode(host_function_details_slice)
             .expect("Failed to convert buffer to HostFunctionDetails")
     }
 
@@ -189,9 +194,8 @@ impl GuestHandle {
                 line,
             );
 
-            let bytes: Vec<u8> = guest_log_data
-                .try_into()
-                .expect("Failed to convert GuestLogData to bytes");
+            let bytes: Vec<u8> =
+                encode(&guest_log_data).expect("Failed to convert GuestLogData to bytes");
 
             self.push_shared_output_data(&bytes)
                 .expect("Unable to push log data to shared output data");

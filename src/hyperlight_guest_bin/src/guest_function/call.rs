@@ -17,10 +17,10 @@ limitations under the License.
 use alloc::format;
 use alloc::vec::Vec;
 
-use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
+use hyperlight_common::flatbuffer_wrappers::util::encode;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::halt;
 use tracing::{Span, instrument};
@@ -107,10 +107,9 @@ fn internal_dispatch_function() {
         Err(err) => {
             let guest_error = Err(GuestError::new(err.kind, err.message));
             let fcr = FunctionCallResult::new(guest_error);
-            let mut builder = FlatBufferBuilder::new();
-            let data = fcr.encode(&mut builder);
+            let data = encode(&fcr).unwrap();
             handle
-                .push_shared_output_data(data)
+                .push_shared_output_data(&data)
                 .expect("Failed to serialize function call result");
         }
     }
