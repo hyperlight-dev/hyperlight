@@ -23,12 +23,13 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_host::GuestBinary;
+use hyperlight_host::mem::shared_mem::ExclusiveSharedMemory;
 use hyperlight_host::sandbox::{MultiUseSandbox, SandboxConfiguration, UninitializedSandbox};
 use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
@@ -492,6 +493,64 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// Benchmark Category: Shared Memory Operations
+// ============================================================================
+
+fn shared_memory_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("shared_memory");
+
+    let sizes: &[(usize, &str)] = &[(1024 * 1024, "1MB"), (64 * 1024 * 1024, "64MB")];
+
+    // Benchmark fill
+    for &(size, name) in sizes {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(BenchmarkId::new("fill", name), &size, |b, &size| {
+            let eshm = ExclusiveSharedMemory::new(size).unwrap();
+            let (mut hshm, _) = eshm.build();
+            b.iter(|| {
+                hshm.fill(0xAB, 0, size).unwrap();
+            });
+        });
+    }
+
+    // Benchmark copy_to_slice (read from shared memory)
+    for &(size, name) in sizes {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("copy_to_slice", name),
+            &size,
+            |b, &size| {
+                let eshm = ExclusiveSharedMemory::new(size).unwrap();
+                let (hshm, _) = eshm.build();
+                let mut dst = vec![0u8; size];
+                b.iter(|| {
+                    hshm.copy_to_slice(&mut dst, 0).unwrap();
+                });
+            },
+        );
+    }
+
+    // Benchmark copy_from_slice (write to shared memory)
+    for &(size, name) in sizes {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("copy_from_slice", name),
+            &size,
+            |b, &size| {
+                let eshm = ExclusiveSharedMemory::new(size).unwrap();
+                let (hshm, _) = eshm.build();
+                let src = vec![0xCDu8; size];
+                b.iter(|| {
+                    hshm.copy_from_slice(&src, 0).unwrap();
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default();
@@ -501,6 +560,7 @@ criterion_group! {
         snapshots_benchmark,
         guest_call_benchmark_large_param,
         function_call_serialization_benchmark,
-        sample_workloads_benchmark
+        sample_workloads_benchmark,
+        shared_memory_benchmark
 }
 criterion_main!(benches);
