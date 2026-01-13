@@ -139,7 +139,7 @@ mod tests {
         let features = "gdb";
 
         // build it before running to avoid a race condition below
-        let mut guest_child = Command::new("cargo")
+        Command::new("cargo")
             .arg("build")
             .arg("--example")
             .arg("guest-debugging")
@@ -165,6 +165,7 @@ mod tests {
         thread::sleep(Duration::from_secs(3));
 
         let mut gdb = Command::new(GDB_COMMAND)
+            .arg("-nx") // Don't load any .gdbinit files
             .arg("--nw")
             .arg("--batch")
             .arg("-x")
@@ -261,7 +262,7 @@ mod tests {
 
                 set pagination off
                 set logging file {out_file_path}
-                set logging on
+                set logging enabled on
 
                 break hyperlight_main
                     commands
@@ -273,7 +274,7 @@ mod tests {
 
                 continue
 
-                set logging off
+                set logging enabled off
                 quit
             "
         );
@@ -309,7 +310,7 @@ mod tests {
 
                 set pagination off
                 set logging file {out_file_path}
-                set logging on
+                set logging enabled on
 
                 break main.rs:simpleguest::use_sse2_registers
                 commands 1
@@ -325,7 +326,7 @@ mod tests {
 
                 continue
 
-                set logging off
+                set logging enabled off
                 quit
             "
         );
