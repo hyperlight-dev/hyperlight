@@ -281,11 +281,11 @@ dependencies = [
 
 [[package]]
 name = "buddy_system_allocator"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1a0108968a3a2dab95b089c0fc3f1afa7759aa5ebe6f1d86d206d6f7ba726eb"
+checksum = "b672b945a3e4f4f40bfd4cd5ee07df9e796a42254ce7cd6d2599ad969244c44a"
 dependencies = [
- "spin 0.9.8",
+ "spin",
 ]
 
 [[package]]
@@ -1374,7 +1374,7 @@ dependencies = [
  "arbitrary",
  "flatbuffers",
  "log",
- "spin 0.10.0",
+ "spin",
  "thiserror 2.0.17",
  "tracing",
 ]
@@ -1443,7 +1443,7 @@ dependencies = [
  "hyperlight-guest-tracing",
  "linkme",
  "log",
- "spin 0.10.0",
+ "spin",
  "tracing",
 ]
 
@@ -1462,7 +1462,7 @@ name = "hyperlight-guest-tracing"
 version = "0.12.0"
 dependencies = [
  "hyperlight-common",
- "spin 0.10.0",
+ "spin",
  "tracing",
  "tracing-core",
 ]
@@ -3260,15 +3260,6 @@ checksum = "17129e116933cf371d018bb80ae557e889637989d8638274fb25622827b03881"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
-]
-
-[[package]]
-name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
-dependencies = [
- "lock_api",
 ]
 
 [[package]]
