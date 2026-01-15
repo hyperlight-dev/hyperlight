@@ -8,6 +8,109 @@
 // Included from hyperlight_guest_bin/third_party/printf
 #include "printf.h"
 
+// ============================================================================
+// Time API tests - exercise the POSIX-style C time functions from hyperlight_guest_capi
+// ============================================================================
+
+// Check if the paravirtualized clock is available
+int is_clock_available(void) {
+    hl_timespec ts;
+    return clock_gettime(hl_CLOCK_REALTIME, &ts) == 0 ? 1 : 0;
+}
+
+// Get the current monotonic time in nanoseconds
+uint64_t monotonic_time_ns(void) {
+    hl_timespec ts;
+    if (clock_gettime(hl_CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+// Get the current wall clock time in nanoseconds (UTC since Unix epoch)
+uint64_t wall_clock_time_ns(void) {
+    hl_timespec ts;
+    if (clock_gettime(hl_CLOCK_REALTIME, &ts) != 0) {
+        return 0;
+    }
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+// Test that monotonic time increases between reads
+int monotonic_increases(void) {
+    hl_timespec ts1, ts2;
+    
+    if (clock_gettime(hl_CLOCK_MONOTONIC, &ts1) != 0) {
+        return 0;
+    }
+    
+    // Small busy loop to ensure time passes
+    for (volatile int i = 0; i < 10000; i++) {}
+    
+    if (clock_gettime(hl_CLOCK_MONOTONIC, &ts2) != 0) {
+        return 0;
+    }
+    
+    // Second reading should be > first
+    uint64_t t1 = (uint64_t)ts1.tv_sec * 1000000000ULL + (uint64_t)ts1.tv_nsec;
+    uint64_t t2 = (uint64_t)ts2.tv_sec * 1000000000ULL + (uint64_t)ts2.tv_nsec;
+    
+    return t2 > t1 ? 1 : 0;
+}
+
+// Get the UTC offset in seconds
+int utc_offset_seconds(void) {
+    hl_timeval tv;
+    hl_timezone tz;
+    if (gettimeofday(&tv, &tz) != 0) {
+        return 0;
+    }
+    // tz_minuteswest is minutes WEST of UTC, so negate and convert to seconds
+    return -(tz.tz_minuteswest * 60);
+}
+
+// Static buffers for formatted strings (safe - guests are single-threaded)
+static char datetime_buffer[128];
+static char timestamp_buffer[128];
+
+// Format the current local time using strftime from hyperlight_guest_capi
+const char* format_current_datetime(void) {
+    int64_t now = time(NULL);
+    if (now == -1) {
+        return "Error: clock not available";
+    }
+    
+    hl_tm tm_local;
+    if (localtime_r(&now, &tm_local) == NULL) {
+        return "Error: localtime_r failed";
+    }
+    
+    // Use strftime from the C API: "Thursday 16 January 2026 15:48:39"
+    if (strftime((uint8_t*)datetime_buffer, sizeof(datetime_buffer),
+                 (const uint8_t*)"%A %d %B %Y %H:%M:%S", &tm_local) == 0) {
+        return "Error: strftime failed";
+    }
+    
+    return datetime_buffer;
+}
+
+// Format a UTC timestamp (nanoseconds) using strftime
+const char* format_timestamp_ns(uint64_t timestamp_ns) {
+    int64_t secs = (int64_t)(timestamp_ns / 1000000000ULL);
+    
+    hl_tm tm_utc;
+    if (gmtime_r(&secs, &tm_utc) == NULL) {
+        return "Error: gmtime_r failed";
+    }
+    
+    if (strftime((uint8_t*)timestamp_buffer, sizeof(timestamp_buffer),
+                 (const uint8_t*)"%A %d %B %Y %H:%M:%S", &tm_utc) == 0) {
+        return "Error: strftime failed";
+    }
+    
+    return timestamp_buffer;
+}
+
 #define GUEST_STACK_SIZE (65536) // default stack size
 #define MAX_BUFFER_SIZE (1024)
 
@@ -354,6 +457,14 @@ HYPERLIGHT_WRAP_FUNCTION(print_eleven_args, Int, 11, String, Int, Long, String, 
 HYPERLIGHT_WRAP_FUNCTION(echo_float, Float, 1, Float)
 HYPERLIGHT_WRAP_FUNCTION(echo_double, Double, 1, Double)
 HYPERLIGHT_WRAP_FUNCTION(set_static, Int, 0)
+// Time API test functions
+HYPERLIGHT_WRAP_FUNCTION(is_clock_available, Int, 0)
+HYPERLIGHT_WRAP_FUNCTION(monotonic_time_ns, ULong, 0)
+HYPERLIGHT_WRAP_FUNCTION(wall_clock_time_ns, ULong, 0)
+HYPERLIGHT_WRAP_FUNCTION(monotonic_increases, Int, 0)
+HYPERLIGHT_WRAP_FUNCTION(utc_offset_seconds, Int, 0)
+HYPERLIGHT_WRAP_FUNCTION(format_current_datetime, String, 0)
+HYPERLIGHT_WRAP_FUNCTION(format_timestamp_ns, String, 1, ULong)
 // HYPERLIGHT_WRAP_FUNCTION(get_size_prefixed_buffer, Int, 1, VecBytes) is not valid for functions that return VecBytes
 HYPERLIGHT_WRAP_FUNCTION(guest_abort_with_msg, Int, 2, Int, String)
 HYPERLIGHT_WRAP_FUNCTION(guest_abort_with_code, Int, 1, Int)
@@ -393,6 +504,14 @@ void hyperlight_main(void)
     HYPERLIGHT_REGISTER_FUNCTION("EchoFloat", echo_float);
     HYPERLIGHT_REGISTER_FUNCTION("EchoDouble", echo_double);
     HYPERLIGHT_REGISTER_FUNCTION("SetStatic", set_static);
+    // Time API test functions
+    HYPERLIGHT_REGISTER_FUNCTION("TestClockAvailable", is_clock_available);
+    HYPERLIGHT_REGISTER_FUNCTION("GetMonotonicTimeNs", monotonic_time_ns);
+    HYPERLIGHT_REGISTER_FUNCTION("GetWallClockTimeNs", wall_clock_time_ns);
+    HYPERLIGHT_REGISTER_FUNCTION("TestMonotonicIncreases", monotonic_increases);
+    HYPERLIGHT_REGISTER_FUNCTION("GetUtcOffsetSeconds", utc_offset_seconds);
+    HYPERLIGHT_REGISTER_FUNCTION("FormatCurrentDateTime", format_current_datetime);
+    HYPERLIGHT_REGISTER_FUNCTION("FormatTimestampNs", format_timestamp_ns);
     // HYPERLIGHT_REGISTER_FUNCTION macro does not work for functions that return VecBytes,
     // so we use hl_register_function_definition directly
     hl_register_function_definition("GetSizePrefixedBuffer", get_size_prefixed_buffer, 1, (hl_ParameterType[]){hl_ParameterType_VecBytes}, hl_ReturnType_VecBytes);

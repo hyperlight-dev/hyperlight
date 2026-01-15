@@ -40,6 +40,9 @@ pub mod outb;
 pub mod resource;
 
 /// cbindgen:ignore
+pub mod time;
+
+/// cbindgen:ignore
 pub mod func;
 // cbindgen:ignore
 #[cfg(feature = "init-paging")]

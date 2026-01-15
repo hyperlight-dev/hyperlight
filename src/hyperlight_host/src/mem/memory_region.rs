@@ -129,6 +129,8 @@ pub enum MemoryRegionType {
     InputData,
     /// The region contains the Output Data
     OutputData,
+    /// The region contains the Clock Page (for pvclock/Reference TSC)
+    ClockPage,
     /// The region contains the Heap
     Heap,
     /// The region contains the Guard Page

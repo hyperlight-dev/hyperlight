@@ -74,13 +74,15 @@ use std::fmt::Debug;
 use std::mem::{offset_of, size_of};
 
 use hyperlight_common::mem::{GuestMemoryRegion, HyperlightPEB, PAGE_SIZE_USIZE};
+use hyperlight_common::time::GuestClockRegion;
 use rand::{RngCore, rng};
 use tracing::{Span, instrument};
 
 #[cfg(feature = "init-paging")]
 use super::memory_region::MemoryRegionType::PageTables;
 use super::memory_region::MemoryRegionType::{
-    Code, GuardPage, Heap, HostFunctionDefinitions, InitData, InputData, OutputData, Peb, Stack,
+    ClockPage, Code, GuardPage, Heap, HostFunctionDefinitions, InitData, InputData, OutputData,
+    Peb, Stack,
 };
 use super::memory_region::{
     DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
@@ -111,12 +113,15 @@ pub(crate) struct SandboxMemoryLayout {
     peb_init_data_offset: usize,
     peb_heap_data_offset: usize,
     peb_guest_stack_data_offset: usize,
+    peb_guest_clock_offset: usize,
 
     // The following are the actual values
     // that are written to the PEB struct
     pub(crate) host_function_definitions_buffer_offset: usize,
     pub(super) input_data_buffer_offset: usize,
     pub(super) output_data_buffer_offset: usize,
+    /// Offset to the clock page (4KB page for pvclock/Reference TSC)
+    pub(crate) clock_page_offset: usize,
     guest_heap_buffer_offset: usize,
     guard_page_offset: usize,
     guest_user_stack_buffer_offset: usize, // the lowest address of the user stack
@@ -181,6 +186,10 @@ impl Debug for SandboxMemoryLayout {
                 &format_args!("{:#x}", self.peb_guest_stack_data_offset),
             )
             .field(
+                "Guest Clock Offset",
+                &format_args!("{:#x}", self.peb_guest_clock_offset),
+            )
+            .field(
                 "Host Function Definitions Buffer Offset",
                 &format_args!("{:#x}", self.host_function_definitions_buffer_offset),
             )
@@ -191,6 +200,10 @@ impl Debug for SandboxMemoryLayout {
             .field(
                 "Output Data Buffer Offset",
                 &format_args!("{:#x}", self.output_data_buffer_offset),
+            )
+            .field(
+                "Clock Page Offset",
+                &format_args!("{:#x}", self.clock_page_offset),
             )
             .field(
                 "Guest Heap Buffer Offset",
@@ -256,6 +269,7 @@ impl SandboxMemoryLayout {
         let peb_init_data_offset = peb_offset + offset_of!(HyperlightPEB, init_data);
         let peb_heap_data_offset = peb_offset + offset_of!(HyperlightPEB, guest_heap);
         let peb_guest_stack_data_offset = peb_offset + offset_of!(HyperlightPEB, guest_stack);
+        let peb_guest_clock_offset = peb_offset + offset_of!(HyperlightPEB, guest_clock);
         let peb_host_function_definitions_offset =
             peb_offset + offset_of!(HyperlightPEB, host_function_definitions);
 
@@ -275,11 +289,13 @@ impl SandboxMemoryLayout {
             input_data_buffer_offset + cfg.get_input_data_size(),
             PAGE_SIZE_USIZE,
         );
-        // make sure heap buffer starts at 4K boundary
-        let guest_heap_buffer_offset = round_up_to(
+        // Clock page for pvclock/Reference TSC - needs to be page-aligned
+        let clock_page_offset = round_up_to(
             output_data_buffer_offset + cfg.get_output_data_size(),
             PAGE_SIZE_USIZE,
         );
+        // make sure heap buffer starts at 4K boundary (after clock page)
+        let guest_heap_buffer_offset = clock_page_offset + PAGE_SIZE_USIZE;
         // make sure guard page starts at 4K boundary
         let guard_page_offset = round_up_to(guest_heap_buffer_offset + heap_size, PAGE_SIZE_USIZE);
         let guest_user_stack_buffer_offset = guard_page_offset + PAGE_SIZE_USIZE;
@@ -300,11 +316,13 @@ impl SandboxMemoryLayout {
             peb_init_data_offset,
             peb_heap_data_offset,
             peb_guest_stack_data_offset,
+            peb_guest_clock_offset,
             sandbox_memory_config: cfg,
             code_size,
             host_function_definitions_buffer_offset,
             input_data_buffer_offset,
             output_data_buffer_offset,
+            clock_page_offset,
             guest_heap_buffer_offset,
             guest_user_stack_buffer_offset,
             peb_address,
@@ -358,6 +376,19 @@ impl SandboxMemoryLayout {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn get_guest_stack_size(&self) -> usize {
         self.stack_size
+    }
+
+    /// Get the offset in guest memory to the guest clock region.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_guest_clock_offset(&self) -> usize {
+        self.peb_guest_clock_offset
+    }
+
+    /// Get the offset in guest memory to the clock page.
+    /// This is a 4KB page used for pvclock/Reference TSC data.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_clock_page_offset(&self) -> usize {
+        self.clock_page_offset
     }
 
     /// Get the offset in guest memory to the output data pointer.
@@ -580,10 +611,27 @@ impl SandboxMemoryLayout {
         }
 
         // guest output data
-        let heap_offset = builder.push_page_aligned(
+        let clock_page_offset = builder.push_page_aligned(
             self.sandbox_memory_config.get_output_data_size(),
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
             OutputData,
+        );
+
+        let expected_clock_page_offset = TryInto::<usize>::try_into(self.clock_page_offset)?;
+
+        if clock_page_offset != expected_clock_page_offset {
+            return Err(new_error!(
+                "Clock Page offset does not match expected Clock Page offset expected:  {}, actual:  {}",
+                expected_clock_page_offset,
+                clock_page_offset
+            ));
+        }
+
+        // clock page for pvclock/Reference TSC
+        let heap_offset = builder.push_page_aligned(
+            PAGE_SIZE_USIZE,
+            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
+            ClockPage,
         );
 
         let expected_heap_offset = TryInto::<usize>::try_into(self.guest_heap_buffer_offset)?;
@@ -806,6 +854,12 @@ impl SandboxMemoryLayout {
 
         shared_mem.write_u64(self.get_user_stack_pointer_offset(), start_of_user_stack)?;
 
+        // Initialize guest clock region with default values (no clock configured yet)
+        // GuestClockRegion is 32 bytes: clock_page_ptr (8) + clock_type (8) + boot_time_ns (8) + utc_offset_seconds (4) + padding (4)
+        // The actual clock configuration is done by the hypervisor-specific code
+        let guest_clock_bytes = [0u8; size_of::<GuestClockRegion>()];
+        shared_mem.copy_from_slice(&guest_clock_bytes, self.get_guest_clock_offset())?;
+
         // End of setting up the PEB
 
         // Initialize the stack pointers of input data and output data
@@ -866,6 +920,8 @@ mod tests {
         expected_size += round_up_to(cfg.get_input_data_size(), PAGE_SIZE_USIZE);
 
         expected_size += round_up_to(cfg.get_output_data_size(), PAGE_SIZE_USIZE);
+
+        expected_size += PAGE_SIZE_USIZE; // clock page
 
         expected_size += round_up_to(layout.heap_size, PAGE_SIZE_USIZE);
 

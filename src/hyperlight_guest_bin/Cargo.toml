@@ -14,12 +14,14 @@ and third-party code used by our C-API needed to build a native hyperlight-guest
 """
 
 [features]
-default = ["libc", "printf", "macros"]
+default = ["libc", "printf", "macros", "guest_time"]
 libc = [] # compile musl libc
 printf = [ "libc" ] # compile printf
 trace_guest = ["hyperlight-common/trace_guest", "hyperlight-guest/trace_guest", "hyperlight-guest-tracing/trace"]
 mem_profile = ["hyperlight-common/mem_profile"]
 macros = ["dep:hyperlight-guest-macro", "dep:linkme"]
+# Enable paravirtualized clock support for guest time functions
+guest_time = ["hyperlight-common/guest_time", "hyperlight-guest/guest_time"]
 
 [dependencies]
 hyperlight-guest = { workspace = true, default-features = false }

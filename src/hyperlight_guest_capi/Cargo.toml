@@ -11,6 +11,11 @@ crate-type = ["staticlib"]
 [lints]
 workspace = true
 
+[features]
+default = ["guest_time"]
+# Enable paravirtualized clock support for guest time functions
+guest_time = ["hyperlight-guest/guest_time", "hyperlight-guest-bin/guest_time"]
+
 [dependencies]
 hyperlight-guest = { workspace = true, default-features = false }
 hyperlight-guest-bin = { workspace = true, default-features = true }

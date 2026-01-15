@@ -54,6 +54,8 @@ pub mod guest_logger;
 pub mod host_comm;
 pub mod memory;
 pub mod paging;
+#[cfg(feature = "guest_time")]
+pub mod time;
 
 // Globals
 #[cfg(feature = "mem_profile")]

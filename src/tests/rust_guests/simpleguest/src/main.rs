@@ -45,6 +45,7 @@ use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
+use hyperlight_guest::time::{is_clock_available, monotonic_time_ns};
 use hyperlight_guest_bin::exceptions::handler::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::register_function;
@@ -53,7 +54,10 @@ use hyperlight_guest_bin::host_comm::{
     print_output_with_host_print, read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
-use hyperlight_guest_bin::{MIN_STACK_ADDRESS, guest_function, guest_logger, host_function};
+use hyperlight_guest_bin::time::{DateTime, Instant, SystemTime, UNIX_EPOCH, utc_offset_seconds};
+use hyperlight_guest_bin::{
+    GUEST_HANDLE, MIN_STACK_ADDRESS, guest_function, guest_logger, host_function,
+};
 use log::{LevelFilter, error};
 use tracing::{Span, instrument};
 
@@ -186,6 +190,89 @@ fn trigger_int3() -> i32 {
 #[guest_function("EchoFloat")]
 fn echo_float(value: f32) -> f32 {
     value
+}
+
+// Time/clock test functions using the std-like API from hyperlight_guest_bin::time
+
+/// Check if the paravirtualized clock is available
+#[guest_function("TestClockAvailable")]
+fn test_clock_available() -> i32 {
+    // SAFETY: GUEST_HANDLE is initialized during entrypoint, we are single-threaded
+    #[allow(static_mut_refs)]
+    let handle = unsafe { &GUEST_HANDLE };
+    if is_clock_available(handle) { 1 } else { 0 }
+}
+
+/// Get the current monotonic time in nanoseconds using low-level API
+#[guest_function("GetMonotonicTimeNs")]
+fn get_monotonic_time_ns_fn() -> u64 {
+    // SAFETY: GUEST_HANDLE is initialized during entrypoint, we are single-threaded
+    #[allow(static_mut_refs)]
+    let handle = unsafe { &GUEST_HANDLE };
+    monotonic_time_ns(handle).unwrap_or(0)
+}
+
+/// Get the current wall clock time in nanoseconds (UTC since Unix epoch) using SystemTime API
+#[guest_function("GetWallClockTimeNs")]
+fn get_wall_clock_time_ns_fn() -> u64 {
+    // Use the std-like SystemTime API
+    let now = SystemTime::now();
+    now.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+/// Test that monotonic time increases between reads using Instant API
+#[guest_function("TestMonotonicIncreases")]
+fn test_monotonic_increases() -> i32 {
+    let t1 = Instant::now();
+    // Small busy loop to ensure time passes
+    for _ in 0..10000 {
+        core::hint::black_box(0);
+    }
+    let t2 = Instant::now();
+
+    // Instant comparison: t2 should be greater than t1
+    if t2 > t1 { 1 } else { 0 }
+}
+
+/// Get the UTC offset in seconds that was set at sandbox creation
+#[guest_function("GetUtcOffsetSeconds")]
+fn get_utc_offset_seconds_fn() -> i32 {
+    utc_offset_seconds().unwrap_or(0)
+}
+
+/// Format the current local date/time as a string (e.g., "Thursday 15th January 2026 15:34")
+#[guest_function("FormatCurrentDateTime")]
+fn format_current_datetime() -> String {
+    let dt = DateTime::now_local();
+    format!(
+        "{} {} {} {} {:02}:{:02}:{:02}",
+        dt.weekday().name(),
+        dt.day_ordinal(),
+        dt.month().name(),
+        dt.year(),
+        dt.hour(),
+        dt.minute(),
+        dt.second()
+    )
+}
+
+/// Format a specific UTC timestamp (nanoseconds since Unix epoch) as a date/time string
+/// Returns: "Weekday DD Month Year HH:MM:SS" (e.g., "Thursday 15 January 2026 16:30:00")
+#[guest_function("FormatTimestampNs")]
+fn format_timestamp_ns(timestamp_ns: u64) -> String {
+    let dt = DateTime::from_timestamp_nanos(timestamp_ns);
+    format!(
+        "{} {:02} {} {} {:02}:{:02}:{:02}",
+        dt.weekday().name(),
+        dt.day(),
+        dt.month().name(),
+        dt.year(),
+        dt.hour(),
+        dt.minute(),
+        dt.second()
+    )
 }
 
 #[host_function("HostPrint")]

@@ -16,7 +16,9 @@ limitations under the License.
 
 #[cfg(gdb)]
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use hyperlight_common::time::GuestClockRegion;
 use rand::Rng;
 use tracing::{Span, instrument};
 
@@ -25,10 +27,11 @@ use super::SandboxConfiguration;
 use super::uninitialized::SandboxRuntimeConfig;
 use crate::hypervisor::hyperlight_vm::HyperlightVm;
 use crate::mem::exe::LoadInfo;
+use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
 use crate::mem::ptr_offset::Offset;
-use crate::mem::shared_mem::GuestSharedMemory;
+use crate::mem::shared_mem::{GuestSharedMemory, SharedMemory};
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 #[cfg(feature = "mem_profile")]
@@ -36,6 +39,47 @@ use crate::sandbox::trace::MemTraceInfo;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
 use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
+
+/// Get the UTC offset in seconds from the local timezone.
+///
+/// Returns the number of seconds to add to UTC to get local time.
+/// Positive values are east of UTC, negative values are west.
+fn get_utc_offset_seconds() -> i32 {
+    #[cfg(unix)]
+    {
+        // Use libc to get the timezone offset
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as libc::time_t)
+            .unwrap_or(0);
+
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        // SAFETY: localtime_r is thread-safe and writes to our stack-allocated tm
+        unsafe {
+            libc::localtime_r(&now, &mut tm);
+        }
+        // tm_gmtoff is the offset from UTC in seconds
+        tm.tm_gmtoff as i32
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, use Windows API to get timezone info
+        use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+
+        let mut tzi: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: GetTimeZoneInformation writes to our stack-allocated tzi
+        let result = unsafe { GetTimeZoneInformation(&mut tzi) };
+
+        // TIME_ZONE_ID_INVALID is 0xFFFFFFFF
+        if result == 0xFFFFFFFF {
+            return 0;
+        }
+
+        // Bias is in minutes, negative for east of UTC
+        // We negate and convert to seconds
+        -(tzi.Bias * 60)
+    }
+}
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
@@ -150,7 +194,7 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(feature = "mem_profile")]
     let trace_info = MemTraceInfo::new(_load_info.info)?;
 
-    HyperlightVm::new(
+    let mut vm = HyperlightVm::new(
         regions,
         pml4_ptr.absolute()?,
         entrypoint_ptr.absolute()?,
@@ -176,7 +220,55 @@ pub(crate) fn set_up_hypervisor_partition(
         rt_cfg.clone(),
         #[cfg(feature = "mem_profile")]
         trace_info,
-    )
+    )?;
+
+    // Setup paravirtualized clock
+    // Compute clock page GPA (guest physical address)
+    let clock_page_gpa =
+        (SandboxMemoryLayout::BASE_ADDRESS + mgr.layout.get_clock_page_offset()) as u64;
+
+    // Get boot time (UTC nanoseconds since Unix epoch)
+    let boot_time_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
+    // Get UTC offset from local timezone
+    let utc_offset_seconds = get_utc_offset_seconds();
+
+    // Setup pvclock in hypervisor and get clock type
+    let clock_type = vm.setup_pvclock_for_guest(clock_page_gpa)?;
+
+    // Write GuestClockRegion to PEB
+    let guest_clock =
+        GuestClockRegion::new(clock_page_gpa, clock_type, boot_time_ns, utc_offset_seconds);
+
+    // Write the GuestClockRegion to shared memory
+    let guest_clock_offset = mgr.layout.get_guest_clock_offset();
+    mgr.shared_mem.with_exclusivity(|shared_mem| {
+        // Write clock_page_ptr
+        shared_mem.write_u64(guest_clock_offset, guest_clock.clock_page_ptr)?;
+        // Write clock_type
+        shared_mem.write_u64(guest_clock_offset + 8, guest_clock.clock_type)?;
+        // Write boot_time_ns
+        shared_mem.write_u64(guest_clock_offset + 16, guest_clock.boot_time_ns)?;
+        // Write utc_offset_seconds (i32) as a u64 (with zero padding)
+        shared_mem.write_u64(
+            guest_clock_offset + 24,
+            guest_clock.utc_offset_seconds as u32 as u64,
+        )?;
+        Ok::<(), crate::HyperlightError>(())
+    })??;
+
+    log::debug!(
+        "Guest clock configured: type={:?}, page_gpa={:#x}, boot_time_ns={}, utc_offset_seconds={}",
+        clock_type,
+        clock_page_gpa,
+        boot_time_ns,
+        utc_offset_seconds
+    );
+
+    Ok(vm)
 }
 
 #[cfg(test)]

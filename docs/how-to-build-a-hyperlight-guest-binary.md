@@ -23,6 +23,12 @@ the guest to:
 - register functions that can be called by the host application
 - call host functions that have been registered by the host.
 
+### Available Features
+
+- **`guest_time`** (enabled by default): Provides time-related functionality via a paravirtualized clock.
+  This includes `SystemTime`, `Instant`, and `UNIX_EPOCH` in `hyperlight_guest_bin::time` that mirror
+  the `std::time` API. See [Guest Time API](./guest-time.md) for details.
+
 ## C guest binary
 
 For the binary written in C, the generated C bindings can be downloaded from the
@@ -30,3 +36,9 @@ latest release page that contain: the `hyperlight_guest.h` header and the
 C API library.
 The `hyperlight_guest.h` header contains the corresponding APIs to register
 guest functions and call host functions from within the guest.
+
+### Available Features
+
+When built with the `guest_time` feature (enabled by default), the C API provides
+POSIX-compatible time functions: `gettimeofday()`, `clock_gettime()`, and `time()`.
+See [Guest Time API](./guest-time.md) for details.

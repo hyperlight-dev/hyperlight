@@ -23,4 +23,6 @@ pub mod dispatch;
 pub mod error;
 pub mod flatbuffer;
 pub mod logging;
+#[cfg(feature = "guest_time")]
+pub mod time;
 pub mod types;

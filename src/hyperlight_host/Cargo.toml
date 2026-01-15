@@ -66,6 +66,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     "Win32_System_JobObjects",
     "Win32_System_SystemServices",
+    "Win32_System_Time",
 ] }
 windows-sys = { version = "0.61", features = ["Win32"] }
 windows-result = "0.4"
@@ -122,8 +123,10 @@ cfg_aliases = "0.2.1"
 built = { version = "0.8.0", optional = true, features = ["chrono", "git2"] }
 
 [features]
-default = ["kvm", "mshv3", "build-metadata", "init-paging"]
+default = ["kvm", "mshv3", "build-metadata", "init-paging", "guest_time"]
 function_call_metrics = []
+# Enable paravirtualized clock support for guest time functions
+guest_time = ["hyperlight-common/guest_time"]
 executable_heap = []
 # This feature enables printing of debug information to stdout in debug builds
 print_debug = []

@@ -38,6 +38,8 @@ pub struct GuestStack {
     pub user_stack_address: u64,
 }
 
+use crate::time::GuestClockRegion;
+
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct HyperlightPEB {
@@ -49,4 +51,6 @@ pub struct HyperlightPEB {
     pub guest_heap: GuestMemoryRegion,
     pub guest_stack: GuestStack,
     pub host_function_definitions: GuestMemoryRegion,
+    /// Guest clock region for paravirtualized time support
+    pub guest_clock: GuestClockRegion,
 }
