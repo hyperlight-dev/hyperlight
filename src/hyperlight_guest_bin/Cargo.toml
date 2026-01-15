@@ -26,7 +26,7 @@ hyperlight-guest = { workspace = true, default-features = false }
 hyperlight-common = { workspace = true, default-features = false, features = [ "init-paging" ] }
 hyperlight-guest-tracing = { workspace = true, default-features = false }
 hyperlight-guest-macro = { workspace = true, default-features = false, optional = true }
-buddy_system_allocator = "0.11.0"
+buddy_system_allocator = "0.12.0"
 log = { version = "0.4", default-features = false }
 linkme = { version = "0.3.35", optional = true }
 spin = "0.10.0"
