@@ -2882,9 +2882,9 @@ dependencies = [
 
 [[package]]
 name = "rust-embed"
-version = "8.10.0"
+version = "8.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f783a9e226b5319beefe29d45941f559ace8b56801bb8355be17eea277fc8272"
+checksum = "04113cb9355a377d83f06ef1f0a45b8ab8cd7d8b1288160717d66df5c7988d27"
 dependencies = [
  "rust-embed-impl",
  "rust-embed-utils",
