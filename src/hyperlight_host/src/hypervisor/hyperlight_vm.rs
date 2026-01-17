@@ -32,6 +32,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[cfg(gdb)]
 use super::gdb::{DebugCommChannel, DebugMsg, DebugResponse, DebuggableVm, VcpuStopReason, arch};
+#[cfg(target_arch = "x86_64")]
 use super::regs::{CommonFpu, CommonRegisters};
 #[cfg(target_os = "windows")]
 use super::{PartitionState, WindowsInterruptHandle};
@@ -233,20 +234,23 @@ impl HyperlightVm {
             None => get_max_log_level().into(),
         };
 
-        let regs = CommonRegisters {
-            rip: self.entrypoint,
-            rsp: self.orig_rsp.absolute()?,
+        #[cfg(target_arch = "x86_64")]
+        {
+            let regs = CommonRegisters {
+                rip: self.entrypoint,
+                rsp: self.orig_rsp.absolute()?,
 
-            // function args
-            rdi: peb_addr.into(),
-            rsi: seed,
-            rdx: page_size.into(),
-            rcx: guest_max_log_level,
-            rflags: 1 << 1,
+                // function args
+                rdi: peb_addr.into(),
+                rsi: seed,
+                rdx: page_size.into(),
+                rcx: guest_max_log_level,
+                rflags: 1 << 1,
 
-            ..Default::default()
-        };
-        self.vm.set_regs(&regs)?;
+                ..Default::default()
+            };
+            self.vm.set_regs(&regs)?;
+        }
 
         self.run(
             mem_mgr,
@@ -328,16 +332,19 @@ impl HyperlightVm {
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> Result<()> {
         // set RIP and RSP, reset others
-        let regs = CommonRegisters {
-            rip: dispatch_func_addr.into(),
-            rsp: self.orig_rsp.absolute()?,
-            rflags: 1 << 1,
-            ..Default::default()
-        };
-        self.vm.set_regs(&regs)?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let regs = CommonRegisters {
+                rip: dispatch_func_addr.into(),
+                rsp: self.orig_rsp.absolute()?,
+                rflags: 1 << 1,
+                ..Default::default()
+            };
+            self.vm.set_regs(&regs)?;
 
-        // reset fpu
-        self.vm.set_fpu(&CommonFpu::default())?;
+            // reset fpu
+            self.vm.set_fpu(&CommonFpu::default())?;
+        }
 
         self.run(
             mem_mgr,

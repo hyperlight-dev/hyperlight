@@ -12,22 +12,9 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+ */
 
-//! Backwards compatibility re-exports from the arch module.
-//! New code should use `crate::hypervisor::arch` directly.
-
-#[cfg(target_os = "windows")]
-use std::collections::HashSet;
-
-pub(crate) use super::arch::*;
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, PartialEq)]
-pub(crate) enum FromWhpRegisterError {
-    MissingRegister(HashSet<i32>),
-    InvalidLength(usize),
-    InvalidEncoding,
-    DuplicateRegister(i32),
-    InvalidRegister(i32),
-}
+// AArch64 uses a different virtual address space layout than x86_64.
+// The kernel (upper) address space typically starts at 0xFFFF_0000_0000_0000
+// with a 48-bit VA (4-level, 4KB granule).
+pub const SNAPSHOT_PT_GVA: usize = 0xFFFF_FF00_0000_0000;

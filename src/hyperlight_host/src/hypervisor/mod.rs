@@ -20,7 +20,10 @@ use log::LevelFilter;
 #[cfg(gdb)]
 pub(crate) mod gdb;
 
-/// Abstracts over different hypervisor register representations
+/// Architecture-specific register types
+pub(crate) mod arch;
+
+/// Backwards compatibility re-export
 pub(crate) mod regs;
 
 pub(crate) mod virtual_machine;

@@ -1,5 +1,5 @@
 /*
-Copyright 2025  The Hyperlight Authors.
+Copyright 2024 The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,20 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! Backwards compatibility re-exports from the arch module.
-//! New code should use `crate::hypervisor::arch` directly.
-
-#[cfg(target_os = "windows")]
-use std::collections::HashSet;
-
-pub(crate) use super::arch::*;
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, PartialEq)]
-pub(crate) enum FromWhpRegisterError {
-    MissingRegister(HashSet<i32>),
-    InvalidLength(usize),
-    InvalidEncoding,
-    DuplicateRegister(i32),
-    InvalidRegister(i32),
-}
+/// AArch64 general-purpose registers.
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub(crate) struct CommonRegisters {}

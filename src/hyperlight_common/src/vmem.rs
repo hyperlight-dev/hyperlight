@@ -15,6 +15,7 @@ limitations under the License.
  */
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vmem.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/vmem.rs")]
 pub mod arch;
 
 pub use arch::{PAGE_SIZE, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};

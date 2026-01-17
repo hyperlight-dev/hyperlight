@@ -16,6 +16,7 @@ limitations under the License.
 
 // The constraint on the feature is temporary and will be removed when other arch i686 is added
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/layout.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/layout.rs")]
 #[cfg(feature = "init-paging")]
 mod arch;
 

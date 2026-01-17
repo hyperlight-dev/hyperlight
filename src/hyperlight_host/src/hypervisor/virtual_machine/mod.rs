@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 use tracing::{Span, instrument};
 
 use crate::Result;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::arch::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::memory_region::MemoryRegion;
 
 /// KVM (Kernel-based Virtual Machine) functionality (linux)
