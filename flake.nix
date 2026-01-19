@@ -75,19 +75,19 @@
           # for rustfmt and old toolchains to verify MSRV
           toolchains = lib.mapAttrs (_: customisedRustChannelOf) {
             stable = {
-              date = "2025-09-18";
+              date = "2025-12-11";
               channel = "stable";
-              sha256 = "sha256-SJwZ8g0zF2WrKDVmHrVG3pD2RGoQeo24MEXnNx5FyuI=";
+              sha256 = "sha256-sqSWJDUxc+zaz1nBWMAJKTAGBuGWP25GCftIOlCEAtA=";
             };
             nightly = {
-              date = "2025-07-29";
+              date = "2026-01-19";
               channel = "nightly";
-              sha256 = "sha256-6D2b7glWC3jpbIGCq6Ta59lGCKN9sTexhgixH4Y7Nng=";
+              sha256 = "sha256-Ye65U/qzilPLte800N5oxFOY96shgG8bST8dbrF6Qh0=";
             };
-            "1.88" = {
-              date = "2025-06-26";
+            "1.89" = {
+              date = "2025-08-07";
               channel = "stable";
-              sha256 = "sha256-Qxt8XAuaUR2OMdKbN4u8dBJOhSHxS+uS06Wl9+flVEk=";
+              sha256 = "sha256-+9FmLhAOezBZCOziO0Qct1NOrfpjNsXxc/8I0c7BdKE=";
             };
           };
 
@@ -110,14 +110,14 @@
               clauses = lib.strings.concatStringsSep "\n"
                 (lib.mapAttrsToList clause toolchains);
             in ''
-          base="${toolchains.stable.rust}"
-          case "$1" in
-            ${clauses}
-            install) exit 0; ;;
-          esac
-          export PATH="$base/bin:$PATH"
-          exec "$base/bin/${name}" "$@"
-        '');
+              base="${toolchains.stable.rust}"
+              case "$1" in
+                ${clauses}
+                install) exit 0; ;;
+              esac
+              export PATH="$base/bin:$PATH"
+              exec "$base/bin/${name}" "$@"
+            '');
           fake-rustup = pkgs.symlinkJoin {
             name = "fake-rustup";
             paths = [
@@ -128,7 +128,18 @@
           };
 
           buildRustPackageClang = rust-platform.buildRustPackage.override { stdenv = clangStdenv; };
-        in (buildRustPackageClang rec {
+          cargo-hyperlight = buildRustPackageClang rec {
+            pname = "cargo-hyperlight";
+            version = "0.1.5";
+            src = fetchFromGitHub {
+              owner = "hyperlight-dev";
+              repo = "cargo-hyperlight";
+              tag = "v${version}";
+              hash = "sha256-xq4/c69N0wG/I8WOYVloo0J0JqoSIKiWWtECdSKrsxo=";
+            };
+            cargoHash = "sha256-muiMVrK1TydQiMitihfo7xYidqUIIQ+Hw3BIeo5rLFw=";
+          };
+        in (buildRustPackageClang (mkDerivationAttrs: {
           pname = "hyperlight";
           version = "0.0.0";
           src = lib.cleanSource ./.;
@@ -150,6 +161,7 @@
             jaq
             gdb
             zlib
+            cargo-hyperlight
           ];
           buildInputs = [
             pango
@@ -169,7 +181,7 @@
           postHook = ''
             export PATH="${fake-rustup}/bin:$PATH"
           '';
-        }).overrideAttrs(oA: {
+        })).overrideAttrs(oA: {
           hardeningDisable = [ "all" ];
         });
     };
