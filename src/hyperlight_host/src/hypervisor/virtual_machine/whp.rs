@@ -448,6 +448,24 @@ impl VirtualMachine for WhpVm {
     fn partition_handle(&self) -> WHV_PARTITION_HANDLE {
         self.partition
     }
+
+    fn setup_pvclock(&mut self, clock_page_gpa: u64) -> Result<()> {
+        // Enable Hyper-V Reference TSC by setting the WHvRegisterReferenceTsc register.
+        // The value is the GPA of the Reference TSC page with bit 0 set to enable.
+        let reg_value = clock_page_gpa | 1; // bit 0 = enable
+
+        let reg = WHV_REGISTER_VALUE { Reg64: reg_value };
+
+        self.set_registers(&[(WHvRegisterReferenceTsc, Align16(reg))])?;
+
+        log::debug!(
+            "WHP Reference TSC enabled at GPA {:#x} (reg value: {:#x})",
+            clock_page_gpa,
+            reg_value
+        );
+
+        Ok(())
+    }
 }
 
 #[cfg(gdb)]

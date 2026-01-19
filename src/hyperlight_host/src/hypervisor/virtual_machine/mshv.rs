@@ -26,7 +26,8 @@ use mshv_bindings::{
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features, hv_register_assoc,
-    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
+    hv_register_name_HV_REGISTER_REFERENCE_TSC, hv_register_name_HV_X64_REGISTER_RIP,
+    hv_register_value, mshv_user_mem_region,
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
@@ -213,6 +214,28 @@ impl VirtualMachine for MshvVm {
     fn xsave(&self) -> Result<Vec<u8>> {
         let xsave = self.vcpu_fd.get_xsave()?;
         Ok(xsave.buffer.to_vec())
+    }
+
+    fn setup_pvclock(&mut self, clock_page_gpa: u64) -> Result<()> {
+        // Enable Hyper-V Reference TSC by setting the HV_REGISTER_REFERENCE_TSC register.
+        // The value is the GPA of the Reference TSC page with bit 0 set to enable.
+        let reg_value = clock_page_gpa | 1; // bit 0 = enable
+
+        self.vcpu_fd
+            .set_reg(&[hv_register_assoc {
+                name: hv_register_name_HV_REGISTER_REFERENCE_TSC,
+                value: hv_register_value { reg64: reg_value },
+                ..Default::default()
+            }])
+            .map_err(|e| new_error!("Failed to set Reference TSC register: {}", e))?;
+
+        log::debug!(
+            "MSHV Reference TSC enabled at GPA {:#x} (reg value: {:#x})",
+            clock_page_gpa,
+            reg_value
+        );
+
+        Ok(())
     }
 }
 

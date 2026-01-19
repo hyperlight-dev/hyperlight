@@ -169,6 +169,23 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[cfg(crashdump)]
     fn xsave(&self) -> Result<Vec<u8>>;
 
+    /// Setup paravirtualized clock for the guest.
+    ///
+    /// This configures the hypervisor to provide time information to the guest
+    /// via a shared memory page. The guest can read time without VM exits.
+    ///
+    /// # Arguments
+    /// * `clock_page_gpa` - Guest physical address of the clock page (must be 4KB aligned)
+    ///
+    /// # Returns
+    /// * `Ok(())` if clock was successfully configured
+    /// * `Err` if the hypervisor doesn't support pvclock or configuration failed
+    fn setup_pvclock(&mut self, _clock_page_gpa: u64) -> Result<()> {
+        Err(crate::new_error!(
+            "Paravirtualized clock setup not implemented for this hypervisor",
+        ))
+    }
+
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;

@@ -27,6 +27,7 @@ This project is composed internally of several components, depicted in the below
 * [Glossary](./glossary.md)
 * [How code gets executed in a VM](./hyperlight-execution-details.md)
 * [How to build a Hyperlight guest binary](./how-to-build-a-hyperlight-guest-binary.md)
+* [Guest Time API](./guest-time.md)
 * [Security considerations](./security.md)
 * [Technical requirements document](./technical-requirements-document.md)
 

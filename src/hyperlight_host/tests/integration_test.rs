@@ -1760,3 +1760,363 @@ fn interrupt_cancel_delete_race() {
         handle.join().unwrap();
     }
 }
+
+// Paravirtualized clock tests
+
+#[cfg(feature = "guest_time")]
+#[test]
+fn test_pvclock_available() {
+    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
+    let available = sandbox.call::<i32>("TestClockAvailable", ()).unwrap();
+    assert_eq!(available, 1, "Paravirtualized clock should be available");
+}
+
+#[cfg(feature = "guest_time")]
+#[test]
+fn test_monotonic_time_increases() {
+    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
+    let result = sandbox.call::<i32>("TestMonotonicIncreases", ()).unwrap();
+    assert_eq!(result, 1, "Monotonic time should increase between reads");
+}
+
+#[cfg(feature = "guest_time")]
+#[test]
+fn test_wall_clock_reasonable() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
+
+    // First call - guest time should be between host before and after times
+    let host_before_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let guest_ns_1 = sandbox.call::<u64>("GetWallClockTimeNs", ()).unwrap();
+    let host_after_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+
+    // Allow 100ms skew for any timing differences
+    let skew_ns = 100_000_000u64;
+    assert!(
+        guest_ns_1 >= host_before_ns.saturating_sub(skew_ns),
+        "Guest clock too early: guest={}, host_before={}",
+        guest_ns_1,
+        host_before_ns
+    );
+    assert!(
+        guest_ns_1 <= host_after_ns + skew_ns,
+        "Guest clock too late: guest={}, host_after={}",
+        guest_ns_1,
+        host_after_ns
+    );
+
+    // Second call - should be later
+    let guest_ns_2 = sandbox.call::<u64>("GetWallClockTimeNs", ()).unwrap();
+    assert!(
+        guest_ns_2 >= guest_ns_1,
+        "Second call should be >= first: t1={}, t2={}",
+        guest_ns_1,
+        guest_ns_2
+    );
+}
+
+#[cfg(feature = "guest_time")]
+#[test]
+fn test_utc_offset_matches_host() {
+    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
+
+    // Get the UTC offset from the guest
+    let guest_offset = sandbox.call::<i32>("GetUtcOffsetSeconds", ()).unwrap();
+
+    // Get the host's UTC offset using platform-specific APIs
+    #[cfg(unix)]
+    let host_offset = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as libc::time_t)
+            .unwrap_or(0);
+
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::localtime_r(&now, &mut tm);
+        }
+        tm.tm_gmtoff as i32
+    };
+
+    #[cfg(windows)]
+    let host_offset = {
+        use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+
+        let mut tzi: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+        let result = unsafe { GetTimeZoneInformation(&mut tzi) };
+
+        if result == 0xFFFFFFFF {
+            0
+        } else {
+            // Bias is in minutes, negative for east of UTC
+            // We negate and convert to seconds
+            -(tzi.Bias * 60)
+        }
+    };
+
+    // The guest offset should match the host offset (captured at sandbox creation)
+    assert_eq!(
+        guest_offset, host_offset,
+        "Guest UTC offset should match host: guest={}, host={}",
+        guest_offset, host_offset
+    );
+}
+
+#[cfg(feature = "guest_time")]
+#[test]
+fn test_datetime_formatting() {
+    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
+
+    // Get formatted datetime from guest
+    let formatted = sandbox.call::<String>("FormatCurrentDateTime", ()).unwrap();
+
+    // Should contain expected components (not empty, has day/month/year)
+    assert!(
+        !formatted.is_empty(),
+        "Formatted datetime should not be empty"
+    );
+    assert!(
+        formatted.contains(' '),
+        "Formatted datetime should contain spaces: '{}'",
+        formatted
+    );
+
+    // The datetime should have reasonable content - check for common weekday/month words
+    let has_weekday = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ]
+    .iter()
+    .any(|day| formatted.contains(day));
+    let has_month = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ]
+    .iter()
+    .any(|month| formatted.contains(month));
+
+    assert!(
+        has_weekday,
+        "Formatted datetime should contain a weekday name: '{}'",
+        formatted
+    );
+    assert!(
+        has_month,
+        "Formatted datetime should contain a month name: '{}'",
+        formatted
+    );
+
+    println!("Guest formatted datetime: {}", formatted);
+}
+
+/// Test data structure for timestamp formatting tests
+#[cfg(feature = "guest_time")]
+struct TimestampTestCase {
+    /// Unix timestamp in nanoseconds
+    timestamp_ns: u64,
+    /// Expected formatted output
+    expected: &'static str,
+    /// Description of what this test case verifies
+    description: &'static str,
+}
+
+#[cfg(feature = "guest_time")]
+fn get_timestamp_test_cases() -> Vec<TimestampTestCase> {
+    vec![
+        // Unix epoch
+        TimestampTestCase {
+            timestamp_ns: 0,
+            expected: "Thursday 01 January 1970 00:00:00",
+            description: "Unix epoch (1970-01-01 00:00:00 UTC)",
+        },
+        // One day after epoch
+        TimestampTestCase {
+            timestamp_ns: 86400 * 1_000_000_000,
+            expected: "Friday 02 January 1970 00:00:00",
+            description: "One day after epoch",
+        },
+        // End of January 1970
+        TimestampTestCase {
+            timestamp_ns: 30 * 86400 * 1_000_000_000,
+            expected: "Saturday 31 January 1970 00:00:00",
+            description: "31st January 1970",
+        },
+        // 21st day
+        TimestampTestCase {
+            timestamp_ns: 20 * 86400 * 1_000_000_000,
+            expected: "Wednesday 21 January 1970 00:00:00",
+            description: "21st January 1970",
+        },
+        // 22nd day
+        TimestampTestCase {
+            timestamp_ns: 21 * 86400 * 1_000_000_000,
+            expected: "Thursday 22 January 1970 00:00:00",
+            description: "22nd January 1970",
+        },
+        // 23rd day
+        TimestampTestCase {
+            timestamp_ns: 22 * 86400 * 1_000_000_000,
+            expected: "Friday 23 January 1970 00:00:00",
+            description: "23rd January 1970",
+        },
+        // Y2K (test year 2000, leap year)
+        TimestampTestCase {
+            timestamp_ns: 946684800 * 1_000_000_000,
+            expected: "Saturday 01 January 2000 00:00:00",
+            description: "Y2K - January 1st, 2000",
+        },
+        // Feb 29, 2000 (leap year)
+        TimestampTestCase {
+            timestamp_ns: 951782400 * 1_000_000_000,
+            expected: "Tuesday 29 February 2000 00:00:00",
+            description: "Leap day Feb 29, 2000",
+        },
+        // March 1, 2000 (day after leap day)
+        TimestampTestCase {
+            timestamp_ns: 951868800 * 1_000_000_000,
+            expected: "Wednesday 01 March 2000 00:00:00",
+            description: "March 1, 2000 (day after leap day)",
+        },
+        // Current era: January 15, 2026 at 12:30:45
+        TimestampTestCase {
+            timestamp_ns: 1768480245 * 1_000_000_000,
+            expected: "Thursday 15 January 2026 12:30:45",
+            description: "January 15, 2026 at 12:30:45 UTC",
+        },
+        // Test all months - pick 15th of each month 2025
+        TimestampTestCase {
+            timestamp_ns: 1736899200 * 1_000_000_000, // Jan 15, 2025
+            expected: "Wednesday 15 January 2025 00:00:00",
+            description: "January 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1739577600 * 1_000_000_000, // Feb 15, 2025
+            expected: "Saturday 15 February 2025 00:00:00",
+            description: "February 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1741996800 * 1_000_000_000, // Mar 15, 2025
+            expected: "Saturday 15 March 2025 00:00:00",
+            description: "March 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1744675200 * 1_000_000_000, // Apr 15, 2025
+            expected: "Tuesday 15 April 2025 00:00:00",
+            description: "April 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1747267200 * 1_000_000_000, // May 15, 2025
+            expected: "Thursday 15 May 2025 00:00:00",
+            description: "May 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1749945600 * 1_000_000_000, // Jun 15, 2025
+            expected: "Sunday 15 June 2025 00:00:00",
+            description: "June 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1752537600 * 1_000_000_000, // Jul 15, 2025
+            expected: "Tuesday 15 July 2025 00:00:00",
+            description: "July 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1755216000 * 1_000_000_000, // Aug 15, 2025
+            expected: "Friday 15 August 2025 00:00:00",
+            description: "August 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1757894400 * 1_000_000_000, // Sep 15, 2025
+            expected: "Monday 15 September 2025 00:00:00",
+            description: "September 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1760486400 * 1_000_000_000, // Oct 15, 2025
+            expected: "Wednesday 15 October 2025 00:00:00",
+            description: "October 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1763164800 * 1_000_000_000, // Nov 15, 2025
+            expected: "Saturday 15 November 2025 00:00:00",
+            description: "November 2025",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1765756800 * 1_000_000_000, // Dec 15, 2025
+            expected: "Monday 15 December 2025 00:00:00",
+            description: "December 2025",
+        },
+        // Test non-leap year Feb 28 and Mar 1 (2025)
+        TimestampTestCase {
+            timestamp_ns: 1740700800 * 1_000_000_000, // Feb 28, 2025
+            expected: "Friday 28 February 2025 00:00:00",
+            description: "Feb 28, 2025 (non-leap year)",
+        },
+        TimestampTestCase {
+            timestamp_ns: 1740787200 * 1_000_000_000, // Mar 1, 2025
+            expected: "Saturday 01 March 2025 00:00:00",
+            description: "Mar 1, 2025 (day after non-leap Feb 28)",
+        },
+        // Test leap year 2024
+        TimestampTestCase {
+            timestamp_ns: 1709164800 * 1_000_000_000, // Feb 29, 2024
+            expected: "Thursday 29 February 2024 00:00:00",
+            description: "Feb 29, 2024 (leap day)",
+        },
+        // Test time components
+        TimestampTestCase {
+            timestamp_ns: 1704067199 * 1_000_000_000, // Dec 31, 2023 23:59:59
+            expected: "Sunday 31 December 2023 23:59:59",
+            description: "End of 2023 (test time components)",
+        },
+    ]
+}
+
+#[cfg(feature = "guest_time")]
+#[test]
+fn test_timestamp_formatting() {
+    // Uses GUEST env var to select Rust or C guest (default: Rust)
+    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
+
+    let test_cases = get_timestamp_test_cases();
+    let test_count = test_cases.len();
+
+    for tc in test_cases {
+        let result = sandbox
+            .call::<String>("FormatTimestampNs", tc.timestamp_ns)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to call FormatTimestampNs for {}: {:?}",
+                    tc.description, e
+                )
+            });
+
+        assert_eq!(
+            result, tc.expected,
+            "Timestamp formatting failed for {}:\n  timestamp_ns: {}\n  expected: '{}'\n  got: '{}'",
+            tc.description, tc.timestamp_ns, tc.expected, result
+        );
+    }
+
+    println!("All {} timestamp formatting tests passed", test_count);
+}

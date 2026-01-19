@@ -18,7 +18,9 @@ use std::sync::LazyLock;
 
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
+use kvm_bindings::{
+    Msrs, kvm_fpu, kvm_msr_entry, kvm_regs, kvm_sregs, kvm_userspace_memory_region,
+};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
@@ -29,6 +31,11 @@ use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters
 use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::mem::memory_region::MemoryRegion;
 use crate::{Result, new_error};
+
+/// MSR for KVM pvclock system time (new version)
+/// This MSR enables paravirtualized time for the guest.
+/// The value written is the GPA of the pvclock structure with bit 0 set to enable.
+const MSR_KVM_SYSTEM_TIME_NEW: u32 = 0x4b564d01;
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -169,6 +176,32 @@ impl VirtualMachine for KvmVm {
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect())
+    }
+
+    fn setup_pvclock(&mut self, clock_page_gpa: u64) -> Result<()> {
+        // Enable KVM pvclock by writing the MSR_KVM_SYSTEM_TIME_NEW MSR.
+        // The value is the GPA of the pvclock structure with bit 0 set to enable.
+        let msr_value = clock_page_gpa | 1; // bit 0 = enable
+
+        let mut msrs = Msrs::new(1).map_err(|e| new_error!("Failed to create MSRs: {}", e))?;
+        let entries = msrs.as_mut_slice();
+        entries[0] = kvm_msr_entry {
+            index: MSR_KVM_SYSTEM_TIME_NEW,
+            data: msr_value,
+            ..Default::default()
+        };
+
+        self.vcpu_fd
+            .set_msrs(&msrs)
+            .map_err(|e| new_error!("Failed to set pvclock MSR: {}", e))?;
+
+        log::debug!(
+            "KVM pvclock enabled at GPA {:#x} (MSR value: {:#x})",
+            clock_page_gpa,
+            msr_value
+        );
+
+        Ok(())
     }
 }
 

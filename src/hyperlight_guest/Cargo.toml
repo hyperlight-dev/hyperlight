@@ -22,5 +22,7 @@ tracing = { version = "0.1.44", default-features = false, features = ["attribute
 hyperlight-guest-tracing = { workspace = true, default-features = false, optional = true }
 
 [features]
-default = []
+default = ["guest_time"]
 trace_guest = ["dep:hyperlight-guest-tracing", "hyperlight-guest-tracing?/trace"]
+# Enable paravirtualized clock support for guest time functions
+guest_time = ["hyperlight-common/guest_time"]

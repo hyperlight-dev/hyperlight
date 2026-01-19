@@ -25,6 +25,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+use hyperlight_common::time::ClockType;
 use log::LevelFilter;
 use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
@@ -210,6 +211,42 @@ impl HyperlightVm {
         }
 
         Ok(ret)
+    }
+
+    /// Setup paravirtualized clock for the guest.
+    ///
+    /// This configures the hypervisor to provide time information to the guest
+    /// via a shared memory page at the given GPA. The clock type is determined
+    /// by the hypervisor in use.
+    ///
+    /// # Arguments
+    /// * `clock_page_gpa` - Guest physical address of the clock page (must be 4KB aligned)
+    ///
+    /// # Returns
+    /// * `ClockType` indicating which clock format was configured
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    pub(crate) fn setup_pvclock_for_guest(&mut self, clock_page_gpa: u64) -> Result<ClockType> {
+        // Setup the pvclock in the hypervisor
+        self.vm.setup_pvclock(clock_page_gpa)?;
+
+        // Determine clock type based on hypervisor
+        let clock_type = match get_available_hypervisor() {
+            #[cfg(kvm)]
+            Some(HypervisorType::Kvm) => ClockType::KvmPvclock,
+            #[cfg(mshv3)]
+            Some(HypervisorType::Mshv) => ClockType::HyperVReferenceTsc,
+            #[cfg(target_os = "windows")]
+            Some(HypervisorType::Whp) => ClockType::HyperVReferenceTsc,
+            None => ClockType::None,
+        };
+
+        log::debug!(
+            "Configured pvclock: type={:?}, page_gpa={:#x}",
+            clock_type,
+            clock_page_gpa
+        );
+
+        Ok(clock_type)
     }
 
     /// Initialise the internally stored vCPU with the given PEB address and

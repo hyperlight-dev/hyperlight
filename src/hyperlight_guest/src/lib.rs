@@ -23,6 +23,8 @@ extern crate alloc;
 // Modules
 pub mod error;
 pub mod exit;
+#[cfg(feature = "guest_time")]
+pub mod time;
 
 pub mod guest_handle {
     pub mod handle;
