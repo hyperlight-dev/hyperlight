@@ -217,7 +217,7 @@ done using "wrap" counters:
   the inverse. When the device publishes a used descriptor, it sets both `AVAIL` and `USED` to its
   wrap bit.
 - The reader of a descriptor then compares the flags it reads to its own current wrap to decide if
-  the descriptr is newly available/used now, or is it lagging behind.
+  the descriptor is newly available/used now, or is it lagging behind.
 
 ### Comparison with current implementation
 
@@ -231,7 +231,7 @@ Each of these memory regions begins with an 8-byte header that stores a relative
 the next free byte in the stack.
 
 When pushing, the payload which is flatbuffer-serialized message is written at the current stack
-pointer, followed by the 8-byte footer that containins just written payload's starting offset.
+pointer, followed by the 8-byte footer that containing just written payload's starting offset.
 Finally, the header is advanced to point past the footer. This makes each item a pair of
 `payload + back-pointer`, so the top of the stack can always be found in O(1) without extra
 metadata.
@@ -280,7 +280,7 @@ different batching strategies. For example:
 **2. Event based notifications**
 
 In the single threaded application the notification involve VM exit but in multi-thread environment
-where host and guest are running in separate threads we can laverage event-based notifications (for
+where host and guest are running in separate threads we can leverage event-based notifications (for
 example `ioeventfd` for kvm). This is especially useful for streaming scenarios where the guest can
 continue processing while the host consumes data asynchronously.
 
@@ -324,7 +324,7 @@ struct Descriptor {
 
 When the `INLINE` flag is set, the `addr` is unused. This optimization, inspired by io_uring,
 eliminates memory indirection for common small messages, improving both latency and cache behavior.
-The tradeof is the increased size of descriptor table. Alternatively we could repurpose the `addr`
+The tradeoff is the increased size of descriptor table. Alternatively we could repurpose the `addr`
 and `len` as raw bytes providing 12 bytes of inline storage. We should asses if any of flatbuffer
 schema serialized data can actually fit into small inline data.
 
@@ -657,7 +657,9 @@ where
     N: NotificationStrategy,
 {
     /// Split into separate sender and receiver
-    pub fn split(self) -> (RingSender<A, N>, RingReceiver);
+    pub fn split(self) -> (RingSender<A, N>, RingReceiver) {
+        unimplemented!("split is not implemented in this example");
+    }
 }
 
 impl<A, N> RingSender<A, N>
@@ -671,7 +673,7 @@ where
         T: FlatbufferSerializable;
 
     /// Try to send without blocking
-    pub fn try_send<T>(&mut self, message: T) -> Result<Token, RingError>;
+    pub fn try_send<T>(&mut self, message: T) -> Result<Token, RingError>
     where
         T: FlatbufferSerializable;
 }
