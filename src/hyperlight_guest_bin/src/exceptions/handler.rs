@@ -73,7 +73,7 @@ const _: () = assert!(size_of::<Context>() == 32 + 512 + 120 + 8);
 // as specified in the x86-64 ELF System V psABI specification, Section 3.2.2:
 //
 // https://gitlab.com/x86-psABIs/x86-64-ABI/-/jobs/artifacts/master/raw/x86-64-ABI/abi.pdf?job=build
-const _: () = assert!((size_of::<Context>() + size_of::<ExceptionInfo>()) % 16 == 0);
+const _: () = assert!((size_of::<Context>() + size_of::<ExceptionInfo>()).is_multiple_of(16));
 
 /// Array of installed exception handlers for vectors 0-30.
 ///

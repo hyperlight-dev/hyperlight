@@ -1219,7 +1219,7 @@ fn interrupt_random_kill_stress_test() {
 
                 // Progress reporting
                 let current_total = total_iterations_clone.load(Ordering::Relaxed);
-                if current_total % 5000 == 0 {
+                if current_total.is_multiple_of(5000) {
                     println!(
                         "Progress: {}/{} iterations completed",
                         current_total,
