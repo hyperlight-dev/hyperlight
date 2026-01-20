@@ -31,10 +31,42 @@ use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
-use crate::{HyperlightError, Result, new_error};
+
+/// Errors that can occur when handling an outb operation from the guest.
+#[derive(Debug, thiserror::Error)]
+pub enum HandleOutbError {
+    #[error("Stack overflow detected (signaled by guest)")]
+    StackOverflow,
+    #[error("Guest aborted: error code {code}, message: {message}")]
+    GuestAborted {
+        /// The error code from the guest
+        code: u8,
+        /// The error message from the guest
+        message: String,
+    },
+    #[error("Invalid outb port: {0}")]
+    InvalidPort(String),
+    #[error("Failed to read guest log data: {0}")]
+    ReadLogData(String),
+    #[error("Trace formatting error: {0}")]
+    TraceFormat(String),
+    #[error("Failed to read host function call: {0}")]
+    ReadHostFunctionCall(String),
+    #[error("Failed to acquire lock at {0}:{1} - {2}")]
+    LockFailed(&'static str, u32, String),
+    #[error("Failed to write host function response: {0}")]
+    WriteHostFunctionResponse(String),
+    #[error("Invalid character for debug print: {0}")]
+    InvalidDebugPrintChar(u32),
+    #[cfg(feature = "mem_profile")]
+    #[error("Memory profiling error: {0}")]
+    MemProfile(String),
+}
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level="Trace")]
-pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Result<()> {
+pub(super) fn outb_log(
+    mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+) -> Result<(), HandleOutbError> {
     // This code will create either a logging record or a tracing record for the GuestLogData depending on if the host has set up a tracing subscriber.
     // In theory as we have enabled the log feature in the Cargo.toml for tracing this should happen
     // automatically (based on if there is tracing subscriber present) but only works if the event created using macros. (see https://github.com/tokio-rs/tracing/blob/master/tracing/src/macros.rs#L2421 )
@@ -42,7 +74,9 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
     // set the file and line number for the log record which is not possible with macros.
     // This is because the file and line number come from the  guest not the call site.
 
-    let log_data: GuestLogData = mgr.read_guest_log_data()?;
+    let log_data: GuestLogData = mgr
+        .read_guest_log_data()
+        .map_err(|e| HandleOutbError::ReadLogData(e.to_string()))?;
 
     let record_level: Level = (&log_data.level).into();
 
@@ -77,7 +111,8 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
                 .line(line)
                 .module_path(source)
                 .build(),
-        )?;
+        )
+        .map_err(|e| HandleOutbError::TraceFormat(e.to_string()))?;
     } else {
         // Create a log record for the GuestLogData
         log::logger().log(
@@ -98,7 +133,10 @@ pub(super) fn outb_log(mgr: &mut SandboxMemoryManager<HostSharedMemory>) -> Resu
 const ABORT_TERMINATOR: u8 = 0xFF;
 const MAX_ABORT_BUFFER_LEN: usize = 1024;
 
-fn outb_abort(mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>, data: u32) -> Result<()> {
+fn outb_abort(
+    mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    data: u32,
+) -> Result<(), HandleOutbError> {
     let buffer = mem_mgr.get_abort_buffer_mut();
 
     let bytes = data.to_le_bytes(); // [len, b1, b2, b3]
@@ -110,7 +148,7 @@ fn outb_abort(mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>, data: u32) -
             let guest_error = ErrorCode::from(guest_error_code as u64);
 
             let result = match guest_error {
-                ErrorCode::StackOverflow => Err(HyperlightError::StackOverflow()),
+                ErrorCode::StackOverflow => Err(HandleOutbError::StackOverflow),
                 _ => {
                     let message = if let Some(&maybe_exception_code) = buffer.get(1) {
                         match Exception::try_from(maybe_exception_code) {
@@ -124,7 +162,10 @@ fn outb_abort(mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>, data: u32) -
                         String::new()
                     };
 
-                    Err(HyperlightError::GuestAborted(guest_error_code, message))
+                    Err(HandleOutbError::GuestAborted {
+                        code: guest_error_code,
+                        message,
+                    })
                 }
             };
 
@@ -134,10 +175,10 @@ fn outb_abort(mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>, data: u32) -
 
         if buffer.len() >= MAX_ABORT_BUFFER_LEN {
             buffer.clear();
-            return Err(HyperlightError::GuestAborted(
-                0,
-                "Guest abort buffer overflowed".into(),
-            ));
+            return Err(HandleOutbError::GuestAborted {
+                code: 0,
+                message: "Guest abort buffer overflowed".into(),
+            });
         }
 
         buffer.push(b);
@@ -154,22 +195,29 @@ pub(crate) fn handle_outb(
     data: u32,
     #[cfg(feature = "mem_profile")] regs: &CommonRegisters,
     #[cfg(feature = "mem_profile")] trace_info: &mut MemTraceInfo,
-) -> Result<()> {
-    match port.try_into()? {
+) -> Result<(), HandleOutbError> {
+    match port
+        .try_into()
+        .map_err(|e: anyhow::Error| HandleOutbError::InvalidPort(e.to_string()))?
+    {
         OutBAction::Log => outb_log(mem_mgr),
         OutBAction::CallFunction => {
-            let call = mem_mgr.get_host_function_call()?; // pop output buffer
+            let call = mem_mgr
+                .get_host_function_call()
+                .map_err(|e| HandleOutbError::ReadHostFunctionCall(e.to_string()))?;
             let name = call.function_name.clone();
             let args: Vec<ParameterValue> = call.parameters.unwrap_or(vec![]);
             let res = host_funcs
                 .try_lock()
-                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                .map_err(|e| HandleOutbError::LockFailed(file!(), line!(), e.to_string()))?
                 .call_host_function(&name, args)
                 .map_err(|e| GuestError::new(ErrorCode::HostFunctionError, e.to_string()));
 
             let func_result = FunctionCallResult::new(res);
 
-            mem_mgr.write_response_from_host_function_call(&func_result)?;
+            mem_mgr
+                .write_response_from_host_function_call(&func_result)
+                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(e.to_string()))?;
 
             Ok(())
         }
@@ -178,7 +226,7 @@ pub(crate) fn handle_outb(
             let ch: char = match char::from_u32(data) {
                 Some(c) => c,
                 None => {
-                    return Err(new_error!("Invalid character for logging: {}", data));
+                    return Err(HandleOutbError::InvalidDebugPrintChar(data));
                 }
             };
 

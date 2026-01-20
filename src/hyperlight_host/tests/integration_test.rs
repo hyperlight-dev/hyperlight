@@ -557,6 +557,22 @@ fn guest_malloc_abort() {
     ));
 }
 
+/// Test that executing an OUT instruction with an invalid port causes an error and poisons the sandbox.
+#[test]
+fn guest_outb_with_invalid_port_poisons_sandbox() {
+    let mut sbox = new_uninit_rust().unwrap().evolve().unwrap();
+
+    // Port 0x1234 is not a valid hyperlight port
+    let res = sbox.call::<()>("OutbWithPort", (0x1234_u32, 0_u32));
+    assert!(res.is_err(), "Expected error from invalid OUT port");
+
+    // The sandbox should be poisoned because the guest didn't complete normally
+    assert!(
+        sbox.poisoned(),
+        "Sandbox should be poisoned after invalid OUT"
+    );
+}
+
 #[test]
 fn guest_panic_no_alloc() {
     let heap_size = 0x4000;

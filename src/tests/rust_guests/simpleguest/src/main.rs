@@ -516,6 +516,20 @@ fn trigger_exception() {
     unsafe { core::arch::asm!("ud2") };
 }
 
+/// Execute an OUT instruction with an arbitrary port and value.
+/// This is used to test that invalid OUT ports cause errors.
+#[guest_function("OutbWithPort")]
+fn outb_with_port(port: u32, value: u32) {
+    unsafe {
+        core::arch::asm!(
+            "out dx, eax",
+            in("dx") port as u16,
+            in("eax") value,
+            options(preserves_flags, nomem, nostack)
+        );
+    }
+}
+
 static mut COUNTER: i32 = 0;
 
 #[guest_function("AddToStatic")]

@@ -38,7 +38,7 @@ use super::snapshot::Snapshot;
 use crate::HyperlightError::{self, SnapshotSandboxMismatch};
 use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::InterruptHandle;
-use crate::hypervisor::hyperlight_vm::HyperlightVm;
+use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(unix)]
 use crate::mem::memory_region::{MemoryRegionFlags, MemoryRegionType};
@@ -274,13 +274,15 @@ impl MultiUseSandbox {
         let regions_to_map = snapshot_regions.difference(&current_regions);
 
         for region in regions_to_unmap {
-            self.vm.unmap_region(region)?;
+            self.vm
+                .unmap_region(region)
+                .map_err(HyperlightVmError::UnmapRegion)?;
         }
 
         for region in regions_to_map {
             // Safety: The region has been mapped before, and at that point the caller promised that the memory region is valid
             // in their call to `MultiUseSandbox::map_region`
-            unsafe { self.vm.map_region(region)? };
+            unsafe { self.vm.map_region(region) }.map_err(HyperlightVmError::MapRegion)?;
         }
 
         // The restored snapshot is now our most current snapshot
@@ -490,7 +492,7 @@ impl MultiUseSandbox {
         }
         // Reset snapshot since we are mutating the sandbox state
         self.snapshot = None;
-        unsafe { self.vm.map_region(rgn) }?;
+        unsafe { self.vm.map_region(rgn) }.map_err(HyperlightVmError::MapRegion)?;
         self.mem_mgr.mapped_rgns += 1;
         Ok(())
     }
@@ -597,13 +599,21 @@ impl MultiUseSandbox {
 
             self.mem_mgr.write_guest_function_call(buffer)?;
 
-            self.vm.dispatch_call_from_host(
+            let dispatch_res = self.vm.dispatch_call_from_host(
                 self.dispatch_ptr.clone(),
                 &mut self.mem_mgr,
                 &self.host_funcs,
                 #[cfg(gdb)]
                 self.dbg_mem_access_fn.clone(),
-            )?;
+            );
+
+            // Convert dispatch errors to HyperlightErrors to maintain backwards compatibility
+            // but first determine if sandbox should be poisoned
+            if let Err(e) = dispatch_res {
+                let (error, should_poison) = e.promote();
+                self.poisoned |= should_poison;
+                return Err(error);
+            }
 
             self.mem_mgr.check_stack_guard()?;
 

@@ -33,16 +33,16 @@ use x86_64_target::HyperlightSandboxTarget;
 
 use super::InterruptHandle;
 use super::regs::CommonRegisters;
+use crate::HyperlightError;
 use crate::hypervisor::regs::CommonFpu;
-use crate::hypervisor::virtual_machine::VirtualMachine;
+use crate::hypervisor::virtual_machine::{HypervisorError, RegisterError, VirtualMachine};
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
-use crate::{HyperlightError, new_error};
 
 #[derive(Debug, Error)]
-pub(crate) enum GdbTargetError {
+pub enum GdbTargetError {
     #[error("Error encountered while binding to address and port")]
     CannotBind,
     #[error("Error encountered while listening for connections")]
@@ -86,6 +86,17 @@ pub(crate) struct DebugMemoryAccess {
     pub(crate) guest_mmap_regions: Vec<MemoryRegion>,
 }
 
+/// Errors that can occur during debug memory access operations
+#[derive(Debug, thiserror::Error)]
+pub enum DebugMemoryAccessError {
+    #[error("Failed to copy memory: {0}")]
+    CopyFailed(Box<HyperlightError>),
+    #[error("Failed to acquire lock at {0}:{1} - {2}")]
+    LockFailed(&'static str, u32, String),
+    #[error("Failed to translate guest address {0:#x}")]
+    TranslateGuestAddress(u64),
+}
+
 impl DebugMemoryAccess {
     /// Reads memory from the guest's address space with a maximum length of a PAGE_SIZE
     ///
@@ -94,8 +105,12 @@ impl DebugMemoryAccess {
     /// * `gpa` - Guest physical address to read from.
     ///   This address is shall be translated before calling this function
     /// # Returns
-    /// * `Result<(), HyperlightError>` - Ok if successful, Err otherwise
-    pub(crate) fn read(&self, data: &mut [u8], gpa: u64) -> crate::Result<()> {
+    /// * `Result<(), DebugMemoryAccessError>` - Ok if successful, Err otherwise
+    pub(crate) fn read(
+        &self,
+        data: &mut [u8],
+        gpa: u64,
+    ) -> std::result::Result<(), DebugMemoryAccessError> {
         let read_len = data.len();
 
         let mem_offset = (gpa as usize)
@@ -107,7 +122,7 @@ impl DebugMemoryAccess {
                     gpa,
                     SandboxMemoryLayout::BASE_ADDRESS
                 );
-                HyperlightError::TranslateGuestAddress(gpa)
+                DebugMemoryAccessError::TranslateGuestAddress(gpa)
             })?;
 
         // First check the mapped memory regions to see if the address is within any of them
@@ -123,7 +138,7 @@ impl DebugMemoryAccess {
                         mem_offset,
                         reg.guest_region.start,
                     );
-                    HyperlightError::TranslateGuestAddress(mem_offset as u64)
+                    DebugMemoryAccessError::TranslateGuestAddress(mem_offset as u64)
                 })?;
 
                 let bytes: &[u8] = unsafe {
@@ -144,9 +159,10 @@ impl DebugMemoryAccess {
 
             self.dbg_mem_access_fn
                 .try_lock()
-                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?
                 .get_shared_mem_mut()
-                .copy_to_slice(&mut data[..read_len], mem_offset)?;
+                .copy_to_slice(&mut data[..read_len], mem_offset)
+                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?;
         }
 
         Ok(())
@@ -159,8 +175,12 @@ impl DebugMemoryAccess {
     /// * `gpa` - Guest physical address to write to.
     ///   This address is shall be translated before calling this function
     /// # Returns
-    /// * `Result<(), HyperlightError>` - Ok if successful, Err otherwise
-    pub(crate) fn write(&self, data: &[u8], gpa: u64) -> crate::Result<()> {
+    /// * `Result<(), DebugMemoryAccessError>` - Ok if successful, Err otherwise
+    pub(crate) fn write(
+        &self,
+        data: &[u8],
+        gpa: u64,
+    ) -> std::result::Result<(), DebugMemoryAccessError> {
         let write_len = data.len();
 
         let mem_offset = (gpa as usize)
@@ -172,7 +192,7 @@ impl DebugMemoryAccess {
                     gpa,
                     SandboxMemoryLayout::BASE_ADDRESS
                 );
-                HyperlightError::TranslateGuestAddress(gpa)
+                DebugMemoryAccessError::TranslateGuestAddress(gpa)
             })?;
 
         // First check the mapped memory regions to see if the address is within any of them
@@ -188,7 +208,7 @@ impl DebugMemoryAccess {
                         mem_offset,
                         reg.guest_region.start,
                     );
-                    HyperlightError::TranslateGuestAddress(mem_offset as u64)
+                    DebugMemoryAccessError::TranslateGuestAddress(mem_offset as u64)
                 })?;
 
                 let bytes: &mut [u8] = unsafe {
@@ -213,9 +233,10 @@ impl DebugMemoryAccess {
 
             self.dbg_mem_access_fn
                 .try_lock()
-                .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+                .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?
                 .get_shared_mem_mut()
-                .copy_from_slice(&data[..write_len], mem_offset)?;
+                .copy_from_slice(&data[..write_len], mem_offset)
+                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?;
         }
 
         Ok(())
@@ -275,24 +296,42 @@ pub(crate) enum DebugResponse {
     WriteRegisters,
 }
 
+/// Errors that can occur during debug operations
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum DebugError {
+    #[error("Hardware breakpoint not found at address {0:#x}")]
+    HwBreakpointNotFound(u64),
+    #[error("Failed to enable/disable intercept: {enable}, {inner}")]
+    Intercept {
+        enable: bool,
+        inner: HypervisorError,
+    },
+    #[error("Register operation failed: {0}")]
+    Register(#[from] RegisterError),
+    #[error("Maximum hardware breakpoints ({0}) exceeded")]
+    TooManyHwBreakpoints(usize),
+    #[error("Translation of guest virtual address failed: {0}")]
+    TranslateGva(u64),
+}
+
 /// Trait for VMs that support debugging capabilities.
 /// This extends the base VirtualMachine trait with GDB-specific functionality.
 pub(crate) trait DebuggableVm: VirtualMachine {
     /// Translates a guest virtual address to a guest physical address
-    fn translate_gva(&self, gva: u64) -> crate::Result<u64>;
+    fn translate_gva(&self, gva: u64) -> std::result::Result<u64, DebugError>;
 
     /// Enable/disable debugging
-    fn set_debug(&mut self, enable: bool) -> crate::Result<()>;
+    fn set_debug(&mut self, enable: bool) -> std::result::Result<(), DebugError>;
 
     /// Enable/disable single stepping
-    fn set_single_step(&mut self, enable: bool) -> crate::Result<()>;
+    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError>;
 
     /// Add a hardware breakpoint at the given address.
     /// Must be idempotent.
-    fn add_hw_breakpoint(&mut self, addr: u64) -> crate::Result<()>;
+    fn add_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError>;
 
     /// Remove a hardware breakpoint at the given address
-    fn remove_hw_breakpoint(&mut self, addr: u64) -> crate::Result<()>;
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError>;
 }
 
 /// Debug communication channel that is used for sending a request type and
@@ -513,7 +552,9 @@ mod tests {
             }
 
             let mut read_data = [0u8; 1];
-            mem_access.read(&mut read_data, (BASE_VIRT + offset) as u64)?;
+            mem_access
+                .read(&mut read_data, (BASE_VIRT + offset) as u64)
+                .unwrap();
 
             assert_eq!(read_data[0], 0xAA);
 
@@ -536,7 +577,9 @@ mod tests {
             }
 
             let mut read_data = [0u8; 16];
-            mem_access.read(&mut read_data, (BASE_VIRT + offset) as u64)?;
+            mem_access
+                .read(&mut read_data, (BASE_VIRT + offset) as u64)
+                .unwrap();
 
             assert_eq!(
                 read_data,
@@ -556,7 +599,9 @@ mod tests {
             }
 
             let write_data = [0xCCu8; 1];
-            mem_access.write(&write_data, (BASE_VIRT + offset) as u64)?;
+            mem_access
+                .write(&write_data, (BASE_VIRT + offset) as u64)
+                .unwrap();
 
             let slice = unsafe { get_mmap_slice(&mut mem_access) };
             assert_eq!(slice[offset], write_data[0]);
@@ -577,7 +622,9 @@ mod tests {
             }
 
             let write_data = [0xAAu8; 16];
-            mem_access.write(&write_data, (BASE_VIRT + offset) as u64)?;
+            mem_access
+                .write(&write_data, (BASE_VIRT + offset) as u64)
+                .unwrap();
 
             let slice = unsafe { get_mmap_slice(&mut mem_access) };
             assert_eq!(slice[offset..offset + 16], write_data);
