@@ -212,9 +212,9 @@ test-doc target=default-target features="":
 
 miri-tests:
     rustup +nightly component list | grep -q "miri.*installed" || rustup component add miri --toolchain nightly
-    # For now only run miri tests on hyperlight-common with trace_guest feature
     # We can add more as needed
     cargo +nightly miri test -p hyperlight-common -F trace_guest
+    cargo +nightly miri test -p hyperlight-host --lib -- mem::shared_mem::tests
 
 ################
 ### LINTING ####

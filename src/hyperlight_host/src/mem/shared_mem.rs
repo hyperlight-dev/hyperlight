@@ -35,13 +35,11 @@ use windows::Win32::System::Memory::{
 #[cfg(target_os = "windows")]
 use windows::core::PCSTR;
 
-#[cfg(target_os = "windows")]
-use crate::HyperlightError::MemoryAllocationFailed;
 use crate::HyperlightError::SnapshotSizeMismatch;
 #[cfg(target_os = "windows")]
-use crate::HyperlightError::{MemoryRequestTooBig, WindowsAPIError};
+use crate::HyperlightError::WindowsAPIError;
 use crate::sandbox::snapshot::Snapshot;
-use crate::{Result, log_then_return, new_error};
+use crate::{HyperlightError, Result, log_then_return, new_error};
 
 /// Makes sure that the given `offset` and `size` are within the bounds of the memory with size `mem_size`.
 macro_rules! bounds_check {
@@ -312,12 +310,11 @@ impl ExclusiveSharedMemory {
     #[cfg(target_os = "linux")]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
-        use libc::{
-            MAP_ANONYMOUS, MAP_FAILED, MAP_NORESERVE, MAP_SHARED, PROT_NONE, PROT_READ, PROT_WRITE,
-            c_int, mmap, mprotect, off_t, size_t,
-        };
-
-        use crate::error::HyperlightError::{MemoryRequestTooBig, MmapFailed, MprotectFailed};
+        #[cfg(miri)]
+        use libc::MAP_PRIVATE;
+        use libc::{MAP_ANONYMOUS, MAP_FAILED, PROT_READ, PROT_WRITE, c_int, mmap, off_t, size_t};
+        #[cfg(not(miri))]
+        use libc::{MAP_NORESERVE, MAP_SHARED, PROT_NONE, mprotect};
 
         if min_size_bytes == 0 {
             return Err(new_error!("Cannot create shared memory with size 0"));
@@ -337,39 +334,55 @@ impl ExclusiveSharedMemory {
         // usize and isize are guaranteed to be the same size, and
         // isize::MAX should be positive, so this cast should be safe.
         if total_size > isize::MAX as usize {
-            return Err(MemoryRequestTooBig(total_size, isize::MAX as usize));
+            return Err(HyperlightError::MemoryRequestTooBig(
+                total_size,
+                isize::MAX as usize,
+            ));
         }
 
         // allocate the memory
+        #[cfg(not(miri))]
+        let flags = MAP_ANONYMOUS | MAP_SHARED | MAP_NORESERVE;
+        #[cfg(miri)]
+        let flags = MAP_ANONYMOUS | MAP_PRIVATE;
+
         let addr = unsafe {
             mmap(
                 null_mut(),
                 total_size as size_t,
                 PROT_READ | PROT_WRITE,
-                MAP_ANONYMOUS | MAP_SHARED | MAP_NORESERVE,
+                flags,
                 -1 as c_int,
                 0 as off_t,
             )
         };
         if addr == MAP_FAILED {
-            log_then_return!(MmapFailed(Error::last_os_error().raw_os_error()));
+            log_then_return!(HyperlightError::MmapFailed(
+                Error::last_os_error().raw_os_error()
+            ));
         }
 
         // protect the guard pages
-
-        let res = unsafe { mprotect(addr, PAGE_SIZE_USIZE, PROT_NONE) };
-        if res != 0 {
-            return Err(MprotectFailed(Error::last_os_error().raw_os_error()));
-        }
-        let res = unsafe {
-            mprotect(
-                (addr as *const u8).add(total_size - PAGE_SIZE_USIZE) as *mut c_void,
-                PAGE_SIZE_USIZE,
-                PROT_NONE,
-            )
-        };
-        if res != 0 {
-            return Err(MprotectFailed(Error::last_os_error().raw_os_error()));
+        #[cfg(not(miri))]
+        {
+            let res = unsafe { mprotect(addr, PAGE_SIZE_USIZE, PROT_NONE) };
+            if res != 0 {
+                return Err(HyperlightError::MprotectFailed(
+                    Error::last_os_error().raw_os_error(),
+                ));
+            }
+            let res = unsafe {
+                mprotect(
+                    (addr as *const u8).add(total_size - PAGE_SIZE_USIZE) as *mut c_void,
+                    PAGE_SIZE_USIZE,
+                    PROT_NONE,
+                )
+            };
+            if res != 0 {
+                return Err(HyperlightError::MprotectFailed(
+                    Error::last_os_error().raw_os_error(),
+                ));
+            }
         }
 
         Ok(Self {
@@ -414,7 +427,10 @@ impl ExclusiveSharedMemory {
         // usize and isize are guaranteed to be the same size, and
         // isize::MAX should be positive, so this cast should be safe.
         if total_size > isize::MAX as usize {
-            return Err(MemoryRequestTooBig(total_size, isize::MAX as usize));
+            return Err(HyperlightError::MemoryRequestTooBig(
+                total_size,
+                isize::MAX as usize,
+            ));
         }
 
         let mut dwmaximumsizehigh = 0;
@@ -442,7 +458,7 @@ impl ExclusiveSharedMemory {
         };
 
         if handle.is_invalid() {
-            log_then_return!(MemoryAllocationFailed(
+            log_then_return!(HyperlightError::MemoryAllocationFailed(
                 Error::last_os_error().raw_os_error()
             ));
         }
@@ -451,7 +467,7 @@ impl ExclusiveSharedMemory {
         let addr = unsafe { MapViewOfFile(handle, file_map, 0, 0, 0) };
 
         if addr.Value.is_null() {
-            log_then_return!(MemoryAllocationFailed(
+            log_then_return!(HyperlightError::MemoryAllocationFailed(
                 Error::last_os_error().raw_os_error()
             ));
         }
@@ -646,7 +662,7 @@ pub trait SharedMemory {
     /// not need to be marked as `unsafe` because doing anything with
     /// this pointer itself requires `unsafe`.
     fn base_ptr(&self) -> *mut u8 {
-        self.base_addr() as *mut u8
+        self.region().ptr.wrapping_add(PAGE_SIZE_USIZE)
     }
 
     /// Return the length of usable memory contained in `self`.
@@ -965,10 +981,14 @@ impl SharedMemory for HostSharedMemory {
 #[cfg(test)]
 mod tests {
     use hyperlight_common::mem::PAGE_SIZE_USIZE;
+    #[cfg(not(miri))]
     use proptest::prelude::*;
 
-    use super::{ExclusiveSharedMemory, HostSharedMemory, SharedMemory};
+    #[cfg(not(miri))]
+    use super::HostSharedMemory;
+    use super::{ExclusiveSharedMemory, SharedMemory};
     use crate::Result;
+    #[cfg(not(miri))]
     use crate::mem::shared_mem_tests::read_write_test_suite;
 
     #[test]
@@ -1059,6 +1079,8 @@ mod tests {
         Ok(())
     }
 
+    // proptest uses file I/O (getcwd, open) which miri doesn't support
+    #[cfg(not(miri))]
     proptest! {
         #[test]
         fn read_write_i32(val in -0x1000_i32..0x1000_i32) {
@@ -1238,6 +1260,7 @@ mod tests {
 
         // provides a way for running the above tests in a separate process since they expect to crash
         #[test]
+        #[cfg_attr(miri, ignore)] // miri can't spawn subprocesses
         fn guard_page_testing_shim() {
             let tests = vec!["read", "write", "exec"];
             for test in tests {
