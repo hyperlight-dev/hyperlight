@@ -18,14 +18,16 @@ use std::sync::LazyLock;
 
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
+use kvm_bindings::{kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::regs::{
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+};
 use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::mem::memory_region::MemoryRegion;
 use crate::{Result, new_error};
@@ -58,7 +60,7 @@ pub(crate) struct KvmVm {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
 
-    // KVM as opposed to mshv/whp has no way to get current debug regs, so need to keep a copy here
+    // KVM, as opposed to mshv/whp, has no get_guest_debug() ioctl, so we must track the state ourselves
     #[cfg(gdb)]
     debug_regs: kvm_guest_debug,
 }
@@ -158,6 +160,17 @@ impl VirtualMachine for KvmVm {
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
         let kvm_sregs: kvm_sregs = sregs.into();
         self.vcpu_fd.set_sregs(&kvm_sregs)?;
+        Ok(())
+    }
+
+    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+        let kvm_debug_regs = self.vcpu_fd.get_debug_regs()?;
+        Ok(kvm_debug_regs.into())
+    }
+
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+        let kvm_debug_regs: kvm_debugregs = drs.into();
+        self.vcpu_fd.set_debug_regs(&kvm_debug_regs)?;
         Ok(())
     }
 

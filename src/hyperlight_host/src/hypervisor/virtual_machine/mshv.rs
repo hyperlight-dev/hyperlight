@@ -33,7 +33,9 @@ use tracing::{Span, instrument};
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::regs::{
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+};
 use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::{Result, new_error};
@@ -209,6 +211,17 @@ impl VirtualMachine for MshvVm {
         Ok(())
     }
 
+    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+        let debug_regs = self.vcpu_fd.get_debug_regs()?;
+        Ok(debug_regs.into())
+    }
+
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+        let mshv_debug_regs = drs.into();
+        self.vcpu_fd.set_debug_regs(&mshv_debug_regs)?;
+        Ok(())
+    }
+
     #[cfg(crashdump)]
     fn xsave(&self) -> Result<Vec<u8>> {
         let xsave = self.vcpu_fd.get_xsave()?;
@@ -282,42 +295,30 @@ impl DebuggableVm for MshvVm {
     fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
 
-        let mut debug_regs = self.vcpu_fd.get_debug_regs()?;
+        let mut regs = self.debug_regs()?;
 
         // Check if breakpoint already exists
-        if [
-            debug_regs.dr0,
-            debug_regs.dr1,
-            debug_regs.dr2,
-            debug_regs.dr3,
-        ]
-        .contains(&addr)
-        {
+        if [regs.dr0, regs.dr1, regs.dr2, regs.dr3].contains(&addr) {
             return Ok(());
         }
 
         // Find the first available LOCAL (L0–L3) slot
         let i = (0..MAX_NO_OF_HW_BP)
-            .position(|i| debug_regs.dr7 & (1 << (i * 2)) == 0)
+            .position(|i| regs.dr7 & (1 << (i * 2)) == 0)
             .ok_or_else(|| new_error!("Tried to add more than 4 hardware breakpoints"))?;
 
         // Assign to corresponding debug register
-        *[
-            &mut debug_regs.dr0,
-            &mut debug_regs.dr1,
-            &mut debug_regs.dr2,
-            &mut debug_regs.dr3,
-        ][i] = addr;
+        *[&mut regs.dr0, &mut regs.dr1, &mut regs.dr2, &mut regs.dr3][i] = addr;
 
         // Enable LOCAL bit
-        debug_regs.dr7 |= 1 << (i * 2);
+        regs.dr7 |= 1 << (i * 2);
 
-        self.vcpu_fd.set_debug_regs(&debug_regs)?;
+        self.set_debug_regs(&regs)?;
         Ok(())
     }
 
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
-        let mut debug_regs = self.vcpu_fd.get_debug_regs()?;
+        let mut debug_regs = self.debug_regs()?;
 
         let regs = [
             &mut debug_regs.dr0,
@@ -331,7 +332,7 @@ impl DebuggableVm for MshvVm {
             *regs[i] = 0;
             // Disable LOCAL bit
             debug_regs.dr7 &= !(1 << (i * 2));
-            self.vcpu_fd.set_debug_regs(&debug_regs)?;
+            self.set_debug_regs(&debug_regs)?;
             Ok(())
         } else {
             Err(new_error!("Tried to remove non-existing hw-breakpoint"))
