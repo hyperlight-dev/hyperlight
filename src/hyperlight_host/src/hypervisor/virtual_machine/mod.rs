@@ -20,7 +20,9 @@ use std::sync::OnceLock;
 use tracing::{Span, instrument};
 
 use crate::Result;
-use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+use crate::hypervisor::regs::{
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+};
 use crate::mem::memory_region::MemoryRegion;
 
 /// KVM (Kernel-based Virtual Machine) functionality (linux)
@@ -164,6 +166,12 @@ pub(crate) trait VirtualMachine: Debug + Send {
     fn sregs(&self) -> Result<CommonSpecialRegisters>;
     /// Set special regs
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
+    /// Get the debug registers of the vCPU
+    #[allow(dead_code)]
+    fn debug_regs(&self) -> Result<CommonDebugRegs>;
+    /// Set the debug registers of the vCPU
+    #[allow(dead_code)]
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()>;
 
     /// xsave
     #[cfg(crashdump)]

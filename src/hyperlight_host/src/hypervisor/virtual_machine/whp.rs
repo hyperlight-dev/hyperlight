@@ -26,7 +26,8 @@ use windows_result::HRESULT;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{
-    Align16, CommonFpu, CommonRegisters, CommonSpecialRegisters, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN,
+    Align16, CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+    WHP_DEBUG_REGS_NAMES, WHP_DEBUG_REGS_NAMES_LEN, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN,
     WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES, WHP_SREGS_NAMES_LEN,
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
@@ -386,6 +387,38 @@ impl VirtualMachine for WhpVm {
         Ok(())
     }
 
+    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+        let mut whp_debug_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_DEBUG_REGS_NAMES_LEN] =
+            Default::default();
+
+        unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.partition,
+                0,
+                WHP_DEBUG_REGS_NAMES.as_ptr(),
+                whp_debug_regs_values.len() as u32,
+                whp_debug_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+            )?;
+        }
+
+        let whp_debug_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>);
+            WHP_DEBUG_REGS_NAMES_LEN] =
+            std::array::from_fn(|i| (WHP_DEBUG_REGS_NAMES[i], whp_debug_regs_values[i]));
+        whp_debug_regs.as_slice().try_into().map_err(|e| {
+            new_error!(
+                "Failed to convert WHP registers to CommonDebugRegs: {:?}",
+                e
+            )
+        })
+    }
+
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+        let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_DEBUG_REGS_NAMES_LEN] =
+            drs.into();
+        self.set_registers(&whp_regs)?;
+        Ok(())
+    }
+
     #[cfg(crashdump)]
     fn xsave(&self) -> Result<Vec<u8>> {
         use crate::HyperlightError;
@@ -528,137 +561,46 @@ impl DebuggableVm for WhpVm {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
 
         // Get current debug registers
-        const LEN: usize = 6;
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterDr0,
-            WHvX64RegisterDr1,
-            WHvX64RegisterDr2,
-            WHvX64RegisterDr3,
-            WHvX64RegisterDr6,
-            WHvX64RegisterDr7,
-        ];
-
-        let mut out: [Align16<WHV_REGISTER_VALUE>; LEN] = unsafe { std::mem::zeroed() };
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
-        }
-
-        let mut dr0 = unsafe { out[0].0.Reg64 };
-        let mut dr1 = unsafe { out[1].0.Reg64 };
-        let mut dr2 = unsafe { out[2].0.Reg64 };
-        let mut dr3 = unsafe { out[3].0.Reg64 };
-        let mut dr7 = unsafe { out[5].0.Reg64 };
+        let mut regs = self.debug_regs()?;
 
         // Check if breakpoint already exists
-        if [dr0, dr1, dr2, dr3].contains(&addr) {
+        if [regs.dr0, regs.dr1, regs.dr2, regs.dr3].contains(&addr) {
             return Ok(());
         }
 
         // Find the first available LOCAL (L0–L3) slot
         let i = (0..MAX_NO_OF_HW_BP)
-            .position(|i| dr7 & (1 << (i * 2)) == 0)
+            .position(|i| regs.dr7 & (1 << (i * 2)) == 0)
             .ok_or_else(|| new_error!("Tried to add more than 4 hardware breakpoints"))?;
 
         // Assign to corresponding debug register
-        *[&mut dr0, &mut dr1, &mut dr2, &mut dr3][i] = addr;
+        *[&mut regs.dr0, &mut regs.dr1, &mut regs.dr2, &mut regs.dr3][i] = addr;
 
         // Enable LOCAL bit
-        dr7 |= 1 << (i * 2);
+        regs.dr7 |= 1 << (i * 2);
 
-        // Set the debug registers
-        let registers = vec![
-            (
-                WHvX64RegisterDr0,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr0 }),
-            ),
-            (
-                WHvX64RegisterDr1,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr1 }),
-            ),
-            (
-                WHvX64RegisterDr2,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr2 }),
-            ),
-            (
-                WHvX64RegisterDr3,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr3 }),
-            ),
-            (
-                WHvX64RegisterDr7,
-                Align16(WHV_REGISTER_VALUE { Reg64: dr7 }),
-            ),
-        ];
-        self.set_registers(&registers)?;
+        self.set_debug_regs(&regs)?;
         Ok(())
     }
 
     fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
         // Get current debug registers
-        const LEN: usize = 6;
-        let names: [WHV_REGISTER_NAME; LEN] = [
-            WHvX64RegisterDr0,
-            WHvX64RegisterDr1,
-            WHvX64RegisterDr2,
-            WHvX64RegisterDr3,
-            WHvX64RegisterDr6,
-            WHvX64RegisterDr7,
+        let mut debug_regs = self.debug_regs()?;
+
+        let regs = [
+            &mut debug_regs.dr0,
+            &mut debug_regs.dr1,
+            &mut debug_regs.dr2,
+            &mut debug_regs.dr3,
         ];
-
-        let mut out: [Align16<WHV_REGISTER_VALUE>; LEN] = unsafe { std::mem::zeroed() };
-        unsafe {
-            WHvGetVirtualProcessorRegisters(
-                self.partition,
-                0,
-                names.as_ptr(),
-                LEN as u32,
-                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
-        }
-
-        let mut dr0 = unsafe { out[0].0.Reg64 };
-        let mut dr1 = unsafe { out[1].0.Reg64 };
-        let mut dr2 = unsafe { out[2].0.Reg64 };
-        let mut dr3 = unsafe { out[3].0.Reg64 };
-        let mut dr7 = unsafe { out[5].0.Reg64 };
-
-        let regs = [&mut dr0, &mut dr1, &mut dr2, &mut dr3];
 
         if let Some(i) = regs.iter().position(|&&mut reg| reg == addr) {
             // Clear the address
             *regs[i] = 0;
             // Disable LOCAL bit
-            dr7 &= !(1 << (i * 2));
+            debug_regs.dr7 &= !(1 << (i * 2));
 
-            // Set the debug registers
-            let registers = vec![
-                (
-                    WHvX64RegisterDr0,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr0 }),
-                ),
-                (
-                    WHvX64RegisterDr1,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr1 }),
-                ),
-                (
-                    WHvX64RegisterDr2,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr2 }),
-                ),
-                (
-                    WHvX64RegisterDr3,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr3 }),
-                ),
-                (
-                    WHvX64RegisterDr7,
-                    Align16(WHV_REGISTER_VALUE { Reg64: dr7 }),
-                ),
-            ];
-            self.set_registers(&registers)?;
+            self.set_debug_regs(&debug_regs)?;
             Ok(())
         } else {
             Err(new_error!("Tried to remove non-existing hw-breakpoint"))
