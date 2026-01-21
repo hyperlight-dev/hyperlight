@@ -27,8 +27,6 @@ use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
 use tracing::{Span, instrument};
-#[cfg(feature = "trace_guest")]
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[cfg(gdb)]
 use super::gdb::arch::VcpuStopReasonError;
@@ -660,13 +658,13 @@ impl HyperlightVm {
             {
                 Ok(VmExit::Cancelled())
             } else {
-                #[cfg(feature = "trace_guest")]
-                tc.setup_guest_trace(Span::current().context());
-
                 // ==== KILL() TIMING POINT 3: Before calling run() ====
                 // If kill() is called and ran to completion BEFORE this line executes:
                 //    - Will still do a VM entry, but signals will be sent until VM exits
-                let result = self.vm.run_vcpu();
+                let result = self.vm.run_vcpu(
+                    #[cfg(feature = "trace_guest")]
+                    &mut tc,
+                );
 
                 // End current host trace by closing the current span that captures traces
                 // happening when a guest exits and re-enters.

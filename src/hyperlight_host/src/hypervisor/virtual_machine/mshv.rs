@@ -30,6 +30,8 @@ use mshv_bindings::{
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
@@ -41,6 +43,8 @@ use crate::hypervisor::virtual_machine::{
     VmExit,
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -121,7 +125,10 @@ impl VirtualMachine for MshvVm {
             .map_err(|e| UnmapMemoryError::Hypervisor(e.into()))
     }
 
-    fn run_vcpu(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
+    fn run_vcpu(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
+    ) -> std::result::Result<VmExit, RunVcpuError> {
         const HALT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_HALT;
         const IO_PORT_INTERCEPT_MESSAGE: hv_message_type =
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
@@ -130,6 +137,10 @@ impl VirtualMachine for MshvVm {
         #[cfg(gdb)]
         const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
+        // setup_trace_guest must be called right before vcpu_run.run() call, because
+        // it sets the guest span, no other traces or spans must be setup in between these calls.
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
         let exit_reason = self.vcpu_fd.run();
 
         let result = match exit_reason {
