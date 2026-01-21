@@ -389,7 +389,7 @@ impl VirtualMachine for WhpVm {
 
     fn debug_regs(&self) -> Result<CommonDebugRegs> {
         let mut whp_debug_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_DEBUG_REGS_NAMES_LEN] =
-            unsafe { std::mem::zeroed() };
+            Default::default();
 
         unsafe {
             WHvGetVirtualProcessorRegisters(
@@ -401,18 +401,15 @@ impl VirtualMachine for WhpVm {
             )?;
         }
 
-        WHP_DEBUG_REGS_NAMES
-            .into_iter()
-            .zip(whp_debug_regs_values)
-            .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
-            .as_slice()
-            .try_into()
-            .map_err(|e| {
-                new_error!(
-                    "Failed to convert WHP registers to CommonDebugRegs: {:?}",
-                    e
-                )
-            })
+        let whp_debug_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>);
+            WHP_DEBUG_REGS_NAMES_LEN] =
+            std::array::from_fn(|i| (WHP_DEBUG_REGS_NAMES[i], whp_debug_regs_values[i]));
+        whp_debug_regs.as_slice().try_into().map_err(|e| {
+            new_error!(
+                "Failed to convert WHP registers to CommonDebugRegs: {:?}",
+                e
+            )
+        })
     }
 
     fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
