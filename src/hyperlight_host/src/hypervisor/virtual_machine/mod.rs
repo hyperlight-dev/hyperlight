@@ -22,6 +22,7 @@ use tracing::{Span, instrument};
 use crate::Result;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::mem::memory_region::MemoryRegion;
+use crate::sandbox::trace::context::TraceContext as SandboxTraceContext;
 
 /// KVM (Kernel-based Virtual Machine) functionality (linux)
 #[cfg(kvm)]
@@ -147,7 +148,7 @@ pub(crate) trait VirtualMachine: Debug + Send {
 
     /// Runs the vCPU until it exits.
     /// Note: this function should not emit any traces or spans as it is called after guest span is setup
-    fn run_vcpu(&mut self) -> Result<VmExit>;
+    fn run_vcpu(&mut self, tc: &SandboxTraceContext) -> Result<VmExit>;
 
     /// Get regs
     #[allow(dead_code)]

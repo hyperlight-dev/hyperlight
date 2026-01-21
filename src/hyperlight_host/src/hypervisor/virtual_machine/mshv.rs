@@ -36,6 +36,7 @@ use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::sandbox::trace::context::TraceContext as SandboxTraceContext;
 use crate::{Result, new_error};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
@@ -103,7 +104,9 @@ impl VirtualMachine for MshvVm {
         Ok(())
     }
 
-    fn run_vcpu(&mut self) -> Result<VmExit> {
+    fn run_vcpu(&mut self, tc: &SandboxTraceContext) -> Result<VmExit> {
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
         const HALT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_HALT;
         const IO_PORT_INTERCEPT_MESSAGE: hv_message_type =
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;

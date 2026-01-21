@@ -34,6 +34,7 @@ use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
 use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+use crate::sandbox::trace::context::TraceContext as SandboxTraceContext;
 use crate::{Result, log_then_return, new_error};
 
 #[allow(dead_code)] // Will be used for runtime hypervisor detection
@@ -205,7 +206,9 @@ impl VirtualMachine for WhpVm {
     }
 
     #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
-    fn run_vcpu(&mut self) -> Result<VmExit> {
+    fn run_vcpu(&mut self, tc: &SandboxTraceContext) -> Result<VmExit> {
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
         let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
 
         unsafe {

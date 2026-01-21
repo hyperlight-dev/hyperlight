@@ -28,6 +28,7 @@ use crate::hypervisor::gdb::DebuggableVm;
 use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
 use crate::mem::memory_region::MemoryRegion;
+use crate::sandbox::trace::context::TraceContext as SandboxTraceContext;
 use crate::{Result, new_error};
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
@@ -104,7 +105,10 @@ impl VirtualMachine for KvmVm {
         Ok(())
     }
 
-    fn run_vcpu(&mut self) -> Result<VmExit> {
+    fn run_vcpu(&mut self, tc: &SandboxTraceContext) -> Result<VmExit> {
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
+
         match self.vcpu_fd.run() {
             Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
             Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
