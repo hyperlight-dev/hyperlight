@@ -365,332 +365,336 @@ attempt to snapshot a sandbox with such pending requests will result in a snapsh
 
 ### Type System Design
 
-The goal of this section is not to pin exactly the API for queue semantics but rather give an
-overview of type system that represents the concepts outlined above. The presented API is intended
-for internal Hyperlight usage and won't be exposed to Hyperlight user.
+This section provides an overview of the implemented type system. The API is internal to Hyperlight.
 
-#### Low Level API
+#### Memory Access Abstraction
+
+The `MemOps` trait abstracts memory access, allowing the virtqueue to work with different backends
+(host vs guest memory). This decouples the ring logic from the underlying memory representation.
+
+```rust
+/// Backend-provided memory access for virtqueue.
+///
+/// Implementations must ensure that:
+/// - Pointers passed to methods are valid for the duration of the call
+/// - Memory ordering guarantees are upheld as documented
+/// - Reads and writes don't cause undefined behavior (alignment, validity)
+pub trait MemOps {
+    type Error;
+
+    /// Read bytes from physical memory.
+    /// Used for reading buffer contents pointed to by descriptors.
+    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error>;
+
+    /// Write bytes to physical memory.
+    fn write(&self, addr: u64, src: &[u8]) -> Result<usize, Self::Error>;
+
+    /// Load a u16 with acquire semantics.
+    /// `addr` must translate to a valid, aligned AtomicU16 in shared memory.
+    fn load_acquire(&self, addr: u64) -> Result<u16, Self::Error>;
+
+    /// Store a u16 with release semantics.
+    /// `addr` must translate to a valid AtomicU16 in shared memory.
+    fn store_release(&self, addr: u64, val: u16) -> Result<(), Self::Error>;
+}
+```
+
+#### Descriptor and Event Suppression
+
+The descriptor format follows the VIRTIO packed virtqueue specification. Each descriptor
+represents a memory buffer in a scatter-gather list.
 
 ```rust
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    /// Descriptor flags as defined by VIRTIO specification.
     pub struct DescFlags: u16 {
-        const NEXT     = 1 << 0;
-        const WRITE    = 1 << 1;
-        const INDIRECT = 1 << 2;
-        const AVAIL    = 1 << 7;
-        const USED     = 1 << 15;
+        const NEXT     = 1 << 0;   // Buffer continues via next descriptor
+        const WRITE    = 1 << 1;   // Device write-only (otherwise read-only)
+        const INDIRECT = 1 << 2;   // Buffer contains list of descriptors
+        const AVAIL    = 1 << 7;   // Available flag for wrap counter
+        const USED     = 1 << 15;  // Used flag for wrap counter
     }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Descriptor {
+    /// Physical address of the buffer
     pub addr: u64,
+    /// Length in bytes (for used: bytes written by device)
     pub len: u32,
+    /// Buffer ID for correlating completions with submissions
     pub id: u16,
+    /// Flags (NEXT, WRITE, INDIRECT, AVAIL, USED)
     pub flags: u16,
 }
 
 impl Descriptor {
-    /// Interpret flags as DescFlags
-    pub fn flags(&self) -> DescFlags { }
-    /// Did the driver mark this descriptor in the current driver round?
-    pub fn is_avail(&self, wrap: bool) -> bool { }
-    /// Did the device mark this descriptor used in the current device round?
-    pub fn is_used(&self, wrap: bool) -> bool { }
-    /// Mark descriptor as available according to the driver's wrap bit.
-    pub fn mark_avail(&mut self, wrap: bool) { }
-    /// Mark descriptor as used according to the device's wrap bit.
-    pub fn mark_used(&mut self, wrap: bool) { }
-}
+    /// Read descriptor with acquire semantics for flags.
+    /// This is the primary synchronization point for consuming descriptors.
+    pub fn read_acquire<M: MemOps>(mem: &M, addr: u64) -> Result<Self, M::Error>;
 
-/// A view into a Descriptor stored in shared memory.
-///
-/// Allows reading/writing the descriptor with proper memory ordering.
-pub struct DescriptorView<'t> {
-    base: NonNull<Descriptor>,
-    owner: PhantomData<&'t DescTable<'t>>,
-}
+    /// Write descriptor with release semantics for flags.
+    /// This is the primary synchronization point for publishing descriptors.
+    pub fn write_release<M: MemOps>(&self, mem: &M, addr: u64) -> Result<(), M::Error>;
 
-impl<'t> DescriptorView<'t> {
-    /// # Safety: base must be valid for reads/writes for 't
-    pub unsafe fn new(base: NonNull<Descriptor>) -> Self { }
-    /// Read descriptor from memory: Acquire-load flags then volatile-read other fields.
-    pub fn read(&self) -> Descriptor { }
-    /// Write descriptor fields except flags (volatile), then publish flags atomically (Release).
-    pub fn write(&self, desc: &Descriptor) { }
+    /// Did the driver mark this descriptor available in current round?
+    pub fn is_avail(&self, wrap: bool) -> bool;
+
+    /// Did the device mark this descriptor used in current round?
+    pub fn is_used(&self, wrap: bool) -> bool;
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct EventFlags: u16 {
-        /// Always send notifications
-        const ENABLE = 1 << 0;
-        /// Never send notifications (polling mode)
-        const DISABLE = 1 << 1;
-        /// Only notify when a specific descriptor is processed
-        const DESC_SPECIFIC = 1 << 2;
+        const ENABLE  = 0x0;  // Always notify
+        const DISABLE = 0x1;  // Never notify (polling mode)
+        const DESC    = 0x2;  // Notify at specific descriptor index
     }
 }
 
-/// Event suppression structure controls notification behavior between driver and device
+/// Event suppression structure for controlling notifications.
+/// Both sides can control when they want to be notified.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct EventSuppression {
-    /// Packed descriptor event offset
-    desc: u16,
-    /// Event flags
-    flags: u16,
+    /// bits 0-14: descriptor offset, bit 15: wrap counter
+    pub off_wrap: u16,
+    /// bits 0-1: flags (ENABLE/DISABLE/DESC), bits 2-15: reserved
+    pub flags: u16,
+}
+```
+
+#### Buffer Pool
+
+An allocator for virtio buffer management. This will operate on guest physical 
+addresses from page allocator.
+
+```rust
+/// Trait for buffer providers.
+pub trait BufferProvider {
+    /// Allocate at least `len` bytes.
+    fn alloc(&self, len: usize) -> Result<Allocation, AllocError>;
+
+    /// Free a previously allocated block.
+    fn dealloc(&self, alloc: Allocation) -> Result<(), AllocError>;
+
+    /// Resize by trying in-place grow; otherwise reserve new block and free old.
+    fn resize(&self, old: Allocation, new_len: usize) -> Result<Allocation, AllocError>;
 }
 
-/// A table of descriptors stored in shared memory.
-struct DescTable<'t> {
-    base: NonNull<Descriptor>,
-    size: u16,
-    owner: PhantomData<&'t [Descriptor]>,
-}
-
-impl<'t> DescTable<'t> {
-    /// # Safety: base must be valid for reads/writes for size descriptors
-    pub unsafe fn init_mem(base: NonNull<Descriptor>, size: u16) -> Self { }
-    /// # Safety: base must be valid for reads/writes for size descriptors
-    pub unsafe fn from_mem(base: NonNull<Descriptor>, size: u16) -> Self { }
-    /// Get descriptor at index or None if idx is out of bounds
-    pub fn get(&self, idx: u16) -> Option<DescriptorView<'_>> { }
-    /// Set descriptor at index
-    pub fn set(&self, idx: u16, desc: &Descriptor) { }
-    /// Get number of descriptors in table
-    pub fn len(&self) -> u16 { }
-}
-
-/// A buffer element (part of a scatter-gather list).
-#[derive(Debug, Clone)]
-pub struct BufferElement {
-    /// Physical address of buffer
+/// Allocation result
+pub struct Allocation {
+    /// Starting address of the allocation
     pub addr: u64,
-    /// Length in bytes
-    pub len: u32,
+    /// Length in bytes rounded up to slab size
+    pub len: usize,
 }
 
-/// A buffer returned from the ring after being used by the device.
-struct UsedBuffer {
-    /// Descriptor ID associated with this used buffer
-    pub id: u16,
-    /// Length in bytes of data written by device
-    pub len: u32,
+/// Two-tier buffer pool with small and large slabs.
+/// - Lower tier (L=256): for control messages, small descriptors
+/// - Upper tier (U=4096): for larger data buffers
+/// Small allocations try lower tier first, falling back to upper on OOM.
+pub struct BufferPool<const L: usize = 256, const U: usize = 4096>;
+```
+
+#### Ring Producer/Consumer
+
+The core ring types implement the packed virtqueue protocol. The producer submits buffer chains
+and polls for completions; the consumer polls for available buffers and marks them used.
+
+```rust
+/// Producer (driver) side of a packed virtqueue.
+/// Submits buffer chains for the device to process and polls for completions.
+pub struct RingProducer<M: MemOps> {
+    mem: M,
+    avail_cursor: RingCursor,      // Next available descriptor position
+    used_cursor: RingCursor,       // Next used descriptor position
+    num_free: usize,               // Free slots in the ring
+    desc_table: DescTable,         // Descriptor table in shared memory
+    id_free: SmallVec<[u16; 256]>, // Stack of free IDs (allows out-of-order completion)
+    id_num: SmallVec<[u16; 256]>,  // Chain length per ID
+    drv_evt_addr: u64,             // Controls when device notifies about used buffers
+    dev_evt_addr: u64,             // Reads device event to check notification preference
 }
 
+impl<M: MemOps> RingProducer<M> {
+    /// Submit a buffer chain to the ring.
+    /// Returns the descriptor ID assigned to this chain.
+    pub fn submit_available(&mut self, chain: &BufferChain) -> Result<u16, RingError>;
 
+    /// Submit with notification check based on device's event suppression settings.
+    pub fn submit_available_with_notify(&mut self, chain: &BufferChain) -> Result<SubmitResult, RingError>;
+
+    /// Poll for a used buffer. Returns WouldBlock if no completions available.
+    pub fn poll_used(&mut self) -> Result<UsedBuffer, RingError>;
+
+    /// Enable/disable used-buffer notifications from device.
+    pub fn enable_used_notifications(&mut self) -> Result<(), RingError>;
+    pub fn disable_used_notifications(&mut self) -> Result<(), RingError>;
+}
+
+/// Consumer (device) side of a packed virtqueue.
+/// Polls for available buffer chains and marks them as used after processing.
+pub struct RingConsumer<M: MemOps> {
+    mem: M,
+    avail_cursor: RingCursor,
+    used_cursor: RingCursor,
+    desc_table: DescTable,
+    id_num: SmallVec<[u16; 256]>,  // Per-ID chain length learned when polling
+    num_inflight: usize,
+    drv_evt_addr: u64,
+    dev_evt_addr: u64,
+}
+
+impl<M: MemOps> RingConsumer<M> {
+    /// Poll for an available buffer chain.
+    /// Returns the chain ID and BufferChain containing all buffers.
+    pub fn poll_available(&mut self) -> Result<(u16, BufferChain), RingError>;
+
+    /// Mark a chain as used. `written_len` is total bytes written to writable buffers.
+    pub fn submit_used(&mut self, id: u16, written_len: u32) -> Result<(), RingError>;
+
+    /// Submit used with notification check based on driver's event suppression settings.
+    pub fn submit_used_with_notify(&mut self, id: u16, len: u32) -> Result<bool, RingError>;
+}
+
+/// Result of submitting a buffer to the ring.
+pub struct SubmitResult {
+    pub id: u16,      // Descriptor ID assigned
+    pub notify: bool, // Whether to notify the other side
+}
+
+/// A buffer returned after being used by the device.
+pub struct UsedBuffer {
+    pub id: u16,   // Descriptor ID
+    pub len: u32,  // Bytes written by device
+}
+```
+
+#### Buffer Chain Builder
+
+Type-state pattern enforces that readable buffers are added before writable buffers, preventing
+invalid chain construction at compile time.
+
+```rust
 /// Type-state: Can add readable buffers
 pub struct Readable;
 
 /// Type-state: Can add writable buffers (no more readables allowed)
 pub struct Writable;
 
-/// A builder for buffer chains using type-state to enforce readable/writable order.
-/// Upholds invariants:
-/// - at least one buffer must be present in the chain,
-/// - readable buffers must be added before writable buffers.
-#[derive(Debug, Default)]
-struct BufferChainBuilder<T> {
-    readables: Vec<BufferElement>,
-    writables: Vec<BufferElement>,
+/// Builder for buffer chains using type-state to enforce readable/writable order.
+/// Invariants enforced by the type system:
+/// - At least one buffer must be present in the chain
+/// - Readable buffers must be added before writable buffers
+pub struct BufferChainBuilder<T> {
+    elems: SmallVec<[BufferElement; 16]>,
+    split: usize,  // Index separating readables from writables
     marker: PhantomData<T>,
 }
 
 impl BufferChainBuilder<Readable> {
-    /// Create a new builder starting in Readable state.
-    pub fn new() -> Self { }
-    /// Add a readable buffer (device reads from this).
-    pub fn readable(mut self, addr: u64, len: u32) -> Self { }
-    /// Add a writable buffer (device writes to this). This transitions to Writable
-    /// state so no more readable buffers can be added.
-    pub fn writable(mut self, addr: u64, len: u32) -> BufferChainBuilder<Writable> { }
-    /// Chain must have at least one buffer otherwise an error is returned.
-    pub fn build(self) -> Result<BufferChain, RingError> { }
-}
+    /// Create a new builder in Readable state.
+    pub fn new() -> Self;
 
+    /// Add a readable buffer (device reads from this).
+    pub fn readable(self, addr: u64, len: u32) -> Self;
+
+    /// Add a writable buffer. Transitions to Writable state,
+    /// preventing further readable additions.
+    pub fn writable(self, addr: u64, len: u32) -> BufferChainBuilder<Writable>;
+
+    /// Build the chain. Fails if empty.
+    pub fn build(self) -> Result<BufferChain, RingError>;
+}
 
 impl BufferChainBuilder<Writable> {
-    /// Add writable buffer
-    pub fn writable(mut self, addr: u64, len: u32) -> Self { }
-    /// Build the buffer chain.
-    pub fn build(self) -> Result<BufferChain, RingError> { }
+    /// Add another writable buffer.
+    pub fn writable(self, addr: u64, len: u32) -> Self;
+
+    /// Build the chain.
+    pub fn build(self) -> Result<BufferChain, RingError>;
 }
 
-#[derive(Debug, Default)]
-struct BufferChain {
-    readables: Vec<BufferElement>,
-    writables: Vec<BufferElement>,
+/// A chain of buffers ready for submission.
+pub struct BufferChain {
+    elems: SmallVec<[BufferElement; 16]>,
+    split: usize,
 }
 
 impl BufferChain {
-    /// Get slice of readable buffers
-    pub fn readables(&self) -> &[BufferElement] { }
-    /// Get slice of writable buffers
-    pub fn writables(&self) -> &[BufferElement] { }
+    pub fn readables(&self) -> &[BufferElement];
+    pub fn writables(&self) -> &[BufferElement];
 }
-
-#[derive(Debug)]
-struct RingProducer<'t> {
-    /// Next available descriptor position
-    avail_cursor: RingCursor,
-    /// Next used descriptor position
-    used_cursor: RingCursor,
-    /// Free slots in the ring
-    num_free: usize,
-    /// Descriptor table in shared memory
-    desc_table: DescTable<'t>,
-    /// stack of free IDs, allows out-of-order completion
-    id_free: SmallVec<[u16; DescTable::DEFAULT_LEN]>,
-    // chain length per ID, index = ID,
-    id_num: SmallVec<[u16; DescTable::DEFAULT_LEN]>,
-}
-
-
-/// The producer side of a packed ring.
-impl<'t> RingProducer<'t> {
-    /// Submit a buffer chain to the ring.
-    pub fn submit(&self, chain: &BufferChain) -> Result<u16, RingError> { }
-    /// Poll the ring for a used buffer.
-    pub fn poll(&self) -> Result<UsedBuffer, RingError> { }
-}
-
-
-/// The consumer side of a packed ring.
-#[derive(Debug)]
-pub struct RingConsumer<'t> {
-    /// Cursor for reading available (driver-published) descriptors
-    avail_cursor: RingCursor,
-    /// Cursor for writing used descriptors
-    used_cursor: RingCursor,
-    /// Shared descriptor table
-    desc_table: DescTable<'t>,
-    /// Per-ID chain length learned when polling (index = ID)
-    id_num: SmallVec<[u16; DescTable::DEFAULT_LEN]>,
-}
-
-
-impl<'t> RingConsumer<'t> {
-    /// Poll the ring for an available buffer chain.
-    pub fn poll(&self) -> Result<BufferChain, RingError> { }
-    /// Submit a used buffer back to the ring.
-    pub fn submit(&self, used: &UsedBuffer) -> Result<(), RingError> { }
-}
-
 ```
 
-#### Higher-Level API
+#### High-Level Virtqueue API
 
-The low-level ring buffer implementation provides the foundation for safe and efficient
-communication, but working directly with descriptors, buffer allocation, and notification
-suppression requires in-depth knowledge about the virtqueue semantics. The higher-level API aims to
-provide an ergonomic, type-safe interface for common communication patterns. Specifically:
-
-- abstracts buffer allocation,
-- abstracts notification strategy,
-- enforces type safety by requiring ring payloads to be `FlatbufferSerializable`
+Wraps ring primitives with buffer management and notification handling. This layer abstracts
+buffer allocation and provides a request/response model with token-based correlation. For 
+simplicity this draft omits a batching API.
 
 ```rust
-use allocator_api2::alloc::{AllocError, Allocator};
-
-/// Trait for types that can be serialized/deserialized via flatbuffers
-pub trait FlatbufferSerializable: Sized + Sealed {
-    type Error: Into<RingError>;
-
-    /// Estimate the serialized size (hint for buffer allocation)
-    fn size_hint(&self) -> usize;
-    /// Serialize into the provided buffer
-    fn serialize(&self, buf: &mut [u8]) -> Result<usize, Self::Error>;
-    /// Deserialize from the provided buffer
-    fn deserialize(buf: &[u8]) -> Result<Self, Self::Error>;
+/// Trait for notifying about new requests in the virtqueue.
+pub trait Notifier {
+    fn notify(&self, stats: QueueStats);
 }
 
-/// Notification strategy trait - determines when to notify the other side about new descriptors.
-pub trait NotificationStrategy {
-    /// Returns true if notification should be sent.
-    fn should_notify(&self, stats: &RingStats) -> bool;
+pub struct QueueStats {
+    pub num_free: usize,
+    pub num_inflight: usize,
 }
 
-/// Notification strategy that will notify the device after each send
-struct AlwaysNotify;
+/// A token representing a sent request, used for correlating responses.
+pub struct Token(pub u16);
 
-impl NotificationStrategy for AlwaysNotify {
-    fn should_notify(&self, _stats: &RingStats) -> bool { true };
+/// A request received from the driver side.
+pub struct Request {
+    pub token: Token,
+    pub data: Bytes,
 }
 
-struct BufferPool { }
-
-impl Allocator for BufferPool {
-    /// Allocate a buffer with the given layout from the pool.
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> { }
-    /// Return buffer to the pool.
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) { }
+/// A response received after the device processes a request.
+pub struct Response {
+    pub token: Token,
+    pub data: Bytes,
+    pub written: usize,
 }
 
-/// Split ring into separate sender and receiver
-///
-/// Sender owns the allocator and notification strategy since only
-/// it needs to allocate buffers and decide when to notify.
-pub struct RingSender<A = BufferPool, N = AlwaysNotify>
-where
-    A: Allocator,
-    N: NotificationStrategy,
-{
-    /// The sync version needs to handle concurrent access properly
-    inner: Arc<Mutex<Inner>>,
+/// High-level virtqueue producer for sending requests and receiving responses.
+/// Manages buffer allocation and tracks in-flight requests.
+pub struct VirtqProducer<M: MemOps, N: Notifier, P: BufferProvider> {
+    inner: RingProducer<M>,
+    notifier: N,
+    pool: P,
+    inflight: Vec<Option<ProducerInflight>>,
 }
 
-/// Receiver only needs to know the receive type
-pub struct RingReceiver
-{
-    /// The sync version needs to handle concurrent access properly
-    inner: Arc<Mutex<Inner>>,
+impl<M: MemOps, N: Notifier, P: BufferProvider + Clone> VirtqProducer<M, N, P> {
+    /// Send a request with pre-allocated response capacity.
+    /// Returns a token for correlating with the response.
+    pub fn send(&mut self, req: &[u8], resp_cap: usize) -> Result<Token, VirtqError>;
+
+    /// Poll for a single response. Returns None if no completions available.
+    pub fn poll_once(&mut self) -> Result<Option<Response>, VirtqError>;
+
+    /// Drain all available responses, calling `f` for each.
+    pub fn drain(&mut self, f: impl FnMut(Token, Bytes)) -> Result<(), VirtqError>;
 }
 
-impl<A, N> Ring<A, N>
-where
-    A: Allocator,
-    N: NotificationStrategy,
-{
-    /// Split into separate sender and receiver
-    pub fn split(self) -> (RingSender<A, N>, RingReceiver) {
-        unimplemented!("split is not implemented in this example");
-    }
+/// High-level virtqueue consumer for receiving requests and sending responses.
+pub struct VirtqConsumer<M: MemOps, N: Notifier> {
+    inner: RingConsumer<M>,
+    notifier: N,
+    inflight: Vec<Option<ConsumerInflight>>,
 }
 
-impl<A, N> RingSender<A, N>
-where
-    A: Allocator,
-    N: NotificationStrategy,
-{
-    /// Send a message, use token for out-of-order completion
-    pub fn send<T>(&mut self, message: T) -> Result<Token, RingError>
-    where
-        T: FlatbufferSerializable;
+impl<M: MemOps, N: Notifier> VirtqConsumer<M, N> {
+    /// Poll for a single request. Returns None if no requests available.
+    pub fn poll_once(&mut self, max_req: usize) -> Result<Option<Request>, VirtqError>;
 
-    /// Try to send without blocking
-    pub fn try_send<T>(&mut self, message: T) -> Result<Token, RingError>
-    where
-        T: FlatbufferSerializable;
+    /// Complete a request by sending the response.
+    pub fn complete(&mut self, token: Token, resp: &[u8]) -> Result<(), VirtqError>;
 }
-
-impl RingReceiver
-{
-    /// Receive a message of the specified type
-    pub fn recv<T>(&mut self) -> Result<T, RingError>
-    where
-        T: FlatbufferSerializable;
-
-    /// Try to receive a message without blocking
-    pub fn try_recv<T>(&mut self) -> Result<T, RingError>
-    where
-        T: FlatbufferSerializable;
-}
-
 ```
 
 ### Test Plan
