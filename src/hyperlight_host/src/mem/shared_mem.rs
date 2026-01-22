@@ -17,6 +17,7 @@ limitations under the License.
 use std::any::type_name;
 use std::ffi::c_void;
 use std::io::Error;
+use std::mem::{align_of, size_of};
 #[cfg(target_os = "linux")]
 use std::ptr::null_mut;
 use std::sync::{Arc, RwLock};
@@ -799,12 +800,40 @@ impl HostSharedMemory {
             .lock
             .try_read()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        // todo: replace with something a bit more optimized + correct
-        for (i, b) in slice.iter_mut().enumerate() {
+
+        const CHUNK: usize = size_of::<u128>();
+        let len = slice.len();
+        let mut i = 0;
+
+        // Handle unaligned head bytes until we reach u128 alignment.
+        // Note: align_offset can return usize::MAX if alignment is impossible.
+        // In that case, head_len = len via .min(), so we fall back to byte-by-byte
+        // operations for the entire slice.
+        let align_offset = base.align_offset(align_of::<u128>());
+        let head_len = align_offset.min(len);
+        while i < head_len {
             unsafe {
-                *b = base.wrapping_add(i).read_volatile();
+                slice[i] = base.add(i).read_volatile();
             }
+            i += 1;
         }
+
+        // Read aligned u128 chunks
+        // SAFETY: After processing head_len bytes, base.add(i) is u128-aligned
+        while i + CHUNK <= len {
+            let value = unsafe { (base.add(i) as *const u128).read_volatile() };
+            slice[i..i + CHUNK].copy_from_slice(&value.to_ne_bytes());
+            i += CHUNK;
+        }
+
+        // Handle remaining tail bytes
+        while i < len {
+            unsafe {
+                slice[i] = base.add(i).read_volatile();
+            }
+            i += 1;
+        }
+
         drop(guard);
         Ok(())
     }
@@ -818,12 +847,52 @@ impl HostSharedMemory {
             .lock
             .try_read()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        // todo: replace with something a bit more optimized + correct
-        for (i, b) in slice.iter().enumerate() {
+
+        const CHUNK: usize = size_of::<u128>();
+        let len = slice.len();
+        let mut i = 0;
+
+        // Handle unaligned head bytes until we reach u128 alignment.
+        // Note: align_offset can return usize::MAX if alignment is impossible.
+        // In that case, head_len = len via .min(), so we fall back to byte-by-byte
+        // operations for the entire slice.
+        let align_offset = base.align_offset(align_of::<u128>());
+        let head_len = align_offset.min(len);
+        while i < head_len {
             unsafe {
-                base.wrapping_add(i).write_volatile(*b);
+                base.add(i).write_volatile(slice[i]);
             }
+            i += 1;
         }
+
+        // Write aligned u128 chunks
+        // SAFETY: After processing head_len bytes, base.add(i) is u128-aligned
+        while i + CHUNK <= len {
+            let chunk: [u8; CHUNK] = slice[i..i + CHUNK].try_into().map_err(|_| {
+                new_error!(
+                    "Failed to convert slice to fixed-size array for u128 chunk: \
+                         expected length {}, got {} (total slice len {}, offset {})",
+                    CHUNK,
+                    slice[i..i + CHUNK].len(),
+                    len,
+                    i,
+                )
+            })?;
+            let value = u128::from_ne_bytes(chunk);
+            unsafe {
+                (base.add(i) as *mut u128).write_volatile(value);
+            }
+            i += CHUNK;
+        }
+
+        // Handle remaining tail bytes
+        while i < len {
+            unsafe {
+                base.add(i).write_volatile(slice[i]);
+            }
+            i += 1;
+        }
+
         drop(guard);
         Ok(())
     }
@@ -837,10 +906,41 @@ impl HostSharedMemory {
             .lock
             .try_read()
             .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?;
-        // todo: replace with something a bit more optimized + correct
-        for i in 0..len {
-            unsafe { base.wrapping_add(i).write_volatile(value) };
+
+        const CHUNK: usize = size_of::<u128>();
+        let value_u128 = u128::from_ne_bytes([value; CHUNK]);
+        let mut i = 0;
+
+        // Handle unaligned head bytes until we reach u128 alignment.
+        // Note: align_offset can return usize::MAX if alignment is impossible.
+        // In that case, head_len = len via .min(), so we fall back to byte-by-byte
+        // operations for the entire slice.
+        let align_offset = base.align_offset(align_of::<u128>());
+        let head_len = align_offset.min(len);
+        while i < head_len {
+            unsafe {
+                base.add(i).write_volatile(value);
+            }
+            i += 1;
         }
+
+        // Write aligned u128 chunks
+        // SAFETY: After processing head_len bytes, base.add(i) is u128-aligned
+        while i + CHUNK <= len {
+            unsafe {
+                (base.add(i) as *mut u128).write_volatile(value_u128);
+            }
+            i += CHUNK;
+        }
+
+        // Handle remaining tail bytes
+        while i < len {
+            unsafe {
+                base.add(i).write_volatile(value);
+            }
+            i += 1;
+        }
+
         drop(guard);
         Ok(())
     }
@@ -1204,6 +1304,222 @@ mod tests {
             "shared memory address {:#x} was found in the process map, but shouldn't be",
             addr
         );
+    }
+
+    /// Tests for the optimized aligned memory operations.
+    /// These tests verify that the u128 chunk optimization works correctly
+    /// for various alignment scenarios and buffer sizes.
+    mod alignment_tests {
+        use super::*;
+
+        const CHUNK_SIZE: usize = size_of::<u128>();
+
+        /// Test copy operations with all possible starting alignment offsets (0-15)
+        #[test]
+        fn copy_with_various_alignments() {
+            // Use a buffer large enough to test all alignment cases
+            let mem_size: usize = 4096;
+            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+            let (hshm, _) = eshm.build();
+
+            // Test all 16 possible alignment offsets (0 through 15)
+            for start_offset in 0..CHUNK_SIZE {
+                let test_len = 64; // Enough to cover head, aligned chunks, and tail
+                let test_data: Vec<u8> = (0..test_len).map(|i| (i + start_offset) as u8).collect();
+
+                // Write data at the given offset
+                hshm.copy_from_slice(&test_data, start_offset).unwrap();
+
+                // Read it back
+                let mut read_buf = vec![0u8; test_len];
+                hshm.copy_to_slice(&mut read_buf, start_offset).unwrap();
+
+                assert_eq!(
+                    test_data, read_buf,
+                    "Mismatch at alignment offset {}",
+                    start_offset
+                );
+            }
+        }
+
+        /// Test copy operations with lengths smaller than chunk size (< 16 bytes)
+        #[test]
+        fn copy_small_lengths() {
+            let mem_size: usize = 4096;
+            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+            let (hshm, _) = eshm.build();
+
+            for len in 0..CHUNK_SIZE {
+                let test_data: Vec<u8> = (0..len).map(|i| i as u8).collect();
+
+                hshm.copy_from_slice(&test_data, 0).unwrap();
+
+                let mut read_buf = vec![0u8; len];
+                hshm.copy_to_slice(&mut read_buf, 0).unwrap();
+
+                assert_eq!(test_data, read_buf, "Mismatch for length {}", len);
+            }
+        }
+
+        /// Test copy operations with lengths that don't align to chunk boundaries
+        #[test]
+        fn copy_non_aligned_lengths() {
+            let mem_size: usize = 4096;
+            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+            let (hshm, _) = eshm.build();
+
+            // Test lengths like 17, 31, 33, 47, 63, 65, etc.
+            let test_lengths = [17, 31, 33, 47, 63, 65, 100, 127, 129, 255, 257];
+
+            for &len in &test_lengths {
+                let test_data: Vec<u8> = (0..len).map(|i| (i % 256) as u8).collect();
+
+                hshm.copy_from_slice(&test_data, 0).unwrap();
+
+                let mut read_buf = vec![0u8; len];
+                hshm.copy_to_slice(&mut read_buf, 0).unwrap();
+
+                assert_eq!(test_data, read_buf, "Mismatch for length {}", len);
+            }
+        }
+
+        /// Test copy with exactly one chunk (16 bytes)
+        #[test]
+        fn copy_exact_chunk_size() {
+            let mem_size: usize = 4096;
+            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+            let (hshm, _) = eshm.build();
+
+            let test_data: Vec<u8> = (0..CHUNK_SIZE).map(|i| i as u8).collect();
+
+            hshm.copy_from_slice(&test_data, 0).unwrap();
+
+            let mut read_buf = vec![0u8; CHUNK_SIZE];
+            hshm.copy_to_slice(&mut read_buf, 0).unwrap();
+
+            assert_eq!(test_data, read_buf);
+        }
+
+        /// Test fill with various alignment offsets
+        #[test]
+        fn fill_with_various_alignments() {
+            let mem_size: usize = 4096;
+            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+            let (mut hshm, _) = eshm.build();
+
+            for start_offset in 0..CHUNK_SIZE {
+                let fill_len = 64;
+                let fill_value = (start_offset % 256) as u8;
+
+                // Clear memory first
+                hshm.fill(0, 0, mem_size).unwrap();
+
+                // Fill at the given offset
+                hshm.fill(fill_value, start_offset, fill_len).unwrap();
+
+                // Read it back and verify
+                let mut read_buf = vec![0u8; fill_len];
+                hshm.copy_to_slice(&mut read_buf, start_offset).unwrap();
+
+                assert!(
+                    read_buf.iter().all(|&b| b == fill_value),
+                    "Fill mismatch at alignment offset {}",
+                    start_offset
+                );
+            }
+        }
+
+        /// Test fill with lengths smaller than chunk size
+        #[test]
+        fn fill_small_lengths() {
+            let mem_size: usize = 4096;
+            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+            let (mut hshm, _) = eshm.build();
+
+            for len in 0..CHUNK_SIZE {
+                let fill_value = 0xAB;
+
+                hshm.fill(0, 0, mem_size).unwrap(); // Clear
+                hshm.fill(fill_value, 0, len).unwrap();
+
+                let mut read_buf = vec![0u8; len];
+                hshm.copy_to_slice(&mut read_buf, 0).unwrap();
+
+                assert!(
+                    read_buf.iter().all(|&b| b == fill_value),
+                    "Fill mismatch for length {}",
+                    len
+                );
+            }
+        }
+
+        /// Test fill with non-aligned lengths
+        #[test]
+        fn fill_non_aligned_lengths() {
+            let mem_size: usize = 4096;
+            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+            let (mut hshm, _) = eshm.build();
+
+            let test_lengths = [17, 31, 33, 47, 63, 65, 100, 127, 129, 255, 257];
+
+            for &len in &test_lengths {
+                let fill_value = 0xCD;
+
+                hshm.fill(0, 0, mem_size).unwrap(); // Clear
+                hshm.fill(fill_value, 0, len).unwrap();
+
+                let mut read_buf = vec![0u8; len];
+                hshm.copy_to_slice(&mut read_buf, 0).unwrap();
+
+                assert!(
+                    read_buf.iter().all(|&b| b == fill_value),
+                    "Fill mismatch for length {}",
+                    len
+                );
+            }
+        }
+
+        /// Test edge cases: length 0 and length 1
+        #[test]
+        fn copy_edge_cases() {
+            let mem_size: usize = 4096;
+            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+            let (hshm, _) = eshm.build();
+
+            // Length 0
+            let empty: Vec<u8> = vec![];
+            hshm.copy_from_slice(&empty, 0).unwrap();
+            let mut read_buf: Vec<u8> = vec![];
+            hshm.copy_to_slice(&mut read_buf, 0).unwrap();
+            assert!(read_buf.is_empty());
+
+            // Length 1
+            let single = vec![0x42u8];
+            hshm.copy_from_slice(&single, 0).unwrap();
+            let mut read_buf = vec![0u8; 1];
+            hshm.copy_to_slice(&mut read_buf, 0).unwrap();
+            assert_eq!(single, read_buf);
+        }
+
+        /// Test combined: unaligned start + non-aligned length
+        #[test]
+        fn copy_unaligned_start_and_length() {
+            let mem_size: usize = 4096;
+            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+            let (hshm, _) = eshm.build();
+
+            // Start at offset 7 (unaligned), length 37 (not a multiple of 16)
+            let start_offset = 7;
+            let len = 37;
+            let test_data: Vec<u8> = (0..len).map(|i| (i * 3) as u8).collect();
+
+            hshm.copy_from_slice(&test_data, start_offset).unwrap();
+
+            let mut read_buf = vec![0u8; len];
+            hshm.copy_to_slice(&mut read_buf, start_offset).unwrap();
+
+            assert_eq!(test_data, read_buf);
+        }
     }
 
     #[cfg(target_os = "linux")]
