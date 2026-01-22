@@ -819,10 +819,14 @@ impl HostSharedMemory {
         }
 
         // Read aligned u128 chunks
-        // SAFETY: After processing head_len bytes, base.add(i) is u128-aligned
+        // SAFETY: After processing head_len bytes, base.add(i) is u128-aligned.
+        // We use write_unaligned for the destination since the slice may not be u128-aligned.
+        let dst = slice.as_mut_ptr();
         while i + CHUNK <= len {
-            let value = unsafe { (base.add(i) as *const u128).read_volatile() };
-            slice[i..i + CHUNK].copy_from_slice(&value.to_ne_bytes());
+            unsafe {
+                let value = (base.add(i) as *const u128).read_volatile();
+                std::ptr::write_unaligned(dst.add(i) as *mut u128, value);
+            }
             i += CHUNK;
         }
 
@@ -866,20 +870,12 @@ impl HostSharedMemory {
         }
 
         // Write aligned u128 chunks
-        // SAFETY: After processing head_len bytes, base.add(i) is u128-aligned
+        // SAFETY: After processing head_len bytes, base.add(i) is u128-aligned.
+        // We use read_unaligned for the source since the slice may not be u128-aligned.
+        let src = slice.as_ptr();
         while i + CHUNK <= len {
-            let chunk: [u8; CHUNK] = slice[i..i + CHUNK].try_into().map_err(|_| {
-                new_error!(
-                    "Failed to convert slice to fixed-size array for u128 chunk: \
-                         expected length {}, got {} (total slice len {}, offset {})",
-                    CHUNK,
-                    slice[i..i + CHUNK].len(),
-                    len,
-                    i,
-                )
-            })?;
-            let value = u128::from_ne_bytes(chunk);
             unsafe {
+                let value = std::ptr::read_unaligned(src.add(i) as *const u128);
                 (base.add(i) as *mut u128).write_volatile(value);
             }
             i += CHUNK;
