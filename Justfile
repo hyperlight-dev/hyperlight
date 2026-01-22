@@ -101,6 +101,12 @@ like-ci config=default-target hypervisor="kvm":
     @# Ensure up-to-date Cargo.lock
     cargo fetch --locked
 
+    @# typos
+    typos
+
+    @# check licence headers
+    just check-license-headers
+
     @# fmt
     just fmt-check
 

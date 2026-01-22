@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # This script checks for the presence of the required license header in Rust source files.
 
 # Get the repository root
@@ -32,7 +32,12 @@ MISSING_HEADERS=0
 MISSING_FILES=""
 
 # Find all Rust files, excluding target directory
-while IFS= read -r file; do
+while IFS= read -r -d $'\0' file; do
+    # Skip some files which appear when the guests are build
+    if grep -q '^src/tests/rust_guests/[^/]*/target/' <<< "$file"; then
+        continue
+    fi
+
     # Skip auto-generated files
     if grep -q "@generated" "$file" || grep -q "Automatically generated" "$file"; then
         continue
@@ -44,7 +49,7 @@ while IFS= read -r file; do
         MISSING_FILES="$MISSING_FILES\n  $file"
         MISSING_HEADERS=$((MISSING_HEADERS + 1))
     fi
-done < <(find src -name "*.rs" -type f)
+done < <(find src -name "*.rs" -type f -print0)
 
 if [ $MISSING_HEADERS -gt 0 ]; then
     echo "Found $MISSING_HEADERS files with missing or invalid license headers:"
