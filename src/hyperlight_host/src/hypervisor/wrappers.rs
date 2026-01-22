@@ -57,7 +57,7 @@ impl From<&PSTRWrapper> for PSTR {
 }
 
 /// Wrapper for HANDLE, required since HANDLE is no longer Send.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct HandleWrapper(HANDLE);
 
 impl From<HANDLE> for HandleWrapper {

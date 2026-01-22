@@ -237,6 +237,9 @@ pub enum MapMemoryError {
     #[cfg(target_os = "windows")]
     #[error("Operation not supported: {0}")]
     NotSupported(String),
+    #[cfg(target_os = "windows")]
+    #[error("Surrogate process creation failed: {0}")]
+    SurrogateProcess(String),
 }
 
 /// Unmap memory error
@@ -244,9 +247,6 @@ pub enum MapMemoryError {
 pub enum UnmapMemoryError {
     #[error("Hypervisor error: {0}")]
     Hypervisor(HypervisorError),
-    #[cfg(target_os = "windows")]
-    #[error("Operation not supported: {0}")]
-    NotSupported(String),
 }
 
 /// Implementation-specific Hypervisor error

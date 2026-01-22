@@ -141,8 +141,9 @@ impl DebugMemoryAccess {
                     DebugMemoryAccessError::TranslateGuestAddress(mem_offset as u64)
                 })?;
 
+                let host_start_ptr = <_ as Into<usize>>::into(reg.host_region.start);
                 let bytes: &[u8] = unsafe {
-                    slice::from_raw_parts(reg.host_region.start as *const u8, reg.host_region.len())
+                    slice::from_raw_parts(host_start_ptr as *const u8, reg.guest_region.len())
                 };
                 data[..read_len].copy_from_slice(&bytes[region_offset..region_offset + read_len]);
 
@@ -211,11 +212,9 @@ impl DebugMemoryAccess {
                     DebugMemoryAccessError::TranslateGuestAddress(mem_offset as u64)
                 })?;
 
+                let host_start_ptr = <_ as Into<usize>>::into(reg.host_region.start);
                 let bytes: &mut [u8] = unsafe {
-                    slice::from_raw_parts_mut(
-                        reg.host_region.start as *mut u8,
-                        reg.host_region.len(),
-                    )
+                    slice::from_raw_parts_mut(host_start_ptr as *mut u8, reg.guest_region.len())
                 };
                 bytes[region_offset..region_offset + write_len].copy_from_slice(&data[..write_len]);
 

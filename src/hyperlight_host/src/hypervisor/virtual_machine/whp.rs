@@ -16,7 +16,6 @@ limitations under the License.
 
 use std::os::raw::c_void;
 
-use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use windows::Win32::Foundation::{FreeLibrary, HANDLE};
 use windows::Win32::System::Hypervisor::*;
 use windows::Win32::System::LibraryLoader::*;
@@ -36,7 +35,6 @@ use crate::hypervisor::virtual_machine::{
     CreateVmError, HypervisorError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError,
     VirtualMachine, VmExit,
 };
-use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 
 #[allow(dead_code)] // Will be used for runtime hypervisor detection
@@ -66,9 +64,6 @@ pub(crate) struct WhpVm {
     partition: WHV_PARTITION_HANDLE,
     // Surrogate process for memory mapping
     surrogate_process: SurrogateProcess,
-    // Offset between surrogate process and host process addresses (accounting for guard page)
-    // Calculated lazily on first map_memory call
-    surrogate_offset: Option<isize>,
     // Track if initial memory setup is complete.
     // Used to reject later memory mapping since it's not supported  on windows.
     // TODO remove this flag once memory mapping is supported on windows.
@@ -83,10 +78,7 @@ pub(crate) struct WhpVm {
 unsafe impl Send for WhpVm {}
 
 impl WhpVm {
-    pub(crate) fn new(
-        mmap_file_handle: HandleWrapper,
-        raw_size: usize,
-    ) -> std::result::Result<Self, CreateVmError> {
+    pub(crate) fn new() -> Result<Self, CreateVmError> {
         const NUM_CPU: u32 = 1;
         let partition = unsafe {
             let partition =
@@ -108,13 +100,12 @@ impl WhpVm {
         let mgr = get_surrogate_process_manager()
             .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
         let surrogate_process = mgr
-            .get_surrogate_process(raw_size, mmap_file_handle)
+            .get_surrogate_process()
             .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
 
         Ok(WhpVm {
             partition,
             surrogate_process,
-            surrogate_offset: None,
             initial_memory_setup_done: false,
         })
     }
@@ -143,49 +134,17 @@ impl VirtualMachine for WhpVm {
     unsafe fn map_memory(
         &mut self,
         (_slot, region): (u32, &MemoryRegion),
-    ) -> std::result::Result<(), MapMemoryError> {
-        // Only allow memory mapping during initial setup (the first batch of regions).
-        // After the initial setup is complete, subsequent calls should fail,
-        // since it's not yet implemented.
-        if self.initial_memory_setup_done {
-            // Initial setup already completed - reject this mapping
-            return Err(MapMemoryError::NotSupported(
-                "Mapping host memory into the guest not yet supported on this platform".to_string(),
-            ));
-        }
-
-        // Calculate the offset on first call. The offset accounts for the guard page
-        // at the start of the surrogate process memory.
-        let offset = if let Some(offset) = self.surrogate_offset {
-            offset
-        } else {
-            // surrogate_address points to the start of the guard page, so add PAGE_SIZE
-            // to get to the actual shared memory start
-            let surrogate_address =
-                self.surrogate_process.allocated_address as usize + PAGE_SIZE_USIZE;
-            let host_address = region.host_region.start;
-            let surrogate_isize =
-                isize::try_from(surrogate_address).map_err(MapMemoryError::AddressConversion)?;
-            let host_isize =
-                isize::try_from(host_address).map_err(MapMemoryError::AddressConversion)?;
-            let offset = surrogate_isize - host_isize;
-            self.surrogate_offset = Some(offset);
-            offset
-        };
-
-        let process_handle: HANDLE = self.surrogate_process.process_handle.into();
-
-        let whvmapgparange2_func = unsafe {
-            match try_load_whv_map_gpa_range2() {
-                Ok(func) => func,
-                Err(e) => {
-                    return Err(MapMemoryError::LoadApi {
-                        api_name: "WHvMapGpaRange2",
-                        source: e,
-                    });
-                }
-            }
-        };
+    ) -> Result<(), MapMemoryError> {
+        // Calculate the surrogate process address for this region
+        let surrogate_base = self
+            .surrogate_process
+            .map(
+                region.host_region.start.from_handle,
+                region.host_region.start.handle_base,
+                region.host_region.start.handle_size,
+            )
+            .map_err(|e| MapMemoryError::SurrogateProcess(e.to_string()))?;
+        let surrogate_addr = surrogate_base.wrapping_add(region.host_region.start.offset);
 
         let flags = region
             .flags
@@ -205,15 +164,22 @@ impl VirtualMachine for WhpVm {
             .iter()
             .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag);
 
-        // Calculate the surrogate process address for this region
-        let host_start_isize =
-            isize::try_from(region.host_region.start).map_err(MapMemoryError::AddressConversion)?;
-        let surrogate_addr = (host_start_isize + offset) as *const c_void;
+        let whvmapgparange2_func = unsafe {
+            match try_load_whv_map_gpa_range2() {
+                Ok(func) => func,
+                Err(e) => {
+                    return Err(MapMemoryError::LoadApi {
+                        api_name: "WHvMapGpaRange2",
+                        source: e,
+                    });
+                }
+            }
+        };
 
         let res = unsafe {
             whvmapgparange2_func(
                 self.partition,
-                process_handle,
+                self.surrogate_process.process_handle.into(),
                 surrogate_addr,
                 region.guest_region.start as u64,
                 region.guest_region.len() as u64,
@@ -231,11 +197,19 @@ impl VirtualMachine for WhpVm {
 
     fn unmap_memory(
         &mut self,
-        (_slot, _region): (u32, &MemoryRegion),
-    ) -> std::result::Result<(), UnmapMemoryError> {
-        Err(UnmapMemoryError::NotSupported(
-            "Unmapping host memory from the guest not yet supported on this platform".to_string(),
-        ))
+        (_slot, region): (u32, &MemoryRegion),
+    ) -> Result<(), UnmapMemoryError> {
+        unsafe {
+            WHvUnmapGpaRange(
+                self.partition,
+                region.guest_region.start as u64,
+                region.guest_region.len() as u64,
+            )
+            .map_err(|e| UnmapMemoryError::Hypervisor(HypervisorError::WindowsError(e)))?;
+        }
+        self.surrogate_process
+            .unmap(region.host_region.start.handle_base);
+        Ok(())
     }
 
     #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]

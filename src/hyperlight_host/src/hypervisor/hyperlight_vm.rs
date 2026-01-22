@@ -61,8 +61,6 @@ use crate::hypervisor::virtual_machine::{
     HypervisorType, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VmError, VmExit,
     get_available_hypervisor,
 };
-#[cfg(target_os = "windows")]
-use crate::hypervisor::wrappers::HandleWrapper;
 use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_max_log_level};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::SandboxMemoryManager;
@@ -325,8 +323,6 @@ impl HyperlightVm {
         entrypoint: u64,
         rsp: u64,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
-        #[cfg(target_os = "windows")] handle: HandleWrapper,
-        #[cfg(target_os = "windows")] raw_size: usize,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
@@ -343,9 +339,7 @@ impl HyperlightVm {
             #[cfg(mshv3)]
             Some(HypervisorType::Mshv) => Box::new(MshvVm::new().map_err(VmError::CreateVm)?),
             #[cfg(target_os = "windows")]
-            Some(HypervisorType::Whp) => {
-                Box::new(WhpVm::new(handle, raw_size).map_err(VmError::CreateVm)?)
-            }
+            Some(HypervisorType::Whp) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
 
@@ -500,8 +494,10 @@ impl HyperlightVm {
         if [
             region.guest_region.start,
             region.guest_region.end,
-            region.host_region.start,
-            region.host_region.end,
+            #[allow(clippy::useless_conversion)]
+            region.host_region.start.into(),
+            #[allow(clippy::useless_conversion)]
+            region.host_region.end.into(),
         ]
         .iter()
         .any(|x| x % self.page_size != 0)

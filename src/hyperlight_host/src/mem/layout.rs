@@ -461,7 +461,12 @@ impl SandboxMemoryLayout {
     }
 
     pub fn get_memory_regions(&self, shared_mem: &GuestSharedMemory) -> Result<Vec<MemoryRegion>> {
-        self.get_memory_regions_(shared_mem.base_addr())
+        self.get_memory_regions_(
+            #[cfg(target_os = "windows")]
+            shared_mem.host_region_base(),
+            #[cfg(not(target_os = "windows"))]
+            shared_mem.base_addr(),
+        )
     }
 
     /// Returns the memory regions associated with this memory layout,

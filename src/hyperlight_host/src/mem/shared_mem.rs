@@ -685,6 +685,18 @@ pub trait SharedMemory {
         self.region().size
     }
 
+    /// Extract a base address that can be mapped into a VM for this
+    /// SharedMemory
+    #[cfg(target_os = "windows")]
+    fn host_region_base(&self) -> super::memory_region::HostRegionBase {
+        super::memory_region::HostRegionBase {
+            from_handle: self.region().handle.into(),
+            handle_base: self.region().ptr as usize,
+            handle_size: self.region().size,
+            offset: PAGE_SIZE_USIZE,
+        }
+    }
+
     /// Run some code with exclusive access to the SharedMemory
     /// underlying this.  If the SharedMemory is not an
     /// ExclusiveSharedMemory, any concurrent accesses to the relevant

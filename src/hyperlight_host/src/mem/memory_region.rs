@@ -31,6 +31,9 @@ use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
 
+#[cfg(target_os = "windows")]
+use crate::hypervisor::wrappers::HandleWrapper;
+
 pub(crate) const DEFAULT_GUEST_BLOB_MEM_FLAGS: MemoryRegionFlags = MemoryRegionFlags::READ;
 
 bitflags! {
@@ -142,7 +145,6 @@ pub enum MemoryRegionType {
 /// This trait is used to parameterize [`MemoryRegion_`]
 pub(crate) trait MemoryRegionKind {
     /// The type used to represent host memory addresses.
-    ///
     type HostBaseType: Copy;
 
     /// Computes an address by adding a size to a base address.
@@ -162,11 +164,67 @@ pub(crate) trait MemoryRegionKind {
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub(crate) struct HostGuestMemoryRegion {}
 
+#[cfg(not(target_os = "windows"))]
 impl MemoryRegionKind for HostGuestMemoryRegion {
     type HostBaseType = usize;
 
     fn add(base: Self::HostBaseType, size: usize) -> Self::HostBaseType {
         base + size
+    }
+}
+/// A [`HostRegionBase`] keeps track of not just a pointer, but also a
+/// file mapping into which it is pointing.  This is used on WHP,
+/// where mapping the actual pointer into the VM actually involves
+/// first mapping the file into a surrogate process.
+#[cfg(target_os = "windows")]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct HostRegionBase {
+    /// The file handle from which the file mapping was created
+    pub from_handle: HandleWrapper,
+    /// The base of the file mapping
+    pub handle_base: usize,
+    /// The size of the file mapping
+    pub handle_size: usize,
+    /// The offset into file mapping region where this
+    /// [`HostRegionBase`] is pointing.
+    pub offset: usize,
+}
+#[cfg(target_os = "windows")]
+impl std::hash::Hash for HostRegionBase {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // it's safe not to hash the handle (which is not hashable)
+        // since, for any of these in use at the same time, the handle
+        // should be uniquely determined by the
+        // handle_base/handle_size combination.
+        self.handle_base.hash(state);
+        self.handle_size.hash(state);
+        self.offset.hash(state);
+    }
+}
+#[cfg(target_os = "windows")]
+impl From<HostRegionBase> for usize {
+    fn from(x: HostRegionBase) -> usize {
+        x.handle_base + x.offset
+    }
+}
+#[cfg(target_os = "windows")]
+impl TryFrom<HostRegionBase> for isize {
+    type Error = <isize as TryFrom<usize>>::Error;
+    fn try_from(x: HostRegionBase) -> Result<isize, Self::Error> {
+        <isize as TryFrom<usize>>::try_from(x.into())
+    }
+}
+#[cfg(target_os = "windows")]
+impl MemoryRegionKind for HostGuestMemoryRegion {
+    type HostBaseType = HostRegionBase;
+
+    fn add(base: Self::HostBaseType, size: usize) -> Self::HostBaseType {
+        HostRegionBase {
+            from_handle: base.from_handle,
+            handle_base: base.handle_base,
+            handle_size: base.handle_size,
+            offset: base.offset + size,
+        }
     }
 }
 

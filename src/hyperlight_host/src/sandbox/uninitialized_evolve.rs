@@ -157,20 +157,6 @@ pub(crate) fn set_up_hypervisor_partition(
         entrypoint_ptr.absolute()?,
         rsp_ptr.absolute()?,
         config,
-        #[cfg(target_os = "windows")]
-        {
-            use crate::hypervisor::wrappers::HandleWrapper;
-            use crate::mem::shared_mem::SharedMemory;
-            HandleWrapper::from(
-                mgr.shared_mem
-                    .with_exclusivity(|s| s.get_mmap_file_handle())?,
-            )
-        },
-        #[cfg(target_os = "windows")]
-        {
-            use crate::mem::shared_mem::SharedMemory;
-            mgr.shared_mem.raw_mem_size()
-        },
         #[cfg(gdb)]
         gdb_conn,
         #[cfg(crashdump)]

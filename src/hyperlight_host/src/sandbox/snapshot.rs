@@ -88,8 +88,12 @@ fn hash(memory: &[u8], regions: &[MemoryRegion]) -> Result<[u8; 32]> {
     for rgn in regions {
         hasher.update(&usize::to_le_bytes(rgn.guest_region.start));
         let guest_len = rgn.guest_region.end - rgn.guest_region.start;
-        hasher.update(&usize::to_le_bytes(rgn.host_region.start));
-        let host_len = rgn.host_region.end - rgn.host_region.start;
+        #[allow(clippy::useless_conversion)]
+        let host_start_addr: usize = rgn.host_region.start.into();
+        #[allow(clippy::useless_conversion)]
+        let host_end_addr: usize = rgn.host_region.end.into();
+        hasher.update(&usize::to_le_bytes(host_start_addr));
+        let host_len = host_end_addr - host_start_addr;
         if guest_len != host_len {
             return Err(MemoryRegionSizeMismatch(
                 host_len,

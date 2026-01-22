@@ -86,11 +86,11 @@ impl GuestView {
         let regions = ctx
             .regions
             .iter()
-            .filter(|r| !r.host_region.is_empty())
+            .filter(|r| !r.guest_region.is_empty())
             .map(|r| VaRegion {
                 begin: r.guest_region.start as u64,
                 end: r.guest_region.end as u64,
-                offset: r.host_region.start as u64,
+                offset: <_ as Into<usize>>::into(r.host_region.start) as u64,
                 protection: VaProtection {
                     is_private: false,
                     read: r.flags.contains(MemoryRegionFlags::READ),
@@ -225,8 +225,8 @@ impl ReadProcessMemory for GuestMemReader {
                 let offset = base - r.guest_region.start;
                 let region_slice = unsafe {
                     std::slice::from_raw_parts(
-                        r.host_region.start as *const u8,
-                        r.host_region.len(),
+                        <_ as Into<usize>>::into(r.host_region.start) as *const u8,
+                        r.guest_region.len(),
                     )
                 };
 
@@ -463,9 +463,20 @@ mod test {
     #[test]
     fn test_crashdump_dummy_core_dump() {
         let dummy_vec = vec![0; 0x1000];
+        use crate::mem::memory_region::{HostGuestMemoryRegion, MemoryRegionKind};
+        #[cfg(target_os = "windows")]
+        let host_base = crate::mem::memory_region::HostRegionBase {
+            from_handle: windows::Win32::Foundation::INVALID_HANDLE_VALUE.into(),
+            handle_base: 0,
+            handle_size: -1isize as usize,
+            offset: dummy_vec.as_ptr() as usize,
+        };
+        #[cfg(not(target_os = "windows"))]
+        let host_base = dummy_vec.as_ptr() as usize;
+        let host_end = <HostGuestMemoryRegion as MemoryRegionKind>::add(host_base, dummy_vec.len());
         let regions = vec![MemoryRegion {
             guest_region: 0x1000..0x2000,
-            host_region: dummy_vec.as_ptr() as usize..dummy_vec.as_ptr() as usize + dummy_vec.len(),
+            host_region: host_base..host_end,
             flags: MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
             region_type: crate::mem::memory_region::MemoryRegionType::Code,
         }];
