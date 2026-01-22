@@ -145,8 +145,15 @@ impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps> Iterator
         let next_vmin = if self.n == 0 {
             self.request.vmin
         } else {
-            // Align to the next boundary by adding one entry's worth and masking off lower bits
-            (self.request.vmin + (self.n << LOW_BIT)) & !lower_bits_mask
+            // Align to the next boundary by adding one entry's worth
+            // and masking off lower bits. Masking off before adding
+            // is safe, since n << LOW_BIT must always have zeros in
+            // these positions.
+            let aligned_min = self.request.vmin & !lower_bits_mask;
+            // Use checked_add here because going past the end of the
+            // address space counts as "the next one would be out of
+            // range"
+            aligned_min.checked_add(self.n << LOW_BIT)?
         };
 
         // Check if we've processed the entire requested range

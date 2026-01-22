@@ -36,6 +36,9 @@ use windows::Win32::System::Memory::{
 #[cfg(target_os = "windows")]
 use windows::core::PCSTR;
 
+use super::memory_region::{
+    HostGuestMemoryRegion, MemoryRegion, MemoryRegionFlags, MemoryRegionKind, MemoryRegionType,
+};
 use crate::HyperlightError::SnapshotSizeMismatch;
 #[cfg(target_os = "windows")]
 use crate::HyperlightError::WindowsAPIError;
@@ -311,11 +314,12 @@ impl ExclusiveSharedMemory {
     #[cfg(target_os = "linux")]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
-        #[cfg(miri)]
-        use libc::MAP_PRIVATE;
-        use libc::{MAP_ANONYMOUS, MAP_FAILED, PROT_READ, PROT_WRITE, c_int, mmap, off_t, size_t};
+        use libc::{
+            MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, c_int, mmap, off_t,
+            size_t,
+        };
         #[cfg(not(miri))]
-        use libc::{MAP_NORESERVE, MAP_SHARED, PROT_NONE, mprotect};
+        use libc::{MAP_NORESERVE, PROT_NONE, mprotect};
 
         if min_size_bytes == 0 {
             return Err(new_error!("Cannot create shared memory with size 0"));
@@ -343,7 +347,7 @@ impl ExclusiveSharedMemory {
 
         // allocate the memory
         #[cfg(not(miri))]
-        let flags = MAP_ANONYMOUS | MAP_SHARED | MAP_NORESERVE;
+        let flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE;
         #[cfg(miri)]
         let flags = MAP_ANONYMOUS | MAP_PRIVATE;
 
@@ -642,6 +646,43 @@ impl ExclusiveSharedMemory {
     }
 }
 
+impl GuestSharedMemory {
+    /// Create a [`super::memory_region::MemoryRegion`] structure
+    /// suitable for mapping this region into a VM
+    pub(crate) fn mapping_at(
+        &self,
+        guest_base: u64,
+        region_type: MemoryRegionType,
+    ) -> MemoryRegion {
+        let flags = match region_type {
+            MemoryRegionType::Scratch => MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+            #[allow(clippy::panic)]
+            // In the future, all the host side knowledge about memory
+            // region types should collapse down to Snapshot vs
+            // Scratch, at which time this panicking case will be
+            // unnecessary. For now, we will panic if one of the
+            // legacy regions ends up in this function, which very
+            // much should be impossible (since the only callers of it
+            // directly pass a literal new-style region type).
+            _ => panic!(
+                "GuestSharedMemory::mapping_at should only be used for Scratch or Snapshot regions"
+            ),
+        };
+        let guest_base = guest_base as usize;
+        #[cfg(not(windows))]
+        let host_base = self.base_addr();
+        #[cfg(windows)]
+        let host_base = self.host_region_base();
+        let host_end = <HostGuestMemoryRegion as MemoryRegionKind>::add(host_base, self.mem_size());
+        MemoryRegion {
+            guest_region: guest_base..(guest_base + self.mem_size()),
+            host_region: host_base..host_end,
+            region_type,
+            flags,
+        }
+    }
+}
+
 /// A trait that abstracts over the particular kind of SharedMemory,
 /// used when invoking operations from Rust that absolutely must have
 /// exclusive control over the shared memory for correctness +
@@ -713,6 +754,29 @@ pub trait SharedMemory {
             return Err(SnapshotSizeMismatch(self.mem_size(), snapshot.mem_size()));
         }
         self.with_exclusivity(|e| e.copy_from_slice(snapshot.memory(), 0))?
+    }
+
+    /// Zero a shared memory region
+    fn zero(&mut self) -> Result<()> {
+        self.with_exclusivity(|e| {
+            #[allow(unused_mut)] // unused on some platforms, although not others
+            let mut do_copy = true;
+            // TODO: Compare & add heuristic thresholds: mmap, MADV_DONTNEED, MADV_REMOVE, MADV_FREE (?)
+            #[cfg(target_os = "linux")]
+            unsafe {
+                let ret = libc::madvise(
+                    e.region.ptr as *mut libc::c_void,
+                    e.region.size,
+                    libc::MADV_DONTNEED,
+                );
+                if ret == 0 {
+                    do_copy = false;
+                }
+            }
+            if do_copy {
+                e.as_mut_slice().fill(0);
+            }
+        })
     }
 }
 

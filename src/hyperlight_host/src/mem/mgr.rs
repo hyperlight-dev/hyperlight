@@ -45,6 +45,8 @@ pub(crate) const STACK_COOKIE_LEN: usize = 16;
 pub(crate) struct SandboxMemoryManager<S> {
     /// Shared memory for the Sandbox
     pub(crate) shared_mem: S,
+    /// Scratch memory for the Sandbox
+    pub(crate) scratch_mem: S,
     /// The memory layout of the underlying shared memory
     pub(crate) layout: SandboxMemoryLayout,
     /// Pointer to where to load memory from
@@ -145,6 +147,7 @@ where
     pub(crate) fn new(
         layout: SandboxMemoryLayout,
         shared_mem: S,
+        scratch_mem: S,
         load_addr: RawPtr,
         entrypoint_offset: Option<Offset>,
         stack_cookie: [u8; STACK_COOKIE_LEN],
@@ -152,6 +155,7 @@ where
         Self {
             layout,
             shared_mem,
+            scratch_mem,
             load_addr,
             entrypoint_offset,
             mapped_rgns: 0,
@@ -191,12 +195,6 @@ where
             mapped_regions,
         )
     }
-
-    /// This function restores a memory snapshot from a given snapshot.
-    pub(crate) fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
-        self.shared_mem.restore_from_snapshot(snapshot)?;
-        Ok(())
-    }
 }
 
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
@@ -204,6 +202,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         let layout = *s.layout();
         let mut shared_mem = ExclusiveSharedMemory::new(s.mem_size())?;
         shared_mem.copy_from_slice(s.memory(), 0)?;
+        let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
         let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
         let stack_cookie = rand::random::<[u8; STACK_COOKIE_LEN]>();
         let entrypoint_gva = s.preinitialise();
@@ -211,6 +210,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         Ok(Self::new(
             layout,
             shared_mem,
+            scratch_mem,
             load_addr,
             entrypoint_offset,
             stack_cookie,
@@ -236,9 +236,11 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         SandboxMemoryManager<GuestSharedMemory>,
     ) {
         let (hshm, gshm) = self.shared_mem.build();
+        let (hscratch, gscratch) = self.scratch_mem.build();
         (
             SandboxMemoryManager {
                 shared_mem: hshm,
+                scratch_mem: hscratch,
                 layout: self.layout,
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
@@ -248,6 +250,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             },
             SandboxMemoryManager {
                 shared_mem: gshm,
+                scratch_mem: gscratch,
                 layout: self.layout,
                 load_addr: self.load_addr.clone(),
                 entrypoint_offset: self.entrypoint_offset,
@@ -380,6 +383,37 @@ impl SandboxMemoryManager<HostSharedMemory> {
             ) else {
                 break;
             };
+        }
+    }
+
+    /// This function restores a memory snapshot from a given snapshot.
+    pub(crate) fn restore_snapshot(
+        &mut self,
+        snapshot: &Snapshot,
+    ) -> Result<Option<GuestSharedMemory>> {
+        if self.shared_mem.mem_size() != snapshot.mem_size() {
+            return Err(new_error!(
+                "Snapshot size does not match current memory size: {} != {}",
+                self.shared_mem.raw_mem_size(),
+                snapshot.mem_size()
+            ));
+        }
+        self.shared_mem.restore_from_snapshot(snapshot)?;
+        let new_scratch_size = snapshot.layout().get_scratch_size();
+        if new_scratch_size == self.scratch_mem.mem_size() {
+            self.scratch_mem.zero()?;
+            Ok(None)
+        } else {
+            let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
+            let (hscratch, gscratch) = new_scratch_mem.build();
+            // Even though this destroys the reference to the host
+            // side of the old scratch mapping, the VM should still
+            // own the reference to the guest side of the old scratch
+            // mapping, so it won't actually be deallocated until it
+            // has been unmapped from the VM.
+            self.scratch_mem = hscratch;
+
+            Ok(Some(gscratch))
         }
     }
 }

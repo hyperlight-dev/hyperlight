@@ -138,6 +138,8 @@ pub enum MemoryRegionType {
     GuardPage,
     /// The region contains the Stack
     Stack,
+    /// The scratch region
+    Scratch,
 }
 
 /// A trait that distinguishes between different kinds of memory region representations.

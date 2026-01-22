@@ -83,6 +83,23 @@ impl KvmVm {
             .create_vcpu(0)
             .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
 
+        // Set the CPUID leaf for MaxPhysAddr. KVM allows this to
+        // easily be overridden by the hypervisor and defaults it very
+        // low, while mshv passes it through from hardware unless an
+        // intercept is installed.
+        let mut kvm_cpuid = hv
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        for entry in kvm_cpuid.as_mut_slice().iter_mut() {
+            if entry.function == 0x8000_0008 {
+                entry.eax &= !0xff;
+                entry.eax |= hyperlight_common::layout::MAX_GPA.ilog2() + 1;
+            }
+        }
+        vcpu_fd
+            .set_cpuid2(&kvm_cpuid)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
         Ok(Self {
             vm_fd,
             vcpu_fd,

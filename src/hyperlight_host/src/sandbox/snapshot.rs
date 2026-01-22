@@ -140,6 +140,7 @@ impl Snapshot {
             exe_info.loaded_size(),
             usize::try_from(cfg.get_stack_size())?,
             usize::try_from(cfg.get_heap_size())?,
+            cfg.get_scratch_size(),
             guest_blob_size,
             guest_blob_mem_flags,
         )?;
@@ -159,12 +160,15 @@ impl Snapshot {
 
         #[cfg(feature = "init-paging")]
         {
+            // Set up page table entries for the snapshot
             let pt_base_gpa =
                 crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS + layout.get_pt_offset();
             let pt_buf = crate::mem::mgr::GuestPageTableBuffer::new(pt_base_gpa);
             use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind};
 
             use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegionFlags};
+
+            // 1. Map the (ideally readonly) pages of snapshot data
             for rgn in layout.get_memory_regions_::<GuestMemoryRegion>(())?.iter() {
                 let readable = rgn.flags.contains(MemoryRegionFlags::READ);
                 let writable = rgn.flags.contains(MemoryRegionFlags::WRITE)
@@ -188,6 +192,23 @@ impl Snapshot {
                 };
                 unsafe { vmem::map(&pt_buf, mapping) };
             }
+
+            // 2. Map the scratch region
+            let scratch_size = cfg.get_scratch_size();
+            let mapping = Mapping {
+                phys_base: hyperlight_common::layout::scratch_base_gpa(scratch_size),
+                virt_base: hyperlight_common::layout::scratch_base_gva(scratch_size),
+                len: scratch_size as u64,
+                kind: MappingKind::BasicMapping(BasicMapping {
+                    readable: true,
+                    writable: true,
+                    executable: true,
+                }),
+            };
+            unsafe { vmem::map(&pt_buf, mapping) };
+
+            // 3. Map the page tables themselves, in order to allow the
+            // guest to update them easily
             let mut pt_size_mapped = 0;
             while pt_buf.size() > pt_size_mapped {
                 let mapping = Mapping {
@@ -306,7 +327,8 @@ mod tests {
 
         let cfg = crate::sandbox::SandboxConfiguration::default();
         let layout =
-            crate::mem::layout::SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0, None).unwrap();
+            crate::mem::layout::SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0x3000, 0, None)
+                .unwrap();
 
         // Take snapshot of data1
         let snapshot = super::Snapshot::new(
@@ -334,7 +356,8 @@ mod tests {
 
         let cfg = crate::sandbox::SandboxConfiguration::default();
         let layout =
-            crate::mem::layout::SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0, None).unwrap();
+            crate::mem::layout::SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0x3000, 0, None)
+                .unwrap();
 
         let snapshot = super::Snapshot::new(
             &mut gm,
@@ -353,7 +376,8 @@ mod tests {
 
         let cfg = crate::sandbox::SandboxConfiguration::default();
         let layout =
-            crate::mem::layout::SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0, None).unwrap();
+            crate::mem::layout::SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0x3000, 0, None)
+                .unwrap();
 
         // Create first snapshot with pattern A
         let pattern_a = vec![0xAA; PAGE_SIZE_USIZE];

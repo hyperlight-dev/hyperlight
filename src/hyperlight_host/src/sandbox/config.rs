@@ -79,6 +79,8 @@ pub struct SandboxConfiguration {
     /// Note: Since real-time signals can vary across platforms, ensure that the offset
     /// results in a signal number that is not already in use by other components of the system.
     interrupt_vcpu_sigrtmin_offset: u8,
+    /// How much writable memory to offer the guest
+    scratch_size: usize,
 }
 
 impl SandboxConfiguration {
@@ -98,6 +100,8 @@ impl SandboxConfiguration {
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
     /// The default stack size of a hyperlight sandbox
     pub const DEFAULT_STACK_SIZE: u64 = 65536;
+    /// The default size of the scratch region
+    pub const DEFAULT_SCRATCH_SIZE: usize = 0x40000;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -107,6 +111,7 @@ impl SandboxConfiguration {
         output_data_size: usize,
         stack_size_override: Option<u64>,
         heap_size_override: Option<u64>,
+        scratch_size: usize,
         interrupt_retry_delay: Duration,
         interrupt_vcpu_sigrtmin_offset: u8,
         #[cfg(gdb)] guest_debug_info: Option<DebugInfo>,
@@ -117,6 +122,7 @@ impl SandboxConfiguration {
             output_data_size: max(output_data_size, Self::MIN_OUTPUT_SIZE),
             stack_size_override: stack_size_override.unwrap_or(0),
             heap_size_override: heap_size_override.unwrap_or(0),
+            scratch_size,
             interrupt_retry_delay,
             interrupt_vcpu_sigrtmin_offset,
             #[cfg(gdb)]
@@ -215,6 +221,11 @@ impl SandboxConfiguration {
         self.output_data_size
     }
 
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_scratch_size(&self) -> usize {
+        self.scratch_size
+    }
+
     #[cfg(crashdump)]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_core_dump(&self) -> bool {
@@ -262,6 +273,7 @@ impl Default for SandboxConfiguration {
             Self::DEFAULT_OUTPUT_SIZE,
             None,
             None,
+            Self::DEFAULT_SCRATCH_SIZE,
             Self::DEFAULT_INTERRUPT_RETRY_DELAY,
             Self::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
             #[cfg(gdb)]
@@ -282,11 +294,13 @@ mod tests {
         const HEAP_SIZE_OVERRIDE: u64 = 0x50000;
         const INPUT_DATA_SIZE_OVERRIDE: usize = 0x4000;
         const OUTPUT_DATA_SIZE_OVERRIDE: usize = 0x4001;
+        const SCRATCH_SIZE_OVERRIDE: usize = 0x60000;
         let mut cfg = SandboxConfiguration::new(
             INPUT_DATA_SIZE_OVERRIDE,
             OUTPUT_DATA_SIZE_OVERRIDE,
             Some(STACK_SIZE_OVERRIDE),
             Some(HEAP_SIZE_OVERRIDE),
+            SCRATCH_SIZE_OVERRIDE,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
             SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
             #[cfg(gdb)]
@@ -297,13 +311,17 @@ mod tests {
 
         let stack_size = cfg.get_stack_size();
         let heap_size = cfg.get_heap_size();
+        let scratch_size = cfg.get_scratch_size();
         assert_eq!(STACK_SIZE_OVERRIDE, stack_size);
         assert_eq!(HEAP_SIZE_OVERRIDE, heap_size);
+        assert_eq!(SCRATCH_SIZE_OVERRIDE, scratch_size);
 
         cfg.stack_size_override = 1024;
         cfg.heap_size_override = 2048;
+        cfg.scratch_size = 0x40000;
         assert_eq!(1024, cfg.stack_size_override);
         assert_eq!(2048, cfg.heap_size_override);
+        assert_eq!(0x40000, cfg.scratch_size);
         assert_eq!(INPUT_DATA_SIZE_OVERRIDE, cfg.input_data_size);
         assert_eq!(OUTPUT_DATA_SIZE_OVERRIDE, cfg.output_data_size);
     }
@@ -315,6 +333,7 @@ mod tests {
             SandboxConfiguration::MIN_OUTPUT_SIZE - 1,
             None,
             None,
+            SandboxConfiguration::DEFAULT_SCRATCH_SIZE,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
             SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
             #[cfg(gdb)]

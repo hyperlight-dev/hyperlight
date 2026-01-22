@@ -351,6 +351,7 @@ impl HyperlightError {
             | HyperlightError::HyperlightVmError(HyperlightVmError::Initialize(_))
             | HyperlightError::HyperlightVmError(HyperlightVmError::MapRegion(_))
             | HyperlightError::HyperlightVmError(HyperlightVmError::UnmapRegion(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::UpdateScratch(_))
             | HyperlightError::IOError(_)
             | HyperlightError::IntConversionFailure(_)
             | HyperlightError::InvalidFlatBuffer(_)

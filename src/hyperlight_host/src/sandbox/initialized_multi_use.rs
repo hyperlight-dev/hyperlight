@@ -265,7 +265,11 @@ impl MultiUseSandbox {
             return Err(SnapshotSandboxMismatch);
         }
 
-        self.mem_mgr.restore_snapshot(&snapshot)?;
+        if let Some(gscratch) = self.mem_mgr.restore_snapshot(&snapshot)? {
+            self.vm
+                .update_scratch_mapping(gscratch)
+                .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        }
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
         let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();

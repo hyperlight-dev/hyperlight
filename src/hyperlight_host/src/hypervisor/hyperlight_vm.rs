@@ -65,7 +65,7 @@ use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_max_log_level}
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::shared_mem::HostSharedMemory;
+use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -95,6 +95,10 @@ pub(crate) struct HyperlightVm {
     mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
     next_slot: u32,                     // Monotonically increasing slot number
     freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
+    scratch_slot: u32,                  // The slot number used for the scratch region
+    // The current scratch region, used to keep it alive as long as it
+    // is used & when unmapping
+    scratch_memory: Option<GuestSharedMemory>,
 
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -247,6 +251,15 @@ pub enum UnmapRegionError {
     UnmapMemory(#[from] UnmapMemoryError),
 }
 
+/// Errors that can occur when updating the scratch mapping
+#[derive(Debug, thiserror::Error)]
+pub enum UpdateScratchError {
+    #[error("VM map memory error: {0}")]
+    MapMemory(#[from] MapMemoryError),
+    #[error("VM unmap memory error: {0}")]
+    UnmapMemory(#[from] UnmapMemoryError),
+}
+
 /// Errors that can occur during HyperlightVm creation
 #[derive(Debug, thiserror::Error)]
 pub enum CreateHyperlightVmError {
@@ -262,6 +275,8 @@ pub enum CreateHyperlightVmError {
     SendDbgMsg(#[from] SendDbgMsgError),
     #[error("VM operation error: {0}")]
     Vm(#[from] VmError),
+    #[error("Set scratch error: {0}")]
+    UpdateScratch(#[from] UpdateScratchError),
 }
 
 /// Errors that can occur during debug exit handling
@@ -311,6 +326,8 @@ pub enum HyperlightVmError {
     MapRegion(#[from] MapRegionError),
     #[error("Unmap region error: {0}")]
     UnmapRegion(#[from] UnmapRegionError),
+    #[error("Update scratch error: {0}")]
+    UpdateScratch(#[from] UpdateScratchError),
 }
 
 impl HyperlightVm {
@@ -319,6 +336,7 @@ impl HyperlightVm {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mem_regions: Vec<MemoryRegion>,
+        scratch_mem: GuestSharedMemory,
         _pml4_addr: u64,
         entrypoint: u64,
         rsp: u64,
@@ -395,6 +413,7 @@ impl HyperlightVm {
             }),
         });
 
+        let scratch_slot = mem_regions.len() as u32;
         #[cfg_attr(not(gdb), allow(unused_mut))]
         let mut ret = Self {
             vm,
@@ -403,10 +422,12 @@ impl HyperlightVm {
             interrupt_handle,
             page_size: 0, // Will be set in `initialise`
 
-            next_slot: mem_regions.len() as u32,
+            next_slot: scratch_slot + 1,
             sandbox_regions: mem_regions,
             mmap_regions: Vec::new(),
             freed_slots: Vec::new(),
+            scratch_slot,
+            scratch_memory: None,
 
             #[cfg(gdb)]
             gdb_conn,
@@ -417,6 +438,8 @@ impl HyperlightVm {
             #[cfg(crashdump)]
             rt_cfg,
         };
+
+        ret.update_scratch_mapping(scratch_mem)?;
 
         // Send the interrupt handle to the GDB thread if debugging is enabled
         // This is used to allow the GDB thread to stop the vCPU
@@ -540,6 +563,24 @@ impl HyperlightVm {
     /// Get the currently mapped dynamic memory regions (not including initial sandbox region)
     pub(crate) fn get_mapped_regions(&self) -> impl Iterator<Item = &MemoryRegion> {
         self.mmap_regions.iter().map(|(_, region)| region)
+    }
+
+    /// Update the scratch mapping to point to a new GuestSharedMemory
+    pub(crate) fn update_scratch_mapping(
+        &mut self,
+        scratch: GuestSharedMemory,
+    ) -> Result<(), UpdateScratchError> {
+        let guest_base = hyperlight_common::layout::scratch_base_gpa(scratch.mem_size());
+        let rgn = scratch.mapping_at(guest_base, MemoryRegionType::Scratch);
+
+        if let Some(old_scratch) = self.scratch_memory.replace(scratch) {
+            let old_base = hyperlight_common::layout::scratch_base_gpa(old_scratch.mem_size());
+            let old_rgn = old_scratch.mapping_at(old_base, MemoryRegionType::Scratch);
+            self.vm.unmap_memory((self.scratch_slot, &old_rgn))?;
+        }
+        unsafe { self.vm.map_memory((self.scratch_slot, &rgn))? };
+
+        Ok(())
     }
 
     /// Dispatch a call from the host to the guest using the given pointer

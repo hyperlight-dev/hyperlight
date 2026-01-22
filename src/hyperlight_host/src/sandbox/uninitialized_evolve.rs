@@ -39,9 +39,9 @@ use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
-    let (mut hshm, mut gshm) = u_sbox.mgr.build();
+    let (mut hshm, gshm) = u_sbox.mgr.build();
     let mut vm = set_up_hypervisor_partition(
-        &mut gshm,
+        gshm,
         &u_sbox.config,
         #[cfg(any(crashdump, gdb))]
         &u_sbox.rt_cfg,
@@ -53,7 +53,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         rng.random::<u64>()
     };
     let peb_addr = {
-        let peb_u64 = u64::try_from(gshm.layout.peb_address)?;
+        let peb_u64 = u64::try_from(hshm.layout.peb_address)?;
         RawPtr::from(peb_u64)
     };
 
@@ -98,7 +98,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 }
 
 pub(crate) fn set_up_hypervisor_partition(
-    mgr: &mut SandboxMemoryManager<GuestSharedMemory>,
+    mgr: SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
@@ -153,6 +153,7 @@ pub(crate) fn set_up_hypervisor_partition(
 
     Ok(HyperlightVm::new(
         regions,
+        mgr.scratch_mem,
         pml4_ptr.absolute()?,
         entrypoint_ptr.absolute()?,
         rsp_ptr.absolute()?,
