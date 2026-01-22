@@ -228,6 +228,7 @@
             gdb
             zlib
             cargo-hyperlight
+            typos
           ];
           buildInputs = [
             pango
