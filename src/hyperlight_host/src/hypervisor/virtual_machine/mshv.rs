@@ -32,13 +32,15 @@ use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 
 #[cfg(gdb)]
-use crate::hypervisor::gdb::DebuggableVm;
+use crate::hypervisor::gdb::{DebugError, DebuggableVm};
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
 };
-use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
+use crate::hypervisor::virtual_machine::{
+    CreateVmError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VirtualMachine,
+    VmExit,
+};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::{Result, new_error};
 
 /// Determine whether the HyperV for Linux hypervisor API is present
 /// and functional.
@@ -60,52 +62,66 @@ pub(crate) struct MshvVm {
     vcpu_fd: VcpuFd,
 }
 
-static MSHV: LazyLock<Result<Mshv>> =
-    LazyLock::new(|| Mshv::new().map_err(|e| new_error!("Failed to open /dev/mshv: {}", e)));
+static MSHV: LazyLock<std::result::Result<Mshv, CreateVmError>> =
+    LazyLock::new(|| Mshv::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
 
 impl MshvVm {
     /// Create a new instance of a MshvVm
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn new() -> Result<Self> {
-        let mshv = MSHV
-            .as_ref()
-            .map_err(|e| new_error!("Failed to create MSHV instance: {}", e))?;
+    pub(crate) fn new() -> std::result::Result<Self, CreateVmError> {
+        let mshv = MSHV.as_ref().map_err(|e| e.clone())?;
+
         let pr = Default::default();
-        let vm_fd = {
-            // It's important to avoid create_vm() and explicitly use
-            // create_vm_with_args() with an empty arguments structure
-            // here, because otherwise the partition is set up with a SynIC.
+        // It's important to avoid create_vm() and explicitly use
+        // create_vm_with_args() with an empty arguments structure
+        // here, because otherwise the partition is set up with a SynIC.
+        let vm_fd = mshv
+            .create_vm_with_args(&pr)
+            .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
 
-            let vm_fd = mshv.create_vm_with_args(&pr)?;
+        let vcpu_fd = {
             let features: hv_partition_synthetic_processor_features = Default::default();
-            vm_fd.set_partition_property(
-                hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
-                unsafe { features.as_uint64[0] },
-            )?;
-            vm_fd.initialize()?;
             vm_fd
-        };
+                .set_partition_property(
+                    hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
+                    unsafe { features.as_uint64[0] },
+                )
+                .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+            vm_fd
+                .initialize()
+                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
 
-        let vcpu_fd = vm_fd.create_vcpu(0)?;
+            vm_fd
+                .create_vcpu(0)
+                .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?
+        };
 
         Ok(Self { vm_fd, vcpu_fd })
     }
 }
 
 impl VirtualMachine for MshvVm {
-    unsafe fn map_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
+    unsafe fn map_memory(
+        &mut self,
+        (_slot, region): (u32, &MemoryRegion),
+    ) -> std::result::Result<(), MapMemoryError> {
         let mshv_region: mshv_user_mem_region = region.into();
-        self.vm_fd.map_user_memory(mshv_region)?;
-        Ok(())
+        self.vm_fd
+            .map_user_memory(mshv_region)
+            .map_err(|e| MapMemoryError::Hypervisor(e.into()))
     }
 
-    fn unmap_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
+    fn unmap_memory(
+        &mut self,
+        (_slot, region): (u32, &MemoryRegion),
+    ) -> std::result::Result<(), UnmapMemoryError> {
         let mshv_region: mshv_user_mem_region = region.into();
-        self.vm_fd.unmap_user_memory(mshv_region)?;
-        Ok(())
+        self.vm_fd
+            .unmap_user_memory(mshv_region)
+            .map_err(|e| UnmapMemoryError::Hypervisor(e.into()))
     }
 
-    fn run_vcpu(&mut self) -> Result<VmExit> {
+    fn run_vcpu(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
         const HALT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_HALT;
         const IO_PORT_INTERCEPT_MESSAGE: hv_message_type =
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
@@ -120,35 +136,46 @@ impl VirtualMachine for MshvVm {
             Ok(m) => match m.header.message_type {
                 HALT_MESSAGE => VmExit::Halt(),
                 IO_PORT_INTERCEPT_MESSAGE => {
-                    let io_message = m.to_ioport_info().map_err(mshv_ioctls::MshvError::from)?;
+                    let io_message = m
+                        .to_ioport_info()
+                        .map_err(|_| RunVcpuError::DecodeIOMessage(m.header.message_type))?;
                     let port_number = io_message.port_number;
                     let rip = io_message.header.rip;
                     let rax = io_message.rax;
                     let instruction_length = io_message.header.instruction_length() as u64;
 
                     // mshv, unlike kvm, does not automatically increment RIP
-                    self.vcpu_fd.set_reg(&[hv_register_assoc {
-                        name: hv_register_name_HV_X64_REGISTER_RIP,
-                        value: hv_register_value {
-                            reg64: rip + instruction_length,
-                        },
-                        ..Default::default()
-                    }])?;
+                    self.vcpu_fd
+                        .set_reg(&[hv_register_assoc {
+                            name: hv_register_name_HV_X64_REGISTER_RIP,
+                            value: hv_register_value {
+                                reg64: rip + instruction_length,
+                            },
+                            ..Default::default()
+                        }])
+                        .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
                     VmExit::IoOut(port_number, rax.to_le_bytes().to_vec())
                 }
                 UNMAPPED_GPA_MESSAGE => {
-                    let mimo_message = m.to_memory_info().map_err(mshv_ioctls::MshvError::from)?;
+                    let mimo_message = m
+                        .to_memory_info()
+                        .map_err(|_| RunVcpuError::DecodeIOMessage(m.header.message_type))?;
                     let addr = mimo_message.guest_physical_address;
-                    match MemoryRegionFlags::try_from(mimo_message)? {
+                    match MemoryRegionFlags::try_from(mimo_message)
+                        .map_err(|_| RunVcpuError::ParseGpaAccessInfo)?
+                    {
                         MemoryRegionFlags::READ => VmExit::MmioRead(addr),
                         MemoryRegionFlags::WRITE => VmExit::MmioWrite(addr),
                         _ => VmExit::Unknown("Unknown MMIO access".to_string()),
                     }
                 }
                 INVALID_GPA_ACCESS_MESSAGE => {
-                    let mimo_message = m.to_memory_info().map_err(mshv_ioctls::MshvError::from)?;
+                    let mimo_message = m
+                        .to_memory_info()
+                        .map_err(|_| RunVcpuError::DecodeIOMessage(m.header.message_type))?;
                     let gpa = mimo_message.guest_physical_address;
-                    let access_info = MemoryRegionFlags::try_from(mimo_message)?;
+                    let access_info = MemoryRegionFlags::try_from(mimo_message)
+                        .map_err(|_| RunVcpuError::ParseGpaAccessInfo)?;
                     match access_info {
                         MemoryRegionFlags::READ => VmExit::MmioRead(gpa),
                         MemoryRegionFlags::WRITE => VmExit::MmioWrite(gpa),
@@ -159,8 +186,11 @@ impl VirtualMachine for MshvVm {
                 EXCEPTION_INTERCEPT => {
                     let ex_info = m
                         .to_exception_info()
-                        .map_err(mshv_ioctls::MshvError::from)?;
-                    let DebugRegisters { dr6, .. } = self.vcpu_fd.get_debug_regs()?;
+                        .map_err(|_| RunVcpuError::DecodeIOMessage(m.header.message_type))?;
+                    let DebugRegisters { dr6, .. } = self
+                        .vcpu_fd
+                        .get_debug_regs()
+                        .map_err(|e| RunVcpuError::GetDr6(e.into()))?;
                     VmExit::Debug {
                         dr6,
                         exception: ex_info.exception_vector as u32,
@@ -172,80 +202,101 @@ impl VirtualMachine for MshvVm {
                 // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
                 libc::EINTR => VmExit::Cancelled(),
                 libc::EAGAIN => VmExit::Retry(),
-                _ => VmExit::Unknown(format!("Unknown MSHV VCPU error: {}", e)),
+                _ => Err(RunVcpuError::Unknown(e.into()))?,
             },
         };
         Ok(result)
     }
 
-    fn regs(&self) -> Result<CommonRegisters> {
-        let mshv_regs = self.vcpu_fd.get_regs()?;
+    fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
+        let mshv_regs = self
+            .vcpu_fd
+            .get_regs()
+            .map_err(|e| RegisterError::GetRegs(e.into()))?;
         Ok((&mshv_regs).into())
     }
 
-    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
+    fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
         let mshv_regs: StandardRegisters = regs.into();
-        self.vcpu_fd.set_regs(&mshv_regs)?;
+        self.vcpu_fd
+            .set_regs(&mshv_regs)
+            .map_err(|e| RegisterError::SetRegs(e.into()))?;
         Ok(())
     }
 
-    fn fpu(&self) -> Result<CommonFpu> {
-        let mshv_fpu = self.vcpu_fd.get_fpu()?;
+    fn fpu(&self) -> std::result::Result<CommonFpu, RegisterError> {
+        let mshv_fpu = self
+            .vcpu_fd
+            .get_fpu()
+            .map_err(|e| RegisterError::GetFpu(e.into()))?;
         Ok((&mshv_fpu).into())
     }
 
-    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
+    fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
         let mshv_fpu: FloatingPointUnit = fpu.into();
-        self.vcpu_fd.set_fpu(&mshv_fpu)?;
+        self.vcpu_fd
+            .set_fpu(&mshv_fpu)
+            .map_err(|e| RegisterError::SetFpu(e.into()))?;
         Ok(())
     }
 
-    fn sregs(&self) -> Result<CommonSpecialRegisters> {
-        let mshv_sregs = self.vcpu_fd.get_sregs()?;
+    fn sregs(&self) -> std::result::Result<CommonSpecialRegisters, RegisterError> {
+        let mshv_sregs = self
+            .vcpu_fd
+            .get_sregs()
+            .map_err(|e| RegisterError::GetSregs(e.into()))?;
         Ok((&mshv_sregs).into())
     }
 
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError> {
         let mshv_sregs: SpecialRegisters = sregs.into();
-        self.vcpu_fd.set_sregs(&mshv_sregs)?;
+        self.vcpu_fd
+            .set_sregs(&mshv_sregs)
+            .map_err(|e| RegisterError::SetSregs(e.into()))?;
         Ok(())
     }
 
-    fn debug_regs(&self) -> Result<CommonDebugRegs> {
-        let debug_regs = self.vcpu_fd.get_debug_regs()?;
+    fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError> {
+        let debug_regs = self
+            .vcpu_fd
+            .get_debug_regs()
+            .map_err(|e| RegisterError::GetDebugRegs(e.into()))?;
         Ok(debug_regs.into())
     }
 
-    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError> {
         let mshv_debug_regs = drs.into();
-        self.vcpu_fd.set_debug_regs(&mshv_debug_regs)?;
+        self.vcpu_fd
+            .set_debug_regs(&mshv_debug_regs)
+            .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
         Ok(())
     }
 
     #[cfg(crashdump)]
-    fn xsave(&self) -> Result<Vec<u8>> {
-        let xsave = self.vcpu_fd.get_xsave()?;
+    fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError> {
+        let xsave = self
+            .vcpu_fd
+            .get_xsave()
+            .map_err(|e| RegisterError::GetXsave(e.into()))?;
         Ok(xsave.buffer.to_vec())
     }
 }
 
 #[cfg(gdb)]
 impl DebuggableVm for MshvVm {
-    fn translate_gva(&self, gva: u64) -> Result<u64> {
+    fn translate_gva(&self, gva: u64) -> std::result::Result<u64, DebugError> {
         use mshv_bindings::{HV_TRANSLATE_GVA_VALIDATE_READ, HV_TRANSLATE_GVA_VALIDATE_WRITE};
-
-        use crate::HyperlightError;
 
         let flags = (HV_TRANSLATE_GVA_VALIDATE_READ | HV_TRANSLATE_GVA_VALIDATE_WRITE) as u64;
         let (addr, _) = self
             .vcpu_fd
             .translate_gva(gva, flags)
-            .map_err(|_| HyperlightError::TranslateGuestAddress(gva))?;
+            .map_err(|_| DebugError::TranslateGva(gva))?;
 
         Ok(addr)
     }
 
-    fn set_debug(&mut self, enabled: bool) -> Result<()> {
+    fn set_debug(&mut self, enabled: bool) -> std::result::Result<(), DebugError> {
         use mshv_bindings::{
             HV_INTERCEPT_ACCESS_MASK_EXECUTE, HV_INTERCEPT_ACCESS_MASK_NONE,
             hv_intercept_parameters, hv_intercept_type_HV_INTERCEPT_TYPE_EXCEPTION,
@@ -269,19 +320,15 @@ impl DebuggableVm for MshvVm {
                         exception_vector: vector as u16,
                     },
                 })
-                .map_err(|e| {
-                    new_error!(
-                        "Cannot {} exception intercept for vector {}: {}",
-                        if enabled { "install" } else { "remove" },
-                        vector,
-                        e
-                    )
+                .map_err(|e| DebugError::Intercept {
+                    enable: enabled,
+                    inner: e.into(),
                 })?;
         }
         Ok(())
     }
 
-    fn set_single_step(&mut self, enable: bool) -> Result<()> {
+    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
         let mut regs = self.regs()?;
         if enable {
             regs.rflags |= 1 << 8;
@@ -292,7 +339,7 @@ impl DebuggableVm for MshvVm {
         Ok(())
     }
 
-    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+    fn add_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
 
         let mut regs = self.debug_regs()?;
@@ -305,7 +352,7 @@ impl DebuggableVm for MshvVm {
         // Find the first available LOCAL (L0–L3) slot
         let i = (0..MAX_NO_OF_HW_BP)
             .position(|i| regs.dr7 & (1 << (i * 2)) == 0)
-            .ok_or_else(|| new_error!("Tried to add more than 4 hardware breakpoints"))?;
+            .ok_or(DebugError::TooManyHwBreakpoints(MAX_NO_OF_HW_BP))?;
 
         // Assign to corresponding debug register
         *[&mut regs.dr0, &mut regs.dr1, &mut regs.dr2, &mut regs.dr3][i] = addr;
@@ -317,7 +364,7 @@ impl DebuggableVm for MshvVm {
         Ok(())
     }
 
-    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
         let mut debug_regs = self.debug_regs()?;
 
         let regs = [
@@ -335,7 +382,7 @@ impl DebuggableVm for MshvVm {
             self.set_debug_regs(&debug_regs)?;
             Ok(())
         } else {
-            Err(new_error!("Tried to remove non-existing hw-breakpoint"))
+            Err(DebugError::HwBreakpointNotFound(addr))
         }
     }
 }

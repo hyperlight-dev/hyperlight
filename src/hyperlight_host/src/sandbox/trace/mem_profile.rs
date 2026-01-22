@@ -23,6 +23,7 @@ use crate::hypervisor::regs::CommonRegisters;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
+use crate::sandbox::outb::HandleOutbError;
 use crate::{Result, new_error};
 
 /// The type of trace frame being recorded.
@@ -147,7 +148,7 @@ impl MemTraceInfo {
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
         trace_identifier: TraceFrameType,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), HandleOutbError> {
         let Ok(stack) = self.unwind(regs, mem_mgr) else {
             return Ok(());
         };
@@ -156,20 +157,20 @@ impl MemTraceInfo {
         let ptr = regs.rcx;
 
         match trace_identifier {
-            TraceFrameType::MemAlloc => {
-                self.record_trace_frame(self.epoch, trace_identifier as u64, |f| {
+            TraceFrameType::MemAlloc => self
+                .record_trace_frame(self.epoch, trace_identifier as u64, |f| {
                     let _ = f.write_all(&ptr.to_ne_bytes());
                     let _ = f.write_all(&amt.to_ne_bytes());
                     self.write_stack(f, &stack);
                 })
-            }
+                .map_err(|e| HandleOutbError::MemProfile(e.to_string())),
             // The MemFree case does not expect an amount, only a pointer
-            TraceFrameType::MemFree => {
-                self.record_trace_frame(self.epoch, trace_identifier as u64, |f| {
+            TraceFrameType::MemFree => self
+                .record_trace_frame(self.epoch, trace_identifier as u64, |f| {
                     let _ = f.write_all(&ptr.to_ne_bytes());
                     self.write_stack(f, &stack);
                 })
-            }
+                .map_err(|e| HandleOutbError::MemProfile(e.to_string())),
         }
     }
 
@@ -178,7 +179,7 @@ impl MemTraceInfo {
         &self,
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), HandleOutbError> {
         self.handle_trace(regs, mem_mgr, TraceFrameType::MemAlloc)
     }
 
@@ -187,7 +188,7 @@ impl MemTraceInfo {
         &self,
         regs: &CommonRegisters,
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), HandleOutbError> {
         self.handle_trace(regs, mem_mgr, TraceFrameType::MemFree)
     }
 }

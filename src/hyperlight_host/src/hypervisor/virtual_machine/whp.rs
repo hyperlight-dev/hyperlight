@@ -24,7 +24,7 @@ use windows::core::s;
 use windows_result::HRESULT;
 
 #[cfg(gdb)]
-use crate::hypervisor::gdb::DebuggableVm;
+use crate::hypervisor::gdb::{DebugError, DebuggableVm};
 use crate::hypervisor::regs::{
     Align16, CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
     WHP_DEBUG_REGS_NAMES, WHP_DEBUG_REGS_NAMES_LEN, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN,
@@ -32,10 +32,12 @@ use crate::hypervisor::regs::{
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
-use crate::hypervisor::virtual_machine::{VirtualMachine, VmExit};
+use crate::hypervisor::virtual_machine::{
+    CreateVmError, HypervisorError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError,
+    VirtualMachine, VmExit,
+};
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-use crate::{Result, log_then_return, new_error};
 
 #[allow(dead_code)] // Will be used for runtime hypervisor detection
 pub(crate) fn is_hypervisor_present() -> bool {
@@ -81,24 +83,33 @@ pub(crate) struct WhpVm {
 unsafe impl Send for WhpVm {}
 
 impl WhpVm {
-    pub(crate) fn new(mmap_file_handle: HandleWrapper, raw_size: usize) -> Result<Self> {
+    pub(crate) fn new(
+        mmap_file_handle: HandleWrapper,
+        raw_size: usize,
+    ) -> std::result::Result<Self, CreateVmError> {
         const NUM_CPU: u32 = 1;
         let partition = unsafe {
-            let partition = WHvCreatePartition()?;
+            let partition =
+                WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
             WHvSetPartitionProperty(
                 partition,
                 WHvPartitionPropertyCodeProcessorCount,
                 &NUM_CPU as *const _ as *const _,
                 std::mem::size_of_val(&NUM_CPU) as _,
-            )?;
-            WHvSetupPartition(partition)?;
-            WHvCreateVirtualProcessor(partition, 0, 0)?;
+            )
+            .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+            WHvSetupPartition(partition).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+            WHvCreateVirtualProcessor(partition, 0, 0)
+                .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
             partition
         };
 
         // Create the surrogate process with the total memory size
-        let mgr = get_surrogate_process_manager()?;
-        let surrogate_process = mgr.get_surrogate_process(raw_size, mmap_file_handle)?;
+        let mgr = get_surrogate_process_manager()
+            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+        let surrogate_process = mgr
+            .get_surrogate_process(raw_size, mmap_file_handle)
+            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
 
         Ok(WhpVm {
             partition,
@@ -113,7 +124,7 @@ impl WhpVm {
     fn set_registers(
         &self,
         registers: &[(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)],
-    ) -> Result<()> {
+    ) -> windows_result::Result<()> {
         let (names, values): (Vec<_>, Vec<_>) = registers.iter().copied().unzip();
 
         unsafe {
@@ -123,23 +134,24 @@ impl WhpVm {
                 names.as_ptr(),
                 names.len() as u32,
                 values.as_ptr() as *const WHV_REGISTER_VALUE, // Casting Align16 away
-            )?;
+            )
         }
-
-        Ok(())
     }
 }
 
 impl VirtualMachine for WhpVm {
-    unsafe fn map_memory(&mut self, (_slot, region): (u32, &MemoryRegion)) -> Result<()> {
+    unsafe fn map_memory(
+        &mut self,
+        (_slot, region): (u32, &MemoryRegion),
+    ) -> std::result::Result<(), MapMemoryError> {
         // Only allow memory mapping during initial setup (the first batch of regions).
         // After the initial setup is complete, subsequent calls should fail,
         // since it's not yet implemented.
         if self.initial_memory_setup_done {
             // Initial setup already completed - reject this mapping
-            log_then_return!(
-                "Mapping host memory into the guest not yet supported on this platform"
-            );
+            return Err(MapMemoryError::NotSupported(
+                "Mapping host memory into the guest not yet supported on this platform".to_string(),
+            ));
         }
 
         // Calculate the offset on first call. The offset accounts for the guard page
@@ -152,7 +164,11 @@ impl VirtualMachine for WhpVm {
             let surrogate_address =
                 self.surrogate_process.allocated_address as usize + PAGE_SIZE_USIZE;
             let host_address = region.host_region.start;
-            let offset = isize::try_from(surrogate_address)? - isize::try_from(host_address)?;
+            let surrogate_isize =
+                isize::try_from(surrogate_address).map_err(MapMemoryError::AddressConversion)?;
+            let host_isize =
+                isize::try_from(host_address).map_err(MapMemoryError::AddressConversion)?;
+            let offset = surrogate_isize - host_isize;
             self.surrogate_offset = Some(offset);
             offset
         };
@@ -162,7 +178,12 @@ impl VirtualMachine for WhpVm {
         let whvmapgparange2_func = unsafe {
             match try_load_whv_map_gpa_range2() {
                 Ok(func) => func,
-                Err(e) => return Err(new_error!("Can't find API: {}", e)),
+                Err(e) => {
+                    return Err(MapMemoryError::LoadApi {
+                        api_name: "WHvMapGpaRange2",
+                        source: e,
+                    });
+                }
             }
         };
 
@@ -175,14 +196,19 @@ impl VirtualMachine for WhpVm {
                 MemoryRegionFlags::WRITE => Ok(WHvMapGpaRangeFlagWrite),
                 MemoryRegionFlags::EXECUTE => Ok(WHvMapGpaRangeFlagExecute),
                 MemoryRegionFlags::STACK_GUARD => Ok(WHvMapGpaRangeFlagNone),
-                _ => Err(new_error!("Invalid Memory Region Flag")),
+                _ => Err(MapMemoryError::InvalidFlags(format!(
+                    "Invalid memory region flag: {:?}",
+                    flag
+                ))),
             })
-            .collect::<Result<Vec<WHV_MAP_GPA_RANGE_FLAGS>>>()?
+            .collect::<std::result::Result<Vec<WHV_MAP_GPA_RANGE_FLAGS>, MapMemoryError>>()?
             .iter()
             .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag);
 
         // Calculate the surrogate process address for this region
-        let surrogate_addr = (isize::try_from(region.host_region.start)? + offset) as *const c_void;
+        let host_start_isize =
+            isize::try_from(region.host_region.start).map_err(MapMemoryError::AddressConversion)?;
+        let surrogate_addr = (host_start_isize + offset) as *const c_void;
 
         let res = unsafe {
             whvmapgparange2_func(
@@ -195,18 +221,25 @@ impl VirtualMachine for WhpVm {
             )
         };
         if res.is_err() {
-            return Err(new_error!("Call to WHvMapGpaRange2 failed"));
+            return Err(MapMemoryError::Hypervisor(HypervisorError::WindowsError(
+                windows_result::Error::from_hresult(res),
+            )));
         }
 
         Ok(())
     }
 
-    fn unmap_memory(&mut self, (_slot, _region): (u32, &MemoryRegion)) -> Result<()> {
-        log_then_return!("Mapping host memory into the guest not yet supported on this platform");
+    fn unmap_memory(
+        &mut self,
+        (_slot, _region): (u32, &MemoryRegion),
+    ) -> std::result::Result<(), UnmapMemoryError> {
+        Err(UnmapMemoryError::NotSupported(
+            "Unmapping host memory from the guest not yet supported on this platform".to_string(),
+        ))
     }
 
     #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
-    fn run_vcpu(&mut self) -> Result<VmExit> {
+    fn run_vcpu(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
         let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
 
         unsafe {
@@ -215,7 +248,8 @@ impl VirtualMachine for WhpVm {
                 0,
                 &mut exit_context as *mut _ as *mut c_void,
                 std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
-            )?;
+            )
+            .map_err(|e| RunVcpuError::Unknown(e.into()))?;
         }
 
         let result = match exit_context.ExitReason {
@@ -225,7 +259,8 @@ impl VirtualMachine for WhpVm {
                 self.set_registers(&[(
                     WHvX64RegisterRip,
                     Align16(WHV_REGISTER_VALUE { Reg64: rip }),
-                )])?;
+                )])
+                .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
                 VmExit::IoOut(
                     exit_context.Anonymous.IoPortAccess.PortNumber,
                     exit_context
@@ -245,7 +280,8 @@ impl VirtualMachine for WhpVm {
                         (exit_context.Anonymous.MemoryAccess.AccessInfo.AsUINT32 & 0b11) as i32,
                     )
                 };
-                let access_info = MemoryRegionFlags::try_from(access_info)?;
+                let access_info = MemoryRegionFlags::try_from(access_info)
+                    .map_err(|_| RunVcpuError::ParseGpaAccessInfo)?;
                 match access_info {
                     MemoryRegionFlags::READ => VmExit::MmioRead(gpa),
                     MemoryRegionFlags::WRITE => VmExit::MmioWrite(gpa),
@@ -269,7 +305,8 @@ impl VirtualMachine for WhpVm {
                             names.as_ptr(),
                             1,
                             out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-                        )?;
+                        )
+                        .map_err(|e| RunVcpuError::GetDr6(e.into()))?;
                     }
                     unsafe { out[0].0.Reg64 }
                 };
@@ -287,7 +324,7 @@ impl VirtualMachine for WhpVm {
         Ok(result)
     }
 
-    fn regs(&self) -> Result<CommonRegisters> {
+    fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
         let mut whv_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_REGS_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
 
@@ -298,7 +335,8 @@ impl VirtualMachine for WhpVm {
                 WHP_REGS_NAMES.as_ptr(),
                 whv_regs_values.len() as u32,
                 whv_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
+            )
+            .map_err(|e| RegisterError::GetRegs(e.into()))?;
         }
 
         WHP_REGS_NAMES
@@ -308,21 +346,22 @@ impl VirtualMachine for WhpVm {
             .as_slice()
             .try_into()
             .map_err(|e| {
-                new_error!(
+                RegisterError::ConversionFailed(format!(
                     "Failed to convert WHP registers to CommonRegisters: {:?}",
                     e
-                )
+                ))
             })
     }
 
-    fn set_regs(&self, regs: &CommonRegisters) -> Result<()> {
+    fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError> {
         let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_REGS_NAMES_LEN] =
             regs.into();
-        self.set_registers(&whp_regs)?;
+        self.set_registers(&whp_regs)
+            .map_err(|e| RegisterError::SetRegs(e.into()))?;
         Ok(())
     }
 
-    fn fpu(&self) -> Result<CommonFpu> {
+    fn fpu(&self) -> std::result::Result<CommonFpu, RegisterError> {
         let mut whp_fpu_values: [Align16<WHV_REGISTER_VALUE>; WHP_FPU_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
 
@@ -333,7 +372,8 @@ impl VirtualMachine for WhpVm {
                 WHP_FPU_NAMES.as_ptr(),
                 whp_fpu_values.len() as u32,
                 whp_fpu_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
+            )
+            .map_err(|e| RegisterError::GetFpu(e.into()))?;
         }
 
         WHP_FPU_NAMES
@@ -342,17 +382,23 @@ impl VirtualMachine for WhpVm {
             .collect::<Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)>>()
             .as_slice()
             .try_into()
-            .map_err(|e| new_error!("Failed to convert WHP registers to CommonFpu: {:?}", e))
+            .map_err(|e| {
+                RegisterError::ConversionFailed(format!(
+                    "Failed to convert WHP registers to CommonFpu: {:?}",
+                    e
+                ))
+            })
     }
 
-    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()> {
+    fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
         let whp_fpu: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_FPU_NAMES_LEN] =
             fpu.into();
-        self.set_registers(&whp_fpu)?;
+        self.set_registers(&whp_fpu)
+            .map_err(|e| RegisterError::SetFpu(e.into()))?;
         Ok(())
     }
 
-    fn sregs(&self) -> Result<CommonSpecialRegisters> {
+    fn sregs(&self) -> std::result::Result<CommonSpecialRegisters, RegisterError> {
         let mut whp_sregs_values: [Align16<WHV_REGISTER_VALUE>; WHP_SREGS_NAMES_LEN] =
             unsafe { std::mem::zeroed() };
 
@@ -363,7 +409,8 @@ impl VirtualMachine for WhpVm {
                 WHP_SREGS_NAMES.as_ptr(),
                 whp_sregs_values.len() as u32,
                 whp_sregs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
+            )
+            .map_err(|e| RegisterError::GetSregs(e.into()))?;
         }
 
         WHP_SREGS_NAMES
@@ -373,21 +420,22 @@ impl VirtualMachine for WhpVm {
             .as_slice()
             .try_into()
             .map_err(|e| {
-                new_error!(
+                RegisterError::ConversionFailed(format!(
                     "Failed to convert WHP registers to CommonSpecialRegisters: {:?}",
                     e
-                )
+                ))
             })
     }
 
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()> {
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError> {
         let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
             sregs.into();
-        self.set_registers(&whp_regs)?;
+        self.set_registers(&whp_regs)
+            .map_err(|e| RegisterError::SetSregs(e.into()))?;
         Ok(())
     }
 
-    fn debug_regs(&self) -> Result<CommonDebugRegs> {
+    fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError> {
         let mut whp_debug_regs_values: [Align16<WHV_REGISTER_VALUE>; WHP_DEBUG_REGS_NAMES_LEN] =
             Default::default();
 
@@ -398,31 +446,31 @@ impl VirtualMachine for WhpVm {
                 WHP_DEBUG_REGS_NAMES.as_ptr(),
                 whp_debug_regs_values.len() as u32,
                 whp_debug_regs_values.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-            )?;
+            )
+            .map_err(|e| RegisterError::GetDebugRegs(e.into()))?;
         }
 
         let whp_debug_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>);
             WHP_DEBUG_REGS_NAMES_LEN] =
             std::array::from_fn(|i| (WHP_DEBUG_REGS_NAMES[i], whp_debug_regs_values[i]));
         whp_debug_regs.as_slice().try_into().map_err(|e| {
-            new_error!(
+            RegisterError::ConversionFailed(format!(
                 "Failed to convert WHP registers to CommonDebugRegs: {:?}",
                 e
-            )
+            ))
         })
     }
 
-    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()> {
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError> {
         let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_DEBUG_REGS_NAMES_LEN] =
             drs.into();
-        self.set_registers(&whp_regs)?;
+        self.set_registers(&whp_regs)
+            .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
         Ok(())
     }
 
     #[cfg(crashdump)]
-    fn xsave(&self) -> Result<Vec<u8>> {
-        use crate::HyperlightError;
-
+    fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError> {
         // Get the required buffer size by calling with NULL buffer.
         // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns
         // WHV_E_INSUFFICIENT_BUFFER and sets buffer_size_needed to the required size.
@@ -442,7 +490,7 @@ impl VirtualMachine for WhpVm {
         if let Err(e) = result
             && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
         {
-            return Err(HyperlightError::WindowsAPIError(e));
+            return Err(RegisterError::GetXsave(e.into()));
         }
 
         // Allocate buffer with the required size
@@ -458,15 +506,15 @@ impl VirtualMachine for WhpVm {
                 buffer_size_needed,
                 &mut written_bytes,
             )
-        }?;
+        }
+        .map_err(|e| RegisterError::GetXsave(e.into()))?;
 
         // Verify the number of written bytes matches the expected size
         if written_bytes != buffer_size_needed {
-            return Err(new_error!(
-                "Failed to get Xsave state: expected {} bytes, got {}",
-                buffer_size_needed,
-                written_bytes
-            ));
+            return Err(RegisterError::XsaveSizeMismatch {
+                expected: buffer_size_needed,
+                actual: written_bytes,
+            });
         }
 
         Ok(xsave_buffer)
@@ -485,7 +533,7 @@ impl VirtualMachine for WhpVm {
 
 #[cfg(gdb)]
 impl DebuggableVm for WhpVm {
-    fn translate_gva(&self, gva: u64) -> Result<u64> {
+    fn translate_gva(&self, gva: u64) -> std::result::Result<u64, DebugError> {
         let mut gpa = 0;
         let mut result = WHV_TRANSLATE_GVA_RESULT::default();
 
@@ -501,13 +549,14 @@ impl DebuggableVm for WhpVm {
                 translateflags,
                 &mut result,
                 &mut gpa,
-            )?;
+            )
+            .map_err(|_| DebugError::TranslateGva(gva))?;
         }
 
         Ok(gpa)
     }
 
-    fn set_debug(&mut self, enable: bool) -> Result<()> {
+    fn set_debug(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
         let extended_vm_exits = if enable { 1 << 2 } else { 0 };
         let exception_exit_bitmap = if enable {
             (1 << WHvX64ExceptionTypeDebugTrapOrFault.0)
@@ -540,13 +589,17 @@ impl DebuggableVm for WhpVm {
                     code,
                     &property as *const _ as *const c_void,
                     std::mem::size_of::<WHV_PARTITION_PROPERTY>() as u32,
-                )?;
+                )
+                .map_err(|e| DebugError::Intercept {
+                    enable,
+                    inner: e.into(),
+                })?;
             }
         }
         Ok(())
     }
 
-    fn set_single_step(&mut self, enable: bool) -> Result<()> {
+    fn set_single_step(&mut self, enable: bool) -> std::result::Result<(), DebugError> {
         let mut regs = self.regs()?;
         if enable {
             regs.rflags |= 1 << 8;
@@ -557,7 +610,7 @@ impl DebuggableVm for WhpVm {
         Ok(())
     }
 
-    fn add_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+    fn add_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
         use crate::hypervisor::gdb::arch::MAX_NO_OF_HW_BP;
 
         // Get current debug registers
@@ -571,7 +624,7 @@ impl DebuggableVm for WhpVm {
         // Find the first available LOCAL (L0–L3) slot
         let i = (0..MAX_NO_OF_HW_BP)
             .position(|i| regs.dr7 & (1 << (i * 2)) == 0)
-            .ok_or_else(|| new_error!("Tried to add more than 4 hardware breakpoints"))?;
+            .ok_or(DebugError::TooManyHwBreakpoints(MAX_NO_OF_HW_BP))?;
 
         // Assign to corresponding debug register
         *[&mut regs.dr0, &mut regs.dr1, &mut regs.dr2, &mut regs.dr3][i] = addr;
@@ -583,7 +636,7 @@ impl DebuggableVm for WhpVm {
         Ok(())
     }
 
-    fn remove_hw_breakpoint(&mut self, addr: u64) -> Result<()> {
+    fn remove_hw_breakpoint(&mut self, addr: u64) -> std::result::Result<(), DebugError> {
         // Get current debug registers
         let mut debug_regs = self.debug_regs()?;
 
@@ -603,7 +656,7 @@ impl DebuggableVm for WhpVm {
             self.set_debug_regs(&debug_regs)?;
             Ok(())
         } else {
-            Err(new_error!("Tried to remove non-existing hw-breakpoint"))
+            Err(DebugError::HwBreakpointNotFound(addr))
         }
     }
 }
@@ -637,29 +690,22 @@ type WHvMapGpaRange2Func = unsafe extern "C" fn(
     WHV_MAP_GPA_RANGE_FLAGS,
 ) -> HRESULT;
 
-unsafe fn try_load_whv_map_gpa_range2() -> Result<WHvMapGpaRange2Func> {
+unsafe fn try_load_whv_map_gpa_range2() -> windows_result::Result<WHvMapGpaRange2Func> {
     let library = unsafe {
         LoadLibraryExA(
             s!("winhvplatform.dll"),
             None,
             LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
         )
-    };
-
-    if let Err(e) = library {
-        return Err(new_error!("{}", e));
-    }
-
-    #[allow(clippy::unwrap_used)]
-    // We know this will succeed because we just checked for an error above
-    let library = library.unwrap();
+    }?;
 
     let address = unsafe { GetProcAddress(library, s!("WHvMapGpaRange2")) };
 
     if address.is_none() {
         unsafe { FreeLibrary(library)? };
-        return Err(new_error!(
-            "Failed to find WHvMapGpaRange2 in winhvplatform.dll"
+        return Err(windows_result::Error::new(
+            HRESULT::from_win32(127), // ERROR_PROC_NOT_FOUND
+            "Failed to find WHvMapGpaRange2 in winhvplatform.dll",
         ));
     }
 

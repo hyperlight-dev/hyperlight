@@ -23,7 +23,7 @@ use tracing::{Span, instrument};
 use super::SandboxConfiguration;
 #[cfg(any(crashdump, gdb))]
 use super::uninitialized::SandboxRuntimeConfig;
-use crate::hypervisor::hyperlight_vm::HyperlightVm;
+use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::exe::LoadInfo;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::{GuestPtr, RawPtr};
@@ -74,7 +74,8 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         u_sbox.max_guest_log_level,
         #[cfg(gdb)]
         dbg_mem_access_hdl,
-    )?;
+    )
+    .map_err(HyperlightVmError::Initialize)?;
 
     let dispatch_function_addr = hshm.get_pointer_to_dispatch_function()?;
     if dispatch_function_addr == 0 {
@@ -150,7 +151,7 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(feature = "mem_profile")]
     let trace_info = MemTraceInfo::new(_load_info.info)?;
 
-    HyperlightVm::new(
+    Ok(HyperlightVm::new(
         regions,
         pml4_ptr.absolute()?,
         entrypoint_ptr.absolute()?,
@@ -177,6 +178,7 @@ pub(crate) fn set_up_hypervisor_partition(
         #[cfg(feature = "mem_profile")]
         trace_info,
     )
+    .map_err(HyperlightVmError::Create)?)
 }
 
 #[cfg(test)]

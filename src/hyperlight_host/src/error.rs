@@ -30,6 +30,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, Ret
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use thiserror::Error;
 
+use crate::hypervisor::hyperlight_vm::HyperlightVmError;
 #[cfg(target_os = "windows")]
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::MemoryRegionFlags;
@@ -111,6 +112,14 @@ pub enum HyperlightError {
     #[error("HostFunction {0} was not found")]
     HostFunctionNotFound(String),
 
+    /// Hyperlight VM error.
+    ///
+    /// **Note:** This error variant is considered internal and its structure is not stable.
+    /// It may change between versions without notice. Users should not rely on this.
+    #[doc(hidden)]
+    #[error("Internal Hyperlight VM error: {0}")]
+    HyperlightVmError(#[from] HyperlightVmError),
+
     /// Reading Writing or Seeking data failed.
     #[error("Reading Writing or Seeking data failed {0:?}")]
     IOError(#[from] std::io::Error),
@@ -126,11 +135,6 @@ pub enum HyperlightError {
     /// Conversion of str to Json failed
     #[error("Conversion of str data to json failed")]
     JsonConversionFailure(#[from] serde_json::Error),
-
-    /// KVM Error Occurred
-    #[error("KVM Error {0:?}")]
-    #[cfg(kvm)]
-    KVMError(#[from] kvm_ioctls::Error),
 
     /// An attempt to get a lock from a Mutex failed.
     #[error("Unable to lock resource")]
@@ -167,11 +171,6 @@ pub enum HyperlightError {
     /// mprotect Failed.
     #[error("mprotect failed with os error {0:?}")]
     MprotectFailed(Option<i32>),
-
-    /// mshv Error Occurred
-    #[error("mshv Error {0:?}")]
-    #[cfg(mshv3)]
-    MSHVError(#[from] mshv_ioctls::MshvError),
 
     /// No Hypervisor was found for Sandbox.
     #[error("No Hypervisor was found for Sandbox")]
@@ -241,11 +240,6 @@ pub enum HyperlightError {
     /// SystemTimeError
     #[error("SystemTimeError {0:?}")]
     SystemTimeError(#[from] SystemTimeError),
-
-    /// Error occurred when translating guest address
-    #[error("An error occurred when translating guest address: {0:?}")]
-    #[cfg(gdb)]
-    TranslateGuestAddress(u64),
 
     /// Error occurred converting a slice to an array
     #[error("TryFromSliceError {0:?}")]
@@ -334,6 +328,11 @@ impl HyperlightError {
             | HyperlightError::SnapshotSizeMismatch(_, _)
             | HyperlightError::MemoryRegionSizeMismatch(_, _, _) => true,
 
+            // HyperlightVmError::DispatchGuestCall may poison the sandbox
+            HyperlightError::HyperlightVmError(HyperlightVmError::DispatchGuestCall(e)) => {
+                e.is_poison_error()
+            }
+
             // All other errors do not poison the sandbox.
             HyperlightError::AnyhowError(_)
             | HyperlightError::BoundsCheckFailed(_, _)
@@ -348,6 +347,10 @@ impl HyperlightError {
             | HyperlightError::GuestInterfaceUnsupportedType(_)
             | HyperlightError::GuestOffsetIsInvalid(_)
             | HyperlightError::HostFunctionNotFound(_)
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Create(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Initialize(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::MapRegion(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::UnmapRegion(_))
             | HyperlightError::IOError(_)
             | HyperlightError::IntConversionFailure(_)
             | HyperlightError::InvalidFlatBuffer(_)
@@ -384,12 +387,6 @@ impl HyperlightError {
             HyperlightError::WindowsAPIError(_) => false,
             #[cfg(target_os = "linux")]
             HyperlightError::VmmSysError(_) => false,
-            #[cfg(kvm)]
-            HyperlightError::KVMError(_) => false,
-            #[cfg(mshv3)]
-            HyperlightError::MSHVError(_) => false,
-            #[cfg(gdb)]
-            HyperlightError::TranslateGuestAddress(_) => false,
         }
     }
 }
@@ -409,4 +406,145 @@ macro_rules! new_error {
            let __err_msg = std::format!($fmtstr, $($arg)*);
            $crate::error::HyperlightError::Error(__err_msg)
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hypervisor::hyperlight_vm::{
+        DispatchGuestCallError, HandleIoError, HyperlightVmError, RunVmError,
+    };
+    use crate::sandbox::outb::HandleOutbError;
+
+    /// Test that StackOverflow from RunVmError promotes to HyperlightError::StackOverflow
+    #[test]
+    fn test_promote_stack_overflow_from_run_vm() {
+        let err = DispatchGuestCallError::Run(RunVmError::StackOverflow);
+        let (promoted, should_poison) = err.promote();
+
+        assert!(should_poison, "StackOverflow should poison the sandbox");
+        assert!(
+            matches!(promoted, HyperlightError::StackOverflow()),
+            "Expected HyperlightError::StackOverflow, got {:?}",
+            promoted
+        );
+    }
+
+    /// Test that StackOverflow from HandleOutbError promotes to HyperlightError::StackOverflow
+    #[test]
+    fn test_promote_stack_overflow_from_outb() {
+        let err = DispatchGuestCallError::Run(RunVmError::HandleIo(HandleIoError::Outb(
+            HandleOutbError::StackOverflow,
+        )));
+        let (promoted, should_poison) = err.promote();
+
+        assert!(should_poison, "StackOverflow should poison the sandbox");
+        assert!(
+            matches!(promoted, HyperlightError::StackOverflow()),
+            "Expected HyperlightError::StackOverflow, got {:?}",
+            promoted
+        );
+    }
+
+    /// Test that ExecutionCancelledByHost promotes to HyperlightError::ExecutionCanceledByHost
+    #[test]
+    fn test_promote_execution_cancelled_by_host() {
+        let err = DispatchGuestCallError::Run(RunVmError::ExecutionCancelledByHost);
+        let (promoted, should_poison) = err.promote();
+
+        assert!(
+            should_poison,
+            "ExecutionCancelledByHost should poison the sandbox"
+        );
+        assert!(
+            matches!(promoted, HyperlightError::ExecutionCanceledByHost()),
+            "Expected HyperlightError::ExecutionCanceledByHost, got {:?}",
+            promoted
+        );
+    }
+
+    /// Test that GuestAborted promotes to HyperlightError::GuestAborted with correct values
+    #[test]
+    fn test_promote_guest_aborted() {
+        let err = DispatchGuestCallError::Run(RunVmError::HandleIo(HandleIoError::Outb(
+            HandleOutbError::GuestAborted {
+                code: 42,
+                message: "test abort".to_string(),
+            },
+        )));
+        let (promoted, should_poison) = err.promote();
+
+        assert!(should_poison, "GuestAborted should poison the sandbox");
+        match promoted {
+            HyperlightError::GuestAborted(code, msg) => {
+                assert_eq!(code, 42);
+                assert_eq!(msg, "test abort");
+            }
+            _ => panic!("Expected HyperlightError::GuestAborted, got {:?}", promoted),
+        }
+    }
+
+    /// Test that MemoryAccessViolation promotes to HyperlightError::MemoryAccessViolation
+    #[test]
+    fn test_promote_memory_access_violation() {
+        let err = DispatchGuestCallError::Run(RunVmError::MemoryAccessViolation {
+            addr: 0xDEADBEEF,
+            access_type: MemoryRegionFlags::WRITE,
+            region_flags: MemoryRegionFlags::READ,
+        });
+        let (promoted, should_poison) = err.promote();
+
+        assert!(
+            should_poison,
+            "MemoryAccessViolation should poison the sandbox"
+        );
+        match promoted {
+            HyperlightError::MemoryAccessViolation(addr, access_type, region_flags) => {
+                assert_eq!(addr, 0xDEADBEEF);
+                assert_eq!(access_type, MemoryRegionFlags::WRITE);
+                assert_eq!(region_flags, MemoryRegionFlags::READ);
+            }
+            _ => panic!(
+                "Expected HyperlightError::MemoryAccessViolation, got {:?}",
+                promoted
+            ),
+        }
+    }
+
+    /// Test that ConvertRspPointer does not poison the sandbox
+    #[test]
+    fn test_promote_convert_rsp_pointer_no_poison() {
+        let err = DispatchGuestCallError::ConvertRspPointer("test error".to_string());
+        let (promoted, should_poison) = err.promote();
+
+        assert!(
+            !should_poison,
+            "ConvertRspPointer should not poison the sandbox"
+        );
+        assert!(
+            matches!(
+                promoted,
+                HyperlightError::HyperlightVmError(HyperlightVmError::DispatchGuestCall(_))
+            ),
+            "Expected HyperlightError::HyperlightVmError, got {:?}",
+            promoted
+        );
+    }
+
+    /// Test that non-promoted Run errors are wrapped in HyperlightVmError
+    #[test]
+    fn test_promote_other_run_errors_wrapped() {
+        let err = DispatchGuestCallError::Run(RunVmError::MmioReadUnmapped(0x1000));
+        let (promoted, should_poison) = err.promote();
+
+        assert!(should_poison, "Run errors should poison the sandbox");
+        assert!(
+            matches!(
+                promoted,
+                HyperlightError::HyperlightVmError(HyperlightVmError::DispatchGuestCall(_))
+            ),
+            "Expected HyperlightError::HyperlightVmError, got {:?}",
+            promoted
+        );
+    }
 }

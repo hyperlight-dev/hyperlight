@@ -19,7 +19,8 @@ use std::sync::OnceLock;
 
 use tracing::{Span, instrument};
 
-use crate::Result;
+#[cfg(gdb)]
+use crate::hypervisor::gdb::DebugError;
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
 };
@@ -131,6 +132,137 @@ pub(crate) enum VmExit {
     Retry(),
 }
 
+/// VM error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum VmError {
+    #[error("Failed to create vm: {0}")]
+    CreateVm(#[from] CreateVmError),
+    #[cfg(gdb)]
+    #[error("Debug operation failed: {0}")]
+    Debug(#[from] DebugError),
+    #[error("Map memory operation failed: {0}")]
+    MapMemory(#[from] MapMemoryError),
+    #[error("Register operation failed: {0}")]
+    Register(#[from] RegisterError),
+    #[error("Failed to run vcpu: {0}")]
+    RunVcpu(#[from] RunVcpuError),
+    #[error("Unmap memory operation failed: {0}")]
+    UnmapMemory(#[from] UnmapMemoryError),
+}
+
+/// Create VM error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum CreateVmError {
+    #[error("VCPU creation failed: {0}")]
+    CreateVcpuFd(HypervisorError),
+    #[error("VM creation failed: {0}")]
+    CreateVmFd(HypervisorError),
+    #[error("Hypervisor is not available: {0}")]
+    HypervisorNotAvailable(HypervisorError),
+    #[error("Initialize VM failed: {0}")]
+    InitializeVm(HypervisorError),
+    #[error("Set Partition Property failed: {0}")]
+    SetPartitionProperty(HypervisorError),
+    #[cfg(target_os = "windows")]
+    #[error("Surrogate process creation failed: {0}")]
+    SurrogateProcess(String),
+}
+
+/// RunVCPU error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum RunVcpuError {
+    #[error("Failed to decode message type: {0}")]
+    DecodeIOMessage(u32),
+    #[cfg(gdb)]
+    #[error("Failed to get DR6 debug register: {0}")]
+    GetDr6(HypervisorError),
+    #[error("Increment RIP failed: {0}")]
+    IncrementRip(HypervisorError),
+    #[error("Parse GPA access info failed")]
+    ParseGpaAccessInfo,
+    #[error("Unknown error: {0}")]
+    Unknown(HypervisorError),
+}
+
+/// Register error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum RegisterError {
+    #[error("Failed to get registers: {0}")]
+    GetRegs(HypervisorError),
+    #[error("Failed to set registers: {0}")]
+    SetRegs(HypervisorError),
+    #[error("Failed to get FPU registers: {0}")]
+    GetFpu(HypervisorError),
+    #[error("Failed to set FPU registers: {0}")]
+    SetFpu(HypervisorError),
+    #[error("Failed to get special registers: {0}")]
+    GetSregs(HypervisorError),
+    #[error("Failed to set special registers: {0}")]
+    SetSregs(HypervisorError),
+    #[error("Failed to get debug registers: {0}")]
+    GetDebugRegs(HypervisorError),
+    #[error("Failed to set debug registers: {0}")]
+    SetDebugRegs(HypervisorError),
+    #[error("Failed to get xsave: {0}")]
+    GetXsave(HypervisorError),
+    #[error("Xsave size mismatch: expected {expected} bytes, got {actual}")]
+    XsaveSizeMismatch {
+        /// Expected size in bytes
+        expected: u32,
+        /// Actual size in bytes
+        actual: u32,
+    },
+    #[cfg(target_os = "windows")]
+    #[error("Failed to convert WHP registers: {0}")]
+    ConversionFailed(String),
+}
+
+/// Map memory error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum MapMemoryError {
+    #[cfg(target_os = "windows")]
+    #[error("Address conversion failed: {0}")]
+    AddressConversion(std::num::TryFromIntError),
+    #[error("Hypervisor error: {0}")]
+    Hypervisor(HypervisorError),
+    #[cfg(target_os = "windows")]
+    #[error("Invalid memory region flags: {0}")]
+    InvalidFlags(String),
+    #[cfg(target_os = "windows")]
+    #[error("Failed to load API '{api_name}': {source}")]
+    LoadApi {
+        api_name: &'static str,
+        source: windows_result::Error,
+    },
+    #[cfg(target_os = "windows")]
+    #[error("Operation not supported: {0}")]
+    NotSupported(String),
+}
+
+/// Unmap memory error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum UnmapMemoryError {
+    #[error("Hypervisor error: {0}")]
+    Hypervisor(HypervisorError),
+    #[cfg(target_os = "windows")]
+    #[error("Operation not supported: {0}")]
+    NotSupported(String),
+}
+
+/// Implementation-specific Hypervisor error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum HypervisorError {
+    #[cfg(kvm)]
+    #[error("KVM error: {0}")]
+    KvmError(#[from] kvm_ioctls::Error),
+    #[cfg(mshv3)]
+    #[error("MSHV error: {0}")]
+    MshvError(#[from] mshv_ioctls::MshvError),
+    #[cfg(target_os = "windows")]
+    #[error("Windows error: {0}")]
+    WindowsError(#[from] windows_result::Error),
+}
+
 /// Trait for single-vCPU VMs. Provides a common interface for basic VM operations.
 /// Abstracts over differences between KVM, MSHV and WHP implementations.
 pub(crate) trait VirtualMachine: Debug + Send {
@@ -142,40 +274,46 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// The caller must ensure that the given u32 is not already mapped, otherwise previously mapped
     /// memory regions may be overwritten.
     /// The memory region must not overlap with an existing region, and depending on platform, must be aligned to page boundaries.
-    unsafe fn map_memory(&mut self, region: (u32, &MemoryRegion)) -> Result<()>;
+    unsafe fn map_memory(
+        &mut self,
+        region: (u32, &MemoryRegion),
+    ) -> std::result::Result<(), MapMemoryError>;
 
     /// Unmap memory region from this VM that has previously been mapped using `map_memory`.
-    fn unmap_memory(&mut self, region: (u32, &MemoryRegion)) -> Result<()>;
+    fn unmap_memory(
+        &mut self,
+        region: (u32, &MemoryRegion),
+    ) -> std::result::Result<(), UnmapMemoryError>;
 
     /// Runs the vCPU until it exits.
     /// Note: this function should not emit any traces or spans as it is called after guest span is setup
-    fn run_vcpu(&mut self) -> Result<VmExit>;
+    fn run_vcpu(&mut self) -> std::result::Result<VmExit, RunVcpuError>;
 
     /// Get regs
     #[allow(dead_code)]
-    fn regs(&self) -> Result<CommonRegisters>;
+    fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError>;
     /// Set regs
-    fn set_regs(&self, regs: &CommonRegisters) -> Result<()>;
+    fn set_regs(&self, regs: &CommonRegisters) -> std::result::Result<(), RegisterError>;
     /// Get fpu regs
     #[allow(dead_code)]
-    fn fpu(&self) -> Result<CommonFpu>;
+    fn fpu(&self) -> std::result::Result<CommonFpu, RegisterError>;
     /// Set fpu regs
-    fn set_fpu(&self, fpu: &CommonFpu) -> Result<()>;
+    fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError>;
     /// Get special regs
     #[allow(dead_code)]
-    fn sregs(&self) -> Result<CommonSpecialRegisters>;
+    fn sregs(&self) -> std::result::Result<CommonSpecialRegisters, RegisterError>;
     /// Set special regs
-    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> Result<()>;
+    fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError>;
     /// Get the debug registers of the vCPU
     #[allow(dead_code)]
-    fn debug_regs(&self) -> Result<CommonDebugRegs>;
+    fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError>;
     /// Set the debug registers of the vCPU
     #[allow(dead_code)]
-    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> Result<()>;
+    fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError>;
 
     /// xsave
     #[cfg(crashdump)]
-    fn xsave(&self) -> Result<Vec<u8>>;
+    fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError>;
 
     /// Get partition handle
     #[cfg(target_os = "windows")]

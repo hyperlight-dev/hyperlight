@@ -16,9 +16,18 @@ limitations under the License.
 
 //! This file contains architecture specific code for the x86_64
 
-use super::{DebuggableVm, VcpuStopReason};
-use crate::Result;
+use super::{DebugError, DebuggableVm, VcpuStopReason};
 use crate::hypervisor::regs::CommonRegisters;
+use crate::hypervisor::virtual_machine::RegisterError;
+
+/// Errors that can occur when determining the vCPU stop reason
+#[derive(Debug, thiserror::Error)]
+pub enum VcpuStopReasonError {
+    #[error("Failed to get registers: {0}")]
+    GetRegs(#[from] RegisterError),
+    #[error("Failed to remove hardware breakpoint: {0}")]
+    RemoveHwBreakpoint(#[from] DebugError),
+}
 
 // Described in Table 6-1. Exceptions and Interrupts at Page 6-13 Vol. 1
 // of Intel 64 and IA-32 Architectures Software Developer's Manual
@@ -56,7 +65,7 @@ pub(crate) fn vcpu_stop_reason(
     dr6: u64,
     entrypoint: u64,
     exception: u32,
-) -> Result<VcpuStopReason> {
+) -> std::result::Result<VcpuStopReason, VcpuStopReasonError> {
     let CommonRegisters { rip, .. } = vm.regs()?;
     if DB_EX_ID == exception {
         // If the BS flag in DR6 register is set, it means a single step
