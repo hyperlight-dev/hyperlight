@@ -20,7 +20,7 @@ use alloc::sync::Arc;
 use spin::Mutex;
 use tracing_core::span::{Attributes, Id, Record};
 use tracing_core::subscriber::Subscriber;
-use tracing_core::{Event, Metadata};
+use tracing_core::{Event, LevelFilter, Metadata};
 
 use crate::state::GuestState;
 
@@ -31,22 +31,42 @@ pub(crate) struct GuestSubscriber {
     /// A reference to this state is stored in a static variable
     /// so it can be accessed from the guest tracing API
     state: Arc<Mutex<GuestState>>,
+    /// Maximum log level to record
+    max_log_level: LevelFilter,
+}
+
+/// Converts a `tracing::log::LevelFilter` to a `tracing_core::LevelFilter`
+/// Used to check if an event should be recorded based on the maximum log level
+fn convert_level_filter(filter: tracing::log::LevelFilter) -> tracing_core::LevelFilter {
+    match filter {
+        tracing::log::LevelFilter::Off => tracing_core::LevelFilter::OFF,
+        tracing::log::LevelFilter::Error => tracing_core::LevelFilter::ERROR,
+        tracing::log::LevelFilter::Warn => tracing_core::LevelFilter::WARN,
+        tracing::log::LevelFilter::Info => tracing_core::LevelFilter::INFO,
+        tracing::log::LevelFilter::Debug => tracing_core::LevelFilter::DEBUG,
+        tracing::log::LevelFilter::Trace => tracing_core::LevelFilter::TRACE,
+    }
 }
 
 impl GuestSubscriber {
-    pub(crate) fn new(guest_start_tsc: u64) -> Self {
+    /// Creates a new `GuestSubscriber` with the given guest start TSC and maximum log level
+    pub(crate) fn new(guest_start_tsc: u64, max_log_level: tracing::log::LevelFilter) -> Self {
         Self {
             state: Arc::new(Mutex::new(GuestState::new(guest_start_tsc))),
+            max_log_level: convert_level_filter(max_log_level),
         }
     }
+    /// Returns a reference to the internal state of the subscriber
+    /// This is used to access the spans and events collected by the subscriber
     pub(crate) fn state(&self) -> &Arc<Mutex<GuestState>> {
         &self.state
     }
 }
 
 impl Subscriber for GuestSubscriber {
-    fn enabled(&self, _md: &Metadata<'_>) -> bool {
-        true
+    fn enabled(&self, md: &Metadata<'_>) -> bool {
+        // Check if the metadata level is less than or equal to the maximum log level filter
+        self.max_log_level >= *md.level()
     }
 
     fn new_span(&self, attrs: &Attributes<'_>) -> Id {

@@ -757,10 +757,16 @@ fn log_message() {
         22 * 6
     };
 
+    // Calculate fixed info logs
+    // - 10 logs per iteration from infrastructure at Info level (halt, dispatch_function, call_guest_function)
+    //   (halt x 3 calls + dispatch x 1 + call_guest x 1) * 2 logs (Enter/Exit) = 10 logs
+    // - 6 iterations
+    let num_fixed_info_log = 10 * 6;
+
     let tests = vec![
         (LevelFilter::Trace, 5 + num_fixed_trace_log),
-        (LevelFilter::Debug, 4),
-        (LevelFilter::Info, 3),
+        (LevelFilter::Debug, 4 + num_fixed_info_log),
+        (LevelFilter::Info, 3 + num_fixed_info_log),
         (LevelFilter::Warn, 2),
         (LevelFilter::Error, 1),
         (LevelFilter::Off, 0),

@@ -25,7 +25,7 @@ use tracing::instrument;
 /// this means we can instrument it as a trace point because the trace state
 /// shall not be locked at this point (we are not in an exception context).
 #[inline(never)]
-#[instrument(skip_all, level = "Trace")]
+#[instrument(skip_all, level = "Info")]
 pub fn halt() {
     #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
     {
