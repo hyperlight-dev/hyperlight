@@ -5,7 +5,7 @@ publish = false
 edition = "2021"
 
 [dependencies]
-addr2line = "0.25.1"
+addr2line = "0.26.0"
 piet-common = { version = "0.8.0", features = [ "png" ] }
 blake3 = { version = "1.8.3" }
 
