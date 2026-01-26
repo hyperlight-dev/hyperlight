@@ -270,6 +270,7 @@ support both sync and async work completion.
 
 <img width="921" height="772" alt="hl-model" src="https://github.com/user-attachments/assets/0ee9cf15-200d-4ef4-8c9b-6ffaac05d4c0" />
 
+#### Summary
 
 | Aspect                    | Current (Stack-based)                      | Proposed (Ring Buffer)                                  |
 |-------------------------- | ------------------------------------------ | ------------------------------------------------------- |
