@@ -97,9 +97,23 @@ responses in batches.
 
 ### Risks and Mitigations
 
-**Risk**: Malicious guest corrupting the queue **Mitigation**: Do not expose low level queue API to
-the guest. Assert queue state invariants after each producer and consumer operation, poison sandbox
-if any invariant is not upheld
+**Risk**: Malicious guest corrupting the queue
+**Mitigation**: The host must treat all guest-provided data as untrusted:
+
+- **Address validation**: Before accessing any buffer, verify that the GPA falls within the
+  permitted guest memory region (scratch/shared memory). Reject descriptors pointing outside
+  this region.
+- **No racy access**: Even if a guest violates the synchronization protocol and modifies a buffer
+  while the host is reading it, the host must not exhibit undefined behavior. Use volatile reads
+  for buffer contents after the synchronizing acquire load.
+- **Invariant checking**: Assert queue state invariants after each operation. If any invariant is
+  violated (e.g., wrap counter inconsistency, invalid descriptor chain), poison the sandbox
+  immediately.
+- **Bound checking**: Validate `len` fields to prevent out-of-bounds access. A malicious guest
+  could set `len` larger than the actual buffer allocation.
+- **No double-use**: Track which buffers are currently owned by each side. The host should never
+  read from a buffer it hasn't acquired via the proper protocol.
+
 
 **Risk**: Complexity of implementing a lock-free ring buffer with proper memory ordering
 **Mitigation**: Follow established virtio semantics; use atomic operations with appropriate memory
