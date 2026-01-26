@@ -169,7 +169,7 @@ Each descriptor is 16 bytes and has the following layout:
 
 ```rust
 struct Descriptor {
-    addr: u64,  // Offset into shared memory where buffer resides
+    addr: u64,  // Guest Physical Address where buffer resides
     len: u32,   // Buffer length in bytes
     id: u16,    // Buffer ID for tracking
     flags: u16, // AVAIL, USED, WRITE, NEXT, INDIRECT, etc.
