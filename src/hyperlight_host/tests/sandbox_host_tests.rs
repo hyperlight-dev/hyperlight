@@ -45,7 +45,6 @@ fn pass_byte_array() {
 }
 
 #[test]
-#[ignore = "Fails with mismatched float only when c .exe guest?!"]
 fn float_roundtrip() {
     let doubles = [
         0.0,
@@ -83,8 +82,11 @@ fn float_roundtrip() {
     for f in doubles.iter() {
         let res: f64 = sandbox.call("EchoDouble", *f).unwrap();
 
+        // Use == for comparison (handles -0.0 == 0.0) with special case for NaN.
+        // Note: FlatBuffers doesn't preserve -0.0 (-0.0 round-trips to 0.0) because FlatBuffers skips
+        // storing values equal to the default (as an optimization), and -0.0 == 0.0 in IEEE 754.
         assert!(
-            res.total_cmp(f).is_eq(),
+            (res.is_nan() && f.is_nan()) || res == *f,
             "Expected {:?} but got {:?}",
             f,
             res
@@ -93,8 +95,11 @@ fn float_roundtrip() {
     for f in floats.iter() {
         let res: f32 = sandbox.call("EchoFloat", *f).unwrap();
 
+        // Use == for comparison (handles -0.0 == 0.0) with special case for NaN.
+        // Note: FlatBuffers doesn't preserve -0.0 (-0.0 round-trips to 0.0) because FlatBuffers skips
+        // storing values equal to the default (as an optimization), and -0.0 == 0.0 in IEEE 754.
         assert!(
-            res.total_cmp(f).is_eq(),
+            (res.is_nan() && f.is_nan()) || res == *f,
             "Expected {:?} but got {:?}",
             f,
             res

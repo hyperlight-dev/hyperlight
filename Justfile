@@ -42,13 +42,15 @@ build target=default-target:
 # build testing guest binaries
 guests: build-and-move-rust-guests build-and-move-c-guests
 
+ensure-cargo-hyperlight:
+    command -v cargo-hyperlight >/dev/null 2>&1 || cargo install --locked cargo-hyperlight
+
 witguest-wit:
     command -v wasm-tools >/dev/null 2>&1 || cargo install --locked wasm-tools
     cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
     cd src/tests/rust_guests/witguest && wasm-tools component wit two_worlds.wit -w -o twoworlds.wasm
 
-build-rust-guests target=default-target features="": (witguest-wit)
-    command -v cargo-hyperlight >/dev/null 2>&1 || cargo install --locked cargo-hyperlight
+build-rust-guests target=default-target features="": (witguest-wit) (ensure-cargo-hyperlight)
     cd src/tests/rust_guests/simpleguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
     cd src/tests/rust_guests/dummyguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} 
     cd src/tests/rust_guests/witguest && cargo hyperlight build {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }}
@@ -259,8 +261,7 @@ clippy target=default-target: (witguest-wit)
 clippyw target=default-target: (witguest-wit)
     {{ cargo-cmd }} clippy --all-targets --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
 
-clippy-guests target=default-target: (witguest-wit)
-    command -v cargo-hyperlight >/dev/null 2>&1 || cargo install --locked cargo-hyperlight
+clippy-guests target=default-target: (witguest-wit) (ensure-cargo-hyperlight)
     cd src/tests/rust_guests/simpleguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
     cd src/tests/rust_guests/witguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
 
@@ -314,7 +315,7 @@ tar-headers: (build-rust-capi) # build-rust-capi is a dependency because we need
     tar -zcvf include.tar.gz -C {{root}}/src/hyperlight_guest_bin/third_party/ musl/include musl/arch/x86_64 printf/printf.h -C {{root}}/src/hyperlight_guest_capi include
 
 tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
-    tar -zcvf hyperlight-guest-c-api-linux.tar.gz -C {{root}}/target/x86_64-unknown-none/ release/libhyperlight_guest_capi.a -C {{root}}/target/x86_64-unknown-none/ debug/libhyperlight_guest_capi.a
+    tar -zcvf hyperlight-guest-c-api-linux.tar.gz -C {{root}}/target/x86_64-hyperlight-none/ release/libhyperlight_guest_capi.a -C {{root}}/target/x86_64-hyperlight-none/ debug/libhyperlight_guest_capi.a
 
 # Create release notes for the given tag. The expected format is a v-prefixed version number, e.g. v0.2.0
 # For prereleases, the version should be "dev-latest"

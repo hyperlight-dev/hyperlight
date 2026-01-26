@@ -849,10 +849,6 @@ fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
 
 /// Tests whether host is able to return Float/f32 as return type
 /// or not
-/// Adding Ignore attribute, due known issues with float and double
-/// calculations - see Github issue #179. Once it is fixed we can
-/// remove ignore attribute
-#[ignore]
 #[test]
 fn test_if_guest_is_able_to_get_float_return_values_from_host() {
     let mut sbox1 = new_uninit_c().unwrap();
@@ -870,10 +866,6 @@ fn test_if_guest_is_able_to_get_float_return_values_from_host() {
 
 /// Tests whether host is able to return Double/f64 as return type
 /// or not
-/// Adding Ignore attribute, due known issues with float and double
-/// calculations - see Github issue #179. Once it is fixed we can
-/// remove ignore attribute
-#[ignore]
 #[test]
 fn test_if_guest_is_able_to_get_double_return_values_from_host() {
     let mut sbox1 = new_uninit_c().unwrap();
