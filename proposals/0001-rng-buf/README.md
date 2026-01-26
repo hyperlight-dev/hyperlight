@@ -270,7 +270,6 @@ support both sync and async work completion.
 
 <img width="921" height="772" alt="hl-model" src="https://github.com/user-attachments/assets/0ee9cf15-200d-4ef4-8c9b-6ffaac05d4c0" />
 
-```markdown
 
 | Aspect                    | Current (Stack-based)                      | Proposed (Ring Buffer)                                  |
 |-------------------------- | ------------------------------------------ | ------------------------------------------------------- |
@@ -280,7 +279,6 @@ support both sync and async work completion.
 | **Async support**         | Not possible                               | Supported via descriptor IDs                            |
 | **Flow control**          | Implicit (stack size)                      | Explicit (ring capacity + event suppression)            |
 | **Memory access pattern** | Two separate regions (input/output stacks) | Single contiguous ring + buffer pool                    |
-```
 
 ### Performance Optimizations
 
