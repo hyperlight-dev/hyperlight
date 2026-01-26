@@ -130,11 +130,18 @@ system; implement ownership tracking; perform thorough validation and fuzzing
 ### Packed Virtqueue Overview
 
 Before diving into the specifics, it will be useful to agree on some terminology. We borrow terms
-specific for virtio spec. Throughout this document, when we refer to the `driver`, we mean the
-`producer` side of the queue (the side that submits elements). When we refer to the `device`, we
-mean the `consumer` side (the side that processes queue elements). In the virtio specification,
-these terms come from the traditional device driver model, but in our case, either the host or guest
-can act as driver or device depending on the direction of communication.
+from the virtio spec:
+
+- **Driver**: The side that allocates buffers in shared memory and submits descriptors. In
+  Hyperlight, this is always the **guest**, since only the guest can allocate memory accessible to
+  both sides. The driver is essentially providing buffers for the device to use.
+- **Device**: The side that reads from and writes to driver-provided buffers on request. In
+  Hyperlight, this is always the **host**. The host acts as a paravirtualized device, processing
+  requests and writing responses into guest-provided buffers.
+
+This mapping is fixed regardless of communication direction. For host-to-guest calls, the guest
+pre-populates writable buffers that the host fills with incoming work. For guest-to-host calls,
+the guest submits request buffers with attached response buffers.
 
 #### Bidirectional Communication
 
@@ -479,7 +486,7 @@ pub struct EventSuppression {
 
 #### Buffer Pool
 
-An allocator for virtio buffer management. This will operate on guest physical 
+An allocator for virtio buffer management. This will operate on guest physical
 addresses from page allocator.
 
 ```rust
@@ -644,7 +651,7 @@ impl BufferChain {
 #### High-Level Virtqueue API
 
 Wraps ring primitives with buffer management and notification handling. This layer abstracts
-buffer allocation and provides a request/response model with token-based correlation. For 
+buffer allocation and provides a request/response model with token-based correlation. For
 simplicity this draft omits a batching API.
 
 ```rust
