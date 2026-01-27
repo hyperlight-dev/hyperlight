@@ -217,7 +217,7 @@ impl Snapshot {
                     len: (pt_buf.size() - pt_size_mapped) as u64,
                     kind: MappingKind::BasicMapping(BasicMapping {
                         readable: true,
-                        writable: true,
+                        writable: false,
                         executable: false,
                     }),
                 };
