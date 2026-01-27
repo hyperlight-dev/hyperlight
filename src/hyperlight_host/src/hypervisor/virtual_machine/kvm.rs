@@ -22,6 +22,8 @@ use kvm_bindings::{kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_me
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
@@ -33,6 +35,8 @@ use crate::hypervisor::virtual_machine::{
     VmExit,
 };
 use crate::mem::memory_region::MemoryRegion;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -134,7 +138,14 @@ impl VirtualMachine for KvmVm {
             .map_err(|e| UnmapMemoryError::Hypervisor(e.into()))
     }
 
-    fn run_vcpu(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
+    fn run_vcpu(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
+    ) -> std::result::Result<VmExit, RunVcpuError> {
+        // setup_trace_guest must be called right before vcpu_run.run() call, because
+        // it sets the guest span, no other traces or spans must be setup in between these calls.
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
         match self.vcpu_fd.run() {
             Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
             Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),

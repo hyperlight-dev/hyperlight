@@ -16,6 +16,9 @@ limitations under the License.
 
 use std::os::raw::c_void;
 
+use tracing::Span;
+#[cfg(feature = "trace_guest")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use windows::Win32::Foundation::{FreeLibrary, HANDLE};
 use windows::Win32::System::Hypervisor::*;
 use windows::Win32::System::LibraryLoader::*;
@@ -36,6 +39,8 @@ use crate::hypervisor::virtual_machine::{
     VirtualMachine, VmExit,
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
 #[allow(dead_code)] // Will be used for runtime hypervisor detection
 pub(crate) fn is_hypervisor_present() -> bool {
@@ -213,9 +218,16 @@ impl VirtualMachine for WhpVm {
     }
 
     #[expect(non_upper_case_globals, reason = "Windows API constant are lower case")]
-    fn run_vcpu(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
+    fn run_vcpu(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
+    ) -> std::result::Result<VmExit, RunVcpuError> {
         let mut exit_context: WHV_RUN_VP_EXIT_CONTEXT = Default::default();
 
+        // setup_trace_guest must be called right before WHvRunVirtualProcessor() call, because
+        // it sets the guest span, no other traces or spans must be setup in between these calls.
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
         unsafe {
             WHvRunVirtualProcessor(
                 self.partition,
@@ -225,7 +237,6 @@ impl VirtualMachine for WhpVm {
             )
             .map_err(|e| RunVcpuError::Unknown(e.into()))?;
         }
-
         let result = match exit_context.ExitReason {
             WHvRunVpExitReasonX64IoPortAccess => unsafe {
                 let instruction_length = exit_context.VpContext._bitfield & 0xF;

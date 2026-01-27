@@ -25,6 +25,8 @@ use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
 };
 use crate::mem::memory_region::MemoryRegion;
+#[cfg(feature = "trace_guest")]
+use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
 /// KVM (Kernel-based Virtual Machine) functionality (linux)
 #[cfg(kvm)]
@@ -286,8 +288,12 @@ pub(crate) trait VirtualMachine: Debug + Send {
     ) -> std::result::Result<(), UnmapMemoryError>;
 
     /// Runs the vCPU until it exits.
-    /// Note: this function should not emit any traces or spans as it is called after guest span is setup
-    fn run_vcpu(&mut self) -> std::result::Result<VmExit, RunVcpuError>;
+    /// Note: this function emits traces spans for guests
+    /// and the span setup is called right before the run virtual processor call of each hypervisor
+    fn run_vcpu(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
+    ) -> std::result::Result<VmExit, RunVcpuError>;
 
     /// Get regs
     #[allow(dead_code)]
