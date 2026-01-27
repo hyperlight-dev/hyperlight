@@ -660,22 +660,22 @@ fn guard_page_check_2() {
 }
 
 #[test]
-#[ignore] // ran from Justfile because requires feature "executable_heap"
 fn execute_on_heap() {
     let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
     let result = sbox1.call::<String>("ExecuteOnHeap", ());
 
-    println!("{:#?}", result);
     #[cfg(feature = "executable_heap")]
-    assert!(result.is_ok());
+    assert_eq!(
+        result.unwrap(),
+        "Executed on heap successfully",
+        "should execute successfully"
+    );
 
     #[cfg(not(feature = "executable_heap"))]
-    {
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-
-        assert!(err.to_string().contains("PageFault"));
-    }
+    assert!(
+        result.unwrap_err().to_string().contains("PageFault"),
+        "should get page fault"
+    );
 }
 
 // checks that a recursive function with stack allocation eventually fails with stackoverflow
