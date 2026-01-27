@@ -15,6 +15,7 @@ limitations under the License.
  */
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/layout.rs")]
+#[cfg_attr(target_arch = "x86", path = "arch/i686/layout.rs")]
 mod arch;
 
 pub use arch::MAIN_STACK_TOP_GVA;
