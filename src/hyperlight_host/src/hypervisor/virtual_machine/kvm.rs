@@ -38,6 +38,24 @@ use crate::mem::memory_region::MemoryRegion;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
+/// On KVM x86-64 only, we have to set this in order to set the guest
+/// physical address width.
+///
+/// The requirement to set this to configure the guest physical
+/// address width for KVM is not well documented, but see e.g. Linux
+/// v6.18.6 arch/x86/kvm/cpuid.c:kvm_vcpu_after_set_cpuid()
+/// (https://elixir.bootlin.com/linux/v6.18.6/source/arch/x86/kvm/cpuid.c#L444)
+/// for how it is processed.
+///
+/// For the architectural definition and format of the system register:
+/// See AMD64 Architecture Programmer's Manual, Volume 3: General-Purpose and
+///                                                       System Instructions
+///     Appendix E: Obtaining Processor Information Via the CPUID Instruction
+///         E.4.7: Function 8000_0008h---Processor Capacity Parameters and
+///                Extended Feature Identification, pp. 627--628
+const CPUID_FUNCTION_PROCESSOR_CAPACITY_PARAMETERS_AND_EXTENDED_FEATURE_IDENTIFICATION: u32 =
+    0x8000_0008;
+
 /// Return `true` if the KVM API is available, version 12, and has UserMemory capability, or `false` otherwise
 #[instrument(skip_all, parent = Span::current(), level = "Trace")]
 pub(crate) fn is_hypervisor_present() -> bool {
@@ -95,7 +113,9 @@ impl KvmVm {
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
             .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
         for entry in kvm_cpuid.as_mut_slice().iter_mut() {
-            if entry.function == 0x8000_0008 {
+            if entry.function
+                == CPUID_FUNCTION_PROCESSOR_CAPACITY_PARAMETERS_AND_EXTENDED_FEATURE_IDENTIFICATION
+            {
                 entry.eax &= !0xff;
                 entry.eax |= hyperlight_common::layout::MAX_GPA.ilog2() + 1;
             }
