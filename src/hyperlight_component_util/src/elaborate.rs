@@ -439,10 +439,16 @@ impl<'p, 'a> Ctx<'p, 'a> {
             ComponentDefinedType::Future(_) | ComponentDefinedType::Stream(_) => {
                 panic!("async not yet supported")
             }
+            ComponentDefinedType::Map(_, _) => {
+                panic!("map type not yet supported")
+            }
         }
     }
 
     fn elab_func<'c>(&'c mut self, ft: &ComponentFuncType<'a>) -> Result<Func<'a>, Error<'a>> {
+        if ft.async_ {
+            panic!("async not yet supported")
+        }
         Ok(Func {
             params: ft
                 .params
