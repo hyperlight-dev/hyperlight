@@ -17,7 +17,7 @@
             patchRustPkg = pkg: (pkg.overrideAttrs (oA: {
               buildCommand = (builtins.replaceStrings
                 [ "rustc,rustdoc" ]
-                [ "rustc,rustdoc,clippy-driver,cargo-clippy" ]
+                [ "rustc,rustdoc,clippy-driver,cargo-clippy,miri,cargo-miri" ]
                 oA.buildCommand) + (let
                   wrapperPath = pkgs.path + "/pkgs/build-support/bintools-wrapper/ld-wrapper.sh";
                   baseOut = pkgs.clangStdenv.cc.bintools.out;
@@ -68,7 +68,7 @@
                 "x86_64-pc-windows-msvc" "x86_64-unknown-none"
                 "wasm32-wasip1" "wasm32-wasip2" "wasm32-unknown-unknown"
               ];
-              extensions = [ "rust-src" ];
+              extensions = [ "rust-src" ] ++ (if args.channel == "nightly" then [ "miri-preview" ] else []);
             });
 
           # Hyperlight needs a variety of toolchains, since we use Nightly
@@ -96,6 +96,31 @@
             rustc = toolchains.stable.rust;
           };
 
+          # when building a guest with cargo-hyperlight, or when
+          # building a miri sysroot for the main workspace, we need to
+          # include any crates.io dependencies of the standard library
+          # (e.g. rustc-literal-escaper)
+          stdlibLocks = lib.mapAttrsToList (_: toolchain:
+            "${toolchain.rust}/lib/rustlib/src/rust/library/Cargo.lock"
+          ) toolchains;
+          stdlibDeps = builtins.map (lockFile:
+            rust-platform.importCargoLock { inherit lockFile; }) stdlibLocks;
+          withStdlibLock = lockFile:
+            pkgs.symlinkJoin {
+              name = "cargo-deps";
+              paths = stdlibDeps ++ [
+                (rust-platform.importCargoLock {
+                  inherit lockFile;
+                })
+              ];
+            };
+          deps = {
+            "Cargo.toml" = withStdlibLock ./Cargo.lock;
+            "src/tests/rust_guests/dummyguest/Cargo.toml" = withStdlibLock ./src/tests/rust_guests/dummyguest/Cargo.lock;
+            "src/tests/rust_guests/simpleguest/Cargo.toml" = withStdlibLock ./src/tests/rust_guests/simpleguest/Cargo.lock;
+            "src/tests/rust_guests/witguest/Cargo.toml" = withStdlibLock ./src/tests/rust_guests/witguest/Cargo.lock;
+          };
+
           # Script snippet, used in the cargo/rustc wrappers below,
           # which creates a number of .cargo/config.toml files in
           # order to allow using Nix-fetched dependencies (this must
@@ -105,7 +130,7 @@
           # unfortunately that tends not to play well with subcommands
           # like `cargo clippy` and `cargo hyperlight` (see
           # https://github.com/rust-lang/cargo/issues/11031).
-          materialiseDeps = deps: let
+          materialiseDeps = let
             sortedNames =  lib.lists.reverseList (builtins.attrNames deps);
             matchClause = path: ''  */${path}) root="''${manifest%${path}}" ;;'';
             matchClauses = lib.strings.concatStringsSep "\n"
@@ -144,7 +169,7 @@
           # scripts also use `rustup toolchain install` in some cases, in
           # order to work in CI, so we provide a fake rustup that does
           # nothing as well.
-          rustup-like-wrapper = name: deps: pkgs.writeShellScriptBin name
+          rustup-like-wrapper = name: pkgs.writeShellScriptBin name
             (let
               clause = name: toolchain:
                 "+${name}) base=\"${toolchain.rust}\"; shift 1; ;;";
@@ -152,7 +177,7 @@
                 (lib.mapAttrsToList clause toolchains);
             in ''
               base="${toolchains.stable.rust}"
-              ${materialiseDeps deps}
+              ${materialiseDeps}
               case "$1" in
                 ${clauses}
                 install) exit 0; ;;
@@ -160,12 +185,12 @@
               export PATH="$base/bin:$PATH"
               exec "$base/bin/${name}" "$@"
             '');
-          fake-rustup = deps: pkgs.symlinkJoin {
+          fake-rustup = pkgs.symlinkJoin {
             name = "fake-rustup";
             paths = [
               (pkgs.writeShellScriptBin "rustup" "")
-              (rustup-like-wrapper "rustc" deps)
-              (rustup-like-wrapper "cargo" deps)
+              (rustup-like-wrapper "rustc")
+              (rustup-like-wrapper "cargo")
             ];
           };
 
@@ -182,34 +207,11 @@
             };
             cargoHash = "sha256-muiMVrK1TydQiMitihfo7xYidqUIIQ+Hw3BIeo5rLFw=";
           };
-          # when building a guest with cargo-hyperlight, we need to
-          # include any crates.io dependencies of the standard library
-          # (e.g. rustc-literal-escaper)
-          stdlibLocks = lib.mapAttrsToList (_: toolchain:
-            "${toolchain.rust}/lib/rustlib/src/rust/library/Cargo.lock"
-          ) toolchains;
-          stdlibDeps = builtins.map (lockFile:
-            rust-platform.importCargoLock { inherit lockFile; }) stdlibLocks;
-          withStdlibLock = lockFile:
-            pkgs.symlinkJoin {
-              name = "cargo-deps";
-              paths = stdlibDeps ++ [
-                (rust-platform.importCargoLock {
-                  inherit lockFile;
-                })
-              ];
-            };
-          deps = finalRootVendor: {
-            "Cargo.toml" = finalRootVendor;
-            "src/tests/rust_guests/dummyguest/Cargo.toml" = withStdlibLock ./src/tests/rust_guests/dummyguest/Cargo.lock;
-            "src/tests/rust_guests/simpleguest/Cargo.toml" = withStdlibLock ./src/tests/rust_guests/simpleguest/Cargo.lock;
-            "src/tests/rust_guests/witguest/Cargo.toml" = withStdlibLock ./src/tests/rust_guests/witguest/Cargo.lock;
-          };
         in (buildRustPackageClang (mkDerivationAttrs: {
           pname = "hyperlight";
           version = "0.0.0";
           src = lib.cleanSource ./.;
-          cargoLock.lockFile = ./Cargo.lock;
+          cargoDeps = deps."Cargo.toml";
 
           nativeBuildInputs = [
             azure-cli
@@ -246,7 +248,7 @@
           # Set this through shellHook rather than nativeBuildInputs to be
           # really sure that it overrides the real cargo.
           postHook = ''
-            export PATH="${fake-rustup (deps mkDerivationAttrs.cargoDeps)}/bin:$PATH"
+            export PATH="${fake-rustup}/bin:$PATH"
           '';
         })).overrideAttrs(oA: {
           hardeningDisable = [ "all" ];
