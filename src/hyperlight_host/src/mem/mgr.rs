@@ -95,13 +95,18 @@ impl vmem::TableOps for GuestPageTableBuffer {
             .unwrap_or(0)
     }
 
-    unsafe fn write_entry(&self, addr: (usize, usize), x: PageTableEntry) {
+    unsafe fn write_entry(
+        &self,
+        addr: (usize, usize),
+        entry: PageTableEntry,
+    ) -> Option<(usize, usize)> {
         let mut b = self.buffer.borrow_mut();
         let byte_offset =
             (addr.0 - self.phys_base / PAGE_TABLE_SIZE) * PAGE_TABLE_SIZE + addr.1 * 8;
         if let Some(slice) = b.get_mut(byte_offset..byte_offset + 8) {
-            slice.copy_from_slice(&x.to_ne_bytes());
+            slice.copy_from_slice(&entry.to_ne_bytes());
         }
+        None
     }
 
     fn to_phys(addr: (usize, usize)) -> PhysAddr {
@@ -237,28 +242,28 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
     ) {
         let (hshm, gshm) = self.shared_mem.build();
         let (hscratch, gscratch) = self.scratch_mem.build();
-        (
-            SandboxMemoryManager {
-                shared_mem: hshm,
-                scratch_mem: hscratch,
-                layout: self.layout,
-                load_addr: self.load_addr.clone(),
-                entrypoint_offset: self.entrypoint_offset,
-                mapped_rgns: self.mapped_rgns,
-                stack_cookie: self.stack_cookie,
-                abort_buffer: self.abort_buffer,
-            },
-            SandboxMemoryManager {
-                shared_mem: gshm,
-                scratch_mem: gscratch,
-                layout: self.layout,
-                load_addr: self.load_addr.clone(),
-                entrypoint_offset: self.entrypoint_offset,
-                mapped_rgns: self.mapped_rgns,
-                stack_cookie: self.stack_cookie,
-                abort_buffer: Vec::new(), // Guest doesn't need abort buffer
-            },
-        )
+        let mut host_mgr = SandboxMemoryManager {
+            shared_mem: hshm,
+            scratch_mem: hscratch,
+            layout: self.layout,
+            load_addr: self.load_addr.clone(),
+            entrypoint_offset: self.entrypoint_offset,
+            mapped_rgns: self.mapped_rgns,
+            stack_cookie: self.stack_cookie,
+            abort_buffer: self.abort_buffer,
+        };
+        let guest_mgr = SandboxMemoryManager {
+            shared_mem: gshm,
+            scratch_mem: gscratch,
+            layout: self.layout,
+            load_addr: self.load_addr.clone(),
+            entrypoint_offset: self.entrypoint_offset,
+            mapped_rgns: self.mapped_rgns,
+            stack_cookie: self.stack_cookie,
+            abort_buffer: Vec::new(), // Guest doesn't need abort buffer
+        };
+        host_mgr.update_scratch_bookkeeping();
+        (host_mgr, guest_mgr)
     }
 }
 
@@ -400,9 +405,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
         }
         self.shared_mem.restore_from_snapshot(snapshot)?;
         let new_scratch_size = snapshot.layout().get_scratch_size();
-        if new_scratch_size == self.scratch_mem.mem_size() {
+        let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
             self.scratch_mem.zero()?;
-            Ok(None)
+            None
         } else {
             let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
             let (hscratch, gscratch) = new_scratch_mem.build();
@@ -413,8 +418,34 @@ impl SandboxMemoryManager<HostSharedMemory> {
             // has been unmapped from the VM.
             self.scratch_mem = hscratch;
 
-            Ok(Some(gscratch))
-        }
+            Some(gscratch)
+        };
+        self.update_scratch_bookkeeping();
+        Ok(gscratch)
+    }
+
+    fn update_scratch_bookkeeping(&mut self) {
+        let scratch_size = self.scratch_mem.mem_size();
+        let size_offset =
+            scratch_size - hyperlight_common::layout::SCRATCH_TOP_SIZE_OFFSET as usize;
+        // The only way that write can fail is if the offset is
+        // outside of the memory, which would be sufficiently much of
+        // an invariant violation that panicking is probably
+        // sensible...
+        #[allow(clippy::unwrap_used)]
+        self.scratch_mem
+            .write::<u64>(size_offset, scratch_size as u64)
+            .unwrap();
+        let alloc_offset =
+            scratch_size - hyperlight_common::layout::SCRATCH_TOP_ALLOCATOR_OFFSET as usize;
+        // See above comment about unwrap() on write
+        #[allow(clippy::unwrap_used)]
+        self.scratch_mem
+            .write::<u64>(
+                alloc_offset,
+                hyperlight_common::layout::scratch_base_gpa(scratch_size),
+            )
+            .unwrap();
     }
 }
 

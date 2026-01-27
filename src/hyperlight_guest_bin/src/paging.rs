@@ -14,12 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use alloc::alloc::Layout;
 use core::arch::asm;
 
+use hyperlight_guest::prim_alloc::alloc_phys_pages;
 use tracing::{Span, instrument};
 
-use crate::OS_PAGE_SIZE;
 
 /// Convert a physical address in main memory to a virtual address
 /// through the pysmap
@@ -137,28 +136,6 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
     }
 }
 
-/// Allocate n contiguous physical pages and return the physical
-/// addresses of the pages in question.
-/// # Safety
-/// This function is not inherently unsafe but will likely become so in the future
-/// when a real physical page allocator is implemented.
-/// # Panics
-/// This function will panic if:
-/// - The Layout creation fails
-/// - Memory allocation fails
-pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
-    // Currently, since all of main memory is idmap'd, we can just
-    // allocate any appropriately aligned section of memory.
-    unsafe {
-        let v = alloc::alloc::alloc_zeroed(
-            Layout::from_size_align(n as usize * OS_PAGE_SIZE as usize, OS_PAGE_SIZE as usize)
-                .expect("could not create physical page allocation layout"),
-        );
-        if v.is_null() {
-            panic!("could not allocate a physical page");
-        }
-        v as u64
-    }
 }
 
 pub fn flush_tlb() {
