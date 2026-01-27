@@ -287,7 +287,7 @@ mod tests {
             layout
                 .write(shared_mem, SandboxMemoryLayout::BASE_ADDRESS, mem_size)
                 .unwrap();
-            let (hmgr, _) = mgr.build();
+            let (hmgr, _) = mgr.build().unwrap();
             hmgr
         };
         {
@@ -399,7 +399,7 @@ mod tests {
                 layout
                     .write(shared_mem, SandboxMemoryLayout::BASE_ADDRESS, mem_size)
                     .unwrap();
-                let (hmgr, _) = mgr.build();
+                let (hmgr, _) = mgr.build().unwrap();
                 hmgr
             };
 

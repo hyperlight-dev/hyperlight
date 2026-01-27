@@ -525,7 +525,7 @@ pub(crate) mod tests {
         let rt_cfg: SandboxRuntimeConfig = Default::default();
         let sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(filename.clone()), Some(config))?;
-        let (mut mem_mgr, gshm) = sandbox.mgr.build();
+        let (mut mem_mgr, gshm) = sandbox.mgr.build().unwrap();
         let mut vm = set_up_hypervisor_partition(
             gshm,
             &config,

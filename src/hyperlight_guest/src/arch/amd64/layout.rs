@@ -12,22 +12,23 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+ */
 
-#![no_std]
-#[cfg(all(feature = "trace_guest", not(target_arch = "x86_64")))]
-compile_error!("trace_guest feature is only supported on x86_64 architecture");
+pub const MAIN_STACK_TOP_GVA: usize = 0xffff_feff_ffff_f000;
 
-extern crate alloc;
+pub fn scratch_size() -> u64 {
+    let addr = crate::layout::scratch_size_gva();
+    let x: u64;
+    unsafe {
+        core::arch::asm!("mov {x}, [{addr}]", x = out(reg) x, addr = in(reg) addr);
+    }
+    x
+}
 
-// Modules
-pub mod error;
-pub mod exit;
-pub mod layout;
-pub mod prim_alloc;
+pub fn scratch_base_gpa() -> u64 {
+    hyperlight_common::layout::scratch_base_gpa(scratch_size() as usize)
+}
 
-pub mod guest_handle {
-    pub mod handle;
-    pub mod host_comm;
-    pub mod io;
+pub fn scratch_base_gva() -> u64 {
+    hyperlight_common::layout::scratch_base_gva(scratch_size() as usize)
 }

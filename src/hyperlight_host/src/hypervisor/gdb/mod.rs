@@ -497,7 +497,7 @@ mod tests {
                 .inspect_err(|_| unsafe {
                     libc::munmap(mapped_mem, size);
                 })?;
-            let (mem_mgr, _) = sandbox.mgr.build();
+            let (mem_mgr, _) = sandbox.mgr.build()?;
 
             // Create the memory access struct
             let mem_access = DebugMemoryAccess {
