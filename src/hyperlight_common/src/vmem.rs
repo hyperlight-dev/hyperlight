@@ -75,7 +75,10 @@ pub trait TableOps {
     unsafe fn read_entry(&self, addr: Self::TableAddr) -> PageTableEntry;
 
     /// Write a u64 to the given address, used to write updated page
-    /// table entries
+    /// table entries. In some cases,the page table in which the entry
+    /// is located may need to be relocated in order for this to
+    /// succeed; if this is the case, the base address of the new
+    /// table is returned.
     ///
     /// # Safety
     /// This writes to the given memory address, and so all the usual
@@ -85,7 +88,11 @@ pub trait TableOps {
     /// invariants. The implementor of the trait should ensure that
     /// nothing else will be reading/writing the address at the same
     /// time as mapping code using the trait.
-    unsafe fn write_entry(&self, addr: Self::TableAddr, entry: PageTableEntry);
+    unsafe fn write_entry(
+        &self,
+        addr: Self::TableAddr,
+        entry: PageTableEntry,
+    ) -> Option<Self::TableAddr>;
 
     /// Convert an abstract table address to a concrete physical address (u64)
     /// which can be e.g. written into a page table entry
