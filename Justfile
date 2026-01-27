@@ -99,15 +99,9 @@ test-like-ci config=default-target hypervisor="kvm":
     @# test the tracing related features
     {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
 
-like-ci config=default-target hypervisor="kvm":
+code-checks-like-ci config=default-target hypervisor="kvm":
     @# Ensure up-to-date Cargo.lock
     cargo fetch --locked
-
-    @# typos
-    typos
-
-    @# check licence headers
-    just check-license-headers
 
     @# fmt
     just fmt-check
@@ -122,6 +116,17 @@ like-ci config=default-target hypervisor="kvm":
     @# Verify MSRV
     ./dev/verify-msrv.sh hyperlight-common hyperlight-guest hyperlight-guest-bin hyperlight-host hyperlight-component-util hyperlight-component-macro hyperlight-guest-tracing
 
+    @# Check 32-bit guests
+    {{ if os() == "linux" { "just check-i686 " + config } else { "" } }}
+
+    @# Check cargo features compile
+    just check
+
+    @# Check compilation with no default features
+    just test-compilation-no-default-features debug
+    just test-compilation-no-default-features release
+
+build-guests-like-ci config=default-target hypervisor="kvm":
     @# Build and move Rust guests
     just build-rust-guests {{config}}
     just move-rust-guests {{config}}
@@ -130,29 +135,62 @@ like-ci config=default-target hypervisor="kvm":
     just build-c-guests {{config}}
     just move-c-guests {{config}}
 
+build-test-like-ci config=default-target hypervisor="kvm":
     @# Build
     just build {{config}}
 
-    @# Run Rust tests
-    just test-like-ci {{config}} {{hypervisor}}
+    @# Run Miri tests
+    {{ if os() == "linux" { "just miri-tests" } else { "" } }}
 
+    @# Run Rust tests
+    just test {{config}}
+
+    @# Run Rust tests with single driver
+    {{ if os() == "linux" { "just test " + config+ " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+
+    @# Run Rust Gdb tests
+    just test-rust-gdb-debugging {{config}}
+
+    @# Run Rust Crashdump tests
+    just test-rust-crashdump {{config}}
+
+    @# Run Rust Tracing tests
+    {{ if os() == "linux" { "just test-rust-tracing " + config } else { "" } }}
+
+run-examples-like-ci config=default-target hypervisor="kvm":
     @# Run Rust examples - Windows
     {{ if os() == "windows" { "just run-rust-examples " + config } else { "" } }}
 
     @# Run Rust examples - linux
-    {{ if os() == "linux" { "just run-rust-examples-linux " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    {{ if os() == "linux" { "just run-rust-examples-linux " + config + " " } else { "" } }}
 
-    @# Run Rust Gdb tests
-    just test-rust-gdb-debugging {{ config }} {{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} 
-
-    @# Run Rust Crashdump tests
-    just test-rust-crashdump {{config}} {{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }}
-
-    @# Run Rust Tracing tests - linux
-    {{ if os() == "linux" { "just test-rust-tracing " + config + " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
-
+benchmarks-like-ci config=default-target hypervisor="$vm":
     @# Run benchmarks
-    {{ if config == "release" { "just bench-ci main " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+    {{ if config == "release" { "just bench-ci main" } else { "" } }}
+
+like-ci config=default-target hypervisor="kvm":
+    @# .github/workflows/dep_code_checks.yml
+    just code-checks-like-ci {{config}} {{hypervisor}}
+
+    @# .github/workflows/dep_build_guests.yml
+    just build-guests-like-ci {{config}} {{hypervisor}}
+
+    @# .github/workflows/dep_build_test.yml
+    just build-test-like-ci {{config}} {{hypervisor}}
+
+    @# .github/workflows/dep_run_examples.yml
+    just run-examples-like-ci {{config}} {{hypervisor}}
+
+    @# .github/workflows/dep_benchmarks.yml
+    just benchmarks-like-ci {{config}} {{hypervisor}}
+
+    @# can't run fuzzing locally
+
+    @# spelling
+    typos
+
+    @# license-headers
+    just check-license-headers
 
 # runs all tests
 test target=default-target features="": (test-unit target features) (test-isolated target features) (test-integration "rust" target features) (test-integration "c" target features) (test-doc target features)

@@ -67,6 +67,7 @@
                 "x86_64-unknown-linux-gnu"
                 "x86_64-pc-windows-msvc" "x86_64-unknown-none"
                 "wasm32-wasip1" "wasm32-wasip2" "wasm32-unknown-unknown"
+                "i686-unknown-linux-gnu"
               ];
               extensions = [ "rust-src" ] ++ (if args.channel == "nightly" then [ "miri-preview" ] else []);
             });
