@@ -655,7 +655,9 @@ impl GuestSharedMemory {
         region_type: MemoryRegionType,
     ) -> MemoryRegion {
         let flags = match region_type {
-            MemoryRegionType::Scratch => MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+            MemoryRegionType::Scratch => {
+                MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE
+            }
             #[allow(clippy::panic)]
             // In the future, all the host side knowledge about memory
             // region types should collapse down to Snapshot vs
