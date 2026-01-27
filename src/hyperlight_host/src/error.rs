@@ -326,7 +326,11 @@ impl HyperlightError {
             | HyperlightError::StackOverflow()
             | HyperlightError::MemoryAccessViolation(_, _, _)
             | HyperlightError::SnapshotSizeMismatch(_, _)
-            | HyperlightError::MemoryRegionSizeMismatch(_, _, _) => true,
+            | HyperlightError::MemoryRegionSizeMismatch(_, _, _)
+            // HyperlightVmError::Restore doesn't technically need to poison the sandbox,
+            // because if MultiUseSandbox::restore() fails, the sandbox is still in the same
+            // poisoned state as before.
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Restore(_)) => true,
 
             // HyperlightVmError::DispatchGuestCall may poison the sandbox
             HyperlightError::HyperlightVmError(HyperlightVmError::DispatchGuestCall(e)) => {
