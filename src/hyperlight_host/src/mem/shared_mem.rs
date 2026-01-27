@@ -1333,50 +1333,61 @@ mod tests {
         assert_eq!(data, ret_vec);
     }
 
-    /// A test to ensure that, if a `SharedMem` instance is cloned
-    /// and _all_ clones are dropped, the memory region will no longer
-    /// be valid.
-    ///
-    /// This test is ignored because it is incompatible with other tests as
-    /// they may be allocating memory at the same time.
-    ///
-    /// Marking this test as ignored means that running `cargo test` will not
-    /// run it. This feature will allow a developer who runs that command
-    /// from their workstation to be successful without needing to know about
-    /// test interdependencies. This test will, however, be run explicitly as a
-    /// part of the CI pipeline.
+    /// Test that verifies memory is properly unmapped when all SharedMemory
+    /// references are dropped.
     #[test]
-    #[ignore]
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(miri)))]
     fn test_drop() {
-        use proc_maps::maps_contain_addr;
+        use proc_maps::get_process_maps;
+
+        // Use a unique size that no other test uses to avoid false positives
+        // from concurrent tests allocating at the same address.
+        // The mprotect calls split the mapping into 3 regions (guard, usable, guard),
+        // so we check for the usable region which has this exact size.
+        //
+        // NOTE: If this test fails intermittently, there may be a race condition
+        // where another test allocates memory at the same address between our
+        // drop and the mapping check. Ensure UNIQUE_SIZE is not used by any
+        // other test in the codebase to avoid this.
+        const UNIQUE_SIZE: usize = PAGE_SIZE_USIZE * 17;
 
         let pid = std::process::id();
 
-        let eshm = ExclusiveSharedMemory::new(PAGE_SIZE_USIZE).unwrap();
+        let eshm = ExclusiveSharedMemory::new(UNIQUE_SIZE).unwrap();
         let (hshm1, gshm) = eshm.build();
         let hshm2 = hshm1.clone();
-        let addr = hshm1.raw_ptr() as usize;
 
-        // ensure the address is in the process's virtual memory
-        let maps_before_drop = proc_maps::get_process_maps(pid.try_into().unwrap()).unwrap();
+        // Use the usable memory region (not raw), since mprotect splits the mapping
+        let base_ptr = hshm1.base_ptr() as usize;
+        let mem_size = hshm1.mem_size();
+
+        // Helper to check if exact mapping exists (matching both address and size)
+        let has_exact_mapping = |ptr: usize, size: usize| -> bool {
+            get_process_maps(pid.try_into().unwrap())
+                .unwrap()
+                .iter()
+                .any(|m| m.start() == ptr && m.size() == size)
+        };
+
+        // Verify mapping exists before drop
         assert!(
-            maps_contain_addr(addr, &maps_before_drop),
-            "shared memory address {:#x} was not found in process map, but should be",
-            addr,
+            has_exact_mapping(base_ptr, mem_size),
+            "shared memory mapping not found at {:#x} with size {}",
+            base_ptr,
+            mem_size
         );
-        // drop both shared memory instances, which should result
-        // in freeing the memory region
+
+        // Drop all references
         drop(hshm1);
         drop(hshm2);
         drop(gshm);
 
-        let maps_after_drop = proc_maps::get_process_maps(pid.try_into().unwrap()).unwrap();
-        // now, ensure the address is not in the process's virtual memory
+        // Verify exact mapping is gone
         assert!(
-            !maps_contain_addr(addr, &maps_after_drop),
-            "shared memory address {:#x} was found in the process map, but shouldn't be",
-            addr
+            !has_exact_mapping(base_ptr, mem_size),
+            "shared memory mapping still exists at {:#x} with size {} after drop",
+            base_ptr,
+            mem_size
         );
     }
 
