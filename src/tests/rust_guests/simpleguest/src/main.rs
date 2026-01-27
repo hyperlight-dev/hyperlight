@@ -489,7 +489,7 @@ fn execute_on_heap() -> String {
         black_box(heap_fn); // avoid optimization when running in release mode
     }
     // will only reach this point if heap is executable
-    String::from("fail")
+    String::from("Executed on heap successfully")
 }
 
 #[guest_function("TestMalloc")]
