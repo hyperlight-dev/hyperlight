@@ -758,115 +758,90 @@ mod tests {
         }
     }
 
+    /// Tests that tracing spans and events are properly emitted when a tracing subscriber is set.
+    ///
+    /// This test verifies:
+    /// 1. Spans are created with correct attributes (correlation_id)
+    /// 2. Nested spans from UninitializedSandbox::new are properly parented
+    /// 3. Error events are emitted when sandbox creation fails
     #[test]
-    // Tests that trace data are emitted when a trace subscriber is set
-    // this test is ignored because it is incompatible with other tests , specifically those which require a logger for tracing
-    // marking  this test as ignored means that running `cargo test` will not run this test but will allow a developer who runs that command
-    // from their workstation to be successful without needed to know about test interdependencies
-    // this test will be run explicitly as a part of the CI pipeline
-    #[ignore]
     #[cfg(feature = "build-metadata")]
     fn test_trace_trace() {
-        use hyperlight_testing::logger::Logger as TestLogger;
-        use hyperlight_testing::tracing_subscriber::TracingSubscriber as TestSubscriber;
-        use serde_json::{Map, Value};
-        use tracing::Level as tracing_level;
+        use hyperlight_testing::tracing_subscriber::TracingSubscriber;
+        use tracing::Level;
         use tracing_core::Subscriber;
-        use tracing_core::callsite::rebuild_interest_cache;
         use uuid::Uuid;
 
-        use crate::testing::log_values::build_metadata_testing::try_to_strings;
-        use crate::testing::log_values::test_value_as_str;
+        /// Helper to extract a string value from nested JSON: obj["span"]["attributes"][key]
+        fn get_span_attr<'a>(span: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+            span.get("span")?.get("attributes")?.get(key)?.as_str()
+        }
 
-        TestLogger::initialize_log_tracer();
-        rebuild_interest_cache();
-        let subscriber = TestSubscriber::new(tracing_level::TRACE);
+        /// Helper to extract event field: obj["event"][field]
+        fn get_event_field<'a>(event: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+            event.get("event")?.get(field)?.as_str()
+        }
+
+        /// Helper to extract event metadata field: obj["event"]["metadata"][field]
+        fn get_event_metadata<'a>(event: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+            event.get("event")?.get("metadata")?.get(field)?.as_str()
+        }
+
+        let subscriber = TracingSubscriber::new(Level::TRACE);
+
         tracing::subscriber::with_default(subscriber.clone(), || {
-            let correlation_id = Uuid::new_v4().as_hyphenated().to_string();
-            let span = tracing::error_span!("test_trace_logs", correlation_id).entered();
+            let correlation_id = Uuid::new_v4().to_string();
+            let _span = tracing::error_span!("test_trace_logs", %correlation_id).entered();
 
-            // We should be in span 1
+            // Verify we're in span 1 with correct name
+            let (span_id, span_meta) = subscriber
+                .current_span()
+                .into_inner()
+                .expect("Should be inside a span");
+            assert_eq!(span_id.into_u64(), 1, "Should be in span 1");
+            assert_eq!(span_meta.name(), "test_trace_logs");
 
-            let current_span = subscriber.current_span();
-            assert!(current_span.is_known(), "Current span is unknown");
-            let current_span_metadata = current_span.into_inner().unwrap();
-            assert_eq!(
-                current_span_metadata.0.into_u64(),
-                1,
-                "Current span is not span 1"
-            );
-            assert_eq!(current_span_metadata.1.name(), "test_trace_logs");
-
-            // Get the span data and check the correlation id
-
+            // Verify correlation_id was recorded
             let span_data = subscriber.get_span(1);
-            let span_attributes: &Map<String, Value> = span_data
-                .get("span")
-                .unwrap()
-                .get("attributes")
-                .unwrap()
-                .as_object()
-                .unwrap();
+            let recorded_id =
+                get_span_attr(&span_data, "correlation_id").expect("correlation_id not found");
+            assert_eq!(recorded_id, correlation_id);
 
-            test_value_as_str(span_attributes, "correlation_id", correlation_id.as_str());
+            // Try to create a sandbox with a non-existent binary - this should fail
+            // and emit an error event
+            let bad_path = simple_guest_as_string().unwrap() + "does_not_exist";
+            let result = UninitializedSandbox::new(GuestBinary::FilePath(bad_path), None);
+            assert!(result.is_err(), "Sandbox creation should fail");
 
-            let mut binary_path = simple_guest_as_string().unwrap();
-            binary_path.push_str("does_not_exist");
+            // Verify we're still in span 1 (our test span)
+            let (span_id, _) = subscriber
+                .current_span()
+                .into_inner()
+                .expect("Should still be inside a span");
+            assert_eq!(span_id.into_u64(), 1, "Should still be in span 1");
 
-            let sbox = UninitializedSandbox::new(GuestBinary::FilePath(binary_path), None);
-            assert!(sbox.is_err());
+            // Verify span 2 was created by UninitializedSandbox::new
+            let inner_span_meta = subscriber.get_span_metadata(2);
+            assert_eq!(inner_span_meta.name(), "new");
 
-            // Now we should still be in span 1 but span 2 should be created (we created entered and exited span 2 when we called UninitializedSandbox::new)
-
-            let current_span = subscriber.current_span();
-            assert!(current_span.is_known(), "Current span is unknown");
-            let current_span_metadata = current_span.into_inner().unwrap();
-            assert_eq!(
-                current_span_metadata.0.into_u64(),
-                1,
-                "Current span is not span 1"
-            );
-
-            let span_metadata = subscriber.get_span_metadata(2);
-            assert_eq!(span_metadata.name(), "new");
-
-            // There should be one event for the error that the binary path does not exist plus 14 info events for the logging of the crate info
-
+            // Verify the error event was emitted
             let events = subscriber.get_events();
-            assert_eq!(events.len(), 1);
+            assert_eq!(events.len(), 1, "Expected exactly one error event");
 
-            let mut count_matching_events = 0;
+            let event = &events[0];
+            let level = get_event_metadata(event, "level").expect("event should have level");
+            let error = get_event_field(event, "error").expect("event should have error field");
+            let target = get_event_metadata(event, "target").expect("event should have target");
+            let module_path =
+                get_event_metadata(event, "module_path").expect("event should have module_path");
 
-            for json_value in events {
-                let event_values = json_value.as_object().unwrap().get("event").unwrap();
-                let metadata_values_map =
-                    event_values.get("metadata").unwrap().as_object().unwrap();
-                let event_values_map = event_values.as_object().unwrap();
-
-                let expected_error_start = "Error(\"GuestBinary not found:";
-
-                let err_vals_res = try_to_strings([
-                    (metadata_values_map, "level"),
-                    (event_values_map, "error"),
-                    (metadata_values_map, "module_path"),
-                    (metadata_values_map, "target"),
-                ]);
-                if let Ok(err_vals) = err_vals_res
-                    && err_vals[0] == "ERROR"
-                    && err_vals[1].starts_with(expected_error_start)
-                    && err_vals[2] == "hyperlight_host::sandbox::uninitialized"
-                    && err_vals[3] == "hyperlight_host::sandbox::uninitialized"
-                {
-                    count_matching_events += 1;
-                }
-            }
+            assert_eq!(level, "ERROR");
             assert!(
-                count_matching_events == 1,
-                "Unexpected number of matching events {}",
-                count_matching_events
+                error.contains("GuestBinary not found"),
+                "Error should mention 'GuestBinary not found', got: {error}"
             );
-            span.exit();
-            subscriber.clear();
+            assert_eq!(target, "hyperlight_host::sandbox::uninitialized");
+            assert_eq!(module_path, "hyperlight_host::sandbox::uninitialized");
         });
     }
 
