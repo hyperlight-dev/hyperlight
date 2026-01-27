@@ -23,9 +23,9 @@ limitations under the License.
 //! - PT (Page Table) - bits 20:12 - 512 entries, each covering 4KB pages
 //!
 //! The code uses an iterator-based approach to walk the page table hierarchy,
-//! allocating intermediate tables as needed and setting appropriate flags on leaf PTEs.
+//! allocating intermediate tables as needed and setting appropriate flags on leaf PTEs
 
-use crate::vmem::{Mapping, MappingKind, TableOps};
+use crate::vmem::{BasicMapping, Mapping, MappingKind, TableOps};
 
 // Paging Flags
 //
@@ -94,20 +94,114 @@ fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
     (x & ((1 << (HIGH_BIT + 1)) - 1)) >> LOW_BIT
 }
 
+/// Helper function to generate a page table entry that points to another table
+#[allow(clippy::identity_op)]
+#[allow(clippy::precedence)]
+fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
+    Op::to_phys(table_addr) |
+        PAGE_ACCESSED_CLEAR | // accessed bit cleared (will be set by CPU when page is accessed - but we dont use the access bit for anything at present)
+        PAGE_CACHE_ENABLED | // leave caching enabled
+        PAGE_WRITE_BACK | // use write-back caching
+        PAGE_USER_ACCESS_DISABLED |// dont allow user access (no code runs in user mode for now)
+        PAGE_RW | // R/W - we don't use block-level permissions
+        PAGE_PRESENT // P   - this entry is present
+}
+
+/// Helper function to write a page table entry, updating the whole
+/// chain of tables back to the root if necessary
+unsafe fn write_entry_updating<Op: TableOps, P: UpdateParent<Op>>(
+    op: &Op,
+    parent: P,
+    addr: Op::TableAddr,
+    entry: u64,
+) {
+    if let Some(again) = unsafe { op.write_entry(addr, entry) } {
+        parent.update_parent(op, again);
+    }
+}
+
+/// A helper trait that allows us to move a page table (e.g. from the
+/// snapshot to the scratch region), keeping track of the context that
+/// needs to be updated when that is moved (and potentially
+/// recursively updating, if necessary)
+///
+/// This is done via a trait so that the selected impl knows the exact
+/// nesting depth of tables, in order to assist
+/// inlining/specialisation in generating efficient code.
+trait UpdateParent<Op: TableOps>: Copy {
+    fn update_parent(self, op: &Op, new_ptr: Op::TableAddr);
+}
+
+/// A struct implementing [`UpdateParent`] that keeps track of the
+/// fact that the parent table is itself another table, whose own
+/// ancestors may need to be recursively updated
+struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
+    parent: P,
+    entry_ptr: Op::TableAddr,
+}
+impl<Op: TableOps, P: UpdateParent<Op>> Clone for UpdateParentTable<Op, P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<Op: TableOps, P: UpdateParent<Op>> Copy for UpdateParentTable<Op, P> {}
+impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
+    fn new(parent: P, entry_ptr: Op::TableAddr) -> Self {
+        UpdateParentTable { parent, entry_ptr }
+    }
+}
+impl<Op: TableOps, P: UpdateParent<Op>> UpdateParent<Op> for UpdateParentTable<Op, P> {
+    fn update_parent(self, op: &Op, new_ptr: Op::TableAddr) {
+        let pte = pte_for_table::<Op>(new_ptr);
+        unsafe {
+            write_entry_updating(op, self.parent, self.entry_ptr, pte);
+        }
+    }
+}
+
+/// A struct implementing [`UpdateParent`] that keeps track of the
+/// fact that the parent "table" is actually the CR3 system register.
+#[derive(Copy, Clone)]
+struct UpdateParentCR3 {}
+impl<Op: TableOps> UpdateParent<Op> for UpdateParentCR3 {
+    fn update_parent(self, _op: &Op, new_ptr: Op::TableAddr) {
+        unsafe {
+            core::arch::asm!("mov cr3, {}", in(reg) Op::to_phys(new_ptr));
+        }
+    }
+}
+
+/// A struct implementing [`UpdateParent`] that panics when used, for
+/// the occasional situations in which we should never do an update
+#[derive(Copy, Clone)]
+struct UpdateParentNone {}
+impl<Op: TableOps> UpdateParent<Op> for UpdateParentNone {
+    // This is only used in contexts which should absolutely never try
+    // to update a page table, and so in no case should possibly ever
+    // call an update_parent.  Therefore, this is impossible unless an
+    // extremely significant invariant violation has occurred.
+    #[allow(clippy::panic)]
+    fn update_parent(self, _op: &Op, _new_ptr: Op::TableAddr) {
+        panic!("UpdateParentNone: tried to update parent");
+    }
+}
+
 /// A helper structure indicating a mapping operation that needs to be
 /// performed
-struct MapRequest<T> {
-    table_base: T,
+struct MapRequest<Op: TableOps, P: UpdateParent<Op>> {
+    table_base: Op::TableAddr,
     vmin: VirtAddr,
     len: u64,
+    update_parent: P,
 }
 
 /// A helper structure indicating that a particular PTE needs to be
 /// modified
-struct MapResponse<T> {
-    entry_ptr: T,
+struct MapResponse<Op: TableOps, P: UpdateParent<Op>> {
+    entry_ptr: Op::TableAddr,
     vmin: VirtAddr,
     len: u64,
+    update_parent: P,
 }
 
 /// Iterator that walks through page table entries at a specific level.
@@ -122,14 +216,14 @@ struct MapResponse<T> {
 /// - PDPT: HIGH_BIT=38, LOW_BIT=30 (9 bits = 512 entries, each covering 1GB)
 /// - PD:   HIGH_BIT=29, LOW_BIT=21 (9 bits = 512 entries, each covering 2MB)
 /// - PT:   HIGH_BIT=20, LOW_BIT=12 (9 bits = 512 entries, each covering 4KB)
-struct ModifyPteIterator<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps> {
-    request: MapRequest<Op::TableAddr>,
+struct ModifyPteIterator<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps, P: UpdateParent<Op>> {
+    request: MapRequest<Op, P>,
     n: u64,
 }
-impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps> Iterator
-    for ModifyPteIterator<HIGH_BIT, LOW_BIT, Op>
+impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps, P: UpdateParent<Op>> Iterator
+    for ModifyPteIterator<HIGH_BIT, LOW_BIT, Op, P>
 {
-    type Item = MapResponse<Op::TableAddr>;
+    type Item = MapResponse<Op, P>;
     fn next(&mut self) -> Option<Self::Item> {
         // Each page table entry at this level covers a region of size (1 << LOW_BIT) bytes.
         // For example, at the PT level (LOW_BIT=12), each entry covers 4KB (0x1000 bytes).
@@ -188,12 +282,13 @@ impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps> Iterator
             entry_ptr,
             vmin: next_vmin,
             len: next_len,
+            update_parent: self.request.update_parent,
         })
     }
 }
-fn modify_ptes<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps>(
-    r: MapRequest<Op::TableAddr>,
-) -> ModifyPteIterator<HIGH_BIT, LOW_BIT, Op> {
+fn modify_ptes<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps, P: UpdateParent<Op>>(
+    r: MapRequest<Op, P>,
+) -> ModifyPteIterator<HIGH_BIT, LOW_BIT, Op, P> {
     ModifyPteIterator { request: r, n: 0 }
 }
 
@@ -201,34 +296,31 @@ fn modify_ptes<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps>(
 /// # Safety
 /// This function modifies page table data structures, and should not be called concurrently
 /// with any other operations that modify the page tables.
-unsafe fn alloc_pte_if_needed<Op: TableOps>(
+unsafe fn alloc_pte_if_needed<Op: TableOps, P: UpdateParent<Op>>(
     op: &Op,
-    x: MapResponse<Op::TableAddr>,
-) -> MapRequest<Op::TableAddr> {
+    x: MapResponse<Op, P>,
+) -> MapRequest<Op, UpdateParentTable<Op, P>> {
+    let new_update_parent = UpdateParentTable::new(x.update_parent, x.entry_ptr);
     if let Some(pte) = unsafe { read_pte_if_present(op, x.entry_ptr) } {
         return MapRequest {
             table_base: Op::from_phys(pte & PTE_ADDR_MASK),
             vmin: x.vmin,
             len: x.len,
+            update_parent: new_update_parent,
         };
     }
 
     let page_addr = unsafe { op.alloc_table() };
 
-    #[allow(clippy::identity_op)]
-    #[allow(clippy::precedence)]
-    let pte = Op::to_phys(page_addr) |
-        PAGE_ACCESSED_CLEAR | // accessed bit cleared (will be set by CPU when page is accessed - but we dont use the access bit for anything at present)
-        PAGE_CACHE_ENABLED | // leave caching enabled
-        PAGE_WRITE_BACK | // use write-back caching
-        PAGE_USER_ACCESS_DISABLED |// dont allow user access (no code runs in user mode for now)
-        PAGE_RW | // R/W - we don't use block-level permissions
-        PAGE_PRESENT; // P   - this entry is present
-    unsafe { op.write_entry(x.entry_ptr, pte) };
+    let pte = pte_for_table::<Op>(page_addr);
+    unsafe {
+        write_entry_updating(op, x.update_parent, x.entry_ptr, pte);
+    };
     MapRequest {
         table_base: page_addr,
         vmin: x.vmin,
         len: x.len,
+        update_parent: new_update_parent,
     }
 }
 
@@ -238,7 +330,11 @@ unsafe fn alloc_pte_if_needed<Op: TableOps>(
 /// with any other operations that modify the page tables.
 #[allow(clippy::identity_op)]
 #[allow(clippy::precedence)]
-unsafe fn map_page<Op: TableOps>(op: &Op, mapping: &Mapping, r: MapResponse<Op::TableAddr>) {
+unsafe fn map_page<Op: TableOps, P: UpdateParent<Op>>(
+    op: &Op,
+    mapping: &Mapping,
+    r: MapResponse<Op, P>,
+) {
     let pte = match &mapping.kind {
         MappingKind::BasicMapping(bm) =>
         // TODO: Support not readable
@@ -262,7 +358,7 @@ unsafe fn map_page<Op: TableOps>(op: &Op, mapping: &Mapping, r: MapResponse<Op::
         }
     };
     unsafe {
-        op.write_entry(r.entry_ptr, pte);
+        write_entry_updating(op, r.update_parent, r.entry_ptr, pte);
     }
 }
 
@@ -283,17 +379,18 @@ unsafe fn map_page<Op: TableOps>(op: &Op, mapping: &Mapping, r: MapResponse<Op::
 /// 4. PT (20:12) - write final PTE with physical address and flags
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
-    modify_ptes::<47, 39, Op>(MapRequest {
+    modify_ptes::<47, 39, Op, _>(MapRequest {
         table_base: op.root_table(),
         vmin: mapping.virt_base,
         len: mapping.len,
+        update_parent: UpdateParentCR3 {},
     })
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<38, 30, Op>)
+    .flat_map(modify_ptes::<38, 30, Op, _>)
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<29, 21, Op>)
+    .flat_map(modify_ptes::<29, 21, Op, _>)
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<20, 12, Op>)
+    .flat_map(modify_ptes::<20, 12, Op, _>)
     .map(|r| unsafe { map_page(op, &mapping, r) })
     .for_each(drop);
 }
@@ -302,14 +399,15 @@ pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
 /// This function traverses page table data structures, and should not
 /// be called concurrently with any other operations that modify the
 /// page table.
-unsafe fn require_pte_exist<Op: TableOps>(
+unsafe fn require_pte_exist<Op: TableOps, P: UpdateParent<Op>>(
     op: &Op,
-    x: MapResponse<Op::TableAddr>,
-) -> Option<MapRequest<Op::TableAddr>> {
+    x: MapResponse<Op, P>,
+) -> Option<MapRequest<Op, UpdateParentTable<Op, P>>> {
     unsafe { read_pte_if_present(op, x.entry_ptr) }.map(|pte| MapRequest {
         table_base: Op::from_phys(pte & PTE_ADDR_MASK),
         vmin: x.vmin,
         len: x.len,
+        update_parent: UpdateParentTable::new(x.update_parent, x.entry_ptr),
     })
 }
 
@@ -322,20 +420,34 @@ unsafe fn require_pte_exist<Op: TableOps>(
 /// Returns `Some(pte)` containing the leaf page table entry if the address is mapped,
 /// or `None` if any level of the page table hierarchy has a non-present entry.
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn virt_to_phys<Op: TableOps>(op: &Op, address: u64) -> Option<u64> {
-    modify_ptes::<47, 39, Op>(MapRequest {
+pub unsafe fn virt_to_phys<Op: TableOps>(
+    op: &Op,
+    address: u64,
+) -> Option<(PhysAddr, BasicMapping)> {
+    modify_ptes::<47, 39, Op, _>(MapRequest {
         table_base: op.root_table(),
         vmin: address,
         len: 1,
+        update_parent: UpdateParentNone {},
     })
-    .filter_map(|r| unsafe { require_pte_exist::<Op>(op, r) })
-    .flat_map(modify_ptes::<38, 30, Op>)
-    .filter_map(|r| unsafe { require_pte_exist::<Op>(op, r) })
-    .flat_map(modify_ptes::<29, 21, Op>)
-    .filter_map(|r| unsafe { require_pte_exist::<Op>(op, r) })
-    .flat_map(modify_ptes::<20, 12, Op>)
+    .filter_map(|r| unsafe { require_pte_exist(op, r) })
+    .flat_map(modify_ptes::<38, 30, Op, _>)
+    .filter_map(|r| unsafe { require_pte_exist(op, r) })
+    .flat_map(modify_ptes::<29, 21, Op, _>)
+    .filter_map(|r| unsafe { require_pte_exist(op, r) })
+    .flat_map(modify_ptes::<20, 12, Op, _>)
     .filter_map(|r| unsafe { read_pte_if_present(op, r.entry_ptr) })
     .next()
+    .map(|r| {
+        (
+            r & PTE_ADDR_MASK,
+            BasicMapping {
+                readable: true,
+                writable: (r & PAGE_RW) != 0,
+                executable: (r & PAGE_NX) == 0,
+            },
+        )
+    })
 }
 
 pub const PAGE_SIZE: usize = 4096;
@@ -396,8 +508,9 @@ mod tests {
             self.tables.borrow()[addr.0][addr.1]
         }
 
-        unsafe fn write_entry(&self, addr: Self::TableAddr, entry: u64) {
+        unsafe fn write_entry(&self, addr: Self::TableAddr, entry: u64) -> Option<Self::TableAddr> {
             self.tables.borrow_mut()[addr.0][addr.1] = entry;
+            None
         }
 
         fn to_phys(addr: Self::TableAddr) -> PhysAddr {
@@ -629,7 +742,7 @@ mod tests {
         let result = unsafe { virt_to_phys(&ops, 0x1000) };
         assert!(result.is_some(), "Should find mapped address");
         let pte = result.unwrap();
-        assert_eq!(pte & PTE_ADDR_MASK, 0x1000);
+        assert_eq!(pte.0, 0x1000);
     }
 
     #[test]
@@ -674,9 +787,10 @@ mod tests {
             table_base: ops.root_table(),
             vmin: 0x1000,
             len: PAGE_SIZE as u64,
+            update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps>(request).collect();
+        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
         assert_eq!(responses.len(), 1, "Single page should yield one response");
         assert_eq!(responses[0].vmin, 0x1000);
         assert_eq!(responses[0].len, PAGE_SIZE as u64);
@@ -689,9 +803,10 @@ mod tests {
             table_base: ops.root_table(),
             vmin: 0x1000,
             len: 3 * PAGE_SIZE as u64,
+            update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps>(request).collect();
+        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
         assert_eq!(responses.len(), 3, "3 pages should yield 3 responses");
     }
 
@@ -702,9 +817,10 @@ mod tests {
             table_base: ops.root_table(),
             vmin: 0x1000,
             len: 0,
+            update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps>(request).collect();
+        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
         assert_eq!(responses.len(), 0, "Zero length should yield no responses");
     }
 
@@ -717,9 +833,10 @@ mod tests {
             table_base: ops.root_table(),
             vmin: 0x1800,
             len: 0x1000,
+            update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps>(request).collect();
+        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
         assert_eq!(
             responses.len(),
             2,

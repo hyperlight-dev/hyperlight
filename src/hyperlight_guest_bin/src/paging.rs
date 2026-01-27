@@ -16,18 +16,9 @@ limitations under the License.
 
 use core::arch::asm;
 
+use hyperlight_common::vmem;
 use hyperlight_guest::prim_alloc::alloc_phys_pages;
 use tracing::{Span, instrument};
-
-
-/// Convert a physical address in main memory to a virtual address
-/// through the pysmap
-///
-/// This is _not guaranteed_ to work with device memory
-pub fn ptov(x: u64) -> *mut u8 {
-    // Currently, all of main memory is identity mapped
-    x as *mut u8
-}
 
 // TODO: This is not at all thread-safe atm
 // TODO: A lot of code in this file uses inline assembly to load and
@@ -45,6 +36,8 @@ static SNAPSHOT_PT_GPA: spin::Once<u64> = spin::Once::new();
 struct GuestMappingOperations {
     snapshot_pt_base_gpa: u64,
     snapshot_pt_base_gva: u64,
+    scratch_base_gpa: u64,
+    scratch_base_gva: u64,
 }
 impl GuestMappingOperations {
     fn new() -> Self {
@@ -57,22 +50,28 @@ impl GuestMappingOperations {
                 snapshot_pt_base_gpa
             }),
             snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA as u64,
+            scratch_base_gpa: hyperlight_guest::layout::scratch_base_gpa(),
+            scratch_base_gva: hyperlight_guest::layout::scratch_base_gva(),
         }
     }
-    fn phys_to_virt(&self, addr: u64) -> u64 {
-        if addr >= self.snapshot_pt_base_gpa {
-            self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)
+    fn phys_to_virt(&self, addr: u64) -> *mut u8 {
+        if addr >= self.scratch_base_gpa {
+            (self.scratch_base_gva + (addr - self.scratch_base_gpa)) as *mut u8
+        } else if addr >= self.snapshot_pt_base_gpa {
+            (self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)) as *mut u8
         } else {
-            // Assume for now that any of our own PTs are identity mapped.
-            addr
+            panic!("phys_to_virt encountered snapshot non-PT page")
         }
     }
 }
-impl hyperlight_common::vmem::TableOps for GuestMappingOperations {
+impl vmem::TableOps for GuestMappingOperations {
     type TableAddr = u64;
     unsafe fn alloc_table(&self) -> u64 {
         let page_addr = unsafe { alloc_phys_pages(1) };
-        unsafe { ptov(page_addr).write_bytes(0u8, hyperlight_common::vmem::PAGE_TABLE_SIZE) };
+        unsafe {
+            self.phys_to_virt(page_addr)
+                .write_bytes(0u8, vmem::PAGE_TABLE_SIZE)
+        };
         page_addr
     }
     fn entry_addr(addr: u64, offset: u64) -> u64 {
@@ -86,11 +85,27 @@ impl hyperlight_common::vmem::TableOps for GuestMappingOperations {
         }
         ret
     }
-    unsafe fn write_entry(&self, addr: u64, entry: u64) {
+    unsafe fn write_entry(&self, addr: u64, entry: u64) -> Option<u64> {
+        let mut addr = addr;
+        let mut ret = None;
+        if addr >= self.snapshot_pt_base_gpa && addr < self.scratch_base_gpa {
+            // This needs to be CoW'd over to the scratch region
+            unsafe {
+                let new_table = alloc_phys_pages(1);
+                core::ptr::copy(
+                    self.phys_to_virt(addr & !0xfff),
+                    self.phys_to_virt(new_table),
+                    vmem::PAGE_TABLE_SIZE,
+                );
+                addr = new_table | (addr & 0xfff);
+                ret = Some(new_table);
+            }
+        }
         let addr = self.phys_to_virt(addr);
         unsafe {
             asm!("mov qword ptr [{}], {}", in(reg) addr, in(reg) entry);
         }
+        ret
     }
     fn to_phys(addr: u64) -> u64 {
         addr
@@ -118,7 +133,6 @@ impl hyperlight_common::vmem::TableOps for GuestMappingOperations {
 ///   if previously-unmapped ranges are not being mapped, TLB invalidation may need to be performed afterwards.
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
-    use hyperlight_common::vmem;
     unsafe {
         vmem::map(
             &GuestMappingOperations::new(),
@@ -136,6 +150,8 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
     }
 }
 
+pub fn virt_to_phys(gva: u64) -> Option<(u64, vmem::BasicMapping)> {
+    unsafe { vmem::virt_to_phys::<_>(&GuestMappingOperations::new(), gva) }
 }
 
 pub fn flush_tlb() {
