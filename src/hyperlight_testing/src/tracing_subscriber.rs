@@ -22,7 +22,7 @@ use tracing::Subscriber;
 use tracing_core::event::Event;
 use tracing_core::metadata::Metadata;
 use tracing_core::span::{Attributes, Current, Id, Record};
-use tracing_core::{Level, LevelFilter};
+use tracing_core::{Interest, Level, LevelFilter};
 use tracing_serde::AsSerde;
 
 #[derive(Debug, Clone)]
@@ -69,6 +69,11 @@ impl TracingSubscriber {
         EVENTS.with(|events| events.borrow().clone())
     }
 
+    /// Returns all recorded spans as a HashMap
+    pub fn get_all_spans(&self) -> HashMap<u64, Value> {
+        SPANS.with(|spans| spans.borrow().clone())
+    }
+
     pub fn test_trace_records<F: Fn(&HashMap<u64, Value>, &Vec<Value>)>(&self, f: F) {
         SPANS.with(|spans| {
             EVENTS.with(|events| {
@@ -88,6 +93,13 @@ impl TracingSubscriber {
 }
 
 impl Subscriber for TracingSubscriber {
+    fn register_callsite(&self, _metadata: &'static Metadata<'static>) -> Interest {
+        // Return Interest::sometimes() to prevent the global interest cache from caching
+        // our decision. This avoids race conditions when running tests in parallel,
+        // since each call to enabled() will be re-evaluated per-thread.
+        Interest::sometimes()
+    }
+
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
         LEVEL_FILTER.with(|level_filter| metadata.level() <= &*level_filter.borrow())
     }
