@@ -15,9 +15,13 @@ limitations under the License.
  */
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vmem.rs")]
+#[cfg_attr(target_arch = "x86", path = "arch/i686/vmem.rs")]
 pub mod arch;
 
-pub use arch::{PAGE_SIZE, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
+/// This is always the page size that the /guest/ is being compiled
+/// for, which may or may not be the same as the host page size.
+pub use arch::PAGE_SIZE;
+pub use arch::{PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
 pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
     PAGE_TABLE_SIZE / core::mem::size_of::<PageTableEntry>();
 
