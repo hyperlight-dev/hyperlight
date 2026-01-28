@@ -72,7 +72,6 @@ use std::fmt::Debug;
 use std::mem::{offset_of, size_of};
 
 use hyperlight_common::mem::{GuestStack, HyperlightPEB, PAGE_SIZE_USIZE};
-use rand::{RngCore, rng};
 use tracing::{Span, instrument};
 
 #[cfg(feature = "init-paging")]
@@ -101,7 +100,6 @@ pub(crate) struct SandboxMemoryLayout {
     /// The following fields are offsets to the actual PEB struct fields.
     /// They are used when writing the PEB struct itself
     peb_offset: usize,
-    peb_security_cookie_seed_offset: usize,
     peb_guest_dispatch_function_ptr_offset: usize, // set by guest in guest entrypoint
     peb_input_data_offset: usize,
     peb_output_data_offset: usize,
@@ -149,10 +147,6 @@ impl Debug for SandboxMemoryLayout {
             .field("PEB Address", &format_args!("{:#x}", self.peb_address))
             .field("PEB Offset", &format_args!("{:#x}", self.peb_offset))
             .field("Code Size", &format_args!("{:#x}", self.code_size))
-            .field(
-                "Security Cookie Seed Offset",
-                &format_args!("{:#x}", self.peb_security_cookie_seed_offset),
-            )
             .field(
                 "Guest Dispatch Function Pointer Offset",
                 &format_args!("{:#x}", self.peb_guest_dispatch_function_ptr_offset),
@@ -245,8 +239,6 @@ impl SandboxMemoryLayout {
         let guest_code_offset = 0;
         // The following offsets are to the fields of the PEB struct itself!
         let peb_offset = code_size.next_multiple_of(PAGE_SIZE_USIZE);
-        let peb_security_cookie_seed_offset =
-            peb_offset + offset_of!(HyperlightPEB, security_cookie_seed);
         let peb_guest_dispatch_function_ptr_offset =
             peb_offset + offset_of!(HyperlightPEB, guest_function_dispatch_ptr);
         let peb_input_data_offset = peb_offset + offset_of!(HyperlightPEB, input_stack);
@@ -281,7 +273,6 @@ impl SandboxMemoryLayout {
             peb_offset,
             stack_size: stack_size_rounded,
             heap_size,
-            peb_security_cookie_seed_offset,
             peb_guest_dispatch_function_ptr_offset,
             peb_input_data_offset,
             peb_output_data_offset,
@@ -691,11 +682,6 @@ impl SandboxMemoryLayout {
         }
 
         // Start of setting up the PEB. The following are in the order of the PEB fields
-
-        // Set up the security cookie seed
-        let mut security_cookie_seed = [0u8; 8];
-        rng().fill_bytes(&mut security_cookie_seed);
-        shared_mem.copy_from_slice(&security_cookie_seed, self.peb_security_cookie_seed_offset)?;
 
         // Skip guest_dispatch_function_ptr_offset because it is set by the guest
 

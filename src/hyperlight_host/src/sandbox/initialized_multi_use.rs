@@ -649,8 +649,6 @@ impl MultiUseSandbox {
                 return Err(error);
             }
 
-            self.mem_mgr.check_stack_guard()?;
-
             let guest_result = self.mem_mgr.get_guest_function_call_result()?.into_inner();
 
             match guest_result {
@@ -817,9 +815,7 @@ impl Callable for MultiUseSandbox {
 
 impl std::fmt::Debug for MultiUseSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MultiUseSandbox")
-            .field("stack_guard", &self.mem_mgr.get_stack_cookie())
-            .finish()
+        f.debug_struct("MultiUseSandbox").finish()
     }
 }
 

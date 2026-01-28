@@ -575,7 +575,6 @@ mod tests {
             scratch_mem,
             0.into(),
             None,
-            [0u8; 16],
         );
         let (mgr, _) = mgr.build().unwrap();
         (mgr, pt_base as u64)

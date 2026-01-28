@@ -771,13 +771,6 @@ impl HyperlightVm {
                             });
                         }
                         None => {
-                            if !mem_mgr
-                                .check_stack_guard()
-                                .map_err(|e| RunVmError::CheckStackGuard(Box::new(e)))?
-                            {
-                                break Err(RunVmError::StackOverflow);
-                            }
-
                             break Err(RunVmError::MmioReadUnmapped(addr));
                         }
                     }
@@ -800,13 +793,6 @@ impl HyperlightVm {
                             });
                         }
                         None => {
-                            if !mem_mgr
-                                .check_stack_guard()
-                                .map_err(|e| RunVmError::CheckStackGuard(Box::new(e)))?
-                            {
-                                break Err(RunVmError::StackOverflow);
-                            }
-
                             break Err(RunVmError::MmioWriteUnmapped(addr));
                         }
                     }

@@ -41,7 +41,6 @@ pub struct GuestStack {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct HyperlightPEB {
-    pub security_cookie_seed: u64,
     pub guest_function_dispatch_ptr: u64,
     pub input_stack: GuestMemoryRegion,
     pub output_stack: GuestMemoryRegion,

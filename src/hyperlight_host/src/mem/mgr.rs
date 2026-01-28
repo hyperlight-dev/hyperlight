@@ -13,9 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#[cfg(feature = "init-paging")]
-use std::cmp::Ordering;
-
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
@@ -33,9 +30,6 @@ use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemo
 use crate::sandbox::snapshot::Snapshot;
 use crate::{Result, new_error};
 
-/// The size of stack guard cookies
-pub(crate) const STACK_COOKIE_LEN: usize = 16;
-
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
 #[derive(Clone)]
@@ -52,8 +46,6 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) entrypoint_offset: Option<Offset>,
     /// How many memory regions were mapped after sandbox creation
     pub(crate) mapped_rgns: u64,
-    /// Stack cookie for stack guard verification
-    pub(crate) stack_cookie: [u8; STACK_COOKIE_LEN],
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
 }
@@ -160,7 +152,6 @@ where
         scratch_mem: S,
         load_addr: RawPtr,
         entrypoint_offset: Option<Offset>,
-        stack_cookie: [u8; STACK_COOKIE_LEN],
     ) -> Self {
         Self {
             layout,
@@ -169,15 +160,8 @@ where
             load_addr,
             entrypoint_offset,
             mapped_rgns: 0,
-            stack_cookie,
             abort_buffer: Vec::new(),
         }
-    }
-
-    /// Get the stack cookie
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_stack_cookie(&self) -> &[u8; STACK_COOKIE_LEN] {
-        &self.stack_cookie
     }
 
     /// Get mutable access to the abort buffer
@@ -217,7 +201,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         shared_mem.copy_from_slice(s.memory(), 0)?;
         let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
         let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
-        let stack_cookie = rand::random::<[u8; STACK_COOKIE_LEN]>();
         let entrypoint_gva = s.preinitialise();
         let entrypoint_offset = entrypoint_gva.map(|x| (x - u64::from(&load_addr)).into());
         Ok(Self::new(
@@ -226,7 +209,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             scratch_mem,
             load_addr,
             entrypoint_offset,
-            stack_cookie,
         ))
     }
 
@@ -266,7 +248,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             load_addr: self.load_addr.clone(),
             entrypoint_offset: self.entrypoint_offset,
             mapped_rgns: self.mapped_rgns,
-            stack_cookie: self.stack_cookie,
             abort_buffer: self.abort_buffer,
         };
         let guest_mgr = SandboxMemoryManager {
@@ -276,7 +257,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             load_addr: self.load_addr.clone(),
             entrypoint_offset: self.entrypoint_offset,
             mapped_rgns: self.mapped_rgns,
-            stack_cookie: self.stack_cookie,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
         };
         host_mgr.update_scratch_bookkeeping(
@@ -287,33 +267,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
-    /// Check the stack guard of the memory in `shared_mem`, using
-    /// `layout` to calculate its location.
-    ///
-    /// Return `true`
-    /// if `shared_mem` could be accessed properly and the guard
-    /// matches `cookie`. If it could be accessed properly and the
-    /// guard doesn't match `cookie`, return `false`. Otherwise, return
-    /// a descriptive error.
-    ///
-    /// This method could be an associated function instead. See
-    /// documentation at the bottom `set_stack_guard` for description
-    /// of why it isn't.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    #[cfg(feature = "init-paging")]
-    pub(crate) fn check_stack_guard(&self) -> Result<bool> {
-        let expected = self.stack_cookie;
-        let offset = self.layout.get_top_of_user_stack_offset();
-        let actual: [u8; STACK_COOKIE_LEN] = self.shared_mem.read(offset)?;
-        let cmp_res = expected.iter().cmp(actual.iter());
-        Ok(cmp_res == Ordering::Equal)
-    }
-
-    #[cfg(not(feature = "init-paging"))]
-    pub(crate) fn check_stack_guard(&self) -> Result<bool> {
-        Ok(true)
-    }
-
     /// Get the address of the dispatch function in memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_pointer_to_dispatch_function(&self) -> Result<u64> {
