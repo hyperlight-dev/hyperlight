@@ -18,5 +18,6 @@ limitations under the License.
 // allow compiling the guest for real mode boot scenarios.
 
 pub const MAX_GVA: usize = 0xffff_efff;
-pub const SNAPSHOT_PT_GVA: usize = 0xefff_efff;
+pub const SNAPSHOT_PT_GVA_MIN: usize = 0xef00_0000;
+pub const SNAPSHOT_PT_GVA_MAX: usize = 0xefff_efff;
 pub const MAX_GPA: usize = 0xffff_ffff;

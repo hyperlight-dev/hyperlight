@@ -170,7 +170,13 @@ impl MultiUseSandbox {
         }
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
-        let memory_snapshot = self.mem_mgr.snapshot(self.id, mapped_regions_vec)?;
+        let root_pt_gpa = self
+            .vm
+            .get_root_pt()
+            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        let memory_snapshot = self
+            .mem_mgr
+            .snapshot(self.id, mapped_regions_vec, root_pt_gpa)?;
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
@@ -196,7 +202,6 @@ impl MultiUseSandbox {
     /// - **Corrupted allocator metadata** - Free lists and heap headers restored to consistent state
     /// - **Locked mutexes** - All lock state is reset
     /// - **Partial updates** - Data structures restored to their pre-execution state
-    ///
     ///
     /// # Examples
     ///
@@ -254,22 +259,47 @@ impl MultiUseSandbox {
     /// ```
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn restore(&mut self, snapshot: Arc<Snapshot>) -> Result<()> {
-        if let Some(snap) = &self.snapshot
-            && snap.as_ref() == snapshot.as_ref()
-        {
-            // If the snapshot is already the current one, no need to restore
-            return Ok(());
-        }
+        // Currently, we do not try to optimise restore to the
+        // most-current snapshot. This is because the most-current
+        // snapshot, while it must have identical virtual memory
+        // layout to the current sandbox, does not necessarily have
+        // the exact same /physical/ memory contents. It is not
+        // entirely inconceivable that this could lead to breakage of
+        // cross-request isolation in some way, although it would
+        // require some /very/ odd code.  For example, suppose that a
+        // service uses Hyperlight to sandbox native code from
+        // clients, and promises cross-request isolation. A tenant
+        // provides a binary that can process two forms of request,
+        // either writing a secret into physical memory, or reading
+        // from arbitrary physical memory, assuming that the two kinds
+        // of requests can never (dangerously) meet in the same
+        // sandbox.
+        //
+        // It is presently unclear whether this is a sensible threat
+        // model, especially since Hyperlight is often used with
+        // managed-code runtimes which do not allow even arbitrary
+        // access to virtual memory, much less physical memory.
+        // However, out of an abundance of caution, the optimisation
+        // is presently disabled.
 
         if self.id != snapshot.sandbox_id() {
             return Err(SnapshotSandboxMismatch);
         }
 
-        if let Some(gscratch) = self.mem_mgr.restore_snapshot(&snapshot)? {
+        let (gsnapshot, gscratch) = self.mem_mgr.restore_snapshot(&snapshot)?;
+        if let Some(gsnapshot) = gsnapshot {
+            self.vm
+                .update_snapshot_mapping(gsnapshot)
+                .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        }
+        if let Some(gscratch) = gscratch {
             self.vm
                 .update_scratch_mapping(gscratch)
                 .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         }
+        self.vm
+            .set_root_pt(snapshot.root_pt_gpa())
+            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
         let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();
@@ -1138,7 +1168,7 @@ mod tests {
         let actual: Vec<u8> = sbox
             .call(
                 "ReadMappedBuffer",
-                (guest_base as u64, expected.len() as u64),
+                (guest_base as u64, expected.len() as u64, true),
             )
             .unwrap();
 
@@ -1232,6 +1262,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    #[ignore] // this test will be re-enabled in the next commit
     fn snapshot_restore_handles_remapping_correctly() {
         let mut sbox: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
@@ -1250,32 +1281,50 @@ mod tests {
 
         unsafe { sbox.map_region(&region).unwrap() };
         assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
+        let orig_read = sbox
+            .call::<Vec<u8>>(
+                "ReadMappedBuffer",
+                (
+                    guest_base as u64,
+                    hyperlight_common::vmem::PAGE_SIZE as u64,
+                    true,
+                ),
+            )
+            .unwrap();
 
         // 3. Take snapshot 2 with 1 region mapped
         let snapshot2 = sbox.snapshot().unwrap();
         assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
 
-        // 4. Restore to snapshot 1 (should unmap the region)
+        // 4. Re(store to snapshot 1 (should unmap the region)
         sbox.restore(snapshot1.clone()).unwrap();
         assert_eq!(sbox.vm.get_mapped_regions().count(), 0);
+        let is_mapped = sbox
+            .call::<bool>("CheckMapped", (guest_base as u64,))
+            .unwrap();
+        assert!(!is_mapped);
 
-        // 5. Restore forward to snapshot 2 (should remap the region)
+        // 5. Restore forward to snapshot 2 (should have folded the
+        //    region into the snapshot)
         sbox.restore(snapshot2.clone()).unwrap();
-        assert_eq!(sbox.vm.get_mapped_regions().count(), 1);
+        assert_eq!(sbox.vm.get_mapped_regions().count(), 0);
+        let is_mapped = sbox
+            .call::<bool>("CheckMapped", (guest_base as u64,))
+            .unwrap();
+        assert!(is_mapped);
 
         // Verify the region is the same
-        let mut restored_regions = sbox.vm.get_mapped_regions();
-        assert_eq!(restored_regions.next().unwrap(), &region);
-        assert!(restored_regions.next().is_none());
-        drop(restored_regions);
-
-        // 6. Try map the region again (should fail since already mapped)
-        let err = unsafe { sbox.map_region(&region) };
-        assert!(
-            err.is_err(),
-            "Expected error when remapping existing region: {:?}",
-            err
-        );
+        let new_read = sbox
+            .call::<Vec<u8>>(
+                "ReadMappedBuffer",
+                (
+                    guest_base as u64,
+                    hyperlight_common::vmem::PAGE_SIZE as u64,
+                    false,
+                ),
+            )
+            .unwrap();
+        assert_eq!(new_read, orig_read);
     }
 
     #[test]

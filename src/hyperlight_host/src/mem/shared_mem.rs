@@ -582,6 +582,7 @@ impl ExclusiveSharedMemory {
 
     /// Copy the entire contents of `self` into a `Vec<u8>`, then return it
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    #[cfg(test)]
     pub(crate) fn copy_all_to_vec(&self) -> Result<Vec<u8>> {
         let data = self.as_slice();
         Ok(data.to_vec())
@@ -654,7 +655,7 @@ impl GuestSharedMemory {
         region_type: MemoryRegionType,
     ) -> MemoryRegion {
         let flags = match region_type {
-            MemoryRegionType::Scratch => {
+            MemoryRegionType::Scratch | MemoryRegionType::Snapshot => {
                 MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE
             }
             #[allow(clippy::panic)]

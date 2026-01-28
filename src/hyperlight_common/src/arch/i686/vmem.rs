@@ -31,8 +31,15 @@ pub unsafe fn map<Op: TableOps>(_op: &Op, _mapping: Mapping) {
 }
 
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn virt_to_phys<Op: TableOps>(_op: &Op, _address: u64) -> Option<(u64, BasicMapping)> {
+pub unsafe fn virt_to_phys<Op: TableOps>(
+    _op: &Op,
+    _address: u64,
+) -> impl Iterator<Item = (VirtAddr, PhysAddr, BasicMapping)> {
     panic!(
         "vmem::virt_to_phys: i686 guests do not support booting the full hyperlight guest kernel"
     );
+    // necessary to provide a concrete type that impls Iterator as the
+    // return type, even though this will never be executed
+    #[allow(unreachable_code)]
+    core::iter::empty()
 }

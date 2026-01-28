@@ -33,6 +33,7 @@ use tracing::{Span, instrument};
 // change the snapshot pt base, we will need to modify this.
 static SNAPSHOT_PT_GPA: spin::Once<u64> = spin::Once::new();
 
+#[derive(Copy, Clone)]
 struct GuestMappingOperations {
     snapshot_pt_base_gpa: u64,
     snapshot_pt_base_gva: u64,
@@ -49,7 +50,7 @@ impl GuestMappingOperations {
                 };
                 snapshot_pt_base_gpa
             }),
-            snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA as u64,
+            snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64,
             scratch_base_gpa: hyperlight_guest::layout::scratch_base_gpa(),
             scratch_base_gva: hyperlight_guest::layout::scratch_base_gva(),
         }
@@ -62,6 +63,12 @@ impl GuestMappingOperations {
         } else {
             panic!("phys_to_virt encountered snapshot non-PT page")
         }
+    }
+}
+// for virt_to_phys
+impl core::convert::AsRef<GuestMappingOperations> for GuestMappingOperations {
+    fn as_ref(&self) -> &Self {
+        self
     }
 }
 impl vmem::TableOps for GuestMappingOperations {
@@ -150,8 +157,10 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
     }
 }
 
-pub fn virt_to_phys(gva: u64) -> Option<(u64, vmem::BasicMapping)> {
-    unsafe { vmem::virt_to_phys::<_>(&GuestMappingOperations::new(), gva) }
+pub fn virt_to_phys(
+    gva: u64,
+) -> impl Iterator<Item = (vmem::VirtAddr, vmem::PhysAddr, vmem::BasicMapping)> {
+    unsafe { vmem::virt_to_phys::<_>(GuestMappingOperations::new(), gva, 1) }
 }
 
 pub fn flush_tlb() {

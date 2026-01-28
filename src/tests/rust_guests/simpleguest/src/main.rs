@@ -602,15 +602,26 @@ fn read_from_user_memory(num: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
 }
 
 #[guest_function("ReadMappedBuffer")]
-fn read_mapped_buffer(base: u64, len: u64) -> Vec<u8> {
+fn read_mapped_buffer(base: u64, len: u64, do_map: bool) -> Vec<u8> {
     let base = base as usize as *const u8;
     let len = len as usize;
 
-    unsafe { hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096) };
+    if do_map {
+        unsafe {
+            hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096)
+        };
+    }
 
     let data = unsafe { core::slice::from_raw_parts(base, len) };
 
     data.to_vec()
+}
+
+#[guest_function("CheckMapped")]
+fn check_mapped_buffer(base: u64) -> bool {
+    hyperlight_guest_bin::paging::virt_to_phys(base)
+        .next()
+        .is_some()
 }
 
 #[guest_function("WriteMappedBuffer")]

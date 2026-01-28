@@ -81,10 +81,10 @@ use super::memory_region::MemoryRegionType::{
     Code, GuardPage, Heap, InitData, InputData, OutputData, Peb, Stack,
 };
 use super::memory_region::{
-    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
+    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
     MemoryRegionVecBuilder,
 };
-use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory};
+use super::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 use crate::error::HyperlightError::{GuestOffsetIsInvalid, MemoryRequestTooBig};
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, new_error};
@@ -125,6 +125,7 @@ pub(crate) struct SandboxMemoryLayout {
     code_size: usize,
     // The offset in the sandbox memory where the code starts
     guest_code_offset: usize,
+    #[cfg_attr(not(feature = "init-paging"), allow(unused))]
     pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
 
     // The size of the scratch region in physical memory; note that
@@ -330,12 +331,13 @@ impl SandboxMemoryLayout {
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    #[cfg_attr(not(feature = "init-paging"), allow(unused))]
     pub(super) fn get_guest_stack_size(&self) -> usize {
         self.stack_size
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_scratch_size(&self) -> usize {
+    pub(crate) fn get_scratch_size(&self) -> usize {
         self.scratch_size
     }
 
@@ -462,7 +464,6 @@ impl SandboxMemoryLayout {
 
     /// Sets the size of the memory region used for page tables
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[cfg(feature = "init-paging")]
     pub(crate) fn set_pt_size(&mut self, size: usize) {
         self.pt_size = Some(size);
     }
@@ -475,17 +476,9 @@ impl SandboxMemoryLayout {
         self.get_top_of_user_stack_offset() + self.stack_size - 0x28
     }
 
-    pub fn get_memory_regions(&self, shared_mem: &GuestSharedMemory) -> Result<Vec<MemoryRegion>> {
-        self.get_memory_regions_(
-            #[cfg(target_os = "windows")]
-            shared_mem.host_region_base(),
-            #[cfg(not(target_os = "windows"))]
-            shared_mem.base_addr(),
-        )
-    }
-
     /// Returns the memory regions associated with this memory layout,
     /// suitable for passing to a hypervisor for mapping into memory
+    #[cfg_attr(not(feature = "init-paging"), allow(unused))]
     pub(crate) fn get_memory_regions_<K: MemoryRegionKind>(
         &self,
         host_base: K::HostBaseType,
