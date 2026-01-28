@@ -113,8 +113,6 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(not(feature = "init-paging"))]
     let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
 
-    let regions = mgr.layout.get_memory_regions(&mgr.shared_mem)?;
-
     let pml4_ptr = {
         let pml4_offset_u64 = mgr.layout.get_pt_offset() as u64;
         base_ptr + Offset::from(pml4_offset_u64)
@@ -152,7 +150,7 @@ pub(crate) fn set_up_hypervisor_partition(
     let trace_info = MemTraceInfo::new(_load_info.info)?;
 
     Ok(HyperlightVm::new(
-        regions,
+        mgr.shared_mem,
         mgr.scratch_mem,
         pml4_ptr.absolute()?,
         entrypoint_ptr.absolute()?,

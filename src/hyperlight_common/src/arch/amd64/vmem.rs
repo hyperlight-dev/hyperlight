@@ -47,14 +47,14 @@ use crate::vmem::{BasicMapping, Mapping, MappingKind, TableOps};
 //
 
 /// Page is Present
-pub const PAGE_PRESENT: u64 = 1;
+const PAGE_PRESENT: u64 = 1;
 /// Page is Read/Write (if not set page is read only so long as the WP bit in CR0 is set to 1 - which it is in Hyperlight)
-pub const PAGE_RW: u64 = 1 << 1;
+const PAGE_RW: u64 = 1 << 1;
 /// Execute Disable (if this bit is set then data in the page cannot be executed)`
-pub const PAGE_NX: u64 = 1 << 63;
+const PAGE_NX: u64 = 1 << 63;
 /// Mask to extract the physical address from a PTE (bits 51:12)
 /// This masks out the lower 12 flag bits AND the upper bits including NX (bit 63)
-pub const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 const PAGE_USER_ACCESS_DISABLED: u64 = 0 << 2; // U/S bit not set - supervisor mode only (no code runs in user mode for now)
 const PAGE_DIRTY_CLEAR: u64 = 0 << 6; // D - dirty bit cleared (set by CPU when written)
 const PAGE_ACCESSED_CLEAR: u64 = 0 << 5; // A - accessed bit cleared (set by CPU when accessed)
@@ -415,40 +415,57 @@ unsafe fn require_pte_exist<Op: TableOps, P: UpdateParent<Op>>(
 // here, and the general conditions are documented in the
 // architecture-independent re-export in vmem.rs
 
-/// Translates a virtual address to its physical address by walking the page tables.
+/// Translates a virtual address range to the physical address pages
+/// that back it by walking the page tables.
 ///
-/// Returns `Some(pte)` containing the leaf page table entry if the address is mapped,
-/// or `None` if any level of the page table hierarchy has a non-present entry.
+/// Returns an iterator with an entry for each mapped page that
+/// intersects the given range.
+///
+/// This takes AsRef<Op> + Copy so that on targets where the
+/// operations have little state (e.g. the guest) the operations state
+/// can be copied into the closure(s) in the iterator, allowing for a
+/// nicer result lifetime.  On targets like the
+/// building-an-original-snapshot portion of the host, where the
+/// operations structure owns a large buffer, a reference can instead
+/// be passed.
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn virt_to_phys<Op: TableOps>(
-    op: &Op,
+pub unsafe fn virt_to_phys<'a, Op: TableOps + 'a>(
+    op: impl core::convert::AsRef<Op> + Copy + 'a,
     address: u64,
-) -> Option<(PhysAddr, BasicMapping)> {
+    len: u64,
+) -> impl Iterator<Item = (VirtAddr, PhysAddr, BasicMapping)> + 'a {
+    // Undo sign-extension, and mask off any sub-page bits
+    let vmin = (address & ((1u64 << VA_BITS) - 1)) & !(PAGE_SIZE as u64 - 1);
+    let vmax = core::cmp::min(vmin + len, 1u64 << VA_BITS);
     modify_ptes::<47, 39, Op, _>(MapRequest {
-        table_base: op.root_table(),
-        vmin: address,
-        len: 1,
+        table_base: op.as_ref().root_table(),
+        vmin,
+        len: vmax - vmin,
         update_parent: UpdateParentNone {},
     })
-    .filter_map(|r| unsafe { require_pte_exist(op, r) })
+    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
     .flat_map(modify_ptes::<38, 30, Op, _>)
-    .filter_map(|r| unsafe { require_pte_exist(op, r) })
+    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
     .flat_map(modify_ptes::<29, 21, Op, _>)
-    .filter_map(|r| unsafe { require_pte_exist(op, r) })
+    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
     .flat_map(modify_ptes::<20, 12, Op, _>)
-    .filter_map(|r| unsafe { read_pte_if_present(op, r.entry_ptr) })
-    .next()
-    .map(|r| {
-        (
-            r & PTE_ADDR_MASK,
-            BasicMapping {
-                readable: true,
-                writable: (r & PAGE_RW) != 0,
-                executable: (r & PAGE_NX) == 0,
-            },
-        )
+    .filter_map(move |r| {
+        let pte = unsafe { read_pte_if_present(op.as_ref(), r.entry_ptr) }?;
+        let phys_addr = pte & PTE_ADDR_MASK;
+        // Re-do the sign extension
+        let sgn_bit = r.vmin >> (VA_BITS - 1);
+        let sgn_bits = 0u64.wrapping_sub(sgn_bit) << VA_BITS;
+        let virt_addr = sgn_bits | r.vmin;
+        let perms = BasicMapping {
+            readable: true,
+            writable: (pte & PAGE_RW) != 0,
+            executable: (pte & PAGE_NX) == 0,
+        };
+        Some((virt_addr, phys_addr, perms))
     })
 }
+
+const VA_BITS: usize = 48; // We use 48-bit virtual addresses at the moment.
 
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_TABLE_SIZE: usize = 4096;
@@ -469,6 +486,13 @@ mod tests {
     /// needed because the `GuestPageTableBuffer` is in hyperlight_host which would cause a circular dependency
     struct MockTableOps {
         tables: RefCell<Vec<[u64; PAGE_TABLE_ENTRIES_PER_TABLE]>>,
+    }
+
+    // for virt_to_phys
+    impl core::convert::AsRef<MockTableOps> for MockTableOps {
+        fn as_ref(&self) -> &Self {
+            self
+        }
     }
 
     impl MockTableOps {
@@ -739,10 +763,10 @@ mod tests {
 
         unsafe { map(&ops, mapping) };
 
-        let result = unsafe { virt_to_phys(&ops, 0x1000) };
+        let result = unsafe { virt_to_phys(&ops, 0x1000, 1).next() };
         assert!(result.is_some(), "Should find mapped address");
         let pte = result.unwrap();
-        assert_eq!(pte.0, 0x1000);
+        assert_eq!(pte.1, 0x1000);
     }
 
     #[test]
@@ -750,7 +774,7 @@ mod tests {
         let ops = MockTableOps::new();
         // Don't map anything
 
-        let result = unsafe { virt_to_phys(&ops, 0x1000) };
+        let result = unsafe { virt_to_phys(&ops, 0x1000, 1).next() };
         assert!(result.is_none(), "Should return None for unmapped address");
     }
 
@@ -771,7 +795,7 @@ mod tests {
         unsafe { map(&ops, mapping) };
 
         // Query an address in a different PT entry (unmapped)
-        let result = unsafe { virt_to_phys(&ops, 0x5000) };
+        let result = unsafe { virt_to_phys(&ops, 0x5000, 1).next() };
         assert!(
             result.is_none(),
             "Should return None for unmapped address in same PT"

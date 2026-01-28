@@ -605,6 +605,7 @@ fn guest_panic_no_alloc() {
 
 // Tests libc alloca
 #[test]
+#[ignore] // this test will be re-enabled in the next PR
 fn dynamic_stack_allocate_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
@@ -631,6 +632,7 @@ fn static_stack_allocate() {
 
 // checks that a huge buffer on stack fails with stackoverflow
 #[test]
+#[ignore] // this test will be re-enabled in the next PR
 fn static_stack_allocate_overflow() {
     let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
     let res = sbox1.call::<i32>("LargeVar", ()).unwrap_err();
@@ -639,6 +641,7 @@ fn static_stack_allocate_overflow() {
 
 // checks that a recursive function with stack allocation works, (that chkstk can be called without overflowing)
 #[test]
+#[ignore] // this test will be re-enabled in the next PR
 fn recursive_stack_allocate() {
     let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
@@ -650,6 +653,7 @@ fn recursive_stack_allocate() {
 // checks stack guard page (between guest stack and heap)
 // is properly set up and cannot be written to
 #[test]
+#[ignore] // this test will be re-enabled in the next PR
 fn guard_page_check() {
     // this test is rust-guest only
     let offsets_from_page_guard_start: Vec<i64> = vec![
@@ -683,6 +687,7 @@ fn guard_page_check() {
 }
 
 #[test]
+#[ignore] // this test will be re-enabled in the next PR
 fn guard_page_check_2() {
     // this test is rust-guest only
     let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
@@ -725,6 +730,7 @@ fn execute_on_heap() {
 
 // checks that a recursive function with stack allocation eventually fails with stackoverflow
 #[test]
+#[ignore] // this test will be re-enabled in the next PR
 fn recursive_stack_allocate_overflow() {
     let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 

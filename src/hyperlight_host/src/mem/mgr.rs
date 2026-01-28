@@ -22,10 +22,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 };
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
-#[cfg(feature = "init-paging")]
-use hyperlight_common::vmem;
-#[cfg(feature = "init-paging")]
-use hyperlight_common::vmem::{PAGE_TABLE_SIZE, PageTableEntry, PhysAddr};
+use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr};
 use tracing::{Span, instrument};
 
 use super::layout::SandboxMemoryLayout;
@@ -61,13 +58,11 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) abort_buffer: Vec<u8>,
 }
 
-#[cfg(feature = "init-paging")]
 pub(crate) struct GuestPageTableBuffer {
     buffer: std::cell::RefCell<Vec<u8>>,
     phys_base: usize,
 }
 
-#[cfg(feature = "init-paging")]
 impl vmem::TableOps for GuestPageTableBuffer {
     type TableAddr = (usize, usize); // (table_index, entry_index)
 
@@ -125,13 +120,16 @@ impl vmem::TableOps for GuestPageTableBuffer {
     }
 }
 
-#[cfg(feature = "init-paging")]
 impl GuestPageTableBuffer {
     pub(crate) fn new(phys_base: usize) -> Self {
         GuestPageTableBuffer {
             buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
             phys_base,
         }
+    }
+
+    pub(crate) fn phys_base(&self) -> usize {
+        self.phys_base
     }
 
     pub(crate) fn size(&self) -> usize {
@@ -191,13 +189,16 @@ where
         &mut self,
         sandbox_id: u64,
         mapped_regions: Vec<MemoryRegion>,
+        root_pt_gpa: u64,
     ) -> Result<Snapshot> {
         Snapshot::new(
             &mut self.shared_mem,
+            &mut self.scratch_mem,
             sandbox_id,
             self.layout,
             crate::mem::exe::LoadInfo::dummy(),
             mapped_regions,
+            root_pt_gpa,
         )
     }
 }
@@ -404,14 +405,15 @@ impl SandboxMemoryManager<HostSharedMemory> {
     pub(crate) fn restore_snapshot(
         &mut self,
         snapshot: &Snapshot,
-    ) -> Result<Option<GuestSharedMemory>> {
-        if self.shared_mem.mem_size() != snapshot.mem_size() {
-            return Err(new_error!(
-                "Snapshot size does not match current memory size: {} != {}",
-                self.shared_mem.raw_mem_size(),
-                snapshot.mem_size()
-            ));
-        }
+    ) -> Result<(Option<GuestSharedMemory>, Option<GuestSharedMemory>)> {
+        let gsnapshot = if self.shared_mem.mem_size() == snapshot.mem_size() {
+            None
+        } else {
+            let new_snapshot_mem = ExclusiveSharedMemory::new(snapshot.mem_size())?;
+            let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
+            self.shared_mem = hsnapshot;
+            Some(gsnapshot)
+        };
         self.shared_mem.restore_from_snapshot(snapshot)?;
         let new_scratch_size = snapshot.layout().get_scratch_size();
         let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
@@ -430,7 +432,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             Some(gscratch)
         };
         self.update_scratch_bookkeeping()?;
-        Ok(gscratch)
+        Ok((gsnapshot, gscratch))
     }
 
     fn update_scratch_bookkeeping(&mut self) -> Result<()> {
@@ -456,7 +458,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
 #[cfg(all(feature = "init-paging", target_arch = "x86_64"))]
 mod tests {
     use hyperlight_common::vmem::PAGE_TABLE_SIZE;
-    use hyperlight_common::vmem::arch::{PAGE_NX, PAGE_PRESENT, PAGE_RW, PTE_ADDR_MASK};
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_string;
 
@@ -465,60 +466,6 @@ mod tests {
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::snapshot::Snapshot;
 
-    /// Convert MemoryRegionFlags to expected PTE flags.
-    fn expected_pte_flags(flags: MemoryRegionFlags) -> u64 {
-        let mut pte = PAGE_PRESENT;
-
-        // Writable if WRITE or STACK_GUARD (stack guard needs to be writable
-        // so faults go to hypervisor, not guest kernel)
-        if flags.contains(MemoryRegionFlags::WRITE)
-            || flags.contains(MemoryRegionFlags::STACK_GUARD)
-        {
-            pte |= PAGE_RW;
-        }
-
-        // NX unless EXECUTE is set
-        if !flags.contains(MemoryRegionFlags::EXECUTE) {
-            pte |= PAGE_NX;
-        }
-
-        pte
-    }
-
-    /// Walk page tables to get PTE for a virtual address.
-    /// Returns None if address is not mapped.
-    fn get_pte(memory: &[u8], pt_offset: usize, pt_base_gpa: usize, vaddr: u64) -> Option<u64> {
-        let pml4_idx = ((vaddr >> 39) & 0x1ff) as usize;
-        let pdpt_idx = ((vaddr >> 30) & 0x1ff) as usize;
-        let pd_idx = ((vaddr >> 21) & 0x1ff) as usize;
-        let pt_idx = ((vaddr >> 12) & 0x1ff) as usize;
-
-        let read_entry = |table_gpa: usize, index: usize| -> Option<u64> {
-            let entry_gpa = table_gpa + index * 8;
-            let offset = entry_gpa - pt_base_gpa + pt_offset;
-            if offset + 8 > memory.len() {
-                return None;
-            }
-            let entry = u64::from_ne_bytes(memory[offset..offset + 8].try_into().ok()?);
-            if entry & PAGE_PRESENT != 0 {
-                Some(entry)
-            } else {
-                None
-            }
-        };
-
-        let pml4e = read_entry(pt_base_gpa, pml4_idx)?;
-        let pdpt_gpa = (pml4e & PTE_ADDR_MASK) as usize;
-
-        let pdpte = read_entry(pdpt_gpa, pdpt_idx)?;
-        let pd_gpa = (pdpte & PTE_ADDR_MASK) as usize;
-
-        let pde = read_entry(pd_gpa, pd_idx)?;
-        let pt_gpa = (pde & PTE_ADDR_MASK) as usize;
-
-        read_entry(pt_gpa, pt_idx)
-    }
-
     /// Verify page tables for a given configuration.
     /// Creates a Snapshot and verifies every page in every region has correct PTEs.
     fn verify_page_tables(name: &str, config: SandboxConfiguration) {
@@ -526,48 +473,54 @@ mod tests {
         let snapshot = Snapshot::from_env(GuestBinary::FilePath(path), config)
             .unwrap_or_else(|e| panic!("{}: failed to create snapshot: {}", name, e));
 
-        let memory = snapshot.memory();
-        let layout = snapshot.layout();
-        let pt_offset = layout.get_pt_offset();
-        let pt_base_gpa = super::super::layout::SandboxMemoryLayout::BASE_ADDRESS + pt_offset;
         let regions = snapshot.regions();
-
-        // Mask for the flags we care about (PRESENT, RW, NX)
-        const FLAG_MASK: u64 = PAGE_PRESENT | PAGE_RW | PAGE_NX;
 
         // Verify NULL page (0x0) is NOT mapped
         assert!(
-            get_pte(memory, pt_offset, pt_base_gpa, 0).is_none(),
+            unsafe { hyperlight_common::vmem::virt_to_phys(&snapshot, 0, 1) }
+                .next()
+                .is_none(),
             "{}: NULL page (0x0) should NOT be mapped",
             name
         );
 
         // Verify every page in every region
         for region in regions {
-            let expected = expected_pte_flags(region.flags);
             let mut addr = region.guest_region.start as u64;
 
             while addr < region.guest_region.end as u64 {
-                let pte = get_pte(memory, pt_offset, pt_base_gpa, addr).unwrap_or_else(|| {
-                    panic!(
-                        "{}: {:?} region: address 0x{:x} is not mapped",
-                        name, region.region_type, addr
-                    )
-                });
+                let mapping = unsafe { hyperlight_common::vmem::virt_to_phys(&snapshot, addr, 1) }
+                    .next()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{}: {:?} region: address 0x{:x} is not mapped",
+                            name, region.region_type, addr
+                        )
+                    });
 
                 // Verify identity mapping (phys == virt for low memory)
-                let phys = pte & PTE_ADDR_MASK;
                 assert_eq!(
-                    phys, addr,
+                    mapping.1, addr,
                     "{}: {:?} region: address 0x{:x} should identity map, got phys 0x{:x}",
-                    name, region.region_type, addr, phys
+                    name, region.region_type, addr, mapping.1
                 );
 
-                // Verify flags
-                let actual = pte & FLAG_MASK;
+                // Verify writable
+                let actual = mapping.2.writable;
+                let expected = region.flags.contains(MemoryRegionFlags::WRITE)
+                    || region.flags.contains(MemoryRegionFlags::STACK_GUARD);
                 assert_eq!(
                     actual, expected,
-                    "{}: {:?} region: address 0x{:x} has flags 0x{:x}, expected 0x{:x} (region flags: {:?})",
+                    "{}: {:?} region: address 0x{:x} has writable {}, expected {} (region flags: {:?})",
+                    name, region.region_type, addr, actual, expected, region.flags
+                );
+
+                // Verify executable
+                let actual = mapping.2.executable;
+                let expected = region.flags.contains(MemoryRegionFlags::EXECUTE);
+                assert_eq!(
+                    actual, expected,
+                    "{}: {:?} region: address 0x{:x} has executable {}, expected {} (region flags: {:?})",
                     name, region.region_type, addr, actual, expected, region.flags
                 );
 

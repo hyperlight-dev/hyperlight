@@ -18,7 +18,8 @@ limitations under the License.
 /// to make working with start/end ptrs in a few places more
 /// convenient (not needing to worry about overflow)
 pub const MAX_GVA: usize = 0xffff_ffff_ffff_efff;
-pub const SNAPSHOT_PT_GVA: usize = 0xffff_8000_0000_0000;
+pub const SNAPSHOT_PT_GVA_MIN: usize = 0xffff_8000_0000_0000;
+pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
 
 /// We assume 36-bit IPAs for now, since every amd64 processor
 /// supports at least 36 bits.  Almost all of them support at least 40

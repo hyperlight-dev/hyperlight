@@ -89,14 +89,19 @@ pub(crate) struct HyperlightVm {
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
-    sandbox_regions: Vec<MemoryRegion>, // Initially mapped regions when sandbox is created
-    mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
-    next_slot: u32,                     // Monotonically increasing slot number
-    freed_slots: Vec<u32>,              // Reusable slots from unmapped regions
-    scratch_slot: u32,                  // The slot number used for the scratch region
+    next_slot: u32,        // Monotonically increasing slot number
+    freed_slots: Vec<u32>, // Reusable slots from unmapped regions
+
+    snapshot_slot: u32,
+    // The current snapshot region, used to keep it alive as long as
+    // it is used & when unmapping
+    snapshot_memory: Option<GuestSharedMemory>,
+    scratch_slot: u32, // The slot number used for the scratch region
     // The current scratch region, used to keep it alive as long as it
     // is used & when unmapping
     scratch_memory: Option<GuestSharedMemory>,
+
+    mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
 
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -251,11 +256,18 @@ pub enum UnmapRegionError {
 
 /// Errors that can occur when updating the scratch mapping
 #[derive(Debug, thiserror::Error)]
-pub enum UpdateScratchError {
+pub enum UpdateRegionError {
     #[error("VM map memory error: {0}")]
     MapMemory(#[from] MapMemoryError),
     #[error("VM unmap memory error: {0}")]
     UnmapMemory(#[from] UnmapMemoryError),
+}
+
+/// Errors that can occur when accessing the root page table state
+#[derive(Debug, thiserror::Error)]
+pub enum AccessPageTableError {
+    #[error("Failed to get/set registers: {0}")]
+    AccessRegs(#[from] RegisterError),
 }
 
 /// Errors that can occur during HyperlightVm creation
@@ -274,7 +286,7 @@ pub enum CreateHyperlightVmError {
     #[error("VM operation error: {0}")]
     Vm(#[from] VmError),
     #[error("Set scratch error: {0}")]
-    UpdateScratch(#[from] UpdateScratchError),
+    UpdateRegion(#[from] UpdateRegionError),
 }
 
 /// Errors that can occur during debug exit handling
@@ -324,8 +336,10 @@ pub enum HyperlightVmError {
     MapRegion(#[from] MapRegionError),
     #[error("Unmap region error: {0}")]
     UnmapRegion(#[from] UnmapRegionError),
-    #[error("Update scratch error: {0}")]
-    UpdateScratch(#[from] UpdateScratchError),
+    #[error("Update region error: {0}")]
+    UpdateRegion(#[from] UpdateRegionError),
+    #[error("Access page table error: {0}")]
+    AccessPageTable(#[from] AccessPageTableError),
 }
 
 impl HyperlightVm {
@@ -333,7 +347,7 @@ impl HyperlightVm {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        mem_regions: Vec<MemoryRegion>,
+        snapshot_mem: GuestSharedMemory,
         scratch_mem: GuestSharedMemory,
         _pml4_addr: u64,
         entrypoint: u64,
@@ -348,8 +362,7 @@ impl HyperlightVm {
         #[cfg(not(gdb))]
         type VmType = Box<dyn VirtualMachine>;
 
-        #[cfg_attr(not(gdb), allow(unused_mut))]
-        let mut vm: VmType = match get_available_hypervisor() {
+        let vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
             #[cfg(mshv3)]
@@ -358,14 +371,6 @@ impl HyperlightVm {
             Some(HypervisorType::Whp) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
-
-        for (i, region) in mem_regions.iter().enumerate() {
-            // Safety: slots are unique and region points to valid memory since we created the regions
-            unsafe {
-                vm.map_memory((i as u32, region))
-                    .map_err(VmError::MapMemory)?
-            };
-        }
 
         #[cfg(feature = "init-paging")]
         vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(_pml4_addr))
@@ -407,7 +412,8 @@ impl HyperlightVm {
             }),
         });
 
-        let scratch_slot = mem_regions.len() as u32;
+        let snapshot_slot = 0u32;
+        let scratch_slot = 1u32;
         #[cfg_attr(not(gdb), allow(unused_mut))]
         let mut ret = Self {
             vm,
@@ -417,11 +423,14 @@ impl HyperlightVm {
             page_size: 0, // Will be set in `initialise`
 
             next_slot: scratch_slot + 1,
-            sandbox_regions: mem_regions,
-            mmap_regions: Vec::new(),
             freed_slots: Vec::new(),
+
+            snapshot_slot,
+            snapshot_memory: None,
             scratch_slot,
             scratch_memory: None,
+
+            mmap_regions: Vec::new(),
 
             #[cfg(gdb)]
             gdb_conn,
@@ -433,6 +442,7 @@ impl HyperlightVm {
             rt_cfg,
         };
 
+        ret.update_snapshot_mapping(snapshot_mem)?;
         ret.update_scratch_mapping(scratch_mem)?;
 
         // Send the interrupt handle to the GDB thread if debugging is enabled
@@ -559,11 +569,28 @@ impl HyperlightVm {
         self.mmap_regions.iter().map(|(_, region)| region)
     }
 
+    /// Update the snapshot mapping to point to a new GuestSharedMemory
+    pub(crate) fn update_snapshot_mapping(
+        &mut self,
+        snapshot: GuestSharedMemory,
+    ) -> Result<(), UpdateRegionError> {
+        let guest_base = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
+        let rgn = snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
+
+        if let Some(old_snapshot) = self.snapshot_memory.replace(snapshot) {
+            let old_rgn = old_snapshot.mapping_at(guest_base, MemoryRegionType::Snapshot);
+            self.vm.unmap_memory((self.snapshot_slot, &old_rgn))?;
+        }
+        unsafe { self.vm.map_memory((self.snapshot_slot, &rgn))? };
+
+        Ok(())
+    }
+
     /// Update the scratch mapping to point to a new GuestSharedMemory
     pub(crate) fn update_scratch_mapping(
         &mut self,
         scratch: GuestSharedMemory,
-    ) -> Result<(), UpdateScratchError> {
+    ) -> Result<(), UpdateRegionError> {
         let guest_base = hyperlight_common::layout::scratch_base_gpa(scratch.mem_size());
         let rgn = scratch.mapping_at(guest_base, MemoryRegionType::Scratch);
 
@@ -574,6 +601,20 @@ impl HyperlightVm {
         }
         unsafe { self.vm.map_memory((self.scratch_slot, &rgn))? };
 
+        Ok(())
+    }
+
+    /// Get the current base page table physical address
+    pub(crate) fn get_root_pt(&mut self) -> Result<u64, AccessPageTableError> {
+        let sregs = self.vm.sregs()?;
+        Ok(sregs.cr3)
+    }
+
+    /// Set the current base page table physical address
+    pub(crate) fn set_root_pt(&mut self, addr: u64) -> Result<(), AccessPageTableError> {
+        let mut sregs = self.vm.sregs()?;
+        sregs.cr3 = addr;
+        self.vm.set_sregs(&sregs)?;
         Ok(())
     }
 
@@ -713,7 +754,7 @@ impl HyperlightVm {
                     self.handle_io(mem_mgr, host_funcs, port, data)?;
                 }
                 Ok(VmExit::MmioRead(addr)) => {
-                    let all_regions = self.sandbox_regions.iter().chain(self.get_mapped_regions());
+                    let all_regions = self.get_mapped_regions();
                     match get_memory_access_violation(
                         addr as usize,
                         MemoryRegionFlags::WRITE,
@@ -742,7 +783,7 @@ impl HyperlightVm {
                     }
                 }
                 Ok(VmExit::MmioWrite(addr)) => {
-                    let all_regions = self.sandbox_regions.iter().chain(self.get_mapped_regions());
+                    let all_regions = self.get_mapped_regions();
                     match get_memory_access_violation(
                         addr as usize,
                         MemoryRegionFlags::WRITE,
@@ -1051,9 +1092,9 @@ impl HyperlightVm {
                     .and_then(|name| name.to_os_string().into_string().ok())
             });
 
-            // Include both initial sandbox regions and dynamically mapped regions
-            let mut regions: Vec<MemoryRegion> = self.sandbox_regions.clone();
-            regions.extend(self.get_mapped_regions().cloned());
+            // Include dynamically mapped regions
+            // TODO: include the snapshot and scratch regions
+            let regions: Vec<MemoryRegion> = self.get_mapped_regions().cloned().collect();
             Ok(Some(crashdump::CrashDumpContext::new(
                 regions,
                 regs,

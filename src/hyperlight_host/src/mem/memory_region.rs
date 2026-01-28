@@ -140,6 +140,8 @@ pub enum MemoryRegionType {
     Stack,
     /// The scratch region
     Scratch,
+    /// The snapshot region
+    Snapshot,
 }
 
 /// A trait that distinguishes between different kinds of memory region representations.
@@ -260,6 +262,7 @@ pub(crate) struct MemoryRegion_<K: MemoryRegionKind> {
 
 pub(crate) type MemoryRegion = MemoryRegion_<HostGuestMemoryRegion>;
 
+#[cfg_attr(not(feature = "init-paging"), allow(unused))]
 pub(crate) struct MemoryRegionVecBuilder<K: MemoryRegionKind> {
     guest_base_phys_addr: usize,
     host_base_virt_addr: K::HostBaseType,
