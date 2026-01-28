@@ -1071,41 +1071,38 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // this test runs by itself because it uses a lot of system resources
-    fn create_1000_sandboxes() {
-        let barrier = Arc::new(Barrier::new(21));
+    fn create_200_sandboxes() {
+        const NUM_THREADS: usize = 10;
+        const SANDBOXES_PER_THREAD: usize = 20;
 
-        let mut handles = vec![];
+        // barrier to make sure all threads start their work simultaneously
+        let start_barrier = Arc::new(Barrier::new(NUM_THREADS + 1));
+        let mut thread_handles = vec![];
 
-        for _ in 0..20 {
-            let c = barrier.clone();
+        for _ in 0..NUM_THREADS {
+            let barrier = start_barrier.clone();
 
             let handle = thread::spawn(move || {
-                c.wait();
+                barrier.wait();
 
-                for _ in 0..50 {
-                    let usbox = UninitializedSandbox::new(
-                        GuestBinary::FilePath(
-                            simple_guest_as_string().expect("Guest Binary Missing"),
-                        ),
-                        None,
-                    )
-                    .unwrap();
+                for _ in 0..SANDBOXES_PER_THREAD {
+                    let guest_path = simple_guest_as_string().expect("Guest Binary Missing");
+                    let uninit =
+                        UninitializedSandbox::new(GuestBinary::FilePath(guest_path), None).unwrap();
 
-                    let mut multi_use_sandbox: MultiUseSandbox = usbox.evolve().unwrap();
+                    let mut sandbox: MultiUseSandbox = uninit.evolve().unwrap();
 
-                    let res: i32 = multi_use_sandbox.call("GetStatic", ()).unwrap();
-
-                    assert_eq!(res, 0);
+                    let result: i32 = sandbox.call("GetStatic", ()).unwrap();
+                    assert_eq!(result, 0);
                 }
             });
 
-            handles.push(handle);
+            thread_handles.push(handle);
         }
 
-        barrier.wait();
+        start_barrier.wait();
 
-        for handle in handles {
+        for handle in thread_handles {
             handle.join().unwrap();
         }
     }
