@@ -1262,7 +1262,6 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    #[ignore] // this test will be re-enabled in the next commit
     fn snapshot_restore_handles_remapping_correctly() {
         let mut sbox: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();

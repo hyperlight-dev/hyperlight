@@ -263,7 +263,9 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             stack_cookie: self.stack_cookie,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
         };
-        host_mgr.update_scratch_bookkeeping();
+        host_mgr.update_scratch_bookkeeping(
+            (SandboxMemoryLayout::BASE_ADDRESS + self.layout.get_pt_offset()) as u64,
+        );
         (host_mgr, guest_mgr)
     }
 }
@@ -422,11 +424,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
             Some(gscratch)
         };
-        self.update_scratch_bookkeeping();
+        self.update_scratch_bookkeeping(snapshot.root_pt_gpa());
         Ok((gsnapshot, gscratch))
     }
 
-    fn update_scratch_bookkeeping(&mut self) {
+    fn update_scratch_bookkeeping(&mut self, snapshot_pt_base_gpa: u64) {
         let scratch_size = self.scratch_mem.mem_size();
         let size_offset =
             scratch_size - hyperlight_common::layout::SCRATCH_TOP_SIZE_OFFSET as usize;
@@ -447,6 +449,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 alloc_offset,
                 hyperlight_common::layout::scratch_base_gpa(scratch_size),
             )
+            .unwrap();
+        let snapshot_pt_base_gpa_offset = scratch_size
+            - hyperlight_common::layout::SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET as usize;
+        // See above comment about unwrap() on write
+        #[allow(clippy::unwrap_used)]
+        self.scratch_mem
+            .write::<u64>(snapshot_pt_base_gpa_offset, snapshot_pt_base_gpa)
             .unwrap();
     }
 }
