@@ -314,12 +314,11 @@ impl ExclusiveSharedMemory {
     #[cfg(target_os = "linux")]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
-        use libc::{
-            MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, c_int, mmap, off_t,
-            size_t,
-        };
+        #[cfg(miri)]
+        use libc::MAP_PRIVATE;
+        use libc::{MAP_ANONYMOUS, MAP_FAILED, PROT_READ, PROT_WRITE, c_int, mmap, off_t, size_t};
         #[cfg(not(miri))]
-        use libc::{MAP_NORESERVE, PROT_NONE, mprotect};
+        use libc::{MAP_NORESERVE, MAP_SHARED, PROT_NONE, mprotect};
 
         if min_size_bytes == 0 {
             return Err(new_error!("Cannot create shared memory with size 0"));
@@ -347,7 +346,7 @@ impl ExclusiveSharedMemory {
 
         // allocate the memory
         #[cfg(not(miri))]
-        let flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE;
+        let flags = MAP_ANONYMOUS | MAP_SHARED | MAP_NORESERVE;
         #[cfg(miri)]
         let flags = MAP_ANONYMOUS | MAP_PRIVATE;
 
