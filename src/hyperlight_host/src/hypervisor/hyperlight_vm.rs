@@ -367,10 +367,6 @@ impl HyperlightVm {
             };
         }
 
-        // Mark initial setup as complete for Windows - subsequent map_memory calls will fail
-        #[cfg(target_os = "windows")]
-        vm.complete_initial_memory_setup();
-
         #[cfg(feature = "init-paging")]
         vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(_pml4_addr))
             .map_err(VmError::Register)?;

@@ -324,11 +324,6 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;
-
-    /// Mark that initial memory setup is complete. After this, map_memory will fail.
-    /// This is only needed on Windows where dynamic memory mapping is not yet supported.
-    #[cfg(target_os = "windows")]
-    fn complete_initial_memory_setup(&mut self);
 }
 
 #[cfg(test)]
