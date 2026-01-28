@@ -920,6 +920,9 @@ impl HyperlightVm {
         }
 
         let mem_access = DebugMemoryAccess {
+            // TODO: dbg_mem_access_fn could be out of sync with the
+            // actual snapshot/scratch regions, if a snapshot restore
+            // has caused either of those to change.
             dbg_mem_access_fn,
             guest_mmap_regions: self.get_mapped_regions().cloned().collect(),
         };

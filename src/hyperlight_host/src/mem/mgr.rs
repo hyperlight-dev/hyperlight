@@ -186,7 +186,7 @@ where
     }
 
     /// Get `SharedMemory` in `self` as a mutable reference
-    #[cfg(any(gdb, test))]
+    #[cfg(test)]
     pub(crate) fn get_shared_mem_mut(&mut self) -> &mut S {
         &mut self.shared_mem
     }

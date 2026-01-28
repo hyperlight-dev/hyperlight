@@ -244,7 +244,7 @@ impl SandboxMemoryLayout {
     ) -> Result<Self> {
         let guest_code_offset = 0;
         // The following offsets are to the fields of the PEB struct itself!
-        let peb_offset = round_up_to(code_size, PAGE_SIZE_USIZE);
+        let peb_offset = code_size.next_multiple_of(PAGE_SIZE_USIZE);
         let peb_security_cookie_seed_offset =
             peb_offset + offset_of!(HyperlightPEB, security_cookie_seed);
         let peb_guest_dispatch_function_ptr_offset =
@@ -259,26 +259,23 @@ impl SandboxMemoryLayout {
         // which are written to PEB struct
         let peb_address = Self::BASE_ADDRESS + peb_offset;
         // make sure input data buffer starts at 4K boundary
-        let input_data_buffer_offset = round_up_to(
-            peb_guest_stack_data_offset + size_of::<GuestStack>(),
-            PAGE_SIZE_USIZE,
-        );
-        let output_data_buffer_offset = round_up_to(
-            input_data_buffer_offset + cfg.get_input_data_size(),
-            PAGE_SIZE_USIZE,
-        );
+        let input_data_buffer_offset = (peb_guest_stack_data_offset + size_of::<GuestStack>())
+            .next_multiple_of(PAGE_SIZE_USIZE);
+        let output_data_buffer_offset = (input_data_buffer_offset + cfg.get_input_data_size())
+            .next_multiple_of(PAGE_SIZE_USIZE);
         // make sure heap buffer starts at 4K boundary
-        let guest_heap_buffer_offset = round_up_to(
-            output_data_buffer_offset + cfg.get_output_data_size(),
-            PAGE_SIZE_USIZE,
-        );
+        let guest_heap_buffer_offset = (output_data_buffer_offset + cfg.get_output_data_size())
+            .next_multiple_of(PAGE_SIZE_USIZE);
         // make sure guard page starts at 4K boundary
-        let guard_page_offset = round_up_to(guest_heap_buffer_offset + heap_size, PAGE_SIZE_USIZE);
+        let guard_page_offset = (guest_heap_buffer_offset + heap_size, PAGE_SIZE_USIZE)
+            .next_multiple_of(PAGE_SIZE_USIZE);
         let guest_user_stack_buffer_offset = guard_page_offset + PAGE_SIZE_USIZE;
         // round up stack size to page size. This is needed for MemoryRegion
-        let stack_size_rounded = round_up_to(stack_size, PAGE_SIZE_USIZE);
-        let init_data_offset = guest_user_stack_buffer_offset + stack_size_rounded;
-        let pt_offset = round_up_to(init_data_offset + init_data_size, PAGE_SIZE_USIZE);
+        let stack_size_rounded = stack_size.next_multiple_of(PAGE_SIZE_USIZE);
+        // make sure init data starts at 4K boundary
+        let init_data_offset =
+            (guest_user_stack_buffer_offset + stack_size_rounded).next_multiple_of(PAGE_SIZE_USIZE);
+        let pt_offset = (init_data_offset + init_data_size).next_multiple_of(PAGE_SIZE_USIZE);
 
         Ok(Self {
             peb_offset,
@@ -772,33 +769,11 @@ impl SandboxMemoryLayout {
     }
 }
 
-fn round_up_to(value: usize, multiple: usize) -> usize {
-    (value + multiple - 1) & !(multiple - 1)
-}
-
 #[cfg(test)]
 mod tests {
     use hyperlight_common::mem::PAGE_SIZE_USIZE;
 
     use super::*;
-
-    #[test]
-    fn test_round_up() {
-        assert_eq!(0, round_up_to(0, 4));
-        assert_eq!(4, round_up_to(1, 4));
-        assert_eq!(4, round_up_to(2, 4));
-        assert_eq!(4, round_up_to(3, 4));
-        assert_eq!(4, round_up_to(4, 4));
-        assert_eq!(8, round_up_to(5, 4));
-        assert_eq!(8, round_up_to(6, 4));
-        assert_eq!(8, round_up_to(7, 4));
-        assert_eq!(8, round_up_to(8, 4));
-        assert_eq!(PAGE_SIZE_USIZE, round_up_to(44, PAGE_SIZE_USIZE));
-        assert_eq!(PAGE_SIZE_USIZE, round_up_to(4095, PAGE_SIZE_USIZE));
-        assert_eq!(PAGE_SIZE_USIZE, round_up_to(4096, PAGE_SIZE_USIZE));
-        assert_eq!(PAGE_SIZE_USIZE * 2, round_up_to(4097, PAGE_SIZE_USIZE));
-        assert_eq!(PAGE_SIZE_USIZE * 2, round_up_to(8191, PAGE_SIZE_USIZE));
-    }
 
     // helper func for testing
     fn get_expected_memory_size(layout: &SandboxMemoryLayout) -> usize {
@@ -807,13 +782,13 @@ mod tests {
         // in order of layout
         expected_size += layout.code_size;
 
-        expected_size += round_up_to(size_of::<HyperlightPEB>(), PAGE_SIZE_USIZE);
+        expected_size += size_of::<HyperlightPEB>().next_multiple_of(PAGE_SIZE_USIZE);
 
-        expected_size += round_up_to(cfg.get_input_data_size(), PAGE_SIZE_USIZE);
+        expected_size += cfg.get_input_data_size().next_multiple_of(PAGE_SIZE_USIZE);
 
-        expected_size += round_up_to(cfg.get_output_data_size(), PAGE_SIZE_USIZE);
+        expected_size += cfg.get_output_data_size().next_multiple_of(PAGE_SIZE_USIZE);
 
-        expected_size += round_up_to(layout.heap_size, PAGE_SIZE_USIZE);
+        expected_size += layout.heap_size.next_multiple_of(PAGE_SIZE_USIZE);
 
         expected_size += PAGE_SIZE_USIZE; // guard page
 

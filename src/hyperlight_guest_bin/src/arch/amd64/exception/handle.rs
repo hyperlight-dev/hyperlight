@@ -1,5 +1,5 @@
 /*
-Copyright 2025  The Hyperlight Authors.
+Copyright 2025 The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -12,68 +12,16 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+ */
 
 use core::fmt::Write;
 
-use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::outb::Exception;
 use hyperlight_guest::exit::write_abort;
 
-use crate::HyperlightAbortWriter;
-
-/// Exception information pushed onto the stack by the CPU during an excpection.
-///
-/// See AMD64 Architecture Programmer's Manual, Volume 2
-///     §8.9.3 Interrupt Stack Frame, pp. 283--284
-///       Figure 8-14: Long-Mode Stack After Interrupt---Same Privilege,
-///       Figure 8-15: Long-Mode Stack After Interrupt---Higher Privilege
-/// Note: For exceptions that don't provide an error code, we push a dummy value of 0.
-#[repr(C)]
-pub struct ExceptionInfo {
-    /// Error code provided by the processor (or 0 if not applicable).
-    pub error_code: u64,
-    /// Instruction pointer at the time of the exception.
-    pub rip: u64,
-    /// Code segment selector.
-    pub cs: u64,
-    /// CPU flags register.
-    pub rflags: u64,
-    /// Stack pointer at the time of the exception.
-    pub rsp: u64,
-    /// Stack segment selector.
-    pub ss: u64,
-}
-const _: () = assert!(core::mem::offset_of!(ExceptionInfo, rip) == 8);
-const _: () = assert!(core::mem::offset_of!(ExceptionInfo, rsp) == 32);
-
-/// Saved CPU context pushed onto the stack by exception entry code.
-///
-/// This structure contains all the saved CPU state needed to resume execution
-/// after handling an exception. It includes segment registers, floating-point state,
-/// and general-purpose registers.
-#[repr(C)]
-pub struct Context {
-    /// Segment registers in order: GS, FS, ES, DS.
-    pub segments: [u64; 4],
-    /// FPU/SSE state saved via FXSAVE instruction (512 bytes).
-    pub fxsave: [u8; 512],
-    /// General-purpose registers (RAX through R15, excluding RSP).
-    ///
-    /// The stack pointer (RSP) is not included here since it's saved
-    /// by the processor in the `ExceptionInfo` structure.
-    /// R15 is at index 0, RAX is at index 14.
-    pub gprs: [u64; 15],
-    /// Padding to ensure 16-byte alignment when combined with ExceptionInfo.
-    padding: [u64; 1],
-}
-const _: () = assert!(size_of::<Context>() == 32 + 512 + 120 + 8);
-// The combination of the ExceptionInfo (pushed by the CPU) and the register Context
-// that we save to the stack must be 16byte aligned before calling the hl_exception_handler
-// as specified in the x86-64 ELF System V psABI specification, Section 3.2.2:
-//
-// https://gitlab.com/x86-psABIs/x86-64-ABI/-/jobs/artifacts/master/raw/x86-64-ABI/abi.pdf?job=build
-const _: () = assert!((size_of::<Context>() + size_of::<ExceptionInfo>()).is_multiple_of(16));
+use super::super::context::Context;
+use super::super::machine::ExceptionInfo;
+use crate::{ErrorCode, HyperlightAbortWriter};
 
 /// Array of installed exception handlers for vectors 0-30.
 ///
@@ -118,6 +66,9 @@ pub(crate) extern "C" fn hl_exception_handler(
     exception_number: u64,
     page_fault_address: u64,
 ) {
+    // TODO: is this always needed? surely only needed if CoW
+    crate::paging::flush_tlb();
+
     let ctx = stack_pointer as *mut Context;
     let exn_info = (stack_pointer + size_of::<Context>() as u64) as *mut ExceptionInfo;
 
@@ -141,6 +92,8 @@ pub(crate) extern "C" fn hl_exception_handler(
         }
     }
 
+    let bytes_at_rip = unsafe { (saved_rip as *const [u8; 8]).read_volatile() };
+
     // begin abort sequence by writing the error code
     let mut w = HyperlightAbortWriter;
     write_abort(&[ErrorCode::GuestError as u8, exception as u8]);
@@ -148,10 +101,11 @@ pub(crate) extern "C" fn hl_exception_handler(
         w,
         "Exception vector: {}\n\
          Faulting Instruction: {:#x}\n\
+         Bytes At Faulting Instruction: {:?}\n\
          Page Fault Address: {:#x}\n\
          Error code: {:#x}\n\
          Stack Pointer: {:#x}",
-        exception_number, saved_rip, page_fault_address, error_code, stack_pointer
+        exception_number, saved_rip, bytes_at_rip, page_fault_address, error_code, stack_pointer
     );
     if write_res.is_err() {
         write_abort("exception message format failed".as_bytes());

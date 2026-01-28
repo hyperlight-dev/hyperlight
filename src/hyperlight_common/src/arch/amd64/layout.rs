@@ -14,6 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
+// The addresses in this file should be coordinated with
+// src/hyperlight_guest/src/arch/amd64/layout.rs and
+// src/hyperlight_guest_bin/src/arch/amd64/layout.rs
+
 /// We have this the top of the page below the top of memory in order
 /// to make working with start/end ptrs in a few places more
 /// convenient (not needing to worry about overflow)

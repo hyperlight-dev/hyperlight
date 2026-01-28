@@ -21,8 +21,6 @@ extern crate alloc;
 use core::fmt::Write;
 
 use buddy_system_allocator::LockedHeap;
-#[cfg(target_arch = "x86_64")]
-use exceptions::{gdt::load_gdt, idtr::load_idt};
 use guest_function::call::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
@@ -30,20 +28,18 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
-use hyperlight_guest::exit::{halt, write_abort};
+use hyperlight_guest::exit::write_abort;
 use hyperlight_guest::guest_handle::handle::GuestHandle;
 use log::LevelFilter;
-use spin::Once;
 
 // === Modules ===
+#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/mod.rs")]
+mod arch;
+// temporarily expose the architecture-specific exception interface;
+// this should be replaced with something a bit more abstract in the
+// near future.
 #[cfg(target_arch = "x86_64")]
-pub mod exceptions {
-    pub(super) mod gdt;
-    pub mod handler;
-    mod idt;
-    pub(super) mod idtr;
-    mod interrupt_entry;
-}
+pub mod exception;
 pub mod guest_function {
     pub(super) mod call;
     pub mod definition;
@@ -177,78 +173,68 @@ unsafe extern "C" {
     fn srand(seed: u32);
 }
 
-static INIT: Once = Once::new();
+/// Architecture-nonspecific initialisation: set up the heap,
+/// coordinate some addresses and configuration with the host, and run
+/// user initialisation
+pub(crate) extern "C" fn generic_init(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
+    let peb_ptr = unsafe {
+        GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
+        #[allow(static_mut_refs)]
+        let peb_ptr = GUEST_HANDLE.peb().unwrap();
 
-#[unsafe(no_mangle)]
-pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
+        let heap_start = (*peb_ptr).guest_heap.ptr as usize;
+        let heap_size = (*peb_ptr).guest_heap.size as usize;
+        #[cfg(not(feature = "mem_profile"))]
+        let heap_allocator = &HEAP_ALLOCATOR;
+        #[cfg(feature = "mem_profile")]
+        let heap_allocator = &HEAP_ALLOCATOR.0;
+        heap_allocator
+            .try_lock()
+            .expect("Failed to access HEAP_ALLOCATOR")
+            .init(heap_start, heap_size);
+        peb_ptr
+    };
+
     // Save the guest start TSC for tracing
     #[cfg(feature = "trace_guest")]
     let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
 
-    if peb_address == 0 {
-        panic!("PEB address is null");
+    unsafe {
+        (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
+
+        // This static is to make it easier to implement the __chkstk
+        // function in assembly.  It also means that should we change
+        // the layout of the struct in the future, we don't have to
+        // change the assembly code.
+        MIN_STACK_ADDRESS = (*peb_ptr).guest_stack.min_user_stack_address;
+
+        let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
+        // Set the seed for the random number generator for C code using rand;
+        srand(srand_seed);
+
+        OS_PAGE_SIZE = ops as u32;
     }
 
-    INIT.call_once(|| {
-        unsafe {
-            GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
-            #[allow(static_mut_refs)]
-            let peb_ptr = GUEST_HANDLE.peb().unwrap();
+    // set up the logger
+    let max_log_level = LevelFilter::iter()
+        .nth(max_log_level as usize)
+        .expect("Invalid log level");
+    init_logger(max_log_level);
 
-            let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
+    // It is important that all the tracing events are produced after the tracing is initialized.
+    #[cfg(feature = "trace_guest")]
+    if max_log_level != LevelFilter::Off {
+        hyperlight_guest_tracing::init_guest_tracing(guest_start_tsc);
+    }
 
-            // Set the seed for the random number generator for C code using rand;
-            srand(srand_seed);
+    #[cfg(feature = "macros")]
+    for registration in __private::GUEST_FUNCTION_INIT {
+        registration();
+    }
 
-            // This static is to make it easier to implement the __chkstk function in assembly.
-            // It also means that should we change the layout of the struct in the future, we
-            // don't have to change the assembly code.
-            MIN_STACK_ADDRESS = (*peb_ptr).guest_stack.min_user_stack_address;
-
-            #[cfg(target_arch = "x86_64")]
-            {
-                // Setup GDT and IDT
-                load_gdt();
-                load_idt();
-            }
-
-            let heap_start = (*peb_ptr).guest_heap.ptr as usize;
-            let heap_size = (*peb_ptr).guest_heap.size as usize;
-            #[cfg(not(feature = "mem_profile"))]
-            let heap_allocator = &HEAP_ALLOCATOR;
-            #[cfg(feature = "mem_profile")]
-            let heap_allocator = &HEAP_ALLOCATOR.0;
-            heap_allocator
-                .try_lock()
-                .expect("Failed to access HEAP_ALLOCATOR")
-                .init(heap_start, heap_size);
-
-            OS_PAGE_SIZE = ops as u32;
-
-            (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
-
-            // set up the logger
-            let max_log_level = LevelFilter::iter()
-                .nth(max_log_level as usize)
-                .expect("Invalid log level");
-            init_logger(max_log_level);
-
-            // It is important that all the tracing events are produced after the tracing is initialized.
-            #[cfg(feature = "trace_guest")]
-            if max_log_level != LevelFilter::Off {
-                hyperlight_guest_tracing::init_guest_tracing(guest_start_tsc);
-            }
-
-            #[cfg(feature = "macros")]
-            for registration in __private::GUEST_FUNCTION_INIT {
-                registration();
-            }
-
-            hyperlight_main();
-        }
-    });
-
-    halt();
+    unsafe {
+        hyperlight_main();
+    }
 }
 
 #[cfg(feature = "macros")]

@@ -39,7 +39,7 @@ use crate::hypervisor::virtual_machine::{HypervisorError, RegisterError, Virtual
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::HostSharedMemory;
+use crate::mem::shared_mem::{HostSharedMemory, SharedMemory};
 
 #[derive(Debug, Error)]
 pub enum GdbTargetError {
@@ -98,6 +98,15 @@ pub enum DebugMemoryAccessError {
 }
 
 impl DebugMemoryAccess {
+    // TODO: There is a lot of common logic between both of these
+    // functions, as well as guest_page/access_gpa in snapshot.rs. It
+    // would be nice to factor that out at some point, but the
+    // snapshot versions deal with ExclusiveSharedMemory, since we
+    // never expect a guest to be running concurrent with a snapshot,
+    // and doesn't want to make unnecessary copies, since it runs over
+    // relatively large volumes of data, so it's not clear if it's
+    // terribly easy to combine them
+
     /// Reads memory from the guest's address space with a maximum length of a PAGE_SIZE
     ///
     /// # Arguments
@@ -153,16 +162,28 @@ impl DebugMemoryAccess {
         }
 
         if !region_found {
-            log::debug!(
-                "No mapped region found containing {:X}. Trying shared memory ...",
-                gpa
-            );
-
-            self.dbg_mem_access_fn
+            let mut mgr = self
+                .dbg_mem_access_fn
                 .try_lock()
-                .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?
-                .get_shared_mem_mut()
-                .copy_to_slice(&mut data[..read_len], mem_offset)
+                .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?;
+            let scratch_base =
+                hyperlight_common::layout::scratch_base_gpa(mgr.scratch_mem.mem_size());
+            let (mem, offset, name): (&mut HostSharedMemory, _, _) = if gpa >= scratch_base {
+                (
+                    &mut mgr.scratch_mem,
+                    (gpa - scratch_base) as usize,
+                    "scratch",
+                )
+            } else {
+                (&mut mgr.shared_mem, mem_offset, "snapshot")
+            };
+            log::debug!(
+                "No mapped region found containing {:X}. Trying {} memory at offset {:X} ...",
+                gpa,
+                name,
+                offset
+            );
+            mem.copy_to_slice(&mut data[..read_len], offset)
                 .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?;
         }
 
@@ -224,17 +245,28 @@ impl DebugMemoryAccess {
         }
 
         if !region_found {
-            log::debug!(
-                "No mapped region found containing {:X}. Trying shared memory at offset {:X} ...",
-                gpa,
-                mem_offset
-            );
-
-            self.dbg_mem_access_fn
+            let mut mgr = self
+                .dbg_mem_access_fn
                 .try_lock()
-                .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?
-                .get_shared_mem_mut()
-                .copy_from_slice(&data[..write_len], mem_offset)
+                .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?;
+            let scratch_base =
+                hyperlight_common::layout::scratch_base_gpa(mgr.scratch_mem.mem_size());
+            let (mem, offset, name): (&mut HostSharedMemory, _, _) = if gpa >= scratch_base {
+                (
+                    &mut mgr.scratch_mem,
+                    (gpa - scratch_base) as usize,
+                    "scratch",
+                )
+            } else {
+                (&mut mgr.shared_mem, mem_offset, "snapshot")
+            };
+            log::debug!(
+                "No mapped region found containing {:X}. Trying {} memory at offset {:X} ...",
+                gpa,
+                name,
+                offset
+            );
+            mem.copy_from_slice(&data[..write_len], offset)
                 .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?;
         }
 

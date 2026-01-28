@@ -16,23 +16,10 @@ limitations under the License.
 
 // The addresses in this file should be coordinated with
 // src/hyperlight_common/src/arch/amd64/layout.rs and
-// src/hyperlight_guest_bin/src/arch/amd64/layout.rs
+// src/hyperlight_guest/src/arch/amd64/layout.rs
 
-pub const MAIN_STACK_TOP_GVA: u64 = 0xffff_feff_ffff_f000;
-
-pub fn scratch_size() -> u64 {
-    let addr = crate::layout::scratch_size_gva();
-    let x: u64;
-    unsafe {
-        core::arch::asm!("mov {x}, [{addr}]", x = out(reg) x, addr = in(reg) addr);
-    }
-    x
-}
-
-pub fn scratch_base_gpa() -> u64 {
-    hyperlight_common::layout::scratch_base_gpa(scratch_size() as usize)
-}
-
-pub fn scratch_base_gva() -> u64 {
-    hyperlight_common::layout::scratch_base_gva(scratch_size() as usize)
-}
+/// On amd64, since the processor is told the VAs of control
+/// structures like the GDT/IDT/TSS, we need to map them somewhere to
+/// a VA that will survive the snapshot process. Since we don't have a
+/// useful virtual allocator yet, we just put them here...
+pub const PROC_CONTROL_GVA: u64 = 0xffff_fd00_0000_0000;

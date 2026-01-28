@@ -45,7 +45,7 @@ use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
-use hyperlight_guest_bin::exceptions::handler::{Context, ExceptionInfo};
+use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
@@ -132,7 +132,7 @@ fn test_exception_handler(
 /// Install handler for a specific vector
 #[guest_function("InstallHandler")]
 fn install_handler(vector: i32) {
-    hyperlight_guest_bin::exceptions::handler::HANDLERS[vector as usize]
+    hyperlight_guest_bin::exception::arch::HANDLERS[vector as usize]
         .store(test_exception_handler as usize as u64, Ordering::Release);
 }
 
