@@ -11,3 +11,5 @@ mmaped="mmapped"
 fpr="fpr"
 # consts is a module name in stdlib
 consts="consts"
+# ist is an acronym for Interrupt Stack Table, not a missspelling of its
+ist="ist"

@@ -55,6 +55,40 @@ impl GdtEntry {
             access,
         }
     }
+
+    /// Create a new entry that describes the Task State Segment
+    /// (TSS).
+    ///
+    /// The segment descriptor for the TSS needs to be wider than
+    /// other segments, because its base address is actually used &
+    /// must therefore be able to encode an entire 64-bit VA.  Because
+    /// of this, it uses two adjacent descriptor entries.
+    ///
+    /// See AMD64 Architecture Programmer's Manual, Volume 2: System Programming
+    ///     Section 4: Segmented Virtual Memory
+    ///         §4.8: Long-Mod Segment Descriptors
+    ///             §4.8.3: System Descriptors
+    /// for details of the layout
+    pub const fn tss(base: u64, limit: u32) -> [Self; 2] {
+        [
+            Self {
+                limit_low: (limit & 0xffff) as u16,
+                base_low: (base & 0xffff) as u16,
+                base_middle: ((base >> 16) & 0xff) as u8,
+                access: 0x89,
+                flags_limit: ((limit >> 16) & 0x0f) as u8,
+                base_high: ((base >> 24) & 0xff) as u8,
+            },
+            Self {
+                limit_low: ((base >> 32) & 0xffff) as u16,
+                base_low: ((base >> 48) & 0xffff) as u16,
+                base_middle: 0,
+                access: 0,
+                flags_limit: 0,
+                base_high: 0,
+            },
+        ]
+    }
 }
 
 /// GDTR (GDT pointer)
@@ -67,6 +101,32 @@ pub(super) struct GdtPointer {
     pub(super) limit: u16,
     pub(super) base: u64,
 }
+
+/// Task State Segment
+///
+/// See AMD64 Architecture Programmer's Manual, Volume 2: System Programming
+///     Section 12: Task Management
+///         §12.2: Task-Management Resources
+///             §12.2.5: 64-bit Task State Segment
+#[allow(clippy::upper_case_acronyms)]
+#[repr(C, packed)]
+pub(super) struct TSS {
+    _rsvd0: [u8; 4],
+    _rsp0: u64,
+    _rsp1: u64,
+    _rsp2: u64,
+    _rsvd1: [u8; 8],
+    pub(super) ist1: u64,
+    _ist2: u64,
+    _ist3: u64,
+    _ist4: u64,
+    _ist5: u64,
+    _ist6: u64,
+    _ist7: u64,
+    _rsvd2: [u8; 8],
+}
+const _: () = assert!(mem::size_of::<TSS>() == 0x64);
+const _: () = assert!(mem::offset_of!(TSS, ist1) == 0x24);
 
 /// An entry in the Interrupt Descriptor Table (IDT)
 /// For reference, see page 7-20 Vol. 3A of Intel 64 and IA-32
@@ -97,7 +157,7 @@ impl IdtEntry {
         Self {
             offset_low: (handler & 0xFFFF) as u16,
             selector: 0x08, // Kernel Code Segment
-            interrupt_stack_table_offset: 0,
+            interrupt_stack_table_offset: 1,
             type_attr: 0x8E,
             // 0x8E = 10001110b
             // 1 00 0 1101
@@ -121,7 +181,7 @@ pub(super) struct IdtPointer {
 const _: () = assert!(mem::size_of::<IdtPointer>() == 10);
 
 #[allow(clippy::upper_case_acronyms)]
-pub(super) type GDT = [GdtEntry; 3];
+pub(super) type GDT = [GdtEntry; 5];
 #[allow(clippy::upper_case_acronyms)]
 #[repr(align(0x1000))]
 pub(super) struct IDT {
@@ -129,6 +189,7 @@ pub(super) struct IDT {
 }
 const _: () = assert!(mem::size_of::<IDT>() == 0x1000);
 
+const PADDING_BEFORE_TSS: usize = 64 - mem::size_of::<GDT>();
 /// A single structure containing all of the processor control
 /// structures that we use during early initialization, making it easy
 /// to keep them in an early-allocated physical page.  Field alignment
@@ -138,11 +199,14 @@ const _: () = assert!(mem::size_of::<IDT>() == 0x1000);
 #[repr(C, align(0x1000))]
 pub(super) struct ProcCtrl {
     pub(super) gdt: GDT,
+    _pad: mem::MaybeUninit<[u8; PADDING_BEFORE_TSS]>,
+    pub(super) tss: TSS,
     pub(super) idt: IDT,
 }
 const _: () = assert!(mem::size_of::<ProcCtrl>() == 0x2000);
 const _: () = assert!(mem::size_of::<ProcCtrl>() <= PAGE_SIZE * 2);
 const _: () = assert!(mem::offset_of!(ProcCtrl, gdt) == 0);
+const _: () = assert!(mem::offset_of!(ProcCtrl, tss) == 64);
 const _: () = assert!(mem::offset_of!(ProcCtrl, idt) == 0x1000);
 
 impl ProcCtrl {
@@ -162,6 +226,7 @@ impl ProcCtrl {
             );
             let ptr = ptr as *mut Self;
             (&raw mut (*ptr).gdt).write_bytes(0u8, 1);
+            (&raw mut (*ptr).tss).write_bytes(0u8, 1);
             (&raw mut (*ptr).idt).write_bytes(0u8, 1);
             ptr
         }
