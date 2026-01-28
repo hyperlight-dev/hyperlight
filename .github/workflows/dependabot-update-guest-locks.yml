@@ -1,0 +1,128 @@
+# This workflow automatically updates the Cargo.lock files in guest crates when
+# Dependabot updates dependencies. Without this, Dependabot PRs only update the
+# root Cargo.lock, leaving the guest crate Cargo.lock files stale.
+#
+# See: https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automating-dependabot-with-github-actions
+
+name: Update Guest Cargo.lock for Dependabot PRs
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/hyperlight_*/Cargo.toml'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  update-guest-locks:
+    # Only run for Dependabot PRs - check the PR author, not the actor
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    timeout-minutes: 15
+    steps:
+      # Fetch metadata about the Dependabot PR
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      # Only proceed for cargo ecosystem updates
+      - name: Check if cargo update
+        id: check-ecosystem
+        run: |
+          if [ "${{ steps.metadata.outputs.package-ecosystem }}" = "cargo" ]; then
+            echo "is_cargo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_cargo=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping non-cargo dependency update"
+          fi
+
+      # Get GitHub App token for pushing commits back to the PR
+      # Uses the same app as auto-merge-dependabot.yml
+      - name: Get GitHub App token
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        uses: actions/create-github-app-token@v2
+        id: get-app-token
+        with:
+          app-id: ${{ secrets.DEPENDABOT_APP_ID }}
+          private-key: ${{ secrets.DEPENDABOT_APP_KEY }}
+          permission-contents: write
+
+      - name: Checkout PR branch
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.get-app-token.outputs.token }}
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Setup Rust toolchain
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+        with:
+          rust-toolchain: "1.89"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix cargo home permissions
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        run: |
+          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
+
+      - name: Update simpleguest Cargo.lock
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        working-directory: src/tests/rust_guests/simpleguest
+        run: cargo update
+
+      - name: Update dummyguest Cargo.lock
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        working-directory: src/tests/rust_guests/dummyguest
+        run: cargo update
+
+      - name: Update witguest Cargo.lock
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        working-directory: src/tests/rust_guests/witguest
+        run: cargo update
+
+      - name: Configure git for commits
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check for changes and commit
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        id: commit
+        env:
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+        run: |
+          # Check if there are any changes to the guest Cargo.lock files
+          if git diff --quiet src/tests/rust_guests/*/Cargo.lock; then
+            echo "No changes to guest Cargo.lock files"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Guest Cargo.lock files have changed, committing..."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            
+            # Stage only the guest Cargo.lock changes
+            git add src/tests/rust_guests/*/Cargo.lock
+            
+            # Commit with DCO sign-off
+            git commit --signoff -m "chore: update guest Cargo.lock files" \
+              -m "Automatically updated by dependabot-update-guest-locks workflow." \
+              -m "Triggered by: ${DEPENDENCY_NAMES}"
+          fi
+
+      - name: Push changes
+        if: steps.check-ecosystem.outputs.is_cargo == 'true' && steps.commit.outputs.has_changes == 'true'
+        run: |
+          git push origin HEAD:${{ github.head_ref }}
