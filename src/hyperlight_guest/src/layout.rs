@@ -18,17 +18,17 @@ limitations under the License.
 #[cfg_attr(target_arch = "x86", path = "arch/i686/layout.rs")]
 mod arch;
 
-pub use arch::{MAX_GPA, MAX_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN};
-
-// offsets down from the top of scratch memory for various things
-pub const SCRATCH_TOP_SIZE_OFFSET: u64 = 0x08;
-pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 = 0x10;
-pub const SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET: u64 = 0x18;
-pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x20;
-
-pub fn scratch_base_gpa(size: usize) -> u64 {
-    (MAX_GPA - size + 1) as u64
+pub use arch::MAIN_STACK_TOP_GVA;
+pub fn scratch_size_gva() -> *mut u64 {
+    use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_SIZE_OFFSET};
+    (MAX_GVA as u64 - SCRATCH_TOP_SIZE_OFFSET + 1) as *mut u64
 }
-pub fn scratch_base_gva(size: usize) -> u64 {
-    (MAX_GVA - size + 1) as u64
+pub fn allocator_gva() -> *mut u64 {
+    use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_ALLOCATOR_OFFSET};
+    (MAX_GVA as u64 - SCRATCH_TOP_ALLOCATOR_OFFSET + 1) as *mut u64
 }
+pub fn snapshot_pt_gpa_base_gva() -> *mut u64 {
+    use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET};
+    (MAX_GVA as u64 - SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET + 1) as *mut u64
+}
+pub use arch::{scratch_base_gpa, scratch_base_gva};

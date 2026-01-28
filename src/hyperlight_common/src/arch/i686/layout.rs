@@ -12,22 +12,12 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+ */
 
-#![no_std]
-#[cfg(all(feature = "trace_guest", not(target_arch = "x86_64")))]
-compile_error!("trace_guest feature is only supported on x86_64 architecture");
+// This file is just dummy definitions at the moment, in order to
+// allow compiling the guest for real mode boot scenarios.
 
-extern crate alloc;
-
-// Modules
-pub mod error;
-pub mod exit;
-pub mod layout;
-pub mod prim_alloc;
-
-pub mod guest_handle {
-    pub mod handle;
-    pub mod host_comm;
-    pub mod io;
-}
+pub const MAX_GVA: usize = 0xffff_efff;
+pub const SNAPSHOT_PT_GVA_MIN: usize = 0xef00_0000;
+pub const SNAPSHOT_PT_GVA_MAX: usize = 0xefff_efff;
+pub const MAX_GPA: usize = 0xffff_ffff;

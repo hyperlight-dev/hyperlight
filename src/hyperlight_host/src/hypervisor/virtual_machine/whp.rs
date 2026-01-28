@@ -69,10 +69,6 @@ pub(crate) struct WhpVm {
     partition: WHV_PARTITION_HANDLE,
     // Surrogate process for memory mapping
     surrogate_process: SurrogateProcess,
-    // Track if initial memory setup is complete.
-    // Used to reject later memory mapping since it's not supported  on windows.
-    // TODO remove this flag once memory mapping is supported on windows.
-    initial_memory_setup_done: bool,
 }
 
 // Safety: `WhpVm` is !Send because it holds `SurrogateProcess` which contains a raw pointer
@@ -111,7 +107,6 @@ impl WhpVm {
         Ok(WhpVm {
             partition,
             surrogate_process,
-            initial_memory_setup_done: false,
         })
     }
 
@@ -503,11 +498,6 @@ impl VirtualMachine for WhpVm {
         }
 
         Ok(xsave_buffer)
-    }
-
-    /// Mark that initial memory setup is complete. After this, map_memory will fail.
-    fn complete_initial_memory_setup(&mut self) {
-        self.initial_memory_setup_done = true;
     }
 
     /// Get the partition handle for this VM

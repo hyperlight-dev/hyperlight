@@ -328,6 +328,12 @@ impl HyperlightError {
             | HyperlightError::SnapshotSizeMismatch(_, _)
             | HyperlightError::MemoryRegionSizeMismatch(_, _, _) => true,
 
+            // These errors poison the sandbox because they can leave
+            // it in an inconsistent state due to snapshot restore
+            // failing partway through
+            HyperlightError::HyperlightVmError(HyperlightVmError::UpdateRegion(_))
+            | HyperlightError::HyperlightVmError(HyperlightVmError::AccessPageTable(_)) => true,
+
             // HyperlightVmError::DispatchGuestCall may poison the sandbox
             HyperlightError::HyperlightVmError(HyperlightVmError::DispatchGuestCall(e)) => {
                 e.is_poison_error()
@@ -351,7 +357,6 @@ impl HyperlightError {
             | HyperlightError::HyperlightVmError(HyperlightVmError::Initialize(_))
             | HyperlightError::HyperlightVmError(HyperlightVmError::MapRegion(_))
             | HyperlightError::HyperlightVmError(HyperlightVmError::UnmapRegion(_))
-            | HyperlightError::HyperlightVmError(HyperlightVmError::UpdateScratch(_))
             | HyperlightError::IOError(_)
             | HyperlightError::IntConversionFailure(_)
             | HyperlightError::InvalidFlatBuffer(_)

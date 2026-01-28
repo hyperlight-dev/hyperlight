@@ -15,9 +15,13 @@ limitations under the License.
  */
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vmem.rs")]
-pub mod arch;
+#[cfg_attr(target_arch = "x86", path = "arch/i686/vmem.rs")]
+mod arch;
 
-pub use arch::{PAGE_SIZE, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
+/// This is always the page size that the /guest/ is being compiled
+/// for, which may or may not be the same as the host page size.
+pub use arch::PAGE_SIZE;
+pub use arch::{PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
 pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
     PAGE_TABLE_SIZE / core::mem::size_of::<PageTableEntry>();
 
@@ -71,7 +75,10 @@ pub trait TableOps {
     unsafe fn read_entry(&self, addr: Self::TableAddr) -> PageTableEntry;
 
     /// Write a u64 to the given address, used to write updated page
-    /// table entries
+    /// table entries. In some cases,the page table in which the entry
+    /// is located may need to be relocated in order for this to
+    /// succeed; if this is the case, the base address of the new
+    /// table is returned.
     ///
     /// # Safety
     /// This writes to the given memory address, and so all the usual
@@ -81,7 +88,11 @@ pub trait TableOps {
     /// invariants. The implementor of the trait should ensure that
     /// nothing else will be reading/writing the address at the same
     /// time as mapping code using the trait.
-    unsafe fn write_entry(&self, addr: Self::TableAddr, entry: PageTableEntry);
+    unsafe fn write_entry(
+        &self,
+        addr: Self::TableAddr,
+        entry: PageTableEntry,
+    ) -> Option<Self::TableAddr>;
 
     /// Convert an abstract table address to a concrete physical address (u64)
     /// which can be e.g. written into a page table entry
