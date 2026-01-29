@@ -1258,5 +1258,33 @@ mod tests {
 
             let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
         }
+
+        // Test 9: Create snapshot from existing sandbox
+        {
+            let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
+            let orig_snapshot = Arc::new(
+                Snapshot::from_env(env, Default::default())
+                    .expect("Failed to create snapshot with default config")
+            );
+            let orig_sandbox = UninitializedSandbox::from_snapshot(
+                orig_snapshot,
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create orig_sandbox");
+            let mut initialized_sandbox = orig_sandbox
+                .evolve()
+                .expect("Failed to evolve orig_sandbox");
+            let  new_snapshot = initialized_sandbox.snapshot().expect("Failed to create new_snapshot");
+            let new_sandbox = UninitializedSandbox::from_snapshot(
+                new_snapshot,
+                None,
+                #[cfg(crashdump)]
+                Some(binary_path.clone()),
+            )
+            .expect("Failed to create new_sandbox");
+            let _evolved = new_sandbox.evolve().expect("Failed to evolve new_sandbox");
+        }
     }
 }

@@ -119,11 +119,12 @@ pub(crate) fn set_up_hypervisor_partition(
     };
     let entrypoint_ptr = mgr
         .entrypoint_offset
-        .ok_or_else(|| new_error!("Entrypoint offset is None"))
-        .and_then(|x| {
+        .map(|x| {
             let entrypoint_total_offset = mgr.load_addr.clone() + x;
             GuestPtr::try_from(entrypoint_total_offset)
-        })?;
+                .and_then(|x| x.absolute())
+        })
+        .transpose()?;
 
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
@@ -153,7 +154,7 @@ pub(crate) fn set_up_hypervisor_partition(
         mgr.shared_mem,
         mgr.scratch_mem,
         pml4_ptr.absolute()?,
-        entrypoint_ptr.absolute()?,
+        entrypoint_ptr,
         rsp_ptr.absolute()?,
         config,
         #[cfg(gdb)]

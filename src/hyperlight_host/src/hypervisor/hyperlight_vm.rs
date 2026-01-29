@@ -85,7 +85,7 @@ pub(crate) struct HyperlightVm {
     #[cfg(not(gdb))]
     vm: Box<dyn VirtualMachine>,
     page_size: usize,
-    entrypoint: u64,
+    entrypoint: Option<u64>, // only present if this vm has not yet been initialised
     orig_rsp: GuestPtr,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
@@ -350,7 +350,7 @@ impl HyperlightVm {
         snapshot_mem: GuestSharedMemory,
         scratch_mem: GuestSharedMemory,
         _pml4_addr: u64,
-        entrypoint: u64,
+        entrypoint: Option<u64>,
         rsp: u64,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -450,11 +450,13 @@ impl HyperlightVm {
         #[cfg(gdb)]
         if ret.gdb_conn.is_some() {
             ret.send_dbg_msg(DebugResponse::InterruptHandle(ret.interrupt_handle.clone()))?;
-            // Add breakpoint to the entry point address
+            // Add breakpoint to the entry point address, if we are going to initialise
             ret.vm.set_debug(true).map_err(VmError::Debug)?;
-            ret.vm
-                .add_hw_breakpoint(entrypoint)
-                .map_err(CreateHyperlightVmError::AddHwBreakpoint)?;
+            if let Some(entrypoint) = entrypoint {
+                ret.vm
+                    .add_hw_breakpoint(entrypoint)
+                    .map_err(CreateHyperlightVmError::AddHwBreakpoint)?;
+            }
         }
 
         Ok(ret)
@@ -474,6 +476,10 @@ impl HyperlightVm {
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), InitializeError> {
+        let Some(entrypoint) = self.entrypoint else {
+            return Ok(());
+        };
+
         self.page_size = page_size as usize;
 
         let guest_max_log_level: u64 = match guest_max_log_level {
@@ -482,7 +488,7 @@ impl HyperlightVm {
         };
 
         let regs = CommonRegisters {
-            rip: self.entrypoint,
+            rip: entrypoint,
             rsp: self
                 .orig_rsp
                 .absolute()
@@ -740,8 +746,12 @@ impl HyperlightVm {
                 #[cfg(gdb)]
                 Ok(VmExit::Debug { dr6, exception }) => {
                     // Handle debug event (breakpoints)
-                    let stop_reason =
-                        arch::vcpu_stop_reason(self.vm.as_mut(), dr6, self.entrypoint, exception)?;
+                    let stop_reason = arch::vcpu_stop_reason(
+                        self.vm.as_mut(),
+                        dr6,
+                        self.entrypoint.unwrap_or(0),
+                        exception,
+                    )?;
                     if let Err(e) = self.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
                         break Err(e.into());
                     }
@@ -1088,7 +1098,7 @@ impl HyperlightVm {
                 regions,
                 regs,
                 xsave.to_vec(),
-                self.entrypoint,
+                self.entrypoint.unwrap_or(0),
                 self.rt_cfg.binary_path.clone(),
                 filename,
             )))
