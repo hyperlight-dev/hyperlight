@@ -25,29 +25,14 @@ pub use arch::{PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
 pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
     PAGE_TABLE_SIZE / core::mem::size_of::<PageTableEntry>();
 
-/// The operations used to actually access the page table structures,
-/// used to allow the same code to be used in the host and the guest
-/// for page table setup
-pub trait TableOps {
+/// The read-only operations used to actually access the page table
+/// structures, used to allow the same code to be used in the host and
+/// the guest for page table setup.  This is distinct from
+/// `TableWriteOps`, since there are some implementations for which
+/// writing does not make sense, and only reading is required.
+pub trait TableReadOps {
     /// The type of table addresses
     type TableAddr: Copy;
-
-    /// Allocate a zeroed table
-    ///
-    /// # Safety
-    /// The current implementations of this function are not
-    /// inherently unsafe, but the guest implementation will likely
-    /// become so in the future when a real physical page allocator is
-    /// implemented.
-    ///
-    /// Currently, callers should take care not to call this on
-    /// multiple threads at the same time.
-    ///
-    /// # Panics
-    /// This function may panic if:
-    /// - The Layout creation fails
-    /// - Memory allocation fails
-    unsafe fn alloc_table(&self) -> Self::TableAddr;
 
     /// Offset the table address by the given offset in bytes.
     ///
@@ -74,6 +59,94 @@ pub trait TableOps {
     /// time as mapping code using the trait.
     unsafe fn read_entry(&self, addr: Self::TableAddr) -> PageTableEntry;
 
+    /// Convert an abstract table address to a concrete physical address (u64)
+    /// which can be e.g. written into a page table entry
+    fn to_phys(addr: Self::TableAddr) -> PhysAddr;
+
+    /// Convert a concrete physical address (u64) which may have been e.g. read
+    /// from a page table entry back into an abstract table address
+    fn from_phys(addr: PhysAddr) -> Self::TableAddr;
+
+    /// Return the address of the root page table
+    fn root_table(&self) -> Self::TableAddr;
+}
+
+/// Our own version of ! until it is stable. Used to avoid needing to
+/// implement [`TableOps::update_root`] for ops that never need
+/// to move a table.
+pub enum Void {}
+
+/// A marker struct, used by an implementation of [`TableOps`] to
+/// indicate that it may need to move existing page tables
+pub struct MayMoveTable {}
+/// A marker struct, used by an implementation of [`TableOps`] to
+/// indicate that it will be able to update existing page tables
+/// in-place, without moving them.
+pub struct MayNotMoveTable {}
+
+mod sealed {
+    use super::{MayMoveTable, MayNotMoveTable, TableReadOps, Void};
+
+    /// A (purposefully-not-exposed) internal implementation detail of the
+    /// logic around whether a [`TableOps`] implementation may or may not
+    /// move page tables.
+    pub trait TableMovabilityBase<Op: TableReadOps + ?Sized> {
+        type TableMoveInfo;
+    }
+    impl<Op: TableReadOps> TableMovabilityBase<Op> for MayMoveTable {
+        type TableMoveInfo = Op::TableAddr;
+    }
+    impl<Op: TableReadOps> TableMovabilityBase<Op> for MayNotMoveTable {
+        type TableMoveInfo = Void;
+    }
+}
+use sealed::*;
+
+/// A sealed trait used to collect some information about the marker structures [`MayMoveTable`] and [`MayNotMoveTable`]
+pub trait TableMovability<Op: TableReadOps + ?Sized>:
+    TableMovabilityBase<Op>
+    + arch::TableMovability<Op, <Self as TableMovabilityBase<Op>>::TableMoveInfo>
+{
+}
+impl<
+    Op: TableReadOps,
+    T: TableMovabilityBase<Op>
+        + arch::TableMovability<Op, <Self as TableMovabilityBase<Op>>::TableMoveInfo>,
+> TableMovability<Op> for T
+{
+}
+
+/// The operations used to actually access the page table structures
+/// that involve writing to them, used to allow the same code to be
+/// used in the host and the guest for page table setup.
+pub trait TableOps: TableReadOps {
+    /// This marker should be either [`MayMoveTable`] or
+    /// [`MayNotMoveTable`], as the case may be.
+    ///
+    /// If this is [`MayMoveTable`], the return type of
+    /// [`Self::write_entry`] and the parameter type of
+    /// [`Self::update_root`] will be `<Self as
+    /// TableReadOps>::TableAddr`. If it is [`MayNotMoveTable`], those
+    /// types will be [`Void`].
+    type TableMovability: TableMovability<Self>;
+
+    /// Allocate a zeroed table
+    ///
+    /// # Safety
+    /// The current implementations of this function are not
+    /// inherently unsafe, but the guest implementation will likely
+    /// become so in the future when a real physical page allocator is
+    /// implemented.
+    ///
+    /// Currently, callers should take care not to call this on
+    /// multiple threads at the same time.
+    ///
+    /// # Panics
+    /// This function may panic if:
+    /// - The Layout creation fails
+    /// - Memory allocation fails
+    unsafe fn alloc_table(&self) -> Self::TableAddr;
+
     /// Write a u64 to the given address, used to write updated page
     /// table entries. In some cases,the page table in which the entry
     /// is located may need to be relocated in order for this to
@@ -92,18 +165,19 @@ pub trait TableOps {
         &self,
         addr: Self::TableAddr,
         entry: PageTableEntry,
-    ) -> Option<Self::TableAddr>;
+    ) -> Option<<Self::TableMovability as TableMovabilityBase<Self>>::TableMoveInfo>;
 
-    /// Convert an abstract table address to a concrete physical address (u64)
-    /// which can be e.g. written into a page table entry
-    fn to_phys(addr: Self::TableAddr) -> PhysAddr;
-
-    /// Convert a concrete physical address (u64) which may have been e.g. read
-    /// from a page table entry back into an abstract table address
-    fn from_phys(addr: PhysAddr) -> Self::TableAddr;
-
-    /// Return the address of the root page table
-    fn root_table(&self) -> Self::TableAddr;
+    /// Change the root page table to one at a different address
+    ///
+    /// # Safety
+    /// This function will directly result in a change to virtual
+    /// memory translation, and so is inherently unsafe w.r.t. the
+    /// Rust memory model.  All the caveats listed on [`map`] apply as
+    /// well.
+    unsafe fn update_root(
+        &self,
+        new_root: <Self::TableMovability as TableMovabilityBase<Self>>::TableMoveInfo,
+    );
 }
 
 #[derive(Debug)]

@@ -17,7 +17,7 @@ limitations under the License.
 // This file is just dummy definitions at the moment, in order to
 // allow compiling the guest for real mode boot scenarios.
 
-use crate::vmem::{BasicMapping, Mapping, TableOps};
+use crate::vmem::{BasicMapping, Mapping, TableOps, TableReadOps, Void};
 
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_TABLE_SIZE: usize = 4096;
@@ -43,3 +43,10 @@ pub unsafe fn virt_to_phys<Op: TableOps>(
     #[allow(unreachable_code)]
     core::iter::empty()
 }
+
+pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {}
+impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<Op, Op::TableAddr>
+    for crate::vmem::MayMoveTable
+{
+}
+impl<Op: TableReadOps> TableMovability<Op, Void> for crate::vmem::MayNotMoveTable {}

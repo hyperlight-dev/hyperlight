@@ -88,17 +88,8 @@ impl core::convert::AsRef<Snapshot> for Snapshot {
         self
     }
 }
-impl hyperlight_common::vmem::TableOps for Snapshot {
+impl hyperlight_common::vmem::TableReadOps for Snapshot {
     type TableAddr = u64;
-    // This entire impl is only used in contexts which should
-    // absolutely never try to update a page table, and so in no case
-    // should possibly ever call an update_parent.  Therefore, this is
-    // impossible unless an extremely significant invariant violation
-    // has occurred.
-    #[allow(clippy::panic)]
-    unsafe fn alloc_table(&self) -> u64 {
-        panic!("alloc_table: cannot mutate the page tables inside a snapshot");
-    }
     fn entry_addr(addr: u64, offset: u64) -> u64 {
         addr + offset
     }
@@ -116,15 +107,6 @@ impl hyperlight_common::vmem::TableOps for Snapshot {
         #[allow(clippy::unwrap_used)]
         let n: [u8; 8] = pte_bytes.try_into().unwrap();
         u64::from_ne_bytes(n)
-    }
-    // This entire impl is only used in contexts which should
-    // absolutely never try to update a page table, and so in no case
-    // should possibly ever call an update_parent.  Therefore, this is
-    // impossible unless an extremely significant invariant violation
-    // has occurred.
-    #[allow(clippy::panic)]
-    unsafe fn write_entry(&self, _addr: u64, _entry: u64) -> Option<u64> {
-        panic!("write_entry: cannot mutate the page tables inside a snapshot");
     }
     fn to_phys(addr: u64) -> u64 {
         addr
@@ -209,17 +191,8 @@ impl<'a> SharedMemoryPageTableBuffer<'a> {
         }
     }
 }
-impl<'a> hyperlight_common::vmem::TableOps for SharedMemoryPageTableBuffer<'a> {
+impl<'a> hyperlight_common::vmem::TableReadOps for SharedMemoryPageTableBuffer<'a> {
     type TableAddr = u64;
-    // This entire impl is only used in contexts which should
-    // absolutely never try to update a page table, and so in no case
-    // should possibly ever call an update_parent.  Therefore, this is
-    // impossible unless an extremely significant invariant violation
-    // has occurred.
-    #[allow(clippy::panic)]
-    unsafe fn alloc_table(&self) -> u64 {
-        panic!("alloc_table: cannot mutate the page tables inside the guest");
-    }
     fn entry_addr(addr: u64, offset: u64) -> u64 {
         addr + offset
     }
@@ -237,15 +210,6 @@ impl<'a> hyperlight_common::vmem::TableOps for SharedMemoryPageTableBuffer<'a> {
         #[allow(clippy::unwrap_used)]
         let n: [u8; 8] = pte_bytes.try_into().unwrap();
         u64::from_ne_bytes(n)
-    }
-    // This entire impl is only used in contexts which should
-    // absolutely never try to update a page table, and so in no case
-    // should possibly ever call an update_parent.  Therefore, this is
-    // impossible unless an extremely significant invariant violation
-    // has occurred.
-    #[allow(clippy::panic)]
-    unsafe fn write_entry(&self, _addr: u64, _entry: u64) -> Option<u64> {
-        panic!("write_entry: cannot mutate the page tables inside the guest");
     }
     fn to_phys(addr: u64) -> u64 {
         addr

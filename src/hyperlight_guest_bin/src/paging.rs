@@ -62,16 +62,8 @@ impl core::convert::AsRef<GuestMappingOperations> for GuestMappingOperations {
         self
     }
 }
-impl vmem::TableOps for GuestMappingOperations {
+impl vmem::TableReadOps for GuestMappingOperations {
     type TableAddr = u64;
-    unsafe fn alloc_table(&self) -> u64 {
-        let page_addr = unsafe { alloc_phys_pages(1) };
-        unsafe {
-            self.phys_to_virt(page_addr)
-                .write_bytes(0u8, vmem::PAGE_TABLE_SIZE)
-        };
-        page_addr
-    }
     fn entry_addr(addr: u64, offset: u64) -> u64 {
         addr + offset
     }
@@ -82,6 +74,31 @@ impl vmem::TableOps for GuestMappingOperations {
             asm!("mov {}, qword ptr [{}]", out(reg) ret, in(reg) addr);
         }
         ret
+    }
+    fn to_phys(addr: u64) -> u64 {
+        addr
+    }
+    fn from_phys(addr: u64) -> u64 {
+        addr
+    }
+    fn root_table(&self) -> u64 {
+        let pml4_base: u64;
+        unsafe {
+            asm!("mov {}, cr3", out(reg) pml4_base);
+        }
+        pml4_base & !0xfff
+    }
+}
+
+impl vmem::TableOps for GuestMappingOperations {
+    type TableMovability = vmem::MayMoveTable;
+    unsafe fn alloc_table(&self) -> u64 {
+        let page_addr = unsafe { alloc_phys_pages(1) };
+        unsafe {
+            self.phys_to_virt(page_addr)
+                .write_bytes(0u8, vmem::PAGE_TABLE_SIZE)
+        };
+        page_addr
     }
     unsafe fn write_entry(&self, addr: u64, entry: u64) -> Option<u64> {
         let mut addr = addr;
@@ -105,18 +122,10 @@ impl vmem::TableOps for GuestMappingOperations {
         }
         ret
     }
-    fn to_phys(addr: u64) -> u64 {
-        addr
-    }
-    fn from_phys(addr: u64) -> u64 {
-        addr
-    }
-    fn root_table(&self) -> u64 {
-        let pml4_base: u64;
+    unsafe fn update_root(&self, new_root: u64) {
         unsafe {
-            asm!("mov {}, cr3", out(reg) pml4_base);
+            core::arch::asm!("mov cr3, {}", in(reg) <Self as vmem::TableReadOps>::to_phys(new_root));
         }
-        pml4_base & !0xfff
     }
 }
 

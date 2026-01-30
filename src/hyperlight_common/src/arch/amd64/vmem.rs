@@ -25,7 +25,9 @@ limitations under the License.
 //! The code uses an iterator-based approach to walk the page table hierarchy,
 //! allocating intermediate tables as needed and setting appropriate flags on leaf PTEs
 
-use crate::vmem::{BasicMapping, Mapping, MappingKind, TableOps};
+use crate::vmem::{
+    BasicMapping, Mapping, MappingKind, TableMovabilityBase, TableOps, TableReadOps, Void,
+};
 
 // Paging Flags
 //
@@ -78,7 +80,7 @@ const fn page_nx_flag(executable: bool) -> u64 {
 /// # Safety
 /// The caller must ensure that `entry_ptr` points to a valid page table entry.
 #[inline(always)]
-unsafe fn read_pte_if_present<Op: TableOps>(op: &Op, entry_ptr: Op::TableAddr) -> Option<u64> {
+unsafe fn read_pte_if_present<Op: TableReadOps>(op: &Op, entry_ptr: Op::TableAddr) -> Option<u64> {
     let pte = unsafe { op.read_entry(entry_ptr) };
     if (pte & PAGE_PRESENT) != 0 {
         Some(pte)
@@ -107,9 +109,37 @@ fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
         PAGE_PRESENT // P   - this entry is present
 }
 
+/// This trait is used to select appropriate implementations of
+/// [`UpdateParent`] to be used, depending on whether a particular
+/// implementation needs the ability to move tables.
+pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {
+    type RootUpdateParent: UpdateParent<Op, TableMoveInfo = TableMoveInfo>;
+    fn root_update_parent() -> Self::RootUpdateParent;
+}
+impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<Op, Op::TableAddr>
+    for crate::vmem::MayMoveTable
+{
+    type RootUpdateParent = UpdateParentRoot;
+    fn root_update_parent() -> Self::RootUpdateParent {
+        UpdateParentRoot {}
+    }
+}
+impl<Op: TableReadOps> TableMovability<Op, Void> for crate::vmem::MayNotMoveTable {
+    type RootUpdateParent = UpdateParentNone;
+    fn root_update_parent() -> Self::RootUpdateParent {
+        UpdateParentNone {}
+    }
+}
+
 /// Helper function to write a page table entry, updating the whole
 /// chain of tables back to the root if necessary
-unsafe fn write_entry_updating<Op: TableOps, P: UpdateParent<Op>>(
+unsafe fn write_entry_updating<
+    Op: TableOps,
+    P: UpdateParent<
+            Op,
+            TableMoveInfo = <Op::TableMovability as TableMovabilityBase<Op>>::TableMoveInfo,
+        >,
+>(
     op: &Op,
     parent: P,
     addr: Op::TableAddr,
@@ -128,14 +158,26 @@ unsafe fn write_entry_updating<Op: TableOps, P: UpdateParent<Op>>(
 /// This is done via a trait so that the selected impl knows the exact
 /// nesting depth of tables, in order to assist
 /// inlining/specialisation in generating efficient code.
-trait UpdateParent<Op: TableOps>: Copy {
-    fn update_parent(self, op: &Op, new_ptr: Op::TableAddr);
+///
+/// The trait definition only bounds its parameter by
+/// [`TableReadOps`], since [`UpdateParentNone`] does not need to be
+/// able to actually write to the tables.
+pub trait UpdateParent<Op: TableReadOps + ?Sized>: Copy {
+    /// The type of the information about a moved table which is
+    /// needed in order to update its parent.
+    type TableMoveInfo;
+    /// The [`UpdateParent`] type that should be used when going down
+    /// another level in the table, in order to add the current level
+    /// to the chain of ancestors to be updated.
+    type ChildType: UpdateParent<Op, TableMoveInfo = Self::TableMoveInfo>;
+    fn update_parent(self, op: &Op, new_ptr: Self::TableMoveInfo);
+    fn for_child_at_entry(self, entry_ptr: Op::TableAddr) -> Self::ChildType;
 }
 
 /// A struct implementing [`UpdateParent`] that keeps track of the
 /// fact that the parent table is itself another table, whose own
 /// ancestors may need to be recursively updated
-struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
+pub struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
     parent: P,
     entry_ptr: Op::TableAddr,
 }
@@ -150,45 +192,64 @@ impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
         UpdateParentTable { parent, entry_ptr }
     }
 }
-impl<Op: TableOps, P: UpdateParent<Op>> UpdateParent<Op> for UpdateParentTable<Op, P> {
+impl<
+    Op: TableOps<TableMovability = crate::vmem::MayMoveTable>,
+    P: UpdateParent<Op, TableMoveInfo = Op::TableAddr>,
+> UpdateParent<Op> for UpdateParentTable<Op, P>
+{
+    type TableMoveInfo = Op::TableAddr;
+    type ChildType = UpdateParentTable<Op, Self>;
     fn update_parent(self, op: &Op, new_ptr: Op::TableAddr) {
         let pte = pte_for_table::<Op>(new_ptr);
         unsafe {
             write_entry_updating(op, self.parent, self.entry_ptr, pte);
         }
     }
-}
-
-/// A struct implementing [`UpdateParent`] that keeps track of the
-/// fact that the parent "table" is actually the CR3 system register.
-#[derive(Copy, Clone)]
-struct UpdateParentCR3 {}
-impl<Op: TableOps> UpdateParent<Op> for UpdateParentCR3 {
-    fn update_parent(self, _op: &Op, new_ptr: Op::TableAddr) {
-        unsafe {
-            core::arch::asm!("mov cr3, {}", in(reg) Op::to_phys(new_ptr));
-        }
+    fn for_child_at_entry(self, entry_ptr: Op::TableAddr) -> Self::ChildType {
+        Self::ChildType::new(self, entry_ptr)
     }
 }
 
-/// A struct implementing [`UpdateParent`] that panics when used, for
-/// the occasional situations in which we should never do an update
+/// A struct implementing [`UpdateParent`] that keeps track of the
+/// fact that the parent "table" is actually the root (e.g. the value
+/// of CR3 in the guest)
 #[derive(Copy, Clone)]
-struct UpdateParentNone {}
-impl<Op: TableOps> UpdateParent<Op> for UpdateParentNone {
-    // This is only used in contexts which should absolutely never try
-    // to update a page table, and so in no case should possibly ever
-    // call an update_parent.  Therefore, this is impossible unless an
-    // extremely significant invariant violation has occurred.
-    #[allow(clippy::panic)]
-    fn update_parent(self, _op: &Op, _new_ptr: Op::TableAddr) {
-        panic!("UpdateParentNone: tried to update parent");
+pub struct UpdateParentRoot {}
+impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> UpdateParent<Op>
+    for UpdateParentRoot
+{
+    type TableMoveInfo = Op::TableAddr;
+    type ChildType = UpdateParentTable<Op, Self>;
+    fn update_parent(self, op: &Op, new_ptr: Op::TableAddr) {
+        unsafe {
+            op.update_root(new_ptr);
+        }
+    }
+    fn for_child_at_entry(self, entry_ptr: Op::TableAddr) -> Self::ChildType {
+        Self::ChildType::new(self, entry_ptr)
+    }
+}
+
+/// A struct implementing [`UpdateParent`] that is impossible to use
+/// (since its [`update_parent`] method takes `Void`), used when it is
+/// statically known that a table operation cannot result in a need to
+/// update ancestors.
+#[derive(Copy, Clone)]
+pub struct UpdateParentNone {}
+impl<Op: TableReadOps> UpdateParent<Op> for UpdateParentNone {
+    type TableMoveInfo = Void;
+    type ChildType = Self;
+    fn update_parent(self, _op: &Op, impossible: Void) {
+        match impossible {}
+    }
+    fn for_child_at_entry(self, _entry_ptr: Op::TableAddr) -> Self {
+        self
     }
 }
 
 /// A helper structure indicating a mapping operation that needs to be
 /// performed
-struct MapRequest<Op: TableOps, P: UpdateParent<Op>> {
+struct MapRequest<Op: TableReadOps, P: UpdateParent<Op>> {
     table_base: Op::TableAddr,
     vmin: VirtAddr,
     len: u64,
@@ -197,7 +258,7 @@ struct MapRequest<Op: TableOps, P: UpdateParent<Op>> {
 
 /// A helper structure indicating that a particular PTE needs to be
 /// modified
-struct MapResponse<Op: TableOps, P: UpdateParent<Op>> {
+struct MapResponse<Op: TableReadOps, P: UpdateParent<Op>> {
     entry_ptr: Op::TableAddr,
     vmin: VirtAddr,
     len: u64,
@@ -216,11 +277,16 @@ struct MapResponse<Op: TableOps, P: UpdateParent<Op>> {
 /// - PDPT: HIGH_BIT=38, LOW_BIT=30 (9 bits = 512 entries, each covering 1GB)
 /// - PD:   HIGH_BIT=29, LOW_BIT=21 (9 bits = 512 entries, each covering 2MB)
 /// - PT:   HIGH_BIT=20, LOW_BIT=12 (9 bits = 512 entries, each covering 4KB)
-struct ModifyPteIterator<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps, P: UpdateParent<Op>> {
+struct ModifyPteIterator<
+    const HIGH_BIT: u8,
+    const LOW_BIT: u8,
+    Op: TableReadOps,
+    P: UpdateParent<Op>,
+> {
     request: MapRequest<Op, P>,
     n: u64,
 }
-impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps, P: UpdateParent<Op>> Iterator
+impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableReadOps, P: UpdateParent<Op>> Iterator
     for ModifyPteIterator<HIGH_BIT, LOW_BIT, Op, P>
 {
     type Item = MapResponse<Op, P>;
@@ -286,7 +352,7 @@ impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps, P: UpdateParent<Op>> I
         })
     }
 }
-fn modify_ptes<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps, P: UpdateParent<Op>>(
+fn modify_ptes<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableReadOps, P: UpdateParent<Op>>(
     r: MapRequest<Op, P>,
 ) -> ModifyPteIterator<HIGH_BIT, LOW_BIT, Op, P> {
     ModifyPteIterator { request: r, n: 0 }
@@ -296,11 +362,20 @@ fn modify_ptes<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableOps, P: UpdatePar
 /// # Safety
 /// This function modifies page table data structures, and should not be called concurrently
 /// with any other operations that modify the page tables.
-unsafe fn alloc_pte_if_needed<Op: TableOps, P: UpdateParent<Op>>(
+unsafe fn alloc_pte_if_needed<
+    Op: TableOps,
+    P: UpdateParent<
+            Op,
+            TableMoveInfo = <Op::TableMovability as TableMovabilityBase<Op>>::TableMoveInfo,
+        >,
+>(
     op: &Op,
     x: MapResponse<Op, P>,
-) -> MapRequest<Op, UpdateParentTable<Op, P>> {
-    let new_update_parent = UpdateParentTable::new(x.update_parent, x.entry_ptr);
+) -> MapRequest<Op, P::ChildType>
+where
+    P::ChildType: UpdateParent<Op>,
+{
+    let new_update_parent = x.update_parent.for_child_at_entry(x.entry_ptr);
     if let Some(pte) = unsafe { read_pte_if_present(op, x.entry_ptr) } {
         return MapRequest {
             table_base: Op::from_phys(pte & PTE_ADDR_MASK),
@@ -330,7 +405,13 @@ unsafe fn alloc_pte_if_needed<Op: TableOps, P: UpdateParent<Op>>(
 /// with any other operations that modify the page tables.
 #[allow(clippy::identity_op)]
 #[allow(clippy::precedence)]
-unsafe fn map_page<Op: TableOps, P: UpdateParent<Op>>(
+unsafe fn map_page<
+    Op: TableOps,
+    P: UpdateParent<
+            Op,
+            TableMoveInfo = <Op::TableMovability as TableMovabilityBase<Op>>::TableMoveInfo,
+        >,
+>(
     op: &Op,
     mapping: &Mapping,
     r: MapResponse<Op, P>,
@@ -383,7 +464,7 @@ pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
         table_base: op.root_table(),
         vmin: mapping.virt_base,
         len: mapping.len,
-        update_parent: UpdateParentCR3 {},
+        update_parent: Op::TableMovability::root_update_parent(),
     })
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
     .flat_map(modify_ptes::<38, 30, Op, _>)
@@ -399,15 +480,18 @@ pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
 /// This function traverses page table data structures, and should not
 /// be called concurrently with any other operations that modify the
 /// page table.
-unsafe fn require_pte_exist<Op: TableOps, P: UpdateParent<Op>>(
+unsafe fn require_pte_exist<Op: TableReadOps, P: UpdateParent<Op>>(
     op: &Op,
     x: MapResponse<Op, P>,
-) -> Option<MapRequest<Op, UpdateParentTable<Op, P>>> {
+) -> Option<MapRequest<Op, P::ChildType>>
+where
+    P::ChildType: UpdateParent<Op>,
+{
     unsafe { read_pte_if_present(op, x.entry_ptr) }.map(|pte| MapRequest {
         table_base: Op::from_phys(pte & PTE_ADDR_MASK),
         vmin: x.vmin,
         len: x.len,
-        update_parent: UpdateParentTable::new(x.update_parent, x.entry_ptr),
+        update_parent: x.update_parent.for_child_at_entry(x.entry_ptr),
     })
 }
 
@@ -429,7 +513,7 @@ unsafe fn require_pte_exist<Op: TableOps, P: UpdateParent<Op>>(
 /// operations structure owns a large buffer, a reference can instead
 /// be passed.
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn virt_to_phys<'a, Op: TableOps + 'a>(
+pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
     op: impl core::convert::AsRef<Op> + Copy + 'a,
     address: u64,
     len: u64,
@@ -480,7 +564,10 @@ mod tests {
     use core::cell::RefCell;
 
     use super::*;
-    use crate::vmem::{BasicMapping, Mapping, MappingKind, PAGE_TABLE_ENTRIES_PER_TABLE, TableOps};
+    use crate::vmem::{
+        BasicMapping, Mapping, MappingKind, MayNotMoveTable, PAGE_TABLE_ENTRIES_PER_TABLE,
+        TableOps, TableReadOps, Void,
+    };
 
     /// A mock TableOps implementation for testing that stores page tables in memory
     /// needed because the `GuestPageTableBuffer` is in hyperlight_host which would cause a circular dependency
@@ -512,15 +599,8 @@ mod tests {
         }
     }
 
-    impl TableOps for MockTableOps {
+    impl TableReadOps for MockTableOps {
         type TableAddr = (usize, usize); // (table_index, entry_index)
-
-        unsafe fn alloc_table(&self) -> Self::TableAddr {
-            let mut tables = self.tables.borrow_mut();
-            let idx = tables.len();
-            tables.push([0u64; PAGE_TABLE_ENTRIES_PER_TABLE]);
-            (idx, 0)
-        }
 
         fn entry_addr(addr: Self::TableAddr, entry_offset: u64) -> Self::TableAddr {
             // Convert to physical address, add offset, convert back
@@ -530,11 +610,6 @@ mod tests {
 
         unsafe fn read_entry(&self, addr: Self::TableAddr) -> u64 {
             self.tables.borrow()[addr.0][addr.1]
-        }
-
-        unsafe fn write_entry(&self, addr: Self::TableAddr, entry: u64) -> Option<Self::TableAddr> {
-            self.tables.borrow_mut()[addr.0][addr.1] = entry;
-            None
         }
 
         fn to_phys(addr: Self::TableAddr) -> PhysAddr {
@@ -550,6 +625,26 @@ mod tests {
 
         fn root_table(&self) -> Self::TableAddr {
             (0, 0)
+        }
+    }
+
+    impl TableOps for MockTableOps {
+        type TableMovability = MayNotMoveTable;
+
+        unsafe fn alloc_table(&self) -> Self::TableAddr {
+            let mut tables = self.tables.borrow_mut();
+            let idx = tables.len();
+            tables.push([0u64; PAGE_TABLE_ENTRIES_PER_TABLE]);
+            (idx, 0)
+        }
+
+        unsafe fn write_entry(&self, addr: Self::TableAddr, entry: u64) -> Option<Void> {
+            self.tables.borrow_mut()[addr.0][addr.1] = entry;
+            None
+        }
+
+        unsafe fn update_root(&self, impossible: Void) {
+            match impossible {}
         }
     }
 

@@ -63,16 +63,8 @@ pub(crate) struct GuestPageTableBuffer {
     phys_base: usize,
 }
 
-impl vmem::TableOps for GuestPageTableBuffer {
+impl vmem::TableReadOps for GuestPageTableBuffer {
     type TableAddr = (usize, usize); // (table_index, entry_index)
-
-    unsafe fn alloc_table(&self) -> (usize, usize) {
-        let mut b = self.buffer.borrow_mut();
-        let table_index = b.len() / PAGE_TABLE_SIZE;
-        let new_len = b.len() + PAGE_TABLE_SIZE;
-        b.resize(new_len, 0);
-        (self.phys_base / PAGE_TABLE_SIZE + table_index, 0)
-    }
 
     fn entry_addr(addr: (usize, usize), offset: u64) -> (usize, usize) {
         // Convert to physical address, add offset, convert back
@@ -90,20 +82,6 @@ impl vmem::TableOps for GuestPageTableBuffer {
             .unwrap_or(0)
     }
 
-    unsafe fn write_entry(
-        &self,
-        addr: (usize, usize),
-        entry: PageTableEntry,
-    ) -> Option<(usize, usize)> {
-        let mut b = self.buffer.borrow_mut();
-        let byte_offset =
-            (addr.0 - self.phys_base / PAGE_TABLE_SIZE) * PAGE_TABLE_SIZE + addr.1 * 8;
-        if let Some(slice) = b.get_mut(byte_offset..byte_offset + 8) {
-            slice.copy_from_slice(&entry.to_ne_bytes());
-        }
-        None
-    }
-
     fn to_phys(addr: (usize, usize)) -> PhysAddr {
         (addr.0 as u64 * PAGE_TABLE_SIZE as u64) + (addr.1 as u64 * 8)
     }
@@ -117,6 +95,35 @@ impl vmem::TableOps for GuestPageTableBuffer {
 
     fn root_table(&self) -> (usize, usize) {
         (self.phys_base / PAGE_TABLE_SIZE, 0)
+    }
+}
+impl vmem::TableOps for GuestPageTableBuffer {
+    type TableMovability = vmem::MayNotMoveTable;
+
+    unsafe fn alloc_table(&self) -> (usize, usize) {
+        let mut b = self.buffer.borrow_mut();
+        let table_index = b.len() / PAGE_TABLE_SIZE;
+        let new_len = b.len() + PAGE_TABLE_SIZE;
+        b.resize(new_len, 0);
+        (self.phys_base / PAGE_TABLE_SIZE + table_index, 0)
+    }
+
+    unsafe fn write_entry(
+        &self,
+        addr: (usize, usize),
+        entry: PageTableEntry,
+    ) -> Option<vmem::Void> {
+        let mut b = self.buffer.borrow_mut();
+        let byte_offset =
+            (addr.0 - self.phys_base / PAGE_TABLE_SIZE) * PAGE_TABLE_SIZE + addr.1 * 8;
+        if let Some(slice) = b.get_mut(byte_offset..byte_offset + 8) {
+            slice.copy_from_slice(&entry.to_ne_bytes());
+        }
+        None
+    }
+
+    unsafe fn update_root(&self, impossible: vmem::Void) {
+        match impossible {}
     }
 }
 
