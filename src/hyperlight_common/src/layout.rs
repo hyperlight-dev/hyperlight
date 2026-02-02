@@ -32,3 +32,6 @@ pub fn scratch_base_gpa(size: usize) -> u64 {
 pub fn scratch_base_gva(size: usize) -> u64 {
     (MAX_GVA - size + 1) as u64
 }
+
+/// Compute the minimum scratch region size needed for a sandbox.
+pub use arch::min_scratch_size;

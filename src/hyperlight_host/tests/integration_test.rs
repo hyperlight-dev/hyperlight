@@ -20,7 +20,6 @@ use std::thread;
 use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
@@ -593,10 +592,6 @@ fn guest_panic_no_alloc() {
         )
         .unwrap_err();
 
-    if let HyperlightError::StackOverflow() = res {
-        panic!("panic on OOM caused stack overflow, this implies allocation in panic handler");
-    }
-
     assert!(matches!(
         res,
         HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
@@ -605,7 +600,6 @@ fn guest_panic_no_alloc() {
 
 // Tests libc alloca
 #[test]
-#[ignore] // this test will be re-enabled in the next PR
 fn dynamic_stack_allocate_c_guest() {
     let path = c_simple_guest_as_string().unwrap();
     let guest_path = GuestBinary::FilePath(path);
@@ -618,7 +612,9 @@ fn dynamic_stack_allocate_c_guest() {
     let res = sbox1
         .call::<i32>("StackAllocate", 0x800_0000_i32)
         .unwrap_err();
-    assert!(matches!(res, HyperlightError::StackOverflow()));
+    assert!(
+        matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
+    );
 }
 
 // checks that a small buffer on stack works
@@ -632,16 +628,16 @@ fn static_stack_allocate() {
 
 // checks that a huge buffer on stack fails with stackoverflow
 #[test]
-#[ignore] // this test will be re-enabled in the next PR
 fn static_stack_allocate_overflow() {
     let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
     let res = sbox1.call::<i32>("LargeVar", ()).unwrap_err();
-    assert!(matches!(res, HyperlightError::StackOverflow()));
+    assert!(
+        matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
+    );
 }
 
 // checks that a recursive function with stack allocation works, (that chkstk can be called without overflowing)
 #[test]
-#[ignore] // this test will be re-enabled in the next PR
 fn recursive_stack_allocate() {
     let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
@@ -650,62 +646,14 @@ fn recursive_stack_allocate() {
     sbox1.call::<i32>("StackOverflow", iterations).unwrap();
 }
 
-// checks stack guard page (between guest stack and heap)
-// is properly set up and cannot be written to
 #[test]
-#[ignore] // this test will be re-enabled in the next PR
-fn guard_page_check() {
-    // this test is rust-guest only
-    let offsets_from_page_guard_start: Vec<i64> = vec![
-        -1024,
-        -1,
-        0,                    // should fail
-        1,                    // should fail
-        1024,                 // should fail
-        PAGE_SIZE as i64 - 1, // should fail
-        PAGE_SIZE as i64,
-        PAGE_SIZE as i64 + 1024,
-    ];
-
-    let guard_range = 0..PAGE_SIZE as i64;
-
-    for offset in offsets_from_page_guard_start {
-        // we have to create a sandbox each iteration because can't reuse after MMIO error in release mode
-
-        let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
-        let result = sbox1.call::<String>("test_write_raw_ptr", offset);
-        if guard_range.contains(&offset) {
-            // should have failed
-            assert!(matches!(
-                result.unwrap_err(),
-                HyperlightError::StackOverflow()
-            ));
-        } else {
-            assert!(result.is_ok(), "offset {} should pass", offset)
-        }
-    }
-}
-
-#[test]
-#[ignore] // this test will be re-enabled in the next PR
 fn guard_page_check_2() {
     // this test is rust-guest only
     let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
 
-    let result = sbox1.call::<()>("InfiniteRecursion", ()).unwrap_err();
-    assert!(matches!(result, HyperlightError::StackOverflow()));
-}
-
-#[test]
-fn execute_on_stack() {
-    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
-
-    let result = sbox1.call::<String>("ExecuteOnStack", ()).unwrap_err();
-
-    let err = result.to_string();
+    let res = sbox1.call::<()>("InfiniteRecursion", ()).unwrap_err();
     assert!(
-        // exception that indicates a page fault
-        err.contains("PageFault")
+        matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
     );
 }
 
@@ -730,15 +678,15 @@ fn execute_on_heap() {
 
 // checks that a recursive function with stack allocation eventually fails with stackoverflow
 #[test]
-#[ignore] // this test will be re-enabled in the next PR
 fn recursive_stack_allocate_overflow() {
     let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
 
-    let iterations = 10_i32;
+    let iterations = 32_i32;
 
     let res = sbox1.call::<()>("StackOverflow", iterations).unwrap_err();
-    println!("{:?}", res);
-    assert!(matches!(res, HyperlightError::StackOverflow()));
+    assert!(
+        matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
+    );
 }
 
 // Check that log messages are emitted correctly from the guest

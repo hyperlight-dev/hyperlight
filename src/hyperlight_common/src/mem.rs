@@ -28,16 +28,6 @@ pub struct GuestMemoryRegion {
     pub ptr: u64,
 }
 
-/// A memory region in the guest address space that is used for the stack
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct GuestStack {
-    /// The top of the user stack
-    pub min_user_stack_address: u64,
-    /// The user stack pointer
-    pub user_stack_address: u64,
-}
-
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct HyperlightPEB {
@@ -46,5 +36,4 @@ pub struct HyperlightPEB {
     pub output_stack: GuestMemoryRegion,
     pub init_data: GuestMemoryRegion,
     pub guest_heap: GuestMemoryRegion,
-    pub guest_stack: GuestStack,
 }

@@ -67,6 +67,8 @@ pub struct Snapshot {
     hash: [u8; 32],
     /// The address of the root page table
     root_pt_gpa: u64,
+    /// The address of the top of the guest stack
+    stack_top_gva: u64,
 
     /// Preinitialisation entry point for snapshots created directly from a
     /// guest binary.
@@ -142,11 +144,11 @@ fn hash(memory: &[u8], regions: &[MemoryRegion]) -> Result<[u8; 32]> {
                 format!("{:?}", rgn),
             ));
         }
-        hasher.update(&usize::to_le_bytes(guest_len));
-        hasher.update(&u32::to_le_bytes(rgn.flags.bits()));
         // Ignore [`MemoryRegion::region_type`], since it is extra
         // information for debugging rather than a core part of the
         // identity of the snapshot/workload.
+        hasher.update(&usize::to_le_bytes(guest_len));
+        hasher.update(&u32::to_le_bytes(rgn.flags.bits()));
     }
     // Ignore [`load_info`], since it is extra information for
     // debugging rather than a core part of the identity of the
@@ -348,7 +350,6 @@ impl Snapshot {
         let mut layout = crate::mem::layout::SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
-            usize::try_from(cfg.get_stack_size())?,
             usize::try_from(cfg.get_heap_size())?,
             cfg.get_scratch_size(),
             guest_blob_size,
@@ -413,6 +414,10 @@ impl Snapshot {
         #[cfg(not(feature = "init-paging"))]
         let pt_base_gpa = 0usize;
 
+        let exn_stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
+            - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
+            + 1;
+
         let extra_regions = Vec::new();
         let hash = hash(&memory, &extra_regions)?;
 
@@ -424,10 +429,17 @@ impl Snapshot {
             load_info,
             hash,
             root_pt_gpa: pt_base_gpa as u64,
+            stack_top_gva: exn_stack_top_gva,
             preinitialise: Some(load_addr + entrypoint_offset),
         })
     }
 
+    // It might be nice to consider moving at least stack_top_gva into
+    // layout, and sharing (via RwLock or similar) the layout between
+    // the (host-side) mem mgr (where it can be passed in here) and
+    // the sandbox vm itself (which modifies it as it receives
+    // requests from the sandbox).
+    #[allow(clippy::too_many_arguments)]
     /// Take a snapshot of the memory in `shared_mem`, then create a new
     /// instance of `Self` with the snapshot stored therein.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
@@ -439,6 +451,7 @@ impl Snapshot {
         load_info: LoadInfo,
         regions: Vec<MemoryRegion>,
         root_pt_gpa: u64,
+        stack_top_gva: u64,
     ) -> Result<Self> {
         let (new_root_pt_gpa, memory) = shared_mem.with_exclusivity(|snap_e| {
             scratch_mem.with_exclusivity(|scratch_e| {
@@ -488,6 +501,7 @@ impl Snapshot {
             load_info,
             hash,
             root_pt_gpa: new_root_pt_gpa as u64,
+            stack_top_gva,
             preinitialise: None,
         })
     }
@@ -525,6 +539,10 @@ impl Snapshot {
 
     pub(crate) fn root_pt_gpa(&self) -> u64 {
         self.root_pt_gpa
+    }
+
+    pub(crate) fn stack_top_gva(&self) -> u64 {
+        self.stack_top_gva
     }
 
     pub(crate) fn preinitialise(&self) -> Option<u64> {
@@ -570,7 +588,7 @@ mod tests {
         snapshot_mem.copy_from_slice(&pt_bytes, PAGE_SIZE).unwrap();
         let cfg = crate::sandbox::SandboxConfiguration::default();
         let mgr = SandboxMemoryManager::new(
-            SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0x3000, 0, None).unwrap(),
+            SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0x3000, None).unwrap(),
             snapshot_mem,
             scratch_mem,
             0.into(),
@@ -598,6 +616,7 @@ mod tests {
             LoadInfo::dummy(),
             Vec::new(),
             pt_base,
+            0,
         )
         .unwrap();
 
@@ -627,6 +646,7 @@ mod tests {
             LoadInfo::dummy(),
             Vec::new(),
             pt_base,
+            0,
         )
         .unwrap();
         assert_eq!(snapshot.mem_size(), size);
@@ -647,6 +667,7 @@ mod tests {
             LoadInfo::dummy(),
             Vec::new(),
             pt_base,
+            0,
         )
         .unwrap();
 
@@ -661,6 +682,7 @@ mod tests {
             LoadInfo::dummy(),
             Vec::new(),
             pt_base,
+            0,
         )
         .unwrap();
 

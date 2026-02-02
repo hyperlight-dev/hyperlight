@@ -21,3 +21,7 @@ pub const MAX_GVA: usize = 0xffff_efff;
 pub const SNAPSHOT_PT_GVA_MIN: usize = 0xef00_0000;
 pub const SNAPSHOT_PT_GVA_MAX: usize = 0xefff_efff;
 pub const MAX_GPA: usize = 0xffff_ffff;
+
+pub fn min_scratch_size() -> usize {
+    1 * crate::vmem::PAGE_SIZE
+}

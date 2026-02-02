@@ -18,6 +18,7 @@ limitations under the License.
 // allow compiling the guest for real mode boot scenarios.
 
 pub const MAIN_STACK_TOP_GVA: usize = 0xdfff_efff;
+pub const MAIN_STACK_LIMIT_GVA: usize = 0xdf00_0000;
 
 pub fn scratch_size() -> u64 {
     hyperlight_common::vmem::PAGE_SIZE as u64

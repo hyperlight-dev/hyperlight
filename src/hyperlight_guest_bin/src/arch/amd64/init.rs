@@ -104,27 +104,56 @@ unsafe fn init_tss(pc: *mut ProcCtrl) {
     }
 }
 
+/// To initialise the main stack, we just pre-emptively map the first
+/// page of it.
+unsafe fn init_stack() -> u64 {
+    use hyperlight_guest::layout::MAIN_STACK_TOP_GVA;
+    let stack_top_page_base = (MAIN_STACK_TOP_GVA - 1) & !0xfff;
+    unsafe {
+        crate::paging::map_region(
+            hyperlight_guest::prim_alloc::alloc_phys_pages(1),
+            stack_top_page_base as *mut u8,
+            hyperlight_common::vmem::PAGE_SIZE as u64,
+        );
+    }
+    MAIN_STACK_TOP_GVA
+}
+
 /// Machine-specific initialisation; calls [`crate::generic_init`]
 /// once stack, CoW, etc have been set up.
 #[unsafe(no_mangle)]
 pub extern "C" fn entrypoint(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
     unsafe {
+        // Allocate a VA for processor control structures which must
+        // survive snapshotting at the same VA.
         let pc = ProcCtrl::init();
+
         init_gdt(pc);
         init_tss(pc);
         init_idt(pc);
-        call_generic_init(peb_address, seed, ops, max_log_level);
+        let stack_top = init_stack();
+
+        // Architecture early init is complete! We pivot now to
+        // executing on the main stack, and jump into generic
+        // initialisation code in lib.rs
+        pivot_stack(peb_address, seed, ops, max_log_level, stack_top);
     }
 }
 
 unsafe extern "C" {
-    unsafe fn call_generic_init(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) -> !;
+    unsafe fn pivot_stack(
+        peb_address: u64,
+        seed: u64,
+        ops: u64,
+        max_log_level: u64,
+        stack_top: u64,
+    ) -> !;
 }
 
 core::arch::global_asm!("
-    .global call_generic_init\n
-    call_generic_init:\n
-    sub rsp, 0x8\n
+    .global pivot_stack\n
+    pivot_stack:\n
+    mov rsp, r8\n
     call {generic_init}\n
     hlt\n
 ", generic_init = sym crate::generic_init);

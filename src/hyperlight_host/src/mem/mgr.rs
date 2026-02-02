@@ -181,6 +181,7 @@ where
         sandbox_id: u64,
         mapped_regions: Vec<MemoryRegion>,
         root_pt_gpa: u64,
+        rsp_gva: u64,
     ) -> Result<Snapshot> {
         Snapshot::new(
             &mut self.shared_mem,
@@ -190,6 +191,7 @@ where
             crate::mem::exe::LoadInfo::dummy(),
             mapped_regions,
             root_pt_gpa,
+            rsp_gva,
         )
     }
 }

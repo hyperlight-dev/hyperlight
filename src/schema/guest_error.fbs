@@ -9,7 +9,6 @@ enum  ErrorCode: ulong {
     GispatchFunctionPointerNotSet = 6,              // Host Call Dispatch Function Pointer is not present.
     OutbError = 7,                                  // Error in OutB Function
     UnknownError = 8,                               // The guest error is unknown.
-    StackOverflow = 9,                              // Guest stack allocations caused stack overflow
     GsCheckFailed  = 10,                            // __security_check_cookie failed
     TooManyGuestFunctions = 11,                     // The guest tried to register too many guest functions
     FailureInDlmalloc = 12,                         // this error is set when dlmalloc calls ABORT (e.g. function defined in  ABORT (dlmalloc_abort() calls setError with this errorcode)

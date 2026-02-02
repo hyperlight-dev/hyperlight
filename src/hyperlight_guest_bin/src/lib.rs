@@ -119,8 +119,10 @@ pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();
 
-pub static mut MIN_STACK_ADDRESS: u64 = 0;
-
+/// The size of one page in the host OS, which may have some impacts
+/// on how buffers for host consumption should be aligned. Code only
+/// working with the guest page tables should use
+/// [`hyperlight_common::vm::PAGE_SIZE`] instead.
 pub static mut OS_PAGE_SIZE: u32 = 0;
 
 // === Panic Handler ===
@@ -201,12 +203,6 @@ pub(crate) extern "C" fn generic_init(peb_address: u64, seed: u64, ops: u64, max
 
     unsafe {
         (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
-
-        // This static is to make it easier to implement the __chkstk
-        // function in assembly.  It also means that should we change
-        // the layout of the struct in the future, we don't have to
-        // change the assembly code.
-        MIN_STACK_ADDRESS = (*peb_ptr).guest_stack.min_user_stack_address;
 
         let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
         // Set the seed for the random number generator for C code using rand;

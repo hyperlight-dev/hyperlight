@@ -67,6 +67,9 @@ pub struct UninitializedSandbox {
     #[cfg(any(crashdump, gdb))]
     pub(crate) rt_cfg: SandboxRuntimeConfig,
     pub(crate) load_info: crate::mem::exe::LoadInfo,
+    // This is needed to convey the stack pointer between the snapshot
+    // and the HyperlightVm creation
+    pub(crate) stack_top_gva: u64,
 }
 
 impl Debug for UninitializedSandbox {
@@ -211,6 +214,7 @@ impl UninitializedSandbox {
             #[cfg(any(crashdump, gdb))]
             rt_cfg,
             load_info: snapshot.load_info(),
+            stack_top_gva: snapshot.stack_top_gva(),
         };
 
         // If we were passed a writer for host print register it otherwise use the default.
@@ -368,7 +372,6 @@ mod tests {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_input_data_size(0x1000);
             cfg.set_output_data_size(0x1000);
-            cfg.set_stack_size(0x1000);
             cfg.set_heap_size(0x1000);
             Some(cfg)
         };
@@ -1088,10 +1091,10 @@ mod tests {
             let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
-        // Test 3: Create snapshot with custom stack size
+        // Test 3: Create snapshot with custom scratch size
         {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_stack_size(128 * 1024); // 128KB stack
+            cfg.set_scratch_size(128 * 1024); // 128KB scratch
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 
@@ -1139,7 +1142,7 @@ mod tests {
         {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(32 * 1024 * 1024); // 32MB heap
-            cfg.set_stack_size(256 * 1024); // 256KB stack
+            cfg.set_scratch_size(256 * 1024); // 256KB scratch
             cfg.set_input_data_size(128 * 1024); // 128KB input
             cfg.set_output_data_size(128 * 1024); // 128KB output
 
@@ -1264,7 +1267,7 @@ mod tests {
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
             let orig_snapshot = Arc::new(
                 Snapshot::from_env(env, Default::default())
-                    .expect("Failed to create snapshot with default config")
+                    .expect("Failed to create snapshot with default config"),
             );
             let orig_sandbox = UninitializedSandbox::from_snapshot(
                 orig_snapshot,
@@ -1276,7 +1279,9 @@ mod tests {
             let mut initialized_sandbox = orig_sandbox
                 .evolve()
                 .expect("Failed to evolve orig_sandbox");
-            let  new_snapshot = initialized_sandbox.snapshot().expect("Failed to create new_snapshot");
+            let new_snapshot = initialized_sandbox
+                .snapshot()
+                .expect("Failed to create new_snapshot");
             let new_sandbox = UninitializedSandbox::from_snapshot(
                 new_snapshot,
                 None,

@@ -70,7 +70,7 @@ fuzz_target!(
     init: {
         let mut cfg = SandboxConfiguration::default();
         // In local tests, 256 KiB seemed sufficient for deep recursion
-        cfg.set_stack_size(256 * 1024);
+        cfg.set_scratch_size(256 * 1024);
         let path = simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing");
         let u_sbox = UninitializedSandbox::new(
             GuestBinary::FilePath(path),

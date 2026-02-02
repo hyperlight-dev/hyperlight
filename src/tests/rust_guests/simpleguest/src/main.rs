@@ -16,7 +16,7 @@ limitations under the License.
 
 #![no_std]
 #![no_main]
-const DEFAULT_GUEST_STACK_SIZE: i32 = 65536; // default stack size
+const DEFAULT_GUEST_SCRATCH_SIZE: i32 = 0x40000; // default scratch size
 const MAX_BUFFER_SIZE: usize = 1024;
 // ^^^ arbitrary value for max buffer size
 // to support allocations when we'd get a
@@ -32,7 +32,6 @@ use alloc::{format, vec};
 use core::alloc::Layout;
 use core::ffi::c_char;
 use core::hint::black_box;
-use core::ptr::write_volatile;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
@@ -42,7 +41,6 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
-use hyperlight_common::mem::PAGE_SIZE;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
@@ -53,7 +51,7 @@ use hyperlight_guest_bin::host_comm::{
     print_output_with_host_print, read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
-use hyperlight_guest_bin::{MIN_STACK_ADDRESS, guest_function, guest_logger, host_function};
+use hyperlight_guest_bin::{guest_function, guest_logger, host_function};
 use log::{LevelFilter, error};
 use tracing::{Span, instrument};
 
@@ -318,8 +316,8 @@ fn loop_stack_overflow(i: i32) {
 
 #[guest_function("LargeVar")]
 fn large_var() -> i32 {
-    let _buffer = black_box([0u8; (DEFAULT_GUEST_STACK_SIZE + 1) as usize]);
-    DEFAULT_GUEST_STACK_SIZE + 1
+    let _buffer = black_box([0u8; DEFAULT_GUEST_SCRATCH_SIZE as usize]);
+    DEFAULT_GUEST_SCRATCH_SIZE
 }
 
 #[guest_function("SmallVar")]
@@ -368,11 +366,7 @@ fn exhaust_heap() {
 
 #[guest_function("MallocAndFree")]
 fn malloc_and_free(size: i32) -> i32 {
-    let alloc_length = if size < DEFAULT_GUEST_STACK_SIZE {
-        size
-    } else {
-        size.min(MAX_BUFFER_SIZE as i32)
-    };
+    let alloc_length = size.min(MAX_BUFFER_SIZE as i32);
     let allocated_buffer = vec![0; alloc_length as usize];
     drop(allocated_buffer);
 
@@ -445,38 +439,6 @@ fn test_abort_with_code_and_message(code: i32, mut message: String) {
 #[guest_function("guest_panic")]
 fn test_guest_panic(message: String) {
     panic!("{}", message);
-}
-
-#[guest_function]
-fn test_write_raw_ptr(offset: i64) -> String {
-    let min_stack_addr = unsafe { MIN_STACK_ADDRESS };
-    let page_guard_start = min_stack_addr - PAGE_SIZE;
-    let addr = {
-        let abs = u64::try_from(offset.abs())
-            .map_err(|_| error!("Invalid offset"))
-            .unwrap();
-        if offset.is_negative() {
-            page_guard_start - abs
-        } else {
-            page_guard_start + abs
-        }
-    };
-    unsafe {
-        // host_print(format!("writing to {:#x}\n", addr).as_str());
-        write_volatile(addr as *mut u8, 0u8);
-    }
-    String::from("success")
-}
-
-#[guest_function("ExecuteOnStack")]
-fn execute_on_stack() -> String {
-    unsafe {
-        let mut noop: u8 = 0x90;
-        let stack_fn: fn() = core::mem::transmute(&mut noop as *mut u8);
-        stack_fn();
-    };
-    // will only reach this point if stack is executable
-    String::from("fail")
 }
 
 #[guest_function("ExecuteOnHeap")]

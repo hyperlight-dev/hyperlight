@@ -135,10 +135,6 @@ pub enum MemoryRegionType {
     /// The region contains the Heap
     Heap,
     /// The region contains the Guard Page
-    GuardPage,
-    /// The region contains the Stack
-    Stack,
-    /// The scratch region
     Scratch,
     /// The snapshot region
     Snapshot,

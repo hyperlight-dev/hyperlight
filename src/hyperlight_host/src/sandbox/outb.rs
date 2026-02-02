@@ -35,8 +35,6 @@ use crate::sandbox::trace::MemTraceInfo;
 /// Errors that can occur when handling an outb operation from the guest.
 #[derive(Debug, thiserror::Error)]
 pub enum HandleOutbError {
-    #[error("Stack overflow detected (signaled by guest)")]
-    StackOverflow,
     #[error("Guest aborted: error code {code}, message: {message}")]
     GuestAborted {
         /// The error code from the guest
@@ -145,28 +143,24 @@ fn outb_abort(
     for &b in &bytes[1..=len as usize] {
         if b == ABORT_TERMINATOR {
             let guest_error_code = *buffer.first().unwrap_or(&0);
-            let guest_error = ErrorCode::from(guest_error_code as u64);
 
-            let result = match guest_error {
-                ErrorCode::StackOverflow => Err(HandleOutbError::StackOverflow),
-                _ => {
-                    let message = if let Some(&maybe_exception_code) = buffer.get(1) {
-                        match Exception::try_from(maybe_exception_code) {
-                            Ok(exception) => {
-                                let extra_msg = String::from_utf8_lossy(&buffer[2..]);
-                                format!("Exception: {:?} | {}", exception, extra_msg)
-                            }
-                            Err(_) => String::from_utf8_lossy(&buffer[1..]).into(),
+            let result = {
+                let message = if let Some(&maybe_exception_code) = buffer.get(1) {
+                    match Exception::try_from(maybe_exception_code) {
+                        Ok(exception) => {
+                            let extra_msg = String::from_utf8_lossy(&buffer[2..]);
+                            format!("Exception: {:?} | {}", exception, extra_msg)
                         }
-                    } else {
-                        String::new()
-                    };
+                        Err(_) => String::from_utf8_lossy(&buffer[1..]).into(),
+                    }
+                } else {
+                    String::new()
+                };
 
-                    Err(HandleOutbError::GuestAborted {
-                        code: guest_error_code,
-                        message,
-                    })
-                }
+                Err(HandleOutbError::GuestAborted {
+                    code: guest_error_code,
+                    message,
+                })
             };
 
             buffer.clear();

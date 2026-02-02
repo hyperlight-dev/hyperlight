@@ -28,7 +28,6 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, Functi
 use hyperlight_common::flatbuffer_wrappers::function_types::{
     ParameterValue, ReturnType, ReturnValue,
 };
-use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use tracing::{Span, instrument};
 
@@ -174,9 +173,10 @@ impl MultiUseSandbox {
             .vm
             .get_root_pt()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
-        let memory_snapshot = self
-            .mem_mgr
-            .snapshot(self.id, mapped_regions_vec, root_pt_gpa)?;
+        let stack_top_gpa = self.vm.get_stack_top();
+        let memory_snapshot =
+            self.mem_mgr
+                .snapshot(self.id, mapped_regions_vec, root_pt_gpa, stack_top_gpa)?;
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
@@ -300,6 +300,7 @@ impl MultiUseSandbox {
         self.vm
             .set_root_pt(snapshot.root_pt_gpa())
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        self.vm.set_stack_top(snapshot.stack_top_gva());
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
         let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();
@@ -660,10 +661,10 @@ impl MultiUseSandbox {
                     )
                     .increment(1);
 
-                    Err(match guest_error.code {
-                        ErrorCode::StackOverflow => HyperlightError::StackOverflow(),
-                        _ => HyperlightError::GuestError(guest_error.code, guest_error.message),
-                    })
+                    Err(HyperlightError::GuestError(
+                        guest_error.code,
+                        guest_error.message,
+                    ))
                 }
             }
         })();
@@ -1017,7 +1018,10 @@ mod tests {
     fn test_with_small_stack_and_heap() {
         let mut cfg = SandboxConfiguration::default();
         cfg.set_heap_size(20 * 1024);
-        cfg.set_stack_size(18 * 1024);
+        // min_scratch_size already includes 1 page (4k on most
+        // platforms) of guest stack, so add 20k more to get 24k total
+        let min_scratch = hyperlight_common::layout::min_scratch_size();
+        cfg.set_scratch_size(min_scratch + 0x5000);
 
         let mut sbox1: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();

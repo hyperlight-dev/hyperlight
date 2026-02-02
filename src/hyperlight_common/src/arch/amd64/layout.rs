@@ -30,3 +30,13 @@ pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
 /// bits, so we could consider bumping this in the future if we were
 /// ever memory-constrained.
 pub const MAX_GPA: usize = 0x0000_000f_ffff_ffff;
+
+/// On amd64, this is:
+/// - Two pages for the TSS and IDT
+/// - (up to) 4 pages for the PTEs for mapping that (including CoW'ing the root PT)
+/// - A page for the smallest possible non-exception stack
+/// - (up to) 3 pages for mapping that
+/// - Two pages for the exception stack and metadata
+pub fn min_scratch_size() -> usize {
+    12 * crate::vmem::PAGE_SIZE
+}

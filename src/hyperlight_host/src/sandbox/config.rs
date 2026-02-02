@@ -50,13 +50,6 @@ pub struct SandboxConfiguration {
     /// The size of the memory buffer that is made available for input to the
     /// Guest Binary
     output_data_size: usize,
-    /// The stack size to use in the guest sandbox. If set to 0, the stack
-    /// size will be determined from the PE file header.
-    ///
-    /// Note: this is a C-compatible struct, so even though this optional
-    /// field should be represented as an `Option`, that type is not
-    /// FFI-safe, so it cannot be.
-    stack_size_override: u64,
     /// The heap size to use in the guest sandbox. If set to 0, the heap
     /// size will be determined from the PE file header
     ///
@@ -98,8 +91,6 @@ impl SandboxConfiguration {
     pub const INTERRUPT_VCPU_SIGRTMIN_OFFSET: u8 = 0;
     /// The default heap size of a hyperlight sandbox
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
-    /// The default stack size of a hyperlight sandbox
-    pub const DEFAULT_STACK_SIZE: u64 = 65536;
     /// The default size of the scratch region
     pub const DEFAULT_SCRATCH_SIZE: usize = 0x40000;
 
@@ -109,7 +100,6 @@ impl SandboxConfiguration {
     fn new(
         input_data_size: usize,
         output_data_size: usize,
-        stack_size_override: Option<u64>,
         heap_size_override: Option<u64>,
         scratch_size: usize,
         interrupt_retry_delay: Duration,
@@ -120,7 +110,6 @@ impl SandboxConfiguration {
         Self {
             input_data_size: max(input_data_size, Self::MIN_INPUT_SIZE),
             output_data_size: max(output_data_size, Self::MIN_OUTPUT_SIZE),
-            stack_size_override: stack_size_override.unwrap_or(0),
             heap_size_override: heap_size_override.unwrap_or(0),
             scratch_size,
             interrupt_retry_delay,
@@ -144,12 +133,6 @@ impl SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_output_data_size(&mut self, output_data_size: usize) {
         self.output_data_size = max(output_data_size, Self::MIN_OUTPUT_SIZE);
-    }
-
-    /// Set the stack size to use in the guest sandbox. If set to 0, the stack size will be determined from the PE file header
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn set_stack_size(&mut self, stack_size: u64) {
-        self.stack_size_override = stack_size;
     }
 
     /// Set the heap size to use in the guest sandbox. If set to 0, the heap size will be determined from the PE file header
@@ -226,6 +209,12 @@ impl SandboxConfiguration {
         self.scratch_size
     }
 
+    /// Set the size of the scratch regiong
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_scratch_size(&mut self, scratch_size: usize) {
+        self.scratch_size = scratch_size;
+    }
+
     #[cfg(crashdump)]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_core_dump(&self) -> bool {
@@ -239,21 +228,8 @@ impl SandboxConfiguration {
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn stack_size_override_opt(&self) -> Option<u64> {
-        (self.stack_size_override > 0).then_some(self.stack_size_override)
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn heap_size_override_opt(&self) -> Option<u64> {
         (self.heap_size_override > 0).then_some(self.heap_size_override)
-    }
-
-    /// If self.stack_size is non-zero, return it. Otherwise,
-    /// return exe_info.stack_reserve()
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_stack_size(&self) -> u64 {
-        self.stack_size_override_opt()
-            .unwrap_or(Self::DEFAULT_STACK_SIZE)
     }
 
     /// If self.heap_size_override is non-zero, return it. Otherwise,
@@ -272,7 +248,6 @@ impl Default for SandboxConfiguration {
             Self::DEFAULT_INPUT_SIZE,
             Self::DEFAULT_OUTPUT_SIZE,
             None,
-            None,
             Self::DEFAULT_SCRATCH_SIZE,
             Self::DEFAULT_INTERRUPT_RETRY_DELAY,
             Self::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
@@ -290,7 +265,6 @@ mod tests {
 
     #[test]
     fn overrides() {
-        const STACK_SIZE_OVERRIDE: u64 = 0x10000;
         const HEAP_SIZE_OVERRIDE: u64 = 0x50000;
         const INPUT_DATA_SIZE_OVERRIDE: usize = 0x4000;
         const OUTPUT_DATA_SIZE_OVERRIDE: usize = 0x4001;
@@ -298,7 +272,6 @@ mod tests {
         let mut cfg = SandboxConfiguration::new(
             INPUT_DATA_SIZE_OVERRIDE,
             OUTPUT_DATA_SIZE_OVERRIDE,
-            Some(STACK_SIZE_OVERRIDE),
             Some(HEAP_SIZE_OVERRIDE),
             SCRATCH_SIZE_OVERRIDE,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
@@ -309,17 +282,13 @@ mod tests {
             true,
         );
 
-        let stack_size = cfg.get_stack_size();
         let heap_size = cfg.get_heap_size();
         let scratch_size = cfg.get_scratch_size();
-        assert_eq!(STACK_SIZE_OVERRIDE, stack_size);
         assert_eq!(HEAP_SIZE_OVERRIDE, heap_size);
         assert_eq!(SCRATCH_SIZE_OVERRIDE, scratch_size);
 
-        cfg.stack_size_override = 1024;
         cfg.heap_size_override = 2048;
         cfg.scratch_size = 0x40000;
-        assert_eq!(1024, cfg.stack_size_override);
         assert_eq!(2048, cfg.heap_size_override);
         assert_eq!(0x40000, cfg.scratch_size);
         assert_eq!(INPUT_DATA_SIZE_OVERRIDE, cfg.input_data_size);
@@ -332,7 +301,6 @@ mod tests {
             SandboxConfiguration::MIN_INPUT_SIZE - 1,
             SandboxConfiguration::MIN_OUTPUT_SIZE - 1,
             None,
-            None,
             SandboxConfiguration::DEFAULT_SCRATCH_SIZE,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
             SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
@@ -343,7 +311,6 @@ mod tests {
         );
         assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
         assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
-        assert_eq!(0, cfg.stack_size_override);
         assert_eq!(0, cfg.heap_size_override);
 
         cfg.set_input_data_size(SandboxConfiguration::MIN_INPUT_SIZE - 1);
@@ -375,13 +342,6 @@ mod tests {
                 prop_assert_eq!(size, cfg.get_output_data_size());
             }
 
-
-            #[test]
-            fn stack_size_override(size in 0x1000..=0x10000u64) {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_stack_size(size);
-                prop_assert_eq!(size, cfg.stack_size_override);
-            }
 
             #[test]
             fn heap_size_override(size in 0x1000..=0x10000u64) {

@@ -43,6 +43,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
     let mut vm = set_up_hypervisor_partition(
         gshm,
         &u_sbox.config,
+        u_sbox.stack_top_gva,
         #[cfg(any(crashdump, gdb))]
         &u_sbox.rt_cfg,
         u_sbox.load_info,
@@ -100,18 +101,11 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 pub(crate) fn set_up_hypervisor_partition(
     mgr: SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
+    stack_top_gva: u64,
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
     let base_ptr = GuestPtr::try_from(Offset::from(0))?;
-    #[cfg(feature = "init-paging")]
-    let rsp_ptr = {
-        let rsp_offset_u64 = mgr.layout.get_rsp_offset() as u64;
-        base_ptr + Offset::from(rsp_offset_u64)
-    };
-
-    #[cfg(not(feature = "init-paging"))]
-    let rsp_ptr = GuestPtr::try_from(Offset::from(0))?;
 
     let pml4_ptr = {
         let pml4_offset_u64 = mgr.layout.get_pt_offset() as u64;
@@ -121,8 +115,7 @@ pub(crate) fn set_up_hypervisor_partition(
         .entrypoint_offset
         .map(|x| {
             let entrypoint_total_offset = mgr.load_addr.clone() + x;
-            GuestPtr::try_from(entrypoint_total_offset)
-                .and_then(|x| x.absolute())
+            GuestPtr::try_from(entrypoint_total_offset).and_then(|x| x.absolute())
         })
         .transpose()?;
 
@@ -155,7 +148,7 @@ pub(crate) fn set_up_hypervisor_partition(
         mgr.scratch_mem,
         pml4_ptr.absolute()?,
         entrypoint_ptr,
-        rsp_ptr.absolute()?,
+        stack_top_gva,
         config,
         #[cfg(gdb)]
         gdb_conn,

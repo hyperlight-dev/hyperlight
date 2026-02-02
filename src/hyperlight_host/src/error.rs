@@ -422,36 +422,6 @@ mod tests {
     };
     use crate::sandbox::outb::HandleOutbError;
 
-    /// Test that StackOverflow from RunVmError promotes to HyperlightError::StackOverflow
-    #[test]
-    fn test_promote_stack_overflow_from_run_vm() {
-        let err = DispatchGuestCallError::Run(RunVmError::StackOverflow);
-        let (promoted, should_poison) = err.promote();
-
-        assert!(should_poison, "StackOverflow should poison the sandbox");
-        assert!(
-            matches!(promoted, HyperlightError::StackOverflow()),
-            "Expected HyperlightError::StackOverflow, got {:?}",
-            promoted
-        );
-    }
-
-    /// Test that StackOverflow from HandleOutbError promotes to HyperlightError::StackOverflow
-    #[test]
-    fn test_promote_stack_overflow_from_outb() {
-        let err = DispatchGuestCallError::Run(RunVmError::HandleIo(HandleIoError::Outb(
-            HandleOutbError::StackOverflow,
-        )));
-        let (promoted, should_poison) = err.promote();
-
-        assert!(should_poison, "StackOverflow should poison the sandbox");
-        assert!(
-            matches!(promoted, HyperlightError::StackOverflow()),
-            "Expected HyperlightError::StackOverflow, got {:?}",
-            promoted
-        );
-    }
-
     /// Test that ExecutionCancelledByHost promotes to HyperlightError::ExecutionCanceledByHost
     #[test]
     fn test_promote_execution_cancelled_by_host() {
@@ -515,26 +485,6 @@ mod tests {
                 promoted
             ),
         }
-    }
-
-    /// Test that ConvertRspPointer does not poison the sandbox
-    #[test]
-    fn test_promote_convert_rsp_pointer_no_poison() {
-        let err = DispatchGuestCallError::ConvertRspPointer("test error".to_string());
-        let (promoted, should_poison) = err.promote();
-
-        assert!(
-            !should_poison,
-            "ConvertRspPointer should not poison the sandbox"
-        );
-        assert!(
-            matches!(
-                promoted,
-                HyperlightError::HyperlightVmError(HyperlightVmError::DispatchGuestCall(_))
-            ),
-            "Expected HyperlightError::HyperlightVmError, got {:?}",
-            promoted
-        );
     }
 
     /// Test that non-promoted Run errors are wrapped in HyperlightVmError

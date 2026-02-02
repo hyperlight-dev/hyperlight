@@ -18,6 +18,7 @@ use core::fmt::Write;
 
 use hyperlight_common::outb::Exception;
 use hyperlight_guest::exit::write_abort;
+use hyperlight_guest::layout::{MAIN_STACK_LIMIT_GVA, MAIN_STACK_TOP_GVA};
 
 use super::super::context::Context;
 use super::super::machine::ExceptionInfo;
@@ -76,6 +77,23 @@ pub(crate) extern "C" fn hl_exception_handler(
 
     let saved_rip = unsafe { (&raw const (*exn_info).rip).read_volatile() };
     let error_code = unsafe { (&raw const (*exn_info).error_code).read_volatile() };
+
+    if exception_number == 14
+        && (MAIN_STACK_LIMIT_GVA..MAIN_STACK_TOP_GVA).contains(&page_fault_address)
+    {
+        // TODO: perhaps we should have a sanity check that the
+        // stack grows only one page at a time, which should be
+        // ensured by our stack probing discipline?
+        unsafe {
+            let new_page = hyperlight_guest::prim_alloc::alloc_phys_pages(1);
+            crate::paging::map_region(
+                new_page,
+                (page_fault_address & !0xfff) as *mut u8,
+                hyperlight_common::vmem::PAGE_SIZE as u64,
+            );
+            return;
+        }
+    }
 
     // Check for registered user handlers (only for architecture-defined vectors 0-30)
     if exception_number < 31 {

@@ -62,7 +62,7 @@ use crate::hypervisor::virtual_machine::{
 use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_max_log_level};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::{GuestPtr, RawPtr};
+use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
 use crate::sandbox::SandboxConfiguration;
@@ -86,7 +86,7 @@ pub(crate) struct HyperlightVm {
     vm: Box<dyn VirtualMachine>,
     page_size: usize,
     entrypoint: Option<u64>, // only present if this vm has not yet been initialised
-    orig_rsp: GuestPtr,
+    rsp_gva: u64,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
     next_slot: u32,        // Monotonically increasing slot number
@@ -116,8 +116,6 @@ pub(crate) struct HyperlightVm {
 /// DispatchGuestCall error
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchGuestCallError {
-    #[error("Failed to convert RSP pointer: {0}")]
-    ConvertRspPointer(String),
     #[error("Failed to run vm: {0}")]
     Run(#[from] RunVmError),
     #[error("Failed to setup registers: {0}")]
@@ -131,9 +129,7 @@ impl DispatchGuestCallError {
             // These errors poison the sandbox because they can leave it in an inconsistent state
             // by returning before the guest can unwind properly
             DispatchGuestCallError::Run(_) => true,
-            DispatchGuestCallError::ConvertRspPointer(_) | DispatchGuestCallError::SetupRegs(_) => {
-                false
-            }
+            DispatchGuestCallError::SetupRegs(_) => false,
         }
     }
 
@@ -145,12 +141,6 @@ impl DispatchGuestCallError {
     pub(crate) fn promote(self) -> (HyperlightError, bool) {
         let should_poison = self.is_poison_error();
         let promoted_error = match self {
-            // These errors poison the sandbox because the guest did not run to completion
-            DispatchGuestCallError::Run(RunVmError::StackOverflow)
-            | DispatchGuestCallError::Run(RunVmError::HandleIo(HandleIoError::Outb(
-                HandleOutbError::StackOverflow,
-            ))) => HyperlightError::StackOverflow(),
-
             DispatchGuestCallError::Run(RunVmError::ExecutionCancelledByHost) => {
                 HyperlightError::ExecutionCanceledByHost()
             }
@@ -181,13 +171,13 @@ pub enum InitializeError {
     Run(#[from] RunVmError),
     #[error("Failed to setup registers: {0}")]
     SetupRegs(#[from] RegisterError),
+    #[error("Guest initialised stack pointer to architecturally invalid value: {0}")]
+    InvalidStackPointer(u64),
 }
 
 /// Errors that can occur during VM execution in the run loop
 #[derive(Debug, thiserror::Error)]
 pub enum RunVmError {
-    #[error("Error checking stack guard: {0}")]
-    CheckStackGuard(Box<HyperlightError>),
     #[cfg(crashdump)]
     #[error("Crashdump generation error: {0}")]
     CrashdumpGeneration(Box<HyperlightError>),
@@ -215,8 +205,6 @@ pub enum RunVmError {
     MmioWriteUnmapped(u64),
     #[error("vCPU run failed: {0}")]
     RunVcpu(#[from] RunVcpuError),
-    #[error("Stack overflow detected")]
-    StackOverflow,
     #[error("Unexpected VM exit: {0}")]
     UnexpectedVmExit(String),
     #[cfg(gdb)]
@@ -276,8 +264,6 @@ pub enum CreateHyperlightVmError {
     #[cfg(gdb)]
     #[error("Failed to add hardware breakpoint: {0}")]
     AddHwBreakpoint(DebugError),
-    #[error("Failed to convert RSP pointer: {0}")]
-    ConvertRspPointer(Box<HyperlightError>),
     #[error("No hypervisor was found")]
     NoHypervisorFound,
     #[cfg(gdb)]
@@ -351,7 +337,7 @@ impl HyperlightVm {
         scratch_mem: GuestSharedMemory,
         _pml4_addr: u64,
         entrypoint: Option<u64>,
-        rsp: u64,
+        rsp_gva: u64,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
@@ -378,8 +364,6 @@ impl HyperlightVm {
         #[cfg(not(feature = "init-paging"))]
         vm.set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())
             .map_err(VmError::Register)?;
-        let rsp_gp = GuestPtr::try_from(RawPtr::from(rsp))
-            .map_err(|e| CreateHyperlightVmError::ConvertRspPointer(Box::new(e)))?;
 
         #[cfg(any(kvm, mshv3))]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
@@ -418,7 +402,7 @@ impl HyperlightVm {
         let mut ret = Self {
             vm,
             entrypoint,
-            orig_rsp: rsp_gp,
+            rsp_gva,
             interrupt_handle,
             page_size: 0, // Will be set in `initialise`
 
@@ -489,10 +473,13 @@ impl HyperlightVm {
 
         let regs = CommonRegisters {
             rip: entrypoint,
-            rsp: self
-                .orig_rsp
-                .absolute()
-                .map_err(|e| InitializeError::ConvertPointer(e.to_string()))?,
+            // We usually keep the top of the stack 16-byte
+            // aligned. However, the ABI requirement is that the stack
+            // be aligned _before a call instruction_, which means
+            // that the stack needs to actually be ≡ 8 mod 16 at the
+            // first instruction (since, on x64, a call instruction
+            // automatically pushes a return address).
+            rsp: self.rsp_gva - 8,
 
             // function args
             rdi: peb_addr.into(),
@@ -511,7 +498,16 @@ impl HyperlightVm {
             #[cfg(gdb)]
             dbg_mem_access_fn,
         )
-        .map_err(InitializeError::Run)
+        .map_err(InitializeError::Run)?;
+
+        let regs = self.vm.regs()?;
+        // todo(portability): this is architecture-specific
+        if !regs.rsp.is_multiple_of(16) {
+            return Err(InitializeError::InvalidStackPointer(regs.rsp));
+        }
+        self.rsp_gva = regs.rsp;
+
+        Ok(())
     }
 
     /// Map a region of host memory into the sandbox.
@@ -624,6 +620,16 @@ impl HyperlightVm {
         Ok(())
     }
 
+    /// Get the current stack top virtual address
+    pub(crate) fn get_stack_top(&mut self) -> u64 {
+        self.rsp_gva
+    }
+
+    /// Set the current stack top virtual address
+    pub(crate) fn set_stack_top(&mut self, gva: u64) {
+        self.rsp_gva = gva;
+    }
+
     /// Dispatch a call from the host to the guest using the given pointer
     /// to the dispatch function _in the guest's address space_.
     ///
@@ -642,10 +648,13 @@ impl HyperlightVm {
         // set RIP and RSP, reset others
         let regs = CommonRegisters {
             rip: dispatch_func_addr.into(),
-            rsp: self
-                .orig_rsp
-                .absolute()
-                .map_err(|e| DispatchGuestCallError::ConvertRspPointer(e.to_string()))?,
+            // We usually keep the top of the stack 16-byte
+            // aligned. However, the ABI requirement is that the stack
+            // be aligned _before a call instruction_, which means
+            // that the stack needs to actually be ≡ 8 mod 16 at the
+            // first instruction (since, on x64, a call instruction
+            // automatically pushes a return address).
+            rsp: self.rsp_gva - 8,
             rflags: 1 << 1,
             ..Default::default()
         };
@@ -770,9 +779,6 @@ impl HyperlightVm {
                         MemoryRegionFlags::WRITE,
                         all_regions,
                     ) {
-                        Some(MemoryAccess::StackGuardPageViolation) => {
-                            break Err(RunVmError::StackOverflow);
-                        }
                         Some(MemoryAccess::AccessViolation(region_flags)) => {
                             break Err(RunVmError::MemoryAccessViolation {
                                 addr,
@@ -792,9 +798,6 @@ impl HyperlightVm {
                         MemoryRegionFlags::WRITE,
                         all_regions,
                     ) {
-                        Some(MemoryAccess::StackGuardPageViolation) => {
-                            break Err(RunVmError::StackOverflow);
-                        }
                         Some(MemoryAccess::AccessViolation(region_flags)) => {
                             break Err(RunVmError::MemoryAccessViolation {
                                 addr,
@@ -1118,8 +1121,6 @@ impl Drop for HyperlightVm {
 enum MemoryAccess {
     /// The accessed region has the given flags
     AccessViolation(MemoryRegionFlags),
-    /// The accessed region is a stack guard page
-    StackGuardPageViolation,
 }
 
 /// Determines if a known memory access violation occurred at the given address with the given action type.
@@ -1130,9 +1131,6 @@ fn get_memory_access_violation<'a>(
     mut mem_regions: impl Iterator<Item = &'a MemoryRegion>,
 ) -> Option<MemoryAccess> {
     let region = mem_regions.find(|region| region.guest_region.contains(&gpa))?;
-    if region.region_type == MemoryRegionType::GuardPage {
-        return Some(MemoryAccess::StackGuardPageViolation);
-    }
     if !region.flags.contains(tried) {
         return Some(MemoryAccess::AccessViolation(region.flags));
     }
