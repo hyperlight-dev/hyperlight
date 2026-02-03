@@ -164,9 +164,16 @@ run-examples-like-ci config=default-target hypervisor="kvm":
     @# Run Rust examples - linux
     {{ if os() == "linux" { "just run-rust-examples-linux " + config + " " } else { "" } }}
 
-benchmarks-like-ci config=default-target hypervisor="$vm":
+benchmarks-like-ci config=default-target hypervisor="kvm":
     @# Run benchmarks
     {{ if config == "release" { "just bench-ci main" } else { "" } }}
+
+fuzz-like-ci target config=default-target hypervisor="kvm":
+    @# Run Fuzzing
+    # Use a much shorter time limit (1 vs 300 seconds), because the
+    # local version of this step is mostly intended just for making
+    # sure that the fuzz harnesses compile
+    {{ if config == "release" { "just fuzz-timed " + target + " 1" } else { "" } }}
 
 like-ci config=default-target hypervisor="kvm":
     @# .github/workflows/dep_code_checks.yml
@@ -184,7 +191,12 @@ like-ci config=default-target hypervisor="kvm":
     @# .github/workflows/dep_benchmarks.yml
     just benchmarks-like-ci {{config}} {{hypervisor}}
 
-    @# can't run fuzzing locally
+    @# .github/workflows/dep_fuzzing.yml
+    just fuzz-like-ci fuzz_host_print {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_guest_call {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_host_call {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_guest_estimate_trace_event {{config}} {{hypervisor}}
+    just fuzz-like-ci fuzz_guest_trace {{config}} {{hypervisor}}
 
     @# spelling
     typos
