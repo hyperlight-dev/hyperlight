@@ -2,65 +2,77 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   inputs.nixpkgs-mozilla.url = "github:mozilla/nixpkgs-mozilla/master";
   outputs = { self, nixpkgs, nixpkgs-mozilla, ... } @ inputs:
-    {
+    rec {
+      overlays.fix-rust = self: super: {
+        # Work around the nixpkgs-mozilla equivalent of
+        # https://github.com/NixOS/nixpkgs/issues/278508 and an
+        # incompatibility between nixpkgs-mozilla and makeRustPlatform
+        rustChannelOf = args: let
+          orig = super.rustChannelOf args;
+          patchRustPkg = pkg: (pkg.overrideAttrs (oA: {
+            buildCommand = (builtins.replaceStrings
+              [ "rustc,rustdoc" ]
+              [ "rustc,rustdoc,clippy-driver,cargo-clippy,miri,cargo-miri" ]
+              oA.buildCommand) + (let
+                wrapperPath = self.path + "/pkgs/build-support/bintools-wrapper/ld-wrapper.sh";
+                baseOut = self.clangStdenv.cc.bintools.out;
+                getStdenvAttrs = drv: (drv.overrideAttrs (oA: {
+                  passthru.origAttrs = oA;
+                })).origAttrs;
+                baseEnv = (getStdenvAttrs self.clangStdenv.cc.bintools).env;
+                baseSubstitutedWrapper = self.replaceVars wrapperPath
+                  {
+                    inherit (baseEnv)
+                      shell coreutils_bin suffixSalt mktemp rm;
+                    use_response_file_by_default = "0";
+                    prog = null;
+                    out = null;
+                  };
+              in ''
+                # work around a bug in the overlay
+                ${oA.postInstall}
+
+                # copy over helper scripts that the wrapper needs
+                (cd "${baseOut}"; find . -type f \( -name '*.sh' -or -name '*.bash' \) -print0) | while read -d $'\0' script; do
+                  mkdir -p "$out/$(dirname "$script")"
+                  substitute "${baseOut}/$script" "$out/$script" --replace-quiet "${baseOut}" "$out"
+                done
+
+                # TODO: Work out how to make this work with cross builds
+                ldlld="$out/lib/rustlib/${self.clangStdenv.targetPlatform.config}/bin/gcc-ld/ld.lld";
+                if [ -e "$ldlld" ]; then
+                  export prog="$(readlink -f "$ldlld")"
+                  rm "$ldlld"
+                  substitute ${baseSubstitutedWrapper} "$ldlld" --subst-var "out" --subst-var "prog"
+                  chmod +x "$ldlld"
+                fi
+              '');
+          })) // {
+            targetPlatforms = [ "x86_64-linux" ];
+            badTargetPlatforms = [ ];
+          };
+          overrideRustPkg = pkg: self.lib.makeOverridable (origArgs:
+            patchRustPkg (pkg.override origArgs)
+          ) {};
+        in builtins.mapAttrs (_: overrideRustPkg) orig;
+      };
+      gcroots =
+        let gcrootForShell = pkg: pkg // derivation (pkg.drvAttrs // {
+              origArgs = pkg.drvAttrs.args;
+              # assume the builder is bash for now (it always is for
+              # stdenv, which is the only thing that we will encounter
+              # in this flake).
+              args = [ "-c" "declare > $out" ];
+            });
+        in {
+          shells.default = gcrootForShell devShells.x86_64-linux.default;
+        };
       devShells.x86_64-linux.default =
         let pkgs = import nixpkgs {
               system = "x86_64-linux";
-              overlays = [ (import (nixpkgs-mozilla + "/rust-overlay.nix")) ];
+              overlays = [ (import (nixpkgs-mozilla + "/rust-overlay.nix")) overlays.fix-rust ];
             };
         in with pkgs; let
-          # Work around the nixpkgs-mozilla equivalent of
-          # https://github.com/NixOS/nixpkgs/issues/278508 and an
-          # incompatibility between nixpkgs-mozilla and makeRustPlatform
-          rustChannelOf = args: let
-            orig = pkgs.rustChannelOf args;
-            patchRustPkg = pkg: (pkg.overrideAttrs (oA: {
-              buildCommand = (builtins.replaceStrings
-                [ "rustc,rustdoc" ]
-                [ "rustc,rustdoc,clippy-driver,cargo-clippy,miri,cargo-miri" ]
-                oA.buildCommand) + (let
-                  wrapperPath = pkgs.path + "/pkgs/build-support/bintools-wrapper/ld-wrapper.sh";
-                  baseOut = pkgs.clangStdenv.cc.bintools.out;
-                  getStdenvAttrs = drv: (drv.overrideAttrs (oA: {
-                    passthru.origAttrs = oA;
-                  })).origAttrs;
-                  baseEnv = (getStdenvAttrs pkgs.clangStdenv.cc.bintools).env;
-                  baseSubstitutedWrapper = pkgs.replaceVars wrapperPath
-                    {
-                      inherit (baseEnv)
-                        shell coreutils_bin suffixSalt mktemp rm;
-                      use_response_file_by_default = "0";
-                      prog = null;
-                      out = null;
-                    };
-                in ''
-                  # work around a bug in the overlay
-                  ${oA.postInstall}
-
-                  # copy over helper scripts that the wrapper needs
-                  (cd "${baseOut}"; find . -type f \( -name '*.sh' -or -name '*.bash' \) -print0) | while read -d $'\0' script; do
-                    mkdir -p "$out/$(dirname "$script")"
-                    substitute "${baseOut}/$script" "$out/$script" --replace-quiet "${baseOut}" "$out"
-                  done
-
-                  # TODO: Work out how to make this work with cross builds
-                  ldlld="$out/lib/rustlib/${pkgs.clangStdenv.targetPlatform.config}/bin/gcc-ld/ld.lld";
-                  if [ -e "$ldlld" ]; then
-                    export prog="$(readlink -f "$ldlld")"
-                    rm "$ldlld"
-                    substitute ${baseSubstitutedWrapper} "$ldlld" --subst-var "out" --subst-var "prog"
-                    chmod +x "$ldlld"
-                  fi
-                '');
-            })) // {
-              targetPlatforms = [ "x86_64-linux" ];
-              badTargetPlatforms = [ ];
-            };
-            overrideRustPkg = pkg: lib.makeOverridable (origArgs:
-              patchRustPkg (pkg.override origArgs)
-            ) {};
-          in builtins.mapAttrs (_: overrideRustPkg) orig;
-
           customisedRustChannelOf = args:
             lib.flip builtins.mapAttrs (rustChannelOf args) (_: pkg: pkg.override {
               targets = [
@@ -246,6 +258,8 @@
             zlib
             cargo-hyperlight
             typos
+            flatbuffers
+            cargo-fuzz
           ];
           buildInputs = [
             pango
