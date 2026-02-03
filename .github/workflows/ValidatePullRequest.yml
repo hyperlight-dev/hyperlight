@@ -67,7 +67,7 @@ jobs:
       - docs-pr
       - build-guests
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
         cpu: [amd, intel]
