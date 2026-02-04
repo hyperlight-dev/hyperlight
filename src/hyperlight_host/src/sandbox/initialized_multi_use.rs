@@ -1030,7 +1030,7 @@ mod tests {
         assert_eq!(res, 0);
     }
 
-    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
+    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (24K) and heap(20K).
     // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
     #[test]
     fn test_with_small_stack_and_heap() {
@@ -1038,7 +1038,10 @@ mod tests {
         cfg.set_heap_size(20 * 1024);
         // min_scratch_size already includes 1 page (4k on most
         // platforms) of guest stack, so add 20k more to get 24k total
-        let min_scratch = hyperlight_common::layout::min_scratch_size();
+        let min_scratch = hyperlight_common::layout::min_scratch_size(
+            cfg.get_input_data_size(),
+            cfg.get_output_data_size(),
+        );
         cfg.set_scratch_size(min_scratch + 0x5000);
 
         let mut sbox1: MultiUseSandbox = {

@@ -92,7 +92,7 @@ impl SandboxConfiguration {
     /// The default heap size of a hyperlight sandbox
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
     /// The default size of the scratch region
-    pub const DEFAULT_SCRATCH_SIZE: usize = 0x40000;
+    pub const DEFAULT_SCRATCH_SIZE: usize = 0x48000;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.

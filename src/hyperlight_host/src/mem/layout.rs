@@ -27,10 +27,6 @@ limitations under the License.
 //! +-------------------------------------------+
 //! |             Guest Heap                    |
 //! +-------------------------------------------+
-//! |             Output Data                   |
-//! +-------------------------------------------+
-//! |              Input Data                   |
-//! +-------------------------------------------+
 //! |                PEB Struct                 | (HyperlightPEB size)
 //! +-------------------------------------------+
 //! |               Guest Code                  |
@@ -46,17 +42,23 @@ limitations under the License.
 //! - `InitData` - some extra data that can be loaded onto the sandbox during
 //!   initialization.
 //!
-//! - `HostDefinitions` - the length of this is the `HostFunctionDefinitionSize`
-//!   field from `SandboxConfiguration`
-//!
-//! - `InputData` -  this is a buffer that is used for input data to the host program.
-//!   the length of this field is `InputDataSize` from `SandboxConfiguration`
-//!
-//! - `OutputData` - this is a buffer that is used for output data from host program.
-//!   the length of this field is `OutputDataSize` from `SandboxConfiguration`
-//!
 //! - `GuestHeap` - this is a buffer that is used for heap data in the guest. the length
 //!   of this field is returned by the `heap_size()` method of this struct
+//!
+//! There is also a scratch region at the top of physical memory,
+//! which is mostly laid out as a large undifferentiated blob of
+//! memory, although at present the snapshot process specially
+//! privileges the statically allocated input and output data regions:
+//!
+//! +-------------------------------------------+ (top of physical memory)
+//! |         Exception Stack, Metadata         |
+//! +-------------------------------------------+ (1 page below)
+//! |              Scratch Memory               |
+//! +-------------------------------------------+
+//! |                Output Data                |
+//! +-------------------------------------------+
+//! |                Input Data                 |
+//! +-------------------------------------------+ (scratch size)
 
 use std::fmt::Debug;
 use std::mem::{offset_of, size_of};
@@ -66,13 +68,15 @@ use tracing::{Span, instrument};
 
 #[cfg(feature = "init-paging")]
 use super::memory_region::MemoryRegionType::PageTables;
-use super::memory_region::MemoryRegionType::{Code, Heap, InitData, InputData, OutputData, Peb};
+use super::memory_region::MemoryRegionType::{Code, Heap, InitData, Peb};
 use super::memory_region::{
     DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
     MemoryRegionVecBuilder,
 };
 use super::shared_mem::{ExclusiveSharedMemory, SharedMemory};
-use crate::error::HyperlightError::{GuestOffsetIsInvalid, MemoryRequestTooBig};
+use crate::error::HyperlightError::{
+    GuestOffsetIsInvalid, MemoryRequestTooBig, MemoryRequestTooSmall,
+};
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, new_error};
 
@@ -92,10 +96,6 @@ pub(crate) struct SandboxMemoryLayout {
     peb_init_data_offset: usize,
     peb_heap_data_offset: usize,
 
-    // The following are the actual values
-    // that are written to the PEB struct
-    pub(super) input_data_buffer_offset: usize,
-    pub(super) output_data_buffer_offset: usize,
     guest_heap_buffer_offset: usize,
     init_data_offset: usize,
     pt_offset: usize,
@@ -150,14 +150,6 @@ impl Debug for SandboxMemoryLayout {
                 &format_args!("{:#x}", self.peb_heap_data_offset),
             )
             .field(
-                "Input Data Buffer Offset",
-                &format_args!("{:#x}", self.input_data_buffer_offset),
-            )
-            .field(
-                "Output Data Buffer Offset",
-                &format_args!("{:#x}", self.output_data_buffer_offset),
-            )
-            .field(
                 "Guest Heap Buffer Offset",
                 &format_args!("{:#x}", self.guest_heap_buffer_offset),
             )
@@ -181,9 +173,14 @@ impl Debug for SandboxMemoryLayout {
 
 impl SandboxMemoryLayout {
     /// The maximum amount of memory a single sandbox will be allowed.
-    /// The addressable virtual memory with current paging setup is virtual address 0x0 - 0x40000000 (excl.),
-    /// However, the memory up to Self::BASE_ADDRESS is not used.
-    const MAX_MEMORY_SIZE: usize = 0x40000000 - Self::BASE_ADDRESS;
+    ///
+    /// Currently, both the scratch region and the snapshot region are
+    /// bounded by this size. The current value is essentially
+    /// arbitrary and chosen for historical reasons; the modern
+    /// sandbox virtual memory layout can support much more, so this
+    /// could be increased should use cases for larger sandboxes
+    /// arise.
+    const MAX_MEMORY_SIZE: usize = 0x4000_0000 - Self::BASE_ADDRESS;
 
     /// The base address of the sandbox's memory.
     #[cfg(feature = "init-paging")]
@@ -192,7 +189,7 @@ impl SandboxMemoryLayout {
     pub(crate) const BASE_ADDRESS: usize = 0x0;
 
     // the offset into a sandbox's input/output buffer where the stack starts
-    const STACK_POINTER_SIZE_BYTES: u64 = 8;
+    pub(crate) const STACK_POINTER_SIZE_BYTES: u64 = 8;
 
     /// Create a new `SandboxMemoryLayout` with the given
     /// `SandboxConfiguration`, code size and stack/heap size.
@@ -229,14 +226,10 @@ impl SandboxMemoryLayout {
         // The following offsets are the actual values that relate to memory layout,
         // which are written to PEB struct
         let peb_address = Self::BASE_ADDRESS + peb_offset;
-        // make sure input data buffer starts at 4K boundary
-        let input_data_buffer_offset = (peb_heap_data_offset + size_of::<GuestMemoryRegion>())
-            .next_multiple_of(PAGE_SIZE_USIZE);
-        let output_data_buffer_offset = (input_data_buffer_offset + cfg.get_input_data_size())
-            .next_multiple_of(PAGE_SIZE_USIZE);
         // make sure heap buffer starts at 4K boundary
-        let guest_heap_buffer_offset = (output_data_buffer_offset + cfg.get_output_data_size())
+        let guest_heap_buffer_offset = (peb_heap_data_offset + size_of::<GuestMemoryRegion>())
             .next_multiple_of(PAGE_SIZE_USIZE);
+
         // make sure init data starts at 4K boundary
         let init_data_offset =
             (guest_heap_buffer_offset + heap_size).next_multiple_of(PAGE_SIZE_USIZE);
@@ -252,8 +245,6 @@ impl SandboxMemoryLayout {
             peb_heap_data_offset,
             sandbox_memory_config: cfg,
             code_size,
-            input_data_buffer_offset,
-            output_data_buffer_offset,
             guest_heap_buffer_offset,
             peb_address,
             guest_code_offset,
@@ -301,11 +292,18 @@ impl SandboxMemoryLayout {
         self.get_init_data_size_offset() + size_of::<u64>()
     }
 
-    /// Get the offset in guest memory to the start of output data.
+    /// Get the guest virtual address of the start of output data.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    #[cfg(test)]
-    pub(crate) fn get_output_data_offset(&self) -> usize {
-        self.output_data_buffer_offset
+    pub(crate) fn get_output_data_buffer_gva(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size)
+            + self.sandbox_memory_config.get_input_data_size() as u64
+    }
+
+    /// Get the offset into the host scratch buffer of the start of
+    /// the output data.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_output_data_buffer_scratch_host_offset(&self) -> usize {
+        self.sandbox_memory_config.get_input_data_size()
     }
 
     /// Get the offset in guest memory to the input data size.
@@ -321,6 +319,29 @@ impl SandboxMemoryLayout {
         // The input data pointer is immediately after the input
         // data size field in the input data `GuestMemoryRegion` struct which is a `u64`.
         self.get_input_data_size_offset() + size_of::<u64>()
+    }
+
+    /// Get the guest virtual address of the start of input data
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    fn get_input_data_buffer_gva(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size)
+    }
+
+    /// Get the offset into the host scratch buffer of the start of
+    /// the input data
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_input_data_buffer_scratch_host_offset(&self) -> usize {
+        0
+    }
+
+    /// Get the offset into the host scratch buffer of the start of
+    /// the input data
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_first_free_scratch_gpa(&self) -> u64 {
+        (hyperlight_common::layout::scratch_base_gpa(self.scratch_size) as usize
+            + self.sandbox_memory_config.get_input_data_size()
+            + self.sandbox_memory_config.get_output_data_size())
+        .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE) as u64
     }
 
     /// Get the offset in guest memory to where the guest dispatch function
@@ -424,45 +445,10 @@ impl SandboxMemoryLayout {
         }
 
         // PEB
-        let input_data_offset = builder.push_page_aligned(
+        let heap_offset = builder.push_page_aligned(
             size_of::<HyperlightPEB>(),
             MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
             Peb,
-        );
-
-        let expected_input_data_offset = TryInto::<usize>::try_into(self.input_data_buffer_offset)?;
-
-        if input_data_offset != expected_input_data_offset {
-            return Err(new_error!(
-                "Input Data offset does not match expected Input Data offset expected:  {}, actual:  {}",
-                expected_input_data_offset,
-                input_data_offset
-            ));
-        }
-
-        // guest input data
-        let output_data_offset = builder.push_page_aligned(
-            self.sandbox_memory_config.get_input_data_size(),
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            InputData,
-        );
-
-        let expected_output_data_offset =
-            TryInto::<usize>::try_into(self.output_data_buffer_offset)?;
-
-        if output_data_offset != expected_output_data_offset {
-            return Err(new_error!(
-                "Output Data offset does not match expected Output Data offset expected:  {}, actual:  {}",
-                expected_output_data_offset,
-                output_data_offset
-            ));
-        }
-
-        // guest output data
-        let heap_offset = builder.push_page_aligned(
-            self.sandbox_memory_config.get_output_data_size(),
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            OutputData,
         );
 
         let expected_heap_offset = TryInto::<usize>::try_into(self.guest_heap_buffer_offset)?;
@@ -595,8 +581,10 @@ impl SandboxMemoryLayout {
                 .get_input_data_size()
                 .try_into()?,
         )?;
-        let addr = get_address!(input_data_buffer_offset);
-        shared_mem.write_u64(self.get_input_data_pointer_offset(), addr)?;
+        shared_mem.write_u64(
+            self.get_input_data_pointer_offset(),
+            self.get_input_data_buffer_gva(),
+        )?;
 
         // Set up output buffer pointer
         shared_mem.write_u64(
@@ -605,8 +593,10 @@ impl SandboxMemoryLayout {
                 .get_output_data_size()
                 .try_into()?,
         )?;
-        let addr = get_address!(output_data_buffer_offset);
-        shared_mem.write_u64(self.get_output_data_pointer_offset(), addr)?;
+        shared_mem.write_u64(
+            self.get_output_data_pointer_offset(),
+            self.get_output_data_buffer_gva(),
+        )?;
 
         // Set up init data pointer
         shared_mem.write_u64(
@@ -623,17 +613,10 @@ impl SandboxMemoryLayout {
 
         // End of setting up the PEB
 
-        // Initialize the stack pointers of input data and output data
-        // to point to the ninth (index 8) byte, which is the first free address
-        // of the each respective stack. The first 8 bytes are the stack pointer itself.
-        shared_mem.write_u64(
-            self.input_data_buffer_offset,
-            Self::STACK_POINTER_SIZE_BYTES,
-        )?;
-        shared_mem.write_u64(
-            self.output_data_buffer_offset,
-            Self::STACK_POINTER_SIZE_BYTES,
-        )?;
+        // The input and output data regions do not have their layout
+        // initialised here, because they are in the scratch
+        // region---they are instead set in
+        // [`SandboxMemoryManager::update_scratch_bookkeeping`].
 
         Ok(())
     }
@@ -647,16 +630,11 @@ mod tests {
 
     // helper func for testing
     fn get_expected_memory_size(layout: &SandboxMemoryLayout) -> usize {
-        let cfg = layout.sandbox_memory_config;
         let mut expected_size = 0;
         // in order of layout
         expected_size += layout.code_size;
 
         expected_size += size_of::<HyperlightPEB>().next_multiple_of(PAGE_SIZE_USIZE);
-
-        expected_size += cfg.get_input_data_size().next_multiple_of(PAGE_SIZE_USIZE);
-
-        expected_size += cfg.get_output_data_size().next_multiple_of(PAGE_SIZE_USIZE);
 
         expected_size += layout.heap_size.next_multiple_of(PAGE_SIZE_USIZE);
 

@@ -590,7 +590,8 @@ mod tests {
     }
 
     fn make_simple_pt_mems() -> (SandboxMemoryManager<HostSharedMemory>, u64) {
-        let scratch_mem = ExclusiveSharedMemory::new(PAGE_SIZE).unwrap();
+        let cfg = crate::sandbox::SandboxConfiguration::default();
+        let scratch_mem = ExclusiveSharedMemory::new(cfg.get_scratch_size()).unwrap();
         let pt_base = PAGE_SIZE + SandboxMemoryLayout::BASE_ADDRESS;
         let pt_buf = GuestPageTableBuffer::new(pt_base);
         let mapping = Mapping {
