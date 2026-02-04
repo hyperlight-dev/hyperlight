@@ -169,6 +169,8 @@ unsafe impl Send for GuestSharedMemory {}
 /// communication buffers, allowing it to be used concurrently with a
 /// GuestSharedMemory.
 ///
+/// # Concurrency model
+///
 /// Given future requirements for asynchronous I/O with a minimum
 /// amount of copying (e.g. WASIp3 streams), we would like it to be
 /// possible to safely access these buffers concurrently with the
@@ -299,6 +301,24 @@ unsafe impl Send for GuestSharedMemory {}
 /// \[4\] P1152R0: Deprecating `volatile`. JF Bastien. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1152r0.html>
 /// \[5\] P1382R1: `volatile_load<T>` and `volatile_store<T>`. JF Bastien, Paul McKenney, Jeffrey Yasskin, and the indefatigable TBD. <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p1382r1.pdf>
 /// \[6\] Documentation for std::sync::atomic::fence. <https://doc.rust-lang.org/std/sync/atomic/fn.fence.html>
+///
+/// # Note \[Keeping mappings in sync between userspace and the guest\]
+///
+/// When using this structure with mshv on Linux, it is necessary to
+/// be a little bit careful: since the hypervisor is not directly
+/// integrated with the host kernel virtual memory subsystem, it is
+/// easy for the memory region in userspace to get out of sync with
+/// the memory region mapped into the guest.  Generally speaking, when
+/// the [`SharedMemory`] is mapped into a partition, the MSHV kernel
+/// module will call `pin_user_pages(FOLL_PIN|FOLL_WRITE)` on it,
+/// which will eagerly do any CoW, etc needing to obtain backing pages
+/// pinned in memory, and then map precisely those backing pages into
+/// the virtual machine. After that, the backing pages mapped into the
+/// VM will not change until the region is unmapped or remapped.  This
+/// means that code in this module needs to be very careful to avoid
+/// changing the backing pages of the region in the host userspace,
+/// since that would result in hyperlight-host's view of the memory
+/// becoming completely divorced from the view of the VM.
 #[derive(Clone, Debug)]
 pub struct HostSharedMemory {
     region: Arc<HostMapping>,
@@ -314,11 +334,9 @@ impl ExclusiveSharedMemory {
     #[cfg(target_os = "linux")]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
-        #[cfg(miri)]
-        use libc::MAP_PRIVATE;
-        use libc::{MAP_ANONYMOUS, MAP_FAILED, PROT_READ, PROT_WRITE, c_int, mmap, off_t, size_t};
+        use libc::{MAP_ANONYMOUS, MAP_PRIVATE, MAP_FAILED, PROT_READ, PROT_WRITE, c_int, mmap, off_t, size_t};
         #[cfg(not(miri))]
-        use libc::{MAP_NORESERVE, MAP_SHARED, PROT_NONE, mprotect};
+        use libc::{MAP_NORESERVE, PROT_NONE, mprotect};
 
         if min_size_bytes == 0 {
             return Err(new_error!("Cannot create shared memory with size 0"));
@@ -346,7 +364,7 @@ impl ExclusiveSharedMemory {
 
         // allocate the memory
         #[cfg(not(miri))]
-        let flags = MAP_ANONYMOUS | MAP_SHARED | MAP_NORESERVE;
+        let flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE;
         #[cfg(miri)]
         let flags = MAP_ANONYMOUS | MAP_PRIVATE;
 
@@ -764,7 +782,9 @@ pub trait SharedMemory {
             #[allow(unused_mut)] // unused on some platforms, although not others
             let mut do_copy = true;
             // TODO: Compare & add heuristic thresholds: mmap, MADV_DONTNEED, MADV_REMOVE, MADV_FREE (?)
-            #[cfg(target_os = "linux")]
+            // TODO: Find a similar lazy zeroing approach that works on MSHV.
+            //       (See Note [Keeping mappings in sync between userspace and the guest])
+            #[cfg(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))))]
             unsafe {
                 let ret = libc::madvise(
                     e.region.ptr as *mut libc::c_void,
