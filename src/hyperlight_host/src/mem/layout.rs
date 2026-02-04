@@ -200,11 +200,22 @@ impl SandboxMemoryLayout {
     pub(crate) fn new(
         cfg: SandboxConfiguration,
         code_size: usize,
-        heap_size: usize,
-        scratch_size: usize,
         init_data_size: usize,
         init_data_permissions: Option<MemoryRegionFlags>,
     ) -> Result<Self> {
+        let heap_size = usize::try_from(cfg.get_heap_size())?;
+        let scratch_size = cfg.get_scratch_size();
+        if scratch_size > Self::MAX_MEMORY_SIZE {
+            return Err(MemoryRequestTooBig(scratch_size, Self::MAX_MEMORY_SIZE));
+        }
+        let min_scratch_size = hyperlight_common::layout::min_scratch_size(
+            cfg.get_input_data_size(),
+            cfg.get_output_data_size(),
+        );
+        if scratch_size < min_scratch_size {
+            return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
+        }
+
         let guest_code_offset = 0;
         // The following offsets are to the fields of the PEB struct itself!
         let peb_offset = code_size.next_multiple_of(PAGE_SIZE_USIZE);
@@ -655,8 +666,7 @@ mod tests {
     #[test]
     fn test_get_memory_size() {
         let sbox_cfg = SandboxConfiguration::default();
-        let sbox_mem_layout =
-            SandboxMemoryLayout::new(sbox_cfg, 4096, 4096, 0x3000, 0, None).unwrap();
+        let sbox_mem_layout = SandboxMemoryLayout::new(sbox_cfg, 4096, 0, None).unwrap();
         assert_eq!(
             sbox_mem_layout.get_memory_size().unwrap(),
             get_expected_memory_size(&sbox_mem_layout)

@@ -359,8 +359,6 @@ impl Snapshot {
         let mut layout = crate::mem::layout::SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
-            usize::try_from(cfg.get_heap_size())?,
-            cfg.get_scratch_size(),
             guest_blob_size,
             guest_blob_mem_flags,
         )?;
@@ -612,9 +610,8 @@ mod tests {
         let mut snapshot_mem = ExclusiveSharedMemory::new(PAGE_SIZE + pt_bytes.len()).unwrap();
 
         snapshot_mem.copy_from_slice(&pt_bytes, PAGE_SIZE).unwrap();
-        let cfg = crate::sandbox::SandboxConfiguration::default();
         let mgr = SandboxMemoryManager::new(
-            SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0x3000, None).unwrap(),
+            SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap(),
             snapshot_mem,
             scratch_mem,
             0.into(),
