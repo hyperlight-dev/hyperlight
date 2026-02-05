@@ -21,6 +21,7 @@ use std::sync::OnceLock;
 use crate::hypervisor::virtual_machine::kvm;
 #[cfg(mshv3)]
 use crate::hypervisor::virtual_machine::mshv;
+use crate::hypervisor::virtual_machine::HypervisorType;
 
 static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 
@@ -63,19 +64,6 @@ pub fn get_available_hypervisor() -> &'static Option<HypervisorType> {
             }
         }
     })
-}
-
-/// The hypervisor types available for the current platform
-#[derive(PartialEq, Eq, Debug)]
-pub(crate) enum HypervisorType {
-    #[cfg(kvm)]
-    Kvm,
-
-    #[cfg(mshv3)]
-    Mshv,
-
-    #[cfg(target_os = "windows")]
-    Whp,
 }
 
 // Compiler error if no hypervisor type is available
