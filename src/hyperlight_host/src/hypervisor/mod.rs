@@ -117,13 +117,21 @@ pub(crate) trait InterruptHandleImpl: InterruptHandle {
 
 /// A trait for handling interrupts to a sandbox's vcpu
 pub trait InterruptHandle: Send + Sync + Debug {
-    /// Interrupt the corresponding sandbox from running.
+    /// Cancel guest execution in the corresponding sandbox.
     ///
-    /// - If this is called while the the sandbox currently executing a guest function call, it will interrupt the sandbox and return `true`.
-    /// - If this is called while the sandbox is not running (for example before or after calling a guest function), it will do nothing and return `false`.
+    /// If a guest call is in progress, it will be cancelled and the guest function call
+    /// will return an error. If called before a guest call is made, it has no effect on
+    /// future guest calls.
     ///
-    /// # Note
-    /// This function will block for the duration of the time it takes for the vcpu thread to be interrupted.
+    /// # Returns
+    /// - `true` if a guest call was in progress and the vcpu was actively running.
+    /// - `false` otherwise (no guest call in progress, or guest call in progress but vcpu
+    ///   not yet running). Any in-progress guest call will still be cancelled.
+    ///
+    /// # Platform behavior
+    /// - **Linux**: If the vcpu is running, this function will block for the duration of
+    ///   the time it takes for the vcpu thread to be interrupted.
+    /// - **Windows**: This function returns immediately after requesting cancellation.
     fn kill(&self) -> bool;
 
     /// Used by a debugger to interrupt the corresponding sandbox from running.
