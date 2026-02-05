@@ -68,6 +68,7 @@ use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::{HandleOutbError, handle_outb};
+use crate::sandbox::snapshot::NextAction;
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
@@ -85,7 +86,7 @@ pub(crate) struct HyperlightVm {
     #[cfg(not(gdb))]
     vm: Box<dyn VirtualMachine>,
     page_size: usize,
-    entrypoint: Option<u64>, // only present if this vm has not yet been initialised
+    entrypoint: NextAction, // only present if this vm has not yet been initialised
     rsp_gva: u64,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
@@ -120,6 +121,8 @@ pub enum DispatchGuestCallError {
     Run(#[from] RunVmError),
     #[error("Failed to setup registers: {0}")]
     SetupRegs(RegisterError),
+    #[error("VM was uninitialized")]
+    Uninitialized,
 }
 
 impl DispatchGuestCallError {
@@ -129,7 +132,7 @@ impl DispatchGuestCallError {
             // These errors poison the sandbox because they can leave it in an inconsistent state
             // by returning before the guest can unwind properly
             DispatchGuestCallError::Run(_) => true,
-            DispatchGuestCallError::SetupRegs(_) => false,
+            DispatchGuestCallError::SetupRegs(_) | DispatchGuestCallError::Uninitialized => false,
         }
     }
 
@@ -338,7 +341,7 @@ impl HyperlightVm {
         snapshot_mem: GuestSharedMemory,
         scratch_mem: GuestSharedMemory,
         _pml4_addr: u64,
-        entrypoint: Option<u64>,
+        entrypoint: NextAction,
         rsp_gva: u64,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -438,9 +441,9 @@ impl HyperlightVm {
             ret.send_dbg_msg(DebugResponse::InterruptHandle(ret.interrupt_handle.clone()))?;
             // Add breakpoint to the entry point address, if we are going to initialise
             ret.vm.set_debug(true).map_err(VmError::Debug)?;
-            if let Some(entrypoint) = entrypoint {
+            if let NextAction::Initialise(initialise) = entrypoint {
                 ret.vm
-                    .add_hw_breakpoint(entrypoint)
+                    .add_hw_breakpoint(initialise)
                     .map_err(CreateHyperlightVmError::AddHwBreakpoint)?;
             }
         }
@@ -462,7 +465,7 @@ impl HyperlightVm {
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), InitializeError> {
-        let Some(entrypoint) = self.entrypoint else {
+        let NextAction::Initialise(initialise) = self.entrypoint else {
             return Ok(());
         };
 
@@ -474,7 +477,7 @@ impl HyperlightVm {
         };
 
         let regs = CommonRegisters {
-            rip: entrypoint,
+            rip: initialise,
             // We usually keep the top of the stack 16-byte
             // aligned. However, the ABI requirement is that the stack
             // be aligned _before a call instruction_, which means
@@ -508,6 +511,7 @@ impl HyperlightVm {
             return Err(InitializeError::InvalidStackPointer(regs.rsp));
         }
         self.rsp_gva = regs.rsp;
+        self.entrypoint = NextAction::Call(regs.rax);
 
         Ok(())
     }
@@ -631,6 +635,16 @@ impl HyperlightVm {
         self.rsp_gva = gva;
     }
 
+    /// Get the current entrypoint action
+    pub(crate) fn get_entrypoint(&mut self) -> NextAction {
+        self.entrypoint
+    }
+
+    /// Set the current entrypoint action
+    pub(crate) fn set_entrypoint(&mut self, entrypoint: NextAction) {
+        self.entrypoint = entrypoint
+    }
+
     /// Dispatch a call from the host to the guest using the given pointer
     /// to the dispatch function _in the guest's address space_.
     ///
@@ -641,14 +655,16 @@ impl HyperlightVm {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn dispatch_call_from_host(
         &mut self,
-        dispatch_func_addr: RawPtr,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), DispatchGuestCallError> {
+        let NextAction::Call(dispatch_func_addr) = self.entrypoint else {
+            return Err(DispatchGuestCallError::Uninitialized);
+        };
         // set RIP and RSP, reset others
         let regs = CommonRegisters {
-            rip: dispatch_func_addr.into(),
+            rip: dispatch_func_addr,
             // We usually keep the top of the stack 16-byte
             // aligned. However, the ABI requirement is that the stack
             // be aligned _before a call instruction_, which means
@@ -755,13 +771,13 @@ impl HyperlightVm {
             match exit_reason {
                 #[cfg(gdb)]
                 Ok(VmExit::Debug { dr6, exception }) => {
+                    let initialise = match self.entrypoint {
+                        NextAction::Initialise(initialise) => initialise,
+                        _ => 0,
+                    };
                     // Handle debug event (breakpoints)
-                    let stop_reason = arch::vcpu_stop_reason(
-                        self.vm.as_mut(),
-                        dr6,
-                        self.entrypoint.unwrap_or(0),
-                        exception,
-                    )?;
+                    let stop_reason =
+                        arch::vcpu_stop_reason(self.vm.as_mut(), dr6, initialise, exception)?;
                     if let Err(e) = self.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
                         break Err(e.into());
                     }
@@ -1133,6 +1149,11 @@ impl HyperlightVm {
                     .and_then(|name| name.to_os_string().into_string().ok())
             });
 
+            let initialise = match self.entrypoint {
+                NextAction::Initialise(initialise) => initialise,
+                _ => 0,
+            };
+
             // Include dynamically mapped regions
             // TODO: include the snapshot and scratch regions
             let regions: Vec<MemoryRegion> = self.get_mapped_regions().cloned().collect();
@@ -1140,7 +1161,7 @@ impl HyperlightVm {
                 regions,
                 regs,
                 xsave.to_vec(),
-                self.entrypoint.unwrap_or(0),
+                initialise,
                 self.rt_cfg.binary_path.clone(),
                 filename,
             )))

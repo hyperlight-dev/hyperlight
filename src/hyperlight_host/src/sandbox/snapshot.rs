@@ -33,6 +33,29 @@ use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
 
 pub(super) static SANDBOX_CONFIGURATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Presently, a snapshot can be of a preinitialised sandbox, which
+/// still needs an initialise function called in order to determine
+/// how to call into it, or of an already-properly-initialised sandbox
+/// which can be immediately called into. This keeps track of the
+/// difference.
+///
+/// TODO: this should not necessarily be around in the long term:
+/// ideally we would just preinitialise earlier in the snapshot
+/// creation process and never need this.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum NextAction {
+    /// A sandbox in the preinitialise state still needs to be
+    /// initialised by calling the initialise function
+    Initialise(u64),
+    /// A sandbox in the ready state can immediately be called into,
+    /// using the dispatch function pointer.
+    Call(u64),
+    /// Only when compiling for tests: a sandbox that cannot actually
+    /// be used
+    #[cfg(test)]
+    None,
+}
+
 /// A wrapper around a `SharedMemory` reference and a snapshot
 /// of the memory therein
 pub struct Snapshot {
@@ -79,20 +102,8 @@ pub struct Snapshot {
     /// root_pt_gpa field is used since page tables are relocated during snapshot.
     sregs: Option<CommonSpecialRegisters>,
 
-    /// Preinitialisation entry point for snapshots created directly from a
-    /// guest binary.
-    ///
-    /// When creating a snapshot directly from a guest binary, this tracks
-    /// the address that we need to call into before actually using a
-    /// sandbox from this snapshot in order to perform guest-side
-    /// preinitialisation.
-    ///
-    /// Long-term, the intention is to run this preinitialisation eagerly as
-    /// part of the snapshot creation process so that restored sandboxes can
-    /// begin executing from their normal entry point without requiring this
-    /// field. Until that refactoring happens, this remains part of the
-    /// snapshot format and must be preserved.
-    preinitialise: Option<u64>,
+    /// The next action that should be performed on this snapshot
+    entrypoint: NextAction,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
     fn as_ref(&self) -> &Self {
@@ -438,7 +449,7 @@ impl Snapshot {
             root_pt_gpa: pt_base_gpa as u64,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
-            preinitialise: Some(load_addr + entrypoint_offset),
+            entrypoint: NextAction::Initialise(load_addr + entrypoint_offset),
         })
     }
 
@@ -461,6 +472,7 @@ impl Snapshot {
         root_pt_gpa: u64,
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
+        entrypoint: NextAction,
     ) -> Result<Self> {
         let (new_root_pt_gpa, memory) = shared_mem.with_exclusivity(|snap_e| {
             scratch_mem.with_exclusivity(|scratch_e| {
@@ -512,7 +524,7 @@ impl Snapshot {
             stack_top_gva,
             sregs: Some(sregs),
             root_pt_gpa: new_root_pt_gpa as u64,
-            preinitialise: None,
+            entrypoint,
         })
     }
 
@@ -564,8 +576,8 @@ impl Snapshot {
         self.sregs.as_ref()
     }
 
-    pub(crate) fn preinitialise(&self) -> Option<u64> {
-        self.preinitialise
+    pub(crate) fn entrypoint(&self) -> NextAction {
+        self.entrypoint
     }
 }
 
@@ -616,7 +628,7 @@ mod tests {
             snapshot_mem,
             scratch_mem,
             0.into(),
-            None,
+            super::NextAction::None,
         );
         let (mgr, _) = mgr.build().unwrap();
         (mgr, pt_base as u64)
@@ -642,6 +654,7 @@ mod tests {
             pt_base,
             0,
             default_sregs(),
+            super::NextAction::None,
         )
         .unwrap();
 
@@ -673,6 +686,7 @@ mod tests {
             pt_base,
             0,
             default_sregs(),
+            super::NextAction::None,
         )
         .unwrap();
         assert_eq!(snapshot.mem_size(), size);
@@ -695,6 +709,7 @@ mod tests {
             pt_base,
             0,
             default_sregs(),
+            super::NextAction::None,
         )
         .unwrap();
 
@@ -711,6 +726,7 @@ mod tests {
             pt_base,
             0,
             default_sregs(),
+            super::NextAction::None,
         )
         .unwrap();
 

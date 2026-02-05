@@ -42,7 +42,6 @@ use crate::mem::memory_region::MemoryRegion;
 #[cfg(unix)]
 use crate::mem::memory_region::{MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
@@ -95,7 +94,6 @@ pub struct MultiUseSandbox {
     pub(super) host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
     vm: HyperlightVm,
-    dispatch_ptr: RawPtr,
     #[cfg(gdb)]
     dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     /// If the current state of the sandbox has been captured in a snapshot,
@@ -114,7 +112,6 @@ impl MultiUseSandbox {
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
         vm: HyperlightVm,
-        dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
@@ -123,7 +120,6 @@ impl MultiUseSandbox {
             host_funcs,
             mem_mgr: mgr,
             vm,
-            dispatch_ptr,
             #[cfg(gdb)]
             dbg_mem_access_fn,
             snapshot: None,
@@ -178,12 +174,14 @@ impl MultiUseSandbox {
             .vm
             .get_snapshot_sregs()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        let entrypoint = self.vm.get_entrypoint();
         let memory_snapshot = self.mem_mgr.snapshot(
             self.id,
             mapped_regions_vec,
             root_pt_gpa,
             stack_top_gpa,
             sregs,
+            entrypoint,
         )?;
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
@@ -319,6 +317,7 @@ impl MultiUseSandbox {
             })?;
 
         self.vm.set_stack_top(snapshot.stack_top_gva());
+        self.vm.set_entrypoint(snapshot.entrypoint());
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
         let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();
@@ -653,7 +652,6 @@ impl MultiUseSandbox {
             self.mem_mgr.write_guest_function_call(buffer)?;
 
             let dispatch_res = self.vm.dispatch_call_from_host(
-                self.dispatch_ptr.clone(),
                 &mut self.mem_mgr,
                 &self.host_funcs,
                 #[cfg(gdb)]

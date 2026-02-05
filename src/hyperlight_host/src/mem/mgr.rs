@@ -24,11 +24,10 @@ use tracing::{Span, instrument};
 
 use super::layout::SandboxMemoryLayout;
 use super::memory_region::MemoryRegion;
-use super::ptr::{GuestPtr, RawPtr};
-use super::ptr_offset::Offset;
+use super::ptr::RawPtr;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::hypervisor::regs::CommonSpecialRegisters;
-use crate::sandbox::snapshot::Snapshot;
+use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
 
 /// A struct that is responsible for laying out and managing the memory
@@ -44,7 +43,7 @@ pub(crate) struct SandboxMemoryManager<S> {
     /// Pointer to where to load memory from
     pub(crate) load_addr: RawPtr,
     /// Offset for the execution entrypoint from `load_addr`
-    pub(crate) entrypoint_offset: Option<Offset>,
+    pub(crate) entrypoint: NextAction,
     /// How many memory regions were mapped after sandbox creation
     pub(crate) mapped_rgns: u64,
     /// Buffer for accumulating guest abort messages
@@ -152,14 +151,14 @@ where
         shared_mem: S,
         scratch_mem: S,
         load_addr: RawPtr,
-        entrypoint_offset: Option<Offset>,
+        entrypoint: NextAction,
     ) -> Self {
         Self {
             layout,
             shared_mem,
             scratch_mem,
             load_addr,
-            entrypoint_offset,
+            entrypoint,
             mapped_rgns: 0,
             abort_buffer: Vec::new(),
         }
@@ -176,12 +175,6 @@ where
         &mut self.shared_mem
     }
 
-    /// Get `SharedMemory` in `self` as a mutable reference
-    #[cfg(any(gdb, test))]
-    pub(crate) fn get_scratch_mem_mut(&mut self) -> &mut S {
-        &mut self.scratch_mem
-    }
-
     /// Create a snapshot with the given mapped regions
     pub(crate) fn snapshot(
         &mut self,
@@ -190,6 +183,7 @@ where
         root_pt_gpa: u64,
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
+        entrypoint: NextAction,
     ) -> Result<Snapshot> {
         Snapshot::new(
             &mut self.shared_mem,
@@ -201,6 +195,7 @@ where
             root_pt_gpa,
             rsp_gva,
             sregs,
+            entrypoint,
         )
     }
 }
@@ -212,14 +207,13 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         shared_mem.copy_from_slice(s.memory(), 0)?;
         let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
         let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
-        let entrypoint_gva = s.preinitialise();
-        let entrypoint_offset = entrypoint_gva.map(|x| (x - u64::from(&load_addr)).into());
+        let entrypoint = s.entrypoint();
         Ok(Self::new(
             layout,
             shared_mem,
             scratch_mem,
             load_addr,
-            entrypoint_offset,
+            entrypoint,
         ))
     }
 
@@ -257,7 +251,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             scratch_mem: hscratch,
             layout: self.layout,
             load_addr: self.load_addr.clone(),
-            entrypoint_offset: self.entrypoint_offset,
+            entrypoint: self.entrypoint,
             mapped_rgns: self.mapped_rgns,
             abort_buffer: self.abort_buffer,
         };
@@ -266,7 +260,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             scratch_mem: gscratch,
             layout: self.layout,
             load_addr: self.load_addr.clone(),
-            entrypoint_offset: self.entrypoint_offset,
+            entrypoint: self.entrypoint,
             mapped_rgns: self.mapped_rgns,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
         };
@@ -278,20 +272,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
-    /// Get the address of the dispatch function in memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_pointer_to_dispatch_function(&self) -> Result<u64> {
-        let guest_dispatch_function_ptr = self
-            .shared_mem
-            .read::<u64>(self.layout.get_dispatch_function_pointer_offset())?;
-
-        // This pointer is written by the guest library but is accessible to
-        // the guest engine so we should bounds check it before we return it.
-
-        let guest_ptr = GuestPtr::try_from(RawPtr::from(guest_dispatch_function_ptr))?;
-        guest_ptr.absolute()
-    }
-
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {

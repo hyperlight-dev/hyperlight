@@ -334,7 +334,10 @@ impl ExclusiveSharedMemory {
     #[cfg(target_os = "linux")]
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn new(min_size_bytes: usize) -> Result<Self> {
-        use libc::{MAP_ANONYMOUS, MAP_PRIVATE, MAP_FAILED, PROT_READ, PROT_WRITE, c_int, mmap, off_t, size_t};
+        use libc::{
+            MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, c_int, mmap, off_t,
+            size_t,
+        };
         #[cfg(not(miri))]
         use libc::{MAP_NORESERVE, PROT_NONE, mprotect};
 

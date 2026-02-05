@@ -178,8 +178,13 @@ unsafe extern "C" {
 /// Architecture-nonspecific initialisation: set up the heap,
 /// coordinate some addresses and configuration with the host, and run
 /// user initialisation
-pub(crate) extern "C" fn generic_init(peb_address: u64, seed: u64, ops: u64, max_log_level: u64) {
-    let peb_ptr = unsafe {
+pub(crate) extern "C" fn generic_init(
+    peb_address: u64,
+    seed: u64,
+    ops: u64,
+    max_log_level: u64,
+) -> u64 {
+    unsafe {
         GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
         #[allow(static_mut_refs)]
         let peb_ptr = GUEST_HANDLE.peb().unwrap();
@@ -202,8 +207,6 @@ pub(crate) extern "C" fn generic_init(peb_address: u64, seed: u64, ops: u64, max
     let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
 
     unsafe {
-        (*peb_ptr).guest_function_dispatch_ptr = dispatch_function as usize as u64;
-
         let srand_seed = (((peb_address << 8) ^ (seed >> 4)) >> 32) as u32;
         // Set the seed for the random number generator for C code using rand;
         srand(srand_seed);
@@ -231,6 +234,8 @@ pub(crate) extern "C" fn generic_init(peb_address: u64, seed: u64, ops: u64, max
     unsafe {
         hyperlight_main();
     }
+
+    dispatch_function as usize as u64
 }
 
 #[cfg(feature = "macros")]
