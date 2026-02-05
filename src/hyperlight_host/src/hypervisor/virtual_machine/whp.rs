@@ -29,14 +29,15 @@ use windows_result::HRESULT;
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
 use crate::hypervisor::regs::{
     Align16, CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
-    WHP_DEBUG_REGS_NAMES, WHP_DEBUG_REGS_NAMES_LEN, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN,
-    WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES, WHP_SREGS_NAMES_LEN,
+    FP_CONTROL_WORD_DEFAULT, MXCSR_DEFAULT, WHP_DEBUG_REGS_NAMES, WHP_DEBUG_REGS_NAMES_LEN,
+    WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES,
+    WHP_SREGS_NAMES_LEN,
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
 use crate::hypervisor::virtual_machine::{
     CreateVmError, HypervisorError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError,
-    VirtualMachine, VmExit,
+    VirtualMachine, VmExit, XSAVE_MIN_SIZE,
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 #[cfg(feature = "trace_guest")]
@@ -449,7 +450,7 @@ impl VirtualMachine for WhpVm {
         Ok(())
     }
 
-    #[cfg(crashdump)]
+    #[allow(dead_code)]
     fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError> {
         // Get the required buffer size by calling with NULL buffer.
         // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns
@@ -498,6 +499,131 @@ impl VirtualMachine for WhpVm {
         }
 
         Ok(xsave_buffer)
+    }
+
+    fn reset_xsave(&self) -> std::result::Result<(), RegisterError> {
+        // WHP uses compacted XSAVE format (bit 63 of XCOMP_BV set).
+        // We cannot just zero out the xsave area, we need to preserve the XCOMP_BV.
+
+        // Get the required buffer size by calling with NULL buffer.
+        let mut buffer_size_needed: u32 = 0;
+
+        let result = unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut buffer_size_needed,
+            )
+        };
+
+        // Expect insufficient buffer error; any other error is unexpected
+        if let Err(e) = result
+            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
+        {
+            return Err(RegisterError::GetXsaveSize(e.into()));
+        }
+
+        if buffer_size_needed < XSAVE_MIN_SIZE as u32 {
+            return Err(RegisterError::XsaveSizeMismatch {
+                expected: XSAVE_MIN_SIZE as u32,
+                actual: buffer_size_needed,
+            });
+        }
+
+        // Create a buffer to hold the current state (to get the correct XCOMP_BV)
+        let mut current_state = vec![0u8; buffer_size_needed as usize];
+        let mut written_bytes = 0;
+        unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                current_state.as_mut_ptr() as *mut std::ffi::c_void,
+                buffer_size_needed,
+                &mut written_bytes,
+            )
+            .map_err(|e| RegisterError::GetXsave(e.into()))?;
+        };
+
+        // Zero out most of the buffer, preserving only XCOMP_BV (520-528).
+        // Extended components with XSTATE_BV bit=0 will use their init values.
+        //
+        // - Legacy region (0-512): x87 FPU + SSE state
+        // - XSTATE_BV (512-520): Feature bitmap
+        // - XCOMP_BV (520-528): Compaction bitmap + format bit (KEEP)
+        // - Reserved (528-576): Header padding
+        // - Extended (576+): AVX, AVX-512, MPX, PKRU, AMX, etc.
+        current_state[0..520].fill(0);
+        current_state[528..].fill(0);
+
+        // XSAVE area layout from Intel SDM Vol. 1 Section 13.4.1:
+        // - Bytes 0-1: FCW (x87 FPU Control Word)
+        // - Bytes 24-27: MXCSR
+        // - Bytes 512-519: XSTATE_BV (bitmap of valid state components)
+        current_state[0..2].copy_from_slice(&FP_CONTROL_WORD_DEFAULT.to_le_bytes());
+        current_state[24..28].copy_from_slice(&MXCSR_DEFAULT.to_le_bytes());
+        // XSTATE_BV = 0x3: bits 0,1 = x87 + SSE valid. Explicitly tell hypervisor
+        // to apply the legacy region from this buffer for consistent behavior.
+        current_state[512..520].copy_from_slice(&0x3u64.to_le_bytes());
+
+        unsafe {
+            WHvSetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                current_state.as_ptr() as *const std::ffi::c_void,
+                buffer_size_needed,
+            )
+            .map_err(|e| RegisterError::SetXsave(e.into()))?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[cfg(feature = "init-paging")]
+    fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
+        // Get the required buffer size by calling with NULL buffer.
+        // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns
+        // WHV_E_INSUFFICIENT_BUFFER and sets buffer_size_needed to the required size.
+        let mut buffer_size_needed: u32 = 0;
+
+        let result = unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut buffer_size_needed,
+            )
+        };
+
+        // Expect insufficient buffer error; any other error is unexpected
+        if let Err(e) = result
+            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
+        {
+            return Err(RegisterError::GetXsaveSize(e.into()));
+        }
+
+        let provided_size = std::mem::size_of_val(xsave) as u32;
+        if provided_size != buffer_size_needed {
+            return Err(RegisterError::XsaveSizeMismatch {
+                expected: buffer_size_needed,
+                actual: provided_size,
+            });
+        }
+
+        unsafe {
+            WHvSetVirtualProcessorXsaveState(
+                self.partition,
+                0,
+                xsave.as_ptr() as *const std::ffi::c_void,
+                buffer_size_needed,
+            )
+            .map_err(|e| RegisterError::SetXsave(e.into()))?;
+        }
+
+        Ok(())
     }
 
     /// Get the partition handle for this VM

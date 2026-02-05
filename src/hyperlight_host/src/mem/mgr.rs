@@ -27,6 +27,7 @@ use super::memory_region::MemoryRegion;
 use super::ptr::{GuestPtr, RawPtr};
 use super::ptr_offset::Offset;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
+use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::sandbox::snapshot::Snapshot;
 use crate::{Result, new_error};
 
@@ -182,6 +183,7 @@ where
         mapped_regions: Vec<MemoryRegion>,
         root_pt_gpa: u64,
         rsp_gva: u64,
+        sregs: CommonSpecialRegisters,
     ) -> Result<Snapshot> {
         Snapshot::new(
             &mut self.shared_mem,
@@ -192,6 +194,7 @@ where
             mapped_regions,
             root_pt_gpa,
             rsp_gva,
+            sregs,
         )
     }
 }

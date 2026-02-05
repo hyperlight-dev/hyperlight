@@ -174,9 +174,17 @@ impl MultiUseSandbox {
             .get_root_pt()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         let stack_top_gpa = self.vm.get_stack_top();
-        let memory_snapshot =
-            self.mem_mgr
-                .snapshot(self.id, mapped_regions_vec, root_pt_gpa, stack_top_gpa)?;
+        let sregs = self
+            .vm
+            .get_snapshot_sregs()
+            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        let memory_snapshot = self.mem_mgr.snapshot(
+            self.id,
+            mapped_regions_vec,
+            root_pt_gpa,
+            stack_top_gpa,
+            sregs,
+        )?;
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
@@ -297,9 +305,19 @@ impl MultiUseSandbox {
                 .update_scratch_mapping(gscratch)
                 .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         }
+
+        let sregs = snapshot.sregs().ok_or_else(|| {
+            HyperlightError::Error("snapshot from running sandbox should have sregs".to_string())
+        })?;
+        // TODO (ludfjig): Go through the rest of possible errors in this `MultiUseSandbox::restore` function
+        // and determine if they should also poison the sandbox.
         self.vm
-            .set_root_pt(snapshot.root_pt_gpa())
-            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+            .reset_vcpu(snapshot.root_pt_gpa(), sregs)
+            .map_err(|e| {
+                self.poisoned = true;
+                HyperlightVmError::Restore(e)
+            })?;
+
         self.vm.set_stack_top(snapshot.stack_top_gva());
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
@@ -1356,6 +1374,41 @@ mod tests {
             u_sbox.evolve().unwrap()
         };
         assert_ne!(sandbox3.id, sandbox_id);
+    }
+
+    /// Test that snapshot restore properly resets vCPU debug registers. This test verifies
+    /// that restore() calls reset_vcpu().
+    #[test]
+    fn snapshot_restore_resets_debug_registers() {
+        let mut sandbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        let snapshot = sandbox.snapshot().unwrap();
+
+        // Verify DR0 is initially 0 (clean state)
+        let dr0_initial: u64 = sandbox.call("GetDr0", ()).unwrap();
+        assert_eq!(dr0_initial, 0, "DR0 should initially be 0");
+
+        // Dirty DR0 by setting it to a known non-zero value
+        const DIRTY_VALUE: u64 = 0xDEAD_BEEF_CAFE_BABE;
+        sandbox.call::<()>("SetDr0", DIRTY_VALUE).unwrap();
+        let dr0_dirty: u64 = sandbox.call("GetDr0", ()).unwrap();
+        assert_eq!(
+            dr0_dirty, DIRTY_VALUE,
+            "DR0 should be dirty after SetDr0 call"
+        );
+
+        // Restore to the snapshot - this should reset vCPU state including debug registers
+        sandbox.restore(snapshot).unwrap();
+
+        let dr0_after_restore: u64 = sandbox.call("GetDr0", ()).unwrap();
+        assert_eq!(
+            dr0_after_restore, 0,
+            "DR0 should be 0 after restore (reset_vcpu should have been called)"
+        );
     }
 
     /// Test that sandboxes can be created and evolved with different heap sizes
