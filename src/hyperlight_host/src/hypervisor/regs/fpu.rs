@@ -36,13 +36,11 @@ pub(crate) struct CommonFpu {
     pub fcw: u16,
     pub fsw: u16,
     pub ftwx: u8,
-    pub pad1: u8,
     pub last_opcode: u16,
     pub last_ip: u64,
     pub last_dp: u64,
     pub xmm: [[u8; 16]; 16],
     pub mxcsr: u32,
-    pub pad2: u32,
 }
 
 impl Default for CommonFpu {
@@ -52,13 +50,11 @@ impl Default for CommonFpu {
             fcw: FP_CONTROL_WORD_DEFAULT,
             fsw: 0,
             ftwx: 0,
-            pad1: 0,
             last_opcode: 0,
             last_ip: 0,
             last_dp: 0,
             xmm: [[0u8; 16]; 16],
             mxcsr: MXCSR_DEFAULT,
-            pad2: 0,
         }
     }
 }
@@ -71,13 +67,13 @@ impl From<&CommonFpu> for kvm_fpu {
             fcw: common_fpu.fcw,
             fsw: common_fpu.fsw,
             ftwx: common_fpu.ftwx,
-            pad1: common_fpu.pad1,
+            pad1: 0,
             last_opcode: common_fpu.last_opcode,
             last_ip: common_fpu.last_ip,
             last_dp: common_fpu.last_dp,
             xmm: common_fpu.xmm,
             mxcsr: common_fpu.mxcsr,
-            pad2: common_fpu.pad2,
+            pad2: 0,
         }
     }
 }
@@ -90,13 +86,13 @@ impl From<&CommonFpu> for FloatingPointUnit {
             fcw: common_fpu.fcw,
             fsw: common_fpu.fsw,
             ftwx: common_fpu.ftwx,
-            pad1: common_fpu.pad1,
+            pad1: 0,
             last_opcode: common_fpu.last_opcode,
             last_ip: common_fpu.last_ip,
             last_dp: common_fpu.last_dp,
             xmm: common_fpu.xmm,
             mxcsr: common_fpu.mxcsr,
-            pad2: common_fpu.pad2,
+            pad2: 0,
         }
     }
 }
@@ -109,13 +105,11 @@ impl From<&kvm_fpu> for CommonFpu {
             fcw: kvm_fpu.fcw,
             fsw: kvm_fpu.fsw,
             ftwx: kvm_fpu.ftwx,
-            pad1: kvm_fpu.pad1,
             last_opcode: kvm_fpu.last_opcode,
             last_ip: kvm_fpu.last_ip,
             last_dp: kvm_fpu.last_dp,
             xmm: kvm_fpu.xmm,
             mxcsr: kvm_fpu.mxcsr,
-            pad2: kvm_fpu.pad2,
         }
     }
 }
@@ -128,13 +122,11 @@ impl From<&FloatingPointUnit> for CommonFpu {
             fcw: mshv_fpu.fcw,
             fsw: mshv_fpu.fsw,
             ftwx: mshv_fpu.ftwx,
-            pad1: mshv_fpu.pad1,
             last_opcode: mshv_fpu.last_opcode,
             last_ip: mshv_fpu.last_ip,
             last_dp: mshv_fpu.last_dp,
             xmm: mshv_fpu.xmm,
             mxcsr: mshv_fpu.mxcsr,
-            pad2: mshv_fpu.pad2,
         }
     }
 }
@@ -174,7 +166,7 @@ impl From<&CommonFpu> for [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP
                 FpControl: fpu.fcw,
                 FpStatus: fpu.fsw,
                 FpTag: fpu.ftwx,
-                Reserved: fpu.pad1,
+                Reserved: 0,
                 LastFpOp: fpu.last_opcode,
                 Anonymous: WHV_X64_FP_CONTROL_STATUS_REGISTER_0_0 {
                     LastFpRip: fpu.last_ip,
@@ -293,7 +285,6 @@ impl TryFrom<&[(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)]> for CommonFpu 
                     fpu.fcw = control.FpControl;
                     fpu.fsw = control.FpStatus;
                     fpu.ftwx = control.FpTag;
-                    fpu.pad1 = control.Reserved;
                     fpu.last_opcode = control.LastFpOp;
                     fpu.last_ip = unsafe { control.Anonymous.LastFpRip };
                 }
@@ -355,7 +346,6 @@ mod tests {
             fcw: 0x1234,
             fsw: 0x5678,
             ftwx: 0x9a,
-            pad1: 0xbc,
             last_opcode: 0xdef0,
             last_ip: 0xdeadbeefcafebabe,
             last_dp: 0xabad1deaf00dbabe,
@@ -365,7 +355,6 @@ mod tests {
                 [22u8; 16], [23u8; 16],
             ],
             mxcsr: 0x1f80,
-            pad2: 0,
         }
     }
 
