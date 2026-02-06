@@ -110,10 +110,16 @@ unsafe fn init_stack() -> u64 {
     use hyperlight_guest::layout::MAIN_STACK_TOP_GVA;
     let stack_top_page_base = (MAIN_STACK_TOP_GVA - 1) & !0xfff;
     unsafe {
+        use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE};
         crate::paging::map_region(
             hyperlight_guest::prim_alloc::alloc_phys_pages(1),
             stack_top_page_base as *mut u8,
-            hyperlight_common::vmem::PAGE_SIZE as u64,
+            PAGE_SIZE as u64,
+            MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: false,
+            }),
         );
     }
     MAIN_STACK_TOP_GVA

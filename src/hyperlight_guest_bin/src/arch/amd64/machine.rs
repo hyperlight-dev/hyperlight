@@ -16,7 +16,7 @@ limitations under the License.
 
 use core::mem;
 
-use hyperlight_common::vmem::PAGE_SIZE;
+use hyperlight_common::vmem::{BasicMapping, MappingKind, PAGE_SIZE};
 
 use super::layout::PROC_CONTROL_GVA;
 
@@ -223,6 +223,11 @@ impl ProcCtrl {
                 hyperlight_guest::prim_alloc::alloc_phys_pages(2),
                 ptr,
                 PAGE_SIZE as u64 * 2,
+                MappingKind::Basic(BasicMapping {
+                    readable: true,
+                    writable: true,
+                    executable: false,
+                }),
             );
             let ptr = ptr as *mut Self;
             (&raw mut (*ptr).gdt).write_bytes(0u8, 1);

@@ -359,9 +359,12 @@ impl VirtualMachine for MshvVm {
 #[cfg(gdb)]
 impl DebuggableVm for MshvVm {
     fn translate_gva(&self, gva: u64) -> std::result::Result<u64, DebugError> {
-        use mshv_bindings::{HV_TRANSLATE_GVA_VALIDATE_READ, HV_TRANSLATE_GVA_VALIDATE_WRITE};
+        use mshv_bindings::HV_TRANSLATE_GVA_VALIDATE_READ;
 
-        let flags = (HV_TRANSLATE_GVA_VALIDATE_READ | HV_TRANSLATE_GVA_VALIDATE_WRITE) as u64;
+        // Do not use HV_TRANSLATE_GVA_VALIDATE_WRITE, since many
+        // things that are interesting to debug are not in fact
+        // writable from the guest's point of view.
+        let flags = HV_TRANSLATE_GVA_VALIDATE_READ as u64;
         let (addr, _) = self
             .vcpu_fd
             .translate_gva(gva, flags)

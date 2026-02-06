@@ -17,7 +17,7 @@ limitations under the License.
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::layout::{scratch_base_gpa, scratch_base_gva};
-use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
+use hyperlight_common::vmem::{self, BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE};
 use tracing::{Span, instrument};
 
 use crate::HyperlightError::MemoryRegionSizeMismatch;
@@ -254,25 +254,26 @@ fn filtered_mappings<'a>(
     regions: &[MemoryRegion],
     scratch_size: usize,
     root_pt: u64,
-) -> Vec<(u64, u64, BasicMapping, &'a [u8])> {
+) -> Vec<(Mapping, &'a [u8])> {
     let op = SharedMemoryPageTableBuffer::new(snap, scratch, scratch_size, root_pt);
     unsafe {
         hyperlight_common::vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64)
     }
-    .filter_map(move |(gva, gpa, bm)| {
+    .filter_map(move |mapping| {
         // the scratch map doesn't count
-        if gva >= scratch_base_gva(scratch_size) {
+        if mapping.virt_base >= scratch_base_gva(scratch_size) {
             return None;
         }
         // neither does the mapping of the snapshot's own page tables
-        if gva >= hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64
-            && gva <= hyperlight_common::layout::SNAPSHOT_PT_GVA_MAX as u64
+        if mapping.virt_base >= hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64
+            && mapping.virt_base <= hyperlight_common::layout::SNAPSHOT_PT_GVA_MAX as u64
         {
             return None;
         }
         // todo: is it useful to warn if we can't resolve this?
-        let contents = unsafe { guest_page(snap, scratch, regions, scratch_size, gpa) }?;
-        Some((gva, gpa, bm, contents))
+        let contents =
+            unsafe { guest_page(snap, scratch, regions, scratch_size, mapping.phys_base) }?;
+        Some((mapping, contents))
     })
     .collect()
 }
@@ -319,10 +320,12 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
         phys_base: scratch_base_gpa(scratch_size),
         virt_base: scratch_base_gva(scratch_size),
         len: scratch_size as u64,
-        kind: MappingKind::BasicMapping(BasicMapping {
+        kind: MappingKind::Basic(BasicMapping {
             readable: true,
             writable: true,
-            executable: true,
+            // assume that the guest will map these pages elsewhere if
+            // it actually needs to execute from them
+            executable: false,
         }),
     };
     unsafe { vmem::map(pt_buf, mapping) };
@@ -334,9 +337,9 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
             phys_base: (pt_buf.phys_base() + pt_size_mapped) as u64,
             virt_base: (hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN + pt_size_mapped) as u64,
             len: (pt_buf.size() - pt_size_mapped) as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
-                writable: true,
+                writable: false,
                 executable: false,
             }),
         };
@@ -399,24 +402,25 @@ impl Snapshot {
             // 1. Map the (ideally readonly) pages of snapshot data
             for rgn in layout.get_memory_regions_::<GuestMemoryRegion>(())?.iter() {
                 let readable = rgn.flags.contains(MemoryRegionFlags::READ);
-                let writable = rgn.flags.contains(MemoryRegionFlags::WRITE)
-                    // Temporary hack: the stack guard page is
-                    // currently checked for in the host, rather than
-                    // the guest, so we need to mark it writable in
-                    // the Stage 1 translation so that the fault
-                    // exception on a write is taken to the
-                    // hypervisor, rather than the guest kernel
-                    || rgn.flags.contains(MemoryRegionFlags::STACK_GUARD);
                 let executable = rgn.flags.contains(MemoryRegionFlags::EXECUTE);
+                let writable = rgn.flags.contains(MemoryRegionFlags::WRITE);
+                let kind = if writable {
+                    MappingKind::Cow(CowMapping {
+                        readable,
+                        executable,
+                    })
+                } else {
+                    MappingKind::Basic(BasicMapping {
+                        readable,
+                        writable: false,
+                        executable,
+                    })
+                };
                 let mapping = Mapping {
                     phys_base: rgn.guest_region.start as u64,
                     virt_base: rgn.guest_region.start as u64,
                     len: rgn.guest_region.len() as u64,
-                    kind: MappingKind::BasicMapping(BasicMapping {
-                        readable,
-                        writable,
-                        executable,
-                    }),
+                    kind,
                 };
                 unsafe { vmem::map(&pt_buf, mapping) };
             }
@@ -487,15 +491,27 @@ impl Snapshot {
                 let pt_base_gpa = SandboxMemoryLayout::BASE_ADDRESS + live_pages.len() * PAGE_SIZE;
                 let pt_buf = GuestPageTableBuffer::new(pt_base_gpa);
                 let mut snapshot_memory: Vec<u8> = Vec::new();
-                for (gva, _, bm, contents) in live_pages {
+                for (mapping, contents) in live_pages {
                     let new_offset = snapshot_memory.len();
                     snapshot_memory.extend(contents);
                     let new_gpa = new_offset + SandboxMemoryLayout::BASE_ADDRESS;
+                    let kind = match mapping.kind {
+                        MappingKind::Cow(cm) => MappingKind::Cow(cm),
+                        MappingKind::Basic(bm) if bm.writable => MappingKind::Cow(CowMapping {
+                            readable: bm.readable,
+                            executable: bm.executable,
+                        }),
+                        MappingKind::Basic(bm) => MappingKind::Basic(BasicMapping {
+                            readable: bm.readable,
+                            writable: false,
+                            executable: bm.executable,
+                        }),
+                    };
                     let mapping = Mapping {
                         phys_base: new_gpa as u64,
-                        virt_base: gva,
+                        virt_base: mapping.virt_base,
                         len: PAGE_SIZE as u64,
-                        kind: MappingKind::BasicMapping(bm),
+                        kind,
                     };
                     unsafe { vmem::map(&pt_buf, mapping) };
                 }
@@ -610,7 +626,7 @@ mod tests {
             phys_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
             virt_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
             len: PAGE_SIZE as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
                 executable: true,

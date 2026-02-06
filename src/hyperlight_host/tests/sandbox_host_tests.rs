@@ -26,7 +26,7 @@ use hyperlight_host::{
 use hyperlight_testing::simple_guest_as_string;
 
 pub mod common; // pub to disable dead_code warning
-use crate::common::get_simpleguest_sandboxes;
+use crate::common::{get_simpleguest_sandboxes, get_simpleguest_sandboxes_with_cfg};
 
 #[test]
 fn pass_byte_array() {
@@ -121,7 +121,9 @@ fn invalid_guest_function_name() {
 
 #[test]
 fn set_static() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+    let mut cfg: SandboxConfiguration = Default::default();
+    cfg.set_scratch_size(0x100A000);
+    for mut sandbox in get_simpleguest_sandboxes_with_cfg(None, cfg).into_iter() {
         let fn_name = "SetStatic";
         let res = sandbox.call::<i32>(fn_name, ());
         println!("{:?}", res);

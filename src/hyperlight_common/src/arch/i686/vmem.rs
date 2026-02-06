@@ -17,7 +17,7 @@ limitations under the License.
 // This file is just dummy definitions at the moment, in order to
 // allow compiling the guest for real mode boot scenarios.
 
-use crate::vmem::{BasicMapping, Mapping, TableOps, TableReadOps, Void};
+use crate::vmem::{Mapping, TableOps, TableReadOps, Void};
 
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_TABLE_SIZE: usize = 4096;
@@ -31,10 +31,7 @@ pub unsafe fn map<Op: TableOps>(_op: &Op, _mapping: Mapping) {
 }
 
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn virt_to_phys<Op: TableOps>(
-    _op: &Op,
-    _address: u64,
-) -> impl Iterator<Item = (VirtAddr, PhysAddr, BasicMapping)> {
+pub unsafe fn virt_to_phys<Op: TableOps>(_op: &Op, _address: u64) -> impl Iterator<Item = Mapping> {
     panic!(
         "vmem::virt_to_phys: i686 guests do not support booting the full hyperlight guest kernel"
     );

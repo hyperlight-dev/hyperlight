@@ -45,14 +45,18 @@ impl GuestMappingOperations {
             scratch_base_gva: hyperlight_guest::layout::scratch_base_gva(),
         }
     }
-    fn phys_to_virt(&self, addr: u64) -> *mut u8 {
+    fn fallible_phys_to_virt(&self, addr: u64) -> Option<*mut u8> {
         if addr >= self.scratch_base_gpa {
-            (self.scratch_base_gva + (addr - self.scratch_base_gpa)) as *mut u8
+            Some((self.scratch_base_gva + (addr - self.scratch_base_gpa)) as *mut u8)
         } else if addr >= self.snapshot_pt_base_gpa {
-            (self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)) as *mut u8
+            Some((self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)) as *mut u8)
         } else {
-            panic!("phys_to_virt encountered snapshot non-PT page")
+            None
         }
+    }
+    fn phys_to_virt(&self, addr: u64) -> *mut u8 {
+        self.fallible_phys_to_virt(addr)
+            .expect("phys_to_virt encountered snapshot non-PT page")
     }
 }
 // for virt_to_phys
@@ -137,7 +141,7 @@ impl vmem::TableOps for GuestMappingOperations {
 ///   as such do not use concurrently with any other page table operations
 /// - TLB invalidation is not performed,
 ///   if previously-unmapped ranges are not being mapped, TLB invalidation may need to be performed afterwards.
-pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
+pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64, kind: vmem::MappingKind) {
     unsafe {
         vmem::map(
             &GuestMappingOperations::new(),
@@ -145,20 +149,18 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
                 phys_base,
                 virt_base: virt_base as u64,
                 len,
-                kind: vmem::MappingKind::BasicMapping(vmem::BasicMapping {
-                    readable: true,
-                    writable: true,
-                    executable: true,
-                }),
+                kind,
             },
         );
     }
 }
 
-pub fn virt_to_phys(
-    gva: u64,
-) -> impl Iterator<Item = (vmem::VirtAddr, vmem::PhysAddr, vmem::BasicMapping)> {
+pub fn virt_to_phys(gva: vmem::VirtAddr) -> impl Iterator<Item = vmem::Mapping> {
     unsafe { vmem::virt_to_phys::<_>(GuestMappingOperations::new(), gva, 1) }
+}
+
+pub fn phys_to_virt(gpa: vmem::PhysAddr) -> Option<*mut u8> {
+    GuestMappingOperations::new().fallible_phys_to_virt(gpa)
 }
 
 pub fn flush_tlb() {

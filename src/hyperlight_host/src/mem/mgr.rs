@@ -427,7 +427,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 #[cfg(test)]
 #[cfg(all(feature = "init-paging", target_arch = "x86_64"))]
 mod tests {
-    use hyperlight_common::vmem::PAGE_TABLE_SIZE;
+    use hyperlight_common::vmem::{MappingKind, PAGE_TABLE_SIZE};
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_string;
 
@@ -470,15 +470,22 @@ mod tests {
 
                 // Verify identity mapping (phys == virt for low memory)
                 assert_eq!(
-                    mapping.1, addr,
+                    mapping.phys_base, addr,
                     "{}: {:?} region: address 0x{:x} should identity map, got phys 0x{:x}",
-                    name, region.region_type, addr, mapping.1
+                    name, region.region_type, addr, mapping.phys_base
                 );
 
+                // Verify kind is Basic
+                let MappingKind::Basic(bm) = mapping.kind else {
+                    panic!(
+                        "{}: {:?} region: address 0x{:x} should be kind basic, got {:?}",
+                        name, region.region_type, addr, mapping.kind
+                    );
+                };
+
                 // Verify writable
-                let actual = mapping.2.writable;
-                let expected = region.flags.contains(MemoryRegionFlags::WRITE)
-                    || region.flags.contains(MemoryRegionFlags::STACK_GUARD);
+                let actual = bm.writable;
+                let expected = region.flags.contains(MemoryRegionFlags::WRITE);
                 assert_eq!(
                     actual, expected,
                     "{}: {:?} region: address 0x{:x} has writable {}, expected {} (region flags: {:?})",
@@ -486,7 +493,7 @@ mod tests {
                 );
 
                 // Verify executable
-                let actual = mapping.2.executable;
+                let actual = bm.executable;
                 let expected = region.flags.contains(MemoryRegionFlags::EXECUTE);
                 assert_eq!(
                     actual, expected,

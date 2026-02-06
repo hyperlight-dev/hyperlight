@@ -48,8 +48,6 @@ bitflags! {
         const WRITE = 2;
         /// allow guest to execute
         const EXECUTE = 4;
-        /// identifier that this is a stack guard page
-        const STACK_GUARD = 8;
     }
 }
 
