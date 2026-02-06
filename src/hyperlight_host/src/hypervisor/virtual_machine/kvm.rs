@@ -18,7 +18,9 @@ use std::sync::LazyLock;
 
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
-use kvm_bindings::{kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region};
+use kvm_bindings::{
+    kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region, kvm_xsave,
+};
 use kvm_ioctls::Cap::UserMemory;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
@@ -28,8 +30,11 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
 use crate::hypervisor::regs::{
-    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
+    MXCSR_DEFAULT,
 };
+#[cfg(all(test, feature = "init-paging"))]
+use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
 use crate::hypervisor::virtual_machine::{
     CreateVmError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VirtualMachine,
     VmExit,
@@ -206,6 +211,8 @@ impl VirtualMachine for KvmVm {
     }
 
     fn fpu(&self) -> std::result::Result<CommonFpu, RegisterError> {
+        // Note: On KVM this ignores MXCSR.
+        // See https://github.com/torvalds/linux/blob/d358e5254674b70f34c847715ca509e46eb81e6f/arch/x86/kvm/x86.c#L12554-L12599
         let kvm_fpu = self
             .vcpu_fd
             .get_fpu()
@@ -215,6 +222,8 @@ impl VirtualMachine for KvmVm {
 
     fn set_fpu(&self, fpu: &CommonFpu) -> std::result::Result<(), RegisterError> {
         let kvm_fpu: kvm_fpu = fpu.into();
+        // Note: On KVM this ignores MXCSR.
+        // See https://github.com/torvalds/linux/blob/d358e5254674b70f34c847715ca509e46eb81e6f/arch/x86/kvm/x86.c#L12554-L12599
         self.vcpu_fd
             .set_fpu(&kvm_fpu)
             .map_err(|e| RegisterError::SetFpu(e.into()))?;
@@ -253,7 +262,7 @@ impl VirtualMachine for KvmVm {
         Ok(())
     }
 
-    #[cfg(crashdump)]
+    #[allow(dead_code)]
     fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError> {
         let xsave = self
             .vcpu_fd
@@ -264,6 +273,59 @@ impl VirtualMachine for KvmVm {
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect())
+    }
+
+    fn reset_xsave(&self) -> std::result::Result<(), RegisterError> {
+        let mut xsave = kvm_xsave::default(); // default is zeroed 4KB buffer with no FAM
+
+        // XSAVE legacy region layout (Intel SDM Vol. 1 Section 13.4.1):
+        // - Bytes 0-1: FCW, 2-3: FSW
+        // - Bytes 24-27: MXCSR
+        // - Bytes 512-519: XSTATE_BV
+        // - Bytes 520-527: XCOMP_BV (compaction format indicator)
+        //
+        // kvm_xsave.region is [u32], so region[0] covers FCW (low 16) and FSW (high 16, stays 0).
+        xsave.region[0] = FP_CONTROL_WORD_DEFAULT as u32;
+        xsave.region[6] = MXCSR_DEFAULT;
+        // XSTATE_BV = 0x3: bits 0,1 = x87 + SSE valid. This tells KVM to apply
+        // the legacy region from this buffer. Without this, some KVM versions
+        // may ignore set_xsave entirely when XSTATE_BV=0.
+        xsave.region[128] = 0x3;
+        // Note: Unlike MSHV/WHP, we don't preserve XCOMP_BV because KVM uses
+        // standard (non-compacted) XSAVE format where XCOMP_BV remains 0.
+
+        // SAFETY: No dynamic features enabled, 4KB is sufficient
+        unsafe {
+            self.vcpu_fd
+                .set_xsave(&xsave)
+                .map_err(|e| RegisterError::SetXsave(e.into()))?
+        };
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[cfg(feature = "init-paging")]
+    fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
+        if std::mem::size_of_val(xsave) != XSAVE_BUFFER_SIZE {
+            return Err(RegisterError::XsaveSizeMismatch {
+                expected: XSAVE_BUFFER_SIZE as u32,
+                actual: std::mem::size_of_val(xsave) as u32,
+            });
+        }
+        let xsave = kvm_xsave {
+            region: xsave.try_into().expect("xsave slice has correct length"),
+            ..Default::default()
+        };
+        // Safety: Safe because we only copy 4096 bytes
+        // and have not enabled any dynamic xsave features
+        unsafe {
+            self.vcpu_fd
+                .set_xsave(&xsave)
+                .map_err(|e| RegisterError::SetXsave(e.into()))?
+        };
+
+        Ok(())
     }
 }
 

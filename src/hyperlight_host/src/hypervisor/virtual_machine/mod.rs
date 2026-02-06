@@ -88,7 +88,7 @@ pub fn is_hypervisor_present() -> bool {
 }
 
 /// The hypervisor types available for the current platform
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub(crate) enum HypervisorType {
     #[cfg(kvm)]
     Kvm,
@@ -99,6 +99,17 @@ pub(crate) enum HypervisorType {
     #[cfg(target_os = "windows")]
     Whp,
 }
+
+/// Minimum XSAVE buffer size: 512 bytes legacy region + 64 bytes header.
+/// Only used by MSHV and WHP which use compacted XSAVE format and need to
+/// validate buffer size before accessing XCOMP_BV.
+#[cfg(any(mshv3, target_os = "windows"))]
+pub(crate) const XSAVE_MIN_SIZE: usize = 576;
+
+/// Standard XSAVE buffer size (4KB) used by KVM and MSHV.
+/// WHP queries the required size dynamically.
+#[cfg(all(any(kvm, mshv3), test, feature = "init-paging"))]
+pub(crate) const XSAVE_BUFFER_SIZE: usize = 4096;
 
 // Compiler error if no hypervisor type is available
 #[cfg(not(any(kvm, mshv3, target_os = "windows")))]
@@ -207,6 +218,8 @@ pub enum RegisterError {
     SetDebugRegs(HypervisorError),
     #[error("Failed to get xsave: {0}")]
     GetXsave(HypervisorError),
+    #[error("Failed to set xsave: {0}")]
+    SetXsave(HypervisorError),
     #[error("Xsave size mismatch: expected {expected} bytes, got {actual}")]
     XsaveSizeMismatch {
         /// Expected size in bytes
@@ -214,6 +227,11 @@ pub enum RegisterError {
         /// Actual size in bytes
         actual: u32,
     },
+    #[error("Invalid xsave alignment")]
+    InvalidXsaveAlignment,
+    #[cfg(target_os = "windows")]
+    #[error("Failed to get xsave size: {0}")]
+    GetXsaveSize(#[from] HypervisorError),
     #[cfg(target_os = "windows")]
     #[error("Failed to convert WHP registers: {0}")]
     ConversionFailed(String),
@@ -314,12 +332,17 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[allow(dead_code)]
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError>;
     /// Set the debug registers of the vCPU
-    #[allow(dead_code)]
     fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError>;
 
-    /// xsave
-    #[cfg(crashdump)]
+    /// Get xsave
+    #[allow(dead_code)]
     fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError>;
+    /// Reset xsave to default state
+    fn reset_xsave(&self) -> std::result::Result<(), RegisterError>;
+    /// Set xsave - only used for tests
+    #[cfg(test)]
+    #[cfg(feature = "init-paging")]
+    fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError>;
 
     /// Get partition handle
     #[cfg(target_os = "windows")]
