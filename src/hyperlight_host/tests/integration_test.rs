@@ -25,6 +25,7 @@ use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, Uninitializ
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 use log::LevelFilter;
+use serial_test::serial;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{new_uninit, new_uninit_c, new_uninit_rust};
@@ -293,6 +294,7 @@ fn interrupt_moved_sandbox() {
 /// The ABA-problem is solved by clearing CANCEL bit at the start of each VirtualCPU::run() call.
 #[test]
 #[cfg(target_os = "linux")]
+#[serial(thread_heavy)]
 fn interrupt_custom_signal_no_and_retry_delay() {
     let mut config = SandboxConfiguration::default();
     config.set_interrupt_vcpu_sigrtmin_offset(0).unwrap();
@@ -315,8 +317,8 @@ fn interrupt_custom_signal_no_and_retry_delay() {
     let thread = thread::spawn(move || {
         for _ in 0..NUM_ITERS {
             // wait for the guest call to start
-            thread::sleep(Duration::from_millis(1000));
-            interrupt_handle.kill();
+            thread::sleep(Duration::from_millis(3000));
+            assert!(interrupt_handle.kill());
         }
     });
 
@@ -864,6 +866,7 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
 /// - Calls we did NOT choose to kill NEVER return ExecutionCanceledByHost
 /// - We get a mix of killed and non-killed outcomes (not 100% or 0%)
 #[test]
+#[serial(thread_heavy)]
 fn interrupt_random_kill_stress_test() {
     // Wrapper to hold a sandbox and its snapshot together
     struct SandboxWithSnapshot {
@@ -1334,6 +1337,7 @@ fn interrupt_random_kill_stress_test() {
 ///
 /// **Failure Condition:** If this test hangs, it means `kill()` failed to stop the guest, leaving it spinning forever.
 #[test]
+#[serial(thread_heavy)]
 fn interrupt_infinite_loop_stress_test() {
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -1421,6 +1425,7 @@ fn interrupt_infinite_loop_stress_test() {
 // mid-call and shares a thread ID with another sandbox, ensuring only the intended
 // VM is interrupted while bait sandboxes keep running.
 #[test]
+#[serial(thread_heavy)]
 fn interrupt_infinite_moving_loop_stress_test() {
     use std::sync::Arc;
     use std::thread;
