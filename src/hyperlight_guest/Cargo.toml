@@ -12,7 +12,7 @@ Provides only the essential building blocks for interacting with the host enviro
 """
 
 [dependencies]
-anyhow = { version = "1.0.100", default-features = false }
+anyhow = { version = "1.0.101", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 hyperlight-common = { workspace = true, default-features = false }
 flatbuffers = { version= "25.12.19", default-features = false }
