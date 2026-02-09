@@ -326,7 +326,10 @@ impl HyperlightError {
             | HyperlightError::StackOverflow()
             | HyperlightError::MemoryAccessViolation(_, _, _)
             | HyperlightError::SnapshotSizeMismatch(_, _)
-            | HyperlightError::MemoryRegionSizeMismatch(_, _, _) => true,
+            | HyperlightError::MemoryRegionSizeMismatch(_, _, _)
+            // HyperlightVmError::Restore is already handled manually in restore(), but we mark it
+            // as poisoning here too for defense in depth.
+            | HyperlightError::HyperlightVmError(HyperlightVmError::Restore(_)) => true,
 
             // These errors poison the sandbox because they can leave
             // it in an inconsistent state due to snapshot restore

@@ -235,7 +235,7 @@ fn interrupt_same_thread_no_barrier() {
             // Only allow successful calls or interrupted.
             // The call can be successful in case the call is finished before kill() is called.
             Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {}
-            _ => panic!("Unexpected return"),
+            other => panic!("Unexpected return: {:?}", other),
         };
         if sbox2.poisoned() {
             sbox2.restore(snapshot2.clone()).unwrap();

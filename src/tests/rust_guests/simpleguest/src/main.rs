@@ -533,6 +533,18 @@ fn use_sse2_registers() {
     unsafe { core::arch::asm!("movss xmm1, DWORD PTR [{0}]", in(reg) &val) };
 }
 
+#[guest_function("SetDr0")]
+fn set_dr0(value: u64) {
+    unsafe { core::arch::asm!("mov dr0, {}", in(reg) value) };
+}
+
+#[guest_function("GetDr0")]
+fn get_dr0() -> u64 {
+    let value: u64;
+    unsafe { core::arch::asm!("mov {}, dr0", out(reg) value) };
+    value
+}
+
 #[guest_function("Add")]
 fn add(a: i32, b: i32) -> Result<i32> {
     #[host_function("HostAdd")]

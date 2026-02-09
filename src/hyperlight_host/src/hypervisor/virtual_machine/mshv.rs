@@ -21,7 +21,7 @@ use std::sync::LazyLock;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
-    FloatingPointUnit, SpecialRegisters, StandardRegisters, hv_message_type,
+    FloatingPointUnit, SpecialRegisters, StandardRegisters, XSave, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
@@ -36,11 +36,14 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
 use crate::hypervisor::regs::{
-    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
+    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
+    MXCSR_DEFAULT,
 };
+#[cfg(all(test, feature = "init-paging"))]
+use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
 use crate::hypervisor::virtual_machine::{
     CreateVmError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VirtualMachine,
-    VmExit,
+    VmExit, XSAVE_MIN_SIZE,
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 #[cfg(feature = "trace_guest")]
@@ -283,13 +286,73 @@ impl VirtualMachine for MshvVm {
         Ok(())
     }
 
-    #[cfg(crashdump)]
+    #[allow(dead_code)]
     fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError> {
         let xsave = self
             .vcpu_fd
             .get_xsave()
             .map_err(|e| RegisterError::GetXsave(e.into()))?;
         Ok(xsave.buffer.to_vec())
+    }
+
+    fn reset_xsave(&self) -> std::result::Result<(), RegisterError> {
+        let current_xsave = self
+            .vcpu_fd
+            .get_xsave()
+            .map_err(|e| RegisterError::GetXsave(e.into()))?;
+        if current_xsave.buffer.len() < XSAVE_MIN_SIZE {
+            // Minimum: 512 legacy + 64 header
+            return Err(RegisterError::XsaveSizeMismatch {
+                expected: XSAVE_MIN_SIZE as u32,
+                actual: current_xsave.buffer.len() as u32,
+            });
+        }
+
+        let mut buf = XSave::default(); // default is zeroed 4KB buffer
+
+        // Copy XCOMP_BV (offset 520-527) - preserves feature mask + compacted bit
+        buf.buffer[520..528].copy_from_slice(&current_xsave.buffer[520..528]);
+
+        // XSAVE area layout from Intel SDM Vol. 1 Section 13.4.1:
+        // - Bytes 0-1: FCW (x87 FPU Control Word)
+        // - Bytes 24-27: MXCSR
+        // - Bytes 512-519: XSTATE_BV (bitmap of valid state components)
+        buf.buffer[0..2].copy_from_slice(&FP_CONTROL_WORD_DEFAULT.to_le_bytes());
+        buf.buffer[24..28].copy_from_slice(&MXCSR_DEFAULT.to_le_bytes());
+        // XSTATE_BV = 0x3: bits 0,1 = x87 + SSE valid. Explicitly tell hypervisor
+        // to apply the legacy region from this buffer for consistent behavior.
+        buf.buffer[512..520].copy_from_slice(&0x3u64.to_le_bytes());
+
+        self.vcpu_fd
+            .set_xsave(&buf)
+            .map_err(|e| RegisterError::SetXsave(e.into()))?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[cfg(feature = "init-paging")]
+    fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
+        if std::mem::size_of_val(xsave) != XSAVE_BUFFER_SIZE {
+            return Err(RegisterError::XsaveSizeMismatch {
+                expected: XSAVE_BUFFER_SIZE as u32,
+                actual: std::mem::size_of_val(xsave) as u32,
+            });
+        }
+
+        // Safety: all valid u32 values are 4 valid u8 values
+        let (prefix, bytes, suffix) = unsafe { xsave.align_to() };
+        if !prefix.is_empty() || !suffix.is_empty() {
+            return Err(RegisterError::InvalidXsaveAlignment);
+        }
+        let buf = XSave {
+            buffer: bytes
+                .try_into()
+                .expect("xsave slice has correct length and prefix and suffix are empty"),
+        };
+        self.vcpu_fd
+            .set_xsave(&buf)
+            .map_err(|e| RegisterError::SetXsave(e.into()))?;
+        Ok(())
     }
 }
 

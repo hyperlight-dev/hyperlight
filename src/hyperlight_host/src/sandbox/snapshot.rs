@@ -22,6 +22,7 @@ use tracing::{Span, instrument};
 
 use crate::HyperlightError::MemoryRegionSizeMismatch;
 use crate::Result;
+use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegion;
@@ -29,6 +30,7 @@ use crate::mem::mgr::GuestPageTableBuffer;
 use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
+
 pub(super) static SANDBOX_CONFIGURATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A wrapper around a `SharedMemory` reference and a snapshot
@@ -69,6 +71,13 @@ pub struct Snapshot {
     root_pt_gpa: u64,
     /// The address of the top of the guest stack
     stack_top_gva: u64,
+
+    /// Special register state captured from the vCPU during snapshot.
+    /// None for snapshots created directly from a binary (before guest runs).
+    /// Some for snapshots taken from a running sandbox.
+    /// Note: CR3 in this struct is NOT used on restore - instead, the new
+    /// root_pt_gpa field is used since page tables are relocated during snapshot.
+    sregs: Option<CommonSpecialRegisters>,
 
     /// Preinitialisation entry point for snapshots created directly from a
     /// guest binary.
@@ -430,6 +439,7 @@ impl Snapshot {
             hash,
             root_pt_gpa: pt_base_gpa as u64,
             stack_top_gva: exn_stack_top_gva,
+            sregs: None,
             preinitialise: Some(load_addr + entrypoint_offset),
         })
     }
@@ -452,6 +462,7 @@ impl Snapshot {
         regions: Vec<MemoryRegion>,
         root_pt_gpa: u64,
         stack_top_gva: u64,
+        sregs: CommonSpecialRegisters,
     ) -> Result<Self> {
         let (new_root_pt_gpa, memory) = shared_mem.with_exclusivity(|snap_e| {
             scratch_mem.with_exclusivity(|scratch_e| {
@@ -500,8 +511,9 @@ impl Snapshot {
             regions,
             load_info,
             hash,
-            root_pt_gpa: new_root_pt_gpa as u64,
             stack_top_gva,
+            sregs: Some(sregs),
+            root_pt_gpa: new_root_pt_gpa as u64,
             preinitialise: None,
         })
     }
@@ -545,6 +557,15 @@ impl Snapshot {
         self.stack_top_gva
     }
 
+    /// Returns the special registers stored in this snapshot.
+    /// Returns None for snapshots created directly from a binary (before preinitialisation).
+    /// Returns Some for snapshots taken from a running sandbox.
+    /// Note: The CR3 value in the returned struct should NOT be used for restore;
+    /// use `root_pt_gpa()` instead since page tables are relocated during snapshot.
+    pub(crate) fn sregs(&self) -> Option<&CommonSpecialRegisters> {
+        self.sregs.as_ref()
+    }
+
     pub(crate) fn preinitialise(&self) -> Option<u64> {
         self.preinitialise
     }
@@ -560,10 +581,15 @@ impl PartialEq for Snapshot {
 mod tests {
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
 
+    use crate::hypervisor::regs::CommonSpecialRegisters;
     use crate::mem::exe::LoadInfo;
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::mgr::{GuestPageTableBuffer, SandboxMemoryManager};
     use crate::mem::shared_mem::{ExclusiveSharedMemory, HostSharedMemory, SharedMemory};
+
+    fn default_sregs() -> CommonSpecialRegisters {
+        CommonSpecialRegisters::default()
+    }
 
     fn make_simple_pt_mems() -> (SandboxMemoryManager<HostSharedMemory>, u64) {
         let scratch_mem = ExclusiveSharedMemory::new(PAGE_SIZE).unwrap();
@@ -617,6 +643,7 @@ mod tests {
             Vec::new(),
             pt_base,
             0,
+            default_sregs(),
         )
         .unwrap();
 
@@ -647,6 +674,7 @@ mod tests {
             Vec::new(),
             pt_base,
             0,
+            default_sregs(),
         )
         .unwrap();
         assert_eq!(snapshot.mem_size(), size);
@@ -668,6 +696,7 @@ mod tests {
             Vec::new(),
             pt_base,
             0,
+            default_sregs(),
         )
         .unwrap();
 
@@ -683,6 +712,7 @@ mod tests {
             Vec::new(),
             pt_base,
             0,
+            default_sregs(),
         )
         .unwrap();
 
