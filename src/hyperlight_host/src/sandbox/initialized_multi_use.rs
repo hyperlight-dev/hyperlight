@@ -1430,4 +1430,145 @@ mod tests {
             drop(sbox);
         }
     }
+
+    #[test]
+    fn test_read_write_msr() {
+        use rand::seq::IteratorRandom;
+
+        use crate::hypervisor::virtual_machine::{MSR_TEST_RANGES, is_virtualized_msr};
+
+        let value: u64 = 0x0;
+        const N: usize = 100;
+
+        let msr_numbers = MSR_TEST_RANGES
+            .iter()
+            .flat_map(|&(start, end)| start..end)
+            .filter(|idx| !is_virtualized_msr(*idx))
+            .sample(&mut rand::rng(), N);
+
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+        for msr_number in msr_numbers {
+            let result = sbox.call::<u64>("ReadMSR", msr_number);
+            match &result {
+                Ok(val) => panic!(
+                    "Expected RDMSR to MSR 0x{:X} to be intercepted, but it succeeded with value 0x{:X}",
+                    msr_number, val
+                ),
+                Err(err) => assert!(
+                    matches!(err,
+                        HyperlightError::MsrReadViolation(msr) if *msr == msr_number
+                    ) || matches!(err, HyperlightError::GuestAborted(_, _)),
+                    "RDMSR 0x{:X}: expected MsrReadViolation or GuestAborted, got: {:?}",
+                    msr_number,
+                    err
+                ),
+            }
+            sbox.restore(snapshot.clone()).unwrap();
+            let result = sbox.call::<()>("WriteMSR", (msr_number, value));
+            match &result {
+                Ok(_) => panic!(
+                    "Expected WRMSR to MSR 0x{:X} to be intercepted, but it succeeded",
+                    msr_number
+                ),
+                Err(err) => assert!(
+                    matches!(err,
+                        HyperlightError::MsrWriteViolation(msr_idx, v) if *msr_idx == msr_number && *v == value
+                    ) || matches!(err, HyperlightError::GuestAborted(_, _)),
+                    "WRMSR 0x{:X}: expected MsrWriteViolation or GuestAborted, got: {:?}",
+                    msr_number,
+                    err
+                ),
+            }
+            sbox.restore(snapshot.clone()).unwrap();
+        }
+
+        // Also try case where MSR access is allowed
+        let mut cfg = SandboxConfiguration::default();
+        unsafe { cfg.set_allow_msr(true) };
+
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            Some(cfg),
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+
+        let msr_index: u32 = 0xC0000102; // IA32_KERNEL_GS_BASE
+        let value: u64 = 0x5;
+
+        sbox.call::<()>("WriteMSR", (msr_index, value)).unwrap();
+        let read_value: u64 = sbox.call("ReadMSR", msr_index).unwrap();
+        assert_eq!(read_value, value);
+    }
+
+    /// Exhaustive test that every MSR index in the known architectural ranges
+    /// either triggers a trap (MsrReadViolation) OR is in the canonical
+    /// [`VIRTUALIZED_MSRS`] list. This ensures the list stays in sync with
+    /// what the hypervisor actually virtualizes.
+    ///
+    /// The test iterates ALL indices — no random sampling — so that adding a
+    /// new virtualized MSR to the hypervisor without updating VIRTUALIZED_MSRS
+    /// will cause a deterministic failure.
+    #[test]
+    fn test_all_msr_indices_trapped_or_virtualized() {
+        use crate::hypervisor::virtual_machine::{MSR_TEST_RANGES, is_virtualized_msr};
+
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+
+        let all_msr_indices = MSR_TEST_RANGES.iter().flat_map(|&(start, end)| start..end);
+
+        let mut untapped_not_in_list = Vec::new();
+
+        for msr_index in all_msr_indices {
+            let result = sbox.call::<u64>("ReadMSR", msr_index);
+            match &result {
+                Ok(_) => {
+                    // MSR read succeeded without trapping — it must be in
+                    // the virtualized list, otherwise it's a gap.
+                    if !is_virtualized_msr(msr_index) {
+                        untapped_not_in_list.push(msr_index);
+                    }
+                }
+                Err(err) => {
+                    // Expected: the MSR was trapped. Verify it's the right error.
+                    assert!(
+                        matches!(
+                            err,
+                            HyperlightError::MsrReadViolation(_)
+                                | HyperlightError::GuestAborted(_, _)
+                        ),
+                        "MSR 0x{:X}: unexpected error variant: {:?}",
+                        msr_index,
+                        err,
+                    );
+                }
+            }
+            sbox.restore(snapshot.clone()).unwrap();
+        }
+
+        assert!(
+            untapped_not_in_list.is_empty(),
+            "The following MSR(s) were NOT trapped and are NOT in VIRTUALIZED_MSRS. \
+             They need to be added to VIRTUALIZED_MSRS in virtual_machine/mod.rs: {:?}",
+            untapped_not_in_list
+                .iter()
+                .map(|idx| format!("0x{:X}", idx))
+                .collect::<Vec<_>>()
+        );
+    }
 }

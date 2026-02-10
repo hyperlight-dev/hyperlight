@@ -649,6 +649,36 @@ fn call_host_expect_error(hostfuncname: String) -> Result<()> {
     Ok(())
 }
 
+#[guest_function("ReadMSR")]
+fn read_msr(msr: u32) -> u64 {
+    let (read_eax, read_edx): (u32, u32);
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") read_eax,
+            out("edx") read_edx,
+            options(nostack, nomem)
+        );
+    }
+    ((read_edx as u64) << 32) | (read_eax as u64)
+}
+
+#[guest_function("WriteMSR")]
+fn write_msr(msr: u32, value: u64) {
+    let eax = (value & 0xFFFFFFFF) as u32;
+    let edx = ((value >> 32) & 0xFFFFFFFF) as u32;
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") eax,
+            in("edx") edx,
+            options(nostack, nomem)
+        );
+    }
+}
+
 #[no_mangle]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub extern "C" fn hyperlight_main() {

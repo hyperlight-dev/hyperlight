@@ -133,6 +133,23 @@ impl WhpVm {
 }
 
 impl VirtualMachine for WhpVm {
+    fn enable_msr_intercept(&mut self) -> std::result::Result<(), CreateVmError> {
+        let mut extended_exits_property = WHV_PARTITION_PROPERTY::default();
+        // X64MsrExit bit position (bit 1) in WHV_EXTENDED_VM_EXITS
+        // See https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvpartitionpropertydatatypes
+        extended_exits_property.ExtendedVmExits.AsUINT64 = 1 << 1;
+        unsafe {
+            WHvSetPartitionProperty(
+                self.partition,
+                WHvPartitionPropertyCodeExtendedVmExits,
+                &extended_exits_property as *const _ as *const _,
+                std::mem::size_of::<WHV_PARTITION_PROPERTY>() as _,
+            )
+            .map_err(|e| CreateVmError::EnableMsrIntercept(e.into()))?
+        };
+        Ok(())
+    }
+
     unsafe fn map_memory(
         &mut self,
         (_slot, region): (u32, &MemoryRegion),
@@ -272,6 +289,21 @@ impl VirtualMachine for WhpVm {
             }
             // Execution was cancelled by the host.
             WHvRunVpExitReasonCanceled => VmExit::Cancelled(),
+            WHvRunVpExitReasonX64MsrAccess => {
+                let msr_access = unsafe { exit_context.Anonymous.MsrAccess };
+                let eax = msr_access.Rax;
+                let edx = msr_access.Rdx;
+                let written_value = (edx << 32) | eax;
+                let access = unsafe { msr_access.AccessInfo.AsUINT32 };
+                match access {
+                    0 => VmExit::MsrRead(msr_access.MsrNumber),
+                    1 => VmExit::MsrWrite {
+                        msr_index: msr_access.MsrNumber,
+                        value: written_value,
+                    },
+                    _ => VmExit::Unknown(format!("Unknown MSR access type={}", access)),
+                }
+            }
             #[cfg(gdb)]
             WHvRunVpExitReasonException => {
                 let exception = unsafe { exit_context.Anonymous.VpException };
@@ -623,6 +655,51 @@ impl VirtualMachine for WhpVm {
             )
             .map_err(|e| RegisterError::SetXsave(e.into()))?;
         }
+
+        Ok(())
+    }
+
+    fn reset_msrs(&self) -> std::result::Result<(), RegisterError> {
+        use super::{MSRS_TO_RESET, MSRS_TO_RESET_COUNT};
+
+        /// Convert an MSR index to a WHV_REGISTER_NAME.
+        ///
+        /// The WHV encoding mirrors the HV register namespace with a shifted base:
+        /// HV MSR registers live at `0x0008_0000 + offset`, WHV maps them to
+        /// `0x0000_2000 + offset`.
+        ///
+        /// For MSR indices below 0x4000_0000 the offset equals the MSR index
+        /// itself. For indices >= 0x4000_0000 the HV encoding packs them into
+        /// `0x0008_0000 + (msr_index - 0x4000_0000 + 0x0800)`, so the WHV name
+        /// is `0x2000 + (msr_index - 0x4000_0000 + 0x0800)`.
+        const fn msr_index_to_whv_name(msr_index: u32) -> WHV_REGISTER_NAME {
+            if msr_index < 0x4000_0000 {
+                WHV_REGISTER_NAME(0x2000 + msr_index as i32)
+            } else {
+                WHV_REGISTER_NAME(0x2000_i32 + (msr_index as i32 - 0x4000_0000_i32) + 0x0800_i32)
+            }
+        }
+
+        const REGS: &[(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)] = &{
+            let mut result = [(
+                WHV_REGISTER_NAME(0),
+                Align16(WHV_REGISTER_VALUE { Reg64: 0 }),
+            ); MSRS_TO_RESET_COUNT];
+            let mut i = 0;
+            while i < MSRS_TO_RESET.len() {
+                result[i] = (
+                    msr_index_to_whv_name(MSRS_TO_RESET[i].0),
+                    Align16(WHV_REGISTER_VALUE {
+                        Reg64: MSRS_TO_RESET[i].1,
+                    }),
+                );
+                i += 1;
+            }
+            result
+        };
+
+        self.set_registers(REGS)
+            .map_err(|e| RegisterError::ResetMsrs(e.into()))?;
 
         Ok(())
     }
