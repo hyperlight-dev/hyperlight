@@ -85,7 +85,7 @@ uuid = { version = "1.20.0", features = ["v4"] }
 signal-hook-registry = "1.4.8"
 serde = "1.0"
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "code_asm"] }
-proptest = "1.9.0"
+proptest = "1.10.0"
 tempfile = "3.24.0"
 crossbeam-queue = "0.3.12"
 tracing-serde = "0.2.0"
