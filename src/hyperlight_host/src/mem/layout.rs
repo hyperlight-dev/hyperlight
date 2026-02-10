@@ -662,4 +662,13 @@ mod tests {
             get_expected_memory_size(&sbox_mem_layout)
         );
     }
+
+    #[test]
+    fn test_max_memory_sandbox() {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_input_data_size(0x40000000);
+        let layout = SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 4096, None).unwrap();
+        let result = layout.get_memory_size();
+        assert!(matches!(result.unwrap_err(), MemoryRequestTooBig(..)));
+    }
 }

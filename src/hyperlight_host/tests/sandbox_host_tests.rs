@@ -208,24 +208,6 @@ fn incorrect_parameter_num() {
 }
 
 #[test]
-fn max_memory_sandbox() {
-    use hyperlight_host::{GuestBinary, UninitializedSandbox};
-    use hyperlight_testing::simple_guest_as_string;
-
-    let mut cfg = hyperlight_host::sandbox::SandboxConfiguration::default();
-    cfg.set_input_data_size(0x40000000);
-    let a = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(cfg),
-    );
-
-    assert!(matches!(
-        a.unwrap_err(),
-        HyperlightError::MemoryRequestTooBig(..)
-    ));
-}
-
-#[test]
 fn iostack_is_working() {
     with_all_sandboxes(|mut sandbox| {
         let res: i32 = sandbox
