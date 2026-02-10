@@ -116,8 +116,6 @@ impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 /// The type of memory region
 pub enum MemoryRegionType {
-    /// The region contains the guest's page tables
-    PageTables,
     /// The region contains the guest's code
     Code,
     /// The region contains the guest's init data

@@ -29,18 +29,12 @@ use hyperlight_guest::prim_alloc::alloc_phys_pages;
 
 #[derive(Copy, Clone)]
 struct GuestMappingOperations {
-    snapshot_pt_base_gpa: u64,
-    snapshot_pt_base_gva: u64,
     scratch_base_gpa: u64,
     scratch_base_gva: u64,
 }
 impl GuestMappingOperations {
     fn new() -> Self {
         Self {
-            snapshot_pt_base_gpa: unsafe {
-                hyperlight_guest::layout::snapshot_pt_gpa_base_gva().read_volatile()
-            },
-            snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64,
             scratch_base_gpa: hyperlight_guest::layout::scratch_base_gpa(),
             scratch_base_gva: hyperlight_guest::layout::scratch_base_gva(),
         }
@@ -48,8 +42,6 @@ impl GuestMappingOperations {
     fn fallible_phys_to_virt(&self, addr: u64) -> Option<*mut u8> {
         if addr >= self.scratch_base_gpa {
             Some((self.scratch_base_gva + (addr - self.scratch_base_gpa)) as *mut u8)
-        } else if addr >= self.snapshot_pt_base_gpa {
-            Some((self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)) as *mut u8)
         } else {
             None
         }
@@ -94,6 +86,11 @@ impl vmem::TableReadOps for GuestMappingOperations {
 }
 
 impl vmem::TableOps for GuestMappingOperations {
+    // Currently, we don't actually move tables anywhere on amd64
+    // because of issues with guest PTs in IPAs that are mapped
+    // readonly in Stage 2 translation. However, this code all works
+    // and will re-enabled as soon as there is improved
+    // architecture/hypervisor support.
     type TableMovability = vmem::MayMoveTable;
     unsafe fn alloc_table(&self) -> u64 {
         let page_addr = unsafe { alloc_phys_pages(1) };
@@ -104,26 +101,11 @@ impl vmem::TableOps for GuestMappingOperations {
         page_addr
     }
     unsafe fn write_entry(&self, addr: u64, entry: u64) -> Option<u64> {
-        let mut addr = addr;
-        let mut ret = None;
-        if addr >= self.snapshot_pt_base_gpa && addr < self.scratch_base_gpa {
-            // This needs to be CoW'd over to the scratch region
-            unsafe {
-                let new_table = alloc_phys_pages(1);
-                core::ptr::copy(
-                    self.phys_to_virt(addr & !0xfff),
-                    self.phys_to_virt(new_table),
-                    vmem::PAGE_TABLE_SIZE,
-                );
-                addr = new_table | (addr & 0xfff);
-                ret = Some(new_table);
-            }
-        }
         let addr = self.phys_to_virt(addr);
         unsafe {
             asm!("mov qword ptr [{}], {}", in(reg) addr, in(reg) entry);
         }
-        ret
+        None
     }
     unsafe fn update_root(&self, new_root: u64) {
         unsafe {

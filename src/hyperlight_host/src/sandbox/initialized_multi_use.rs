@@ -1030,12 +1030,14 @@ mod tests {
         let mut cfg = SandboxConfiguration::default();
         cfg.set_heap_size(20 * 1024);
         // min_scratch_size already includes 1 page (4k on most
-        // platforms) of guest stack, so add 20k more to get 24k total
+        // platforms) of guest stack, so add 20k more to get 24k
+        // total, and then add some more for the eagerly-copied page
+        // tables on amd64
         let min_scratch = hyperlight_common::layout::min_scratch_size(
             cfg.get_input_data_size(),
             cfg.get_output_data_size(),
         );
-        cfg.set_scratch_size(min_scratch + 0x10000);
+        cfg.set_scratch_size(min_scratch + 0x10000 + 0x10000);
 
         let mut sbox1: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
@@ -1419,6 +1421,7 @@ mod tests {
         for (name, heap_size) in test_cases {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(heap_size);
+            cfg.set_scratch_size(0x100000);
 
             let path = simple_guest_as_string().unwrap();
             let sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg))

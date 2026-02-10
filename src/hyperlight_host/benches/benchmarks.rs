@@ -62,11 +62,13 @@ impl SandboxSize {
             Self::Medium => {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(MEDIUM_HEAP_SIZE);
+                cfg.set_scratch_size(0x50000);
                 Some(cfg)
             }
             Self::Large => {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(LARGE_HEAP_SIZE);
+                cfg.set_scratch_size(0x100000);
                 Some(cfg)
             }
         }

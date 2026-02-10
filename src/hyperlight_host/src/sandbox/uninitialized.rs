@@ -1094,7 +1094,7 @@ mod tests {
         // Test 3: Create snapshot with custom scratch size
         {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_scratch_size(144 * 1024); // 144KB scratch
+            cfg.set_scratch_size(256 * 1024); // 256KB scratch
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 

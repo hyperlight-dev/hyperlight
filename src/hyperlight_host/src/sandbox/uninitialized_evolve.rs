@@ -25,8 +25,7 @@ use super::uninitialized::SandboxRuntimeConfig;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::exe::LoadInfo;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::ptr_offset::Offset;
+use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
@@ -96,13 +95,6 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
-    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
-
-    let pml4_ptr = {
-        let pml4_offset_u64 = mgr.layout.get_pt_offset() as u64;
-        base_ptr + Offset::from(pml4_offset_u64)
-    };
-
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
     let gdb_conn = if let Some(DebugInfo { port }) = rt_cfg.debug_info {
@@ -130,7 +122,7 @@ pub(crate) fn set_up_hypervisor_partition(
     Ok(HyperlightVm::new(
         mgr.shared_mem,
         mgr.scratch_mem,
-        pml4_ptr.absolute()?,
+        mgr.layout.get_pt_base_gpa(),
         mgr.entrypoint,
         stack_top_gva,
         config,

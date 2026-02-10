@@ -66,8 +66,6 @@ use std::mem::{offset_of, size_of};
 use hyperlight_common::mem::{GuestMemoryRegion, HyperlightPEB, PAGE_SIZE_USIZE};
 use tracing::{Span, instrument};
 
-#[cfg(feature = "init-paging")]
-use super::memory_region::MemoryRegionType::PageTables;
 use super::memory_region::MemoryRegionType::{Code, Heap, InitData, Peb};
 use super::memory_region::{
     DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
@@ -97,7 +95,6 @@ pub(crate) struct SandboxMemoryLayout {
 
     guest_heap_buffer_offset: usize,
     init_data_offset: usize,
-    pt_offset: usize,
     pt_size: Option<usize>,
 
     // other
@@ -152,7 +149,6 @@ impl Debug for SandboxMemoryLayout {
                 "Init Data Offset",
                 &format_args!("{:#x}", self.init_data_offset),
             )
-            .field("PT Offset", &format_args!("{:#x}", self.pt_offset))
             .field("PT Size", &format_args!("{:#x}", self.pt_size.unwrap_or(0)))
             .field(
                 "Guest Code Offset",
@@ -226,7 +222,6 @@ impl SandboxMemoryLayout {
         // make sure init data starts at 4K boundary
         let init_data_offset =
             (guest_heap_buffer_offset + heap_size).next_multiple_of(PAGE_SIZE_USIZE);
-        let pt_offset = (init_data_offset + init_data_size).next_multiple_of(PAGE_SIZE_USIZE);
 
         Ok(Self {
             peb_offset,
@@ -243,7 +238,6 @@ impl SandboxMemoryLayout {
             init_data_offset,
             init_data_size,
             init_data_permissions,
-            pt_offset,
             pt_size: None,
             scratch_size,
         })
@@ -326,14 +320,28 @@ impl SandboxMemoryLayout {
         0
     }
 
-    /// Get the offset into the host scratch buffer of the start of
-    /// the input data
+    /// Get the offset from the beginning of the scratch region to the
+    /// location where page tables will be eagerly copied on restore
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
+        (self.sandbox_memory_config.get_input_data_size()
+            + self.sandbox_memory_config.get_output_data_size())
+        .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
+    }
+
+    /// Get the base GPA to which the page tables will be eagerly
+    /// copied on restore
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_pt_base_gpa(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gpa(self.scratch_size)
+            + self.get_pt_base_scratch_offset() as u64
+    }
+
+    /// Get the first GPA of the scratch region that the host hasn't
+    /// used for something else
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_first_free_scratch_gpa(&self) -> u64 {
-        (hyperlight_common::layout::scratch_base_gpa(self.scratch_size) as usize
-            + self.sandbox_memory_config.get_input_data_size()
-            + self.sandbox_memory_config.get_output_data_size())
-        .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE) as u64
+        self.get_pt_base_gpa() + self.pt_size.unwrap_or(0) as u64
     }
 
     /// Get the offset in guest memory to the heap size
@@ -354,7 +362,7 @@ impl SandboxMemoryLayout {
     /// layout.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_unaligned_memory_size(&self) -> usize {
-        self.pt_offset + self.pt_size.unwrap_or(0)
+        self.init_data_offset + self.init_data_size
     }
 
     /// get the code offset
@@ -391,16 +399,25 @@ impl SandboxMemoryLayout {
         }
     }
 
-    /// Get the offset into the snapshot region of the page tables
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_pt_offset(&self) -> usize {
-        self.pt_offset
-    }
-
     /// Sets the size of the memory region used for page tables
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn set_pt_size(&mut self, size: usize) {
+    pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
+        let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
+            self.sandbox_memory_config.get_input_data_size(),
+            self.sandbox_memory_config.get_output_data_size(),
+        );
+        let min_scratch = min_fixed_scratch + size;
+        if self.scratch_size < min_scratch {
+            return Err(MemoryRequestTooSmall(self.scratch_size, min_scratch));
+        }
         self.pt_size = Some(size);
+        Ok(())
+    }
+
+    /// Get the size of the memory region used for page tables
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_pt_size(&mut self) -> usize {
+        self.pt_size.unwrap_or(0)
     }
 
     /// Returns the memory regions associated with this memory layout,
@@ -480,31 +497,6 @@ impl SandboxMemoryLayout {
             init_data_offset
         };
 
-        #[cfg(feature = "init-paging")]
-        // page tables
-        let final_offset = {
-            let expected_pt_offset = TryInto::<usize>::try_into(self.pt_offset)?;
-
-            if after_init_offset != expected_pt_offset {
-                return Err(new_error!(
-                    "Page table offset does not match expected:  {}, actual:  {}",
-                    expected_pt_offset,
-                    after_init_offset
-                ));
-            }
-
-            if let Some(pt_size) = self.pt_size {
-                builder.push_page_aligned(
-                    pt_size,
-                    MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-                    PageTables,
-                )
-            } else {
-                after_init_offset
-            }
-        };
-
-        #[cfg(not(feature = "init-paging"))]
         let final_offset = after_init_offset;
 
         let expected_final_offset = TryInto::<usize>::try_into(self.get_memory_size()?)?;

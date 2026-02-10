@@ -90,16 +90,14 @@ pub struct Snapshot {
     /// It is not a [`blake3::Hash`] because we do not presently
     /// require constant-time equality checking
     hash: [u8; 32],
-    /// The address of the root page table
-    root_pt_gpa: u64,
     /// The address of the top of the guest stack
     stack_top_gva: u64,
 
     /// Special register state captured from the vCPU during snapshot.
-    /// None for snapshots created directly from a binary (before guest runs).
-    /// Some for snapshots taken from a running sandbox.
-    /// Note: CR3 in this struct is NOT used on restore - instead, the new
-    /// root_pt_gpa field is used since page tables are relocated during snapshot.
+    /// None for snapshots created directly from a binary (before
+    /// guest runs).  Some for snapshots taken from a running sandbox.
+    /// Note: CR3 in this struct is NOT used on restore, since page
+    /// tables are relocated during snapshot.
     sregs: Option<CommonSpecialRegisters>,
 
     /// The next action that should be performed on this snapshot
@@ -137,7 +135,7 @@ impl hyperlight_common::vmem::TableReadOps for Snapshot {
         addr
     }
     fn root_table(&self) -> u64 {
-        self.root_pt_gpa
+        self.root_pt_gpa()
     }
 }
 
@@ -329,23 +327,6 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
         }),
     };
     unsafe { vmem::map(pt_buf, mapping) };
-    // Map the page tables themselves, in order to allow the
-    // guest to update them easily
-    let mut pt_size_mapped = 0;
-    while pt_buf.size() > pt_size_mapped {
-        let mapping = Mapping {
-            phys_base: (pt_buf.phys_base() + pt_size_mapped) as u64,
-            virt_base: (hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN + pt_size_mapped) as u64,
-            len: (pt_buf.size() - pt_size_mapped) as u64,
-            kind: MappingKind::Basic(BasicMapping {
-                readable: true,
-                writable: false,
-                executable: false,
-            }),
-        };
-        pt_size_mapped = pt_buf.size();
-        unsafe { vmem::map(pt_buf, mapping) };
-    }
 }
 
 impl Snapshot {
@@ -391,11 +372,9 @@ impl Snapshot {
             .transpose()?;
 
         #[cfg(feature = "init-paging")]
-        let pt_base_gpa = {
+        {
             // Set up page table entries for the snapshot
-            let pt_base_gpa =
-                crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS + layout.get_pt_offset();
-            let pt_buf = GuestPageTableBuffer::new(pt_base_gpa);
+            let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
 
             use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegionFlags};
 
@@ -429,12 +408,9 @@ impl Snapshot {
             map_specials(&pt_buf, layout.get_scratch_size());
 
             let pt_bytes = pt_buf.into_bytes();
-            layout.set_pt_size(pt_bytes.len());
+            layout.set_pt_size(pt_bytes.len())?;
             memory.extend(&pt_bytes);
-            pt_base_gpa
         };
-        #[cfg(not(feature = "init-paging"))]
-        let pt_base_gpa = 0usize;
 
         let exn_stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
@@ -450,7 +426,6 @@ impl Snapshot {
             regions: extra_regions,
             load_info,
             hash,
-            root_pt_gpa: pt_base_gpa as u64,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
             entrypoint: NextAction::Initialise(load_addr + entrypoint_offset),
@@ -478,7 +453,7 @@ impl Snapshot {
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
     ) -> Result<Self> {
-        let (new_root_pt_gpa, memory) = shared_mem.with_exclusivity(|snap_e| {
+        let memory = shared_mem.with_exclusivity(|snap_e| {
             scratch_mem.with_exclusivity(|scratch_e| {
                 let scratch_size = layout.get_scratch_size();
 
@@ -488,8 +463,7 @@ impl Snapshot {
 
                 // Pass 2: copy them, and map them
                 // TODO: Look for opportunities to hugepage map
-                let pt_base_gpa = SandboxMemoryLayout::BASE_ADDRESS + live_pages.len() * PAGE_SIZE;
-                let pt_buf = GuestPageTableBuffer::new(pt_base_gpa);
+                let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
                 let mut snapshot_memory: Vec<u8> = Vec::new();
                 for (mapping, contents) in live_pages {
                     let new_offset = snapshot_memory.len();
@@ -518,11 +492,11 @@ impl Snapshot {
                 // Phase 3: Map the special mappings
                 map_specials(&pt_buf, layout.get_scratch_size());
                 let pt_bytes = pt_buf.into_bytes();
-                layout.set_pt_size(pt_bytes.len());
+                layout.set_pt_size(pt_bytes.len())?;
                 snapshot_memory.extend(&pt_bytes);
-                (pt_base_gpa, snapshot_memory)
+                Ok::<Vec<u8>, crate::HyperlightError>(snapshot_memory)
             })
-        })??;
+        })???;
 
         // We do not need the original regions anymore, as any uses of
         // them in the guest have been incorporated into the snapshot
@@ -539,7 +513,6 @@ impl Snapshot {
             hash,
             stack_top_gva,
             sregs: Some(sregs),
-            root_pt_gpa: new_root_pt_gpa as u64,
             entrypoint,
         })
     }
@@ -576,7 +549,7 @@ impl Snapshot {
     }
 
     pub(crate) fn root_pt_gpa(&self) -> u64 {
-        self.root_pt_gpa
+        self.layout.get_pt_base_gpa()
     }
 
     pub(crate) fn stack_top_gva(&self) -> u64 {
@@ -643,7 +616,6 @@ mod tests {
             SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap(),
             snapshot_mem,
             scratch_mem,
-            0.into(),
             super::NextAction::None,
         );
         let (mgr, _) = mgr.build().unwrap();

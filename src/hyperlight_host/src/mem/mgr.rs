@@ -24,7 +24,6 @@ use tracing::{Span, instrument};
 
 use super::layout::SandboxMemoryLayout;
 use super::memory_region::MemoryRegion;
-use super::ptr::RawPtr;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::sandbox::snapshot::{NextAction, Snapshot};
@@ -40,8 +39,6 @@ pub(crate) struct SandboxMemoryManager<S> {
     pub(crate) scratch_mem: S,
     /// The memory layout of the underlying shared memory
     pub(crate) layout: SandboxMemoryLayout,
-    /// Pointer to where to load memory from
-    pub(crate) load_addr: RawPtr,
     /// Offset for the execution entrypoint from `load_addr`
     pub(crate) entrypoint: NextAction,
     /// How many memory regions were mapped after sandbox creation
@@ -127,10 +124,8 @@ impl GuestPageTableBuffer {
         }
     }
 
-    pub(crate) fn phys_base(&self) -> usize {
-        self.phys_base
-    }
-
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn size(&self) -> usize {
         self.buffer.borrow().len()
     }
@@ -150,14 +145,12 @@ where
         layout: SandboxMemoryLayout,
         shared_mem: S,
         scratch_mem: S,
-        load_addr: RawPtr,
         entrypoint: NextAction,
     ) -> Self {
         Self {
             layout,
             shared_mem,
             scratch_mem,
-            load_addr,
             entrypoint,
             mapped_rgns: 0,
             abort_buffer: Vec::new(),
@@ -206,15 +199,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         let mut shared_mem = ExclusiveSharedMemory::new(s.mem_size())?;
         shared_mem.copy_from_slice(s.memory(), 0)?;
         let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
-        let load_addr: RawPtr = RawPtr::try_from(layout.get_guest_code_address())?;
         let entrypoint = s.entrypoint();
-        Ok(Self::new(
-            layout,
-            shared_mem,
-            scratch_mem,
-            load_addr,
-            entrypoint,
-        ))
+        Ok(Self::new(layout, shared_mem, scratch_mem, entrypoint))
     }
 
     /// Write memory layout
@@ -250,7 +236,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             shared_mem: hshm,
             scratch_mem: hscratch,
             layout: self.layout,
-            load_addr: self.load_addr.clone(),
             entrypoint: self.entrypoint,
             mapped_rgns: self.mapped_rgns,
             abort_buffer: self.abort_buffer,
@@ -259,14 +244,11 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             shared_mem: gshm,
             scratch_mem: gscratch,
             layout: self.layout,
-            load_addr: self.load_addr.clone(),
             entrypoint: self.entrypoint,
             mapped_rgns: self.mapped_rgns,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
         };
-        host_mgr.update_scratch_bookkeeping(
-            (SandboxMemoryLayout::BASE_ADDRESS + self.layout.get_pt_offset()) as u64,
-        )?;
+        host_mgr.update_scratch_bookkeeping()?;
         Ok((host_mgr, guest_mgr))
     }
 }
@@ -385,7 +367,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
             Some(gscratch)
         };
-        self.update_scratch_bookkeeping(snapshot.root_pt_gpa())?;
+        self.layout = *snapshot.layout();
+        self.update_scratch_bookkeeping()?;
         Ok((gsnapshot, gscratch))
     }
 
@@ -396,17 +379,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.scratch_mem.write::<u64>(base_offset, value)
     }
 
-    fn update_scratch_bookkeeping(&mut self, snapshot_pt_base_gpa: u64) -> Result<()> {
+    fn update_scratch_bookkeeping(&mut self) -> Result<()> {
         use hyperlight_common::layout::*;
         let scratch_size = self.scratch_mem.mem_size();
         self.update_scratch_bookkeeping_item(SCRATCH_TOP_SIZE_OFFSET, scratch_size as u64)?;
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_ALLOCATOR_OFFSET,
             self.layout.get_first_free_scratch_gpa(),
-        )?;
-        self.update_scratch_bookkeeping_item(
-            SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET,
-            snapshot_pt_base_gpa,
         )?;
 
         // Initialise the guest input and output data buffers in
@@ -419,6 +398,16 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.layout.get_output_data_buffer_scratch_host_offset(),
             SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
         )?;
+
+        // Copy the page tables into the scratch region
+        let snapshot_pt_end = self.shared_mem.mem_size();
+        let snapshot_pt_start = snapshot_pt_end - self.layout.get_pt_size();
+        self.shared_mem.with_exclusivity(|snap| {
+            self.scratch_mem.with_exclusivity(|scratch| {
+                let bytes = &snap.as_slice()[snapshot_pt_start..snapshot_pt_end];
+                scratch.copy_from_slice(bytes, self.layout.get_pt_base_scratch_offset())
+            })
+        })???;
 
         Ok(())
     }
@@ -523,6 +512,7 @@ mod tests {
             ("large (256MB heap)", {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(LARGE_HEAP_SIZE);
+                cfg.set_scratch_size(0x100000);
                 cfg
             }),
         ];
