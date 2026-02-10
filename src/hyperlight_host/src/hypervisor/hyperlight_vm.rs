@@ -104,6 +104,8 @@ pub(crate) struct HyperlightVm {
 
     mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
 
+    pending_tlb_flush: bool,
+
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(gdb)]
@@ -421,6 +423,8 @@ impl HyperlightVm {
 
             mmap_regions: Vec::new(),
 
+            pending_tlb_flush: false,
+
             #[cfg(gdb)]
             gdb_conn,
             #[cfg(gdb)]
@@ -662,17 +666,25 @@ impl HyperlightVm {
         let NextAction::Call(dispatch_func_addr) = self.entrypoint else {
             return Err(DispatchGuestCallError::Uninitialized);
         };
+        let mut rflags = 1 << 1; // RFLAGS.1 is RES1
+        if self.pending_tlb_flush {
+            rflags |= 1 << 6; // set ZF if we need a tlb flush done before anything else executes
+            self.pending_tlb_flush = false;
+        }
         // set RIP and RSP, reset others
         let regs = CommonRegisters {
             rip: dispatch_func_addr,
             // We usually keep the top of the stack 16-byte
-            // aligned. However, the ABI requirement is that the stack
-            // be aligned _before a call instruction_, which means
-            // that the stack needs to actually be ≡ 8 mod 16 at the
-            // first instruction (since, on x64, a call instruction
-            // automatically pushes a return address).
-            rsp: self.rsp_gva - 8,
-            rflags: 1 << 1,
+            // aligned. Since the usual ABI requirement is that the
+            // stack be aligned _before a call instruction_, one might
+            // expect that the stack pointer here needs to actually be
+            // ≡ 8 mod 16 at the first instruction (since, on x64, a
+            // call instruction automatically pushes a return
+            // address).  However, the x64 entry stub in
+            // hyperlight_guest::arch::dispatch handles this itself,
+            // so we do use the aligned address here.
+            rsp: self.rsp_gva,
+            rflags,
             ..Default::default()
         };
         self.vm
@@ -945,6 +957,7 @@ impl HyperlightVm {
             // to point to the new (relocated) page tables
             let mut sregs = *sregs;
             sregs.cr3 = cr3;
+            self.pending_tlb_flush = true;
             self.vm.set_sregs(&sregs)?;
         }
         #[cfg(not(feature = "init-paging"))]

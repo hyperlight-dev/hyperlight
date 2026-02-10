@@ -20,8 +20,8 @@ extern crate alloc;
 
 use core::fmt::Write;
 
+use arch::dispatch::dispatch_function;
 use buddy_system_allocator::LockedHeap;
-use guest_function::call::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;

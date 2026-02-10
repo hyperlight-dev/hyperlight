@@ -144,22 +144,3 @@ pub fn virt_to_phys(gva: vmem::VirtAddr) -> impl Iterator<Item = vmem::Mapping> 
 pub fn phys_to_virt(gpa: vmem::PhysAddr) -> Option<*mut u8> {
     GuestMappingOperations::new().fallible_phys_to_virt(gpa)
 }
-
-pub fn flush_tlb() {
-    // Currently this just always flips CR4.PGE back and forth to
-    // trigger a tlb flush. We should use a faster approach where
-    // available
-    let mut orig_cr4: u64;
-    unsafe {
-        asm!("mov {}, cr4", out(reg) orig_cr4);
-    }
-    let tmp_cr4: u64 = orig_cr4 ^ (1 << 7); // CR4.PGE
-    unsafe {
-        asm!(
-            "mov cr4, {}",
-            "mov cr4, {}",
-            in(reg) tmp_cr4,
-            in(reg) orig_cr4
-        );
-    }
-}

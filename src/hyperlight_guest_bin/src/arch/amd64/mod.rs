@@ -15,6 +15,7 @@ limitations under the License.
  */
 
 pub(crate) mod context;
+pub(crate) mod dispatch;
 pub mod exception;
 mod init;
 mod layout;
