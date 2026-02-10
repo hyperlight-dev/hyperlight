@@ -59,8 +59,8 @@ const PAGE_NX: u64 = 1 << 63;
 /// This masks out the lower 12 flag bits AND the upper bits including NX (bit 63)
 const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 const PAGE_USER_ACCESS_DISABLED: u64 = 0 << 2; // U/S bit not set - supervisor mode only (no code runs in user mode for now)
-const PAGE_DIRTY_CLEAR: u64 = 0 << 6; // D - dirty bit cleared (set by CPU when written)
-const PAGE_ACCESSED_CLEAR: u64 = 0 << 5; // A - accessed bit cleared (set by CPU when accessed)
+const PAGE_DIRTY_SET: u64 = 1 << 6; // D - dirty bit
+const PAGE_ACCESSED_SET: u64 = 1 << 5; // A - accessed bit
 const PAGE_CACHE_ENABLED: u64 = 0 << 4; // PCD - page cache disable bit not set (caching enabled)
 const PAGE_WRITE_BACK: u64 = 0 << 3; // PWT - page write-through bit not set (write-back caching)
 const PAGE_PAT_WB: u64 = 0 << 7; // PAT - page attribute table index bit (0 for write-back memory when PCD=0, PWT=0)
@@ -107,7 +107,7 @@ fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
 #[allow(clippy::precedence)]
 fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
     Op::to_phys(table_addr) |
-        PAGE_ACCESSED_CLEAR | // accessed bit cleared (will be set by CPU when page is accessed - but we dont use the access bit for anything at present)
+        PAGE_ACCESSED_SET | // prevent the CPU writing to the access flag
         PAGE_CACHE_ENABLED | // leave caching enabled
         PAGE_WRITE_BACK | // use write-back caching
         PAGE_USER_ACCESS_DISABLED |// dont allow user access (no code runs in user mode for now)
@@ -435,8 +435,8 @@ unsafe fn map_page<
             (mapping.phys_base + (r.vmin - mapping.virt_base)) |
                 page_nx_flag(bm.executable) | // NX - no execute unless allowed
                 PAGE_PAT_WB | // PAT index bit for write-back memory
-                PAGE_DIRTY_CLEAR | // dirty bit (set by CPU when written)
-                PAGE_ACCESSED_CLEAR | // accessed bit cleared (will be set by CPU when page is accessed - but we dont use the access bit for anything at present)
+                PAGE_DIRTY_SET | // prevent the CPU writing to the dirty bit
+                PAGE_ACCESSED_SET | // prevent the CPU writing to the access flag
                 PAGE_CACHE_ENABLED | // leave caching enabled
                 PAGE_WRITE_BACK | // use write-back caching
                 PAGE_USER_ACCESS_DISABLED | // dont allow user access (no code runs in user mode for now)
@@ -448,8 +448,8 @@ unsafe fn map_page<
                 page_nx_flag(cm.executable) | // NX - no execute unless allowed
                 PAGE_AVL_COW |
                 PAGE_PAT_WB | // PAT index bit for write-back memory
-                PAGE_DIRTY_CLEAR | // dirty bit (set by CPU when written)
-                PAGE_ACCESSED_CLEAR | // accessed bit cleared (will be set by CPU when page is accessed - but we dont use the access bit for anything at present)
+                PAGE_DIRTY_SET | // prevent the CPU writing to the dirty bit
+                PAGE_ACCESSED_SET | // prevent the CPU writing to the access flag
                 PAGE_CACHE_ENABLED | // leave caching enabled
                 PAGE_WRITE_BACK | // use write-back caching
                 PAGE_USER_ACCESS_DISABLED | // dont allow user access (no code runs in user mode for now)
