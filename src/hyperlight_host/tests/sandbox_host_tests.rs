@@ -110,7 +110,6 @@ fn invalid_guest_function_name() {
     with_all_sandboxes(|mut sandbox| {
         let fn_name = "FunctionDoesntExist";
         let res = sandbox.call::<i32>(fn_name, ());
-        println!("{:?}", res);
         assert!(
             matches!(res.unwrap_err(), HyperlightError::GuestError(hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::GuestFunctionNotFound, error_name) if error_name == fn_name)
         );
@@ -122,7 +121,6 @@ fn set_static() {
     with_all_sandboxes(|mut sandbox| {
         let fn_name = "SetStatic";
         let res = sandbox.call::<i32>(fn_name, ());
-        println!("{:?}", res);
         assert!(res.is_ok());
         // the result is the size of the static array in the guest
         assert_eq!(res.unwrap(), 1024 * 1024);
@@ -154,10 +152,8 @@ fn multiple_parameters() {
     macro_rules! test_case {
         ($sandbox:ident, $rx:ident, $name:literal, ($($p:ident),+)) => {{
             let ($($p),+, ..) = args.clone();
-            let res: i32 = $sandbox.call($name, ($($p.0,)+)).unwrap();
-            println!("{res:?}");
+            let _res: i32 = $sandbox.call($name, ($($p.0,)+)).unwrap();
             let output = $rx.try_recv().unwrap();
-            println!("{output:?}");
             assert_eq!(output, format!("Message: {}.", [$($p.1),+].join(" ")));
         }};
     }

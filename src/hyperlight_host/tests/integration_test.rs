@@ -61,7 +61,10 @@ fn interrupt_host_call() {
         });
 
         let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
-        assert!(matches!(result, HyperlightError::ExecutionCanceledByHost()));
+        assert!(
+            matches!(&result, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {result:?}"
+        );
         assert!(sandbox.poisoned());
 
         // Restore from snapshot to clear poison
@@ -92,7 +95,10 @@ fn interrupt_in_progress_guest_call() {
         });
 
         let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
-        assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+        assert!(
+            matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {res:?}"
+        );
         assert!(sbox1.poisoned());
 
         // Restore from snapshot to clear poison
@@ -265,7 +271,10 @@ fn interrupt_moved_sandbox() {
     let thread = thread::spawn(move || {
         barrier2.wait();
         let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
-        assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+        assert!(
+            matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {res:?}"
+        );
         assert!(sbox1.poisoned());
         sbox1.restore(snapshot1.clone()).unwrap();
         assert!(!sbox1.poisoned());
@@ -281,7 +290,10 @@ fn interrupt_moved_sandbox() {
     });
 
     let res = sbox2.call::<i32>("Spin", ()).unwrap_err();
-    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    assert!(
+        matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+        "unexpected error: {res:?}"
+    );
 
     thread.join().expect("Thread should finish");
     thread2.join().expect("Thread should finish");
@@ -317,7 +329,10 @@ fn interrupt_custom_signal_no_and_retry_delay() {
 
         for _ in 0..NUM_ITERS {
             let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
-            assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+            assert!(
+                matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+                "unexpected error: {res:?}"
+            );
             assert!(sbox1.poisoned());
             // immediately reenter another guest function call after having being cancelled,
             // so that the vcpu is running again before the interruptor-thread has a chance to see that the vcpu is not running
@@ -355,7 +370,10 @@ fn interrupt_spamming_host_call() {
             .call::<i32>("HostCallLoop", "HostFunc1".to_string())
             .unwrap_err();
 
-        assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+        assert!(
+            matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {res:?}"
+        );
 
         thread.join().expect("Thread should finish");
     });
@@ -368,8 +386,7 @@ fn print_four_args_c_guest() {
             "PrintFourArgs",
             ("Test4".to_string(), 3_i32, 4_i64, "Tested".to_string()),
         );
-        println!("{:?}", res);
-        assert!(matches!(res, Ok(46)));
+        assert!(matches!(&res, Ok(46)), "unexpected result: {res:?}");
     });
 }
 
@@ -381,9 +398,9 @@ fn guest_abort() {
         let res = sbox1
             .call::<()>("GuestAbortWithCode", error_code as i32)
             .unwrap_err();
-        println!("{:?}", res);
         assert!(
-            matches!(res, HyperlightError::GuestAborted(code, message) if (code == error_code && message.is_empty()))
+            matches!(&res, HyperlightError::GuestAborted(code, message) if (*code == error_code && message.is_empty())),
+            "unexpected error: {res:?}"
         );
     });
 }
@@ -394,9 +411,9 @@ fn guest_abort_with_context1() {
         let res = sbox1
             .call::<()>("GuestAbortWithMessage", (25_i32, "Oh no".to_string()))
             .unwrap_err();
-        println!("{:?}", res);
         assert!(
-            matches!(res, HyperlightError::GuestAborted(code, context) if (code == 25 && context == "Oh no"))
+            matches!(&res, HyperlightError::GuestAborted(code, context) if (*code == 25 && context == "Oh no")),
+            "unexpected error: {res:?}"
         );
     });
 }
@@ -439,9 +456,9 @@ fn guest_abort_with_context2() {
         let res = sbox1
             .call::<()>("GuestAbortWithMessage", (60_i32, abort_message.to_string()))
             .unwrap_err();
-        println!("{:?}", res);
         assert!(
-            matches!(res, HyperlightError::GuestAborted(_, context) if context.contains("Guest abort buffer overflowed"))
+            matches!(&res, HyperlightError::GuestAborted(_, context) if context.contains("Guest abort buffer overflowed")),
+            "unexpected error: {res:?}"
         );
     });
 }
@@ -458,9 +475,9 @@ fn guest_abort_c_guest() {
                 (75_i32, "This is a test error message".to_string()),
             )
             .unwrap_err();
-        println!("{:?}", res);
         assert!(
-            matches!(res, HyperlightError::GuestAborted(code, message) if (code == 75 && message == "This is a test error message") )
+            matches!(&res, HyperlightError::GuestAborted(code, message) if (*code == 75 && message == "This is a test error message")),
+            "unexpected error: {res:?}"
         );
     });
 }
@@ -472,9 +489,9 @@ fn guest_panic() {
         let res = sbox1
             .call::<()>("guest_panic", "Error... error...".to_string())
             .unwrap_err();
-        println!("{:?}", res);
         assert!(
-            matches!(res, HyperlightError::GuestAborted(code, context) if code == ErrorCode::UnknownError as u8 && context.contains("\nError... error..."))
+            matches!(&res, HyperlightError::GuestAborted(code, context) if *code == ErrorCode::UnknownError as u8 && context.contains("\nError... error...")),
+            "unexpected error: {res:?}"
         );
     });
 }
@@ -511,30 +528,37 @@ fn guest_malloc_abort() {
         let size = 20000000_i32; // some big number that should fail when allocated
 
         let res = sbox1.call::<i32>("TestMalloc", size).unwrap_err();
-        println!("{:?}", res);
         assert!(
-            matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
         );
     });
 
     // allocate a vector (on heap) that is bigger than the heap
     let heap_size = 0x4000;
     let size_to_allocate = 0x10000;
-    assert!(size_to_allocate > heap_size);
+    assert!(
+        size_to_allocate > heap_size,
+        "precondition: size_to_allocate ({size_to_allocate}) must be > heap_size ({heap_size})"
+    );
 
     let mut cfg = SandboxConfiguration::default();
     cfg.set_heap_size(heap_size);
     with_rust_sandbox_cfg(cfg, |mut sbox2| {
-        let res = sbox2.call::<i32>(
-            "CallMalloc", // uses the rust allocator to allocate a vector on heap
-            size_to_allocate as i32,
+        let err = sbox2
+            .call::<i32>(
+                "CallMalloc", // uses the rust allocator to allocate a vector on heap
+                size_to_allocate as i32,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                // OOM memory errors in rust allocator are panics. Our panic handler returns ErrorCode::UnknownError on panic
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ")
+            ),
+            "unexpected error: {err:?}"
         );
-        println!("{:?}", res);
-        assert!(matches!(
-            res.unwrap_err(),
-            // OOM memory errors in rust allocator are panics. Our panic handler returns ErrorCode::UnknownError on panic
-            HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ")
-        ));
     });
 }
 
@@ -572,10 +596,13 @@ fn guest_panic_no_alloc() {
             panic!("panic on OOM caused stack overflow, this implies allocation in panic handler");
         }
 
-        assert!(matches!(
-            res,
-            HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
-        ));
+        assert!(
+            matches!(
+                &res,
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
+            ),
+            "unexpected error: {res:?}"
+        );
     });
 }
 
@@ -590,7 +617,8 @@ fn dynamic_stack_allocate_c_guest() {
             .call::<i32>("StackAllocate", 0x800_0000_i32)
             .unwrap_err();
         assert!(
-            matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
         );
     });
 }
@@ -610,7 +638,8 @@ fn static_stack_allocate_overflow() {
     with_all_sandboxes(|mut sbox1| {
         let res = sbox1.call::<i32>("LargeVar", ()).unwrap_err();
         assert!(
-            matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
         );
     });
 }
@@ -630,7 +659,8 @@ fn guard_page_check_2() {
     with_rust_sandbox(|mut sbox1| {
         let res = sbox1.call::<()>("InfiniteRecursion", ()).unwrap_err();
         assert!(
-            matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
         );
     });
 }
@@ -663,14 +693,11 @@ fn recursive_stack_allocate_overflow() {
 
         let res = sbox1.call::<()>("StackOverflow", iterations).unwrap_err();
         assert!(
-            matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
         );
     });
 }
-
-//     assert!(
-//     matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
-// );
 
 // Check that log messages are emitted correctly from the guest
 // This test is ignored as it sets a logger and therefore maybe impacted by other tests running concurrently
@@ -774,13 +801,11 @@ fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
                 let res = sbox3
                     .call::<bool>("GuestRetrievesBoolValue", (i, i))
                     .unwrap();
-                println!("{:?}", res);
                 assert!(!res);
             } else {
                 let res = sbox3
                     .call::<bool>("GuestRetrievesBoolValue", (i, i))
                     .unwrap();
-                println!("{:?}", res);
                 assert!(res);
             }
         }
@@ -799,7 +824,6 @@ fn test_if_guest_is_able_to_get_float_return_values_from_host() {
         let res = sbox3
             .call::<f32>("GuestRetrievesFloatValue", (1.34_f32, 1.34_f32))
             .unwrap();
-        println!("{:?}", res);
         assert_eq!(res, 2.68_f32);
     });
 }
@@ -816,7 +840,6 @@ fn test_if_guest_is_able_to_get_double_return_values_from_host() {
         let res = sbox3
             .call::<f64>("GuestRetrievesDoubleValue", (1.34_f64, 1.34_f64))
             .unwrap();
-        println!("{:?}", res);
         assert_eq!(res, 2.68_f64);
     });
 }
@@ -835,7 +858,6 @@ fn test_if_guest_is_able_to_get_string_return_values_from_host() {
         let res = sbox3
             .call::<String>("GuestRetrievesStringValue", ())
             .unwrap();
-        println!("{:?}", res);
         assert_eq!(
             res,
             "Guest Function, string added by Host Function".to_string()
@@ -1550,10 +1572,13 @@ fn interrupt_infinite_moving_loop_stress_test() {
 
             // If the guest entered before calling kill, then we know for a fact the call should have been canceled since kill() was NOT premature.
             if entered_before_kill {
-                assert!(matches!(
-                    sandbox_res,
-                    Err(HyperlightError::ExecutionCanceledByHost())
-                ));
+                assert!(
+                    matches!(
+                        &sandbox_res,
+                        Err(HyperlightError::ExecutionCanceledByHost())
+                    ),
+                    "unexpected result: {sandbox_res:?}"
+                );
             }
 
             // If we did NOT enter the guest before calling kill, then the call may or may not have been canceled depending on timing.
