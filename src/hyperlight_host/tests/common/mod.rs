@@ -13,100 +13,136 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 use hyperlight_host::func::HostFunction;
-#[cfg(gdb)]
-use hyperlight_host::sandbox::config::DebugInfo;
-use hyperlight_host::{GuestBinary, MultiUseSandbox, Result, UninitializedSandbox};
+use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 
-/// Returns a rust/c simpleguest depending on environment variable GUEST.
-/// Uses rust guest by default. Run test with environment variable GUEST="c" to use the c version
-/// If a test is only applicable to rust, use `new_uninit_rust`` instead
-pub fn new_uninit() -> Result<UninitializedSandbox> {
-    UninitializedSandbox::new(
-        GuestBinary::FilePath(get_c_or_rust_simpleguest_path()),
-        None,
-    )
+/// Returns the path to the Rust simple guest binary.
+fn rust_guest_path() -> String {
+    simple_guest_as_string().unwrap()
 }
 
-/// Use this instead of the `new_uninit` if you want your test to only run with the rust guest, not the c guest
-pub fn new_uninit_rust() -> Result<UninitializedSandbox> {
-    #[cfg(gdb)]
-    {
-        use hyperlight_host::sandbox::SandboxConfiguration;
-        let mut cfg = SandboxConfiguration::default();
-        let debug_info = DebugInfo { port: 8080 };
-        cfg.set_guest_debug_info(debug_info);
+/// Returns the path to the C simple guest binary.
+fn c_guest_path() -> String {
+    c_simple_guest_as_string().unwrap()
+}
 
-        UninitializedSandbox::new(
-            GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-            Some(cfg),
-        )
+/// Creates a new Rust guest MultiUseSandbox.
+pub fn new_rust_sandbox() -> MultiUseSandbox {
+    UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), None)
+        .unwrap()
+        .evolve()
+        .unwrap()
+}
+
+/// Creates a new Rust guest UninitializedSandbox.
+pub fn new_rust_uninit_sandbox() -> UninitializedSandbox {
+    UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), None).unwrap()
+}
+
+// =============================================================================
+// Rust guest helpers
+// =============================================================================
+
+/// Runs a test with a Rust guest MultiUseSandbox.
+pub fn with_rust_sandbox<F>(f: F)
+where
+    F: FnOnce(MultiUseSandbox),
+{
+    let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), None)
+        .unwrap()
+        .evolve()
+        .unwrap();
+    f(sandbox);
+}
+
+/// Runs a test with a Rust guest MultiUseSandbox using custom configuration.
+pub fn with_rust_sandbox_cfg<F>(cfg: SandboxConfiguration, f: F)
+where
+    F: FnOnce(MultiUseSandbox),
+{
+    let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), Some(cfg))
+        .unwrap()
+        .evolve()
+        .unwrap();
+    f(sandbox);
+}
+
+/// Runs a test with a Rust guest UninitializedSandbox.
+pub fn with_rust_uninit_sandbox<F>(f: F)
+where
+    F: FnOnce(UninitializedSandbox),
+{
+    let sandbox =
+        UninitializedSandbox::new(GuestBinary::FilePath(rust_guest_path()), None).unwrap();
+    f(sandbox);
+}
+
+// =============================================================================
+// C guest helpers
+// =============================================================================
+
+/// Runs a test with a C guest MultiUseSandbox.
+pub fn with_c_sandbox<F>(f: F)
+where
+    F: FnOnce(MultiUseSandbox),
+{
+    let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(c_guest_path()), None)
+        .unwrap()
+        .evolve()
+        .unwrap();
+    f(sandbox);
+}
+
+/// Runs a test with a C guest UninitializedSandbox.
+pub fn with_c_uninit_sandbox<F>(f: F)
+where
+    F: FnOnce(UninitializedSandbox),
+{
+    let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(c_guest_path()), None).unwrap();
+    f(sandbox);
+}
+
+// =============================================================================
+// Both guests helpers (run test with Rust AND C guests)
+// =============================================================================
+
+/// Runs a test with both Rust and C guest MultiUseSandboxes.
+pub fn with_all_sandboxes<F>(f: F)
+where
+    F: Fn(MultiUseSandbox),
+{
+    for path in [rust_guest_path(), c_guest_path()] {
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap();
+        f(sandbox);
     }
-
-    #[cfg(not(gdb))]
-    UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        None,
-    )
 }
 
-/// Returns a c-language simpleguest.
-pub fn new_uninit_c() -> Result<UninitializedSandbox> {
-    UninitializedSandbox::new(
-        GuestBinary::FilePath(c_simple_guest_as_string().unwrap()),
-        None,
-    )
+/// Runs a test with both Rust and C guest UninitializedSandboxes.
+pub fn with_all_uninit_sandboxes<F>(f: F)
+where
+    F: Fn(UninitializedSandbox),
+{
+    for path in [rust_guest_path(), c_guest_path()] {
+        let sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        f(sandbox);
+    }
 }
 
-pub fn get_simpleguest_sandboxes(
-    writer: Option<HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
-) -> Vec<MultiUseSandbox> {
-    let elf_path = get_c_or_rust_simpleguest_path();
-
-    let sandboxes = [
-        // in hypervisor elf
-        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None).unwrap(),
-    ];
-
-    sandboxes
-        .into_iter()
-        .map(|mut sandbox| {
-            if let Some(writer) = writer.clone() {
-                sandbox.register_print(writer).unwrap();
-            }
-            sandbox.evolve().unwrap()
-        })
-        .collect()
-}
-
-pub fn get_uninit_simpleguest_sandboxes(
-    writer: Option<HostFunction<i32, (String,)>>, // An optional writer to make sure correct info is passed to the host printer
-) -> Vec<UninitializedSandbox> {
-    let elf_path = get_c_or_rust_simpleguest_path();
-
-    let sandboxes = [
-        // in hypervisor elf
-        UninitializedSandbox::new(GuestBinary::FilePath(elf_path.clone()), None).unwrap(),
-    ];
-
-    sandboxes
-        .into_iter()
-        .map(|mut sandbox| {
-            if let Some(writer) = writer.clone() {
-                sandbox.register_print(writer).unwrap();
-            }
-            sandbox
-        })
-        .collect()
-}
-
-// returns the the path of simpleguest binary. Picks rust/c version depending on environment variable GUEST (or rust by default if unset)
-pub(crate) fn get_c_or_rust_simpleguest_path() -> String {
-    let guest_type = std::env::var("GUEST").unwrap_or("rust".to_string());
-    match guest_type.as_str() {
-        "rust" => simple_guest_as_string().unwrap(),
-        "c" => c_simple_guest_as_string().unwrap(),
-        _ => panic!("Unknown guest type '{guest_type}', use either 'rust' or 'c'"),
+/// Runs a test with both Rust and C guest MultiUseSandboxes, with a print writer.
+pub fn with_all_sandboxes_with_writer<F>(writer: HostFunction<i32, (String,)>, f: F)
+where
+    F: Fn(MultiUseSandbox),
+{
+    for path in [rust_guest_path(), c_guest_path()] {
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+        sandbox.register_print(writer.clone()).unwrap();
+        let sandbox = sandbox.evolve().unwrap();
+        f(sandbox);
     }
 }
