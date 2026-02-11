@@ -342,7 +342,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use rand::{Rng, rng};
+    use rand::{RngExt, rng};
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32, Process32First, Process32Next, TH32CS_SNAPPROCESS,
