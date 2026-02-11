@@ -1460,7 +1460,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind};
-    use rand::Rng;
+    use rand::RngExt;
 
     use super::*;
     #[cfg(kvm)]

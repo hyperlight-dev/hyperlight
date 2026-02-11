@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::os::raw::c_void;
 
+#[cfg(feature = "trace_guest")]
 use tracing::Span;
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
