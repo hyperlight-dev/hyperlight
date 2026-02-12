@@ -18,19 +18,16 @@ use core::f64;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
-use common::{get_uninit_simpleguest_sandboxes, new_uninit};
-use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{
-    GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox, new_error,
-};
-use hyperlight_testing::simple_guest_as_string;
+use hyperlight_host::{HyperlightError, MultiUseSandbox, Result, new_error};
 
 pub mod common; // pub to disable dead_code warning
-use crate::common::get_simpleguest_sandboxes;
+use crate::common::{
+    with_all_sandboxes, with_all_sandboxes_with_writer, with_all_uninit_sandboxes,
+};
 
 #[test]
 fn pass_byte_array() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+    with_all_sandboxes(|mut sandbox| {
         const LEN: usize = 10;
         let bytes = vec![1u8; LEN];
         let res: Vec<u8> = sandbox
@@ -41,7 +38,7 @@ fn pass_byte_array() {
         sandbox
             .call::<i32>("SetByteArrayToZeroNoLength", bytes.clone())
             .unwrap_err(); // missing length param
-    }
+    });
 }
 
 #[test]
@@ -78,57 +75,56 @@ fn float_roundtrip() {
         f32::NAN,
         -f32::NAN,
     ];
-    let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
-    for f in doubles.iter() {
-        let res: f64 = sandbox.call("EchoDouble", *f).unwrap();
+    with_all_sandboxes(|mut sandbox| {
+        for f in doubles.iter() {
+            let res: f64 = sandbox.call("EchoDouble", *f).unwrap();
 
-        // Use == for comparison (handles -0.0 == 0.0) with special case for NaN.
-        // Note: FlatBuffers doesn't preserve -0.0 (-0.0 round-trips to 0.0) because FlatBuffers skips
-        // storing values equal to the default (as an optimization), and -0.0 == 0.0 in IEEE 754.
-        assert!(
-            (res.is_nan() && f.is_nan()) || res == *f,
-            "Expected {:?} but got {:?}",
-            f,
-            res
-        );
-    }
-    for f in floats.iter() {
-        let res: f32 = sandbox.call("EchoFloat", *f).unwrap();
+            // Use == for comparison (handles -0.0 == 0.0) with special case for NaN.
+            // Note: FlatBuffers doesn't preserve -0.0 (-0.0 round-trips to 0.0) because FlatBuffers skips
+            // storing values equal to the default (as an optimization), and -0.0 == 0.0 in IEEE 754.
+            assert!(
+                (res.is_nan() && f.is_nan()) || res == *f,
+                "Expected {:?} but got {:?}",
+                f,
+                res
+            );
+        }
+        for f in floats.iter() {
+            let res: f32 = sandbox.call("EchoFloat", *f).unwrap();
 
-        // Use == for comparison (handles -0.0 == 0.0) with special case for NaN.
-        // Note: FlatBuffers doesn't preserve -0.0 (-0.0 round-trips to 0.0) because FlatBuffers skips
-        // storing values equal to the default (as an optimization), and -0.0 == 0.0 in IEEE 754.
-        assert!(
-            (res.is_nan() && f.is_nan()) || res == *f,
-            "Expected {:?} but got {:?}",
-            f,
-            res
-        );
-    }
+            // Use == for comparison (handles -0.0 == 0.0) with special case for NaN.
+            // Note: FlatBuffers doesn't preserve -0.0 (-0.0 round-trips to 0.0) because FlatBuffers skips
+            // storing values equal to the default (as an optimization), and -0.0 == 0.0 in IEEE 754.
+            assert!(
+                (res.is_nan() && f.is_nan()) || res == *f,
+                "Expected {:?} but got {:?}",
+                f,
+                res
+            );
+        }
+    });
 }
 
 #[test]
 fn invalid_guest_function_name() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+    with_all_sandboxes(|mut sandbox| {
         let fn_name = "FunctionDoesntExist";
         let res = sandbox.call::<i32>(fn_name, ());
-        println!("{:?}", res);
         assert!(
             matches!(res.unwrap_err(), HyperlightError::GuestError(hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::GuestFunctionNotFound, error_name) if error_name == fn_name)
         );
-    }
+    });
 }
 
 #[test]
 fn set_static() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+    with_all_sandboxes(|mut sandbox| {
         let fn_name = "SetStatic";
         let res = sandbox.call::<i32>(fn_name, ());
-        println!("{:?}", res);
         assert!(res.is_ok());
         // the result is the size of the static array in the guest
         assert_eq!(res.unwrap(), 1024 * 1024);
-    }
+    });
 }
 
 #[test]
@@ -156,15 +152,13 @@ fn multiple_parameters() {
     macro_rules! test_case {
         ($sandbox:ident, $rx:ident, $name:literal, ($($p:ident),+)) => {{
             let ($($p),+, ..) = args.clone();
-            let res: i32 = $sandbox.call($name, ($($p.0,)+)).unwrap();
-            println!("{res:?}");
+            let _res: i32 = $sandbox.call($name, ($($p.0,)+)).unwrap();
             let output = $rx.try_recv().unwrap();
-            println!("{output:?}");
             assert_eq!(output, format!("Message: {}.", [$($p.1),+].join(" ")));
         }};
     }
 
-    for mut sb in get_simpleguest_sandboxes(Some(writer.into())).into_iter() {
+    with_all_sandboxes_with_writer(writer.into(), |mut sb| {
         test_case!(sb, rx, "PrintTwoArgs", (a, b));
         test_case!(sb, rx, "PrintThreeArgs", (a, b, c));
         test_case!(sb, rx, "PrintFourArgs", (a, b, c, d));
@@ -175,12 +169,12 @@ fn multiple_parameters() {
         test_case!(sb, rx, "PrintNineArgs", (a, b, c, d, e, f, g, h, i));
         test_case!(sb, rx, "PrintTenArgs", (a, b, c, d, e, f, g, h, i, j));
         test_case!(sb, rx, "PrintElevenArgs", (a, b, c, d, e, f, g, h, i, j, k));
-    }
+    });
 }
 
 #[test]
 fn incorrect_parameter_type() {
-    for mut sandbox in get_simpleguest_sandboxes(None) {
+    with_all_sandboxes(|mut sandbox| {
         let res = sandbox.call::<i32>(
             "Echo", 2_i32, // should be string
         );
@@ -192,12 +186,12 @@ fn incorrect_parameter_type() {
                 msg
             ) if msg == "Expected parameter type String for parameter index 0 of function Echo but got Int."
         ));
-    }
+    });
 }
 
 #[test]
 fn incorrect_parameter_num() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+    with_all_sandboxes(|mut sandbox| {
         let res = sandbox.call::<i32>("Echo", ("1".to_string(), 2_i32));
         assert!(matches!(
             res.unwrap_err(),
@@ -206,35 +200,20 @@ fn incorrect_parameter_num() {
                 msg
             ) if msg == "Called function Echo with 2 parameters but it takes 1."
         ));
-    }
-}
-
-#[test]
-fn max_memory_sandbox() {
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_input_data_size(0x40000000);
-    let a = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(cfg),
-    );
-
-    assert!(matches!(
-        a.unwrap_err(),
-        HyperlightError::MemoryRequestTooBig(..)
-    ));
+    });
 }
 
 #[test]
 fn iostack_is_working() {
-    for mut sandbox in get_simpleguest_sandboxes(None).into_iter() {
+    with_all_sandboxes(|mut sandbox| {
         let res: i32 = sandbox
             .call::<i32>("ThisIsNotARealFunctionButTheNameIsImportant", ())
             .unwrap();
         assert_eq!(res, 99);
-    }
+    });
 }
 
-fn simple_test_helper() -> Result<()> {
+fn simple_test_helper() {
     let messages = Arc::new(Mutex::new(Vec::new()));
     let messages_clone = messages.clone();
     let writer = move |msg: String| {
@@ -250,7 +229,7 @@ fn simple_test_helper() -> Result<()> {
     let message = "hello";
     let message2 = "world";
 
-    for mut sandbox in get_simpleguest_sandboxes(Some(writer.into())).into_iter() {
+    with_all_sandboxes_with_writer(writer.into(), |mut sandbox| {
         let res: i32 = sandbox.call("PrintOutput", message.to_string()).unwrap();
         assert_eq!(res, 5);
 
@@ -262,31 +241,24 @@ fn simple_test_helper() -> Result<()> {
             .call("GetSizePrefixedBuffer", buffer.to_vec())
             .unwrap();
         assert_eq!(res, buffer);
-    }
+    });
 
-    let expected_calls = 1;
+    let expected_calls = 2; // Once per guest (rust + c)
 
-    assert_eq!(
-        messages
-            .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-            .len(),
-        expected_calls
-    );
+    assert_eq!(messages.try_lock().unwrap().len(), expected_calls);
 
     assert!(
         messages
             .try_lock()
-            .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
+            .unwrap()
             .iter()
             .all(|msg| msg == message)
     );
-    Ok(())
 }
 
 #[test]
 fn simple_test() {
-    simple_test_helper().unwrap();
+    simple_test_helper();
 }
 
 #[test]
@@ -294,7 +266,7 @@ fn simple_test_parallel() {
     let handles: Vec<_> = (0..50)
         .map(|_| {
             std::thread::spawn(|| {
-                simple_test_helper().unwrap();
+                simple_test_helper();
             })
         })
         .collect();
@@ -304,30 +276,33 @@ fn simple_test_parallel() {
     }
 }
 
-fn callback_test_helper() -> Result<()> {
-    for mut sandbox in get_uninit_simpleguest_sandboxes(None).into_iter() {
+fn callback_test_helper() {
+    with_all_uninit_sandboxes(|mut sandbox| {
         // create host function
         let (tx, rx) = channel();
-        sandbox.register("HostMethod1", move |msg: String| {
-            let len = msg.len();
-            tx.send(msg).unwrap();
-            Ok(len as i32)
-        })?;
+        sandbox
+            .register("HostMethod1", move |msg: String| {
+                let len = msg.len();
+                tx.send(msg).unwrap();
+                Ok(len as i32)
+            })
+            .unwrap();
 
         // call guest function that calls host function
-        let mut init_sandbox: MultiUseSandbox = sandbox.evolve()?;
+        let mut init_sandbox: MultiUseSandbox = sandbox.evolve().unwrap();
         let msg = "Hello world";
-        init_sandbox.call::<i32>("GuestMethod1", msg.to_string())?;
+        init_sandbox
+            .call::<i32>("GuestMethod1", msg.to_string())
+            .unwrap();
 
         let messages = rx.try_iter().collect::<Vec<_>>();
         assert_eq!(messages, [format!("Hello from GuestFunction1, {msg}")]);
-    }
-    Ok(())
+    });
 }
 
 #[test]
 fn callback_test() {
-    callback_test_helper().unwrap();
+    callback_test_helper();
 }
 
 #[test]
@@ -335,7 +310,7 @@ fn callback_test_parallel() {
     let handles: Vec<_> = (0..100)
         .map(|_| {
             std::thread::spawn(|| {
-                callback_test_helper().unwrap();
+                callback_test_helper();
             })
         })
         .collect();
@@ -346,17 +321,19 @@ fn callback_test_parallel() {
 }
 
 #[test]
-fn host_function_error() -> Result<()> {
-    for mut sandbox in get_uninit_simpleguest_sandboxes(None).into_iter() {
+fn host_function_error() {
+    with_all_uninit_sandboxes(|mut sandbox| {
         // create host function
-        sandbox.register("HostMethod1", |_: String| -> Result<String> {
-            Err(new_error!("Host function error!"))
-        })?;
+        sandbox
+            .register("HostMethod1", |_: String| -> Result<String> {
+                Err(new_error!("Host function error!"))
+            })
+            .unwrap();
 
         // call guest function that calls host function
-        let mut init_sandbox: MultiUseSandbox = sandbox.evolve()?;
+        let mut init_sandbox: MultiUseSandbox = sandbox.evolve().unwrap();
         let msg = "Hello world";
-        let snapshot = init_sandbox.snapshot()?;
+        let snapshot = init_sandbox.snapshot().unwrap();
 
         for _ in 0..1000 {
             let res = init_sandbox
@@ -364,15 +341,14 @@ fn host_function_error() -> Result<()> {
                 .unwrap_err();
             assert!(
                 matches!(&res, HyperlightError::GuestError(_, msg) if msg == "Host function error!") // rust guest
-            || matches!(&res, HyperlightError::GuestAborted(_, msg) if msg.contains("Host function error!")), // c guest
+                || matches!(&res, HyperlightError::GuestAborted(_, msg) if msg.contains("Host function error!")), // c guest
                 "expected something but got {}",
                 res
             );
             // C guest panics in rust guest lib when host function returns error, which will poison the sandbox
             if init_sandbox.poisoned() {
-                init_sandbox.restore(snapshot.clone())?;
+                init_sandbox.restore(snapshot.clone()).unwrap();
             }
         }
-    }
-    Ok(())
+    });
 }

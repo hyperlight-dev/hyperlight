@@ -21,130 +21,136 @@ use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_host::sandbox::SandboxConfiguration;
-use hyperlight_host::{GuestBinary, HyperlightError, MultiUseSandbox, UninitializedSandbox};
+use hyperlight_host::{HyperlightError, MultiUseSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
-use hyperlight_testing::{c_simple_guest_as_string, simple_guest_as_string};
 use log::LevelFilter;
 use serial_test::serial;
 
 pub mod common; // pub to disable dead_code warning
-use crate::common::{new_uninit, new_uninit_c, new_uninit_rust};
+use crate::common::{
+    new_rust_sandbox, new_rust_uninit_sandbox, with_all_sandboxes, with_c_sandbox,
+    with_c_uninit_sandbox, with_rust_sandbox, with_rust_sandbox_cfg, with_rust_uninit_sandbox,
+};
 
 // A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
 // we don't re-enter the guest again once the host call is done
 #[test]
 fn interrupt_host_call() {
-    let barrier = Arc::new(Barrier::new(2));
-    let barrier2 = barrier.clone();
+    with_rust_uninit_sandbox(|mut usbox| {
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
 
-    let mut usbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
-        None,
-    )
-    .unwrap();
+        let spin = move || {
+            barrier2.wait();
+            thread::sleep(std::time::Duration::from_secs(1));
+            Ok(())
+        };
 
-    let spin = move || {
-        barrier2.wait();
-        thread::sleep(std::time::Duration::from_secs(1));
-        Ok(())
-    };
+        usbox.register("Spin", spin).unwrap();
 
-    usbox.register("Spin", spin).unwrap();
+        let mut sandbox: MultiUseSandbox = usbox.evolve().unwrap();
+        let snapshot = sandbox.snapshot().unwrap();
+        let interrupt_handle = sandbox.interrupt_handle();
+        assert!(!interrupt_handle.dropped()); // not yet dropped
 
-    let mut sandbox: MultiUseSandbox = usbox.evolve().unwrap();
-    let snapshot = sandbox.snapshot().unwrap();
-    let interrupt_handle = sandbox.interrupt_handle();
-    assert!(!interrupt_handle.dropped()); // not yet dropped
+        let thread = thread::spawn({
+            move || {
+                barrier.wait(); // wait for the host function to be entered
+                interrupt_handle.kill(); // send kill once host call is in progress
+            }
+        });
 
-    let thread = thread::spawn({
-        move || {
-            barrier.wait(); // wait for the host function to be entered
-            interrupt_handle.kill(); // send kill once host call is in progress
-        }
+        let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
+        assert!(
+            matches!(&result, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {result:?}"
+        );
+        assert!(sandbox.poisoned());
+
+        // Restore from snapshot to clear poison
+        sandbox.restore(snapshot.clone()).unwrap();
+        assert!(!sandbox.poisoned());
+
+        thread.join().unwrap();
     });
-
-    let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
-    assert!(matches!(result, HyperlightError::ExecutionCanceledByHost()));
-    assert!(sandbox.poisoned());
-
-    // Restore from snapshot to clear poison
-    sandbox.restore(snapshot.clone()).unwrap();
-    assert!(!sandbox.poisoned());
-
-    thread.join().unwrap();
 }
 
 /// Makes sure a running guest call can be interrupted by the host
 #[test]
 fn interrupt_in_progress_guest_call() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let snapshot = sbox1.snapshot().unwrap();
-    let barrier = Arc::new(Barrier::new(2));
-    let barrier2 = barrier.clone();
-    let interrupt_handle = sbox1.interrupt_handle();
-    assert!(!interrupt_handle.dropped()); // not yet dropped
+    with_rust_sandbox(|mut sbox1| {
+        let snapshot = sbox1.snapshot().unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
+        let interrupt_handle = sbox1.interrupt_handle();
+        assert!(!interrupt_handle.dropped()); // not yet dropped
 
-    // kill vm after 1 second
-    let thread = thread::spawn(move || {
-        thread::sleep(Duration::from_secs(1));
-        assert!(interrupt_handle.kill());
-        barrier2.wait(); // wait here until main thread has returned from the interrupted guest call
-        barrier2.wait(); // wait here until main thread has dropped the sandbox
-        assert!(interrupt_handle.dropped());
+        // kill vm after 1 second
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_secs(1));
+            assert!(interrupt_handle.kill());
+            barrier2.wait(); // wait here until main thread has returned from the interrupted guest call
+            barrier2.wait(); // wait here until main thread has dropped the sandbox
+            assert!(interrupt_handle.dropped());
+        });
+
+        let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {res:?}"
+        );
+        assert!(sbox1.poisoned());
+
+        // Restore from snapshot to clear poison
+        sbox1.restore(snapshot.clone()).unwrap();
+        assert!(!sbox1.poisoned());
+
+        barrier.wait();
+        // Make sure we can still call guest functions after the VM was interrupted
+        sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
+
+        // drop vm to make sure other thread can detect it
+        drop(sbox1);
+        barrier.wait();
+        thread.join().expect("Thread should finish");
     });
-
-    let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
-    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
-    assert!(sbox1.poisoned());
-
-    // Restore from snapshot to clear poison
-    sbox1.restore(snapshot.clone()).unwrap();
-    assert!(!sbox1.poisoned());
-
-    barrier.wait();
-    // Make sure we can still call guest functions after the VM was interrupted
-    sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
-
-    // drop vm to make sure other thread can detect it
-    drop(sbox1);
-    barrier.wait();
-    thread.join().expect("Thread should finish");
 }
 
 /// Makes sure interrupting a vm before the guest call has started does not prevent the guest call from running
 #[test]
 fn interrupt_guest_call_in_advance() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let barrier = Arc::new(Barrier::new(2));
-    let barrier2 = barrier.clone();
-    let interrupt_handle = sbox1.interrupt_handle();
-    assert!(!interrupt_handle.dropped()); // not yet dropped
+    with_rust_sandbox(|mut sbox1| {
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
+        let interrupt_handle = sbox1.interrupt_handle();
+        assert!(!interrupt_handle.dropped()); // not yet dropped
 
-    // kill vm before the guest call has started
-    let thread = thread::spawn(move || {
-        assert!(!interrupt_handle.kill()); // should return false since vcpu is not running yet
-        barrier2.wait();
-        barrier2.wait(); // wait here until main thread has dropped the sandbox
-        assert!(interrupt_handle.dropped());
-    });
+        // kill vm before the guest call has started
+        let thread = thread::spawn(move || {
+            assert!(!interrupt_handle.kill()); // should return false since vcpu is not running yet
+            barrier2.wait();
+            barrier2.wait(); // wait here until main thread has dropped the sandbox
+            assert!(interrupt_handle.dropped());
+        });
 
-    barrier.wait(); // wait until `kill()` is called before starting the guest call
-    match sbox1.call::<String>("Echo", "hello".to_string()) {
-        Ok(_) => {}
-        Err(HyperlightError::ExecutionCanceledByHost()) => {
-            panic!("Unexpected Cancellation Error");
+        barrier.wait(); // wait until `kill()` is called before starting the guest call
+        match sbox1.call::<String>("Echo", "hello".to_string()) {
+            Ok(_) => {}
+            Err(HyperlightError::ExecutionCanceledByHost()) => {
+                panic!("Unexpected Cancellation Error");
+            }
+            Err(_) => {}
         }
-        Err(_) => {}
-    }
 
-    // Make sure we can still call guest functions after the VM was interrupted early
-    // i.e. make sure we dont kill the next iteration.
-    sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
+        // Make sure we can still call guest functions after the VM was interrupted early
+        // i.e. make sure we dont kill the next iteration.
+        sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
 
-    // drop vm to make sure other thread can detect it
-    drop(sbox1);
-    barrier.wait();
-    thread.join().expect("Thread should finish");
+        // drop vm to make sure other thread can detect it
+        drop(sbox1);
+        barrier.wait();
+        thread.join().expect("Thread should finish");
+    });
 }
 
 /// Verifies that only the intended sandbox (`sbox2`) is interruptible,
@@ -158,10 +164,10 @@ fn interrupt_guest_call_in_advance() {
 /// all possible interleavings, but can hopefully increases confidence somewhat.
 #[test]
 fn interrupt_same_thread() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox1: MultiUseSandbox = new_rust_sandbox();
+    let mut sbox2: MultiUseSandbox = new_rust_sandbox();
     let snapshot2 = sbox2.snapshot().unwrap();
-    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox3: MultiUseSandbox = new_rust_sandbox();
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -203,10 +209,10 @@ fn interrupt_same_thread() {
 /// Same test as above but with no per-iteration barrier, to get more possible interleavings.
 #[test]
 fn interrupt_same_thread_no_barrier() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox1: MultiUseSandbox = new_rust_sandbox();
+    let mut sbox2: MultiUseSandbox = new_rust_sandbox();
     let snapshot2 = sbox2.snapshot().unwrap();
-    let mut sbox3: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox3: MultiUseSandbox = new_rust_sandbox();
 
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
@@ -252,9 +258,9 @@ fn interrupt_same_thread_no_barrier() {
 // and that anther sandbox on the original thread does not get incorrectly killed
 #[test]
 fn interrupt_moved_sandbox() {
-    let mut sbox1: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox1: MultiUseSandbox = new_rust_sandbox();
     let snapshot1 = sbox1.snapshot().unwrap();
-    let mut sbox2: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    let mut sbox2: MultiUseSandbox = new_rust_sandbox();
 
     let interrupt_handle = sbox1.interrupt_handle();
     let interrupt_handle2 = sbox2.interrupt_handle();
@@ -265,7 +271,10 @@ fn interrupt_moved_sandbox() {
     let thread = thread::spawn(move || {
         barrier2.wait();
         let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
-        assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+        assert!(
+            matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {res:?}"
+        );
         assert!(sbox1.poisoned());
         sbox1.restore(snapshot1.clone()).unwrap();
         assert!(!sbox1.poisoned());
@@ -281,7 +290,10 @@ fn interrupt_moved_sandbox() {
     });
 
     let res = sbox2.call::<i32>("Spin", ()).unwrap_err();
-    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
+    assert!(
+        matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+        "unexpected error: {res:?}"
+    );
 
     thread.join().expect("Thread should finish");
     thread2.join().expect("Thread should finish");
@@ -300,126 +312,118 @@ fn interrupt_custom_signal_no_and_retry_delay() {
     config.set_interrupt_vcpu_sigrtmin_offset(0).unwrap();
     config.set_interrupt_retry_delay(Duration::from_secs(1));
 
-    let mut sbox1: MultiUseSandbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(config),
-    )
-    .unwrap()
-    .evolve()
-    .unwrap();
+    with_rust_sandbox_cfg(config, |mut sbox1| {
+        let snapshot1 = sbox1.snapshot().unwrap();
+        let interrupt_handle = sbox1.interrupt_handle();
+        assert!(!interrupt_handle.dropped()); // not yet dropped
 
-    let snapshot1 = sbox1.snapshot().unwrap();
-    let interrupt_handle = sbox1.interrupt_handle();
-    assert!(!interrupt_handle.dropped()); // not yet dropped
+        const NUM_ITERS: usize = 3;
 
-    const NUM_ITERS: usize = 3;
+        let thread = thread::spawn(move || {
+            for _ in 0..NUM_ITERS {
+                // wait for the guest call to start
+                thread::sleep(Duration::from_millis(3000));
+                assert!(interrupt_handle.kill());
+            }
+        });
 
-    let thread = thread::spawn(move || {
         for _ in 0..NUM_ITERS {
-            // wait for the guest call to start
-            thread::sleep(Duration::from_millis(3000));
-            assert!(interrupt_handle.kill());
+            let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
+            assert!(
+                matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+                "unexpected error: {res:?}"
+            );
+            assert!(sbox1.poisoned());
+            // immediately reenter another guest function call after having being cancelled,
+            // so that the vcpu is running again before the interruptor-thread has a chance to see that the vcpu is not running
+            sbox1.restore(snapshot1.clone()).unwrap();
+            assert!(!sbox1.poisoned());
         }
+        thread.join().expect("Thread should finish");
     });
-
-    for _ in 0..NUM_ITERS {
-        let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
-        assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
-        assert!(sbox1.poisoned());
-        // immediately reenter another guest function call after having being cancelled,
-        // so that the vcpu is running again before the interruptor-thread has a chance to see that the vcpu is not running
-        sbox1.restore(snapshot1.clone()).unwrap();
-        assert!(!sbox1.poisoned());
-    }
-    thread.join().expect("Thread should finish");
 }
 
 #[test]
 fn interrupt_spamming_host_call() {
-    let mut uninit = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        None,
-    )
-    .unwrap();
+    with_rust_uninit_sandbox(|mut uninit| {
+        uninit
+            .register("HostFunc1", || {
+                // do nothing
+            })
+            .unwrap();
+        let mut sbox1: MultiUseSandbox = uninit.evolve().unwrap();
 
-    uninit
-        .register("HostFunc1", || {
-            // do nothing
-        })
-        .unwrap();
-    let mut sbox1: MultiUseSandbox = uninit.evolve().unwrap();
+        let interrupt_handle = sbox1.interrupt_handle();
 
-    let interrupt_handle = sbox1.interrupt_handle();
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
 
-    let barrier = Arc::new(Barrier::new(2));
-    let barrier2 = barrier.clone();
+        let thread = thread::spawn(move || {
+            barrier2.wait();
+            thread::sleep(Duration::from_secs(1));
+            interrupt_handle.kill();
+        });
 
-    let thread = thread::spawn(move || {
-        barrier2.wait();
-        thread::sleep(Duration::from_secs(1));
-        interrupt_handle.kill();
+        barrier.wait();
+        // This guest call calls "HostFunc1" in a loop
+        let res = sbox1
+            .call::<i32>("HostCallLoop", "HostFunc1".to_string())
+            .unwrap_err();
+
+        assert!(
+            matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {res:?}"
+        );
+
+        thread.join().expect("Thread should finish");
     });
-
-    barrier.wait();
-    // This guest call calls "HostFunc1" in a loop
-    let res = sbox1
-        .call::<i32>("HostCallLoop", "HostFunc1".to_string())
-        .unwrap_err();
-
-    assert!(matches!(res, HyperlightError::ExecutionCanceledByHost()));
-
-    thread.join().expect("Thread should finish");
 }
 
 #[test]
 fn print_four_args_c_guest() {
-    let path = c_simple_guest_as_string().unwrap();
-    let guest_path = GuestBinary::FilePath(path);
-    let uninit = UninitializedSandbox::new(guest_path, None);
-    let mut sbox1 = uninit.unwrap().evolve().unwrap();
-
-    let res = sbox1.call::<i32>(
-        "PrintFourArgs",
-        ("Test4".to_string(), 3_i32, 4_i64, "Tested".to_string()),
-    );
-    println!("{:?}", res);
-    assert!(matches!(res, Ok(46)));
+    with_c_sandbox(|mut sbox1| {
+        let res = sbox1.call::<i32>(
+            "PrintFourArgs",
+            ("Test4".to_string(), 3_i32, 4_i64, "Tested".to_string()),
+        );
+        assert!(matches!(&res, Ok(46)), "unexpected result: {res:?}");
+    });
 }
 
 // Checks that guest can abort with a specific code.
 #[test]
 fn guest_abort() {
-    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
-    let error_code: u8 = 13; // this is arbitrary
-    let res = sbox1
-        .call::<()>("GuestAbortWithCode", error_code as i32)
-        .unwrap_err();
-    println!("{:?}", res);
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(code, message) if (code == error_code && message.is_empty()))
-    );
+    with_all_sandboxes(|mut sbox1| {
+        let error_code: u8 = 13; // this is arbitrary
+        let res = sbox1
+            .call::<()>("GuestAbortWithCode", error_code as i32)
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, message) if (*code == error_code && message.is_empty())),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 #[test]
 fn guest_abort_with_context1() {
-    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
-
-    let res = sbox1
-        .call::<()>("GuestAbortWithMessage", (25_i32, "Oh no".to_string()))
-        .unwrap_err();
-    println!("{:?}", res);
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(code, context) if (code == 25 && context == "Oh no"))
-    );
+    with_all_sandboxes(|mut sbox1| {
+        let res = sbox1
+            .call::<()>("GuestAbortWithMessage", (25_i32, "Oh no".to_string()))
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, context) if (*code == 25 && context == "Oh no")),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 #[test]
 fn guest_abort_with_context2() {
-    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
-
-    // The buffer size for the panic context is 1024 bytes.
-    // This test will see what happens if the panic message is longer than that
-    let abort_message = "Lorem ipsum dolor sit amet, \
+    with_all_sandboxes(|mut sbox1| {
+        // The buffer size for the panic context is 1024 bytes.
+        // This test will see what happens if the panic message is longer than that
+        let abort_message = "Lorem ipsum dolor sit amet, \
                                 consectetur adipiscing elit, \
                                 sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \
                                 Nec feugiat nisl pretium fusce. \
@@ -449,13 +453,14 @@ fn guest_abort_with_context2() {
                                 Arcu felis bibendum ut tristique et. \
                                 Proin sagittis nisl rhoncus mattis rhoncus urna. Magna eget est lorem ipsum.";
 
-    let res = sbox1
-        .call::<()>("GuestAbortWithMessage", (60_i32, abort_message.to_string()))
-        .unwrap_err();
-    println!("{:?}", res);
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(_, context) if context.contains("Guest abort buffer overflowed"))
-    );
+        let res = sbox1
+            .call::<()>("GuestAbortWithMessage", (60_i32, abort_message.to_string()))
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(_, context) if context.contains("Guest abort buffer overflowed")),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 // Ensure abort with context works for c guests.
@@ -463,115 +468,114 @@ fn guest_abort_with_context2() {
 // hopefully be removing the c guest library soon.
 #[test]
 fn guest_abort_c_guest() {
-    let path = c_simple_guest_as_string().unwrap();
-    let guest_path = GuestBinary::FilePath(path);
-    let uninit = UninitializedSandbox::new(guest_path, None);
-    let mut sbox1 = uninit.unwrap().evolve().unwrap();
-
-    let res = sbox1
-        .call::<()>(
-            "GuestAbortWithMessage",
-            (75_i32, "This is a test error message".to_string()),
-        )
-        .unwrap_err();
-    println!("{:?}", res);
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(code, message) if (code == 75 && message == "This is a test error message") )
-    );
+    with_c_sandbox(|mut sbox1| {
+        let res = sbox1
+            .call::<()>(
+                "GuestAbortWithMessage",
+                (75_i32, "This is a test error message".to_string()),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, message) if (*code == 75 && message == "This is a test error message")),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 #[test]
 fn guest_panic() {
     // this test is rust-specific
-    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
-
-    let res = sbox1
-        .call::<()>("guest_panic", "Error... error...".to_string())
-        .unwrap_err();
-    println!("{:?}", res);
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(code, context) if code == ErrorCode::UnknownError as u8 && context.contains("\nError... error..."))
-    )
+    with_rust_sandbox(|mut sbox1| {
+        let res = sbox1
+            .call::<()>("guest_panic", "Error... error...".to_string())
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, context) if *code == ErrorCode::UnknownError as u8 && context.contains("\nError... error...")),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 #[test]
 fn guest_malloc() {
     // this test is rust-only
-    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
-
-    let size_to_allocate = 2000_i32;
-    sbox1.call::<i32>("TestMalloc", size_to_allocate).unwrap();
+    with_rust_sandbox(|mut sbox1| {
+        let size_to_allocate = 2000_i32;
+        sbox1.call::<i32>("TestMalloc", size_to_allocate).unwrap();
+    });
 }
 
 #[test]
 fn guest_allocate_vec() {
-    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
+    with_all_sandboxes(|mut sbox1| {
+        let size_to_allocate = 2000_i32;
 
-    let size_to_allocate = 2000_i32;
+        let res = sbox1
+            .call::<i32>(
+                "CallMalloc", // uses the rust allocator to allocate a vector on heap
+                size_to_allocate,
+            )
+            .unwrap();
 
-    let res = sbox1
-        .call::<i32>(
-            "CallMalloc", // uses the rust allocator to allocate a vector on heap
-            size_to_allocate,
-        )
-        .unwrap();
-
-    assert_eq!(res, size_to_allocate);
+        assert_eq!(res, size_to_allocate);
+    });
 }
 
 // checks that malloc failures are captured correctly
 #[test]
 fn guest_malloc_abort() {
-    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
+    with_rust_sandbox(|mut sbox1| {
+        let size = 20000000_i32; // some big number that should fail when allocated
 
-    let size = 20000000_i32; // some big number that should fail when allocated
-
-    let res = sbox1.call::<i32>("TestMalloc", size).unwrap_err();
-    println!("{:?}", res);
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
-    );
+        let res = sbox1.call::<i32>("TestMalloc", size).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
 
     // allocate a vector (on heap) that is bigger than the heap
     let heap_size = 0x4000;
     let size_to_allocate = 0x10000;
-    assert!(size_to_allocate > heap_size);
+    assert!(
+        size_to_allocate > heap_size,
+        "precondition: size_to_allocate ({size_to_allocate}) must be > heap_size ({heap_size})"
+    );
 
     let mut cfg = SandboxConfiguration::default();
     cfg.set_heap_size(heap_size);
-    let uninit = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(cfg),
-    )
-    .unwrap();
-    let mut sbox2 = uninit.evolve().unwrap();
-
-    let res = sbox2.call::<i32>(
-        "CallMalloc", // uses the rust allocator to allocate a vector on heap
-        size_to_allocate as i32,
-    );
-    println!("{:?}", res);
-    assert!(matches!(
-        res.unwrap_err(),
-        // OOM memory errors in rust allocator are panics. Our panic handler returns ErrorCode::UnknownError on panic
-        HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ")
-    ));
+    with_rust_sandbox_cfg(cfg, |mut sbox2| {
+        let err = sbox2
+            .call::<i32>(
+                "CallMalloc", // uses the rust allocator to allocate a vector on heap
+                size_to_allocate as i32,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                // OOM memory errors in rust allocator are panics. Our panic handler returns ErrorCode::UnknownError on panic
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ")
+            ),
+            "unexpected error: {err:?}"
+        );
+    });
 }
 
 /// Test that executing an OUT instruction with an invalid port causes an error and poisons the sandbox.
 #[test]
 fn guest_outb_with_invalid_port_poisons_sandbox() {
-    let mut sbox = new_uninit_rust().unwrap().evolve().unwrap();
+    with_rust_sandbox(|mut sbox| {
+        // Port 0x1234 is not a valid hyperlight port
+        let res = sbox.call::<()>("OutbWithPort", (0x1234_u32, 0_u32));
+        assert!(res.is_err(), "Expected error from invalid OUT port");
 
-    // Port 0x1234 is not a valid hyperlight port
-    let res = sbox.call::<()>("OutbWithPort", (0x1234_u32, 0_u32));
-    assert!(res.is_err(), "Expected error from invalid OUT port");
-
-    // The sandbox should be poisoned because the guest didn't complete normally
-    assert!(
-        sbox.poisoned(),
-        "Sandbox should be poisoned after invalid OUT"
-    );
+        // The sandbox should be poisoned because the guest didn't complete normally
+        assert!(
+            sbox.poisoned(),
+            "Sandbox should be poisoned after invalid OUT"
+        );
+    });
 }
 
 #[test]
@@ -580,115 +584,119 @@ fn guest_panic_no_alloc() {
 
     let mut cfg = SandboxConfiguration::default();
     cfg.set_heap_size(heap_size);
-    let uninit = UninitializedSandbox::new(
-        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
-        Some(cfg),
-    )
-    .unwrap();
-    let mut sbox: MultiUseSandbox = uninit.evolve().unwrap();
+    with_rust_sandbox_cfg(cfg, |mut sbox| {
+        let res = sbox
+            .call::<i32>(
+                "ExhaustHeap", // uses the rust allocator to allocate small blocks on the heap until OOM
+                (),
+            )
+            .unwrap_err();
 
-    let res = sbox
-        .call::<i32>(
-            "ExhaustHeap", // uses the rust allocator to allocate small blocks on the heap until OOM
-            (),
-        )
-        .unwrap_err();
+        if let HyperlightError::StackOverflow() = res {
+            panic!("panic on OOM caused stack overflow, this implies allocation in panic handler");
+        }
 
-    assert!(matches!(
-        res,
-        HyperlightError::GuestAborted(code, msg) if code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
-    ));
+        assert!(
+            matches!(
+                &res,
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("memory allocation of ") && msg.contains("bytes failed")
+            ),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 // Tests libc alloca
 #[test]
 fn dynamic_stack_allocate_c_guest() {
-    let path = c_simple_guest_as_string().unwrap();
-    let guest_path = GuestBinary::FilePath(path);
-    let uninit = UninitializedSandbox::new(guest_path, None);
-    let mut sbox1: MultiUseSandbox = uninit.unwrap().evolve().unwrap();
+    with_c_sandbox(|mut sbox1| {
+        let res: i32 = sbox1.call("StackAllocate", 100_i32).unwrap();
+        assert_eq!(res, 100);
 
-    let res: i32 = sbox1.call("StackAllocate", 100_i32).unwrap();
-    assert_eq!(res, 100);
-
-    let res = sbox1
-        .call::<i32>("StackAllocate", 0x800_0000_i32)
-        .unwrap_err();
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
-    );
+        let res = sbox1
+            .call::<i32>("StackAllocate", 0x800_0000_i32)
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 // checks that a small buffer on stack works
 #[test]
 fn static_stack_allocate() {
-    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
-
-    let res: i32 = sbox1.call("SmallVar", ()).unwrap();
-    assert_eq!(res, 1024);
+    with_all_sandboxes(|mut sbox1| {
+        let res: i32 = sbox1.call("SmallVar", ()).unwrap();
+        assert_eq!(res, 1024);
+    });
 }
 
 // checks that a huge buffer on stack fails with stackoverflow
 #[test]
 fn static_stack_allocate_overflow() {
-    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
-    let res = sbox1.call::<i32>("LargeVar", ()).unwrap_err();
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
-    );
+    with_all_sandboxes(|mut sbox1| {
+        let res = sbox1.call::<i32>("LargeVar", ()).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 // checks that a recursive function with stack allocation works, (that chkstk can be called without overflowing)
 #[test]
 fn recursive_stack_allocate() {
-    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
-
-    let iterations = 1_i32;
-
-    sbox1.call::<i32>("StackOverflow", iterations).unwrap();
+    with_all_sandboxes(|mut sbox1| {
+        let iterations = 1_i32;
+        sbox1.call::<i32>("StackOverflow", iterations).unwrap();
+    });
 }
 
 #[test]
 fn guard_page_check_2() {
     // this test is rust-guest only
-    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
-
-    let res = sbox1.call::<()>("InfiniteRecursion", ()).unwrap_err();
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
-    );
+    with_rust_sandbox(|mut sbox1| {
+        let res = sbox1.call::<()>("InfiniteRecursion", ()).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 #[test]
-#[ignore] // ran from Justfile because requires feature "executable_heap"
 fn execute_on_heap() {
-    let mut sbox1 = new_uninit_rust().unwrap().evolve().unwrap();
-    let result = sbox1.call::<String>("ExecuteOnHeap", ());
+    with_rust_sandbox(|mut sbox1| {
+        let result = sbox1.call::<String>("ExecuteOnHeap", ());
 
-    println!("{:#?}", result);
-    #[cfg(feature = "executable_heap")]
-    assert!(result.is_ok());
+        #[cfg(feature = "executable_heap")]
+        assert_eq!(
+            result.unwrap(),
+            "Executed on heap successfully",
+            "should execute successfully"
+        );
 
-    #[cfg(not(feature = "executable_heap"))]
-    {
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-
-        assert!(err.to_string().contains("PageFault"));
-    }
+        #[cfg(not(feature = "executable_heap"))]
+        assert!(
+            result.unwrap_err().to_string().contains("PageFault"),
+            "should get page fault"
+        );
+    });
 }
 
 // checks that a recursive function with stack allocation eventually fails with stackoverflow
 #[test]
 fn recursive_stack_allocate_overflow() {
-    let mut sbox1 = new_uninit().unwrap().evolve().unwrap();
+    with_all_sandboxes(|mut sbox1| {
+        let iterations = 32_i32;
 
-    let iterations = 32_i32;
-
-    let res = sbox1.call::<()>("StackOverflow", iterations).unwrap_err();
-    assert!(
-        matches!(res, HyperlightError::GuestAborted(code, _) if code == ErrorCode::MallocFailed as u8)
-    );
+        let res = sbox1.call::<()>("StackOverflow", iterations).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
 }
 
 // Check that log messages are emitted correctly from the guest
@@ -761,17 +769,20 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
     LOGGER.clear_log_calls();
     assert_eq!(0, LOGGER.num_log_calls());
     for level in log::LevelFilter::iter() {
-        let mut sbox = new_uninit().unwrap();
-        if let Some(levelfilter) = levelfilter {
-            sbox.set_max_guest_log_level(levelfilter);
-        }
+        // Only use Rust guest because the C guest has a different signature for LogMessage
+        // (Long vs Int for the level parameter)
+        with_rust_uninit_sandbox(|mut sbox| {
+            if let Some(levelfilter) = levelfilter {
+                sbox.set_max_guest_log_level(levelfilter);
+            }
 
-        let mut sbox1 = sbox.evolve().unwrap();
+            let mut sbox1 = sbox.evolve().unwrap();
 
-        let message = format!("Hello from log_message level {}", level as i32);
-        sbox1
-            .call::<()>("LogMessage", (message.to_string(), level as i32))
-            .unwrap();
+            let message = format!("Hello from log_message level {}", level as i32);
+            sbox1
+                .call::<()>("LogMessage", (message.to_string(), level as i32))
+                .unwrap();
+        });
     }
 }
 
@@ -779,85 +790,81 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
-    let mut sbox1 = new_uninit_c().unwrap();
+    with_c_uninit_sandbox(|mut sbox1| {
+        sbox1
+            .register("HostBool", |a: i32, b: i32| a + b > 10)
+            .unwrap();
+        let mut sbox3 = sbox1.evolve().unwrap();
 
-    sbox1
-        .register("HostBool", |a: i32, b: i32| a + b > 10)
-        .unwrap();
-    let mut sbox3 = sbox1.evolve().unwrap();
-
-    for i in 1..10 {
-        if i < 6 {
-            let res = sbox3
-                .call::<bool>("GuestRetrievesBoolValue", (i, i))
-                .unwrap();
-            println!("{:?}", res);
-            assert!(!res);
-        } else {
-            let res = sbox3
-                .call::<bool>("GuestRetrievesBoolValue", (i, i))
-                .unwrap();
-            println!("{:?}", res);
-            assert!(res);
+        for i in 1..10 {
+            if i < 6 {
+                let res = sbox3
+                    .call::<bool>("GuestRetrievesBoolValue", (i, i))
+                    .unwrap();
+                assert!(!res);
+            } else {
+                let res = sbox3
+                    .call::<bool>("GuestRetrievesBoolValue", (i, i))
+                    .unwrap();
+                assert!(res);
+            }
         }
-    }
+    });
 }
 
 /// Tests whether host is able to return Float/f32 as return type
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_float_return_values_from_host() {
-    let mut sbox1 = new_uninit_c().unwrap();
-
-    sbox1
-        .register("HostAddFloat", |a: f32, b: f32| a + b)
-        .unwrap();
-    let mut sbox3 = sbox1.evolve().unwrap();
-    let res = sbox3
-        .call::<f32>("GuestRetrievesFloatValue", (1.34_f32, 1.34_f32))
-        .unwrap();
-    println!("{:?}", res);
-    assert_eq!(res, 2.68_f32);
+    with_c_uninit_sandbox(|mut sbox1| {
+        sbox1
+            .register("HostAddFloat", |a: f32, b: f32| a + b)
+            .unwrap();
+        let mut sbox3 = sbox1.evolve().unwrap();
+        let res = sbox3
+            .call::<f32>("GuestRetrievesFloatValue", (1.34_f32, 1.34_f32))
+            .unwrap();
+        assert_eq!(res, 2.68_f32);
+    });
 }
 
 /// Tests whether host is able to return Double/f64 as return type
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_double_return_values_from_host() {
-    let mut sbox1 = new_uninit_c().unwrap();
-
-    sbox1
-        .register("HostAddDouble", |a: f64, b: f64| a + b)
-        .unwrap();
-    let mut sbox3 = sbox1.evolve().unwrap();
-    let res = sbox3
-        .call::<f64>("GuestRetrievesDoubleValue", (1.34_f64, 1.34_f64))
-        .unwrap();
-    println!("{:?}", res);
-    assert_eq!(res, 2.68_f64);
+    with_c_uninit_sandbox(|mut sbox1| {
+        sbox1
+            .register("HostAddDouble", |a: f64, b: f64| a + b)
+            .unwrap();
+        let mut sbox3 = sbox1.evolve().unwrap();
+        let res = sbox3
+            .call::<f64>("GuestRetrievesDoubleValue", (1.34_f64, 1.34_f64))
+            .unwrap();
+        assert_eq!(res, 2.68_f64);
+    });
 }
 
 /// Tests whether host is able to return String as return type
 /// or not
 #[test]
 fn test_if_guest_is_able_to_get_string_return_values_from_host() {
-    let mut sbox1 = new_uninit_c().unwrap();
-
-    sbox1
-        .register("HostAddStrings", |a: String| {
-            a + ", string added by Host Function"
-        })
-        .unwrap();
-    let mut sbox3 = sbox1.evolve().unwrap();
-    let res = sbox3
-        .call::<String>("GuestRetrievesStringValue", ())
-        .unwrap();
-    println!("{:?}", res);
-    assert_eq!(
-        res,
-        "Guest Function, string added by Host Function".to_string()
-    );
+    with_c_uninit_sandbox(|mut sbox1| {
+        sbox1
+            .register("HostAddStrings", |a: String| {
+                a + ", string added by Host Function"
+            })
+            .unwrap();
+        let mut sbox3 = sbox1.evolve().unwrap();
+        let res = sbox3
+            .call::<String>("GuestRetrievesStringValue", ())
+            .unwrap();
+        assert_eq!(
+            res,
+            "Guest Function, string added by Host Function".to_string()
+        );
+    });
 }
+
 /// Test that validates interrupt behavior with random kill timing under concurrent load
 /// Uses a pool of 100 sandboxes, 100 threads, and 500 iterations per thread.
 /// Randomly decides to kill some calls at random times during execution.
@@ -887,11 +894,10 @@ fn interrupt_random_kill_stress_test() {
     const KILL_PROBABILITY: f64 = 0.5; // 50% chance to attempt kill
     const GUEST_CALL_DURATION_MS: u32 = 10; // SpinForMs duration
 
-    // Create a pool of 50 sandboxes
     println!("Creating pool of {} sandboxes...", POOL_SIZE);
     let mut sandbox_pool: Vec<SandboxWithSnapshot> = Vec::with_capacity(POOL_SIZE);
     for i in 0..POOL_SIZE {
-        let mut sandbox = new_uninit_rust().unwrap().evolve().unwrap();
+        let mut sandbox = new_rust_sandbox();
         // Create a snapshot for this sandbox
         let snapshot = sandbox.snapshot().unwrap();
         if (i + 1) % 10 == 0 {
@@ -1107,38 +1113,26 @@ fn interrupt_random_kill_stress_test() {
                             );
 
                             // Create a new sandbox with snapshot
-                            match new_uninit_rust().and_then(|uninit| uninit.evolve()) {
-                                Ok(mut new_sandbox) => {
-                                    match new_sandbox.snapshot() {
-                                        Ok(new_snapshot) => {
-                                            // Replace the failed sandbox with the new one
-                                            sandbox_wrapper.sandbox = new_sandbox;
-                                            sandbox_wrapper.snapshot = new_snapshot;
-                                            sandbox_replaced_count_clone
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            trace!(
-                                                "[THREAD-{}] Iteration {}: Successfully replaced sandbox",
-                                                thread_id, iteration
-                                            );
-                                        }
-                                        Err(snapshot_err) => {
-                                            error!(
-                                                "CRITICAL: Thread {} iteration {}: Failed to create snapshot for new sandbox: {:?}",
-                                                thread_id, iteration, snapshot_err
-                                            );
-                                            // Still use the new sandbox even without snapshot
-                                            sandbox_wrapper.sandbox = new_sandbox;
-                                            sandbox_replaced_count_clone
-                                                .fetch_add(1, Ordering::Relaxed);
-                                        }
-                                    }
-                                }
-                                Err(create_err) => {
-                                    error!(
-                                        "CRITICAL: Thread {} iteration {}: Failed to create new sandbox: {:?}",
-                                        thread_id, iteration, create_err
+                            let mut new_sandbox = new_rust_sandbox();
+                            match new_sandbox.snapshot() {
+                                Ok(new_snapshot) => {
+                                    // Replace the failed sandbox with the new one
+                                    sandbox_wrapper.sandbox = new_sandbox;
+                                    sandbox_wrapper.snapshot = new_snapshot;
+                                    sandbox_replaced_count_clone.fetch_add(1, Ordering::Relaxed);
+                                    trace!(
+                                        "[THREAD-{}] Iteration {}: Successfully replaced sandbox",
+                                        thread_id, iteration
                                     );
-                                    // Continue with the broken sandbox - it will be removed from pool eventually
+                                }
+                                Err(snapshot_err) => {
+                                    error!(
+                                        "CRITICAL: Thread {} iteration {}: Failed to create snapshot for new sandbox: {:?}",
+                                        thread_id, iteration, snapshot_err
+                                    );
+                                    // Still use the new sandbox even without snapshot
+                                    sandbox_wrapper.sandbox = new_sandbox;
+                                    sandbox_replaced_count_clone.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
                         }
@@ -1355,7 +1349,7 @@ fn interrupt_infinite_loop_stress_test() {
             let barrier = Arc::new(Barrier::new(2));
             let barrier_for_host = barrier.clone();
 
-            let mut uninit = new_uninit_rust().unwrap();
+            let mut uninit = new_rust_uninit_sandbox();
 
             // Register a host function that waits on the barrier
             uninit
@@ -1440,7 +1434,7 @@ fn interrupt_infinite_moving_loop_stress_test() {
             let entered_guest = Arc::new(AtomicBool::new(false));
             let entered_guest_clone = entered_guest.clone();
 
-            let mut uninit = new_uninit_rust().unwrap();
+            let mut uninit = new_rust_uninit_sandbox();
             // Register a host function that waits on the barrier
             uninit
                 .register("WaitForKill", move || {
@@ -1448,7 +1442,7 @@ fn interrupt_infinite_moving_loop_stress_test() {
                     Ok(())
                 })
                 .unwrap();
-            let uninit2 = new_uninit_rust().unwrap();
+            let uninit2 = new_rust_uninit_sandbox();
 
             // These 2 sandboxes will have the same TID
             let sandbox = uninit.evolve().unwrap();
@@ -1578,10 +1572,13 @@ fn interrupt_infinite_moving_loop_stress_test() {
 
             // If the guest entered before calling kill, then we know for a fact the call should have been canceled since kill() was NOT premature.
             if entered_before_kill {
-                assert!(matches!(
-                    sandbox_res,
-                    Err(HyperlightError::ExecutionCanceledByHost())
-                ));
+                assert!(
+                    matches!(
+                        &sandbox_res,
+                        Err(HyperlightError::ExecutionCanceledByHost())
+                    ),
+                    "unexpected result: {sandbox_res:?}"
+                );
             }
 
             // If we did NOT enter the guest before calling kill, then the call may or may not have been canceled depending on timing.
@@ -1606,33 +1603,33 @@ fn interrupt_infinite_moving_loop_stress_test() {
 
 #[test]
 fn exception_handler_installation_and_validation() {
-    let mut sandbox: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
+    with_rust_sandbox(|mut sandbox| {
+        // Verify handler count starts at 0
+        let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+        assert_eq!(count, 0, "Handler should not have been called yet");
 
-    // Verify handler count starts at 0
-    let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
-    assert_eq!(count, 0, "Handler should not have been called yet");
+        // Install handler for vector
+        sandbox.call::<()>("InstallHandler", 3i32).unwrap();
 
-    // Install handler for vector
-    sandbox.call::<()>("InstallHandler", 3i32).unwrap();
+        // Try to install again - should be able to overwrite
+        sandbox.call::<()>("InstallHandler", 3i32).unwrap();
 
-    // Try to install again - should be able to overwrite
-    sandbox.call::<()>("InstallHandler", 3i32).unwrap();
+        // Trigger int3 exception
+        let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
+        assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
 
-    // Trigger int3 exception
-    let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
-    assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
+        // Verify handler was invoked
+        let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+        assert_eq!(count, 1, "Handler should have been called once");
 
-    // Verify handler was invoked
-    let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
-    assert_eq!(count, 1, "Handler should have been called once");
+        // Trigger int3 exception
+        let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
+        assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
 
-    // Trigger int3 exception
-    let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
-    assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
-
-    // Verify handler was invoked a second time
-    let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
-    assert_eq!(count, 2, "Handler should have been called twice");
+        // Verify handler was invoked a second time
+        let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+        assert_eq!(count, 2, "Handler should have been called twice");
+    });
 }
 
 /// Tests that an exception can be properly handled even when the heap is exhausted.
@@ -1640,37 +1637,38 @@ fn exception_handler_installation_and_validation() {
 /// This validates that the exception handling path does not require heap allocations.
 #[test]
 fn fill_heap_and_cause_exception() {
-    let mut sandbox: MultiUseSandbox = new_uninit_rust().unwrap().evolve().unwrap();
-    let result = sandbox.call::<()>("FillHeapAndCauseException", ());
+    with_rust_sandbox(|mut sandbox| {
+        let result = sandbox.call::<()>("FillHeapAndCauseException", ());
 
-    // The call should fail with an exception error since there's no handler installed
-    assert!(result.is_err(), "Expected an error from ud2 exception");
+        // The call should fail with an exception error since there's no handler installed
+        assert!(result.is_err(), "Expected an error from ud2 exception");
 
-    let err = result.unwrap_err();
-    match &err {
-        HyperlightError::GuestAborted(code, message) => {
-            assert_eq!(*code, ErrorCode::GuestError as u8, "Full error: {:?}", err);
+        let err = result.unwrap_err();
+        match &err {
+            HyperlightError::GuestAborted(code, message) => {
+                assert_eq!(*code, ErrorCode::GuestError as u8, "Full error: {:?}", err);
 
-            // Verify the message was properly formatted (proves no-allocation path worked)
-            // Exception vector 6 is #UD (Invalid Opcode from ud2 instruction)
-            assert!(
-                message.contains("Exception vector: 6"),
-                "Message should contain 'Exception vector: 6'\nFull error: {:?}",
-                err
-            );
-            assert!(
-                message.contains("Faulting Instruction:"),
-                "Message should contain 'Faulting Instruction:'\nFull error: {:?}",
-                err
-            );
-            assert!(
-                message.contains("Stack Pointer:"),
-                "Message should contain 'Stack Pointer:'\nFull error: {:?}",
-                err
-            );
+                // Verify the message was properly formatted (proves no-allocation path worked)
+                // Exception vector 6 is #UD (Invalid Opcode from ud2 instruction)
+                assert!(
+                    message.contains("Exception vector: 6"),
+                    "Message should contain 'Exception vector: 6'\nFull error: {:?}",
+                    err
+                );
+                assert!(
+                    message.contains("Faulting Instruction:"),
+                    "Message should contain 'Faulting Instruction:'\nFull error: {:?}",
+                    err
+                );
+                assert!(
+                    message.contains("Stack Pointer:"),
+                    "Message should contain 'Stack Pointer:'\nFull error: {:?}",
+                    err
+                );
+            }
+            _ => panic!("Expected GuestAborted error, got: {:?}", err),
         }
-        _ => panic!("Expected GuestAborted error, got: {:?}", err),
-    }
+    });
 }
 
 /// This test is "likely" to catch a race condition where WHvCancelRunVirtualProcessor runs halfway, then the partition is deleted (by drop calling WHvDeletePartition),
@@ -1687,9 +1685,9 @@ fn interrupt_cancel_delete_race() {
     let mut handles = vec![];
 
     for _ in 0..NUM_THREADS {
-        handles.push(thread::spawn(move || {
+        handles.push(thread::spawn(|| {
             for _ in 0..ITERATIONS_PER_THREAD {
-                let mut sandbox: MultiUseSandbox = new_uninit().unwrap().evolve().unwrap();
+                let mut sandbox = new_rust_sandbox();
                 let interrupt_handle = sandbox.interrupt_handle();
 
                 let stop_flag = Arc::new(AtomicBool::new(false));
