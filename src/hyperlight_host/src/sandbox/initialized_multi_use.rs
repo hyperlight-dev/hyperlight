@@ -42,7 +42,6 @@ use crate::mem::memory_region::MemoryRegion;
 #[cfg(unix)]
 use crate::mem::memory_region::{MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
@@ -95,7 +94,6 @@ pub struct MultiUseSandbox {
     pub(super) host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
     vm: HyperlightVm,
-    dispatch_ptr: RawPtr,
     #[cfg(gdb)]
     dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     /// If the current state of the sandbox has been captured in a snapshot,
@@ -114,7 +112,6 @@ impl MultiUseSandbox {
         host_funcs: Arc<Mutex<FunctionRegistry>>,
         mgr: SandboxMemoryManager<HostSharedMemory>,
         vm: HyperlightVm,
-        dispatch_ptr: RawPtr,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> MultiUseSandbox {
         Self {
@@ -123,7 +120,6 @@ impl MultiUseSandbox {
             host_funcs,
             mem_mgr: mgr,
             vm,
-            dispatch_ptr,
             #[cfg(gdb)]
             dbg_mem_access_fn,
             snapshot: None,
@@ -178,12 +174,14 @@ impl MultiUseSandbox {
             .vm
             .get_snapshot_sregs()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        let entrypoint = self.vm.get_entrypoint();
         let memory_snapshot = self.mem_mgr.snapshot(
             self.id,
             mapped_regions_vec,
             root_pt_gpa,
             stack_top_gpa,
             sregs,
+            entrypoint,
         )?;
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
@@ -319,6 +317,7 @@ impl MultiUseSandbox {
             })?;
 
         self.vm.set_stack_top(snapshot.stack_top_gva());
+        self.vm.set_entrypoint(snapshot.entrypoint());
 
         let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
         let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();
@@ -532,11 +531,6 @@ impl MultiUseSandbox {
         if self.poisoned {
             return Err(crate::HyperlightError::PoisonedSandbox);
         }
-        if rgn.flags.contains(MemoryRegionFlags::STACK_GUARD) {
-            // Stack guard pages are an internal implementation detail
-            // (which really should be moved into the guest)
-            log_then_return!("Cannot map host memory as a stack guard page");
-        }
         if rgn.flags.contains(MemoryRegionFlags::WRITE) {
             // TODO: Implement support for writable mappings, which
             // need to be registered with the memory manager so that
@@ -653,7 +647,6 @@ impl MultiUseSandbox {
             self.mem_mgr.write_guest_function_call(buffer)?;
 
             let dispatch_res = self.vm.dispatch_call_from_host(
-                self.dispatch_ptr.clone(),
                 &mut self.mem_mgr,
                 &self.host_funcs,
                 #[cfg(gdb)]
@@ -1030,16 +1023,21 @@ mod tests {
         assert_eq!(res, 0);
     }
 
-    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (1K) and heap(14K).
+    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (24K) and heap(20K).
     // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
     #[test]
     fn test_with_small_stack_and_heap() {
         let mut cfg = SandboxConfiguration::default();
         cfg.set_heap_size(20 * 1024);
         // min_scratch_size already includes 1 page (4k on most
-        // platforms) of guest stack, so add 20k more to get 24k total
-        let min_scratch = hyperlight_common::layout::min_scratch_size();
-        cfg.set_scratch_size(min_scratch + 0x5000);
+        // platforms) of guest stack, so add 20k more to get 24k
+        // total, and then add some more for the eagerly-copied page
+        // tables on amd64
+        let min_scratch = hyperlight_common::layout::min_scratch_size(
+            cfg.get_input_data_size(),
+            cfg.get_output_data_size(),
+        );
+        cfg.set_scratch_size(min_scratch + 0x10000 + 0x10000);
 
         let mut sbox1: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
@@ -1423,6 +1421,7 @@ mod tests {
         for (name, heap_size) in test_cases {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(heap_size);
+            cfg.set_scratch_size(0x100000);
 
             let path = simple_guest_as_string().unwrap();
             let sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg))

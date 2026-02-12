@@ -26,7 +26,8 @@ limitations under the License.
 //! allocating intermediate tables as needed and setting appropriate flags on leaf PTEs
 
 use crate::vmem::{
-    BasicMapping, Mapping, MappingKind, TableMovabilityBase, TableOps, TableReadOps, Void,
+    BasicMapping, CowMapping, Mapping, MappingKind, TableMovabilityBase, TableOps, TableReadOps,
+    Void,
 };
 
 // Paging Flags
@@ -58,11 +59,16 @@ const PAGE_NX: u64 = 1 << 63;
 /// This masks out the lower 12 flag bits AND the upper bits including NX (bit 63)
 const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 const PAGE_USER_ACCESS_DISABLED: u64 = 0 << 2; // U/S bit not set - supervisor mode only (no code runs in user mode for now)
-const PAGE_DIRTY_CLEAR: u64 = 0 << 6; // D - dirty bit cleared (set by CPU when written)
-const PAGE_ACCESSED_CLEAR: u64 = 0 << 5; // A - accessed bit cleared (set by CPU when accessed)
+const PAGE_DIRTY_SET: u64 = 1 << 6; // D - dirty bit
+const PAGE_ACCESSED_SET: u64 = 1 << 5; // A - accessed bit
 const PAGE_CACHE_ENABLED: u64 = 0 << 4; // PCD - page cache disable bit not set (caching enabled)
 const PAGE_WRITE_BACK: u64 = 0 << 3; // PWT - page write-through bit not set (write-back caching)
 const PAGE_PAT_WB: u64 = 0 << 7; // PAT - page attribute table index bit (0 for write-back memory when PCD=0, PWT=0)
+
+// We use various patterns of the available-for-software-use bits to
+// represent certain special mappings.
+const PTE_AVL_MASK: u64 = 0x0000_0000_0000_0E00;
+const PAGE_AVL_COW: u64 = 1 << 9;
 
 /// Returns PAGE_RW if writable is true, 0 otherwise
 #[inline(always)]
@@ -101,7 +107,7 @@ fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
 #[allow(clippy::precedence)]
 fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
     Op::to_phys(table_addr) |
-        PAGE_ACCESSED_CLEAR | // accessed bit cleared (will be set by CPU when page is accessed - but we dont use the access bit for anything at present)
+        PAGE_ACCESSED_SET | // prevent the CPU writing to the access flag
         PAGE_CACHE_ENABLED | // leave caching enabled
         PAGE_WRITE_BACK | // use write-back caching
         PAGE_USER_ACCESS_DISABLED |// dont allow user access (no code runs in user mode for now)
@@ -417,7 +423,7 @@ unsafe fn map_page<
     r: MapResponse<Op, P>,
 ) {
     let pte = match &mapping.kind {
-        MappingKind::BasicMapping(bm) =>
+        MappingKind::Basic(bm) =>
         // TODO: Support not readable
         // NOTE: On x86-64, there is no separate "readable" bit in the page table entry.
         // This means that pages cannot be made write-only or execute-only without also being readable.
@@ -429,12 +435,25 @@ unsafe fn map_page<
             (mapping.phys_base + (r.vmin - mapping.virt_base)) |
                 page_nx_flag(bm.executable) | // NX - no execute unless allowed
                 PAGE_PAT_WB | // PAT index bit for write-back memory
-                PAGE_DIRTY_CLEAR | // dirty bit (set by CPU when written)
-                PAGE_ACCESSED_CLEAR | // accessed bit cleared (will be set by CPU when page is accessed - but we dont use the access bit for anything at present)
+                PAGE_DIRTY_SET | // prevent the CPU writing to the dirty bit
+                PAGE_ACCESSED_SET | // prevent the CPU writing to the access flag
                 PAGE_CACHE_ENABLED | // leave caching enabled
                 PAGE_WRITE_BACK | // use write-back caching
                 PAGE_USER_ACCESS_DISABLED | // dont allow user access (no code runs in user mode for now)
                 page_rw_flag(bm.writable) | // R/W - set if writable
+                PAGE_PRESENT // P   - this entry is present
+        }
+        MappingKind::Cow(cm) => {
+            (mapping.phys_base + (r.vmin - mapping.virt_base)) |
+                page_nx_flag(cm.executable) | // NX - no execute unless allowed
+                PAGE_AVL_COW |
+                PAGE_PAT_WB | // PAT index bit for write-back memory
+                PAGE_DIRTY_SET | // prevent the CPU writing to the dirty bit
+                PAGE_ACCESSED_SET | // prevent the CPU writing to the access flag
+                PAGE_CACHE_ENABLED | // leave caching enabled
+                PAGE_WRITE_BACK | // use write-back caching
+                PAGE_USER_ACCESS_DISABLED | // dont allow user access (no code runs in user mode for now)
+                0 | // R/W - Cow page is never writable
                 PAGE_PRESENT // P   - this entry is present
         }
     };
@@ -517,7 +536,7 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
     op: impl core::convert::AsRef<Op> + Copy + 'a,
     address: u64,
     len: u64,
-) -> impl Iterator<Item = (VirtAddr, PhysAddr, BasicMapping)> + 'a {
+) -> impl Iterator<Item = Mapping> + 'a {
     // Undo sign-extension, and mask off any sub-page bits
     let vmin = (address & ((1u64 << VA_BITS) - 1)) & !(PAGE_SIZE as u64 - 1);
     let vmax = core::cmp::min(vmin + len, 1u64 << VA_BITS);
@@ -540,12 +559,27 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
         let sgn_bit = r.vmin >> (VA_BITS - 1);
         let sgn_bits = 0u64.wrapping_sub(sgn_bit) << VA_BITS;
         let virt_addr = sgn_bits | r.vmin;
-        let perms = BasicMapping {
-            readable: true,
-            writable: (pte & PAGE_RW) != 0,
-            executable: (pte & PAGE_NX) == 0,
+
+        let executable = (pte & PAGE_NX) == 0;
+        let avl = pte & PTE_AVL_MASK;
+        let kind = if avl == PAGE_AVL_COW {
+            MappingKind::Cow(CowMapping {
+                readable: true,
+                executable,
+            })
+        } else {
+            MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: (pte & PAGE_RW) != 0,
+                executable,
+            })
         };
-        Some((virt_addr, phys_addr, perms))
+        Some(Mapping {
+            phys_base: phys_addr,
+            virt_base: virt_addr,
+            len: PAGE_SIZE as u64,
+            kind,
+        })
     })
 }
 
@@ -721,7 +755,7 @@ mod tests {
             phys_base: 0x1000,
             virt_base: 0x1000,
             len: PAGE_SIZE as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
                 executable: false,
@@ -754,7 +788,7 @@ mod tests {
             phys_base: 0x2000,
             virt_base: 0x2000,
             len: PAGE_SIZE as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: false,
                 executable: true,
@@ -777,7 +811,7 @@ mod tests {
             phys_base: 0x10000,
             virt_base: 0x10000,
             len: 4 * PAGE_SIZE as u64, // 4 pages = 16KB
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
                 executable: false,
@@ -810,7 +844,7 @@ mod tests {
             phys_base: 0x1000,
             virt_base: 0x1000,
             len: PAGE_SIZE as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
                 executable: false,
@@ -824,7 +858,7 @@ mod tests {
             phys_base: 0x5000,
             virt_base: 0x5000,
             len: PAGE_SIZE as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
                 executable: false,
@@ -849,7 +883,7 @@ mod tests {
             phys_base: 0x1000,
             virt_base: 0x1000,
             len: PAGE_SIZE as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
                 executable: false,
@@ -860,8 +894,75 @@ mod tests {
 
         let result = unsafe { virt_to_phys(&ops, 0x1000, 1).next() };
         assert!(result.is_some(), "Should find mapped address");
-        let pte = result.unwrap();
-        assert_eq!(pte.1, 0x1000);
+        let mapping = result.unwrap();
+        assert_eq!(mapping.phys_base, 0x1000);
+    }
+
+    #[test]
+    fn test_virt_to_phys_unaligned_virt() {
+        let ops = MockTableOps::new();
+        let mapping = Mapping {
+            phys_base: 0x1000,
+            virt_base: 0x1000,
+            len: PAGE_SIZE as u64,
+            kind: MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: false,
+            }),
+        };
+
+        unsafe { map(&ops, mapping) };
+
+        let result = unsafe { virt_to_phys(&ops, 0x1234, 1).next() };
+        assert!(result.is_some(), "Should find mapped address");
+        let mapping = result.unwrap();
+        assert_eq!(mapping.phys_base, 0x1000);
+    }
+
+    #[test]
+    fn test_virt_to_phys_perms() {
+        let test = |kind| {
+            let ops = MockTableOps::new();
+            let mapping = Mapping {
+                phys_base: 0x1000,
+                virt_base: 0x1000,
+                len: PAGE_SIZE as u64,
+                kind,
+            };
+            unsafe { map(&ops, mapping) };
+            let result = unsafe { virt_to_phys(&ops, 0x1000, 1).next() };
+            let mapping = result.unwrap();
+            assert_eq!(mapping.kind, kind);
+        };
+        test(MappingKind::Basic(BasicMapping {
+            readable: true,
+            writable: false,
+            executable: false,
+        }));
+        test(MappingKind::Basic(BasicMapping {
+            readable: true,
+            writable: false,
+            executable: true,
+        }));
+        test(MappingKind::Basic(BasicMapping {
+            readable: true,
+            writable: true,
+            executable: false,
+        }));
+        test(MappingKind::Basic(BasicMapping {
+            readable: true,
+            writable: true,
+            executable: true,
+        }));
+        test(MappingKind::Cow(CowMapping {
+            readable: true,
+            executable: false,
+        }));
+        test(MappingKind::Cow(CowMapping {
+            readable: true,
+            executable: true,
+        }));
     }
 
     #[test]
@@ -880,7 +981,7 @@ mod tests {
             phys_base: 0x1000,
             virt_base: 0x1000,
             len: PAGE_SIZE as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
                 executable: false,

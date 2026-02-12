@@ -156,7 +156,6 @@ impl VirtualMachine for WhpVm {
                 MemoryRegionFlags::READ => Ok(WHvMapGpaRangeFlagRead),
                 MemoryRegionFlags::WRITE => Ok(WHvMapGpaRangeFlagWrite),
                 MemoryRegionFlags::EXECUTE => Ok(WHvMapGpaRangeFlagExecute),
-                MemoryRegionFlags::STACK_GUARD => Ok(WHvMapGpaRangeFlagNone),
                 _ => Err(MapMemoryError::InvalidFlags(format!(
                     "Invalid memory region flag: {:?}",
                     flag

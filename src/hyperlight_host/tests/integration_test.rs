@@ -704,13 +704,13 @@ fn log_message() {
     //  - internal_dispatch_function does a log::trace! in debug mode
     //  - logs from trace level tracing spans created as logs because of the tracing `log` feature
     //    - 4 from evolve call (hyperlight_main + halt)
-    //    - 16 from guest call (internal_dispatch_function + others)
+    //    - 12 from guest call (internal_dispatch_function + others)
     // and are multiplied because we make 6 calls to `log_test_messages`
     // NOTE: These numbers need to be updated if log messages or spans are added/removed
     let num_fixed_trace_log = if cfg!(debug_assertions) {
-        (1 + 20) * 6
+        (1 + 16) * 6
     } else {
-        20 * 6
+        16 * 6
     };
 
     let tests = vec![

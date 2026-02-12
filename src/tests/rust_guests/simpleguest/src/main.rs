@@ -41,6 +41,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
+use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
@@ -582,8 +583,18 @@ fn read_mapped_buffer(base: u64, len: u64, do_map: bool) -> Vec<u8> {
 
     if do_map {
         unsafe {
-            hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096)
-        };
+            hyperlight_guest_bin::paging::map_region(
+                base as _,
+                base as _,
+                len as u64 + 4096,
+                MappingKind::Basic(BasicMapping {
+                    readable: true,
+                    writable: true,
+                    executable: true,
+                }),
+            );
+            hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
+        }
     }
 
     let data = unsafe { core::slice::from_raw_parts(base, len) };
@@ -603,7 +614,19 @@ fn write_mapped_buffer(base: u64, len: u64) -> bool {
     let base = base as usize as *mut u8;
     let len = len as usize;
 
-    unsafe { hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096) };
+    unsafe {
+        hyperlight_guest_bin::paging::map_region(
+            base as _,
+            base as _,
+            len as u64 + 4096,
+            MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: true,
+            }),
+        );
+        hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
+    };
 
     let data = unsafe { core::slice::from_raw_parts_mut(base, len) };
 
@@ -619,7 +642,19 @@ fn exec_mapped_buffer(base: u64, len: u64) -> bool {
     let base = base as usize as *mut u8;
     let len = len as usize;
 
-    unsafe { hyperlight_guest_bin::paging::map_region(base as _, base as _, len as u64 + 4096) };
+    unsafe {
+        hyperlight_guest_bin::paging::map_region(
+            base as _,
+            base as _,
+            len as u64 + 4096,
+            MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: true,
+            }),
+        );
+        hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
+    };
 
     let data = unsafe { core::slice::from_raw_parts(base, len) };
 

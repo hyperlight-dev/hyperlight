@@ -62,11 +62,13 @@ impl SandboxSize {
             Self::Medium => {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(MEDIUM_HEAP_SIZE);
+                cfg.set_scratch_size(0x50000);
                 Some(cfg)
             }
             Self::Large => {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(LARGE_HEAP_SIZE);
+                cfg.set_scratch_size(0x100000);
                 Some(cfg)
             }
         }
@@ -386,6 +388,7 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         let mut config = SandboxConfiguration::default();
         config.set_input_data_size(2 * SIZE + (1024 * 1024)); // 2 * SIZE + 1 MB, to allow 1MB for the rest of the serialized function call
         config.set_heap_size(SIZE as u64 * 15);
+        config.set_scratch_size(6 * SIZE + 4 * (1024 * 1024)); // Big enough for the IO data regions and enough of the heap to be used
 
         let sandbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().unwrap()),
@@ -397,7 +400,7 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         b.iter(|| {
             sandbox
                 .call::<()>("LargeParameters", (large_vec.clone(), large_string.clone()))
-                .unwrap()
+                .unwrap();
         });
     });
 

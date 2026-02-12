@@ -22,7 +22,6 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, Functi
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-use hyperlight_guest::exit::halt;
 use tracing::{Span, instrument};
 
 use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
@@ -79,14 +78,8 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
     }
 }
 
-// This function is marked as no_mangle/inline to prevent the compiler from inlining it , if its inlined the epilogue will not be called
-// and we will leak memory as the epilogue will not be called as halt() is not going to return.
-//
-// This function may panic, as we have no other ways of dealing with errors at this level
-#[unsafe(no_mangle)]
-#[inline(never)]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-fn internal_dispatch_function() {
+pub(crate) fn internal_dispatch_function() {
     let handle = unsafe { GUEST_HANDLE };
 
     #[cfg(debug_assertions)]
@@ -114,35 +107,4 @@ fn internal_dispatch_function() {
                 .expect("Failed to serialize function call result");
         }
     }
-}
-
-// This is implemented as a separate function to make sure that epilogue in the internal_dispatch_function is called before the halt()
-// which if it were included in the internal_dispatch_function cause the epilogue to not be called because the halt() would not return
-// when running in the hypervisor.
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub(crate) extern "C" fn dispatch_function() {
-    // The hyperlight host likes to use one partition and reset it in
-    // various ways; if that has happened, there might stale TLB
-    // entries hanging around from the former user of the
-    // partition. Flushing the TLB here is not quite the right thing
-    // to do, since incorrectly cached entries could make even this
-    // code not exist, but regrettably there is not a simple way for
-    // the host to trigger flushing when it ought to happen, so for
-    // now this works in practice, since the text segment is always
-    // part of the big identity-mapped region at the base of the
-    // guest.
-    crate::paging::flush_tlb();
-
-    // Read the current TSC to report it to the host with the spans/events
-    // This helps calculating the timestamps relative to the guest call
-    #[cfg(feature = "trace_guest")]
-    {
-        let guest_start_tsc = hyperlight_guest_tracing::invariant_tsc::read_tsc();
-        // Reset the trace state for the new guest function call with the new start TSC
-        // This clears any existing spans/events from previous calls ensuring a clean state
-        hyperlight_guest_tracing::new_call(guest_start_tsc);
-    }
-
-    internal_dispatch_function();
-    halt();
 }

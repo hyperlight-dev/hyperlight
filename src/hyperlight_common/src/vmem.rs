@@ -180,16 +180,23 @@ pub trait TableOps: TableReadOps {
     );
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct BasicMapping {
     pub readable: bool,
     pub writable: bool,
     pub executable: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct CowMapping {
+    pub readable: bool,
+    pub executable: bool,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum MappingKind {
-    BasicMapping(BasicMapping),
+    Basic(BasicMapping),
+    Cow(CowMapping),
     /* TODO: What useful things other than basic mappings actually
      * require touching the tables? */
 }

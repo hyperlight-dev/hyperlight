@@ -37,6 +37,8 @@ pub const MAX_GPA: usize = 0x0000_000f_ffff_ffff;
 /// - A page for the smallest possible non-exception stack
 /// - (up to) 3 pages for mapping that
 /// - Two pages for the exception stack and metadata
-pub fn min_scratch_size() -> usize {
-    12 * crate::vmem::PAGE_SIZE
+/// - A page-aligned amount of memory for I/O buffers (for now)
+pub fn min_scratch_size(input_data_size: usize, output_data_size: usize) -> usize {
+    (input_data_size + output_data_size).next_multiple_of(crate::vmem::PAGE_SIZE)
+        + 12 * crate::vmem::PAGE_SIZE
 }

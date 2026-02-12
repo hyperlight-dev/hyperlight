@@ -68,6 +68,7 @@ use crate::metrics::{METRIC_ERRONEOUS_VCPU_KICKS, METRIC_GUEST_CANCELLATION};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
 use crate::sandbox::outb::{HandleOutbError, handle_outb};
+use crate::sandbox::snapshot::NextAction;
 #[cfg(feature = "mem_profile")]
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
@@ -85,7 +86,7 @@ pub(crate) struct HyperlightVm {
     #[cfg(not(gdb))]
     vm: Box<dyn VirtualMachine>,
     page_size: usize,
-    entrypoint: Option<u64>, // only present if this vm has not yet been initialised
+    entrypoint: NextAction, // only present if this vm has not yet been initialised
     rsp_gva: u64,
     interrupt_handle: Arc<dyn InterruptHandleImpl>,
 
@@ -102,6 +103,8 @@ pub(crate) struct HyperlightVm {
     scratch_memory: Option<GuestSharedMemory>,
 
     mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
+
+    pending_tlb_flush: bool,
 
     #[cfg(gdb)]
     gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -120,6 +123,8 @@ pub enum DispatchGuestCallError {
     Run(#[from] RunVmError),
     #[error("Failed to setup registers: {0}")]
     SetupRegs(RegisterError),
+    #[error("VM was uninitialized")]
+    Uninitialized,
 }
 
 impl DispatchGuestCallError {
@@ -129,7 +134,7 @@ impl DispatchGuestCallError {
             // These errors poison the sandbox because they can leave it in an inconsistent state
             // by returning before the guest can unwind properly
             DispatchGuestCallError::Run(_) => true,
-            DispatchGuestCallError::SetupRegs(_) => false,
+            DispatchGuestCallError::SetupRegs(_) | DispatchGuestCallError::Uninitialized => false,
         }
     }
 
@@ -338,7 +343,7 @@ impl HyperlightVm {
         snapshot_mem: GuestSharedMemory,
         scratch_mem: GuestSharedMemory,
         _pml4_addr: u64,
-        entrypoint: Option<u64>,
+        entrypoint: NextAction,
         rsp_gva: u64,
         #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
@@ -418,6 +423,8 @@ impl HyperlightVm {
 
             mmap_regions: Vec::new(),
 
+            pending_tlb_flush: false,
+
             #[cfg(gdb)]
             gdb_conn,
             #[cfg(gdb)]
@@ -438,9 +445,9 @@ impl HyperlightVm {
             ret.send_dbg_msg(DebugResponse::InterruptHandle(ret.interrupt_handle.clone()))?;
             // Add breakpoint to the entry point address, if we are going to initialise
             ret.vm.set_debug(true).map_err(VmError::Debug)?;
-            if let Some(entrypoint) = entrypoint {
+            if let NextAction::Initialise(initialise) = entrypoint {
                 ret.vm
-                    .add_hw_breakpoint(entrypoint)
+                    .add_hw_breakpoint(initialise)
                     .map_err(CreateHyperlightVmError::AddHwBreakpoint)?;
             }
         }
@@ -462,7 +469,7 @@ impl HyperlightVm {
         guest_max_log_level: Option<LevelFilter>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), InitializeError> {
-        let Some(entrypoint) = self.entrypoint else {
+        let NextAction::Initialise(initialise) = self.entrypoint else {
             return Ok(());
         };
 
@@ -474,7 +481,7 @@ impl HyperlightVm {
         };
 
         let regs = CommonRegisters {
-            rip: entrypoint,
+            rip: initialise,
             // We usually keep the top of the stack 16-byte
             // aligned. However, the ABI requirement is that the stack
             // be aligned _before a call instruction_, which means
@@ -508,6 +515,7 @@ impl HyperlightVm {
             return Err(InitializeError::InvalidStackPointer(regs.rsp));
         }
         self.rsp_gva = regs.rsp;
+        self.entrypoint = NextAction::Call(regs.rax);
 
         Ok(())
     }
@@ -631,6 +639,16 @@ impl HyperlightVm {
         self.rsp_gva = gva;
     }
 
+    /// Get the current entrypoint action
+    pub(crate) fn get_entrypoint(&mut self) -> NextAction {
+        self.entrypoint
+    }
+
+    /// Set the current entrypoint action
+    pub(crate) fn set_entrypoint(&mut self, entrypoint: NextAction) {
+        self.entrypoint = entrypoint
+    }
+
     /// Dispatch a call from the host to the guest using the given pointer
     /// to the dispatch function _in the guest's address space_.
     ///
@@ -641,22 +659,32 @@ impl HyperlightVm {
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn dispatch_call_from_host(
         &mut self,
-        dispatch_func_addr: RawPtr,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
         #[cfg(gdb)] dbg_mem_access_fn: Arc<Mutex<SandboxMemoryManager<HostSharedMemory>>>,
     ) -> std::result::Result<(), DispatchGuestCallError> {
+        let NextAction::Call(dispatch_func_addr) = self.entrypoint else {
+            return Err(DispatchGuestCallError::Uninitialized);
+        };
+        let mut rflags = 1 << 1; // RFLAGS.1 is RES1
+        if self.pending_tlb_flush {
+            rflags |= 1 << 6; // set ZF if we need a tlb flush done before anything else executes
+            self.pending_tlb_flush = false;
+        }
         // set RIP and RSP, reset others
         let regs = CommonRegisters {
-            rip: dispatch_func_addr.into(),
+            rip: dispatch_func_addr,
             // We usually keep the top of the stack 16-byte
-            // aligned. However, the ABI requirement is that the stack
-            // be aligned _before a call instruction_, which means
-            // that the stack needs to actually be ≡ 8 mod 16 at the
-            // first instruction (since, on x64, a call instruction
-            // automatically pushes a return address).
-            rsp: self.rsp_gva - 8,
-            rflags: 1 << 1,
+            // aligned. Since the usual ABI requirement is that the
+            // stack be aligned _before a call instruction_, one might
+            // expect that the stack pointer here needs to actually be
+            // ≡ 8 mod 16 at the first instruction (since, on x64, a
+            // call instruction automatically pushes a return
+            // address).  However, the x64 entry stub in
+            // hyperlight_guest::arch::dispatch handles this itself,
+            // so we do use the aligned address here.
+            rsp: self.rsp_gva,
+            rflags,
             ..Default::default()
         };
         self.vm
@@ -755,13 +783,13 @@ impl HyperlightVm {
             match exit_reason {
                 #[cfg(gdb)]
                 Ok(VmExit::Debug { dr6, exception }) => {
+                    let initialise = match self.entrypoint {
+                        NextAction::Initialise(initialise) => initialise,
+                        _ => 0,
+                    };
                     // Handle debug event (breakpoints)
-                    let stop_reason = arch::vcpu_stop_reason(
-                        self.vm.as_mut(),
-                        dr6,
-                        self.entrypoint.unwrap_or(0),
-                        exception,
-                    )?;
+                    let stop_reason =
+                        arch::vcpu_stop_reason(self.vm.as_mut(), dr6, initialise, exception)?;
                     if let Err(e) = self.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
                         break Err(e.into());
                     }
@@ -912,7 +940,7 @@ impl HyperlightVm {
     /// - Special registers (restored from snapshot, with CR3 updated to new page table location)
     // TODO: check if other state needs to be reset
     pub(crate) fn reset_vcpu(
-        &self,
+        &mut self,
         cr3: u64,
         sregs: &CommonSpecialRegisters,
     ) -> std::result::Result<(), RegisterError> {
@@ -929,6 +957,7 @@ impl HyperlightVm {
             // to point to the new (relocated) page tables
             let mut sregs = *sregs;
             sregs.cr3 = cr3;
+            self.pending_tlb_flush = true;
             self.vm.set_sregs(&sregs)?;
         }
         #[cfg(not(feature = "init-paging"))]
@@ -1133,6 +1162,11 @@ impl HyperlightVm {
                     .and_then(|name| name.to_os_string().into_string().ok())
             });
 
+            let initialise = match self.entrypoint {
+                NextAction::Initialise(initialise) => initialise,
+                _ => 0,
+            };
+
             // Include dynamically mapped regions
             // TODO: include the snapshot and scratch regions
             let regions: Vec<MemoryRegion> = self.get_mapped_regions().cloned().collect();
@@ -1140,7 +1174,7 @@ impl HyperlightVm {
                 regions,
                 regs,
                 xsave.to_vec(),
-                self.entrypoint.unwrap_or(0),
+                initialise,
                 self.rt_cfg.binary_path.clone(),
                 filename,
             )))
@@ -1471,7 +1505,6 @@ mod tests {
     use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegionFlags};
     use crate::mem::mgr::{GuestPageTableBuffer, SandboxMemoryManager};
     use crate::mem::ptr::RawPtr;
-    use crate::mem::ptr_offset::Offset;
     use crate::mem::shared_mem::ExclusiveSharedMemory;
     use crate::sandbox::SandboxConfiguration;
     use crate::sandbox::host_funcs::FunctionRegistry;
@@ -2020,11 +2053,10 @@ mod tests {
         #[cfg(any(crashdump, gdb))]
         let rt_cfg: SandboxRuntimeConfig = Default::default();
 
-        let mut layout =
-            SandboxMemoryLayout::new(config, code.len(), 4096, 4096, 0x3000, None).unwrap();
+        let mut layout = SandboxMemoryLayout::new(config, code.len(), 4096, None).unwrap();
 
-        let pt_base_gpa = SandboxMemoryLayout::BASE_ADDRESS + layout.get_pt_offset();
-        let pt_buf = GuestPageTableBuffer::new(pt_base_gpa);
+        let pt_base_gpa = layout.get_pt_base_gpa();
+        let pt_buf = GuestPageTableBuffer::new(pt_base_gpa as usize);
 
         for rgn in layout
             .get_memory_regions_::<GuestMemoryRegion>(())
@@ -2032,36 +2064,19 @@ mod tests {
             .iter()
         {
             let readable = rgn.flags.contains(MemoryRegionFlags::READ);
-            let writable = rgn.flags.contains(MemoryRegionFlags::WRITE)
-                || rgn.flags.contains(MemoryRegionFlags::STACK_GUARD);
+            let writable = rgn.flags.contains(MemoryRegionFlags::WRITE);
             let executable = rgn.flags.contains(MemoryRegionFlags::EXECUTE);
             let mapping = Mapping {
                 phys_base: rgn.guest_region.start as u64,
                 virt_base: rgn.guest_region.start as u64,
                 len: rgn.guest_region.len() as u64,
-                kind: MappingKind::BasicMapping(BasicMapping {
+                kind: MappingKind::Basic(BasicMapping {
                     readable,
                     writable,
                     executable,
                 }),
             };
             unsafe { vmem::map(&pt_buf, mapping) };
-        }
-
-        let mut pt_size_mapped = 0;
-        while pt_buf.size() > pt_size_mapped {
-            let mapping = Mapping {
-                phys_base: (pt_base_gpa + pt_size_mapped) as u64,
-                virt_base: (hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN + pt_size_mapped) as u64,
-                len: (pt_buf.size() - pt_size_mapped) as u64,
-                kind: MappingKind::BasicMapping(BasicMapping {
-                    readable: true,
-                    writable: true,
-                    executable: false,
-                }),
-            };
-            unsafe { vmem::map(&pt_buf, mapping) };
-            pt_size_mapped = pt_buf.size();
         }
 
         // Map the scratch region at the top of the address space
@@ -2072,7 +2087,7 @@ mod tests {
             phys_base: scratch_gpa,
             virt_base: scratch_gva,
             len: scratch_size as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
                 executable: true, // Match regular codepath (map_specials)
@@ -2080,40 +2095,22 @@ mod tests {
         };
         unsafe { vmem::map(&pt_buf, scratch_mapping) };
 
-        // Re-map page tables if they grew from scratch mapping
-        while pt_buf.size() > pt_size_mapped {
-            let mapping = Mapping {
-                phys_base: (pt_base_gpa + pt_size_mapped) as u64,
-                virt_base: (hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN + pt_size_mapped) as u64,
-                len: (pt_buf.size() - pt_size_mapped) as u64,
-                kind: MappingKind::BasicMapping(BasicMapping {
-                    readable: true,
-                    writable: true,
-                    executable: false,
-                }),
-            };
-            unsafe { vmem::map(&pt_buf, mapping) };
-            pt_size_mapped = pt_buf.size();
-        }
-
         let pt_bytes = pt_buf.into_bytes();
-        layout.set_pt_size(pt_bytes.len());
+        layout.set_pt_size(pt_bytes.len()).unwrap();
 
         let mem_size = layout.get_memory_size().unwrap();
         let mut eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
-        eshm.copy_from_slice(&pt_bytes, layout.get_pt_offset())
-            .unwrap();
+        let snapshot_pt_start = mem_size - layout.get_pt_size();
+        eshm.copy_from_slice(&pt_bytes, snapshot_pt_start).unwrap();
         eshm.copy_from_slice(code, layout.get_guest_code_offset())
             .unwrap();
 
-        let load_addr = RawPtr::from(layout.get_guest_code_address() as u64);
         let scratch_mem = ExclusiveSharedMemory::new(config.get_scratch_size()).unwrap();
         let mut mem_mgr = SandboxMemoryManager::new(
             layout,
             eshm,
             scratch_mem,
-            load_addr,
-            Some(Offset::from(0u64)),
+            NextAction::Initialise(layout.get_guest_code_address() as u64),
         );
         mem_mgr.write_memory_layout().unwrap();
 
@@ -2176,7 +2173,7 @@ mod tests {
     fn reset_vcpu_simple() {
         // push rax; hlt - aligns stack to 16 bytes
         const CODE: [u8; 2] = [0x50, 0xf4];
-        let hyperlight_vm = hyperlight_vm(&CODE);
+        let mut hyperlight_vm = hyperlight_vm(&CODE);
         let available_hv = *get_available_hypervisor().as_ref().unwrap();
 
         // Get the initial CR3 value before dirtying sregs
@@ -2339,7 +2336,7 @@ mod tests {
             a.hlt().unwrap();
             let code = a.assemble(0).unwrap();
 
-            let hyperlight_vm = hyperlight_vm(&code);
+            let mut hyperlight_vm = hyperlight_vm(&code);
 
             // After run, check registers match expected dirty state
             let regs = hyperlight_vm.vm.regs().unwrap();
@@ -2441,7 +2438,7 @@ mod tests {
             a.hlt().unwrap();
             let code = a.assemble(0).unwrap();
 
-            let hyperlight_vm = hyperlight_vm(&code);
+            let mut hyperlight_vm = hyperlight_vm(&code);
 
             // After run, check FPU state matches expected dirty values
             let fpu = hyperlight_vm.vm.fpu().unwrap();
@@ -2526,7 +2523,7 @@ mod tests {
             a.hlt().unwrap();
             let code = a.assemble(0).unwrap();
 
-            let hyperlight_vm = hyperlight_vm(&code);
+            let mut hyperlight_vm = hyperlight_vm(&code);
 
             // Verify debug registers are dirty
             let debug_regs = hyperlight_vm.vm.debug_regs().unwrap();
@@ -2572,7 +2569,7 @@ mod tests {
             a.hlt().unwrap();
             let code = a.assemble(0).unwrap();
 
-            let hyperlight_vm = hyperlight_vm(&code);
+            let mut hyperlight_vm = hyperlight_vm(&code);
 
             // Get the initial CR3 value and expected defaults
             let initial_cr3 = hyperlight_vm.vm.sregs().unwrap().cr3;
@@ -2632,8 +2629,11 @@ mod tests {
 
             // Re-run from entrypoint (flag=1 means guest skips dirty phase, just does FXSAVE)
             // Use stack_top - 8 to match initialise()'s behavior (simulates call pushing return addr)
+            let NextAction::Call(rip) = ctx.ctx.vm.entrypoint else {
+                panic!("entrypoint should be call");
+            };
             let regs = CommonRegisters {
-                rip: ctx.ctx.vm.entrypoint.expect("entrypoint should be set"),
+                rip,
                 rsp: ctx.stack_top_gva() - 8,
                 rflags: 1 << 1,
                 ..Default::default()
@@ -2715,7 +2715,7 @@ mod tests {
                 let mut fxsave = [0u8; 512];
                 self.ctx
                     .hshm
-                    .shared_mem
+                    .scratch_mem
                     .copy_to_slice(&mut fxsave, self.fxsave_offset)
                     .unwrap();
                 fxsave
@@ -2738,9 +2738,9 @@ mod tests {
             // These are in the output_data region which starts at a known offset.
             // We use a default SandboxConfiguration to get the same layout as create_test_vm_context.
             let config: SandboxConfiguration = Default::default();
-            let layout = SandboxMemoryLayout::new(config, 512, 4096, 4096, 0x3000, None).unwrap();
-            let fxsave_offset = layout.get_output_data_offset();
-            let fxsave_gva = (SandboxMemoryLayout::BASE_ADDRESS + fxsave_offset) as u64;
+            let layout = SandboxMemoryLayout::new(config, 512, 4096, None).unwrap();
+            let fxsave_offset = layout.get_output_data_buffer_scratch_host_offset();
+            let fxsave_gva = layout.get_output_data_buffer_gva();
             let flag_gva = fxsave_gva + 512;
 
             let mut a = CodeAssembler::new(64).unwrap();
@@ -2790,6 +2790,9 @@ mod tests {
             a.set_label(&mut skip_dirty).unwrap();
             a.mov(rax, fxsave_gva).unwrap();
             a.fxsave(ptr(rax)).unwrap();
+
+            // Return dispatch ptr
+            a.mov(rax, layout.get_guest_code_address() as u64).unwrap();
 
             a.hlt().unwrap();
 

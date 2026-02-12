@@ -29,30 +29,26 @@ use hyperlight_guest::prim_alloc::alloc_phys_pages;
 
 #[derive(Copy, Clone)]
 struct GuestMappingOperations {
-    snapshot_pt_base_gpa: u64,
-    snapshot_pt_base_gva: u64,
     scratch_base_gpa: u64,
     scratch_base_gva: u64,
 }
 impl GuestMappingOperations {
     fn new() -> Self {
         Self {
-            snapshot_pt_base_gpa: unsafe {
-                hyperlight_guest::layout::snapshot_pt_gpa_base_gva().read_volatile()
-            },
-            snapshot_pt_base_gva: hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64,
             scratch_base_gpa: hyperlight_guest::layout::scratch_base_gpa(),
             scratch_base_gva: hyperlight_guest::layout::scratch_base_gva(),
         }
     }
-    fn phys_to_virt(&self, addr: u64) -> *mut u8 {
+    fn fallible_phys_to_virt(&self, addr: u64) -> Option<*mut u8> {
         if addr >= self.scratch_base_gpa {
-            (self.scratch_base_gva + (addr - self.scratch_base_gpa)) as *mut u8
-        } else if addr >= self.snapshot_pt_base_gpa {
-            (self.snapshot_pt_base_gva + (addr - self.snapshot_pt_base_gpa)) as *mut u8
+            Some((self.scratch_base_gva + (addr - self.scratch_base_gpa)) as *mut u8)
         } else {
-            panic!("phys_to_virt encountered snapshot non-PT page")
+            None
         }
+    }
+    fn phys_to_virt(&self, addr: u64) -> *mut u8 {
+        self.fallible_phys_to_virt(addr)
+            .expect("phys_to_virt encountered snapshot non-PT page")
     }
 }
 // for virt_to_phys
@@ -90,6 +86,11 @@ impl vmem::TableReadOps for GuestMappingOperations {
 }
 
 impl vmem::TableOps for GuestMappingOperations {
+    // Currently, we don't actually move tables anywhere on amd64
+    // because of issues with guest PTs in IPAs that are mapped
+    // readonly in Stage 2 translation. However, this code all works
+    // and will re-enabled as soon as there is improved
+    // architecture/hypervisor support.
     type TableMovability = vmem::MayMoveTable;
     unsafe fn alloc_table(&self) -> u64 {
         let page_addr = unsafe { alloc_phys_pages(1) };
@@ -100,26 +101,11 @@ impl vmem::TableOps for GuestMappingOperations {
         page_addr
     }
     unsafe fn write_entry(&self, addr: u64, entry: u64) -> Option<u64> {
-        let mut addr = addr;
-        let mut ret = None;
-        if addr >= self.snapshot_pt_base_gpa && addr < self.scratch_base_gpa {
-            // This needs to be CoW'd over to the scratch region
-            unsafe {
-                let new_table = alloc_phys_pages(1);
-                core::ptr::copy(
-                    self.phys_to_virt(addr & !0xfff),
-                    self.phys_to_virt(new_table),
-                    vmem::PAGE_TABLE_SIZE,
-                );
-                addr = new_table | (addr & 0xfff);
-                ret = Some(new_table);
-            }
-        }
         let addr = self.phys_to_virt(addr);
         unsafe {
             asm!("mov qword ptr [{}], {}", in(reg) addr, in(reg) entry);
         }
-        ret
+        None
     }
     unsafe fn update_root(&self, new_root: u64) {
         unsafe {
@@ -137,7 +123,7 @@ impl vmem::TableOps for GuestMappingOperations {
 ///   as such do not use concurrently with any other page table operations
 /// - TLB invalidation is not performed,
 ///   if previously-unmapped ranges are not being mapped, TLB invalidation may need to be performed afterwards.
-pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
+pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64, kind: vmem::MappingKind) {
     unsafe {
         vmem::map(
             &GuestMappingOperations::new(),
@@ -145,37 +131,71 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64) {
                 phys_base,
                 virt_base: virt_base as u64,
                 len,
-                kind: vmem::MappingKind::BasicMapping(vmem::BasicMapping {
-                    readable: true,
-                    writable: true,
-                    executable: true,
-                }),
+                kind,
             },
         );
     }
 }
 
-pub fn virt_to_phys(
-    gva: u64,
-) -> impl Iterator<Item = (vmem::VirtAddr, vmem::PhysAddr, vmem::BasicMapping)> {
+pub fn virt_to_phys(gva: vmem::VirtAddr) -> impl Iterator<Item = vmem::Mapping> {
     unsafe { vmem::virt_to_phys::<_>(GuestMappingOperations::new(), gva, 1) }
 }
 
-pub fn flush_tlb() {
-    // Currently this just always flips CR4.PGE back and forth to
-    // trigger a tlb flush. We should use a faster approach where
-    // available
-    let mut orig_cr4: u64;
-    unsafe {
-        asm!("mov {}, cr4", out(reg) orig_cr4);
-    }
-    let tmp_cr4: u64 = orig_cr4 ^ (1 << 7); // CR4.PGE
-    unsafe {
-        asm!(
-            "mov cr4, {}",
-            "mov cr4, {}",
-            in(reg) tmp_cr4,
-            in(reg) orig_cr4
-        );
+pub fn phys_to_virt(gpa: vmem::PhysAddr) -> Option<*mut u8> {
+    GuestMappingOperations::new().fallible_phys_to_virt(gpa)
+}
+
+/// Barriers that other code may need to use when updating page tables
+pub mod barrier {
+    /// Call this function when a virtual address has just been made
+    /// valid for the first time after the last tlb invalidate that
+    /// affected it, and it will be used for the first time in the
+    /// same execution context as has made the modification.
+    ///
+    /// On most architectures, TLBs will not cache invalid entries, so
+    /// this does not need to issue a TLB. However, it does need to
+    /// ensure coherency between the previous writes and any future
+    /// uses by a page table walker.
+    ///
+    /// # Architecture-specific (amd64) notes
+    ///
+    /// The exact details around page walk coherency on amd64 seem a
+    /// bit fuzzy. The Intel manual notes that a serialising
+    /// instruction is necessary specifically to synchronise table
+    /// walks performed during instruction fetch [1], but is
+    /// relatively quiet about other page walks. The AMD manual notes
+    /// [2] that "a table entry is allowed to be upgraded (by marking
+    /// it as present, or by removing its write, execute or supervisor
+    /// restrictions) without explicitly maintaining TLB coherency",
+    /// but only states that TLB any upper-level TLB cache entries
+    /// will be flushed before re-walking to confirm the fault, which
+    /// does not clearly seem strong enough.
+    ///
+    /// In some limited testing, `mfence` typically seems to be
+    /// enough, but as it is not a serializing instruction on Intel
+    /// platforms, we assume it may not be quite good enough.  `cpuid`
+    /// is likely to be very slow, since we are definitely running
+    /// under a hypervisor (and often even nested). Currently, for
+    /// simplicity's sake, this just copies cr0 to itself, but other
+    /// options (including the `serialize` instruction where
+    /// available) could be worth exploring.
+    ///
+    /// [1] Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 3: System Programming Guide
+    ///         Chapter 5: Paging
+    ///             §5.10: Caching Translation Information
+    ///                 §5.10.4: Invalidation of TLBs and Paging-Structure Caches
+    ///                     §5.10.4.3: Optional Invalidation
+    /// [2] AMD64 Architecture Programmer's Manual, Volume 2: System Programming
+    ///         Section 5: Page Translation and Protection
+    ///             §5.5: Translation-Lookaside Buffer
+    ///                 §5.5.3: TLB Management
+    #[inline(always)]
+    pub fn first_valid_same_ctx() {
+        unsafe {
+            core::arch::asm!("
+                mov rax, cr0
+                mov cr0, rax
+            ", out("rax") _, out("rcx") _);
+        }
     }
 }

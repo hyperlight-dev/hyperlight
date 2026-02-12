@@ -48,8 +48,6 @@ bitflags! {
         const WRITE = 2;
         /// allow guest to execute
         const EXECUTE = 4;
-        /// identifier that this is a stack guard page
-        const STACK_GUARD = 8;
     }
 }
 
@@ -118,20 +116,12 @@ impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 /// The type of memory region
 pub enum MemoryRegionType {
-    /// The region contains the guest's page tables
-    PageTables,
     /// The region contains the guest's code
     Code,
     /// The region contains the guest's init data
     InitData,
     /// The region contains the PEB
     Peb,
-    /// The region contains the Host Function Definitions
-    HostFunctionDefinitions,
-    /// The region contains the Input Data
-    InputData,
-    /// The region contains the Output Data
-    OutputData,
     /// The region contains the Heap
     Heap,
     /// The region contains the Guard Page

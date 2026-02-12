@@ -25,8 +25,7 @@ use super::uninitialized::SandboxRuntimeConfig;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::exe::LoadInfo;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::ptr::{GuestPtr, RawPtr};
-use crate::mem::ptr_offset::Offset;
+use crate::mem::ptr::RawPtr;
 use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
@@ -34,7 +33,7 @@ use crate::sandbox::config::DebugInfo;
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(target_os = "linux")]
 use crate::signal_handlers::setup_signal_handlers;
-use crate::{MultiUseSandbox, Result, UninitializedSandbox, new_error};
+use crate::{MultiUseSandbox, Result, UninitializedSandbox};
 
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
 pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<MultiUseSandbox> {
@@ -77,13 +76,6 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
     )
     .map_err(HyperlightVmError::Initialize)?;
 
-    let dispatch_function_addr = hshm.get_pointer_to_dispatch_function()?;
-    if dispatch_function_addr == 0 {
-        return Err(new_error!("Dispatch function address is null"));
-    }
-
-    let dispatch_ptr = RawPtr::from(dispatch_function_addr);
-
     #[cfg(gdb)]
     let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
 
@@ -91,7 +83,6 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         u_sbox.host_funcs,
         hshm,
         vm,
-        dispatch_ptr,
         #[cfg(gdb)]
         dbg_mem_wrapper,
     ))
@@ -104,20 +95,6 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
-    let base_ptr = GuestPtr::try_from(Offset::from(0))?;
-
-    let pml4_ptr = {
-        let pml4_offset_u64 = mgr.layout.get_pt_offset() as u64;
-        base_ptr + Offset::from(pml4_offset_u64)
-    };
-    let entrypoint_ptr = mgr
-        .entrypoint_offset
-        .map(|x| {
-            let entrypoint_total_offset = mgr.load_addr.clone() + x;
-            GuestPtr::try_from(entrypoint_total_offset).and_then(|x| x.absolute())
-        })
-        .transpose()?;
-
     // Create gdb thread if gdb is enabled and the configuration is provided
     #[cfg(gdb)]
     let gdb_conn = if let Some(DebugInfo { port }) = rt_cfg.debug_info {
@@ -145,8 +122,8 @@ pub(crate) fn set_up_hypervisor_partition(
     Ok(HyperlightVm::new(
         mgr.shared_mem,
         mgr.scratch_mem,
-        pml4_ptr.absolute()?,
-        entrypoint_ptr,
+        mgr.layout.get_pt_base_gpa(),
+        mgr.entrypoint,
         stack_top_gva,
         config,
         #[cfg(gdb)]

@@ -17,7 +17,7 @@ limitations under the License.
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::layout::{scratch_base_gpa, scratch_base_gva};
-use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
+use hyperlight_common::vmem::{self, BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE};
 use tracing::{Span, instrument};
 
 use crate::HyperlightError::MemoryRegionSizeMismatch;
@@ -32,6 +32,29 @@ use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
 
 pub(super) static SANDBOX_CONFIGURATION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Presently, a snapshot can be of a preinitialised sandbox, which
+/// still needs an initialise function called in order to determine
+/// how to call into it, or of an already-properly-initialised sandbox
+/// which can be immediately called into. This keeps track of the
+/// difference.
+///
+/// TODO: this should not necessarily be around in the long term:
+/// ideally we would just preinitialise earlier in the snapshot
+/// creation process and never need this.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum NextAction {
+    /// A sandbox in the preinitialise state still needs to be
+    /// initialised by calling the initialise function
+    Initialise(u64),
+    /// A sandbox in the ready state can immediately be called into,
+    /// using the dispatch function pointer.
+    Call(u64),
+    /// Only when compiling for tests: a sandbox that cannot actually
+    /// be used
+    #[cfg(test)]
+    None,
+}
 
 /// A wrapper around a `SharedMemory` reference and a snapshot
 /// of the memory therein
@@ -67,32 +90,18 @@ pub struct Snapshot {
     /// It is not a [`blake3::Hash`] because we do not presently
     /// require constant-time equality checking
     hash: [u8; 32],
-    /// The address of the root page table
-    root_pt_gpa: u64,
     /// The address of the top of the guest stack
     stack_top_gva: u64,
 
     /// Special register state captured from the vCPU during snapshot.
-    /// None for snapshots created directly from a binary (before guest runs).
-    /// Some for snapshots taken from a running sandbox.
-    /// Note: CR3 in this struct is NOT used on restore - instead, the new
-    /// root_pt_gpa field is used since page tables are relocated during snapshot.
+    /// None for snapshots created directly from a binary (before
+    /// guest runs).  Some for snapshots taken from a running sandbox.
+    /// Note: CR3 in this struct is NOT used on restore, since page
+    /// tables are relocated during snapshot.
     sregs: Option<CommonSpecialRegisters>,
 
-    /// Preinitialisation entry point for snapshots created directly from a
-    /// guest binary.
-    ///
-    /// When creating a snapshot directly from a guest binary, this tracks
-    /// the address that we need to call into before actually using a
-    /// sandbox from this snapshot in order to perform guest-side
-    /// preinitialisation.
-    ///
-    /// Long-term, the intention is to run this preinitialisation eagerly as
-    /// part of the snapshot creation process so that restored sandboxes can
-    /// begin executing from their normal entry point without requiring this
-    /// field. Until that refactoring happens, this remains part of the
-    /// snapshot format and must be preserved.
-    preinitialise: Option<u64>,
+    /// The next action that should be performed on this snapshot
+    entrypoint: NextAction,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
     fn as_ref(&self) -> &Self {
@@ -126,7 +135,7 @@ impl hyperlight_common::vmem::TableReadOps for Snapshot {
         addr
     }
     fn root_table(&self) -> u64 {
-        self.root_pt_gpa
+        self.root_pt_gpa()
     }
 }
 
@@ -243,25 +252,26 @@ fn filtered_mappings<'a>(
     regions: &[MemoryRegion],
     scratch_size: usize,
     root_pt: u64,
-) -> Vec<(u64, u64, BasicMapping, &'a [u8])> {
+) -> Vec<(Mapping, &'a [u8])> {
     let op = SharedMemoryPageTableBuffer::new(snap, scratch, scratch_size, root_pt);
     unsafe {
         hyperlight_common::vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64)
     }
-    .filter_map(move |(gva, gpa, bm)| {
+    .filter_map(move |mapping| {
         // the scratch map doesn't count
-        if gva >= scratch_base_gva(scratch_size) {
+        if mapping.virt_base >= scratch_base_gva(scratch_size) {
             return None;
         }
         // neither does the mapping of the snapshot's own page tables
-        if gva >= hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64
-            && gva <= hyperlight_common::layout::SNAPSHOT_PT_GVA_MAX as u64
+        if mapping.virt_base >= hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64
+            && mapping.virt_base <= hyperlight_common::layout::SNAPSHOT_PT_GVA_MAX as u64
         {
             return None;
         }
         // todo: is it useful to warn if we can't resolve this?
-        let contents = unsafe { guest_page(snap, scratch, regions, scratch_size, gpa) }?;
-        Some((gva, gpa, bm, contents))
+        let contents =
+            unsafe { guest_page(snap, scratch, regions, scratch_size, mapping.phys_base) }?;
+        Some((mapping, contents))
     })
     .collect()
 }
@@ -308,30 +318,15 @@ fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
         phys_base: scratch_base_gpa(scratch_size),
         virt_base: scratch_base_gva(scratch_size),
         len: scratch_size as u64,
-        kind: MappingKind::BasicMapping(BasicMapping {
+        kind: MappingKind::Basic(BasicMapping {
             readable: true,
             writable: true,
-            executable: true,
+            // assume that the guest will map these pages elsewhere if
+            // it actually needs to execute from them
+            executable: false,
         }),
     };
     unsafe { vmem::map(pt_buf, mapping) };
-    // Map the page tables themselves, in order to allow the
-    // guest to update them easily
-    let mut pt_size_mapped = 0;
-    while pt_buf.size() > pt_size_mapped {
-        let mapping = Mapping {
-            phys_base: (pt_buf.phys_base() + pt_size_mapped) as u64,
-            virt_base: (hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN + pt_size_mapped) as u64,
-            len: (pt_buf.size() - pt_size_mapped) as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
-                readable: true,
-                writable: true,
-                executable: false,
-            }),
-        };
-        pt_size_mapped = pt_buf.size();
-        unsafe { vmem::map(pt_buf, mapping) };
-    }
 }
 
 impl Snapshot {
@@ -359,8 +354,6 @@ impl Snapshot {
         let mut layout = crate::mem::layout::SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
-            usize::try_from(cfg.get_heap_size())?,
-            cfg.get_scratch_size(),
             guest_blob_size,
             guest_blob_mem_flags,
         )?;
@@ -379,35 +372,34 @@ impl Snapshot {
             .transpose()?;
 
         #[cfg(feature = "init-paging")]
-        let pt_base_gpa = {
+        {
             // Set up page table entries for the snapshot
-            let pt_base_gpa =
-                crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS + layout.get_pt_offset();
-            let pt_buf = GuestPageTableBuffer::new(pt_base_gpa);
+            let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
 
             use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegionFlags};
 
             // 1. Map the (ideally readonly) pages of snapshot data
             for rgn in layout.get_memory_regions_::<GuestMemoryRegion>(())?.iter() {
                 let readable = rgn.flags.contains(MemoryRegionFlags::READ);
-                let writable = rgn.flags.contains(MemoryRegionFlags::WRITE)
-                    // Temporary hack: the stack guard page is
-                    // currently checked for in the host, rather than
-                    // the guest, so we need to mark it writable in
-                    // the Stage 1 translation so that the fault
-                    // exception on a write is taken to the
-                    // hypervisor, rather than the guest kernel
-                    || rgn.flags.contains(MemoryRegionFlags::STACK_GUARD);
                 let executable = rgn.flags.contains(MemoryRegionFlags::EXECUTE);
+                let writable = rgn.flags.contains(MemoryRegionFlags::WRITE);
+                let kind = if writable {
+                    MappingKind::Cow(CowMapping {
+                        readable,
+                        executable,
+                    })
+                } else {
+                    MappingKind::Basic(BasicMapping {
+                        readable,
+                        writable: false,
+                        executable,
+                    })
+                };
                 let mapping = Mapping {
                     phys_base: rgn.guest_region.start as u64,
                     virt_base: rgn.guest_region.start as u64,
                     len: rgn.guest_region.len() as u64,
-                    kind: MappingKind::BasicMapping(BasicMapping {
-                        readable,
-                        writable,
-                        executable,
-                    }),
+                    kind,
                 };
                 unsafe { vmem::map(&pt_buf, mapping) };
             }
@@ -416,12 +408,9 @@ impl Snapshot {
             map_specials(&pt_buf, layout.get_scratch_size());
 
             let pt_bytes = pt_buf.into_bytes();
-            layout.set_pt_size(pt_bytes.len());
+            layout.set_pt_size(pt_bytes.len())?;
             memory.extend(&pt_bytes);
-            pt_base_gpa
         };
-        #[cfg(not(feature = "init-paging"))]
-        let pt_base_gpa = 0usize;
 
         let exn_stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
@@ -437,10 +426,9 @@ impl Snapshot {
             regions: extra_regions,
             load_info,
             hash,
-            root_pt_gpa: pt_base_gpa as u64,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
-            preinitialise: Some(load_addr + entrypoint_offset),
+            entrypoint: NextAction::Initialise(load_addr + entrypoint_offset),
         })
     }
 
@@ -463,8 +451,9 @@ impl Snapshot {
         root_pt_gpa: u64,
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
+        entrypoint: NextAction,
     ) -> Result<Self> {
-        let (new_root_pt_gpa, memory) = shared_mem.with_exclusivity(|snap_e| {
+        let memory = shared_mem.with_exclusivity(|snap_e| {
             scratch_mem.with_exclusivity(|scratch_e| {
                 let scratch_size = layout.get_scratch_size();
 
@@ -474,29 +463,40 @@ impl Snapshot {
 
                 // Pass 2: copy them, and map them
                 // TODO: Look for opportunities to hugepage map
-                let pt_base_gpa = SandboxMemoryLayout::BASE_ADDRESS + live_pages.len() * PAGE_SIZE;
-                let pt_buf = GuestPageTableBuffer::new(pt_base_gpa);
+                let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
                 let mut snapshot_memory: Vec<u8> = Vec::new();
-                for (gva, _, bm, contents) in live_pages {
+                for (mapping, contents) in live_pages {
                     let new_offset = snapshot_memory.len();
                     snapshot_memory.extend(contents);
                     let new_gpa = new_offset + SandboxMemoryLayout::BASE_ADDRESS;
+                    let kind = match mapping.kind {
+                        MappingKind::Cow(cm) => MappingKind::Cow(cm),
+                        MappingKind::Basic(bm) if bm.writable => MappingKind::Cow(CowMapping {
+                            readable: bm.readable,
+                            executable: bm.executable,
+                        }),
+                        MappingKind::Basic(bm) => MappingKind::Basic(BasicMapping {
+                            readable: bm.readable,
+                            writable: false,
+                            executable: bm.executable,
+                        }),
+                    };
                     let mapping = Mapping {
                         phys_base: new_gpa as u64,
-                        virt_base: gva,
+                        virt_base: mapping.virt_base,
                         len: PAGE_SIZE as u64,
-                        kind: MappingKind::BasicMapping(bm),
+                        kind,
                     };
                     unsafe { vmem::map(&pt_buf, mapping) };
                 }
                 // Phase 3: Map the special mappings
                 map_specials(&pt_buf, layout.get_scratch_size());
                 let pt_bytes = pt_buf.into_bytes();
-                layout.set_pt_size(pt_bytes.len());
+                layout.set_pt_size(pt_bytes.len())?;
                 snapshot_memory.extend(&pt_bytes);
-                (pt_base_gpa, snapshot_memory)
+                Ok::<Vec<u8>, crate::HyperlightError>(snapshot_memory)
             })
-        })??;
+        })???;
 
         // We do not need the original regions anymore, as any uses of
         // them in the guest have been incorporated into the snapshot
@@ -513,8 +513,7 @@ impl Snapshot {
             hash,
             stack_top_gva,
             sregs: Some(sregs),
-            root_pt_gpa: new_root_pt_gpa as u64,
-            preinitialise: None,
+            entrypoint,
         })
     }
 
@@ -550,7 +549,7 @@ impl Snapshot {
     }
 
     pub(crate) fn root_pt_gpa(&self) -> u64 {
-        self.root_pt_gpa
+        self.layout.get_pt_base_gpa()
     }
 
     pub(crate) fn stack_top_gva(&self) -> u64 {
@@ -566,8 +565,8 @@ impl Snapshot {
         self.sregs.as_ref()
     }
 
-    pub(crate) fn preinitialise(&self) -> Option<u64> {
-        self.preinitialise
+    pub(crate) fn entrypoint(&self) -> NextAction {
+        self.entrypoint
     }
 }
 
@@ -592,14 +591,15 @@ mod tests {
     }
 
     fn make_simple_pt_mems() -> (SandboxMemoryManager<HostSharedMemory>, u64) {
-        let scratch_mem = ExclusiveSharedMemory::new(PAGE_SIZE).unwrap();
+        let cfg = crate::sandbox::SandboxConfiguration::default();
+        let scratch_mem = ExclusiveSharedMemory::new(cfg.get_scratch_size()).unwrap();
         let pt_base = PAGE_SIZE + SandboxMemoryLayout::BASE_ADDRESS;
         let pt_buf = GuestPageTableBuffer::new(pt_base);
         let mapping = Mapping {
             phys_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
             virt_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
             len: PAGE_SIZE as u64,
-            kind: MappingKind::BasicMapping(BasicMapping {
+            kind: MappingKind::Basic(BasicMapping {
                 readable: true,
                 writable: true,
                 executable: true,
@@ -612,13 +612,11 @@ mod tests {
         let mut snapshot_mem = ExclusiveSharedMemory::new(PAGE_SIZE + pt_bytes.len()).unwrap();
 
         snapshot_mem.copy_from_slice(&pt_bytes, PAGE_SIZE).unwrap();
-        let cfg = crate::sandbox::SandboxConfiguration::default();
         let mgr = SandboxMemoryManager::new(
-            SandboxMemoryLayout::new(cfg, 4096, 2048, 4096, 0x3000, None).unwrap(),
+            SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap(),
             snapshot_mem,
             scratch_mem,
-            0.into(),
-            None,
+            super::NextAction::None,
         );
         let (mgr, _) = mgr.build().unwrap();
         (mgr, pt_base as u64)
@@ -644,6 +642,7 @@ mod tests {
             pt_base,
             0,
             default_sregs(),
+            super::NextAction::None,
         )
         .unwrap();
 
@@ -675,6 +674,7 @@ mod tests {
             pt_base,
             0,
             default_sregs(),
+            super::NextAction::None,
         )
         .unwrap();
         assert_eq!(snapshot.mem_size(), size);
@@ -697,6 +697,7 @@ mod tests {
             pt_base,
             0,
             default_sregs(),
+            super::NextAction::None,
         )
         .unwrap();
 
@@ -713,6 +714,7 @@ mod tests {
             pt_base,
             0,
             default_sregs(),
+            super::NextAction::None,
         )
         .unwrap();
 
