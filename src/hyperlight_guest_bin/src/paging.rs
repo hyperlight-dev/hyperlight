@@ -144,3 +144,58 @@ pub fn virt_to_phys(gva: vmem::VirtAddr) -> impl Iterator<Item = vmem::Mapping> 
 pub fn phys_to_virt(gpa: vmem::PhysAddr) -> Option<*mut u8> {
     GuestMappingOperations::new().fallible_phys_to_virt(gpa)
 }
+
+/// Barriers that other code may need to use when updating page tables
+pub mod barrier {
+    /// Call this function when a virtual address has just been made
+    /// valid for the first time after the last tlb invalidate that
+    /// affected it, and it will be used for the first time in the
+    /// same execution context as has made the modification.
+    ///
+    /// On most architectures, TLBs will not cache invalid entries, so
+    /// this does not need to issue a TLB. However, it does need to
+    /// ensure coherency between the previous writes and any future
+    /// uses by a page table walker.
+    ///
+    /// # Architecture-specific (amd64) notes
+    ///
+    /// The exact details around page walk coherency on amd64 seem a
+    /// bit fuzzy. The Intel manual notes that a serialising
+    /// instruction is necessary specifically to synchronise table
+    /// walks performed during instruction fetch [1], but is
+    /// relatively quiet about other page walks. The AMD manual notes
+    /// [2] that "a table entry is allowed to be upgraded (by marking
+    /// it as present, or by removing its write, execute or supervisor
+    /// restrictions) without explicitly maintaining TLB coherency",
+    /// but only states that TLB any upper-level TLB cache entries
+    /// will be flushed before re-walking to confirm the fault, which
+    /// does not clearly seem strong enough.
+    ///
+    /// In some limited testing, `mfence` typically seems to be
+    /// enough, but as it is not a serializing instruction on Intel
+    /// platforms, we assume it may not be quite good enough.  `cpuid`
+    /// is likely to be very slow, since we are definitely running
+    /// under a hypervisor (and often even nested). Currently, for
+    /// simplicity's sake, this just copies cr0 to itself, but other
+    /// options (including the `serialize` instruction where
+    /// available) could be worth exploring.
+    ///
+    /// [1] Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 3: System Programming Guide
+    ///         Chapter 5: Paging
+    ///             §5.10: Caching Translation Information
+    ///                 §5.10.4: Invalidation of TLBs and Paging-Structure Caches
+    ///                     §5.10.4.3: Optional Invalidation
+    /// [2] AMD64 Architecture Programmer's Manual, Volume 2: System Programming
+    ///         Section 5: Page Translation and Protection
+    ///             §5.5: Translation-Lookaside Buffer
+    ///                 §5.5.3: TLB Management
+    #[inline(always)]
+    pub fn first_valid_same_ctx() {
+        unsafe {
+            core::arch::asm!("
+                mov rax, cr0
+                mov cr0, rax
+            ", out("rax") _, out("rcx") _);
+        }
+    }
+}

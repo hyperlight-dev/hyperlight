@@ -229,6 +229,7 @@ impl ProcCtrl {
                     executable: false,
                 }),
             );
+            crate::paging::barrier::first_valid_same_ctx();
             let ptr = ptr as *mut Self;
             (&raw mut (*ptr).gdt).write_bytes(0u8, 1);
             (&raw mut (*ptr).tss).write_bytes(0u8, 1);

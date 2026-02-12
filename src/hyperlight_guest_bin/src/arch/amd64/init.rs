@@ -121,6 +121,7 @@ unsafe fn init_stack() -> u64 {
                 executable: false,
             }),
         );
+        crate::paging::barrier::first_valid_same_ctx();
     }
     MAIN_STACK_TOP_GVA
 }

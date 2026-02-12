@@ -76,6 +76,12 @@ fn handle_stack_pagefault(gva: u64) {
                 executable: false,
             }),
         );
+        // This is mapping an entry for the first time, so we don't
+        // need to worry about TLB maintenance.  We do (probably) need
+        // to worry about coherence between these stores and the page
+        // table walker, but this page won't be accessed again until
+        // after [`iret`], which is a serializing instruction, so
+        // that's already handled as well.
     }
 }
 
@@ -106,6 +112,8 @@ fn handle_cow_pagefault(_phys: PhysAddr, virt: VirtAddr, perms: CowMapping) {
                 executable: perms.executable,
             }),
         );
+        // This is updating an entry that was already valid, changing
+        // its OA, so we need to actually invalidate the TLB for it.
         core::arch::asm!("invlpg [{}]", in(reg) target_virt, options(readonly, nostack, preserves_flags));
     }
 }

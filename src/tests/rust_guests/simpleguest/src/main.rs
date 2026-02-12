@@ -593,6 +593,7 @@ fn read_mapped_buffer(base: u64, len: u64, do_map: bool) -> Vec<u8> {
                     executable: true,
                 }),
             );
+            hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
         }
     }
 
@@ -623,7 +624,8 @@ fn write_mapped_buffer(base: u64, len: u64) -> bool {
                 writable: true,
                 executable: true,
             }),
-        )
+        );
+        hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
     };
 
     let data = unsafe { core::slice::from_raw_parts_mut(base, len) };
@@ -650,7 +652,8 @@ fn exec_mapped_buffer(base: u64, len: u64) -> bool {
                 writable: true,
                 executable: true,
             }),
-        )
+        );
+        hyperlight_guest_bin::paging::barrier::first_valid_same_ctx();
     };
 
     let data = unsafe { core::slice::from_raw_parts(base, len) };
