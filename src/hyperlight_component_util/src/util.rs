@@ -47,7 +47,7 @@ pub fn read_wit_type_from_file<R, F: FnMut(String, &etypes::Component) -> R>(
     let ExternDesc::Component(ct) = &export.desc else {
         panic!("malformed component type container: does not contain component type");
     };
-    log::debug!("hcm: considering component type {:?}", ct);
+    tracing::debug!("hcm: considering component type {:?}", ct);
     cb(export.kebab_name.to_string(), ct)
 }
 

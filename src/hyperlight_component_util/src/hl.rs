@@ -298,7 +298,7 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
         }
         Value::Own(ht) => {
             let vi = resolve_handleable_to_resource(s, ht);
-            log::debug!("resolved ht to r (1) {:?} {:?}", ht, vi);
+            tracing::debug!("resolved ht to r (1) {:?} {:?}", ht, vi);
             if s.is_guest {
                 let rid = format_ident!("HostResource{}", vi);
                 if s.is_wasmtime_guest {
@@ -326,7 +326,7 @@ pub fn emit_hl_unmarshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStr
         }
         Value::Borrow(ht) => {
             let vi = resolve_handleable_to_resource(s, ht);
-            log::debug!("resolved ht to r (2) {:?} {:?}", ht, vi);
+            tracing::debug!("resolved ht to r (2) {:?} {:?}", ht, vi);
             if s.is_guest {
                 let rid = format_ident!("HostResource{}", vi);
                 if s.is_wasmtime_guest {
@@ -624,7 +624,7 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
         }
         Value::Own(ht) => {
             let vi = resolve_handleable_to_resource(s, ht);
-            log::debug!("resolved ht to r (3) {:?} {:?}", ht, vi);
+            tracing::debug!("resolved ht to r (3) {:?} {:?}", ht, vi);
             if s.is_guest {
                 let call = if s.is_wasmtime_guest {
                     quote! { () }
@@ -645,7 +645,7 @@ pub fn emit_hl_marshal_value(s: &mut State, id: Ident, vt: &Value) -> TokenStrea
         }
         Value::Borrow(ht) => {
             let vi = resolve_handleable_to_resource(s, ht);
-            log::debug!("resolved ht to r (6) {:?} {:?}", ht, vi);
+            tracing::debug!("resolved ht to r (6) {:?} {:?}", ht, vi);
             if s.is_guest {
                 let call = if s.is_wasmtime_guest {
                     quote! { () }
