@@ -446,8 +446,8 @@ pub enum RegisterError {
     },
     #[error("Invalid xsave alignment")]
     InvalidXsaveAlignment,
-    #[error("Failed to reset MSRs: {0}")]
-    ResetMsrs(HypervisorError),
+    #[error("Failed to reset MSR 0x{index:X}: {source}")]
+    ResetMsr { index: u32, source: HypervisorError },
     #[error("Unknown MSR 0x{0:X}: no hypervisor register mapping")]
     UnknownMsr(u32),
     #[cfg(target_os = "windows")]

@@ -404,20 +404,20 @@ impl VirtualMachine for MshvVm {
             })
         }
 
-        let regs: Vec<hv_register_assoc> = MSRS_TO_RESET
-            .iter()
-            .map(|&(msr_index, value)| {
-                msr_to_hv_reg(msr_index).map(|name| hv_register_assoc {
-                    name,
-                    value: hv_register_value { reg64: value },
-                    ..Default::default()
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        self.vcpu_fd
-            .set_reg(&regs)
-            .map_err(|e| RegisterError::ResetMsrs(e.into()))?;
+        for &(msr_index, value) in MSRS_TO_RESET {
+            let name = msr_to_hv_reg(msr_index)?;
+            let assoc = hv_register_assoc {
+                name,
+                value: hv_register_value { reg64: value },
+                ..Default::default()
+            };
+            self.vcpu_fd
+                .set_reg(&[assoc])
+                .map_err(|e| RegisterError::ResetMsr {
+                    index: msr_index,
+                    source: e.into(),
+                })?;
+        }
 
         Ok(())
     }

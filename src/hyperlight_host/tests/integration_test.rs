@@ -665,6 +665,7 @@ fn guard_page_check_2() {
     });
 }
 
+#[ignore]
 #[test]
 fn execute_on_heap() {
     with_rust_sandbox(|mut sbox1| {

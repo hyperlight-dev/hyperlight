@@ -660,46 +660,85 @@ impl VirtualMachine for WhpVm {
     }
 
     fn reset_msrs(&self) -> std::result::Result<(), RegisterError> {
-        use super::{MSRS_TO_RESET, MSRS_TO_RESET_COUNT};
+        use super::MSRS_TO_RESET;
 
-        /// Convert an MSR index to a WHV_REGISTER_NAME.
+        /// Map an MSR index to its WHV_REGISTER_NAME.
         ///
-        /// The WHV encoding mirrors the HV register namespace with a shifted base:
-        /// HV MSR registers live at `0x0008_0000 + offset`, WHV maps them to
-        /// `0x0000_2000 + offset`.
-        ///
-        /// For MSR indices below 0x4000_0000 the offset equals the MSR index
-        /// itself. For indices >= 0x4000_0000 the HV encoding packs them into
-        /// `0x0008_0000 + (msr_index - 0x4000_0000 + 0x0800)`, so the WHV name
-        /// is `0x2000 + (msr_index - 0x4000_0000 + 0x0800)`.
+        /// WHV register names are opaque sequential IDs assigned by the
+        /// hypervisor — there is no arithmetic relationship to MSR indices.
+        /// We use the named constants from the `windows` crate where
+        /// available; DebugCtl (0x207D) has no published constant and uses
+        /// the raw value from the hypervisor source (ValX64RegisterDebugCtl).
         const fn msr_index_to_whv_name(msr_index: u32) -> WHV_REGISTER_NAME {
-            if msr_index < 0x4000_0000 {
-                WHV_REGISTER_NAME(0x2000 + msr_index as i32)
-            } else {
-                WHV_REGISTER_NAME(0x2000_i32 + (msr_index as i32 - 0x4000_0000_i32) + 0x0800_i32)
+            match msr_index {
+                0x10 => WHvX64RegisterTsc,
+                0x174 => WHvX64RegisterSysenterCs,
+                0x175 => WHvX64RegisterSysenterEsp,
+                0x176 => WHvX64RegisterSysenterEip,
+                0x1D9 => WHV_REGISTER_NAME(0x207D), // DebugCtl (no windows crate constant)
+                0x277 => WHvX64RegisterPat,
+                0x2FF => WHvX64RegisterMsrMtrrDefType,
+                // Variable-range MTRRs
+                0x200 => WHvX64RegisterMsrMtrrPhysBase0,
+                0x201 => WHvX64RegisterMsrMtrrPhysMask0,
+                0x202 => WHvX64RegisterMsrMtrrPhysBase1,
+                0x203 => WHvX64RegisterMsrMtrrPhysMask1,
+                0x204 => WHvX64RegisterMsrMtrrPhysBase2,
+                0x205 => WHvX64RegisterMsrMtrrPhysMask2,
+                0x206 => WHvX64RegisterMsrMtrrPhysBase3,
+                0x207 => WHvX64RegisterMsrMtrrPhysMask3,
+                0x208 => WHvX64RegisterMsrMtrrPhysBase4,
+                0x209 => WHvX64RegisterMsrMtrrPhysMask4,
+                0x20A => WHvX64RegisterMsrMtrrPhysBase5,
+                0x20B => WHvX64RegisterMsrMtrrPhysMask5,
+                0x20C => WHvX64RegisterMsrMtrrPhysBase6,
+                0x20D => WHvX64RegisterMsrMtrrPhysMask6,
+                0x20E => WHvX64RegisterMsrMtrrPhysBase7,
+                0x20F => WHvX64RegisterMsrMtrrPhysMask7,
+                // Fixed-range MTRRs
+                0x250 => WHvX64RegisterMsrMtrrFix64k00000,
+                0x258 => WHvX64RegisterMsrMtrrFix16k80000,
+                0x259 => WHvX64RegisterMsrMtrrFix16kA0000,
+                0x268 => WHvX64RegisterMsrMtrrFix4kC0000,
+                0x269 => WHvX64RegisterMsrMtrrFix4kC8000,
+                0x26A => WHvX64RegisterMsrMtrrFix4kD0000,
+                0x26B => WHvX64RegisterMsrMtrrFix4kD8000,
+                0x26C => WHvX64RegisterMsrMtrrFix4kE0000,
+                0x26D => WHvX64RegisterMsrMtrrFix4kE8000,
+                0x26E => WHvX64RegisterMsrMtrrFix4kF0000,
+                0x26F => WHvX64RegisterMsrMtrrFix4kF8000,
+                // SYSCALL MSRs
+                0xC000_0081 => WHvX64RegisterStar,
+                0xC000_0082 => WHvX64RegisterLstar,
+                0xC000_0083 => WHvX64RegisterCstar,
+                0xC000_0084 => WHvX64RegisterSfmask,
+                0xC000_0102 => WHvX64RegisterKernelGsBase,
+                0xC000_0103 => WHvX64RegisterTscAux,
+                // Feature-dependent MSRs
+                0x48 => WHvX64RegisterSpecCtrl,
+                0x6A0 => WHvX64RegisterUCet,
+                0x6A2 => WHvX64RegisterSCet,
+                0x6A4 => WHvX64RegisterPl0Ssp,
+                0x6A5 => WHvX64RegisterPl1Ssp,
+                0x6A6 => WHvX64RegisterPl2Ssp,
+                0x6A7 => WHvX64RegisterPl3Ssp,
+                0x6A8 => WHvX64RegisterInterruptSspTableAddr,
+                0xDA0 => WHvX64RegisterXss,
+                _ => panic!("MSR index has no WHV register mapping"),
             }
         }
 
-        const REGS: &[(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)] = &{
-            let mut result = [(
-                WHV_REGISTER_NAME(0),
-                Align16(WHV_REGISTER_VALUE { Reg64: 0 }),
-            ); MSRS_TO_RESET_COUNT];
-            let mut i = 0;
-            while i < MSRS_TO_RESET.len() {
-                result[i] = (
-                    msr_index_to_whv_name(MSRS_TO_RESET[i].0),
-                    Align16(WHV_REGISTER_VALUE {
-                        Reg64: MSRS_TO_RESET[i].1,
-                    }),
-                );
-                i += 1;
-            }
-            result
-        };
-
-        self.set_registers(REGS)
-            .map_err(|e| RegisterError::ResetMsrs(e.into()))?;
+        for &(msr_index, value) in MSRS_TO_RESET {
+            let reg = (
+                msr_index_to_whv_name(msr_index),
+                Align16(WHV_REGISTER_VALUE { Reg64: value }),
+            );
+            self.set_registers(std::slice::from_ref(&reg))
+                .map_err(|e| RegisterError::ResetMsr {
+                    index: msr_index,
+                    source: e.into(),
+                })?;
+        }
 
         Ok(())
     }

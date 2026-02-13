@@ -1571,4 +1571,23 @@ mod tests {
                 .collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn msr_tsc() {
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+
+        let msr_idnex = 0x10u32; // IA32_TSC MSR, which is commonly virtualized but not in the test ranges
+        let result = sbox.call::<u64>("WriteMSR", (msr_idnex, 10u64));
+        println!("Testing MSR 0x{:X}, got result: {:?}", msr_idnex, result);
+        assert!(matches!(
+            result,
+            Err(HyperlightError::MsrWriteViolation(idx, _)) if idx == msr_idnex
+        ),);
+    }
 }
