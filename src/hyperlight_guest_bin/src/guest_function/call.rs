@@ -27,7 +27,7 @@ use tracing::{Span, instrument};
 
 use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
 
-type GuestFunc = fn(&FunctionCall) -> Result<Vec<u8>>;
+type GuestFunc = fn(FunctionCall) -> Result<Vec<u8>>;
 
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>> {
@@ -64,7 +64,7 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
             core::mem::transmute::<usize, GuestFunc>(function_pointer)
         };
 
-        p_function(&function_call)
+        p_function(function_call)
     } else {
         // The given function is not registered. The guest should implement a function called guest_dispatch_function to handle this.
 

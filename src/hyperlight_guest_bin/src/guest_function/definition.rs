@@ -41,7 +41,7 @@ pub struct GuestFunctionDefinition {
     pub function_pointer: usize,
 }
 
-/// Trait for functions that can be converted to a `fn(&FunctionCall) -> Result<Vec<u8>>`
+/// Trait for functions that can be converted to a `fn(FunctionCall) -> Result<Vec<u8>>`
 #[doc(hidden)]
 pub trait IntoGuestFunction<Output, Args>
 where
@@ -53,8 +53,8 @@ where
     #[doc(hidden)]
     const ASSERT_ZERO_SIZED: ();
 
-    /// Convert the function into a `fn(&FunctionCall) -> Result<Vec<u8>>`
-    fn into_guest_function(self) -> fn(&FunctionCall) -> Result<Vec<u8>>;
+    /// Convert the function into a `fn(FunctionCall) -> Result<Vec<u8>>`
+    fn into_guest_function(self) -> fn(FunctionCall) -> Result<Vec<u8>>;
 }
 
 /// Trait for functions that can be converted to a `GuestFunctionDefinition`
@@ -124,14 +124,14 @@ macro_rules! impl_host_function {
                 assert!(core::mem::size_of::<Self>() == 0)
             };
 
-            fn into_guest_function(self) -> fn(&FunctionCall) -> Result<Vec<u8>> {
-                |fc: &FunctionCall| {
+            fn into_guest_function(self) -> fn(FunctionCall) -> Result<Vec<u8>> {
+                |fc: FunctionCall| {
                     // SAFETY: This is safe because:
                     //  1. F is zero-sized (enforced by the ASSERT_ZERO_SIZED const).
                     //  2. F has no Drop impl (enforced by the Copy bound).
                     // Therefore, creating an instance of F is safe.
                     let this = unsafe { core::mem::zeroed::<F>() };
-                    let params = fc.parameters.clone().unwrap_or_default();
+                    let params = fc.parameters.unwrap_or_default();
                     let params = <($($P,)*) as ParameterTuple>::from_value(params)?;
                     let result = Function::<R::ReturnType, ($($P,)*), HyperlightGuestError>::call(&this, params)?;
                     Ok(into_flatbuffer_result(result.into_value()))
