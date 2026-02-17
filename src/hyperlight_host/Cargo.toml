@@ -33,7 +33,7 @@ fallible-iterator = { version = "0.3.0", optional = true }
 blake3 = "1.8.3"
 page_size = "0.6.0"
 termcolor = "1.2.0"
-bitflags = "2.10.0"
+bitflags = "2.11.0"
 log = "0.4.29"
 opentelemetry = { version = "0.31.0", optional = true }
 tracing = { version = "0.1.44", features = ["log"] }
