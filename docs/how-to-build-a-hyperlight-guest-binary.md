@@ -9,8 +9,7 @@ binary can be used with Hyperlight:
   `pub fn hyperlight_main()`
 - Hyperlight expects 
   `hl_Vec* c_guest_dispatch_function(const hl_FunctionCall *functioncall)` or
-  `pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>>`
-  to be defined in the binary so that in case the host calls a function that is
+  the `guest_dispatch!` macro (Rust) to be used in the binary so that in case the host calls a function that is
   not registered by the guest, this function is called instead.
 - to be callable by the host, a function needs to be registered by the guest in
   the `hyperlight_main` function.

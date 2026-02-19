@@ -44,7 +44,7 @@ use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
-use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
+use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
     call_host_function, call_host_function_without_returning_result, get_host_return_value_raw,
@@ -652,11 +652,11 @@ fn call_host_expect_error(hostfuncname: String) -> Result<()> {
 #[no_mangle]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub extern "C" fn hyperlight_main() {
-    let print_output_def = GuestFunctionDefinition::new(
+    let print_output_def = GuestFunctionDefinition::<GuestFunc>::new(
         "PrintOutputWithHostPrint".to_string(),
         Vec::from(&[ParameterType::String]),
         ReturnType::Int,
-        print_output_with_host_print as usize,
+        print_output_with_host_print,
     );
     register_function(print_output_def);
 }
@@ -814,9 +814,7 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
-#[no_mangle]
-#[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
+hyperlight_guest_bin::guest_dispatch!(|function_call| {
     // This test checks the stack behavior of the input/output buffer
     // by calling the host before serializing the function call.
     // If the stack is not working correctly, the input or output buffer will be
@@ -858,4 +856,4 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     }
 
     Ok(get_flatbuffer_result(99))
-}
+});

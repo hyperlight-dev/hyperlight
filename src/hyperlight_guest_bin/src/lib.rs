@@ -51,6 +51,41 @@ pub mod host_comm;
 pub mod memory;
 pub mod paging;
 
+/// Defines the fallback dispatch function for guest function calls that were
+/// not registered via [`#[guest_function]`](crate::guest_function) or
+/// [`register_function`](crate::guest_function::register::register_function).
+///
+/// Registered guest functions are dispatched directly and do not go through
+/// this function. Only calls whose name has no registration end up here.
+///
+/// Use this macro instead of defining the symbol by hand so that signature
+/// changes in future versions of `hyperlight_guest_bin` produce a compile
+/// error.
+///
+/// The body receives a [`FunctionCall`](hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall)
+/// by value and must return `Result<Vec<u8>>`.
+///
+/// The macro expansion references `hyperlight_common`, `hyperlight_guest`,
+/// and `alloc`. The calling crate must have these as direct dependencies
+/// (or `extern crate alloc` for `no_std` crates).
+///
+/// ```ignore
+/// guest_dispatch!(|function_call| {
+///     bail!(ErrorCode::GuestFunctionNotFound => "{}", function_call.function_name);
+/// });
+/// ```
+#[macro_export]
+macro_rules! guest_dispatch {
+    (|$fc:ident| $body:expr) => {
+        #[unsafe(no_mangle)]
+        pub fn guest_dispatch_function_v2(
+            $fc: ::hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall,
+        ) -> ::hyperlight_guest::error::Result<::alloc::vec::Vec<u8>> {
+            $body
+        }
+    };
+}
+
 // Globals
 #[cfg(feature = "mem_profile")]
 struct ProfiledLockedHeap<const ORDER: usize>(LockedHeap<ORDER>);
@@ -116,7 +151,7 @@ pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap<32> =
     ProfiledLockedHeap(LockedHeap::<32>::empty());
 
 pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
-pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
+pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
     GuestFunctionRegister::new();
 
 /// The size of one page in the host OS, which may have some impacts
@@ -278,3 +313,5 @@ pub mod __private {
 
 #[cfg(feature = "macros")]
 pub use hyperlight_guest_macro::{guest_function, host_function};
+
+use crate::guest_function::definition::GuestFunc;

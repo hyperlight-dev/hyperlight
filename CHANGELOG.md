@@ -4,6 +4,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+### Changed
+* **Breaking:** Change `guest_dispatch_function` signature by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1241
+  - The fallback dispatch function now receives `FunctionCall` by value instead of by reference.
+  - Rename `guest_dispatch_function` to `guest_dispatch_function_v2` and change the signature from `fn(fc: &FunctionCall) -> Result<Vec<u8>>` to `fn(fc: FunctionCall) -> Result<Vec<u8>>`.
+  - Rust guests are encouraged to use the new `hyperlight_guest_bin::guest_dispatch!` macro instead of defining the symbol by hand.
+  - `GuestFunctionDefinition::new` now takes a typed function pointer instead of `usize`, so callers passing `func as usize` will get a compile error.
+
 ## [v0.12.0] - 2025-12-09
 
 ### Fixed

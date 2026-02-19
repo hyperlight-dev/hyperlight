@@ -27,8 +27,6 @@ use tracing::{Span, instrument};
 
 use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
 
-type GuestFunc = fn(FunctionCall) -> Result<Vec<u8>>;
-
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>> {
     // Validate this is a Guest Function Call
@@ -59,23 +57,19 @@ pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>
         // Verify that the function call has the correct parameter types and length.
         registered_function_definition.verify_parameters(&function_call_parameter_types)?;
 
-        let p_function = unsafe {
-            let function_pointer = registered_function_definition.function_pointer;
-            core::mem::transmute::<usize, GuestFunc>(function_pointer)
-        };
-
-        p_function(function_call)
+        (registered_function_definition.function_pointer)(function_call)
     } else {
-        // The given function is not registered. The guest should implement a function called guest_dispatch_function to handle this.
+        // The given function is not registered. The guest should implement a function called
+        // guest_dispatch_function_v2 to handle this. Use the `guest_dispatch!` macro to define it.
 
         // TODO: ideally we would define a default implementation of this with weak linkage so the guest is not required
         // to implement the function but its seems that weak linkage is an unstable feature so for now its probably better
         // to not do that.
         unsafe extern "Rust" {
-            fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>>;
+            fn guest_dispatch_function_v2(function_call: FunctionCall) -> Result<Vec<u8>>;
         }
 
-        unsafe { guest_dispatch_function(function_call) }
+        unsafe { guest_dispatch_function_v2(function_call) }
     }
 }
 
