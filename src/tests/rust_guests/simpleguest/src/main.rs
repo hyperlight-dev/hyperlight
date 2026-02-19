@@ -41,6 +41,7 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
+use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
@@ -463,10 +464,15 @@ fn test_rust_malloc(code: i32) -> i32 {
 
 #[guest_function("LogMessage")]
 fn log_message(message: String, level: i32) {
-    let level = LevelFilter::iter().nth(level as usize).unwrap().to_level();
+    let level_filter =
+        LevelFilter::from(GuestLogFilter::try_from(level as u64).expect("Invalid log level"));
+    let level = level_filter.to_level();
 
     match level {
-        Some(level) => log::log!(level, "{}", &message),
+        Some(level) => {
+            // Shall not fail because we have already validated the log level
+            log::log!(level, "{}", &message)
+        }
         None => {
             // was passed LevelFilter::Off, do nothing
         }

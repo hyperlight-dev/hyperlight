@@ -30,6 +30,9 @@ mod flatbuffers;
 // cbindgen:ignore
 pub mod layout;
 
+// cbindgen:ignore
+pub mod log_level;
+
 /// cbindgen:ignore
 pub mod mem;
 

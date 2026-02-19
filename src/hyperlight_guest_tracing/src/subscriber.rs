@@ -35,25 +35,12 @@ pub(crate) struct GuestSubscriber {
     max_log_level: LevelFilter,
 }
 
-/// Converts a `tracing::log::LevelFilter` to a `tracing_core::LevelFilter`
-/// Used to check if an event should be recorded based on the maximum log level
-fn convert_level_filter(filter: tracing::log::LevelFilter) -> tracing_core::LevelFilter {
-    match filter {
-        tracing::log::LevelFilter::Off => tracing_core::LevelFilter::OFF,
-        tracing::log::LevelFilter::Error => tracing_core::LevelFilter::ERROR,
-        tracing::log::LevelFilter::Warn => tracing_core::LevelFilter::WARN,
-        tracing::log::LevelFilter::Info => tracing_core::LevelFilter::INFO,
-        tracing::log::LevelFilter::Debug => tracing_core::LevelFilter::DEBUG,
-        tracing::log::LevelFilter::Trace => tracing_core::LevelFilter::TRACE,
-    }
-}
-
 impl GuestSubscriber {
     /// Creates a new `GuestSubscriber` with the given guest start TSC and maximum log level
-    pub(crate) fn new(guest_start_tsc: u64, max_log_level: tracing::log::LevelFilter) -> Self {
+    pub(crate) fn new(guest_start_tsc: u64, filter: LevelFilter) -> Self {
         Self {
             state: Arc::new(Mutex::new(GuestState::new(guest_start_tsc))),
-            max_log_level: convert_level_filter(max_log_level),
+            max_log_level: filter,
         }
     }
     /// Returns a reference to the internal state of the subscriber

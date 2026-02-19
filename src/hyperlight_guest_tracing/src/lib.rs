@@ -48,7 +48,7 @@ mod trace {
     use alloc::sync::{Arc, Weak};
 
     use spin::Mutex;
-    use tracing::log::LevelFilter;
+    use tracing_core::LevelFilter;
 
     use crate::state::GuestState;
     use crate::subscriber::GuestSubscriber;

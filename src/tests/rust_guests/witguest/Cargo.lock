@@ -187,6 +187,7 @@ dependencies = [
  "log",
  "spin",
  "thiserror",
+ "tracing-core",
 ]
 
 [[package]]

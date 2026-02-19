@@ -24,11 +24,11 @@ use crate::GUEST_HANDLE;
 // this is private on purpose so that `log` can only be called though the `log!` macros.
 struct GuestLogger {}
 
-pub(crate) fn init_logger(level: LevelFilter) {
+pub(crate) fn init_logger(filter: LevelFilter) {
     // if this `expect` fails we have no way to recover anyway, so we actually prefer a panic here
     // below temporary guest logger is promoted to static by the compiler.
     log::set_logger(&GuestLogger {}).expect("unable to setup guest logger");
-    log::set_max_level(level);
+    log::set_max_level(filter);
 }
 
 impl log::Log for GuestLogger {

@@ -22,6 +22,7 @@ tracing = { version = "0.1.44", optional = true }
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 spin = "0.10.0"
 thiserror = { version = "2.0.18", default-features = false }
+tracing-core = { version = "0.1.36", default-features = false }
 
 [features]
 default = ["tracing"]
