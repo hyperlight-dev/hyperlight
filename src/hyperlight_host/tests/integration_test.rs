@@ -20,11 +20,12 @@ use std::thread;
 use std::time::Duration;
 
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{HyperlightError, MultiUseSandbox};
 use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
-use log::LevelFilter;
 use serial_test::serial;
+use tracing_core::LevelFilter;
 
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
@@ -728,12 +729,12 @@ fn log_message() {
     let num_fixed_info_log = 8 * 6;
 
     let tests = vec![
-        (LevelFilter::Trace, 5 + num_fixed_trace_log),
-        (LevelFilter::Debug, 4 + num_fixed_info_log),
-        (LevelFilter::Info, 3 + num_fixed_info_log),
-        (LevelFilter::Warn, 2),
-        (LevelFilter::Error, 1),
-        (LevelFilter::Off, 0),
+        (LevelFilter::TRACE, 5 + num_fixed_trace_log),
+        (LevelFilter::DEBUG, 4 + num_fixed_info_log),
+        (LevelFilter::INFO, 3 + num_fixed_info_log),
+        (LevelFilter::WARN, 2),
+        (LevelFilter::ERROR, 1),
+        (LevelFilter::OFF, 0),
     ];
 
     // init
@@ -771,10 +772,18 @@ fn log_message() {
     assert_eq!(1, LOGGER.num_log_calls());
 }
 
-fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
+fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
     LOGGER.clear_log_calls();
     assert_eq!(0, LOGGER.num_log_calls());
-    for level in log::LevelFilter::iter() {
+    let filters = [
+        LevelFilter::OFF,
+        LevelFilter::TRACE,
+        LevelFilter::DEBUG,
+        LevelFilter::INFO,
+        LevelFilter::WARN,
+        LevelFilter::ERROR,
+    ];
+    for level in filters.iter() {
         // Only use Rust guest because the C guest has a different signature for LogMessage
         // (Long vs Int for the level parameter)
         with_rust_uninit_sandbox(|mut sbox| {
@@ -784,6 +793,7 @@ fn log_test_messages(levelfilter: Option<log::LevelFilter>) {
 
             let mut sbox1 = sbox.evolve().unwrap();
 
+            let level: u64 = GuestLogFilter::from(*level).into();
             let message = format!("Hello from log_message level {}", level as i32);
             sbox1
                 .call::<()>("LogMessage", (message.to_string(), level as i32))

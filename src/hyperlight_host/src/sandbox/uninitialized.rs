@@ -19,8 +19,8 @@ use std::option::Option;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use log::LevelFilter;
 use tracing::{Span, instrument};
+use tracing_core::LevelFilter;
 
 use super::host_funcs::{FunctionRegistry, default_writer_func};
 use super::snapshot::Snapshot;

@@ -18,6 +18,7 @@ limitations under the License.
 use std::collections::HashMap;
 #[cfg(crashdump)]
 use std::path::Path;
+use std::str::FromStr;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
@@ -25,8 +26,9 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use log::LevelFilter;
+use hyperlight_common::log_level::GuestLogFilter;
 use tracing::{Span, instrument};
+use tracing_core::LevelFilter;
 
 #[cfg(gdb)]
 use super::gdb::arch::VcpuStopReasonError;
@@ -59,7 +61,7 @@ use crate::hypervisor::virtual_machine::{
     HypervisorType, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VmError, VmExit,
     get_available_hypervisor,
 };
-use crate::hypervisor::{InterruptHandle, InterruptHandleImpl, get_max_log_level};
+use crate::hypervisor::{InterruptHandle, InterruptHandleImpl};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
@@ -72,6 +74,52 @@ use crate::sandbox::outb::{HandleOutbError, handle_outb};
 use crate::sandbox::trace::MemTraceInfo;
 #[cfg(crashdump)]
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
+
+/// Get the logging level filter to pass to the guest entrypoint
+fn get_max_log_level_filter() -> LevelFilter {
+    // Check to see if the RUST_LOG environment variable is set
+    // and if so, parse it to get the log_level for hyperlight_guest
+    // if that is not set get the log level for the hyperlight_host
+
+    // This is done as the guest will produce logs based on the log level returned here
+    // producing those logs is expensive and we don't want to do it if the host is not
+    // going to process them
+
+    let val = std::env::var("RUST_LOG").unwrap_or_default();
+
+    let level = if val.contains("hyperlight_guest") {
+        val.split(',')
+            .find(|s| s.contains("hyperlight_guest"))
+            .unwrap_or("")
+            .split('=')
+            .nth(1)
+            .unwrap_or("")
+    } else if val.contains("hyperlight_host") {
+        val.split(',')
+            .find(|s| s.contains("hyperlight_host"))
+            .unwrap_or("")
+            .split('=')
+            .nth(1)
+            .unwrap_or("")
+    } else {
+        // look for a value string that does not contain "="
+        val.split(',').find(|s| !s.contains("=")).unwrap_or("")
+    };
+
+    tracing::info!("Determined guest log level: {}", level);
+    // Convert the log level string to a LevelFilter
+    // If no value is found, default to Error
+    LevelFilter::from_str(level).unwrap_or(LevelFilter::ERROR)
+}
+
+/// Converts a given [`Option<LevelFilter>`] to a `u64` value to be passed to the guest entrypoint
+fn get_guest_log_filter(guest_max_log_level: Option<LevelFilter>) -> u64 {
+    let guest_log_level_filter = match guest_max_log_level {
+        Some(level) => level,
+        None => get_max_log_level_filter(),
+    };
+    GuestLogFilter::from(guest_log_level_filter).into()
+}
 
 /// Represents a Hyperlight Virtual Machine instance.
 ///
@@ -468,11 +516,6 @@ impl HyperlightVm {
 
         self.page_size = page_size as usize;
 
-        let guest_max_log_level: u64 = match guest_max_log_level {
-            Some(level) => level as u64,
-            None => get_max_log_level().into(),
-        };
-
         let regs = CommonRegisters {
             rip: entrypoint,
             // We usually keep the top of the stack 16-byte
@@ -487,7 +530,7 @@ impl HyperlightVm {
             rdi: peb_addr.into(),
             rsi: seed,
             rdx: page_size.into(),
-            rcx: guest_max_log_level,
+            rcx: get_guest_log_filter(guest_max_log_level),
             rflags: 1 << 1,
 
             ..Default::default()

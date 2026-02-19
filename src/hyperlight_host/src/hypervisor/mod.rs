@@ -14,8 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use log::LevelFilter;
-
 /// GDB debugging support
 #[cfg(gdb)]
 pub(crate) mod gdb;
@@ -41,50 +39,12 @@ pub(crate) mod crashdump;
 pub(crate) mod hyperlight_vm;
 
 use std::fmt::Debug;
-use std::str::FromStr;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicU8, Ordering};
 #[cfg(any(kvm, mshv3))]
 use std::time::Duration;
-
-/// Get the logging level to pass to the guest entrypoint
-fn get_max_log_level() -> u32 {
-    // Check to see if the RUST_LOG environment variable is set
-    // and if so, parse it to get the log_level for hyperlight_guest
-    // if that is not set get the log level for the hyperlight_host
-
-    // This is done as the guest will produce logs based on the log level returned here
-    // producing those logs is expensive and we don't want to do it if the host is not
-    // going to process them
-
-    let val = std::env::var("RUST_LOG").unwrap_or_default();
-
-    let level = if val.contains("hyperlight_guest") {
-        val.split(',')
-            .find(|s| s.contains("hyperlight_guest"))
-            .unwrap_or("")
-            .split('=')
-            .nth(1)
-            .unwrap_or("")
-    } else if val.contains("hyperlight_host") {
-        val.split(',')
-            .find(|s| s.contains("hyperlight_host"))
-            .unwrap_or("")
-            .split('=')
-            .nth(1)
-            .unwrap_or("")
-    } else {
-        // look for a value string that does not contain "="
-        val.split(',').find(|s| !s.contains("=")).unwrap_or("")
-    };
-
-    log::info!("Determined guest log level: {}", level);
-    // Convert the log level string to a LevelFilter
-    // If no value is found, default to Error
-    LevelFilter::from_str(level).unwrap_or(LevelFilter::Error) as u32
-}
 
 /// A trait for platform-specific interrupt handle implementation details
 pub(crate) trait InterruptHandleImpl: InterruptHandle {
@@ -543,7 +503,7 @@ pub(crate) mod tests {
         let seed = 12345u64; // Random seed
         let page_size = 4096u32; // Standard page size
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
-        let guest_max_log_level = Some(log::LevelFilter::Error);
+        let guest_max_log_level = Some(tracing_core::LevelFilter::ERROR);
 
         #[cfg(gdb)]
         let dbg_mem_access_fn = Arc::new(Mutex::new(mem_mgr.clone()));

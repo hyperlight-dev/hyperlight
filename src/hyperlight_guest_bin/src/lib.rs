@@ -25,12 +25,12 @@ use guest_function::call::dispatch_function;
 use guest_function::register::GuestFunctionRegister;
 use guest_logger::init_logger;
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::mem::HyperlightPEB;
 #[cfg(feature = "mem_profile")]
 use hyperlight_common::outb::OutBAction;
 use hyperlight_guest::exit::write_abort;
 use hyperlight_guest::guest_handle::handle::GuestHandle;
-use log::LevelFilter;
 
 // === Modules ===
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/mod.rs")]
@@ -212,15 +212,17 @@ pub(crate) extern "C" fn generic_init(peb_address: u64, seed: u64, ops: u64, max
     }
 
     // set up the logger
-    let max_log_level = LevelFilter::iter()
-        .nth(max_log_level as usize)
-        .expect("Invalid log level");
-    init_logger(max_log_level);
+    let guest_log_level_filter =
+        GuestLogFilter::try_from(max_log_level).expect("Invalid log level");
+    init_logger(guest_log_level_filter.into());
 
     // It is important that all the tracing events are produced after the tracing is initialized.
     #[cfg(feature = "trace_guest")]
-    if max_log_level != LevelFilter::Off {
-        hyperlight_guest_tracing::init_guest_tracing(guest_start_tsc, max_log_level);
+    if guest_log_level_filter != GuestLogFilter::Off {
+        hyperlight_guest_tracing::init_guest_tracing(
+            guest_start_tsc,
+            guest_log_level_filter.into(),
+        );
     }
 
     #[cfg(feature = "macros")]
