@@ -416,7 +416,7 @@ impl<'a, 'b> State<'a, 'b> {
         let Some(ref mut cnvs) = self.cur_needs_vars else {
             return;
         };
-        log::debug!("debug varref: recording {:?} for var {:?}", cnvs.iter(), un);
+        tracing::debug!("debug varref: recording {:?} for var {:?}", cnvs.iter(), un);
         self.vars_needs_vars[un].extend(cnvs.iter());
     }
     /// Get a list of all the variables needed by a var, given its absolute
@@ -426,7 +426,7 @@ impl<'a, 'b> State<'a, 'b> {
         if self.vars_needs_vars.len() < un + 1 {
             return BTreeSet::new();
         };
-        log::debug!(
+        tracing::debug!(
             "debug varref: looking up {:?} for var {:?}",
             self.vars_needs_vars[un].iter(),
             un
@@ -559,7 +559,7 @@ impl<'a, 'b> State<'a, 'b> {
             Defined::Handleable(Handleable::Var(tv)) => match tv {
                 Tyvar::Bound(n) => {
                     let bv = &self.bound_vars[self.var_offset + (*n as usize)];
-                    log::debug!("checking an origin {:?} {:?}", bv.origin, self.origin);
+                    tracing::debug!("checking an origin {:?} {:?}", bv.origin, self.origin);
                     if bv.origin.matches(self.origin.iter()) {
                         Some((*n, bv.bound.clone()))
                     } else {
@@ -588,7 +588,7 @@ impl<'a, 'b> State<'a, 'b> {
     ///
     /// Precondition: all named traits/modules must exist
     pub fn resolve_trait_immut(&self, absolute: bool, path: &[Ident]) -> &Trait {
-        log::debug!("resolving trait {:?} {:?}", absolute, path);
+        tracing::debug!("resolving trait {:?} {:?}", absolute, path);
         let mut m = if absolute {
             &*self.root_mod
         } else {
@@ -611,7 +611,7 @@ impl<'a, 'b> State<'a, 'b> {
             .enumerate()
             .for_each(|(i, vs)| {
                 *vs = vs.iter().map(|v| v + n).collect();
-                log::debug!("updated {:?} to {:?}", i, *vs);
+                tracing::debug!("updated {:?} to {:?}", i, *vs);
             });
         for _ in 0..n {
             self.vars_needs_vars.push_front(BTreeSet::new());
