@@ -234,16 +234,13 @@ mod tests {
         }
     }
 
-    fn cleanup(out_file_path: &str, cmd_file_path: &str) -> Result<()> {
-        let res1 = std::fs::remove_file(out_file_path)
-            .map_err(|e| new_error!("Failed to remove gdb.output file: {}", e));
-        let res2 = std::fs::remove_file(cmd_file_path)
-            .map_err(|e| new_error!("Failed to remove gdb-commands.txt file: {}", e));
-
-        res1?;
-        res2?;
-
-        Ok(())
+    fn cleanup(out_file_path: &str, cmd_file_path: &str) {
+        // Ignore missing files — they may not exist if the test failed early.
+        for path in [out_file_path, cmd_file_path] {
+            if let Err(e) = std::fs::remove_file(path) {
+                println!("Warning: failed to remove {} during cleanup: {}", path, e);
+            }
+        }
     }
 
     #[test]
@@ -286,10 +283,7 @@ mod tests {
 
         let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
 
-        // cleanup
-        let cleanup_result = cleanup(&out_file_path, &cmd_file_path);
-        assert!(cleanup_result.is_ok(), "{}", cleanup_result.unwrap_err());
-        // check if the test passed - done at the end to ensure cleanup is done
+        cleanup(&out_file_path, &cmd_file_path);
         assert!(result.is_ok(), "{}", result.unwrap_err());
     }
 
@@ -337,10 +331,7 @@ mod tests {
         let checker = |contents: String| contents.contains("$2 = [1.20000005, 0, 0, 0]");
         let result = run_guest_and_gdb(&cmd_file_path, &out_file_path, &cmd, checker);
 
-        // cleanup
-        let cleanup_result = cleanup(&out_file_path, &cmd_file_path);
-        assert!(cleanup_result.is_ok(), "{}", cleanup_result.unwrap_err());
-        // check if the test passed - done at the end to ensure cleanup is done
+        cleanup(&out_file_path, &cmd_file_path);
         assert!(result.is_ok(), "{}", result.unwrap_err());
     }
 }
