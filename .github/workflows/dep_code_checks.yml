@@ -64,7 +64,11 @@ jobs:
             src/tests/rust_guests/witguest -> target
 
       - name: Ensure up-to-date Cargo.lock
-        run: cargo fetch --locked
+        run: |
+          cargo fetch --locked
+          cargo fetch --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml --locked
+          cargo fetch --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml --locked
+          cargo fetch --manifest-path src/tests/rust_guests/witguest/Cargo.toml --locked
 
       - name: fmt
         run: just fmt-check
@@ -128,7 +132,11 @@ jobs:
             src/tests/rust_guests/witguest -> target
 
       - name: Ensure up-to-date Cargo.lock
-        run: cargo fetch --locked
+        run: |
+          cargo fetch --locked
+          cargo fetch --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml --locked
+          cargo fetch --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml --locked
+          cargo fetch --manifest-path src/tests/rust_guests/witguest/Cargo.toml --locked
 
       - name: fmt
         run: just fmt-check
