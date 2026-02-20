@@ -144,6 +144,14 @@ pub enum HyperlightError {
     #[error("Memory Access Violation at address {0:#x} of type {1}, but memory is marked as {2}")]
     MemoryAccessViolation(u64, MemoryRegionFlags, MemoryRegionFlags),
 
+    /// MSR Read Violation. Guest attempted to read from a Model-Specific Register
+    #[error("Guest attempted to read from MSR {0:#x}")]
+    MsrReadViolation(u32),
+
+    /// MSR Write Violation. Guest attempted to write to a Model-Specific Register
+    #[error("Guest attempted to write {1:#x} to MSR {0:#x}")]
+    MsrWriteViolation(u32, u64),
+
     /// Memory Allocation Failed.
     #[error("Memory Allocation Failed with OS Error {0:?}.")]
     MemoryAllocationFailed(Option<i32>),
@@ -320,6 +328,8 @@ impl HyperlightError {
             | HyperlightError::PoisonedSandbox
             | HyperlightError::ExecutionAccessViolation(_)
             | HyperlightError::MemoryAccessViolation(_, _, _)
+            | HyperlightError::MsrReadViolation(_)
+            | HyperlightError::MsrWriteViolation(_, _)
             | HyperlightError::SnapshotSizeMismatch(_, _)
             | HyperlightError::MemoryRegionSizeMismatch(_, _, _)
             // HyperlightVmError::Restore is already handled manually in restore(), but we mark it

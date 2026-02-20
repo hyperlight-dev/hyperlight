@@ -133,6 +133,23 @@ impl WhpVm {
 }
 
 impl VirtualMachine for WhpVm {
+    fn enable_msr_intercept(&mut self) -> std::result::Result<(), CreateVmError> {
+        let mut extended_exits_property = WHV_PARTITION_PROPERTY::default();
+        // X64MsrExit bit position (bit 1) in WHV_EXTENDED_VM_EXITS
+        // See https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/whvpartitionpropertydatatypes
+        extended_exits_property.ExtendedVmExits.AsUINT64 = 1 << 1;
+        unsafe {
+            WHvSetPartitionProperty(
+                self.partition,
+                WHvPartitionPropertyCodeExtendedVmExits,
+                &extended_exits_property as *const _ as *const _,
+                std::mem::size_of::<WHV_PARTITION_PROPERTY>() as _,
+            )
+            .map_err(|e| CreateVmError::EnableMsrIntercept(e.into()))?
+        };
+        Ok(())
+    }
+
     unsafe fn map_memory(
         &mut self,
         (_slot, region): (u32, &MemoryRegion),
@@ -272,6 +289,21 @@ impl VirtualMachine for WhpVm {
             }
             // Execution was cancelled by the host.
             WHvRunVpExitReasonCanceled => VmExit::Cancelled(),
+            WHvRunVpExitReasonX64MsrAccess => {
+                let msr_access = unsafe { exit_context.Anonymous.MsrAccess };
+                let eax = msr_access.Rax;
+                let edx = msr_access.Rdx;
+                let written_value = (edx << 32) | eax;
+                let access = unsafe { msr_access.AccessInfo.AsUINT32 };
+                match access {
+                    0 => VmExit::MsrRead(msr_access.MsrNumber),
+                    1 => VmExit::MsrWrite {
+                        msr_index: msr_access.MsrNumber,
+                        value: written_value,
+                    },
+                    _ => VmExit::Unknown(format!("Unknown MSR access type={}", access)),
+                }
+            }
             #[cfg(gdb)]
             WHvRunVpExitReasonException => {
                 let exception = unsafe { exit_context.Anonymous.VpException };
@@ -622,6 +654,90 @@ impl VirtualMachine for WhpVm {
                 buffer_size_needed,
             )
             .map_err(|e| RegisterError::SetXsave(e.into()))?;
+        }
+
+        Ok(())
+    }
+
+    fn reset_msrs(&self) -> std::result::Result<(), RegisterError> {
+        use super::MSRS_TO_RESET;
+
+        /// Map an MSR index to its WHV_REGISTER_NAME.
+        ///
+        /// WHV register names are opaque sequential IDs assigned by the
+        /// hypervisor — there is no arithmetic relationship to MSR indices.
+        /// We use the named constants from the `windows` crate where
+        /// available; DebugCtl (0x207D) has no published constant and uses
+        /// the raw value from the hypervisor source (ValX64RegisterDebugCtl).
+        const fn msr_index_to_whv_name(msr_index: u32) -> WHV_REGISTER_NAME {
+            match msr_index {
+                0x10 => WHvX64RegisterTsc,
+                0x174 => WHvX64RegisterSysenterCs,
+                0x175 => WHvX64RegisterSysenterEsp,
+                0x176 => WHvX64RegisterSysenterEip,
+                0x1D9 => WHV_REGISTER_NAME(0x207D), // DebugCtl (no windows crate constant)
+                0x277 => WHvX64RegisterPat,
+                0x2FF => WHvX64RegisterMsrMtrrDefType,
+                // Variable-range MTRRs
+                0x200 => WHvX64RegisterMsrMtrrPhysBase0,
+                0x201 => WHvX64RegisterMsrMtrrPhysMask0,
+                0x202 => WHvX64RegisterMsrMtrrPhysBase1,
+                0x203 => WHvX64RegisterMsrMtrrPhysMask1,
+                0x204 => WHvX64RegisterMsrMtrrPhysBase2,
+                0x205 => WHvX64RegisterMsrMtrrPhysMask2,
+                0x206 => WHvX64RegisterMsrMtrrPhysBase3,
+                0x207 => WHvX64RegisterMsrMtrrPhysMask3,
+                0x208 => WHvX64RegisterMsrMtrrPhysBase4,
+                0x209 => WHvX64RegisterMsrMtrrPhysMask4,
+                0x20A => WHvX64RegisterMsrMtrrPhysBase5,
+                0x20B => WHvX64RegisterMsrMtrrPhysMask5,
+                0x20C => WHvX64RegisterMsrMtrrPhysBase6,
+                0x20D => WHvX64RegisterMsrMtrrPhysMask6,
+                0x20E => WHvX64RegisterMsrMtrrPhysBase7,
+                0x20F => WHvX64RegisterMsrMtrrPhysMask7,
+                // Fixed-range MTRRs
+                0x250 => WHvX64RegisterMsrMtrrFix64k00000,
+                0x258 => WHvX64RegisterMsrMtrrFix16k80000,
+                0x259 => WHvX64RegisterMsrMtrrFix16kA0000,
+                0x268 => WHvX64RegisterMsrMtrrFix4kC0000,
+                0x269 => WHvX64RegisterMsrMtrrFix4kC8000,
+                0x26A => WHvX64RegisterMsrMtrrFix4kD0000,
+                0x26B => WHvX64RegisterMsrMtrrFix4kD8000,
+                0x26C => WHvX64RegisterMsrMtrrFix4kE0000,
+                0x26D => WHvX64RegisterMsrMtrrFix4kE8000,
+                0x26E => WHvX64RegisterMsrMtrrFix4kF0000,
+                0x26F => WHvX64RegisterMsrMtrrFix4kF8000,
+                // SYSCALL MSRs
+                0xC000_0081 => WHvX64RegisterStar,
+                0xC000_0082 => WHvX64RegisterLstar,
+                0xC000_0083 => WHvX64RegisterCstar,
+                0xC000_0084 => WHvX64RegisterSfmask,
+                0xC000_0102 => WHvX64RegisterKernelGsBase,
+                0xC000_0103 => WHvX64RegisterTscAux,
+                // Feature-dependent MSRs
+                0x48 => WHvX64RegisterSpecCtrl,
+                0x6A0 => WHvX64RegisterUCet,
+                0x6A2 => WHvX64RegisterSCet,
+                0x6A4 => WHvX64RegisterPl0Ssp,
+                0x6A5 => WHvX64RegisterPl1Ssp,
+                0x6A6 => WHvX64RegisterPl2Ssp,
+                0x6A7 => WHvX64RegisterPl3Ssp,
+                0x6A8 => WHvX64RegisterInterruptSspTableAddr,
+                0xDA0 => WHvX64RegisterXss,
+                _ => panic!("MSR index has no WHV register mapping"),
+            }
+        }
+
+        for &(msr_index, value) in MSRS_TO_RESET {
+            let reg = (
+                msr_index_to_whv_name(msr_index),
+                Align16(WHV_REGISTER_VALUE { Reg64: value }),
+            );
+            self.set_registers(std::slice::from_ref(&reg))
+                .map_err(|e| RegisterError::ResetMsr {
+                    index: msr_index,
+                    source: e.into(),
+                })?;
         }
 
         Ok(())

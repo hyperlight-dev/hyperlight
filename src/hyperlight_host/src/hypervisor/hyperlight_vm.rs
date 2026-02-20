@@ -155,6 +155,14 @@ impl DispatchGuestCallError {
                 region_flags,
             }) => HyperlightError::MemoryAccessViolation(addr, access_type, region_flags),
 
+            DispatchGuestCallError::Run(RunVmError::MsrReadViolation(msr_index)) => {
+                HyperlightError::MsrReadViolation(msr_index)
+            }
+
+            DispatchGuestCallError::Run(RunVmError::MsrWriteViolation { msr_index, value }) => {
+                HyperlightError::MsrWriteViolation(msr_index, value)
+            }
+
             // Leave others as is
             other => HyperlightVmError::DispatchGuestCall(other).into(),
         };
@@ -203,6 +211,10 @@ pub enum RunVmError {
     MmioReadUnmapped(u64),
     #[error("MMIO WRITE access to unmapped address {0:#x}")]
     MmioWriteUnmapped(u64),
+    #[error("Guest attempted to read from MSR {0:#x}")]
+    MsrReadViolation(u32),
+    #[error("Guest attempted to write {value:#x} to MSR {msr_index:#x}")]
+    MsrWriteViolation { msr_index: u32, value: u64 },
     #[error("vCPU run failed: {0}")]
     RunVcpu(#[from] RunVcpuError),
     #[error("Unexpected VM exit: {0}")]
@@ -340,7 +352,7 @@ impl HyperlightVm {
         _pml4_addr: u64,
         entrypoint: Option<u64>,
         rsp_gva: u64,
-        #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
+        config: &SandboxConfiguration,
         #[cfg(gdb)] gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] trace_info: MemTraceInfo,
@@ -350,7 +362,7 @@ impl HyperlightVm {
         #[cfg(not(gdb))]
         type VmType = Box<dyn VirtualMachine>;
 
-        let vm: VmType = match get_available_hypervisor() {
+        let mut vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
             Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
             #[cfg(mshv3)]
@@ -359,6 +371,11 @@ impl HyperlightVm {
             Some(HypervisorType::Whp) => Box::new(WhpVm::new().map_err(VmError::CreateVm)?),
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
+
+        // Enable MSR intercepts unless the user explicitly allows MSR access
+        if !config.get_allow_msr() {
+            vm.enable_msr_intercept().map_err(VmError::CreateVm)?;
+        }
 
         #[cfg(feature = "init-paging")]
         vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(_pml4_addr))
@@ -811,6 +828,12 @@ impl HyperlightVm {
                         }
                     }
                 }
+                Ok(VmExit::MsrRead(msr_index)) => {
+                    break Err(RunVmError::MsrReadViolation(msr_index));
+                }
+                Ok(VmExit::MsrWrite { msr_index, value }) => {
+                    break Err(RunVmError::MsrWriteViolation { msr_index, value });
+                }
                 Ok(VmExit::Cancelled()) => {
                     // If cancellation was not requested for this specific guest function call,
                     // the vcpu was interrupted by a stale cancellation. This can occur when:
@@ -906,6 +929,7 @@ impl HyperlightVm {
     }
 
     /// Resets the following vCPU state:
+    /// - MSRs (see [`VIRTUALIZED_MSRS`](super::virtual_machine::VIRTUALIZED_MSRS))
     /// - General purpose registers
     /// - Debug registers
     /// - XSAVE (includes FPU/SSE state with proper FCW and MXCSR defaults)
@@ -916,6 +940,8 @@ impl HyperlightVm {
         cr3: u64,
         sregs: &CommonSpecialRegisters,
     ) -> std::result::Result<(), RegisterError> {
+        self.vm.reset_msrs()?;
+
         self.vm.set_regs(&CommonRegisters {
             rflags: 1 << 1, // Reserved bit always set
             ..Default::default()

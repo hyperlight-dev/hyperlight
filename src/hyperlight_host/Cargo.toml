@@ -75,8 +75,8 @@ windows-version = "0.1"
 lazy_static = "1.4.0"
 
 [target.'cfg(unix)'.dependencies]
-kvm-bindings = { version = "0.14", features = ["fam-wrappers"], optional = true }
-kvm-ioctls = { version = "0.24", optional = true }
+kvm-bindings = { git = "https://github.com/rust-vmm/kvm", rev = "3ffc9b62af5978553f73cc0ec79fad13fdd47146", features = ["fam-wrappers"], optional = true }
+kvm-ioctls = { git = "https://github.com/rust-vmm/kvm", rev = "3ffc9b62af5978553f73cc0ec79fad13fdd47146", optional = true }
 mshv-bindings = { version = "0.6", optional = true }
 mshv-ioctls = { version = "0.6", optional = true}
 
