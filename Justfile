@@ -102,6 +102,9 @@ test-like-ci config=default-target hypervisor="kvm":
 code-checks-like-ci config=default-target hypervisor="kvm":
     @# Ensure up-to-date Cargo.lock
     cargo fetch --locked
+    cargo fetch --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml --locked
+    cargo fetch --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml --locked
+    cargo fetch --manifest-path src/tests/rust_guests/witguest/Cargo.toml --locked
 
     @# fmt
     just fmt-check

@@ -1,0 +1,177 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+# This reusable workflow updates the Cargo.lock files in guest crates when
+# Dependabot updates dependencies. Without this, Dependabot PRs only update the
+# root Cargo.lock, leaving the guest crate Cargo.lock files stale.
+#
+# See: https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automating-dependabot-with-github-actions
+
+name: Update Guest Cargo.lock for Dependabot PRs
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  pull-requests: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  update-guest-locks:
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    timeout-minutes: 15
+    steps:
+      # Fetch metadata about the Dependabot PR
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      # Only proceed for cargo ecosystem updates
+      - name: Check if cargo update
+        id: check-ecosystem
+        run: |
+          if [ "${{ steps.metadata.outputs.package-ecosystem }}" = "cargo" ]; then
+            echo "is_cargo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_cargo=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping non-cargo dependency update"
+          fi
+
+      # Get GitHub App token for pushing commits back to the PR
+      # Uses the same app as auto-merge-dependabot.yml
+      - name: Get GitHub App token
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        uses: actions/create-github-app-token@v2
+        id: get-app-token
+        with:
+          app-id: ${{ secrets.DEPENDABOT_APP_ID }}
+          private-key: ${{ secrets.DEPENDABOT_APP_KEY }}
+          permission-contents: write
+
+      - name: Checkout PR branch
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.get-app-token.outputs.token }}
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Rust toolchain
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+        with:
+          rust-toolchain: "1.89"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix cargo home permissions
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        run: |
+          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
+
+      - name: Update simpleguest Cargo.lock
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        working-directory: src/tests/rust_guests/simpleguest
+        run: cargo fetch
+
+      - name: Update dummyguest Cargo.lock
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        working-directory: src/tests/rust_guests/dummyguest
+        run: cargo fetch
+
+      - name: Update witguest Cargo.lock
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        working-directory: src/tests/rust_guests/witguest
+        run: cargo fetch
+
+      # Commits created via the Git Data API are automatically signed/verified
+      # by GitHub when authenticated as a GitHub App and no custom author or
+      # committer info is provided.
+      #
+      # References:
+      # - Signature verification for bots:
+      #   https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification#signature-verification-for-bots
+      # - How to Use Commit Signing with GitHub Apps:
+      #   https://github.com/orgs/community/discussions/50055
+      # - Git Data API (Create a commit):
+      #   https://docs.github.com/en/rest/git/commits#create-a-commit
+      - name: Commit and push changes via API
+        if: steps.check-ecosystem.outputs.is_cargo == 'true'
+        env:
+          GH_TOKEN: ${{ steps.get-app-token.outputs.token }}
+          APP_SLUG: ${{ steps.get-app-token.outputs.app-slug }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+          BRANCH: ${{ github.head_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Check if there are any changes to the guest Cargo.lock files
+          if git diff --quiet -- src/tests/rust_guests/*/Cargo.lock; then
+            echo "No changes to guest Cargo.lock files"
+            exit 0
+          fi
+
+          echo "Guest Cargo.lock files have changed, committing via API..."
+
+          # Get app identity for DCO sign-off trailer
+          # Use the app-slug output from create-github-app-token (the /app API
+          # endpoint requires JWT auth, not an installation token).
+          app_slug="${APP_SLUG}"
+          app_user_id=$(gh api "/users/${app_slug}[bot]" --jq .id)
+
+          # Get current branch HEAD and its tree
+          HEAD_SHA=$(gh api "/repos/${REPO}/git/ref/heads/${BRANCH}" --jq .object.sha)
+          BASE_TREE=$(gh api "/repos/${REPO}/git/commits/${HEAD_SHA}" --jq .tree.sha)
+
+          # Build tree entries with file content for each changed Cargo.lock.
+          # The tree API accepts "content" directly and creates blobs for us,
+          # avoiding the need for separate blob creation API calls.
+          TREE_JSON="[]"
+          for file in $(git diff --name-only -- src/tests/rust_guests/*/Cargo.lock); do
+            TREE_JSON=$(jq \
+              --arg path "$file" \
+              --arg content "$(cat "$file")" \
+              '. + [{"path": $path, "mode": "100644", "type": "blob", "content": $content}]' \
+              <<< "$TREE_JSON")
+          done
+
+          # Create a new tree with the updated files
+          NEW_TREE=$(jq -n \
+            --arg base "$BASE_TREE" \
+            --argjson tree "$TREE_JSON" \
+            '{"base_tree": $base, "tree": $tree}' | \
+            gh api "/repos/${REPO}/git/trees" --input - --jq .sha)
+
+          # Build commit message with DCO sign-off
+          SIGNOFF="${app_slug}[bot] <${app_user_id}+${app_slug}[bot]@users.noreply.github.com>"
+          COMMIT_MSG=$(printf '%s\n\n%s\n%s\n\n%s' \
+            "chore: update guest Cargo.lock files" \
+            "Automatically updated by dependabot-update-guest-locks workflow." \
+            "Triggered by: ${DEPENDENCY_NAMES}" \
+            "Signed-off-by: ${SIGNOFF}")
+
+          # Create commit via API — GitHub signs it automatically since we
+          # authenticate as the App and omit custom author/committer info.
+          NEW_COMMIT=$(jq -n \
+            --arg msg "$COMMIT_MSG" \
+            --arg tree "$NEW_TREE" \
+            --arg parent "$HEAD_SHA" \
+            '{"message": $msg, "tree": $tree, "parents": [$parent]}' | \
+            gh api "/repos/${REPO}/git/commits" --input - --jq .sha)
+
+          # Update branch ref to point to the new commit
+          gh api "/repos/${REPO}/git/refs/heads/${BRANCH}" \
+            -X PATCH \
+            -f sha="${NEW_COMMIT}"
+
+          echo "Successfully committed and pushed changes"
