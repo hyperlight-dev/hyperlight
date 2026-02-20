@@ -1,4 +1,6 @@
-# This workflow automatically updates the Cargo.lock files in guest crates when
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+# This reusable workflow updates the Cargo.lock files in guest crates when
 # Dependabot updates dependencies. Without this, Dependabot PRs only update the
 # root Cargo.lock, leaving the guest crate Cargo.lock files stale.
 #
@@ -7,24 +9,21 @@
 name: Update Guest Cargo.lock for Dependabot PRs
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'src/hyperlight_*/Cargo.toml'
-
-permissions:
-  contents: read       # Required for actions/checkout to clone the repo
-  pull-requests: read  # Required for dependabot/fetch-metadata to read PR info
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+  pull-requests: read
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   update-guest-locks:
-    # Only run for Dependabot PRs - check the PR author, not the actor
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
     timeout-minutes: 15
     steps:
@@ -109,6 +108,7 @@ jobs:
         if: steps.check-ecosystem.outputs.is_cargo == 'true'
         env:
           GH_TOKEN: ${{ steps.get-app-token.outputs.token }}
+          APP_SLUG: ${{ steps.get-app-token.outputs.app-slug }}
           DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
           BRANCH: ${{ github.head_ref }}
           REPO: ${{ github.repository }}
@@ -124,7 +124,9 @@ jobs:
           echo "Guest Cargo.lock files have changed, committing via API..."
 
           # Get app identity for DCO sign-off trailer
-          app_slug=$(gh api /app --jq .slug)
+          # Use the app-slug output from create-github-app-token (the /app API
+          # endpoint requires JWT auth, not an installation token).
+          app_slug="${APP_SLUG}"
           app_user_id=$(gh api "/users/${app_slug}[bot]" --jq .id)
 
           # Get current branch HEAD and its tree

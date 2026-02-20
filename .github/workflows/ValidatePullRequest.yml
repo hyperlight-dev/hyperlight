@@ -15,6 +15,7 @@ concurrency:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   docs-pr:
@@ -40,9 +41,24 @@ jobs:
             return all_file_count === docs_file_count;
           result-encoding: string
 
+  # Update guest Cargo.lock files for Dependabot PRs.
+  # Dependabot only updates the root Cargo.lock, leaving the guest crate
+  # Cargo.lock files stale. This job updates them before code-checks runs
+  # `cargo fetch --locked` so that the first CI run succeeds.
+  update-guest-locks:
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.actor == 'dependabot[bot]'
+    uses: ./.github/workflows/dep_update_guest_locks.yml
+    secrets: inherit
+
   # Build guests once, upload as artifacts for other jobs to download
   build-guests:
-    needs: docs-pr
+    needs: [docs-pr, update-guest-locks]
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
     strategy:
       fail-fast: true
       matrix:
@@ -55,7 +71,11 @@ jobs:
 
   # Code checks (fmt, clippy, MSRV) - runs in parallel with build-guests
   code-checks:
-    needs: docs-pr
+    needs: [docs-pr, update-guest-locks]
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
     uses: ./.github/workflows/dep_code_checks.yml
     secrets: inherit
     with:
@@ -66,6 +86,10 @@ jobs:
     needs:
       - docs-pr
       - build-guests
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
     strategy:
       fail-fast: true
       matrix:
@@ -85,6 +109,10 @@ jobs:
     needs:
       - docs-pr
       - build-guests
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
     strategy:
       fail-fast: true
       matrix:
@@ -104,6 +132,10 @@ jobs:
     needs:
       - docs-pr
       - build-guests
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
     strategy:
       fail-fast: true
       matrix:
@@ -120,6 +152,10 @@ jobs:
     needs:
       - docs-pr
       - build-guests
+    # Required because update-guest-locks is skipped on non-dependabot PRs,
+    # and a skipped dependency transitively skips all downstream jobs.
+    # See: https://github.com/actions/runner/issues/2205
+    if: ${{ !cancelled() && !failure() }}
     uses: ./.github/workflows/dep_fuzzing.yml
     with:
       targets: '["fuzz_host_print", "fuzz_guest_call", "fuzz_host_call", "fuzz_guest_estimate_trace_event", "fuzz_guest_trace"]' # Pass as a JSON array
@@ -148,6 +184,7 @@ jobs:
   report-ci-status:
     needs:
       - docs-pr
+      - update-guest-locks
       - build-guests
       - code-checks
       - build-test
