@@ -351,6 +351,29 @@ pub(crate) trait VirtualMachine: Debug + Send {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::hypervisor::regs::{CommonSegmentRegister, CommonTableRegister};
+
+    fn boxed_vm() -> Box<dyn VirtualMachine> {
+        let available_vm = get_available_hypervisor().as_ref().unwrap();
+        match available_vm {
+            #[cfg(kvm)]
+            HypervisorType::Kvm => {
+                use crate::hypervisor::virtual_machine::kvm::KvmVm;
+                Box::new(KvmVm::new().unwrap())
+            }
+            #[cfg(mshv3)]
+            HypervisorType::Mshv => {
+                use crate::hypervisor::virtual_machine::mshv::MshvVm;
+                Box::new(MshvVm::new().unwrap())
+            }
+            #[cfg(target_os = "windows")]
+            HypervisorType::Whp => {
+                use crate::hypervisor::virtual_machine::whp::WhpVm;
+                Box::new(WhpVm::new().unwrap())
+            }
+        }
+    }
 
     #[test]
     // TODO: add support for testing on WHP
@@ -369,5 +392,211 @@ mod tests {
                 assert!(!super::is_hypervisor_present());
             }
         }
+    }
+
+    #[test]
+    fn regs() {
+        let vm = boxed_vm();
+
+        let regs = CommonRegisters {
+            rax: 1,
+            rbx: 2,
+            rcx: 3,
+            rdx: 4,
+            rsi: 5,
+            rdi: 6,
+            rsp: 7,
+            rbp: 8,
+            r8: 9,
+            r9: 10,
+            r10: 11,
+            r11: 12,
+            r12: 13,
+            r13: 14,
+            r14: 15,
+            r15: 16,
+            rip: 17,
+            rflags: 0x2,
+        };
+
+        vm.set_regs(&regs).unwrap();
+        let read_regs = vm.regs().unwrap();
+        assert_eq!(regs, read_regs);
+    }
+
+    #[test]
+    fn fpu() {
+        let vm = boxed_vm();
+
+        // x87 FPU registers are 80-bit (10 bytes), stored in 16-byte slots for alignment.
+        // Only the first 10 bytes are preserved; the remaining 6 bytes are reserved/zeroed.
+        // See Intel® 64 and IA-32 Architectures SDM, Vol. 1, Sec. 10.5.1.1 (x87 State)
+        let fpr_entry: [u8; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0];
+        let fpu = CommonFpu {
+            fpr: [fpr_entry; 8],
+            fcw: 2,
+            fsw: 3,
+            ftwx: 4,
+            last_opcode: 5,
+            last_ip: 6,
+            last_dp: 7,
+            xmm: [[8; 16]; 16],
+            mxcsr: 9,
+        };
+        vm.set_fpu(&fpu).unwrap();
+        #[cfg_attr(not(kvm), allow(unused_mut))]
+        let mut read_fpu = vm.fpu().unwrap();
+        #[cfg(kvm)]
+        {
+            read_fpu.mxcsr = fpu.mxcsr; // KVM get/set fpu does not preserve mxcsr
+        }
+        assert_eq!(fpu, read_fpu);
+    }
+
+    #[test]
+    fn sregs() {
+        let vm = boxed_vm();
+
+        let segment = CommonSegmentRegister {
+            base: 1,
+            limit: 2,
+            selector: 3,
+            type_: 3,
+            present: 1,
+            dpl: 1,
+            db: 0,
+            s: 1,
+            l: 1,
+            g: 0,
+            avl: 1,
+            unusable: 0,
+            padding: 0,
+        };
+
+        let cs_segment = CommonSegmentRegister {
+            base: 1,
+            limit: 0xFFFF,
+            selector: 0x08,
+            type_: 0b1011, // code segment, execute/read, accessed
+            present: 1,
+            dpl: 1,
+            db: 0, // must be 0 in 64-bit mode
+            s: 1,
+            l: 1, // 64-bit mode
+            g: 0, // KVM normalizes g to 0 for segments with small limits
+            avl: 1,
+            unusable: 0,
+            padding: 0,
+        };
+        let table = CommonTableRegister {
+            base: 12,
+            limit: 13,
+        };
+        let sregs = CommonSpecialRegisters {
+            cs: cs_segment,
+            ds: segment,
+            es: segment,
+            fs: segment,
+            gs: segment,
+            ss: segment,
+            tr: segment,
+            ldt: segment,
+            gdt: table,
+            idt: table,
+            cr0: 0x80000011, // bit 0 (PE) + bit 4 (ET) + bit 31 (PG)
+            cr2: 2,
+            cr3: 3,
+            cr4: 0x20,
+            cr8: 5,
+            efer: 0x500,
+            apic_base: 0xFEE00900,
+            interrupt_bitmap: [0; 4],
+        };
+        vm.set_sregs(&sregs).unwrap();
+        let read_sregs = vm.sregs().unwrap();
+        assert_eq!(sregs, read_sregs);
+    }
+
+    /// Helper to create a page-aligned memory region for testing
+    #[cfg(any(kvm, mshv3))]
+    fn create_test_memory(size: usize) -> crate::mem::shared_mem::ExclusiveSharedMemory {
+        use hyperlight_common::mem::PAGE_SIZE_USIZE;
+        let aligned_size = size.div_ceil(PAGE_SIZE_USIZE) * PAGE_SIZE_USIZE;
+        crate::mem::shared_mem::ExclusiveSharedMemory::new(aligned_size).unwrap()
+    }
+
+    /// Helper to create a MemoryRegion from ExclusiveSharedMemory
+    #[cfg(any(kvm, mshv3))]
+    fn region_for_test_memory(
+        mem: &crate::mem::shared_mem::ExclusiveSharedMemory,
+        guest_base: usize,
+        flags: crate::mem::memory_region::MemoryRegionFlags,
+    ) -> MemoryRegion {
+        use crate::mem::memory_region::MemoryRegionType;
+        use crate::mem::shared_mem::SharedMemory;
+        let ptr = mem.base_addr();
+        let len = mem.mem_size();
+        MemoryRegion {
+            host_region: ptr..(ptr + len),
+            guest_region: guest_base..(guest_base + len),
+            flags,
+            region_type: MemoryRegionType::Heap,
+        }
+    }
+
+    #[test]
+    #[cfg(any(kvm, mshv3))] // Requires memory mapping support (TODO on WHP)
+    fn map_memory() {
+        use crate::mem::memory_region::MemoryRegionFlags;
+
+        let mut vm = boxed_vm();
+
+        let mem1 = create_test_memory(4096);
+        let guest_addr: usize = 0x1000;
+        let region = region_for_test_memory(
+            &mem1,
+            guest_addr,
+            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
+        );
+
+        // SAFETY: The memory region points to valid memory allocated by ExclusiveSharedMemory,
+        // and will live until we drop mem1 at the end of the test.
+        // Slot 0 is not already mapped.
+        unsafe {
+            vm.map_memory((0, &region)).unwrap();
+        }
+
+        // Unmap the region
+        vm.unmap_memory((0, &region)).unwrap();
+
+        // Unmapping a region that was already unmapped should fail
+        vm.unmap_memory((0, &region)).unwrap_err();
+
+        // Unmapping a region that was never mapped should fail
+        vm.unmap_memory((99, &region)).unwrap_err();
+
+        // Re-map the same region to a different slot
+        // SAFETY: Same as above - memory is still valid and slot 1 is not mapped.
+        unsafe {
+            vm.map_memory((1, &region)).unwrap();
+        }
+
+        // Map a second region to a different slot
+        let mem2 = create_test_memory(4096);
+        let guest_addr2: usize = 0x2000;
+        let region2 = region_for_test_memory(
+            &mem2,
+            guest_addr2,
+            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
+        );
+
+        // SAFETY: Memory is valid from ExclusiveSharedMemory, slot 2 is not mapped.
+        unsafe {
+            vm.map_memory((2, &region2)).unwrap();
+        }
+
+        // Clean up: unmap both regions
+        vm.unmap_memory((1, &region)).unwrap();
+        vm.unmap_memory((2, &region2)).unwrap();
     }
 }
