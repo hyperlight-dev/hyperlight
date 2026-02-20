@@ -229,10 +229,6 @@ pub enum HyperlightError {
     #[error("Snapshot Size Mismatch: Memory Size {0:?} Snapshot Size {1:?}")]
     SnapshotSizeMismatch(usize, usize),
 
-    /// Stack overflow detected in guest
-    #[error("Stack overflow detected")]
-    StackOverflow(),
-
     /// Tried to restore snapshot to a sandbox that is not the same as the one the snapshot was taken from
     #[error("Snapshot was taken from a different sandbox")]
     SnapshotSandboxMismatch,
@@ -323,7 +319,6 @@ impl HyperlightError {
             | HyperlightError::ExecutionCanceledByHost()
             | HyperlightError::PoisonedSandbox
             | HyperlightError::ExecutionAccessViolation(_)
-            | HyperlightError::StackOverflow()
             | HyperlightError::MemoryAccessViolation(_, _, _)
             | HyperlightError::SnapshotSizeMismatch(_, _)
             | HyperlightError::MemoryRegionSizeMismatch(_, _, _)
