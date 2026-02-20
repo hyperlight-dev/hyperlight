@@ -80,9 +80,9 @@ pub fn read_n_bytes_from_user_memory(num: u64) -> Result<Vec<u8>> {
 ///
 /// This function requires memory to be setup to be used. In particular, the
 /// existence of the input and output memory regions.
-pub fn print_output_with_host_print(function_call: &FunctionCall) -> Result<Vec<u8>> {
+pub fn print_output_with_host_print(function_call: FunctionCall) -> Result<Vec<u8>> {
     let handle = unsafe { GUEST_HANDLE };
-    if let ParameterValue::String(message) = function_call.parameters.clone().unwrap()[0].clone() {
+    if let ParameterValue::String(message) = function_call.parameters.unwrap().remove(0) {
         let res = handle.call_host_function::<i32>(
             "HostPrint",
             Some(Vec::from(&[ParameterValue::String(message.to_string())])),

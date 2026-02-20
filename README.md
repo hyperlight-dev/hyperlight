@@ -97,11 +97,10 @@ pub extern "C" fn hyperlight_main() {
     // any initialization code goes here
 }
 
-#[no_mangle]
-pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
+hyperlight_guest_bin::guest_dispatch!(|function_call| {
     let function_name = function_call.function_name;
     bail!(ErrorCode::GuestFunctionNotFound => "{function_name}");
-}
+});
 ```
 
 Build the guest using [cargo-hyperlight](https://github.com/hyperlight-dev/cargo-hyperlight):

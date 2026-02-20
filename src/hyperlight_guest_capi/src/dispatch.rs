@@ -18,18 +18,17 @@ use alloc::boxed::Box;
 use alloc::slice;
 use alloc::vec::Vec;
 use core::ffi::{CStr, c_char};
-use core::mem;
 
-use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ReturnType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
-use hyperlight_guest::error::{HyperlightGuestError, Result};
+use hyperlight_guest::error::HyperlightGuestError;
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::GuestFunctionRegister;
 use hyperlight_guest_bin::host_comm::call_host_function_without_returning_result;
 
 use crate::types::{FfiFunctionCall, FfiVec};
-static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister = GuestFunctionRegister::new();
+static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister<CGuestFunc> =
+    GuestFunctionRegister::new();
 
 type CGuestFunc = extern "C" fn(&FfiFunctionCall) -> Box<FfiVec>;
 
@@ -39,8 +38,7 @@ unsafe extern "C" {
     fn c_guest_dispatch_function(function_call: &FfiFunctionCall) -> *mut FfiVec;
 }
 
-#[unsafe(no_mangle)]
-pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
+hyperlight_guest_bin::guest_dispatch!(|function_call| {
     // Use &raw const to get an immutable reference to the static HashMap
     // this is to avoid the clippy warning "shared reference to mutable static"
     if let Some(registered_func) =
@@ -55,10 +53,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
         registered_func.verify_parameters(&function_call_parameter_types)?;
 
         let ffi_func_call = FfiFunctionCall::from_function_call(function_call)?;
-
-        let guest_func =
-            unsafe { mem::transmute::<usize, CGuestFunc>(registered_func.function_pointer) };
-        let function_result = guest_func(&ffi_func_call);
+        let function_result = (registered_func.function_pointer)(&ffi_func_call);
 
         unsafe { Ok(FfiVec::into_vec(*function_result)) }
     } else {
@@ -80,7 +75,7 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
             Ok(unsafe { FfiVec::into_vec(*result) })
         }
     }
-}
+});
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_register_function_definition(
@@ -94,8 +89,7 @@ pub extern "C" fn hl_register_function_definition(
 
     let func_params = unsafe { slice::from_raw_parts(params_type, param_no).to_vec() };
 
-    let func_def =
-        GuestFunctionDefinition::new(func_name, func_params, return_type, func_ptr as usize);
+    let func_def = GuestFunctionDefinition::new(func_name, func_params, return_type, func_ptr);
 
     // Use &raw mut to get a mutable raw pointer, then dereference it
     // this is to avoid the clippy warning "shared reference to mutable static"
