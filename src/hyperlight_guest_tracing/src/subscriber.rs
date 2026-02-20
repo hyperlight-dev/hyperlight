@@ -20,7 +20,7 @@ use alloc::sync::Arc;
 use spin::Mutex;
 use tracing_core::span::{Attributes, Id, Record};
 use tracing_core::subscriber::Subscriber;
-use tracing_core::{Event, Metadata};
+use tracing_core::{Event, LevelFilter, Metadata};
 
 use crate::state::GuestState;
 
@@ -31,22 +31,29 @@ pub(crate) struct GuestSubscriber {
     /// A reference to this state is stored in a static variable
     /// so it can be accessed from the guest tracing API
     state: Arc<Mutex<GuestState>>,
+    /// Maximum log level to record
+    max_log_level: LevelFilter,
 }
 
 impl GuestSubscriber {
-    pub(crate) fn new(guest_start_tsc: u64) -> Self {
+    /// Creates a new `GuestSubscriber` with the given guest start TSC and maximum log level
+    pub(crate) fn new(guest_start_tsc: u64, filter: LevelFilter) -> Self {
         Self {
             state: Arc::new(Mutex::new(GuestState::new(guest_start_tsc))),
+            max_log_level: filter,
         }
     }
+    /// Returns a reference to the internal state of the subscriber
+    /// This is used to access the spans and events collected by the subscriber
     pub(crate) fn state(&self) -> &Arc<Mutex<GuestState>> {
         &self.state
     }
 }
 
 impl Subscriber for GuestSubscriber {
-    fn enabled(&self, _md: &Metadata<'_>) -> bool {
-        true
+    fn enabled(&self, md: &Metadata<'_>) -> bool {
+        // Check if the metadata level is less than or equal to the maximum log level filter
+        self.max_log_level >= *md.level()
     }
 
     fn new_span(&self, attrs: &Attributes<'_>) -> Id {
