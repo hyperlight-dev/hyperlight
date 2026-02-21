@@ -16,7 +16,6 @@ env:
 
 permissions:
   contents: read
-  pull-requests: read
 
 defaults:
   run:
@@ -27,28 +26,9 @@ jobs:
     runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
     timeout-minutes: 15
     steps:
-      # Fetch metadata about the Dependabot PR
-      - name: Dependabot metadata
-        id: metadata
-        uses: dependabot/fetch-metadata@v2
-        with:
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
-
-      # Only proceed for cargo ecosystem updates
-      - name: Check if cargo update
-        id: check-ecosystem
-        run: |
-          if [ "${{ steps.metadata.outputs.package-ecosystem }}" = "cargo" ]; then
-            echo "is_cargo=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_cargo=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping non-cargo dependency update"
-          fi
-
       # Get GitHub App token for pushing commits back to the PR
       # Uses the same app as auto-merge-dependabot.yml
       - name: Get GitHub App token
-        if: steps.check-ecosystem.outputs.is_cargo == 'true'
         uses: actions/create-github-app-token@v2
         id: get-app-token
         with:
@@ -57,7 +37,6 @@ jobs:
           permission-contents: write
 
       - name: Checkout PR branch
-        if: steps.check-ecosystem.outputs.is_cargo == 'true'
         uses: actions/checkout@v6
         with:
           token: ${{ steps.get-app-token.outputs.token }}
@@ -66,7 +45,6 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust toolchain
-        if: steps.check-ecosystem.outputs.is_cargo == 'true'
         uses: hyperlight-dev/ci-setup-workflow@v1.8.0
         with:
           rust-toolchain: "1.89"
@@ -74,22 +52,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fix cargo home permissions
-        if: steps.check-ecosystem.outputs.is_cargo == 'true'
         run: |
           sudo chown -R $(id -u):$(id -g) /opt/cargo || true
 
       - name: Update simpleguest Cargo.lock
-        if: steps.check-ecosystem.outputs.is_cargo == 'true'
         working-directory: src/tests/rust_guests/simpleguest
         run: cargo fetch
 
       - name: Update dummyguest Cargo.lock
-        if: steps.check-ecosystem.outputs.is_cargo == 'true'
         working-directory: src/tests/rust_guests/dummyguest
         run: cargo fetch
 
       - name: Update witguest Cargo.lock
-        if: steps.check-ecosystem.outputs.is_cargo == 'true'
         working-directory: src/tests/rust_guests/witguest
         run: cargo fetch
 
@@ -105,11 +79,10 @@ jobs:
       # - Git Data API (Create a commit):
       #   https://docs.github.com/en/rest/git/commits#create-a-commit
       - name: Commit and push changes via API
-        if: steps.check-ecosystem.outputs.is_cargo == 'true'
         env:
           GH_TOKEN: ${{ steps.get-app-token.outputs.token }}
           APP_SLUG: ${{ steps.get-app-token.outputs.app-slug }}
-          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
           BRANCH: ${{ github.head_ref }}
           REPO: ${{ github.repository }}
         run: |
@@ -157,7 +130,7 @@ jobs:
           COMMIT_MSG=$(printf '%s\n\n%s\n%s\n\n%s' \
             "chore: update guest Cargo.lock files" \
             "Automatically updated by dependabot-update-guest-locks workflow." \
-            "Triggered by: ${DEPENDENCY_NAMES}" \
+            "Triggered by: ${PR_TITLE}" \
             "Signed-off-by: ${SIGNOFF}")
 
           # Create commit via API — GitHub signs it automatically since we

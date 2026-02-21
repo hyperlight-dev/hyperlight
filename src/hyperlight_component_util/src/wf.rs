@@ -117,13 +117,6 @@ pub enum Error<'a> {
     DuplicateRecordField(Name<'a>),
     /// A variant has multiple cases with the same name
     DuplicateVariantField(Name<'a>),
-    /// A variant case is marked as refining another case, but that
-    /// case does not exist
-    NonexistentVariantRefinement(u32),
-    /// A variant case is marked as refining another case, but its
-    /// associated value is not a subtype of the value of the refined
-    /// case
-    IncompatibleVariantRefinement(subtype::Error<'a>),
     /// A flags has multiple flags with the same name
     DuplicateFlagsName(Name<'a>),
     /// An enum has multiple cases with the same name
@@ -181,15 +174,6 @@ impl<'p, 'a> Ctx<'p, 'a> {
             |&vc| vc.name.name,
             |vc| Error::DuplicateVariantField(vc.name),
         )?;
-        for vc in vcs {
-            if let Some(ri) = vc.refines {
-                let rvc = vcs
-                    .get(ri as usize)
-                    .ok_or(Error::NonexistentVariantRefinement(ri))?;
-                self.subtype_value_option(&vc.ty, &rvc.ty)
-                    .map_err(Error::IncompatibleVariantRefinement)?;
-            }
-        }
         Ok(())
     }
     fn wf_value<'r>(&'r self, p: ValueTypePosition, vt: &'r Value<'a>) -> Result<(), Error<'a>> {

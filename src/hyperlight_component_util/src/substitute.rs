@@ -77,7 +77,6 @@ where
                 Ok(VariantCase {
                     name: vc.name,
                     ty: self.value_option(&vc.ty)?,
-                    refines: vc.refines,
                 })
             })
             .collect()

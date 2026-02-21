@@ -46,9 +46,7 @@ jobs:
   # Cargo.lock files stale. This job updates them before code-checks runs
   # `cargo fetch --locked` so that the first CI run succeeds.
   update-guest-locks:
-    if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.actor == 'dependabot[bot]'
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     uses: ./.github/workflows/dep_update_guest_locks.yml
     secrets: inherit
 

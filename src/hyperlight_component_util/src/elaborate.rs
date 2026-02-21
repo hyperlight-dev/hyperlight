@@ -402,7 +402,6 @@ impl<'p, 'a> Ctx<'p, 'a> {
                         Ok(VariantCase {
                             name: Name { name: vc.name },
                             ty: vc.ty.as_ref().map(|ty| self.elab_value(ty)).transpose()?,
-                            refines: vc.refines,
                         })
                     })
                     .collect::<Result<Vec<_>, Error<'a>>>()?;
@@ -433,7 +432,7 @@ impl<'p, 'a> Ctx<'p, 'a> {
                 Defined::Handleable(h) => Ok(Value::Borrow(h.clone())),
                 _ => Err(Error::HandleToNonResource),
             },
-            ComponentDefinedType::FixedSizeList(vt, size) => {
+            ComponentDefinedType::FixedLengthList(vt, size) => {
                 Ok(Value::FixList(Box::new(self.elab_value(vt)?), *size))
             }
             ComponentDefinedType::Future(_) | ComponentDefinedType::Stream(_) => {
