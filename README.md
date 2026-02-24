@@ -69,10 +69,30 @@ fn main() -> hyperlight_host::Result<()> {
 
 ### Guest
 
+First, create a `Cargo.toml` with the required dependencies:
+
+```toml
+[package]
+name = "my-hyperlight-guest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hyperlight-guest = "0.12"
+hyperlight-guest-bin = "0.12"
+hyperlight-common = { version = "0.12", default-features = false }
+```
+
+> **Important:** The `hyperlight-common` crate must have `default-features = false` to avoid pulling in
+> the standard library, which conflicts with the `no_std` requirement for guests.
+
+Then, create `src/main.rs`:
+
 ```rust
 #![no_std]
 #![no_main]
 extern crate alloc;
+extern crate hyperlight_guest_bin;
 
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -106,10 +126,14 @@ pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
 
 Build the guest using [cargo-hyperlight](https://github.com/hyperlight-dev/cargo-hyperlight):
 
-```
+```sh
 cargo install --locked cargo-hyperlight
 cargo hyperlight build
 ```
+
+> **Note:** You must use `cargo hyperlight build` instead of the regular `cargo build` command.
+> The `cargo-hyperlight` tool sets up the required custom target, sysroot, and compiler flags
+> that are necessary for building Hyperlight guests.
 
 For additional examples of using the Hyperlight host Rust library, see
 the [./src/hyperlight_host/examples](./src/hyperlight_host/examples) directory.
@@ -198,6 +222,8 @@ your user is a member of that group.
 
 For more details on how to verify that KVM is correctly installed and permissions are correct, follow the
 guide [here](https://help.ubuntu.com/community/KVM/Installation).
+
+For additional debugging tips, including common build and runtime issues, see the [How to build a Hyperlight guest binary](./docs/how-to-build-a-hyperlight-guest-binary.md) guide.
 
 ### Or you can use a codespace
 
