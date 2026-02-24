@@ -379,11 +379,10 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
     #[cfg(target_os = "windows")]
     group.sample_size(10); // This benchmark is very slow on Windows, so we reduce the sample size to avoid long test runs.
 
-    // This benchmark includes time to first clone a vector and string, so it is not a "pure' benchmark of the guest call, but it's still useful
     group.bench_function("guest_call_with_large_parameters", |b| {
         const SIZE: usize = 50 * 1024 * 1024; // 50 MB
         let large_vec = vec![0u8; SIZE];
-        let large_string = unsafe { String::from_utf8_unchecked(large_vec.clone()) }; // Safety: indeed above vec is valid utf8
+        let large_string = String::from_utf8(large_vec.clone()).unwrap();
 
         let mut config = SandboxConfiguration::default();
         config.set_input_data_size(2 * SIZE + (1024 * 1024)); // 2 * SIZE + 1 MB, to allow 1MB for the rest of the serialized function call
@@ -397,11 +396,14 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         .unwrap();
         let mut sandbox = sandbox.evolve().unwrap();
 
-        b.iter(|| {
-            sandbox
-                .call::<()>("LargeParameters", (large_vec.clone(), large_string.clone()))
-                .unwrap();
-        });
+        b.iter_with_setup(
+            || (large_vec.clone(), large_string.clone()),
+            |(vec_clone, string_clone)| {
+                sandbox
+                    .call::<()>("LargeParameters", (vec_clone, string_clone))
+                    .unwrap()
+            },
+        );
     });
 
     group.finish();
