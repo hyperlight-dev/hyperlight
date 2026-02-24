@@ -133,7 +133,7 @@ pub enum MemoryRegionType {
 /// A trait that distinguishes between different kinds of memory region representations.
 ///
 /// This trait is used to parameterize [`MemoryRegion_`]
-pub(crate) trait MemoryRegionKind {
+pub trait MemoryRegionKind {
     /// The type used to represent host memory addresses.
     type HostBaseType: Copy;
 
@@ -152,7 +152,7 @@ pub(crate) trait MemoryRegionKind {
 /// Type for memory regions that track both host and guest addresses.
 ///
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub(crate) struct HostGuestMemoryRegion {}
+pub struct HostGuestMemoryRegion {}
 
 #[cfg(not(target_os = "windows"))]
 impl MemoryRegionKind for HostGuestMemoryRegion {
@@ -233,7 +233,7 @@ impl MemoryRegionKind for GuestMemoryRegion {
 /// represents a single memory region inside the guest. All memory within a region has
 /// the same memory permissions
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct MemoryRegion_<K: MemoryRegionKind> {
+pub struct MemoryRegion_<K: MemoryRegionKind> {
     /// the range of guest memory addresses
     pub guest_region: Range<usize>,
     /// the range of host memory addresses
@@ -246,7 +246,7 @@ pub(crate) struct MemoryRegion_<K: MemoryRegionKind> {
     pub region_type: MemoryRegionType,
 }
 
-pub(crate) type MemoryRegion = MemoryRegion_<HostGuestMemoryRegion>;
+pub type MemoryRegion = MemoryRegion_<HostGuestMemoryRegion>;
 
 #[cfg_attr(not(feature = "init-paging"), allow(unused))]
 pub(crate) struct MemoryRegionVecBuilder<K: MemoryRegionKind> {

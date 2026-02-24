@@ -139,6 +139,7 @@ pub struct ExclusiveSharedMemory {
     region: Arc<HostMapping>,
 }
 unsafe impl Send for ExclusiveSharedMemory {}
+unsafe impl Sync for ExclusiveSharedMemory {}
 
 /// A GuestSharedMemory is used to represent
 /// the reference to all-of-memory that is taken by the virtual cpu.
@@ -148,7 +149,7 @@ unsafe impl Send for ExclusiveSharedMemory {}
 /// unit that likely can't be discovered by the compiler) that _rust_
 /// users do not perform racy accesses to the guest communication
 /// buffers that are also accessed by HostSharedMemory.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct GuestSharedMemory {
     region: Arc<HostMapping>,
     /// The lock that indicates this shared memory is being used by non-Rust code
@@ -164,6 +165,7 @@ pub struct GuestSharedMemory {
     pub lock: Arc<RwLock<()>>,
 }
 unsafe impl Send for GuestSharedMemory {}
+unsafe impl Sync for GuestSharedMemory {}
 
 /// A HostSharedMemory allows synchronized accesses to guest
 /// communication buffers, allowing it to be used concurrently with a
@@ -325,6 +327,7 @@ pub struct HostSharedMemory {
     lock: Arc<RwLock<()>>,
 }
 unsafe impl Send for HostSharedMemory {}
+unsafe impl Sync for HostSharedMemory {}
 
 impl ExclusiveSharedMemory {
     /// Create a new region of shared memory with the given minimum
@@ -772,33 +775,26 @@ pub trait SharedMemory {
         f: F,
     ) -> Result<T>;
 
-    /// Restore a SharedMemory from a snapshot with matching size
-    fn restore_from_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
-        if snapshot.memory().len() != self.mem_size() {
-            return Err(SnapshotSizeMismatch(self.mem_size(), snapshot.mem_size()));
-        }
-        self.with_exclusivity(|e| e.copy_from_slice(snapshot.memory(), 0))?
-    }
-
     /// Zero a shared memory region
     fn zero(&mut self) -> Result<()> {
+        eprintln!("zeroing {} bytes via copy", self.mem_size());
         self.with_exclusivity(|e| {
             #[allow(unused_mut)] // unused on some platforms, although not others
             let mut do_copy = true;
             // TODO: Compare & add heuristic thresholds: mmap, MADV_DONTNEED, MADV_REMOVE, MADV_FREE (?)
             // TODO: Find a similar lazy zeroing approach that works on MSHV.
             //       (See Note [Keeping mappings in sync between userspace and the guest])
-            #[cfg(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))))]
-            unsafe {
-                let ret = libc::madvise(
-                    e.region.ptr as *mut libc::c_void,
-                    e.region.size,
-                    libc::MADV_DONTNEED,
-                );
-                if ret == 0 {
-                    do_copy = false;
-                }
-            }
+            //#[cfg(all(target_os = "linux", feature = "kvm", not(any(feature = "mshv3"))))]
+            //unsafe {
+            //    let ret = libc::madvise(
+            //        e.region.ptr as *mut libc::c_void,
+            //        e.region.size,
+            //        libc::MADV_DONTNEED,
+            //    );
+            //    if ret == 0 {
+            //        do_copy = false;
+            //    }
+            //}
             if do_copy {
                 e.as_mut_slice().fill(0);
             }

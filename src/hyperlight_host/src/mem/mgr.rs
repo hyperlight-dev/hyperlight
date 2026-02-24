@@ -177,6 +177,7 @@ where
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
+        new_scratch_size: Option<usize>,
     ) -> Result<Snapshot> {
         Snapshot::new(
             &mut self.shared_mem,
@@ -189,15 +190,18 @@ where
             rsp_gva,
             sregs,
             entrypoint,
+            new_scratch_size,
         )
     }
 }
 
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
-    pub(crate) fn from_snapshot(s: &Snapshot) -> Result<Self> {
+    pub(crate) fn from_snapshot(s: &mut Snapshot) -> Result<Self> {
         let layout = *s.layout();
         let mut shared_mem = ExclusiveSharedMemory::new(s.mem_size())?;
-        shared_mem.copy_from_slice(s.memory(), 0)?;
+        s.memory.0.with_exclusivity(|e|
+            shared_mem.copy_from_slice(e.as_slice(), 0)
+        )??;
         let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
         let entrypoint = s.entrypoint();
         Ok(Self::new(layout, shared_mem, scratch_mem, entrypoint))
@@ -342,20 +346,24 @@ impl SandboxMemoryManager<HostSharedMemory> {
         &mut self,
         snapshot: &Snapshot,
     ) -> Result<(Option<GuestSharedMemory>, Option<GuestSharedMemory>)> {
-        let gsnapshot = if self.shared_mem.mem_size() == snapshot.mem_size() {
-            None
-        } else {
-            let new_snapshot_mem = ExclusiveSharedMemory::new(snapshot.mem_size())?;
-            let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
-            self.shared_mem = hsnapshot;
-            Some(gsnapshot)
-        };
-        self.shared_mem.restore_from_snapshot(snapshot)?;
+        // let gsnapshot = if self.shared_mem.mem_size() == snapshot.mem_size() {
+        //     None
+        // } else {
+        //     eprintln!("needed to make a new snapshot SHM");
+        //     let new_snapshot_mem = ExclusiveSharedMemory::new(snapshot.mem_size())?;
+        //     let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
+        //     self.shared_mem = hsnapshot;
+        //     Some(gsnapshot)
+        // };
+        // self.shared_mem.restore_from_snapshot(snapshot)?;
+        self.shared_mem = snapshot.memory.0.clone();
+        let gsnapshot = Some(snapshot.memory.1.clone());
         let new_scratch_size = snapshot.layout().get_scratch_size();
         let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
             self.scratch_mem.zero()?;
             None
         } else {
+            eprintln!("needed to make a new scratch SHM");
             let new_scratch_mem = ExclusiveSharedMemory::new(new_scratch_size)?;
             let (hscratch, gscratch) = new_scratch_mem.build();
             // Even though this destroys the reference to the host

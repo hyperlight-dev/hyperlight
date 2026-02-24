@@ -195,6 +195,7 @@ pub struct CowMapping {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum MappingKind {
+    Unmapped,
     Basic(BasicMapping),
     Cow(CowMapping),
     /* TODO: What useful things other than basic mappings actually

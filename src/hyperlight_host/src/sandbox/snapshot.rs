@@ -27,7 +27,7 @@ use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::GuestPageTableBuffer;
-use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory, GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
 
@@ -70,7 +70,7 @@ pub struct Snapshot {
     /// configuration id will share the same layout
     layout: crate::mem::layout::SandboxMemoryLayout,
     /// Memory of the sandbox at the time this snapshot was taken
-    memory: Vec<u8>,
+    pub(crate) memory: (HostSharedMemory, GuestSharedMemory),
     /// The memory regions that were mapped when this snapshot was
     /// taken (excluding initial sandbox regions)
     regions: Vec<MemoryRegion>,
@@ -115,18 +115,13 @@ impl hyperlight_common::vmem::TableReadOps for Snapshot {
     }
     unsafe fn read_entry(&self, addr: u64) -> u64 {
         let addr = addr as usize;
-        let Some(pte_bytes) = self.memory.as_slice().get(addr..addr + 8) else {
+        self.memory.0.read::<u64>(addr).unwrap_or_else(|_| {
             // Attacker-controlled data pointed out-of-bounds. We'll
             // default to returning 0 in this case, which, for most
             // architectures (including x86-64 and arm64, the ones we
             // care about presently) will be a not-present entry.
             return 0;
-        };
-        // this is statically the correct size, so using unwrap() here
-        // doesn't make this any more panic-y.
-        #[allow(clippy::unwrap_used)]
-        let n: [u8; 8] = pte_bytes.try_into().unwrap();
-        u64::from_ne_bytes(n)
+        })
     }
     fn to_phys(addr: u64) -> u64 {
         addr
@@ -419,6 +414,10 @@ impl Snapshot {
         let extra_regions = Vec::new();
         let hash = hash(&memory, &extra_regions)?;
 
+        let mut anon = ExclusiveSharedMemory::new(memory.len()).unwrap();
+        anon.copy_from_slice(&memory, 0);
+        let memory = anon.build();
+
         Ok(Self {
             sandbox_id: SANDBOX_CONFIGURATION_COUNTER.fetch_add(1, Ordering::Relaxed),
             memory,
@@ -452,23 +451,23 @@ impl Snapshot {
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
+        new_scratch_size: Option<usize>,
     ) -> Result<Self> {
+        use std::collections::HashMap;
+        let mut phys_map = HashMap::<u64, usize>::new();
         let memory = shared_mem.with_exclusivity(|snap_e| {
             scratch_mem.with_exclusivity(|scratch_e| {
-                let scratch_size = layout.get_scratch_size();
+                let orig_scratch_size = layout.get_scratch_size();
 
                 // Pass 1: count how many pages need to live
                 let live_pages =
-                    filtered_mappings(snap_e, scratch_e, &regions, scratch_size, root_pt_gpa);
+                    filtered_mappings(snap_e, scratch_e, &regions, orig_scratch_size, root_pt_gpa);
 
                 // Pass 2: copy them, and map them
                 // TODO: Look for opportunities to hugepage map
                 let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
                 let mut snapshot_memory: Vec<u8> = Vec::new();
                 for (mapping, contents) in live_pages {
-                    let new_offset = snapshot_memory.len();
-                    snapshot_memory.extend(contents);
-                    let new_gpa = new_offset + SandboxMemoryLayout::BASE_ADDRESS;
                     let kind = match mapping.kind {
                         MappingKind::Cow(cm) => MappingKind::Cow(cm),
                         MappingKind::Basic(bm) if bm.writable => MappingKind::Cow(CowMapping {
@@ -480,9 +479,18 @@ impl Snapshot {
                             writable: false,
                             executable: bm.executable,
                         }),
+                        MappingKind::Unmapped => continue,
                     };
+
+                    let new_phys = phys_map.entry(mapping.phys_base);
+                    let new_gpa = new_phys.or_insert_with(|| {
+                        let new_offset = snapshot_memory.len();
+                        snapshot_memory.extend(contents);
+                        let new_gpa = new_offset + SandboxMemoryLayout::BASE_ADDRESS;
+                        new_gpa
+                    });
                     let mapping = Mapping {
-                        phys_base: new_gpa as u64,
+                        phys_base: *new_gpa as u64,
                         virt_base: mapping.virt_base,
                         len: PAGE_SIZE as u64,
                         kind,
@@ -490,7 +498,7 @@ impl Snapshot {
                     unsafe { vmem::map(&pt_buf, mapping) };
                 }
                 // Phase 3: Map the special mappings
-                map_specials(&pt_buf, layout.get_scratch_size());
+                map_specials(&pt_buf, new_scratch_size.unwrap_or(layout.get_scratch_size()));
                 let pt_bytes = pt_buf.into_bytes();
                 layout.set_pt_size(pt_bytes.len())?;
                 snapshot_memory.extend(&pt_bytes);
@@ -504,6 +512,11 @@ impl Snapshot {
         let regions = Vec::new();
 
         let hash = hash(&memory, &regions)?;
+
+        let mut anon = ExclusiveSharedMemory::new(memory.len()).unwrap();
+        anon.copy_from_slice(&memory, 0);
+        let memory = anon.build();
+
         Ok(Self {
             sandbox_id,
             layout,
@@ -530,13 +543,7 @@ impl Snapshot {
     /// Return the size of the snapshot in bytes.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn mem_size(&self) -> usize {
-        self.memory.len()
-    }
-
-    /// Return the main memory contents of the snapshot
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn memory(&self) -> &[u8] {
-        &self.memory
+        self.memory.0.mem_size()
     }
 
     /// Return a copy of the load info for the exe in the snapshot

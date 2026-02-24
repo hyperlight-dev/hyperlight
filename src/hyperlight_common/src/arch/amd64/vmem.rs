@@ -456,6 +456,7 @@ unsafe fn map_page<
                 0 | // R/W - Cow page is never writable
                 PAGE_PRESENT // P   - this entry is present
         }
+        MappingKind::Unmapped => 0,
     };
     unsafe {
         write_entry_updating(op, r.update_parent, r.entry_ptr, pte);
