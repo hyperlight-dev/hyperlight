@@ -28,17 +28,23 @@ use hyperlight_common::func::{
 };
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 
-/// The definition of a function exposed from the guest to the host
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GuestFunctionDefinition {
+/// The function pointer type for Rust guest functions.
+pub type GuestFunc = fn(FunctionCall) -> Result<Vec<u8>>;
+
+/// The definition of a function exposed from the guest to the host.
+///
+/// The type parameter `F` is the function pointer type. For Rust guests this
+/// is [`GuestFunc`]; the C API uses its own `CGuestFunc` type.
+#[derive(Debug, Clone)]
+pub struct GuestFunctionDefinition<F: Copy> {
     /// The function name
     pub function_name: String,
     /// The type of the parameter values for the host function call.
     pub parameter_types: Vec<ParameterType>,
     /// The type of the return value from the host function call
     pub return_type: ReturnType,
-    /// The function pointer to the guest function
-    pub function_pointer: usize,
+    /// The function pointer to the guest function.
+    pub function_pointer: F,
 }
 
 /// Trait for functions that can be converted to a `fn(FunctionCall) -> Result<Vec<u8>>`
@@ -57,7 +63,7 @@ where
     fn into_guest_function(self) -> fn(FunctionCall) -> Result<Vec<u8>>;
 }
 
-/// Trait for functions that can be converted to a `GuestFunctionDefinition`
+/// Trait for functions that can be converted to a `GuestFunctionDefinition<GuestFunc>`
 pub trait AsGuestFunctionDefinition<Output, Args>
 where
     Self: Function<Output, Args, HyperlightGuestError>,
@@ -66,7 +72,10 @@ where
     Args: ParameterTuple,
 {
     /// Get the `GuestFunctionDefinition` for this function
-    fn as_guest_function_definition(&self, name: impl Into<String>) -> GuestFunctionDefinition;
+    fn as_guest_function_definition(
+        &self,
+        name: impl Into<String>,
+    ) -> GuestFunctionDefinition<GuestFunc>;
 }
 
 fn into_flatbuffer_result(value: ReturnValue) -> Vec<u8> {
@@ -147,11 +156,13 @@ where
     Args: ParameterTuple,
     Output: SupportedReturnType,
 {
-    fn as_guest_function_definition(&self, name: impl Into<String>) -> GuestFunctionDefinition {
+    fn as_guest_function_definition(
+        &self,
+        name: impl Into<String>,
+    ) -> GuestFunctionDefinition<GuestFunc> {
         let parameter_types = Args::TYPE.to_vec();
         let return_type = Output::TYPE;
         let function_pointer = self.into_guest_function();
-        let function_pointer = function_pointer as usize;
 
         GuestFunctionDefinition {
             function_name: name.into(),
@@ -164,13 +175,13 @@ where
 
 for_each_tuple!(impl_host_function);
 
-impl GuestFunctionDefinition {
+impl<F: Copy> GuestFunctionDefinition<F> {
     /// Create a new `GuestFunctionDefinition`.
     pub fn new(
         function_name: String,
         parameter_types: Vec<ParameterType>,
         return_type: ReturnType,
-        function_pointer: usize,
+        function_pointer: F,
     ) -> Self {
         Self {
             function_name,
@@ -180,12 +191,12 @@ impl GuestFunctionDefinition {
         }
     }
 
-    /// Create a new `GuestFunctionDefinition` from a function that implements
-    /// `AsGuestFunctionDefinition`.
+    /// Create a new `GuestFunctionDefinition<GuestFunc>` from a function that
+    /// implements `AsGuestFunctionDefinition`.
     pub fn from_fn<Output, Args>(
         function_name: String,
         function: impl AsGuestFunctionDefinition<Output, Args>,
-    ) -> Self
+    ) -> GuestFunctionDefinition<GuestFunc>
     where
         Args: ParameterTuple,
         Output: SupportedReturnType,

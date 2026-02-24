@@ -116,7 +116,7 @@ pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap<32> =
     ProfiledLockedHeap(LockedHeap::<32>::empty());
 
 pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
-pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
+pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
     GuestFunctionRegister::new();
 
 /// The size of one page in the host OS, which may have some impacts
@@ -278,3 +278,5 @@ pub mod __private {
 
 #[cfg(feature = "macros")]
 pub use hyperlight_guest_macro::{guest_function, host_function};
+
+pub use crate::guest_function::definition::GuestFunc;

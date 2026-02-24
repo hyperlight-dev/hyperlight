@@ -210,7 +210,7 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
             let marshal_result = emit_hl_marshal_result(s, ret.clone(), &ft.result);
             let trait_path = s.cur_trait_path();
             quote! {
-                fn #n<T: Guest>(fc: &::hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall) -> ::hyperlight_guest::error::Result<::alloc::vec::Vec<u8>> {
+                fn #n<T: Guest>(fc: ::hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall) -> ::hyperlight_guest::error::Result<::alloc::vec::Vec<u8>> {
                     <T as Guest>::with_guest_state(|state| {
                         #(#pds)*
                         #(#get_instance)*
@@ -223,7 +223,7 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                         ::alloc::string::ToString::to_string(#fname),
                         ::alloc::vec![#(#pts),*],
                         ::hyperlight_common::flatbuffer_wrappers::function_types::ReturnType::VecBytes,
-                        #n::<T> as usize
+                        #n::<T>
                     )
                 );
             }
