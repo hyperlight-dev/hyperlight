@@ -77,47 +77,64 @@ use crate::sandbox::trace::MemTraceInfo;
 use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 
 /// Get the logging level filter to pass to the guest entrypoint
-fn get_max_log_level_filter() -> LevelFilter {
-    // Check to see if the RUST_LOG environment variable is set
-    // and if so, parse it to get the log_level for hyperlight_guest
-    // if that is not set get the log level for the hyperlight_host
-
+///
+/// The guest entrypoint uses this to determine the maximum log level to enable for the guest.
+/// The `RUST_LOG` environment variable is expected to be in the format of comma-separated
+/// key-value pairs, where the key is a log target (e.g., "hyperlight_guest_bin") and the value is
+/// a log level (e.g., "debug").
+///
+/// NOTE: This prioritizes the log level for the targets containing "hyperlight_guest" string, then
+/// "hyperlight_host", and then general log level. If none of these targets are found, it
+/// defaults to "error".
+fn get_max_log_level_filter(rust_log: String) -> LevelFilter {
     // This is done as the guest will produce logs based on the log level returned here
     // producing those logs is expensive and we don't want to do it if the host is not
     // going to process them
+    let level_str = rust_log
+        .split(',')
+        // Prioritize targets containing "hyperlight_guest"
+        .find_map(|part| {
+            let mut kv = part.splitn(2, '=');
+            match (kv.next(), kv.next()) {
+                (Some(k), Some(v)) if k.trim().contains("hyperlight_guest") => Some(v.trim()),
+                _ => None,
+            }
+        })
+        // Then check for "hyperlight_host"
+        .or_else(|| {
+            rust_log.split(',').find_map(|part| {
+                let mut kv = part.splitn(2, '=');
+                match (kv.next(), kv.next()) {
+                    (Some(k), Some(v)) if k.trim().contains("hyperlight_host") => Some(v.trim()),
+                    _ => None,
+                }
+            })
+        })
+        // Finally, check for general log level
+        .or_else(|| {
+            rust_log.split(',').find_map(|part| {
+                if part.contains("=") {
+                    None
+                } else {
+                    Some(part.trim())
+                }
+            })
+        })
+        .unwrap_or("");
 
-    let val = std::env::var("RUST_LOG").unwrap_or_default();
+    tracing::info!("Determined guest log level: {}", level_str);
 
-    let level = if val.contains("hyperlight_guest") {
-        val.split(',')
-            .find(|s| s.contains("hyperlight_guest"))
-            .unwrap_or("")
-            .split('=')
-            .nth(1)
-            .unwrap_or("")
-    } else if val.contains("hyperlight_host") {
-        val.split(',')
-            .find(|s| s.contains("hyperlight_host"))
-            .unwrap_or("")
-            .split('=')
-            .nth(1)
-            .unwrap_or("")
-    } else {
-        // look for a value string that does not contain "="
-        val.split(',').find(|s| !s.contains("=")).unwrap_or("")
-    };
-
-    tracing::info!("Determined guest log level: {}", level);
-    // Convert the log level string to a LevelFilter
     // If no value is found, default to Error
-    LevelFilter::from_str(level).unwrap_or(LevelFilter::ERROR)
+    LevelFilter::from_str(level_str).unwrap_or(LevelFilter::ERROR)
 }
 
 /// Converts a given [`Option<LevelFilter>`] to a `u64` value to be passed to the guest entrypoint
+/// If the provided filter is `None`, it uses the `RUST_LOG` environment variable to determine the
+/// maximum log level filter for the guest and converts it to a `u64` value.
 fn get_guest_log_filter(guest_max_log_level: Option<LevelFilter>) -> u64 {
     let guest_log_level_filter = match guest_max_log_level {
         Some(level) => level,
-        None => get_max_log_level_filter(),
+        None => get_max_log_level_filter(std::env::var("RUST_LOG").unwrap_or_default()),
     };
     GuestLogFilter::from(guest_log_level_filter).into()
 }
@@ -2858,5 +2875,105 @@ mod tests {
 
             FxsaveTestContext { ctx, fxsave_offset }
         }
+    }
+
+    /// ========================================================================
+    /// Misc tests
+    /// ========================================================================
+    #[test]
+    fn test_get_max_log_level_filter_both_guest_and_host() {
+        let rust_log = "hyperlight_guest=trace,hyperlight_host=debug".to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(filter, LevelFilter::TRACE, "Max log level should be Trace");
+    }
+    #[test]
+    fn test_get_max_log_level_filter_only_guest() {
+        let rust_log = "hyperlight_guest=info".to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(filter, LevelFilter::INFO, "Max log level should be Info");
+    }
+    #[test]
+    fn test_get_max_log_level_filter_only_host() {
+        let rust_log = "hyperlight_host=debug".to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(filter, LevelFilter::DEBUG, "Max log level should be Debug");
+    }
+    #[test]
+    fn test_get_max_log_level_filter_only_general() {
+        let rust_log = "trace".to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(filter, LevelFilter::TRACE, "Max log level should be Trace");
+    }
+    #[test]
+    fn test_get_max_log_level_filter_complex_rust_log_00() {
+        let rust_log =
+            "error,hyperlight_guest=debug,hyperlight_host=info,hyperlight_guest_bin=trace"
+                .to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(filter, LevelFilter::DEBUG, "Max log level should be Debug");
+    }
+    #[test]
+    fn test_get_max_log_level_filter_complex_rust_log_01() {
+        let rust_log =
+            "error,hyperlight_host=info,hyperlight_guest=debug,hyperlight_guest_bin=trace"
+                .to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(filter, LevelFilter::DEBUG, "Max log level should be Debug");
+    }
+    #[test]
+    fn test_get_max_log_level_filter_complex_rust_log_02() {
+        let rust_log =
+            "hyperlight_host=info,error,hyperlight_guest=debug,hyperlight_guest_bin=trace"
+                .to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(filter, LevelFilter::DEBUG, "Max log level should be Debug");
+    }
+    #[test]
+    fn test_get_max_log_level_filter_general_and_others() {
+        let rust_log =
+            "trace,hyperlight_component_macro=debug,hyperlight_component_util=error".to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(filter, LevelFilter::TRACE, "Max log level should be Trace");
+    }
+    #[test]
+    fn test_get_max_log_level_filter_default() {
+        let rust_log = "hyperlight_common=debug,hyperlight_component_util=info".to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(
+            filter,
+            LevelFilter::ERROR,
+            "Max log level should default to Error"
+        );
+    }
+    #[test]
+    fn test_get_max_log_level_filter_invalid_rust_log() {
+        let rust_log = "this is an invalid rust log string".to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(
+            filter,
+            LevelFilter::ERROR,
+            "Max log level should default to Error"
+        );
+    }
+    #[test]
+    fn test_get_max_log_level_filter_empty_rust_log() {
+        let rust_log = "".to_string();
+        let filter = get_max_log_level_filter(rust_log);
+
+        assert_eq!(
+            filter,
+            LevelFilter::ERROR,
+            "Max log level should default to Error"
+        );
     }
 }
