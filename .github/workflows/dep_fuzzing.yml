@@ -56,3 +56,4 @@ jobs:
         with:
           name: fuzz-crash-artifacts
           path: fuzz/artifacts/
+          retention-days: 28

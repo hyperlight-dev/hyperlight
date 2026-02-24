@@ -66,3 +66,4 @@ jobs:
           name: benchmarks_${{runner.os}}_${{matrix.hypervisor}}_${{ matrix.cpu }}
           path: ./target/criterion/
           if-no-files-found: error
+          retention-days: 5
