@@ -6,7 +6,7 @@ This project makes use of the following third party libraries, each of which is 
 
 [picolibc](https://github.com/picolibc/picolibc) is a C library designed for embedded systems, derived from newlib. It is included as a git submodule.
 
-- **Version**: 1.8.10
+- **Version**: 1.8.11
 - **License**: BSD-3-Clause (picolibc), with BSD/MIT-compatible licenses for newlib portions (see `COPYING.picolibc` and `COPYING.NEWLIB`)
 - **Submodule path**: `third_party/picolibc`
 

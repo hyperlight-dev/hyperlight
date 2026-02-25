@@ -93,10 +93,10 @@ fn gen_config_file(config_dir: &Path) -> Result<()> {
     writeln!(file, "#define __NEWLIB__ 4")?;
     writeln!(file, "#define __NEWLIB_MINOR__ 3")?;
     writeln!(file, "#define __NEWLIB_PATCHLEVEL__ 0")?;
-    writeln!(file, "#define __PICOLIBC_VERSION__ \"1.8.10\"")?;
+    writeln!(file, "#define __PICOLIBC_VERSION__ \"1.8.11\"")?;
     writeln!(file, "#define __PICOLIBC__ 1")?;
     writeln!(file, "#define __PICOLIBC_MINOR__ 8")?;
-    writeln!(file, "#define __PICOLIBC_PATCHLEVEL__ 10")?;
+    writeln!(file, "#define __PICOLIBC_PATCHLEVEL__ 11")?;
     writeln!(file)?;
 
     // Static configuration
@@ -104,16 +104,13 @@ fn gen_config_file(config_dir: &Path) -> Result<()> {
     writeln!(file, "#define __SINGLE_THREAD")?; // -Dsingle-thread=true
     writeln!(file, "#define __GLOBAL_ERRNO")?; // -Dnewlib-global-errno=true
     writeln!(file, "#define __INIT_FINI_ARRAY")?; // -Dinitfini-array=true
-    writeln!(file, "#define __TINY_STDIO")?; // -Dtinystdio=true
-    writeln!(file, "#define __IO_DEFAULT 'd'")?; // -Dformat-default=d (full printf functionality)
-    writeln!(file, "#define __IO_FLOAT_EXACT")?; // tinystdio default
+    writeln!(file, "#define __TINY_STDIO")?; // tinystdio is now the only stdio
+    writeln!(file, "#define __IO_DEFAULT 'd'")?; // -Dformat-default=double
+    writeln!(file, "#define __IO_FLOAT_EXACT")?; // default
     writeln!(file, "#define __IO_WCHAR")?; // -Dio-wchar=true
     writeln!(file, "#define __IEEE_LIBM")?; // math library without errno
     writeln!(file, "#define __FAST_STRCMP")?; // default optimization
-    writeln!(file, "#define __PICO_EXIT")?; // picoexit enabled by default
     writeln!(file, "#define __FAST_BUFIO")?; // -Dfast-bufio=true
-
-    // tinystdio-specific settings
     writeln!(file, "#define __IO_SMALL_ULTOA")?; // avoid division in conversion
 
     for test in &[
@@ -171,8 +168,8 @@ fn gen_config_file(config_dir: &Path) -> Result<()> {
     writeln!(file, "#undef __THREAD_LOCAL_STORAGE_API")?;
     writeln!(file, "#undef __THREAD_LOCAL_STORAGE_RP2040")?;
     writeln!(file, "#undef __THREAD_LOCAL_STORAGE_STACK_GUARD")?;
-    writeln!(file, "#undef __NANO_MALLOC")?; // -Dnewlib-nano-malloc=false
-    writeln!(file, "#undef __NANO_MALLOC_CLEAR_FREED")?;
+    writeln!(file, "#undef __ENABLE_MALLOC")?; // -Denable-malloc=false
+    writeln!(file, "#undef __MALLOC_CLEAR_FREED")?;
     writeln!(file, "#undef __MB_CAPABLE")?; // no multibyte support
     writeln!(file, "#undef __HAVE_FCNTL")?; // freestanding environment
     writeln!(file, "#undef __STDIO_LOCKING")?; // single-thread
@@ -249,7 +246,8 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
         .flag_if_supported("-frounding-math")
         .flag_if_supported("-fsignaling-nans")
         .flag_if_supported("-fno-builtin-copysignl")
-        .flag_if_supported("-mstack-protector-guard=global");
+        .flag_if_supported("-mstack-protector-guard=global")
+        .flag_if_supported("-fstrict-flex-arrays=3");
 
     build
         .flag("-U_FORTIFY_SOURCE")
@@ -263,12 +261,12 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
     // but how downstream crates get at it then? And TBH I think having piclibc
     // headers (features.h) depend on a build time header is wrong is odd to say
     // at least.
-    gen_config_file(&picolibc_dir.join("newlib/libc/include"))?;
+    gen_config_file(&picolibc_dir.join("libc/include"))?;
 
     match target {
         "x86" | "x86_64" => {
-            build.include(picolibc_dir.join("newlib/libm/machine/x86"));
-            build.include(picolibc_dir.join("newlib/libc/machine/x86"));
+            build.include(picolibc_dir.join("libm/machine/x86"));
+            build.include(picolibc_dir.join("libc/machine/x86"));
         }
         arch => {
             bail!("Unsupported target architecture: {arch}");
@@ -277,9 +275,9 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
 
     build
         .include(picolibc_dir)
-        .include(picolibc_dir.join("newlib/libc/tinystdio"))
-        .include(picolibc_dir.join("newlib/libc/locale"))
-        .include(picolibc_dir.join("newlib/libc/include"));
+        .include(picolibc_dir.join("libc/stdio"))
+        .include(picolibc_dir.join("libc/locale"))
+        .include(picolibc_dir.join("libc/include"));
 
     Ok(build)
 }
@@ -292,7 +290,7 @@ fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<
     };
 
     for file in files {
-        let source_path = picolibc_dir.join("newlib/libc").join(file);
+        let source_path = picolibc_dir.join("libc").join(file);
         build.file(&source_path);
     }
 
@@ -301,8 +299,7 @@ fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<
 }
 
 fn add_libm(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<()> {
-    build.include(picolibc_dir.join("newlib"));
-    build.include(picolibc_dir.join("newlib/libm/common"));
+    build.include(picolibc_dir.join("libm/common"));
 
     let base = LIBM_FILES.iter();
     let files = match target {
@@ -311,7 +308,7 @@ fn add_libm(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<
     };
 
     for file in files {
-        let source_path = picolibc_dir.join("newlib/libm").join(file);
+        let source_path = picolibc_dir.join("libm").join(file);
         build.file(&source_path);
     }
 
@@ -383,7 +380,7 @@ fn cargo_main() -> Result<()> {
         }
 
         build.compile("hyperlight_guest_bin");
-        copy_includes(&include_dir, "third_party/picolibc/newlib/libc/include")?;
+        copy_includes(&include_dir, "third_party/picolibc/libc/include")?;
     }
 
     let include_str = include_dir

@@ -7,7 +7,7 @@ Component. picolibc
 picolibc is a C library designed for embedded systems, derived from newlib.
 https://github.com/picolibc/picolibc
 
-Version: 1.8.10
+Version: 1.8.11
 
 Open Source License/Copyright Notice.
 
