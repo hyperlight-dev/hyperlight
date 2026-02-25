@@ -52,7 +52,7 @@ use hyperlight_guest_bin::host_comm::{
     print_output_with_host_print, read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
-use hyperlight_guest_bin::{guest_function, guest_logger, host_function};
+use hyperlight_guest_bin::{GUEST_HANDLE, guest_function, guest_logger, host_function};
 use log::{LevelFilter, error};
 use tracing::{Span, instrument};
 
@@ -802,6 +802,39 @@ fn fuzz_traced_function(depth: u32, max_depth: u32, msg: &str) -> u32 {
 #[guest_function("FuzzGuestTrace")]
 fn fuzz_guest_trace(max_depth: u32, msg: String) -> u32 {
     fuzz_traced_function(0, max_depth, &msg)
+}
+
+#[guest_function("CorruptOutputSizePrefix")]
+fn corrupt_output_size_prefix() -> i32 {
+    unsafe {
+        let peb_ptr = core::ptr::addr_of!(GUEST_HANDLE).read().peb().unwrap();
+        let output_stack_ptr = (*peb_ptr).output_stack.ptr as *mut u8;
+
+        // Write a fake stack entry with a ~4 GB size prefix (0xFFFF_FFFB + 4).
+        let buf = core::slice::from_raw_parts_mut(output_stack_ptr, 24);
+        buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
+        buf[8..12].copy_from_slice(&0xFFFF_FFFBu32.to_le_bytes());
+        buf[12..16].copy_from_slice(&[0u8; 4]);
+        buf[16..24].copy_from_slice(&8_u64.to_le_bytes());
+
+        core::arch::asm!("hlt", options(noreturn));
+    }
+}
+
+#[guest_function("CorruptOutputBackPointer")]
+fn corrupt_output_back_pointer() -> i32 {
+    unsafe {
+        let peb_ptr = core::ptr::addr_of!(GUEST_HANDLE).read().peb().unwrap();
+        let output_stack_ptr = (*peb_ptr).output_stack.ptr as *mut u8;
+
+        // Write a fake stack entry with back-pointer 0xDEAD (past stack pointer 24).
+        let buf = core::slice::from_raw_parts_mut(output_stack_ptr, 24);
+        buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
+        buf[8..16].copy_from_slice(&[0u8; 8]);
+        buf[16..24].copy_from_slice(&0xDEAD_u64.to_le_bytes());
+
+        core::arch::asm!("hlt", options(noreturn));
+    }
 }
 
 // Interprets the given guest function call as a host function call and dispatches it to the host.
