@@ -48,7 +48,7 @@ use crate::{HyperlightError, Result, log_then_return, new_error};
 /// Makes sure that the given `offset` and `size` are within the bounds of the memory with size `mem_size`.
 macro_rules! bounds_check {
     ($offset:expr, $size:expr, $mem_size:expr) => {
-        if $offset + $size > $mem_size {
+        if $offset.checked_add($size).is_none_or(|end| end > $mem_size) {
             return Err(new_error!(
                 "Cannot read value from offset {} with size {} in memory of size {}",
                 $offset,
@@ -1218,6 +1218,34 @@ mod tests {
 
         assert!(hshm.fill(0, 0, mem_size + 1).is_err());
         assert!(hshm.fill(0, mem_size, 1).is_err());
+    }
+
+    /// Verify that `bounds_check!` rejects offset + size combinations that
+    /// would overflow `usize`.
+    #[test]
+    fn bounds_check_overflow() {
+        let mem_size: usize = 4096;
+        let mut eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
+
+        // ExclusiveSharedMemory methods
+        assert!(eshm.read_i32(usize::MAX).is_err());
+        assert!(eshm.write_i32(usize::MAX, 0).is_err());
+        assert!(eshm.copy_from_slice(&[0u8; 1], usize::MAX).is_err());
+
+        // HostSharedMemory methods
+        let (mut hshm, _) = eshm.build();
+
+        assert!(hshm.read::<u8>(usize::MAX).is_err());
+        assert!(hshm.read::<u64>(usize::MAX - 3).is_err());
+        assert!(hshm.write::<u8>(usize::MAX, 0).is_err());
+        assert!(hshm.write::<u64>(usize::MAX - 3, 0).is_err());
+
+        let mut buf = [0u8; 1];
+        assert!(hshm.copy_to_slice(&mut buf, usize::MAX).is_err());
+        assert!(hshm.copy_from_slice(&[0u8; 1], usize::MAX).is_err());
+
+        assert!(hshm.fill(0, usize::MAX, 1).is_err());
+        assert!(hshm.fill(0, 1, usize::MAX).is_err());
     }
 
     #[test]
