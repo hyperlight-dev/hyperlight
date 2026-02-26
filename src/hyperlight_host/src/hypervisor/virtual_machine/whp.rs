@@ -59,7 +59,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
     } {
         Ok(_) => unsafe { capability.HypervisorPresent.as_bool() },
         Err(_) => {
-            log::info!("Windows Hypervisor Platform is not available on this system");
+            tracing::info!("Windows Hypervisor Platform is not available on this system");
             false
         }
     }
@@ -770,7 +770,7 @@ impl Drop for WhpVm {
         // (HyperlightVm::drop() runs before its fields are dropped, so
         // set_dropped() completes before this Drop impl runs.)
         if let Err(e) = unsafe { WHvDeletePartition(self.partition) } {
-            log::error!("Failed to delete partition: {}", e);
+            tracing::error!("Failed to delete partition: {}", e);
         }
     }
 }
