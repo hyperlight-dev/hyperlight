@@ -61,7 +61,7 @@ jobs:
       - name: Run Benchmarks
         run: just bench-ci main
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: benchmarks_${{runner.os}}_${{matrix.hypervisor}}_${{ matrix.cpu }}
           path: ./target/criterion/
