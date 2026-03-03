@@ -500,3 +500,19 @@ impl DebuggableVm for KvmVm {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "hw-interrupts")]
+mod hw_interrupt_tests {
+    use super::*;
+
+    #[test]
+    fn halt_port_is_not_standard_device() {
+        // OutBAction::Halt port must not overlap in-kernel PIC/PIT/speaker ports
+        const HALT: u16 = OutBAction::Halt as u16;
+        const _: () = assert!(HALT != 0x20 && HALT != 0x21);
+        const _: () = assert!(HALT != 0xA0 && HALT != 0xA1);
+        const _: () = assert!(HALT != 0x40 && HALT != 0x41 && HALT != 0x42 && HALT != 0x43);
+        const _: () = assert!(HALT != 0x61);
+    }
+}

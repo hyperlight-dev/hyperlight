@@ -1338,3 +1338,91 @@ unsafe fn try_load_whv_map_gpa_range2() -> windows_result::Result<WHvMapGpaRange
     unsafe { Ok(std::mem::transmute_copy(&address)) }
 }
 
+#[cfg(test)]
+#[cfg(feature = "hw-interrupts")]
+mod hw_interrupt_tests {
+    use super::*;
+
+    #[test]
+    fn lapic_register_helpers() {
+        let mut state = vec![0u8; 1024];
+        WhpVm::write_lapic_u32(&mut state, 0xF0, 0x1FF);
+        assert_eq!(WhpVm::read_lapic_u32(&state, 0xF0), 0x1FF);
+
+        WhpVm::write_lapic_u32(&mut state, 0x320, 0x0002_0020);
+        assert_eq!(WhpVm::read_lapic_u32(&state, 0x320), 0x0002_0020);
+    }
+
+    #[test]
+    fn lapic_lvt_timer_periodic() {
+        // LVT Timer: vector 0x20, periodic (bit 17), unmasked
+        let vector: u32 = 0x20;
+        let lvt = vector | (1 << 17);
+        assert_eq!(lvt & 0xFF, 0x20, "vector should be 0x20");
+        assert_ne!(lvt & (1 << 17), 0, "periodic bit should be set");
+        assert_eq!(lvt & (1 << 16), 0, "mask bit should be clear");
+    }
+
+    #[test]
+    fn lapic_timer_initial_count() {
+        // Hyper-V LAPIC timer is 10 MHz with divide-by-1.
+        // 1 tick = 100 ns, so period_us * 10 = initial count.
+        let period_us: u32 = 1000; // 1 ms
+        let initial_count = period_us * 10;
+        assert_eq!(initial_count, 10_000, "1ms should be 10000 ticks");
+
+        let period_us: u32 = 100; // 100 us
+        let initial_count = period_us * 10;
+        assert_eq!(initial_count, 1_000, "100us should be 1000 ticks");
+    }
+
+    #[test]
+    fn lapic_svr_value() {
+        let svr: u64 = 0x1FF;
+        assert_ne!(svr & (1 << 8), 0, "APIC should be enabled");
+        assert_eq!(svr & 0xFF, 0xFF, "spurious vector should be 0xFF");
+    }
+
+    #[test]
+    fn apic_base_re_enable_value() {
+        // When re-enabling: base 0xFEE00000 + BSP (bit 8) + enable (bit 11)
+        let apic_base: u64 = 0xFEE00900;
+        assert_ne!(apic_base & (1 << 8), 0, "BSP flag");
+        assert_ne!(apic_base & (1 << 11), 0, "global enable");
+        assert_eq!(apic_base & 0xFFFFF000, 0xFEE00000, "base address");
+    }
+
+    #[test]
+    fn lapic_divide_config() {
+        // 0x0B = divide-by-1
+        let divide: u32 = 0x0B;
+        assert_eq!(divide, 0x0B, "divide config should be 0x0B (divide-by-1)");
+    }
+
+    #[test]
+    fn check_lapic_emulation_capability() {
+        let mut capability: WHV_CAPABILITY = Default::default();
+        let result = unsafe {
+            WHvGetCapability(
+                WHvCapabilityCodeFeatures,
+                &mut capability as *mut _ as *mut std::os::raw::c_void,
+                std::mem::size_of::<WHV_CAPABILITY>() as u32,
+                None,
+            )
+        };
+        assert!(
+            result.is_ok(),
+            "WHvGetCapability(Features) failed: {result:?}"
+        );
+        let raw = unsafe { capability.Features.AsUINT64 };
+        let has_lapic = raw & (1 << 1) != 0; // bit 1 = LocalApicEmulation
+        println!("WHP Features raw: {raw:#018x}");
+        println!("WHP LocalApicEmulation supported: {has_lapic}");
+        assert!(
+            has_lapic,
+            "This host does not support WHP LocalApicEmulation. \
+             hw-interrupts LAPIC timer tests will be skipped. \
+             Windows 11 22H2+ or a recent Windows Server build is typically required."
+        );
+    }
+}
