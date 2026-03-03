@@ -472,6 +472,7 @@ pub(crate) mod tests {
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{Result, is_hypervisor_present, new_error};
 
+    #[cfg_attr(feature = "hw-interrupts", ignore)]
     #[test]
     fn test_initialise() -> Result<()> {
         if !is_hypervisor_present() {

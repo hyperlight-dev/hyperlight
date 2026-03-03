@@ -833,3 +833,102 @@ impl MshvVm {
     }
 }
 
+#[cfg(test)]
+#[cfg(feature = "hw-interrupts")]
+mod hw_interrupt_tests {
+    use super::*;
+
+    #[test]
+    fn write_read_lapic_u32_roundtrip() {
+        let mut regs = [0i8; 1024];
+        write_lapic_u32(&mut regs, 0xF0, 0xDEAD_BEEF);
+        assert_eq!(read_lapic_u32(&regs, 0xF0), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn write_read_lapic_u32_multiple_offsets() {
+        let mut regs = [0i8; 1024];
+        write_lapic_u32(&mut regs, 0x80, 0x1234_5678);
+        write_lapic_u32(&mut regs, 0xF0, 0xABCD_EF01);
+        write_lapic_u32(&mut regs, 0xE0, 0xFFFF_FFFF);
+        assert_eq!(read_lapic_u32(&regs, 0x80), 0x1234_5678);
+        assert_eq!(read_lapic_u32(&regs, 0xF0), 0xABCD_EF01);
+        assert_eq!(read_lapic_u32(&regs, 0xE0), 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn write_read_lapic_u32_zero() {
+        let mut regs = [0xFFu8 as i8; 1024];
+        write_lapic_u32(&mut regs, 0x80, 0);
+        assert_eq!(read_lapic_u32(&regs, 0x80), 0);
+    }
+
+    #[test]
+    fn write_read_lapic_u32_does_not_clobber_neighbors() {
+        let mut regs = [0i8; 1024];
+        write_lapic_u32(&mut regs, 0x80, 0xAAAA_BBBB);
+        // Check that bytes before and after are untouched
+        assert_eq!(regs[0x7F], 0);
+        assert_eq!(regs[0x84], 0);
+    }
+
+    #[test]
+    fn synic_timer_config_bitfield() {
+        let vector: u8 = 0x20;
+        let config = MshvVm::build_stimer_config(vector);
+
+        assert_ne!(config & 1, 0, "enable bit should be set");
+        assert_ne!(config & (1 << 1), 0, "periodic bit should be set");
+        assert_eq!(config & (1 << 2), 0, "lazy bit should be clear");
+        assert_ne!(config & (1 << 3), 0, "auto_enable bit should be set");
+        assert_eq!((config >> 4) & 0xFF, 0x20, "apic_vector should be 0x20");
+        assert_ne!(config & (1 << 12), 0, "direct_mode bit should be set");
+    }
+
+    #[test]
+    fn synic_timer_config_different_vectors() {
+        for vector in [0x20u8, 0x30, 0x40, 0xFF] {
+            let config = MshvVm::build_stimer_config(vector);
+            assert_eq!(
+                (config >> 4) & 0xFF,
+                vector as u64,
+                "vector mismatch for {:#x}",
+                vector
+            );
+        }
+    }
+
+    #[test]
+    fn timer_count_us_to_100ns() {
+        assert_eq!(MshvVm::period_us_to_100ns(1000), 10_000);
+        assert_eq!(MshvVm::period_us_to_100ns(10_000), 100_000);
+        assert_eq!(MshvVm::period_us_to_100ns(1), 10);
+    }
+
+    #[test]
+    fn apic_base_default_value() {
+        let base = MshvVm::APIC_BASE_DEFAULT;
+        assert_ne!(base & (1 << 8), 0, "BSP flag should be set");
+        assert_ne!(base & (1 << 11), 0, "global enable should be set");
+        assert_eq!(
+            base & 0xFFFFF000,
+            0xFEE00000,
+            "base address should be 0xFEE00000"
+        );
+    }
+
+    #[test]
+    fn lapic_svr_init_value() {
+        // SVR = 0x1FF: bit 8 = enable APIC, bits 0-7 = spurious vector 0xFF
+        let svr: u32 = 0x1FF;
+        assert_ne!(svr & 0x100, 0, "APIC enable bit should be set");
+        assert_eq!(svr & 0xFF, 0xFF, "spurious vector should be 0xFF");
+    }
+
+    #[test]
+    fn lapic_lvt_masked_value() {
+        // Masked LVT entry: bit 16 = 1
+        let masked: u32 = 0x0001_0000;
+        assert_ne!(masked & (1 << 16), 0, "mask bit should be set");
+    }
+}

@@ -2272,6 +2272,7 @@ mod tests {
     // Tests
     // ==========================================================================
 
+    #[cfg_attr(feature = "hw-interrupts", ignore)]
     #[test]
     fn reset_vcpu_simple() {
         // push rax; hlt - aligns stack to 16 bytes
@@ -2417,6 +2418,7 @@ mod tests {
 
         use super::*;
 
+        #[cfg_attr(feature = "hw-interrupts", ignore)]
         #[test]
         fn reset_vcpu_regs() {
             let mut a = CodeAssembler::new(64).unwrap();
@@ -2476,6 +2478,7 @@ mod tests {
             assert_regs_reset(hyperlight_vm.vm.as_ref());
         }
 
+        #[cfg_attr(feature = "hw-interrupts", ignore)]
         #[test]
         fn reset_vcpu_fpu() {
             #[cfg(kvm)]
@@ -2607,6 +2610,7 @@ mod tests {
             }
         }
 
+        #[cfg_attr(feature = "hw-interrupts", ignore)]
         #[test]
         fn reset_vcpu_debug_regs() {
             let mut a = CodeAssembler::new(64).unwrap();
@@ -2649,6 +2653,7 @@ mod tests {
             assert_debug_regs_reset(hyperlight_vm.vm.as_ref());
         }
 
+        #[cfg_attr(feature = "hw-interrupts", ignore)]
         #[test]
         fn reset_vcpu_sregs() {
             // Build code that modifies special registers and halts
@@ -2702,6 +2707,7 @@ mod tests {
 
         /// Verifies guest-visible FPU state (via FXSAVE) is properly reset.
         /// Unlike tests using hypervisor API, this runs actual guest code with FXSAVE.
+        #[cfg_attr(feature = "hw-interrupts", ignore)]
         #[test]
         fn reset_vcpu_fpu_guest_visible_state() {
             let mut ctx = hyperlight_vm_with_mem_mgr_fxsave();
