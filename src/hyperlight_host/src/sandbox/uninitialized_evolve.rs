@@ -43,7 +43,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         &u_sbox.config,
         u_sbox.stack_top_gva,
         #[cfg(any(crashdump, gdb))]
-        &u_sbox.rt_cfg,
+        u_sbox.rt_cfg,
         u_sbox.load_info,
     )?;
 
@@ -92,7 +92,7 @@ pub(crate) fn set_up_hypervisor_partition(
     mgr: SandboxMemoryManager<GuestSharedMemory>,
     #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
     stack_top_gva: u64,
-    #[cfg(any(crashdump, gdb))] rt_cfg: &SandboxRuntimeConfig,
+    #[cfg(any(crashdump, gdb))] rt_cfg: SandboxRuntimeConfig,
     _load_info: LoadInfo,
 ) -> Result<HyperlightVm> {
     // Create gdb thread if gdb is enabled and the configuration is provided
@@ -125,9 +125,9 @@ pub(crate) fn set_up_hypervisor_partition(
     // that GDB needs to compute the PIE binary's load offset.
     #[cfg(crashdump)]
     let rt_cfg = {
-        let mut rt_cfg = rt_cfg.clone();
+        let mut rt_cfg = rt_cfg;
         if let crate::sandbox::snapshot::NextAction::Initialise(addr) = mgr.entrypoint {
-            rt_cfg.entry_point = addr;
+            rt_cfg.entry_point = Some(addr);
         }
         rt_cfg
     };

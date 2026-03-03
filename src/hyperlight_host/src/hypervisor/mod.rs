@@ -494,7 +494,7 @@ pub(crate) mod tests {
             &config,
             exn_stack_top_gva,
             #[cfg(any(crashdump, gdb))]
-            &rt_cfg,
+            rt_cfg,
             sandbox.load_info,
         )?;
 

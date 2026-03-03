@@ -1260,7 +1260,12 @@ impl HyperlightVm {
             // which GDB needs for AT_ENTRY to compute the PIE load offset.
             // We cannot use self.entrypoint here because it transitions from
             // Initialise(addr) to Call(dispatch_addr) after guest init.
-            let initialise = self.rt_cfg.entry_point;
+            let initialise = self.rt_cfg.entry_point.unwrap_or_else(|| {
+                tracing::warn!(
+                    "entry_point was never set in SandboxRuntimeConfig; AT_ENTRY will be 0"
+                );
+                0
+            });
             let mmap_regions: Vec<MemoryRegion> = self.get_mapped_regions().cloned().collect();
             let root_pt = self.get_root_pt()?;
 
@@ -2223,7 +2228,7 @@ mod tests {
             &config,
             stack_top_gva,
             #[cfg(any(crashdump, gdb))]
-            &rt_cfg,
+            rt_cfg,
             crate::mem::exe::LoadInfo::dummy(),
         )
         .unwrap();
