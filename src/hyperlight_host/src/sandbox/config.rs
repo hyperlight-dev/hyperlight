@@ -74,6 +74,8 @@ pub struct SandboxConfiguration {
     interrupt_vcpu_sigrtmin_offset: u8,
     /// How much writable memory to offer the guest
     scratch_size: usize,
+    /// Allow MSR (Model Specific Register) access. This is disabled by default for security reasons.
+    allow_msr: bool,
 }
 
 impl SandboxConfiguration {
@@ -118,6 +120,7 @@ impl SandboxConfiguration {
             guest_debug_info,
             #[cfg(crashdump)]
             guest_core_dump,
+            allow_msr: false,
         }
     }
 
@@ -157,6 +160,27 @@ impl SandboxConfiguration {
     #[cfg(target_os = "linux")]
     pub fn get_interrupt_vcpu_sigrtmin_offset(&self) -> u8 {
         self.interrupt_vcpu_sigrtmin_offset
+    }
+
+    /// Set whether MSR access is allowed. By default, MSR access is disabled
+    /// for security reasons.
+    ///
+    /// # Safety
+    ///
+    /// If enabled, the guest can read and write arbitrary MSRs, which may
+    /// expose host CPU state (performance counters, speculation control, etc.)
+    /// or cause unexpected side effects. With MSR access allowed, intercepts
+    /// are not installed and guest-modified MSRs are not reset across snapshot
+    /// restores, which can leak data between guest executions.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub unsafe fn set_allow_msr(&mut self, allow_msr: bool) {
+        self.allow_msr = allow_msr;
+    }
+
+    /// Get whether MSR access is allowed
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn get_allow_msr(&self) -> bool {
+        self.allow_msr
     }
 
     /// Sets the offset from `SIGRTMIN` to determine the real-time signal used for

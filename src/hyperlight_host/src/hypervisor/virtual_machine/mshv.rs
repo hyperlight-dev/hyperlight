@@ -21,12 +21,16 @@ use std::sync::LazyLock;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
-    FloatingPointUnit, SpecialRegisters, StandardRegisters, XSave, hv_message_type,
+    FloatingPointUnit, HV_INTERCEPT_ACCESS_MASK_READ, HV_INTERCEPT_ACCESS_MASK_WRITE,
+    HV_INTERCEPT_ACCESS_READ, HV_INTERCEPT_ACCESS_WRITE, SpecialRegisters, StandardRegisters,
+    XSave, hv_intercept_type_HV_INTERCEPT_TYPE_X64_MSR, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
+    hv_message_type_HVMSG_X64_MSR_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features, hv_register_assoc,
-    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
+    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_install_intercept,
+    mshv_user_mem_region, msr_to_hv_reg_name,
 };
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
@@ -108,6 +112,18 @@ impl MshvVm {
 }
 
 impl VirtualMachine for MshvVm {
+    fn enable_msr_intercept(&mut self) -> std::result::Result<(), CreateVmError> {
+        let intercept = mshv_install_intercept {
+            access_type_mask: HV_INTERCEPT_ACCESS_MASK_WRITE | HV_INTERCEPT_ACCESS_MASK_READ,
+            intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_X64_MSR,
+            intercept_parameter: Default::default(),
+        };
+        self.vm_fd
+            .install_intercept(intercept)
+            .map_err(|e| CreateVmError::EnableMsrIntercept(e.into()))?;
+        Ok(())
+    }
+
     unsafe fn map_memory(
         &mut self,
         (_slot, region): (u32, &MemoryRegion),
@@ -137,6 +153,7 @@ impl VirtualMachine for MshvVm {
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
         const UNMAPPED_GPA_MESSAGE: hv_message_type = hv_message_type_HVMSG_UNMAPPED_GPA;
         const INVALID_GPA_ACCESS_MESSAGE: hv_message_type = hv_message_type_HVMSG_GPA_INTERCEPT;
+        const MSR_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_MSR_INTERCEPT;
         #[cfg(gdb)]
         const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
@@ -194,6 +211,23 @@ impl VirtualMachine for MshvVm {
                         MemoryRegionFlags::READ => VmExit::MmioRead(gpa),
                         MemoryRegionFlags::WRITE => VmExit::MmioWrite(gpa),
                         _ => VmExit::Unknown("Unknown MMIO access".to_string()),
+                    }
+                }
+                MSR_MESSAGE => {
+                    let msr_message = m
+                        .to_msr_info()
+                        .map_err(|_| RunVcpuError::DecodeMsrMessage(m.header.message_type))?;
+                    let edx = msr_message.rdx;
+                    let eax = msr_message.rax;
+                    let written_value = (edx << 32) | eax;
+                    let access = msr_message.header.intercept_access_type as u32;
+                    match access {
+                        HV_INTERCEPT_ACCESS_READ => VmExit::MsrRead(msr_message.msr_number),
+                        HV_INTERCEPT_ACCESS_WRITE => VmExit::MsrWrite {
+                            msr_index: msr_message.msr_number,
+                            value: written_value,
+                        },
+                        _ => VmExit::Unknown(format!("Unknown MSR access type={}", access)),
                     }
                 }
                 #[cfg(gdb)]
@@ -352,6 +386,39 @@ impl VirtualMachine for MshvVm {
         self.vcpu_fd
             .set_xsave(&buf)
             .map_err(|e| RegisterError::SetXsave(e.into()))?;
+        Ok(())
+    }
+
+    fn reset_msrs(&self) -> std::result::Result<(), RegisterError> {
+        use mshv_bindings::{hv_register_name, hv_register_name_HV_X64_REGISTER_U_XSS};
+
+        use super::MSRS_TO_RESET;
+
+        /// Extends `msr_to_hv_reg_name` with mappings missing from
+        /// mshv-bindings (e.g. IA32_XSS 0xDA0, whose constant is
+        /// incorrectly set to the HV register name value 0x8008B).
+        fn msr_to_hv_reg(msr_index: u32) -> Result<hv_register_name, RegisterError> {
+            msr_to_hv_reg_name(msr_index).or(match msr_index {
+                0xDA0 => Ok(hv_register_name_HV_X64_REGISTER_U_XSS),
+                _ => Err(RegisterError::UnknownMsr(msr_index)),
+            })
+        }
+
+        for &(msr_index, value) in MSRS_TO_RESET {
+            let name = msr_to_hv_reg(msr_index)?;
+            let assoc = hv_register_assoc {
+                name,
+                value: hv_register_value { reg64: value },
+                ..Default::default()
+            };
+            self.vcpu_fd
+                .set_reg(&[assoc])
+                .map_err(|e| RegisterError::ResetMsr {
+                    index: msr_index,
+                    source: e.into(),
+                })?;
+        }
+
         Ok(())
     }
 }
