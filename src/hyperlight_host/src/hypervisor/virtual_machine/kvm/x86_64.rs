@@ -16,8 +16,11 @@ limitations under the License.
 
 use std::sync::LazyLock;
 
+use hyperlight_common::outb::OutBAction;
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
+#[cfg(feature = "hw-interrupts")]
+use kvm_bindings::{KVM_PIT_SPEAKER_DUMMY, kvm_pit_config};
 use kvm_bindings::{
     kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region, kvm_xsave,
 };
@@ -106,6 +109,26 @@ impl KvmVm {
         let vm_fd = hv
             .create_vm_with_type(0)
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
+
+        // When hw-interrupts is enabled, create the in-kernel IRQ chip
+        // (PIC + IOAPIC + LAPIC) and PIT before creating the vCPU so the
+        // per-vCPU LAPIC is initialised in virtual-wire mode (LINT0 = ExtINT).
+        // The guest programs the PIC remap and PIT frequency via standard
+        // IO port writes, which the in-kernel devices handle transparently.
+        #[cfg(feature = "hw-interrupts")]
+        {
+            vm_fd
+                .create_irq_chip()
+                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+            let pit_config = kvm_pit_config {
+                flags: KVM_PIT_SPEAKER_DUMMY,
+                ..Default::default()
+            };
+            vm_fd
+                .create_pit2(pit_config)
+                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        }
+
         let vcpu_fd = vm_fd
             .create_vcpu(0)
             .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
@@ -171,8 +194,57 @@ impl VirtualMachine for KvmVm {
         // it sets the guest span, no other traces or spans must be setup in between these calls.
         #[cfg(feature = "trace_guest")]
         tc.setup_guest_trace(Span::current().context());
+
+        // When hw-interrupts is enabled, the in-kernel PIC + PIT + LAPIC handle
+        // timer interrupts natively. The guest signals "I'm done" by writing to
+        // OutBAction::Halt (an IO port exit) instead of using HLT, because the in-kernel
+        // LAPIC absorbs HLT (never returns VcpuExit::Hlt to userspace).
+        #[cfg(feature = "hw-interrupts")]
+        loop {
+            match self.vcpu_fd.run() {
+                Ok(VcpuExit::Hlt) => {
+                    // The in-kernel LAPIC normally handles HLT internally.
+                    // If we somehow get here, just re-enter the guest.
+                    continue;
+                }
+                Ok(VcpuExit::IoOut(port, data)) => {
+                    if port == OutBAction::Halt as u16 {
+                        return Ok(VmExit::Halt());
+                    }
+                    if port == OutBAction::PvTimerConfig as u16 {
+                        // Ignore: the in-kernel PIT handles timer scheduling.
+                        // The guest writes here for MSHV/WHP compatibility.
+                        continue;
+                    }
+                    return Ok(VmExit::IoOut(port, data.to_vec()));
+                }
+                Ok(VcpuExit::MmioRead(addr, _)) => return Ok(VmExit::MmioRead(addr)),
+                Ok(VcpuExit::MmioWrite(addr, _)) => return Ok(VmExit::MmioWrite(addr)),
+                #[cfg(gdb)]
+                Ok(VcpuExit::Debug(debug_exit)) => {
+                    return Ok(VmExit::Debug {
+                        dr6: debug_exit.dr6,
+                        exception: debug_exit.exception,
+                    });
+                }
+                Err(e) => match e.errno() {
+                    libc::EINTR => return Ok(VmExit::Cancelled()),
+                    libc::EAGAIN => continue,
+                    _ => return Err(RunVcpuError::Unknown(e.into())),
+                },
+                Ok(other) => {
+                    return Ok(VmExit::Unknown(format!(
+                        "Unknown KVM VCPU exit: {:?}",
+                        other
+                    )));
+                }
+            }
+        }
+
+        #[cfg(not(feature = "hw-interrupts"))]
         match self.vcpu_fd.run() {
             Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
+            Ok(VcpuExit::IoOut(port, _)) if port == OutBAction::Halt as u16 => Ok(VmExit::Halt()),
             Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
             Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
             Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
