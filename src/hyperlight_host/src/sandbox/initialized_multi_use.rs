@@ -768,7 +768,23 @@ impl MultiUseSandbox {
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
     pub fn generate_crashdump(&mut self) -> Result<()> {
-        crate::hypervisor::crashdump::generate_crashdump(&self.vm, &mut self.mem_mgr)
+        crate::hypervisor::crashdump::generate_crashdump(&self.vm, &mut self.mem_mgr, None)
+    }
+
+    /// Generate a crash dump of the current state of the VM, writing to `dir`.
+    ///
+    /// Like [`generate_crashdump`](Self::generate_crashdump), but the core dump
+    /// file is placed in `dir` instead of consulting the `HYPERLIGHT_CORE_DUMP_DIR`
+    /// environment variable.  This avoids the need for callers to use
+    /// `unsafe { std::env::set_var(...) }`.
+    #[cfg(crashdump)]
+    #[instrument(err(Debug), skip_all, parent = Span::current())]
+    pub fn generate_crashdump_to_dir(&mut self, dir: impl Into<String>) -> Result<()> {
+        crate::hypervisor::crashdump::generate_crashdump(
+            &self.vm,
+            &mut self.mem_mgr,
+            Some(dir.into()),
+        )
     }
 
     /// Returns whether the sandbox is currently poisoned.

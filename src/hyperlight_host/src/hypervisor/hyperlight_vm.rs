@@ -976,7 +976,7 @@ impl HyperlightVm {
             Err(e) => {
                 #[cfg(crashdump)]
                 if self.rt_cfg.guest_core_dump {
-                    crashdump::generate_crashdump(self, mem_mgr)
+                    crashdump::generate_crashdump(self, mem_mgr, None)
                         .map_err(|e| RunVmError::CrashdumpGeneration(Box::new(e)))?;
                 }
 

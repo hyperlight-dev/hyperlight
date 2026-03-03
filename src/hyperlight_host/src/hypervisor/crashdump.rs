@@ -256,25 +256,30 @@ impl ReadProcessMemory for GuestMemReader {
 ///
 /// This function generates an ELF core dump file capturing the hypervisor's state,
 /// which can be used for debugging when crashes occur.
-/// The location of the core dump file is determined by the `HYPERLIGHT_CORE_DUMP_DIR`
-/// environment variable. If not set, it defaults to the system's temporary directory.
+///
+/// If `override_dir` is `Some`, the core dump is placed there. Otherwise, the
+/// location is determined by the `HYPERLIGHT_CORE_DUMP_DIR` environment variable.
+/// If neither is set, it defaults to the system's temporary directory.
 ///
 /// # Arguments
 /// * `hv`: Reference to the hypervisor implementation
+/// * `mem_mgr`: Mutable reference to the sandbox memory manager
+/// * `override_dir`: Optional directory path that takes priority over the environment variable
 ///
 /// # Returns
 /// * `Result<()>`: Success or error
 pub(crate) fn generate_crashdump(
     hv: &HyperlightVm,
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    override_dir: Option<String>,
 ) -> Result<()> {
     // Get crash context from hypervisor
     let ctx = hv
         .crashdump_context(mem_mgr)
         .map_err(|e| new_error!("Failed to get crashdump context: {:?}", e))?;
 
-    // Get env variable for core dump directory
-    let core_dump_dir = std::env::var("HYPERLIGHT_CORE_DUMP_DIR").ok();
+    // Prefer the explicit override, then the env var, then the system temp dir
+    let core_dump_dir = override_dir.or_else(|| std::env::var("HYPERLIGHT_CORE_DUMP_DIR").ok());
 
     // Compute file path on the filesystem
     let file_path = core_dump_file_path(core_dump_dir);

@@ -76,11 +76,17 @@ limitations under the License.
 #[cfg(all(crashdump, target_os = "linux"))]
 use std::io::Write;
 
+#[cfg(all(crashdump, target_os = "linux"))]
+use hyperlight_host::HyperlightError;
 use hyperlight_host::sandbox::SandboxConfiguration;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
 
 fn main() -> hyperlight_host::Result<()> {
-    env_logger::init();
+    // Only enable logging if the user explicitly sets RUST_LOG; keep
+    // the example output clean by default.
+    if std::env::var_os("RUST_LOG").is_some() {
+        env_logger::init();
+    }
 
     let guest_path =
         hyperlight_testing::simple_guest_as_string().expect("Cannot find simpleguest binary");
@@ -88,7 +94,7 @@ fn main() -> hyperlight_host::Result<()> {
     println!("=== Hyperlight Crash Dump Example ===\n");
 
     // -----------------------------------------------------------------------
-    // Part 1: Automatic crash dump (VM-level fault bypasses guest handler)
+    // Part 1: Guest-caused crash dump (VM-level fault bypasses guest handler)
     // -----------------------------------------------------------------------
     println!("--- Part 1: Automatic crash dump (memory access violation) ---\n");
 
@@ -152,7 +158,7 @@ fn guest_crash_auto_dump(guest_path: &str) -> hyperlight_host::Result<()> {
     let mapping_file = create_mapping_file();
     let guest_base: u64 = 0x200000000;
     let len = sandbox.map_file_cow(mapping_file.as_path(), guest_base)?;
-    println!("Mapped {len} bytes at guest address {guest_base:#x} (read-only).\n");
+    println!("Mapped {len} bytes at guest address {guest_base:#x} (read-only).");
 
     // Call WriteMappedBuffer — the guest maps the address in its page tables
     // as writable, but the hypervisor's EPT/NPT mapping is read-only.
@@ -162,15 +168,11 @@ fn guest_crash_auto_dump(guest_path: &str) -> hyperlight_host::Result<()> {
     let result = sandbox.call::<bool>("WriteMappedBuffer", (guest_base, len));
 
     match result {
-        Ok(_) => println!("Unexpected success."),
-        Err(e) => {
-            println!("Guest crashed with a memory access violation (as expected).");
-            println!("Error: {e}\n");
-            println!(
-                "The crash dump was written automatically by the VM run loop.\n\
-                 No explicit generate_crashdump() call was needed."
-            );
+        Ok(_) => panic!("Unexpected success."),
+        Err(HyperlightError::MemoryAccessViolation(addr, ..)) => {
+            println!("Guest crashed with a memory access violation at {addr:#x}.");
         }
+        Err(e) => panic!("Unexpected error: {e}"),
     }
 
     Ok(())
@@ -217,10 +219,6 @@ fn guest_crash_with_on_demand_dump(guest_path: &str) -> hyperlight_host::Result<
 
     let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
 
-    // A normal call succeeds.
-    let message = "Hello from crashdump example!\n".to_string();
-    sandbox.call::<i32>("PrintOutput", message)?;
-
     // This call triggers a ud2 instruction in the guest. The guest's IDT
     // catches the #UD exception and reports it back to the host as a
     // GuestAborted error via I/O. This does NOT trigger an automatic crash
@@ -229,26 +227,15 @@ fn guest_crash_with_on_demand_dump(guest_path: &str) -> hyperlight_host::Result<
     let result = sandbox.call::<()>("TriggerException", ());
 
     match result {
-        Ok(_) => println!("Unexpected success."),
-        Err(e) => {
-            println!("Guest crashed as expected.");
-            println!("Error: {e}\n");
+        Ok(_) => panic!("Unexpected success."),
+        Err(_) => {
+            println!("Guest crashed (undefined instruction).");
 
             #[cfg(crashdump)]
-            {
-                // Generate the core dump explicitly. The automatic crash dump
-                // path in the VM run loop is bypassed when the guest exception
-                // handler catches the fault and reports it via IO (GuestAborted).
-                // Calling generate_crashdump() is the recommended post-mortem
-                // debugging workflow.
-                sandbox.generate_crashdump()?;
-            }
+            sandbox.generate_crashdump()?;
 
             #[cfg(not(crashdump))]
-            println!(
-                "The `crashdump` feature is not enabled.\n\
-                 Re-run with: cargo run --example crashdump --features crashdump"
-            );
+            println!("Re-run with: cargo run --example crashdump --features crashdump");
         }
     }
 
@@ -257,44 +244,51 @@ fn guest_crash_with_on_demand_dump(guest_path: &str) -> hyperlight_host::Result<
 
 /// Shows how to disable crash dump generation for a specific sandbox.
 ///
+/// This repeats the same memory-access-violation scenario from Part 1,
+/// but with crash dumps disabled. The VM-level fault still occurs, but
+/// no core dump file is written.
+///
 /// This is useful when you know certain sandboxes will intentionally crash
 /// (e.g., during fuzzing or testing) and you don't want the overhead of
 /// writing core dump files.
+#[cfg(all(crashdump, target_os = "linux"))]
 fn guest_crash_with_dump_disabled(guest_path: &str) -> hyperlight_host::Result<()> {
-    #[allow(unused_mut)]
     let mut cfg = SandboxConfiguration::default();
-
-    #[cfg(crashdump)]
-    {
-        // Disable core dump generation for this sandbox
-        cfg.set_guest_core_dump(false);
-        println!("Core dump generation disabled via cfg.set_guest_core_dump(false).");
-    }
+    cfg.set_guest_core_dump(false);
+    println!("Core dump disabled for this sandbox.");
 
     let uninitialized_sandbox =
         UninitializedSandbox::new(GuestBinary::FilePath(guest_path.to_string()), Some(cfg))?;
 
     let mut sandbox: MultiUseSandbox = uninitialized_sandbox.evolve()?;
 
-    println!("Calling guest function 'TriggerException'...");
-    let result = sandbox.call::<()>("TriggerException", ());
+    let mapping_file = create_mapping_file();
+    let guest_base: u64 = 0x200000000;
+    let len = sandbox.map_file_cow(mapping_file.as_path(), guest_base)?;
+
+    println!("Calling guest function 'WriteMappedBuffer' on read-only region...");
+    let result = sandbox.call::<bool>("WriteMappedBuffer", (guest_base, len));
 
     match result {
-        Ok(_) => println!("Unexpected success."),
-        Err(e) => {
-            println!("Guest crashed as expected: {e}");
-
-            #[cfg(crashdump)]
-            println!("No core dump was generated (disabled for this sandbox).");
-
-            #[cfg(not(crashdump))]
+        Ok(_) => panic!("Unexpected success."),
+        Err(HyperlightError::MemoryAccessViolation(addr, ..)) => {
             println!(
-                "The `crashdump` feature is not enabled.\n\
-                 Re-run with: cargo run --example crashdump --features crashdump"
+                "Guest crashed with a memory access violation at {addr:#x}. No core dump generated."
             );
         }
+        Err(e) => panic!("Unexpected error: {e}"),
     }
 
+    Ok(())
+}
+
+/// Fallback when crashdump feature or Linux is not available.
+#[cfg(not(all(crashdump, target_os = "linux")))]
+fn guest_crash_with_dump_disabled(_guest_path: &str) -> hyperlight_host::Result<()> {
+    println!(
+        "This part requires the `crashdump` feature and Linux.\n\
+         Re-run with: cargo run --example crashdump --features crashdump"
+    );
     Ok(())
 }
 
@@ -328,15 +322,8 @@ fn guest_crash_with_dump_disabled(guest_path: &str) -> hyperlight_host::Result<(
 fn print_on_demand_info() {
     #[cfg(crashdump)]
     println!(
-        "\nThe on-demand crash dump API is available:\n\
-         \n\
-         MultiUseSandbox::generate_crashdump()\n\
-         \n\
-         This is designed for use from a debugger (e.g., gdb) while the\n\
-         guest is mid-execution. Attach to your process with gdb and call\n\
-         sandbox.generate_crashdump() to capture the VM state.\n\
-         \n\
-         See docs/how-to-debug-a-hyperlight-guest.md for the full workflow."
+        "\nUse MultiUseSandbox::generate_crashdump() from gdb to capture\n\
+         VM state mid-execution. See docs/how-to-debug-a-hyperlight-guest.md."
     );
 }
 
@@ -402,15 +389,8 @@ mod tests {
     /// Build a sandbox, map a file with known content, trigger a crash and
     /// return the path to the generated ELF core dump.
     ///
-    /// `dump_dir` controls where `HYPERLIGHT_CORE_DUMP_DIR` points.
+    /// `dump_dir` controls where the core dump is written.
     fn generate_crashdump_with_content(dump_dir: &Path) -> PathBuf {
-        // Direct core dump output to a known directory
-        // SAFETY: No other threads are reading this env var concurrently
-        // in this test process. Tests using this helper are marked #[serial].
-        unsafe {
-            std::env::set_var("HYPERLIGHT_CORE_DUMP_DIR", dump_dir.as_os_str());
-        }
-
         let data_file = create_test_data_file(dump_dir);
 
         // Create sandbox with default config (crashdump enabled)
@@ -438,7 +418,7 @@ mod tests {
         // IO-based errors (GuestAborted), so we call generate_crashdump()
         // explicitly — this is the recommended workflow for post-mortem
         // debugging anyway.
-        sbox.generate_crashdump()
+        sbox.generate_crashdump_to_dir(dump_dir.to_string_lossy())
             .expect("generate_crashdump should succeed");
 
         // Find the generated hl_core_*.elf file
@@ -565,6 +545,8 @@ file {binary}
 core-file {core}
 echo === MEMORY ===\\n
 x/s {addr:#x}
+echo === BACKTRACE ===\\n
+bt
 echo === DONE ===\\n
 set logging enabled off
 quit
@@ -589,6 +571,20 @@ quit
             gdb_output.contains(sentinel_str),
             "GDB should read back the sentinel string \"{sentinel_str}\" from mapped memory.\n\
              Output:\n{gdb_output}"
+        );
+        assert!(
+            gdb_output.contains("=== BACKTRACE ==="),
+            "GDB should have printed the BACKTRACE marker.\nOutput:\n{gdb_output}"
+        );
+        assert!(
+            gdb_output.contains("hl_exception_handler"),
+            "GDB backtrace should contain the guest exception handler frame \
+             (hl_exception_handler).\nOutput:\n{gdb_output}"
+        );
+        assert!(
+            gdb_output.contains("0x0000000000000000 in ?? ()"),
+            "GDB backtrace should unwind to the null return address at the \
+             bottom of the guest stack.\nOutput:\n{gdb_output}"
         );
         assert!(
             gdb_output.contains("=== DONE ==="),
