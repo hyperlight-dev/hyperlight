@@ -38,6 +38,9 @@ pub(crate) mod crashdump;
 
 pub(crate) mod hyperlight_vm;
 
+#[cfg(all(feature = "hw-interrupts", any(mshv3, target_os = "windows")))]
+pub(crate) mod pic;
+
 use std::fmt::Debug;
 #[cfg(any(kvm, mshv3))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};

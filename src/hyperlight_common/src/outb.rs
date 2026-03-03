@@ -104,6 +104,15 @@ pub enum OutBAction {
     TraceMemoryAlloc = 105,
     #[cfg(feature = "mem_profile")]
     TraceMemoryFree = 106,
+    /// IO port for PV timer configuration. The guest writes a 32-bit
+    /// LE value representing the desired timer period in microseconds.
+    /// A value of 0 disables the timer.
+    PvTimerConfig = 107,
+    /// IO port the guest writes to signal "I'm done" to the host.
+    /// This replaces the `hlt` instruction for halt signaling so that
+    /// KVM's in-kernel LAPIC (which absorbs HLT exits) does not interfere
+    /// with hyperlight's halt-based guest-host protocol.
+    Halt = 108,
 }
 
 impl TryFrom<u16> for OutBAction {
@@ -120,6 +129,8 @@ impl TryFrom<u16> for OutBAction {
             105 => Ok(OutBAction::TraceMemoryAlloc),
             #[cfg(feature = "mem_profile")]
             106 => Ok(OutBAction::TraceMemoryFree),
+            107 => Ok(OutBAction::PvTimerConfig),
+            108 => Ok(OutBAction::Halt),
             _ => Err(anyhow::anyhow!("Invalid OutBAction value: {}", val)),
         }
     }

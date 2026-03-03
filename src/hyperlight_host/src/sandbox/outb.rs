@@ -233,6 +233,11 @@ pub(crate) fn handle_outb(
         OutBAction::TraceMemoryAlloc => trace_info.handle_trace_mem_alloc(regs, mem_mgr),
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryFree => trace_info.handle_trace_mem_free(regs, mem_mgr),
+        // PvTimerConfig and Halt are handled at the hypervisor level
+        // (in run_vcpu) and should never reach this handler.
+        OutBAction::PvTimerConfig | OutBAction::Halt => Err(HandleOutbError::InvalidPort(format!(
+            "port {port:#x} should be handled at hypervisor level"
+        ))),
     }
 }
 #[cfg(test)]
