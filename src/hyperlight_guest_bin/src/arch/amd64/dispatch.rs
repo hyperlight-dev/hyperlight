@@ -58,6 +58,8 @@ unsafe extern "C" {
 core::arch::global_asm!("
     .global dispatch_function
     dispatch_function:
+    .cfi_startproc
+    .cfi_undefined rip
     jnz flush_done
     mov rdi, cr4
     xor rdi, 0x80
@@ -67,4 +69,5 @@ core::arch::global_asm!("
     flush_done:
     call {internal_dispatch_function}\n
     hlt\n
+    .cfi_endproc
 ", internal_dispatch_function = sym crate::guest_function::call::internal_dispatch_function);

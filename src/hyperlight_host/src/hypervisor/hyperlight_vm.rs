@@ -1270,7 +1270,7 @@ impl HyperlightVm {
             let root_pt = self.get_root_pt()?;
 
             let regions = mem_mgr
-                .get_guest_memory_regions(root_pt, &mmap_regions, self.rsp_gva)
+                .get_guest_memory_regions(root_pt, &mmap_regions)
                 .map_err(|e| CrashDumpError::AccessPageTable(Box::new(e)))?;
 
             Ok(Some(crashdump::CrashDumpContext::new(

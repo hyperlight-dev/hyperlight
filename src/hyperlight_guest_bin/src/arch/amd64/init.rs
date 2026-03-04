@@ -157,10 +157,22 @@ unsafe extern "C" {
     ) -> !;
 }
 
+// Mark this as the bottom-most frame for debuggers:
+//  - .cfi_undefined rip: tells DWARF unwinders there is no return
+//    address to recover (i.e. no caller frame).
+//  - xor ebp, ebp: sets the frame pointer to zero so frame-pointer-
+//    based unwinders recognise this as the end of the chain.
+// See System V AMD64 ABI: https://gitlab.com/x86-psABIs/x86-64-ABI
+//      §3.4.1 (Initial Stack and Register State)
+//      §6.3 Unwinding Through Assembler Code
 core::arch::global_asm!("
     .global pivot_stack\n
     pivot_stack:\n
+    .cfi_startproc\n
+    .cfi_undefined rip\n
     mov rsp, r8\n
+    xor ebp, ebp\n
     call {generic_init}\n
     hlt\n
+    .cfi_endproc\n
 ", generic_init = sym crate::generic_init);
