@@ -173,6 +173,9 @@ core::arch::global_asm!("
     mov rsp, r8\n
     xor ebp, ebp\n
     call {generic_init}\n
+    mov dx, 108\n
+    out dx, al\n
+    cli\n
     hlt\n
     .cfi_endproc\n
 ", generic_init = sym crate::generic_init);

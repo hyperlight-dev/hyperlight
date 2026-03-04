@@ -1848,3 +1848,28 @@ fn memory_region_types_are_publicly_accessible() {
         };
     }
 }
+
+/// Test that hardware timer interrupts are delivered to the guest via OutBAction::PvTimerConfig port.
+///
+/// The guest function `TestTimerInterrupts`:
+///  1. Initializes the PIC (IRQ0 -> vector 0x20)
+///  2. Installs an IDT entry for vector 0x20
+///  3. Arms the timer via OutBAction::PvTimerConfig port
+///  4. Enables interrupts and busy-waits
+///  5. Returns the number of timer interrupts received
+///
+/// Requires the `hw-interrupts` feature on the host side.
+#[test]
+#[cfg(feature = "hw-interrupts")]
+fn hw_timer_interrupts() {
+    with_rust_sandbox(|mut sbox| {
+        // 1ms period, up to 100M spin iterations (should fire well before that)
+        let count: i32 = sbox
+            .call("TestTimerInterrupts", (1000_i32, 100_000_000_i32))
+            .unwrap();
+        assert!(
+            count > 0,
+            "Expected at least one timer interrupt, got {count}"
+        );
+    });
+}
