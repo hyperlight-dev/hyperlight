@@ -17,7 +17,7 @@ proc-macro = true
 
 [dependencies]
 wasmparser = { version = "0.245.1" }
-quote = { version = "1.0.44" }
+quote = { version = "1.0.45" }
 proc-macro2 = { version = "1.0.106" }
 syn = { version = "2.0.117" }
 itertools = { version = "0.14.0" }
