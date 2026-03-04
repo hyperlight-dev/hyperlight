@@ -248,6 +248,7 @@ test-rust-gdb-debugging target=default-target features="":
 # rust test for crashdump
 test-rust-crashdump target=default-target features="":
     {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }} -- test_crashdump
+    {{ cargo-cmd }} test --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} --example crashdump {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }}
 
 # rust test for tracing
 test-rust-tracing target=default-target features="":
@@ -353,6 +354,7 @@ run-rust-examples target=default-target features="":
 run-rust-examples-linux target=default-target features="": (run-rust-examples target features)
     {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}   {{ target-triple-flag }} --example tracing {{ if features =="" {''} else { "--features " + features } }}
     {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}   {{ target-triple-flag }}  --example tracing {{ if features =="" {"--features function_call_metrics" } else {"--features function_call_metrics," + features} }}
+    {{ cargo-cmd }} run --profile={{ if target == "debug" { "dev" } else { target } }}   {{ target-triple-flag }} --example crashdump {{ if features =="" {'--features crashdump'} else { "--features crashdump," + features } }}
 
 
 #########################

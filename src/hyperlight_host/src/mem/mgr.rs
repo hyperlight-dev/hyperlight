@@ -20,14 +20,106 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr};
+#[cfg(all(feature = "crashdump", feature = "init-paging"))]
+use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
 
 use super::layout::SandboxMemoryLayout;
-use super::memory_region::MemoryRegion;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::hypervisor::regs::CommonSpecialRegisters;
+use crate::mem::memory_region::MemoryRegion;
+#[cfg(feature = "crashdump")]
+use crate::mem::memory_region::{
+    CrashDumpRegion, HostGuestMemoryRegion, MemoryRegionFlags, MemoryRegionType,
+};
 use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
+
+#[cfg(all(feature = "crashdump", feature = "init-paging"))]
+fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
+    match kind {
+        MappingKind::Basic(BasicMapping {
+            readable,
+            writable,
+            executable,
+        }) => {
+            let mut flags = MemoryRegionFlags::empty();
+            if *readable {
+                flags |= MemoryRegionFlags::READ;
+            }
+            if *writable {
+                flags |= MemoryRegionFlags::WRITE;
+            }
+            if *executable {
+                flags |= MemoryRegionFlags::EXECUTE;
+            }
+            (flags, MemoryRegionType::Code)
+        }
+        MappingKind::Cow(cow) => {
+            let mut flags = MemoryRegionFlags::empty();
+            if cow.readable {
+                flags |= MemoryRegionFlags::READ;
+            }
+            if cow.executable {
+                flags |= MemoryRegionFlags::EXECUTE;
+            }
+            (flags, MemoryRegionType::Scratch)
+        }
+    }
+}
+
+/// Try to extend the last region in `regions` if the new page is contiguous
+/// in both guest and host address space and has the same flags.
+///
+/// Returns `true` if the region was coalesced, `false` if a new region is needed.
+#[cfg(all(feature = "crashdump", feature = "init-paging"))]
+fn try_coalesce_region(
+    regions: &mut [CrashDumpRegion],
+    virt_base: usize,
+    virt_end: usize,
+    host_base: usize,
+    flags: MemoryRegionFlags,
+) -> bool {
+    if let Some(last) = regions.last_mut()
+        && last.guest_region.end == virt_base
+        && last.host_region.end == host_base
+        && last.flags == flags
+    {
+        last.guest_region.end = virt_end;
+        last.host_region.end = host_base + (virt_end - virt_base);
+        return true;
+    }
+    false
+}
+
+/// Check dynamic mmap regions for a GPA that wasn't found in snapshot/scratch,
+/// and push matching regions.
+#[cfg(all(feature = "crashdump", feature = "init-paging"))]
+fn resolve_from_mmap_regions(
+    regions: &mut Vec<CrashDumpRegion>,
+    mapping: &hyperlight_common::vmem::Mapping,
+    virt_base: usize,
+    virt_end: usize,
+    mmap_regions: &[MemoryRegion],
+) {
+    let phys_start = mapping.phys_base as usize;
+    let phys_end = (mapping.phys_base + mapping.len) as usize;
+
+    for rgn in mmap_regions {
+        if phys_start >= rgn.guest_region.start && phys_end <= rgn.guest_region.end {
+            let offset = phys_start - rgn.guest_region.start;
+            let host_base = HostGuestMemoryRegion::to_addr(rgn.host_region.start) + offset;
+            let host_end = host_base + mapping.len as usize;
+
+            regions.push(CrashDumpRegion {
+                guest_region: virt_base..virt_end,
+                host_region: host_base..host_end,
+                flags: rgn.flags,
+                region_type: rgn.region_type,
+            });
+        }
+    }
+}
 
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
@@ -410,6 +502,152 @@ impl SandboxMemoryManager<HostSharedMemory> {
         })???;
 
         Ok(())
+    }
+
+    /// Build the list of guest memory regions for a crash dump.
+    ///
+    /// With `init-paging` enabled, walks the guest page tables to discover
+    /// GVA→GPA mappings and translates them to host-backed regions. Also
+    /// includes any dynamic mmap regions that may not be covered by the
+    /// page table walk.
+    #[cfg(all(feature = "crashdump", feature = "init-paging"))]
+    pub(crate) fn get_guest_memory_regions(
+        &mut self,
+        root_pt: u64,
+        mmap_regions: &[MemoryRegion],
+    ) -> Result<Vec<CrashDumpRegion>> {
+        use crate::sandbox::snapshot::{SharedMemoryPageTableBuffer, access_gpa};
+
+        let scratch_size = self.scratch_mem.mem_size();
+        let len = hyperlight_common::layout::MAX_GVA;
+
+        let mut regions = self.shared_mem.with_exclusivity(|snapshot| {
+            self.scratch_mem.with_exclusivity(|scratch| {
+                let pt_buf =
+                    SharedMemoryPageTableBuffer::new(snapshot, scratch, scratch_size, root_pt);
+
+                let mappings: Vec<_> =
+                    unsafe { hyperlight_common::vmem::virt_to_phys(&pt_buf, 0, len as u64) }
+                        .collect();
+
+                if mappings.is_empty() {
+                    return Err(new_error!(
+                        "No page table mappings found (len {len})",
+                    ));
+                }
+
+                let mut regions: Vec<CrashDumpRegion> = Vec::new();
+                for mapping in &mappings {
+                    let virt_base = mapping.virt_base as usize;
+                    let virt_end = (mapping.virt_base + mapping.len) as usize;
+
+                    if let Some((mem, offset)) =
+                        access_gpa(snapshot, scratch, scratch_size, mapping.phys_base)
+                    {
+                        let (flags, region_type) = mapping_kind_to_flags(&mapping.kind);
+
+                        if offset >= mem.mem_size() {
+                            tracing::error!(
+                                "Mapping for GPA {:#x} offset {:#x} out of bounds (size {:#x}), skipping",
+                                mapping.phys_base, offset, mem.mem_size(),
+                            );
+                            continue;
+                        }
+
+                        let host_base = mem.base_addr() + offset;
+                        let host_len =
+                            (mapping.len as usize).min(mem.mem_size().saturating_sub(offset));
+
+                        if try_coalesce_region(&mut regions, virt_base, virt_end, host_base, flags)
+                        {
+                            continue;
+                        }
+
+                        regions.push(CrashDumpRegion {
+                            guest_region: virt_base..virt_end,
+                            host_region: host_base..host_base + host_len,
+                            flags,
+                            region_type,
+                        });
+                    } else {
+                        // GPA not in snapshot/scratch — check dynamic mmap regions
+                        resolve_from_mmap_regions(
+                            &mut regions, mapping, virt_base, virt_end, mmap_regions,
+                        );
+                    }
+                }
+
+                Ok(regions)
+            })
+        })???;
+
+        // Include dynamic mmap regions at their GVA addresses as a fallback
+        // in case the page tables were corrupted and missed some pages.
+        for rgn in mmap_regions {
+            let already_covered = regions.iter().any(|r| {
+                r.guest_region.start <= rgn.guest_region.start
+                    && r.guest_region.end >= rgn.guest_region.end
+            });
+            if !already_covered {
+                regions.push(CrashDumpRegion {
+                    guest_region: rgn.guest_region.clone(),
+                    host_region: HostGuestMemoryRegion::to_addr(rgn.host_region.start)
+                        ..HostGuestMemoryRegion::to_addr(rgn.host_region.end),
+                    flags: rgn.flags,
+                    region_type: rgn.region_type,
+                });
+            }
+        }
+
+        Ok(regions)
+    }
+
+    /// Build the list of guest memory regions for a crash dump (non-paging).
+    ///
+    /// Without paging, GVA == GPA (identity mapped), so we return the
+    /// snapshot and scratch regions directly at their known addresses
+    /// alongside any dynamic mmap regions.
+    #[cfg(all(feature = "crashdump", not(feature = "init-paging")))]
+    pub(crate) fn get_guest_memory_regions(
+        &mut self,
+        _root_pt: u64,
+        mmap_regions: &[MemoryRegion],
+    ) -> Result<Vec<CrashDumpRegion>> {
+        let snapshot_base = SandboxMemoryLayout::BASE_ADDRESS;
+        let snapshot_size = self.shared_mem.mem_size();
+        let snapshot_host = self.shared_mem.base_addr();
+
+        let scratch_size = self.scratch_mem.mem_size();
+        let scratch_gva = hyperlight_common::layout::scratch_base_gva(scratch_size) as usize;
+        let scratch_host = self.scratch_mem.base_addr();
+
+        let mut regions = vec![
+            CrashDumpRegion {
+                guest_region: snapshot_base..snapshot_base + snapshot_size,
+                host_region: snapshot_host..snapshot_host + snapshot_size,
+                flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+                region_type: MemoryRegionType::Snapshot,
+            },
+            CrashDumpRegion {
+                guest_region: scratch_gva..scratch_gva + scratch_size,
+                host_region: scratch_host..scratch_host + scratch_size,
+                flags: MemoryRegionFlags::READ
+                    | MemoryRegionFlags::WRITE
+                    | MemoryRegionFlags::EXECUTE,
+                region_type: MemoryRegionType::Scratch,
+            },
+        ];
+        for rgn in mmap_regions {
+            regions.push(CrashDumpRegion {
+                guest_region: rgn.guest_region.clone(),
+                host_region: HostGuestMemoryRegion::to_addr(rgn.host_region.start)
+                    ..HostGuestMemoryRegion::to_addr(rgn.host_region.end),
+                flags: rgn.flags,
+                region_type: rgn.region_type,
+            });
+        }
+
+        Ok(regions)
     }
 
     /// Read guest memory at a Guest Virtual Address (GVA) by walking the

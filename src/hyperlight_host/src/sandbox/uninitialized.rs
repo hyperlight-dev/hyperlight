@@ -44,6 +44,11 @@ pub(crate) struct SandboxRuntimeConfig {
     pub(crate) debug_info: Option<super::config::DebugInfo>,
     #[cfg(crashdump)]
     pub(crate) guest_core_dump: bool,
+    /// The original entry point address of the loaded guest binary
+    /// (load_addr + ELF entry offset). Used for AT_ENTRY in core dumps
+    /// so GDB can compute the correct load offset for PIE binaries.
+    #[cfg(crashdump)]
+    pub(crate) entry_point: u64,
 }
 
 /// A preliminary sandbox that represents allocated memory and registered host functions,
@@ -196,6 +201,10 @@ impl UninitializedSandbox {
                 debug_info,
                 #[cfg(crashdump)]
                 guest_core_dump,
+                // entry_point is set later in set_up_hypervisor_partition
+                // once the entrypoint is resolved from the snapshot
+                #[cfg(crashdump)]
+                entry_point: 0,
             }
         };
 

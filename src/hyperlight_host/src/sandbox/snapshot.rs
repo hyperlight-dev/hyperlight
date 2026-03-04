@@ -181,9 +181,11 @@ pub(crate) fn access_gpa<'a>(
     gpa: u64,
 ) -> Option<(&'a ExclusiveSharedMemory, usize)> {
     let scratch_base = scratch_base_gpa(scratch_size);
-    if gpa >= scratch_base {
+    if gpa >= scratch_base && gpa < scratch_base + scratch_size as u64 {
         Some((scratch, (gpa - scratch_base) as usize))
-    } else if gpa >= SandboxMemoryLayout::BASE_ADDRESS as u64 {
+    } else if gpa >= SandboxMemoryLayout::BASE_ADDRESS as u64
+        && gpa < SandboxMemoryLayout::BASE_ADDRESS as u64 + snap.mem_size() as u64
+    {
         Some((snap, gpa as usize - SandboxMemoryLayout::BASE_ADDRESS))
     } else {
         None

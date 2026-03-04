@@ -119,6 +119,19 @@ pub(crate) fn set_up_hypervisor_partition(
     #[cfg(feature = "mem_profile")]
     let trace_info = MemTraceInfo::new(_load_info.info)?;
 
+    // Store the original entry point address in the runtime config for core dumps.
+    // This is needed because `entrypoint` transitions from `Initialise(addr)` to
+    // `Call(dispatch_addr)` after guest initialisation, losing the original value
+    // that GDB needs to compute the PIE binary's load offset.
+    #[cfg(crashdump)]
+    let rt_cfg = {
+        let mut rt_cfg = rt_cfg.clone();
+        if let crate::sandbox::snapshot::NextAction::Initialise(addr) = mgr.entrypoint {
+            rt_cfg.entry_point = addr;
+        }
+        rt_cfg
+    };
+
     Ok(HyperlightVm::new(
         mgr.shared_mem,
         mgr.scratch_mem,
@@ -129,7 +142,7 @@ pub(crate) fn set_up_hypervisor_partition(
         #[cfg(gdb)]
         gdb_conn,
         #[cfg(crashdump)]
-        rt_cfg.clone(),
+        rt_cfg,
         #[cfg(feature = "mem_profile")]
         trace_info,
     )

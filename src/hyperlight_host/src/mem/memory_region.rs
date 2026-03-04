@@ -248,6 +248,50 @@ pub(crate) struct MemoryRegion_<K: MemoryRegionKind> {
 
 pub(crate) type MemoryRegion = MemoryRegion_<HostGuestMemoryRegion>;
 
+/// A [`MemoryRegionKind`] for crash dump regions that always uses raw
+/// `usize` host addresses.  The crash dump path only reads host memory
+/// through raw pointers, so it never needs the file-mapping metadata
+/// stored in [`HostRegionBase`] on Windows.
+#[cfg(feature = "crashdump")]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub(crate) struct CrashDumpMemoryRegion;
+
+#[cfg(feature = "crashdump")]
+impl MemoryRegionKind for CrashDumpMemoryRegion {
+    type HostBaseType = usize;
+
+    fn add(base: Self::HostBaseType, size: usize) -> Self::HostBaseType {
+        base + size
+    }
+}
+
+/// A memory region used exclusively by the crash dump path.
+///
+/// Host addresses are always raw `usize` pointers, avoiding the need
+/// to construct platform-specific wrappers like [`HostRegionBase`].
+#[cfg(feature = "crashdump")]
+pub(crate) type CrashDumpRegion = MemoryRegion_<CrashDumpMemoryRegion>;
+
+#[cfg(feature = "crashdump")]
+impl HostGuestMemoryRegion {
+    /// Extract the raw `usize` host address from the platform-specific
+    /// host base type.
+    ///
+    /// On Linux this is identity (`HostBaseType` = `usize`).
+    /// On Windows it computes `handle_base + offset` via the existing
+    /// `From<HostRegionBase> for usize` impl.
+    pub(crate) fn to_addr(val: <Self as MemoryRegionKind>::HostBaseType) -> usize {
+        #[cfg(not(target_os = "windows"))]
+        {
+            val
+        }
+        #[cfg(target_os = "windows")]
+        {
+            val.into()
+        }
+    }
+}
+
 #[cfg_attr(not(feature = "init-paging"), allow(unused))]
 pub(crate) struct MemoryRegionVecBuilder<K: MemoryRegionKind> {
     guest_base_phys_addr: usize,

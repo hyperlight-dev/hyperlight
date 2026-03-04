@@ -767,8 +767,8 @@ impl MultiUseSandbox {
     ///
     #[cfg(crashdump)]
     #[instrument(err(Debug), skip_all, parent = Span::current())]
-    pub fn generate_crashdump(&self) -> Result<()> {
-        crate::hypervisor::crashdump::generate_crashdump(&self.vm)
+    pub fn generate_crashdump(&mut self) -> Result<()> {
+        crate::hypervisor::crashdump::generate_crashdump(&self.vm, &mut self.mem_mgr)
     }
 
     /// Returns whether the sandbox is currently poisoned.

@@ -330,6 +330,17 @@ pub enum AccessPageTableError {
     AccessRegs(#[from] RegisterError),
 }
 
+#[cfg(crashdump)]
+#[derive(Debug, thiserror::Error)]
+pub enum CrashDumpError {
+    #[error("Failed to generate crashdump because of a register error: {0}")]
+    GetRegs(#[from] RegisterError),
+    #[error("Failed to get root PT during crashdump generation: {0}")]
+    GetRootPt(#[from] AccessPageTableError),
+    #[error("Failed to get guest memory mapping during crashdump generation: {0}")]
+    AccessPageTable(Box<HyperlightError>),
+}
+
 /// Errors that can occur during HyperlightVm creation
 #[derive(Debug, thiserror::Error)]
 pub enum CreateHyperlightVmError {
@@ -678,12 +689,21 @@ impl HyperlightVm {
         Ok(())
     }
 
-    /// Get the current base page table physical address
-    pub(crate) fn get_root_pt(&mut self) -> Result<u64, AccessPageTableError> {
-        let sregs = self.vm.sregs()?;
-
-        // Mask off the flags bits
-        Ok(sregs.cr3 & !0xfff_u64)
+    /// Get the current base page table physical address.
+    ///
+    /// With `init-paging`, reads CR3 from the vCPU special registers.
+    /// Without `init-paging`, returns 0 (identity-mapped, no page tables).
+    pub(crate) fn get_root_pt(&self) -> Result<u64, AccessPageTableError> {
+        #[cfg(feature = "init-paging")]
+        {
+            let sregs = self.vm.sregs()?;
+            // Mask off the flags bits
+            Ok(sregs.cr3 & !0xfff_u64)
+        }
+        #[cfg(not(feature = "init-paging"))]
+        {
+            Ok(0)
+        }
     }
 
     /// Get the special registers that need to be stored in a snapshot.
@@ -956,7 +976,7 @@ impl HyperlightVm {
             Err(e) => {
                 #[cfg(crashdump)]
                 if self.rt_cfg.guest_core_dump {
-                    crashdump::generate_crashdump(self)
+                    crashdump::generate_crashdump(self, mem_mgr)
                         .map_err(|e| RunVmError::CrashdumpGeneration(Box::new(e)))?;
                 }
 
@@ -1190,7 +1210,8 @@ impl HyperlightVm {
     #[cfg(crashdump)]
     pub(crate) fn crashdump_context(
         &self,
-    ) -> std::result::Result<Option<super::crashdump::CrashDumpContext>, RegisterError> {
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    ) -> std::result::Result<Option<super::crashdump::CrashDumpContext>, CrashDumpError> {
         if self.rt_cfg.guest_core_dump {
             let mut regs = [0; 27];
 
@@ -1234,14 +1255,19 @@ impl HyperlightVm {
                     .and_then(|name| name.to_os_string().into_string().ok())
             });
 
-            let initialise = match self.entrypoint {
-                NextAction::Initialise(initialise) => initialise,
-                _ => 0,
-            };
+            // Use the stored entry point address from the runtime config.
+            // This is the original entry point (load_addr + ELF entry offset)
+            // which GDB needs for AT_ENTRY to compute the PIE load offset.
+            // We cannot use self.entrypoint here because it transitions from
+            // Initialise(addr) to Call(dispatch_addr) after guest init.
+            let initialise = self.rt_cfg.entry_point;
+            let mmap_regions: Vec<MemoryRegion> = self.get_mapped_regions().cloned().collect();
+            let root_pt = self.get_root_pt()?;
 
-            // Include dynamically mapped regions
-            // TODO: include the snapshot and scratch regions
-            let regions: Vec<MemoryRegion> = self.get_mapped_regions().cloned().collect();
+            let regions = mem_mgr
+                .get_guest_memory_regions(root_pt, &mmap_regions)
+                .map_err(|e| CrashDumpError::AccessPageTable(Box::new(e)))?;
+
             Ok(Some(crashdump::CrashDumpContext::new(
                 regions,
                 regs,
