@@ -509,12 +509,18 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// With `init-paging` enabled, walks the guest page tables to discover
     /// GVA→GPA mappings and translates them to host-backed regions. Also
     /// includes any dynamic mmap regions that may not be covered by the
-    /// page table walk.
+    /// page table walk, and a sentinel page at the stack top for clean
+    /// GDB backtraces.
+    ///
+    /// Without `init-paging`, GVA == GPA (identity mapped), so the snapshot
+    /// and scratch regions are returned directly at their known addresses
+    /// alongside any dynamic mmap regions.
     #[cfg(all(feature = "crashdump", feature = "init-paging"))]
     pub(crate) fn get_guest_memory_regions(
         &mut self,
         root_pt: u64,
         mmap_regions: &[MemoryRegion],
+        rsp_gva: u64,
     ) -> Result<Vec<CrashDumpRegion>> {
         use crate::sandbox::snapshot::{SharedMemoryPageTableBuffer, access_gpa};
 
@@ -599,6 +605,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
             }
         }
 
+        // Add a zero-filled sentinel page at the stack top so GDB can
+        // read a null return address and terminate the backtrace cleanly
+        // Not strictly necessary but avoids "Cannot access memory at address \u2026"
+        // in the backtrace in gdb
+        static SENTINEL_PAGE: [u8; 4096] = [0u8; 4096];
+        let stack_top = rsp_gva as usize;
+        let sentinel_host = SENTINEL_PAGE.as_ptr() as usize;
+        regions.push(CrashDumpRegion {
+            guest_region: stack_top..stack_top + 4096,
+            host_region: sentinel_host..sentinel_host + 4096,
+            flags: MemoryRegionFlags::READ,
+            region_type: MemoryRegionType::Scratch,
+        });
+
         Ok(regions)
     }
 
@@ -612,6 +632,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         &mut self,
         _root_pt: u64,
         mmap_regions: &[MemoryRegion],
+        _rsp_gva: u64,
     ) -> Result<Vec<CrashDumpRegion>> {
         let snapshot_base = SandboxMemoryLayout::BASE_ADDRESS;
         let snapshot_size = self.shared_mem.mem_size();
