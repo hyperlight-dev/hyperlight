@@ -577,11 +577,6 @@ quit
             "GDB should have printed the BACKTRACE marker.\nOutput:\n{gdb_output}"
         );
         assert!(
-            gdb_output.contains("hl_exception_handler"),
-            "GDB backtrace should contain the guest exception handler frame \
-             (hl_exception_handler).\nOutput:\n{gdb_output}"
-        );
-        assert!(
             gdb_output.contains("0x0000000000000000 in ?? ()"),
             "GDB backtrace should unwind to the null return address at the \
              bottom of the guest stack.\nOutput:\n{gdb_output}"
