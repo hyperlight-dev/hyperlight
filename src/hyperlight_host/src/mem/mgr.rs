@@ -512,14 +512,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Build the list of guest memory regions for a crash dump.
     ///
     /// With `init-paging` enabled, walks the guest page tables to discover
-    /// GVA→GPA mappings and translates them to host-backed regions. Also
-    /// includes any dynamic mmap regions that may not be covered by the
-    /// page table walk, and a sentinel page at the stack top for clean
-    /// GDB backtraces.
-    ///
-    /// Without `init-paging`, GVA == GPA (identity mapped), so the snapshot
-    /// and scratch regions are returned directly at their known addresses
-    /// alongside any dynamic mmap regions.
+    /// GVA→GPA mappings and translates them to host-backed regions.
     #[cfg(all(feature = "crashdump", feature = "init-paging"))]
     pub(crate) fn get_guest_memory_regions(
         &mut self,
