@@ -34,8 +34,6 @@ use windows_result::HRESULT;
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
-#[cfg(feature = "hw-interrupts")]
-use crate::hypervisor::pic::Pic;
 use crate::hypervisor::regs::{
     Align16, CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
     FP_CONTROL_WORD_DEFAULT, MXCSR_DEFAULT, WHP_DEBUG_REGS_NAMES, WHP_DEBUG_REGS_NAMES_LEN,
@@ -100,8 +98,6 @@ pub(crate) struct WhpVm {
     /// Tracks host-side file mappings (view_base, mapping_handle) for
     /// cleanup on unmap or drop. Only populated for MappedFile regions.
     file_mappings: Vec<(HandleWrapper, *mut c_void)>,
-    #[cfg(feature = "hw-interrupts")]
-    pic: Pic,
     /// Whether the WHP host supports LAPIC emulation mode.
     #[cfg(feature = "hw-interrupts")]
     lapic_emulation: bool,
@@ -272,8 +268,6 @@ impl WhpVm {
             partition,
             surrogate_process,
             file_mappings: Vec::new(),
-            #[cfg(feature = "hw-interrupts")]
-            pic: Pic::new(),
             #[cfg(feature = "hw-interrupts")]
             lapic_emulation,
             #[cfg(feature = "hw-interrupts")]
@@ -1126,6 +1120,11 @@ impl DebuggableVm for WhpVm {
 
 #[cfg(feature = "hw-interrupts")]
 impl WhpVm {
+    /// Hardcoded timer interrupt vector.  The nanvix guest always
+    /// remaps IRQ0 to vector 0x20 via PIC ICW2, so we use that same
+    /// vector directly — no PIC state machine needed.
+    const TIMER_VECTOR: u32 = 0x20;
+
     /// Get the LAPIC state via the bulk interrupt-controller state API.
     fn get_lapic_state(&self) -> windows_result::Result<Vec<u8>> {
         let mut state = vec![0u8; Self::LAPIC_STATE_MAX_SIZE as usize];
@@ -1177,17 +1176,21 @@ impl WhpVm {
     }
 
     /// Handle a hardware-interrupt IO IN request.
-    /// Returns `Some(value)` if the port was handled (PIC or PIT read),
-    /// `None` if the port should be passed through to the guest handler.
+    /// Returns `Some(value)` if the port was handled, `None` if the
+    /// port should be passed through to the guest handler.
+    ///
+    /// No PIC state machine — PIC data ports return 0xFF (all masked),
+    /// PIC command ports return 0 (no pending IRQ), PIT returns 0.
     fn handle_hw_io_in(&self, port: u16) -> Option<u64> {
-        if let Some(val) = self.pic.handle_io_in(port) {
-            return Some(val as u64);
+        match port {
+            // PIC master/slave data ports — return "all masked"
+            0x21 | 0xA1 => Some(0xFF),
+            // PIC master/slave command ports — return 0 (ISR/IRR read)
+            0x20 | 0xA0 => Some(0),
+            // PIT data port read — return 0
+            0x40 => Some(0),
+            _ => None,
         }
-        // PIT data port read -- return 0
-        if port == 0x40 {
-            return Some(0);
-        }
-        None
     }
 
     /// Stop the software timer thread if running.
@@ -1219,7 +1222,7 @@ impl WhpVm {
                     // host-side software timer thread that periodically
                     // injects interrupts via WHvRequestInterrupt.
                     let partition_raw = self.partition.0;
-                    let vector = self.pic.master_vector_base() as u32;
+                    let vector = Self::TIMER_VECTOR;
                     let stop = Arc::new(AtomicBool::new(false));
                     let stop_clone = stop.clone();
                     let period = std::time::Duration::from_micros(period_us as u64);
@@ -1256,11 +1259,16 @@ impl WhpVm {
             }
             return true;
         }
-        if !data.is_empty() && self.pic.handle_io_out(port, data[0]) {
-            // When the guest sends PIC EOI (port 0x20, OCW2 non-specific EOI),
-            // also perform LAPIC EOI since the software timer delivers
-            // through the LAPIC and the guest only acknowledges via PIC.
-            if port == 0x20 && (data[0] & 0xE0) == 0x20 && self.lapic_timer_active {
+        // PIC ports (0x20, 0x21, 0xA0, 0xA1): accept as no-ops.
+        // No PIC state machine — we only need LAPIC EOI bridging when
+        // the guest sends a non-specific EOI on the master PIC command
+        // port (0x20, OCW2 byte with bits 7:5 = 001).
+        if port == 0x20 || port == 0x21 || port == 0xA0 || port == 0xA1 {
+            if port == 0x20
+                && !data.is_empty()
+                && (data[0] & 0xE0) == 0x20
+                && self.lapic_timer_active
+            {
                 self.do_lapic_eoi();
             }
             return true;
