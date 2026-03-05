@@ -47,14 +47,14 @@ static CURRENT_TIME: AtomicU64 = AtomicU64::new(0);
 
 /// Matches picolibc `struct timespec` layout for x86_64.
 #[repr(C)]
-struct Timespec {
+pub(crate) struct Timespec {
     tv_sec: c_long,
     tv_nsec: c_long,
 }
 
 /// Matches picolibc `struct timeval` layout for x86_64.
 #[repr(C)]
-struct Timeval {
+pub(crate) struct Timeval {
     tv_sec: c_long,
     tv_usec: c_long,
 }

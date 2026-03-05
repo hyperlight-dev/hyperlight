@@ -212,7 +212,6 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
         .flag("-Werror=double-promotion")
         .flag("-Werror=implicit-function-declaration")
         .flag("-Werror=unreachable-code-fallthrough")
-        .flag("-Wmissing-prototypes")
         .flag("-Wmissing-declarations")
         .flag("-Wold-style-definition")
         .flag("-Wno-implicit-int")
