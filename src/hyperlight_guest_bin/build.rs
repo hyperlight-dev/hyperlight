@@ -157,10 +157,6 @@ fn gen_config_file(config_dir: &Path) -> Result<()> {
     let has = if detect_cc_feature(code)? { 1 } else { 0 };
     writeln!(file, "#define __HAVE_COMPLEX {has}")?;
 
-    let code = r#"long long x = 0; int main() { return 0; }"#;
-    let has = if detect_cc_feature(code)? { 1 } else { 0 };
-    writeln!(file, "#define __IO_LONG_LONG {has}")?;
-
     // Static undefs
     writeln!(file, "#undef __ARM_SEMIHOST")?; // -Dsemihost=false
     writeln!(file, "#undef __SEMIHOST")?; // -Dsemihost=false
@@ -294,7 +290,6 @@ fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<
         build.file(&source_path);
     }
 
-    build.file("c/clock.c");
     Ok(())
 }
 

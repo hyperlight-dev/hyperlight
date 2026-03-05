@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use alloc::string::ToString;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::*;
@@ -34,14 +34,53 @@ fn set_errno(val: c_int) {
 }
 
 // POSIX errno values (matching picolibc sys/errno.h)
+const EINVAL: c_int = 22;
 const EIO: c_int = 5;
 const EBADF: c_int = 9;
 const ENOSYS: c_int = 88;
 
+// picolibc clock IDs (from time.h)
+const CLOCK_REALTIME: c_ulong = 1;
+const CLOCK_MONOTONIC: c_ulong = 4;
+
 static CURRENT_TIME: AtomicU64 = AtomicU64::new(0);
+
+/// Matches picolibc `struct timespec` layout for x86_64.
+#[repr(C)]
+struct Timespec {
+    tv_sec: c_long,
+    tv_nsec: c_long,
+}
+
+/// Matches picolibc `struct timeval` layout for x86_64.
+#[repr(C)]
+struct Timeval {
+    tv_sec: c_long,
+    tv_usec: c_long,
+}
+
+/// Retrieves the current time from the host as (seconds, nanoseconds).
+fn current_time() -> (u64, u64) {
+    let bytes = call_host_function::<Vec<u8>>("CurrentTime", Some(vec![]), ReturnType::VecBytes)
+        .unwrap_or_default();
+
+    if bytes.len() == 16 {
+        let secs = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
+        let nanos = u64::from_ne_bytes(bytes[8..16].try_into().unwrap());
+        (secs, nanos)
+    } else {
+        let secs = 1609459200 + CURRENT_TIME.fetch_add(1, Ordering::Relaxed);
+        (secs, 0)
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize {
+    if buf.is_null() && count > 0 {
+        set_errno(EINVAL);
+        return -1;
+    }
+
     if fd != 0 {
         set_errno(EBADF);
         return -1;
@@ -53,7 +92,7 @@ pub extern "C" fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize {
         ReturnType::VecBytes,
     ) {
         Ok(bytes) => {
-            let n = bytes.len();
+            let n = bytes.len().min(count);
             unsafe {
                 core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
             }
@@ -68,16 +107,21 @@ pub extern "C" fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn write(fd: c_int, buf: *const c_void, count: usize) -> isize {
+    if buf.is_null() && count > 0 {
+        set_errno(EINVAL);
+        return -1;
+    }
+
     if fd != 1 && fd != 2 {
         set_errno(EBADF);
         return -1;
     }
 
     let slice = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
-    let s = core::str::from_utf8(slice).unwrap_or("<invalid utf8>");
+    let s = String::from_utf8_lossy(slice);
     match call_host_function::<i32>(
         "HostPrint",
-        Some(vec![ParameterValue::String(s.to_string())]),
+        Some(vec![ParameterValue::String(s.into_owned())]),
         ReturnType::Int,
     ) {
         Ok(_) => count as isize,
@@ -90,21 +134,48 @@ pub extern "C" fn write(fd: c_int, buf: *const c_void, count: usize) -> isize {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _current_time(ts: *mut u64) -> c_int {
-    let bytes = call_host_function::<Vec<u8>>("CurrentTime", Some(vec![]), ReturnType::VecBytes)
-        .unwrap_or_default();
-
-    let (secs, nanos) = if bytes.len() == 16 {
-        let secs = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
-        let nanos = u64::from_ne_bytes(bytes[8..16].try_into().unwrap());
-        (secs, nanos)
-    } else {
-        let secs = 1609459200 + CURRENT_TIME.fetch_add(1, Ordering::Relaxed);
-        (secs, 0)
-    };
-
+    let (secs, nanos) = current_time();
     let ts = unsafe { core::slice::from_raw_parts_mut(ts, 2) };
     ts[0] = secs;
     ts[1] = nanos;
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn clock_gettime(clk_id: c_ulong, tp: *mut Timespec) -> c_int {
+    if tp.is_null() {
+        set_errno(EINVAL);
+        return -1;
+    }
+
+    match clk_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC => {
+            let (secs, nanos) = current_time();
+            unsafe {
+                (*tp).tv_sec = secs as c_long;
+                (*tp).tv_nsec = nanos as c_long;
+            }
+            0
+        }
+        _ => {
+            set_errno(EINVAL);
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gettimeofday(tv: *mut Timeval, _tz: *mut c_void) -> c_int {
+    if tv.is_null() {
+        set_errno(EINVAL);
+        return -1;
+    }
+
+    let (secs, nanos) = current_time();
+    unsafe {
+        (*tv).tv_sec = secs as c_long;
+        (*tv).tv_usec = (nanos / 1000) as c_long;
+    }
     0
 }
 

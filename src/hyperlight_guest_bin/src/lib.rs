@@ -51,6 +51,7 @@ pub mod host_comm;
 pub mod memory;
 pub mod paging;
 
+/// Bridge between picolibc's POSIX expectations and the Hyperlight host.
 #[cfg(feature = "libc")]
 mod host_bridge;
 
