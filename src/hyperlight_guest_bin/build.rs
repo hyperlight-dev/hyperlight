@@ -222,8 +222,8 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
         .flag("-fno-stack-protector")
         .flag("-fstack-clash-protection")
         .flag("-mstack-probe-size=4096")
-        // We don't use a different stack for all interrupts, so there
-        // can be no red zone
+        // Hyperlight's stack management was not designed with a redzone in mind,
+        // so we leave it disabled for now
         .flag("-mno-red-zone")
         // This is a terrible hack, because
         // - we need stack clash protection, because we have put the
