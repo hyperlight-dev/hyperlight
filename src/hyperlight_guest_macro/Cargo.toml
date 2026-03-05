@@ -15,7 +15,7 @@ Macros for registering guest and host functions on hyperlight guests binaries.
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1.0"
-proc-macro-crate = "3.3.0"
+proc-macro-crate = "3.5.0"
 
 [lib]
 proc-macro = true
