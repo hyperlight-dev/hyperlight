@@ -252,11 +252,11 @@ pub(crate) type MemoryRegion = MemoryRegion_<HostGuestMemoryRegion>;
 /// `usize` host addresses.  The crash dump path only reads host memory
 /// through raw pointers, so it never needs the file-mapping metadata
 /// stored in [`HostRegionBase`] on Windows.
-#[cfg(feature = "crashdump")]
+#[cfg(crashdump)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub(crate) struct CrashDumpMemoryRegion;
 
-#[cfg(feature = "crashdump")]
+#[cfg(crashdump)]
 impl MemoryRegionKind for CrashDumpMemoryRegion {
     type HostBaseType = usize;
 
@@ -269,10 +269,10 @@ impl MemoryRegionKind for CrashDumpMemoryRegion {
 ///
 /// Host addresses are always raw `usize` pointers, avoiding the need
 /// to construct platform-specific wrappers like [`HostRegionBase`].
-#[cfg(feature = "crashdump")]
+#[cfg(crashdump)]
 pub(crate) type CrashDumpRegion = MemoryRegion_<CrashDumpMemoryRegion>;
 
-#[cfg(feature = "crashdump")]
+#[cfg(crashdump)]
 impl HostGuestMemoryRegion {
     /// Extract the raw `usize` host address from the platform-specific
     /// host base type.

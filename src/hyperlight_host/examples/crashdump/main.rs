@@ -130,12 +130,7 @@ fn main() -> hyperlight_host::Result<()> {
 ///
 /// The guest has an IDT (Interrupt Descriptor Table) that catches most CPU
 /// exceptions (page faults, undefined instructions, etc.) and reports them
-/// back to the host as `GuestAborted` errors.
-///
-/// However, some faults are intercepted by the **hypervisor** before the
-/// CPU delivers them to the guest. For example, when the guest writes to
-/// a memory region that the hypervisor mapped as read-only (via EPT/NPT),
-/// the hypervisor sees an MMIO write exit. The guest IDT never fires.
+/// back to the host as `GuestAborted` errors and doesn't create a crashdump.
 ///
 /// These hypervisor-level exits produce `MemoryAccessViolation` errors,
 /// and Hyperlight automatically writes a crash dump for them.
@@ -161,7 +156,7 @@ fn guest_crash_auto_dump(guest_path: &str) -> hyperlight_host::Result<()> {
     println!("Mapped {len} bytes at guest address {guest_base:#x} (read-only).");
 
     // Call WriteMappedBuffer — the guest maps the address in its page tables
-    // as writable, but the hypervisor's EPT/NPT mapping is read-only.
+    // as writable, but the hypervisor's mapping is read-only.
     // The write triggers an MMIO exit that the guest exception handler
     // never sees.
     println!("Calling guest function 'WriteMappedBuffer' on read-only region...");
@@ -405,8 +400,25 @@ mod tests {
         // The core dump already includes snapshot and scratch regions
         // automatically. This mapping lets us verify that GDB can read
         // a specific sentinel string from a known address.
-        sbox.map_file_cow(&data_file, MAP_GUEST_BASE)
+        let len = sbox
+            .map_file_cow(&data_file, MAP_GUEST_BASE)
             .expect("map_file_cow");
+
+        // Read the mapped region back through the guest and verify it
+        // contains the sentinel we wrote.
+        // The also maps the file in so the guest can see it and we will be able to read it as well
+        // in the crashdump  since we are only dumping the GVA
+        let result: Vec<u8> = sbox
+            .call("ReadMappedBuffer", (MAP_GUEST_BASE, len as u64, true))
+            .expect("ReadMappedBuffer should succeed");
+        let sentinel_str =
+            std::str::from_utf8(TEST_SENTINEL).expect("TEST_SENTINEL is valid UTF-8");
+        assert!(
+            result.starts_with(TEST_SENTINEL),
+            "Guest should read back the sentinel string \"{sentinel_str}\" from mapped memory.\n\
+             Got: {:?}",
+            &result[..TEST_SENTINEL.len().min(result.len())]
+        );
 
         // Trigger a crash — TriggerException causes a GuestAborted error via
         // the guest exception handler's IO-based reporting mechanism.
@@ -524,11 +536,6 @@ quit
     #[test]
     #[serial]
     fn test_crashdump_gdb_memory() {
-        if !gdb_is_available() {
-            eprintln!("Skipping test: {GDB_COMMAND} not found on PATH");
-            return;
-        }
-
         let dump_dir = tempfile::tempdir().expect("create temp dir");
         let core_path = generate_crashdump_with_content(dump_dir.path());
         let guest_path = hyperlight_testing::simple_guest_as_string().expect("simpleguest binary");

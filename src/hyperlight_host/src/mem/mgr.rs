@@ -28,7 +28,7 @@ use super::layout::SandboxMemoryLayout;
 use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::memory_region::MemoryRegion;
-#[cfg(feature = "crashdump")]
+#[cfg(crashdump)]
 use crate::mem::memory_region::{
     CrashDumpRegion, HostGuestMemoryRegion, MemoryRegionFlags, MemoryRegionType,
 };
@@ -53,7 +53,7 @@ fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegion
             if *executable {
                 flags |= MemoryRegionFlags::EXECUTE;
             }
-            (flags, MemoryRegionType::Code)
+            (flags, MemoryRegionType::Snapshot)
         }
         MappingKind::Cow(cow) => {
             let mut flags = MemoryRegionFlags::empty();
@@ -110,11 +110,16 @@ fn resolve_from_mmap_regions(
             let offset = phys_start - rgn.guest_region.start;
             let host_base = HostGuestMemoryRegion::to_addr(rgn.host_region.start) + offset;
             let host_end = host_base + mapping.len as usize;
+            let flags = rgn.flags;
+
+            if try_coalesce_region(regions, virt_base, virt_end, host_base, flags) {
+                continue;
+            }
 
             regions.push(CrashDumpRegion {
                 guest_region: virt_base..virt_end,
                 host_region: host_base..host_end,
-                flags: rgn.flags,
+                flags,
                 region_type: rgn.region_type,
             });
         }
@@ -526,7 +531,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let scratch_size = self.scratch_mem.mem_size();
         let len = hyperlight_common::layout::MAX_GVA;
 
-        let mut regions = self.shared_mem.with_exclusivity(|snapshot| {
+        let regions = self.shared_mem.with_exclusivity(|snapshot| {
             self.scratch_mem.with_exclusivity(|scratch| {
                 let pt_buf =
                     SharedMemoryPageTableBuffer::new(snapshot, scratch, scratch_size, root_pt);
@@ -585,24 +590,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 Ok(regions)
             })
         })???;
-
-        // Include dynamic mmap regions at their GVA addresses as a fallback
-        // in case the page tables were corrupted and missed some pages.
-        for rgn in mmap_regions {
-            let already_covered = regions.iter().any(|r| {
-                r.guest_region.start <= rgn.guest_region.start
-                    && r.guest_region.end >= rgn.guest_region.end
-            });
-            if !already_covered {
-                regions.push(CrashDumpRegion {
-                    guest_region: rgn.guest_region.clone(),
-                    host_region: HostGuestMemoryRegion::to_addr(rgn.host_region.start)
-                        ..HostGuestMemoryRegion::to_addr(rgn.host_region.end),
-                    flags: rgn.flags,
-                    region_type: rgn.region_type,
-                });
-            }
-        }
 
         Ok(regions)
     }
