@@ -15,12 +15,14 @@ limitations under the License.
 */
 
 use std::sync::LazyLock;
+#[cfg(feature = "hw-interrupts")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "hw-interrupts")]
+use std::sync::Arc;
 
 use hyperlight_common::outb::OutBAction;
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
-#[cfg(feature = "hw-interrupts")]
-use kvm_bindings::{KVM_PIT_SPEAKER_DUMMY, kvm_pit_config};
 use kvm_bindings::{
     kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region, kvm_xsave,
 };
@@ -29,6 +31,8 @@ use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+#[cfg(feature = "hw-interrupts")]
+use vmm_sys_util::eventfd::EventFd;
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
@@ -87,14 +91,33 @@ pub(crate) fn is_hypervisor_present() -> bool {
 }
 
 /// A KVM implementation of a single-vcpu VM
-#[derive(Debug)]
 pub(crate) struct KvmVm {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
 
+    /// EventFd registered via irqfd for GSI 0 (IRQ0). A timer thread
+    /// writes to this to inject periodic timer interrupts.
+    #[cfg(feature = "hw-interrupts")]
+    timer_irq_eventfd: EventFd,
+    /// Signals the timer thread to stop.
+    #[cfg(feature = "hw-interrupts")]
+    timer_stop: Arc<AtomicBool>,
+    /// Handle to the background timer thread (if started).
+    #[cfg(feature = "hw-interrupts")]
+    timer_thread: Option<std::thread::JoinHandle<()>>,
+
     // KVM, as opposed to mshv/whp, has no get_guest_debug() ioctl, so we must track the state ourselves
     #[cfg(gdb)]
     debug_regs: kvm_guest_debug,
+}
+
+impl std::fmt::Debug for KvmVm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KvmVm")
+            .field("vm_fd", &self.vm_fd)
+            .field("vcpu_fd", &self.vcpu_fd)
+            .finish_non_exhaustive()
+    }
 }
 
 static KVM: LazyLock<std::result::Result<Kvm, CreateVmError>> =
@@ -111,23 +134,35 @@ impl KvmVm {
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
 
         // When hw-interrupts is enabled, create the in-kernel IRQ chip
-        // (PIC + IOAPIC + LAPIC) and PIT before creating the vCPU so the
+        // (PIC + IOAPIC + LAPIC) before creating the vCPU so the
         // per-vCPU LAPIC is initialised in virtual-wire mode (LINT0 = ExtINT).
-        // The guest programs the PIC remap and PIT frequency via standard
-        // IO port writes, which the in-kernel devices handle transparently.
+        // The guest programs the PIC remap via standard IO port writes,
+        // which the in-kernel PIC handles transparently.
+        //
+        // Instead of creating an in-kernel PIT (create_pit2), we use a
+        // host-side timer thread + irqfd to inject IRQ0 at the rate
+        // requested by the guest via OutBAction::PvTimerConfig (port 107).
+        // This eliminates the in-kernel PIT device. Guest PIT port writes
+        // (0x40, 0x43) become no-ops handled in the run loop.
         #[cfg(feature = "hw-interrupts")]
-        {
+        let timer_irq_eventfd = {
             vm_fd
                 .create_irq_chip()
                 .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-            let pit_config = kvm_pit_config {
-                flags: KVM_PIT_SPEAKER_DUMMY,
-                ..Default::default()
-            };
+
+            // Create an EventFd and register it via irqfd for GSI 0 (IRQ0).
+            // When the timer thread writes to this EventFd, the in-kernel
+            // PIC will assert IRQ0, which is delivered as the vector the
+            // guest configured during PIC remap (typically vector 0x20).
+            let eventfd = EventFd::new(0)
+                .map_err(|e| CreateVmError::InitializeVm(
+                    kvm_ioctls::Error::new(e.raw_os_error().unwrap_or(libc::EIO)).into()
+                ))?;
             vm_fd
-                .create_pit2(pit_config)
+                .register_irqfd(&eventfd, 0)
                 .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-        }
+            eventfd
+        };
 
         let vcpu_fd = vm_fd
             .create_vcpu(0)
@@ -155,6 +190,12 @@ impl KvmVm {
         Ok(Self {
             vm_fd,
             vcpu_fd,
+            #[cfg(feature = "hw-interrupts")]
+            timer_irq_eventfd,
+            #[cfg(feature = "hw-interrupts")]
+            timer_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "hw-interrupts")]
+            timer_thread: None,
             #[cfg(gdb)]
             debug_regs: kvm_guest_debug::default(),
         })
@@ -195,9 +236,11 @@ impl VirtualMachine for KvmVm {
         #[cfg(feature = "trace_guest")]
         tc.setup_guest_trace(Span::current().context());
 
-        // When hw-interrupts is enabled, the in-kernel PIC + PIT + LAPIC handle
-        // timer interrupts natively. The guest signals "I'm done" by writing to
-        // OutBAction::Halt (an IO port exit) instead of using HLT, because the in-kernel
+        // When hw-interrupts is enabled, the in-kernel PIC + LAPIC deliver
+        // interrupts triggered by the host-side timer thread via irqfd.
+        // There is no in-kernel PIT; guest PIT port writes are no-ops.
+        // The guest signals "I'm done" by writing to OutBAction::Halt
+        // (an IO port exit) instead of using HLT, because the in-kernel
         // LAPIC absorbs HLT (never returns VcpuExit::Hlt to userspace).
         #[cfg(feature = "hw-interrupts")]
         loop {
@@ -209,11 +252,43 @@ impl VirtualMachine for KvmVm {
                 }
                 Ok(VcpuExit::IoOut(port, data)) => {
                     if port == OutBAction::Halt as u16 {
+                        // Stop the timer thread before returning.
+                        self.timer_stop.store(true, Ordering::Relaxed);
+                        if let Some(h) = self.timer_thread.take() {
+                            let _ = h.join();
+                        }
                         return Ok(VmExit::Halt());
                     }
                     if port == OutBAction::PvTimerConfig as u16 {
-                        // Ignore: the in-kernel PIT handles timer scheduling.
-                        // The guest writes here for MSHV/WHP compatibility.
+                        // The guest is configuring the timer period.
+                        // Extract the period in microseconds (LE u32).
+                        if data.len() >= 4 {
+                            let period_us = u32::from_le_bytes(
+                                data[..4].try_into().unwrap(),
+                            ) as u64;
+                            if period_us > 0 && self.timer_thread.is_none() {
+                                let eventfd = self
+                                    .timer_irq_eventfd
+                                    .try_clone()
+                                    .expect("failed to clone timer EventFd");
+                                let stop = self.timer_stop.clone();
+                                let period = std::time::Duration::from_micros(period_us);
+                                self.timer_thread = Some(std::thread::spawn(move || {
+                                    while !stop.load(Ordering::Relaxed) {
+                                        std::thread::sleep(period);
+                                        if stop.load(Ordering::Relaxed) {
+                                            break;
+                                        }
+                                        let _ = eventfd.write(1);
+                                    }
+                                }));
+                            }
+                        }
+                        continue;
+                    }
+                    // PIT ports (0x40-0x43): no in-kernel PIT, so these
+                    // exit to userspace. Silently ignore them.
+                    if (0x40..=0x43).contains(&port) {
                         continue;
                     }
                     return Ok(VmExit::IoOut(port, data.to_vec()));
@@ -498,6 +573,16 @@ impl DebuggableVm for KvmVm {
             .set_guest_debug(&self.debug_regs)
             .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
         Ok(())
+    }
+}
+
+#[cfg(feature = "hw-interrupts")]
+impl Drop for KvmVm {
+    fn drop(&mut self) {
+        self.timer_stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.timer_thread.take() {
+            let _ = h.join();
+        }
     }
 }
 
