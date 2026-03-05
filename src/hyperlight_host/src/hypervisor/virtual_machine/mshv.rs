@@ -16,7 +16,11 @@ limitations under the License.
 
 #[cfg(gdb)]
 use std::fmt::Debug;
+#[cfg(feature = "hw-interrupts")]
+use std::sync::Arc;
 use std::sync::LazyLock;
+#[cfg(feature = "hw-interrupts")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use hyperlight_common::outb::OutBAction;
 #[cfg(feature = "hw-interrupts")]
@@ -39,11 +43,10 @@ use mshv_bindings::{
 };
 #[cfg(feature = "hw-interrupts")]
 use mshv_bindings::{
-    hv_register_name_HV_REGISTER_SCONTROL, hv_register_name_HV_REGISTER_STIMER0_CONFIG,
-    hv_register_name_HV_REGISTER_STIMER0_COUNT, hv_register_name_HV_X64_REGISTER_RAX,
+    hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED, hv_register_name_HV_X64_REGISTER_RAX,
 };
 #[cfg(feature = "hw-interrupts")]
-use mshv_ioctls::make_default_synthetic_features_mask;
+use mshv_ioctls::InterruptRequest;
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
@@ -81,14 +84,31 @@ pub(crate) fn is_hypervisor_present() -> bool {
 }
 
 /// A MSHV implementation of a single-vcpu VM
-#[derive(Debug)]
 pub(crate) struct MshvVm {
+    /// VmFd wrapped in Arc so the timer thread can call
+    /// `request_virtual_interrupt` from a background thread.
+    #[cfg(feature = "hw-interrupts")]
+    vm_fd: Arc<VmFd>,
+    #[cfg(not(feature = "hw-interrupts"))]
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
     #[cfg(feature = "hw-interrupts")]
     pic: Pic,
+    /// Signals the timer thread to stop.
     #[cfg(feature = "hw-interrupts")]
-    synic_timer_active: bool,
+    timer_stop: Arc<AtomicBool>,
+    /// Handle to the background timer thread (if started).
+    #[cfg(feature = "hw-interrupts")]
+    timer_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for MshvVm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MshvVm")
+            .field("vm_fd", &self.vm_fd)
+            .field("vcpu_fd", &self.vcpu_fd)
+            .finish_non_exhaustive()
+    }
 }
 
 static MSHV: LazyLock<std::result::Result<Mshv, CreateVmError>> =
@@ -123,8 +143,8 @@ impl MshvVm {
 
         #[allow(unused_mut)]
         let mut pr: mshv_create_partition_v2 = Default::default();
-        // Enable LAPIC for hw-interrupts — required for SynIC direct-mode
-        // timer delivery via APIC vector. MSHV_PT_BIT_LAPIC = bit 0.
+        // Enable LAPIC for hw-interrupts — required for interrupt delivery
+        // via request_virtual_interrupt. MSHV_PT_BIT_LAPIC = bit 0.
         #[cfg(feature = "hw-interrupts")]
         {
             pr.pt_flags = 1u64; // LAPIC
@@ -134,12 +154,11 @@ impl MshvVm {
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
 
         let vcpu_fd = {
-            // Use the full default synthetic features mask (includes SynIC,
-            // synthetic timers, direct mode, hypercall regs, etc.) when
-            // hw-interrupts is enabled. Without hw-interrupts, leave all
-            // features at zero.
+            // No synthetic features needed — timer interrupts are injected
+            // directly via request_virtual_interrupt(), not through SynIC.
+            // The LAPIC (enabled via pt_flags) handles interrupt delivery.
             #[cfg(feature = "hw-interrupts")]
-            let feature_val = make_default_synthetic_features_mask();
+            let feature_val = 0u64;
             #[cfg(not(feature = "hw-interrupts"))]
             let feature_val = 0u64;
 
@@ -161,7 +180,7 @@ impl MshvVm {
 
         // Initialize the virtual LAPIC when hw-interrupts is enabled.
         // LAPIC defaults to disabled (SVR bit 8 = 0), which means no APIC
-        // interrupts (including SynIC direct-mode timer) can be delivered.
+        // interrupts can be delivered (request_virtual_interrupt would fail).
         #[cfg(feature = "hw-interrupts")]
         {
             let mut lapic: LapicState = vcpu_fd
@@ -181,7 +200,7 @@ impl MshvVm {
             write_lapic_u32(&mut lapic.regs, 0x350, 0x0001_0000);
             // LINT1 (offset 0x360): NMI delivery, not masked
             write_lapic_u32(&mut lapic.regs, 0x360, 0x400);
-            // LVT Timer (offset 0x320): masked — we use SynIC timer instead
+            // LVT Timer (offset 0x320): masked — we use host timer thread instead
             write_lapic_u32(&mut lapic.regs, 0x320, 0x0001_0000);
             // LVT Error (offset 0x370): masked
             write_lapic_u32(&mut lapic.regs, 0x370, 0x0001_0000);
@@ -193,7 +212,7 @@ impl MshvVm {
             // Install MSR intercept for IA32_APIC_BASE (MSR 0x1B) to prevent
             // the guest from globally disabling the LAPIC. The Nanvix kernel
             // disables the APIC when no I/O APIC is detected, but we need
-            // the LAPIC enabled for SynIC direct-mode timer delivery.
+            // the LAPIC enabled for request_virtual_interrupt delivery.
             //
             // This may fail with AccessDenied on some kernel versions; in
             // that case we fall back to re-enabling the LAPIC in the timer
@@ -208,12 +227,17 @@ impl MshvVm {
         }
 
         Ok(Self {
+            #[cfg(feature = "hw-interrupts")]
+            vm_fd: Arc::new(vm_fd),
+            #[cfg(not(feature = "hw-interrupts"))]
             vm_fd,
             vcpu_fd,
             #[cfg(feature = "hw-interrupts")]
             pic: Pic::new(),
             #[cfg(feature = "hw-interrupts")]
-            synic_timer_active: false,
+            timer_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "hw-interrupts")]
+            timer_thread: None,
         })
     }
 }
@@ -267,12 +291,12 @@ impl VirtualMachine for MshvVm {
                     let msg_type = m.header.message_type;
                     match msg_type {
                         HALT_MESSAGE => {
-                            // With SynIC timer active, re-enter the guest.
+                            // With timer thread active, re-enter the guest.
                             // The hypervisor will deliver pending timer
                             // interrupts on the next run(), waking the
                             // vCPU from HLT.
                             #[cfg(feature = "hw-interrupts")]
-                            if self.synic_timer_active {
+                            if self.timer_thread.is_some() {
                                 continue;
                             }
                             return Ok(VmExit::Halt());
@@ -301,6 +325,14 @@ impl VirtualMachine for MshvVm {
                             // OutBAction::Halt always means "I'm done", regardless
                             // of whether a timer is active.
                             if is_write && port_number == OutBAction::Halt as u16 {
+                                // Stop the timer thread before returning.
+                                #[cfg(feature = "hw-interrupts")]
+                                {
+                                    self.timer_stop.store(true, Ordering::Relaxed);
+                                    if let Some(h) = self.timer_thread.take() {
+                                        let _ = h.join();
+                                    }
+                                }
                                 return Ok(VmExit::Halt());
                             }
 
@@ -411,12 +443,12 @@ impl VirtualMachine for MshvVm {
                 }
                 Err(e) => match e.errno() {
                     libc::EINTR => {
-                        // When the SynIC timer is active, EINTR may be
+                        // When the timer thread is active, EINTR may be
                         // a spurious signal. Continue the run loop to
                         // let the hypervisor deliver any pending timer
                         // interrupt.
                         #[cfg(feature = "hw-interrupts")]
-                        if self.synic_timer_active {
+                        if self.timer_thread.is_some() {
                             continue;
                         }
                         return Ok(VmExit::Cancelled());
@@ -684,8 +716,9 @@ impl MshvVm {
     const APIC_BASE_DEFAULT: u64 = 0xFEE00900;
 
     /// Perform LAPIC EOI: clear the highest-priority in-service bit.
-    /// Called when the guest sends PIC EOI, since SynIC direct-mode timer
-    /// delivers through the LAPIC and the guest only acknowledges via PIC.
+    /// Called when the guest sends PIC EOI, since the timer thread
+    /// delivers interrupts through the LAPIC and the guest only
+    /// acknowledges via PIC.
     fn do_lapic_eoi(&self) {
         if let Ok(mut lapic) = self.vcpu_fd.get_lapic() {
             // ISR is at offset 0x100, 8 x 32-bit words (one per 16 bytes).
@@ -717,33 +750,11 @@ impl MshvVm {
         None
     }
 
-    /// Build SynIC timer config register value.
-    ///
-    /// Layout (from Hyper-V TLFS):
-    ///  - Bit 0: enable
-    ///  - Bit 1: periodic
-    ///  - Bit 3: auto_enable
-    ///  - Bits 4-11: apic_vector
-    ///  - Bit 12: direct_mode
-    fn build_stimer_config(vector: u8) -> u64 {
-        1                            // enable
-        | (1 << 1)                   // periodic
-        | (1 << 3)                   // auto_enable
-        | ((vector as u64) << 4)     // apic_vector
-        | (1 << 12) // direct_mode
-    }
-
-    /// Convert a timer period in microseconds to the SynIC timer count
-    /// in 100-nanosecond units (Hyper-V reference time).
-    fn period_us_to_100ns(period_us: u32) -> u64 {
-        (period_us as u64) * 10
-    }
-
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
         if port == OutBAction::PvTimerConfig as u16 {
             if data.len() >= 4 {
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                if period_us > 0 {
+                if period_us > 0 && self.timer_thread.is_none() {
                     // Re-enable LAPIC if the guest disabled it (via WRMSR
                     // to MSR 0x1B clearing bit 11). This happens when the
                     // Nanvix kernel doesn't detect an I/O APIC.
@@ -780,42 +791,40 @@ impl MshvVm {
                         }
                     }
 
-                    // Enable SynIC on this vCPU (SCONTROL bit 0 = enable)
-                    let _ = self.vcpu_fd.set_reg(&[hv_register_assoc {
-                        name: hv_register_name_HV_REGISTER_SCONTROL,
-                        value: hv_register_value { reg64: 1 },
-                        ..Default::default()
-                    }]);
-
-                    // Arm STIMER0 immediately (the guest needs timer
-                    // interrupts for thread preemption, not just idle
-                    // wakeup).
-                    let vector = self.pic.master_vector_base();
-                    let config = Self::build_stimer_config(vector);
-                    let count_100ns = Self::period_us_to_100ns(period_us);
-
-                    let _ = self.vcpu_fd.set_reg(&[
-                        hv_register_assoc {
-                            name: hv_register_name_HV_REGISTER_STIMER0_CONFIG,
-                            value: hv_register_value { reg64: config },
-                            ..Default::default()
-                        },
-                        hv_register_assoc {
-                            name: hv_register_name_HV_REGISTER_STIMER0_COUNT,
-                            value: hv_register_value { reg64: count_100ns },
-                            ..Default::default()
-                        },
-                    ]);
-                    self.synic_timer_active = true;
+                    // Start a host timer thread that periodically injects
+                    // interrupts via request_virtual_interrupt (HVCALL 148).
+                    // This replaces the SynIC timer approach and makes MSHV
+                    // consistent with the KVM irqfd and WHP software timer
+                    // patterns.
+                    let vm_fd = self.vm_fd.clone();
+                    let vector = self.pic.master_vector_base() as u32;
+                    let stop = self.timer_stop.clone();
+                    let period = std::time::Duration::from_micros(period_us as u64);
+                    self.timer_thread = Some(std::thread::spawn(move || {
+                        while !stop.load(Ordering::Relaxed) {
+                            std::thread::sleep(period);
+                            if stop.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let _ = vm_fd.request_virtual_interrupt(&InterruptRequest {
+                                interrupt_type: hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED,
+                                apic_id: 0,
+                                vector,
+                                level_triggered: false,
+                                logical_destination_mode: false,
+                                long_mode: false,
+                            });
+                        }
+                    }));
                 }
             }
             return true;
         }
         if !data.is_empty() && self.pic.handle_io_out(port, data[0]) {
             // When the guest sends PIC EOI (port 0x20, OCW2 non-specific EOI),
-            // also perform LAPIC EOI since SynIC timer delivers via LAPIC and
-            // the guest only knows about the PIC.
-            if port == 0x20 && (data[0] & 0xE0) == 0x20 && self.synic_timer_active {
+            // also perform LAPIC EOI since the timer thread delivers via LAPIC
+            // and the guest only acknowledges via PIC.
+            if port == 0x20 && (data[0] & 0xE0) == 0x20 && self.timer_thread.is_some() {
                 self.do_lapic_eoi();
             }
             return true;
@@ -830,6 +839,16 @@ impl MshvVm {
             return true;
         }
         false
+    }
+}
+
+#[cfg(feature = "hw-interrupts")]
+impl Drop for MshvVm {
+    fn drop(&mut self) {
+        self.timer_stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.timer_thread.take() {
+            let _ = h.join();
+        }
     }
 }
 
@@ -870,39 +889,6 @@ mod hw_interrupt_tests {
         // Check that bytes before and after are untouched
         assert_eq!(regs[0x7F], 0);
         assert_eq!(regs[0x84], 0);
-    }
-
-    #[test]
-    fn synic_timer_config_bitfield() {
-        let vector: u8 = 0x20;
-        let config = MshvVm::build_stimer_config(vector);
-
-        assert_ne!(config & 1, 0, "enable bit should be set");
-        assert_ne!(config & (1 << 1), 0, "periodic bit should be set");
-        assert_eq!(config & (1 << 2), 0, "lazy bit should be clear");
-        assert_ne!(config & (1 << 3), 0, "auto_enable bit should be set");
-        assert_eq!((config >> 4) & 0xFF, 0x20, "apic_vector should be 0x20");
-        assert_ne!(config & (1 << 12), 0, "direct_mode bit should be set");
-    }
-
-    #[test]
-    fn synic_timer_config_different_vectors() {
-        for vector in [0x20u8, 0x30, 0x40, 0xFF] {
-            let config = MshvVm::build_stimer_config(vector);
-            assert_eq!(
-                (config >> 4) & 0xFF,
-                vector as u64,
-                "vector mismatch for {:#x}",
-                vector
-            );
-        }
-    }
-
-    #[test]
-    fn timer_count_us_to_100ns() {
-        assert_eq!(MshvVm::period_us_to_100ns(1000), 10_000);
-        assert_eq!(MshvVm::period_us_to_100ns(10_000), 100_000);
-        assert_eq!(MshvVm::period_us_to_100ns(1), 10);
     }
 
     #[test]
