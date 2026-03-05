@@ -54,8 +54,6 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
-#[cfg(feature = "hw-interrupts")]
-use crate::hypervisor::pic::Pic;
 use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
     MXCSR_DEFAULT,
@@ -92,8 +90,6 @@ pub(crate) struct MshvVm {
     #[cfg(not(feature = "hw-interrupts"))]
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
-    #[cfg(feature = "hw-interrupts")]
-    pic: Pic,
     /// Signals the timer thread to stop.
     #[cfg(feature = "hw-interrupts")]
     timer_stop: Arc<AtomicBool>,
@@ -232,8 +228,6 @@ impl MshvVm {
             #[cfg(not(feature = "hw-interrupts"))]
             vm_fd,
             vcpu_fd,
-            #[cfg(feature = "hw-interrupts")]
-            pic: Pic::new(),
             #[cfg(feature = "hw-interrupts")]
             timer_stop: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "hw-interrupts")]
@@ -715,6 +709,11 @@ impl MshvVm {
     /// BSP flag (bit 8) + global enable (bit 11).
     const APIC_BASE_DEFAULT: u64 = 0xFEE00900;
 
+    /// Hardcoded timer interrupt vector.  The nanvix guest always
+    /// remaps IRQ0 to vector 0x20 via PIC ICW2, so we use that same
+    /// vector directly — no PIC state machine needed.
+    const TIMER_VECTOR: u32 = 0x20;
+
     /// Perform LAPIC EOI: clear the highest-priority in-service bit.
     /// Called when the guest sends PIC EOI, since the timer thread
     /// delivers interrupts through the LAPIC and the guest only
@@ -737,17 +736,21 @@ impl MshvVm {
     }
 
     /// Handle a hardware-interrupt IO IN request.
-    /// Returns `Some(value)` if the port was handled (PIC or PIT read),
-    /// `None` if the port should be passed through to the guest handler.
+    /// Returns `Some(value)` if the port was handled, `None` if the
+    /// port should be passed through to the guest handler.
+    ///
+    /// No PIC state machine — PIC data ports return 0xFF (all masked),
+    /// PIC command ports return 0 (no pending IRQ), PIT returns 0.
     fn handle_hw_io_in(&self, port: u16) -> Option<u64> {
-        if let Some(val) = self.pic.handle_io_in(port) {
-            return Some(val as u64);
+        match port {
+            // PIC master/slave data ports — return "all masked"
+            0x21 | 0xA1 => Some(0xFF),
+            // PIC master/slave command ports — return 0 (ISR/IRR read)
+            0x20 | 0xA0 => Some(0),
+            // PIT data port read — return 0
+            0x40 => Some(0),
+            _ => None,
         }
-        // PIT data port read -- return 0
-        if port == 0x40 {
-            return Some(0);
-        }
-        None
     }
 
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
@@ -797,7 +800,7 @@ impl MshvVm {
                     // consistent with the KVM irqfd and WHP software timer
                     // patterns.
                     let vm_fd = self.vm_fd.clone();
-                    let vector = self.pic.master_vector_base() as u32;
+                    let vector = Self::TIMER_VECTOR;
                     let stop = self.timer_stop.clone();
                     let period = std::time::Duration::from_micros(period_us as u64);
                     self.timer_thread = Some(std::thread::spawn(move || {
@@ -820,11 +823,16 @@ impl MshvVm {
             }
             return true;
         }
-        if !data.is_empty() && self.pic.handle_io_out(port, data[0]) {
-            // When the guest sends PIC EOI (port 0x20, OCW2 non-specific EOI),
-            // also perform LAPIC EOI since the timer thread delivers via LAPIC
-            // and the guest only acknowledges via PIC.
-            if port == 0x20 && (data[0] & 0xE0) == 0x20 && self.timer_thread.is_some() {
+        // PIC ports (0x20, 0x21, 0xA0, 0xA1): accept as no-ops.
+        // No PIC state machine — we only need LAPIC EOI bridging when
+        // the guest sends a non-specific EOI on the master PIC command
+        // port (0x20, OCW2 byte with bits 7:5 = 001).
+        if port == 0x20 || port == 0x21 || port == 0xA0 || port == 0xA1 {
+            if port == 0x20
+                && !data.is_empty()
+                && (data[0] & 0xE0) == 0x20
+                && self.timer_thread.is_some()
+            {
                 self.do_lapic_eoi();
             }
             return true;
