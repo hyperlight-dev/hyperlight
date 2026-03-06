@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#[cfg(feature = "hw-interrupts")]
+use std::sync::Arc;
 use std::sync::LazyLock;
 #[cfg(feature = "hw-interrupts")]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "hw-interrupts")]
-use std::sync::Arc;
 
 use hyperlight_common::outb::OutBAction;
 #[cfg(gdb)]
@@ -154,10 +154,11 @@ impl KvmVm {
             // When the timer thread writes to this EventFd, the in-kernel
             // PIC will assert IRQ0, which is delivered as the vector the
             // guest configured during PIC remap (typically vector 0x20).
-            let eventfd = EventFd::new(0)
-                .map_err(|e| CreateVmError::InitializeVm(
-                    kvm_ioctls::Error::new(e.raw_os_error().unwrap_or(libc::EIO)).into()
-                ))?;
+            let eventfd = EventFd::new(0).map_err(|e| {
+                CreateVmError::InitializeVm(
+                    kvm_ioctls::Error::new(e.raw_os_error().unwrap_or(libc::EIO)).into(),
+                )
+            })?;
             vm_fd
                 .register_irqfd(&eventfd, 0)
                 .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
@@ -263,9 +264,8 @@ impl VirtualMachine for KvmVm {
                         // The guest is configuring the timer period.
                         // Extract the period in microseconds (LE u32).
                         if data.len() >= 4 {
-                            let period_us = u32::from_le_bytes(
-                                data[..4].try_into().unwrap(),
-                            ) as u64;
+                            let period_us =
+                                u32::from_le_bytes(data[..4].try_into().unwrap()) as u64;
                             if period_us > 0 && self.timer_thread.is_none() {
                                 let eventfd = self
                                     .timer_irq_eventfd
