@@ -111,8 +111,8 @@ pub(crate) const XSAVE_MIN_SIZE: usize = 576;
 #[cfg(all(any(kvm, mshv3), test, feature = "init-paging"))]
 pub(crate) const XSAVE_BUFFER_SIZE: usize = 4096;
 
-// Compiler error if no hypervisor type is available
-#[cfg(not(any(kvm, mshv3, target_os = "windows")))]
+// Compiler error if no hypervisor type is available (not applicable on aarch64 yet)
+#[cfg(not(any(kvm, mshv3, target_os = "windows", target_arch = "aarch64")))]
 compile_error!(
     "No hypervisor type is available for the current platform. Please enable either the `kvm` or `mshv3` cargo feature."
 );
@@ -121,7 +121,12 @@ compile_error!(
 pub(crate) enum VmExit {
     /// The vCPU has exited due to a debug event (usually breakpoint)
     #[cfg(gdb)]
-    Debug { dr6: u64, exception: u32 },
+    Debug {
+        #[cfg(target_arch = "x86_64")]
+        dr6: u64,
+        #[cfg(target_arch = "x86_64")]
+        exception: u32,
+    },
     /// The vCPU has halted
     Halt(),
     /// The vCPU has issued a write to the given port with the given value

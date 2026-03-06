@@ -12,27 +12,14 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+ */
 
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
-#[cfg(target_arch = "x86_64")]
-pub(crate) use x86_64::*;
+// TODO(aarch64): change these, they are only provided in order to compile
+pub const MAX_GVA: usize = 0xffff_ffff_ffff_efff;
+pub const SNAPSHOT_PT_GVA_MIN: usize = 0xffff_8000_0000_0000;
+pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
+pub const MAX_GPA: usize = 0x0000_000f_ffff_ffff;
 
-#[cfg(target_arch = "aarch64")]
-mod aarch64;
-#[cfg(target_os = "windows")]
-use std::collections::HashSet;
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) use aarch64::*;
-
-#[cfg(target_os = "windows")]
-#[derive(Debug, PartialEq)]
-pub(crate) enum FromWhpRegisterError {
-    MissingRegister(HashSet<i32>),
-    InvalidLength(usize),
-    InvalidEncoding,
-    DuplicateRegister(i32),
-    InvalidRegister(i32),
+pub fn min_scratch_size(_input_data_size: usize, _output_data_size: usize) -> usize {
+    unimplemented!("min_scratch_size")
 }
