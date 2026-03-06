@@ -20,10 +20,15 @@ use core::ffi::{CStr, c_char};
 use hyperlight_common::outb::OutBAction;
 use tracing::instrument;
 
-/// Halt the execution of the guest and returns control to the host.
-/// Halt is generally called for a successful completion of the guest's work,
-/// this means we can instrument it as a trace point because the trace state
-/// shall not be locked at this point (we are not in an exception context).
+/// Signal successful completion of the guest's work and return control
+/// to the host.  This replaces the previous `hlt`-based exit: under the
+/// `hw-interrupts` feature, `hlt` becomes a wait-for-interrupt (the
+/// in-kernel IRQ chip wakes the vCPU), so we use an explicit IO-port
+/// write (port 108) to trigger a VM exit that the host treats as a
+/// clean shutdown.
+///
+/// This function never returns — the host does not re-enter the guest
+/// after seeing the Halt port.
 #[inline(never)]
 #[instrument(skip_all, level = "Trace")]
 pub fn halt() {
@@ -37,13 +42,8 @@ pub fn halt() {
         hyperlight_guest_tracing::flush();
     }
 
-    // Signal "I'm done" to the host via an IO port write. This causes a
-    // VM exit on all backends (KVM, MSHV, WHP). The subsequent cli+hlt
-    // is dead code—hyperlight never re-enters the guest after seeing
-    // the Halt port—but serves as a safety fallback.
     unsafe {
         out32(OutBAction::Halt as u16, 0);
-        asm!("cli", "hlt", options(nostack));
     }
 }
 

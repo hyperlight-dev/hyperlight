@@ -70,7 +70,5 @@ core::arch::global_asm!("
     call {internal_dispatch_function}\n
     mov dx, 108\n
     out dx, al\n
-    cli\n
-    hlt\n
     .cfi_endproc
 ", internal_dispatch_function = sym crate::guest_function::call::internal_dispatch_function);

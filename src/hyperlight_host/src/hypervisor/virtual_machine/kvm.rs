@@ -40,6 +40,8 @@ use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
     MXCSR_DEFAULT,
 };
+#[cfg(feature = "hw-interrupts")]
+use crate::hypervisor::virtual_machine::HypervisorError;
 #[cfg(all(test, feature = "init-paging"))]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
 use crate::hypervisor::virtual_machine::{
@@ -91,6 +93,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
 }
 
 /// A KVM implementation of a single-vcpu VM
+#[derive(Debug)]
 pub(crate) struct KvmVm {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
@@ -109,15 +112,6 @@ pub(crate) struct KvmVm {
     // KVM, as opposed to mshv/whp, has no get_guest_debug() ioctl, so we must track the state ourselves
     #[cfg(gdb)]
     debug_regs: kvm_guest_debug,
-}
-
-impl std::fmt::Debug for KvmVm {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KvmVm")
-            .field("vm_fd", &self.vm_fd)
-            .field("vcpu_fd", &self.vcpu_fd)
-            .finish_non_exhaustive()
-    }
 }
 
 static KVM: LazyLock<std::result::Result<Kvm, CreateVmError>> =
@@ -263,14 +257,12 @@ impl VirtualMachine for KvmVm {
                     if port == OutBAction::PvTimerConfig as u16 {
                         // The guest is configuring the timer period.
                         // Extract the period in microseconds (LE u32).
-                        if data.len() >= 4 {
-                            let period_us =
-                                u32::from_le_bytes(data[..4].try_into().unwrap()) as u64;
+                        if let Ok(bytes) = data[..4].try_into() {
+                            let period_us = u32::from_le_bytes(bytes) as u64;
                             if period_us > 0 && self.timer_thread.is_none() {
-                                let eventfd = self
-                                    .timer_irq_eventfd
-                                    .try_clone()
-                                    .expect("failed to clone timer EventFd");
+                                let eventfd = self.timer_irq_eventfd.try_clone().map_err(|e| {
+                                    RunVcpuError::Unknown(HypervisorError::KvmError(e.into()))
+                                })?;
                                 let stop = self.timer_stop.clone();
                                 let period = std::time::Duration::from_micros(period_us);
                                 self.timer_thread = Some(std::thread::spawn(move || {

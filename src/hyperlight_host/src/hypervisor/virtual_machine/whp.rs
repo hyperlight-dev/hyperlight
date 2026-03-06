@@ -76,12 +76,6 @@ pub(crate) struct WhpVm {
     partition: WHV_PARTITION_HANDLE,
     // Surrogate process for memory mapping
     surrogate_process: SurrogateProcess,
-    /// Whether the WHP host supports LAPIC emulation mode.
-    #[cfg(feature = "hw-interrupts")]
-    lapic_emulation: bool,
-    /// Whether the LAPIC timer is actively delivering periodic interrupts.
-    #[cfg(feature = "hw-interrupts")]
-    lapic_timer_active: bool,
     /// Signal to stop the software timer thread.
     #[cfg(feature = "hw-interrupts")]
     timer_stop: Option<Arc<AtomicBool>>,
@@ -101,126 +95,62 @@ impl WhpVm {
     pub(crate) fn new() -> Result<Self, CreateVmError> {
         const NUM_CPU: u32 = 1;
 
-        // Check whether the WHP host supports LAPIC emulation.
-        // Bit 1 of WHV_CAPABILITY_FEATURES corresponds to LocalApicEmulation.
-        // LAPIC emulation is required for the LAPIC timer to deliver interrupts.
-        #[cfg(feature = "hw-interrupts")]
-        const LAPIC_EMULATION_BIT: u64 = 1 << 1;
+        let partition = unsafe {
+            #[cfg(feature = "hw-interrupts")]
+            {
+                // Check whether the WHP host supports LAPIC emulation.
+                // Bit 1 of WHV_CAPABILITY_FEATURES = LocalApicEmulation.
+                // LAPIC emulation is required for timer interrupt delivery.
+                const LAPIC_EMULATION_BIT: u64 = 1 << 1;
 
-        #[cfg(feature = "hw-interrupts")]
-        let mut lapic_emulation = {
-            let mut capability: WHV_CAPABILITY = Default::default();
-            let ok = unsafe {
-                WHvGetCapability(
+                let mut capability: WHV_CAPABILITY = Default::default();
+                let has_lapic = WHvGetCapability(
                     WHvCapabilityCodeFeatures,
                     &mut capability as *mut _ as *mut c_void,
                     std::mem::size_of::<WHV_CAPABILITY>() as u32,
                     None,
                 )
-            };
-            if ok.is_ok() {
-                unsafe { capability.Features.AsUINT64 & LAPIC_EMULATION_BIT != 0 }
-            } else {
-                false
-            }
-        };
+                .is_ok()
+                    && (capability.Features.AsUINT64 & LAPIC_EMULATION_BIT != 0);
 
-        // Create partition, set CPU count, setup, and create vCPU.
-        // When hw-interrupts is enabled and LAPIC emulation is supported,
-        // we create a partition with LAPIC emulation mode.  This is
-        // required for the LAPIC timer.
-        let partition = unsafe {
-            #[cfg(feature = "hw-interrupts")]
-            {
-                if lapic_emulation {
-                    let p =
-                        WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
-                    WHvSetPartitionProperty(
-                        p,
-                        WHvPartitionPropertyCodeProcessorCount,
-                        &NUM_CPU as *const _ as *const _,
-                        std::mem::size_of_val(&NUM_CPU) as _,
-                    )
-                    .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
-
-                    let apic_mode: u32 = 1; // WHvX64LocalApicEmulationModeXApic
-                    let partition_ok = WHvSetPartitionProperty(
-                        p,
-                        WHvPartitionPropertyCodeLocalApicEmulationMode,
-                        &apic_mode as *const _ as *const _,
-                        std::mem::size_of_val(&apic_mode) as _,
-                    )
-                    .is_ok()
-                        && WHvSetupPartition(p).is_ok()
-                        && WHvCreateVirtualProcessor(p, 0, 0).is_ok();
-
-                    if partition_ok {
-                        log::info!("[WHP] LAPIC partition created, running init_lapic_bulk");
-                        // Initialize the LAPIC via the bulk interrupt-controller
-                        // state API (individual APIC register writes via
-                        // WHvSetVirtualProcessorRegisters fail with ACCESS_DENIED).
-                        if let Err(e) = Self::init_lapic_bulk(p) {
-                            log::warn!(
-                                "[WHP] Bulk LAPIC init failed ({e}); \
-                                 falling back to non-LAPIC mode."
-                            );
-                            let _ = WHvDeleteVirtualProcessor(p, 0);
-                            let _ = WHvDeletePartition(p);
-                            lapic_emulation = false;
-
-                            let p = WHvCreatePartition()
-                                .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
-                            WHvSetPartitionProperty(
-                                p,
-                                WHvPartitionPropertyCodeProcessorCount,
-                                &NUM_CPU as *const _ as *const _,
-                                std::mem::size_of_val(&NUM_CPU) as _,
-                            )
-                            .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
-                            WHvSetupPartition(p)
-                                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-                            WHvCreateVirtualProcessor(p, 0, 0)
-                                .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
-                            p
-                        } else {
-                            log::info!("[WHP] Bulk LAPIC init succeeded, lapic_emulation=true");
-                            p
-                        }
-                    } else {
-                        log::warn!("LAPIC emulation setup failed, falling back to non-LAPIC mode");
-                        let _ = WHvDeleteVirtualProcessor(p, 0);
-                        let _ = WHvDeletePartition(p);
-                        lapic_emulation = false;
-
-                        let p = WHvCreatePartition()
-                            .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
-                        WHvSetPartitionProperty(
-                            p,
-                            WHvPartitionPropertyCodeProcessorCount,
-                            &NUM_CPU as *const _ as *const _,
-                            std::mem::size_of_val(&NUM_CPU) as _,
+                if !has_lapic {
+                    return Err(CreateVmError::InitializeVm(
+                        windows_result::Error::new(
+                            HRESULT::from_win32(0x32), // ERROR_NOT_SUPPORTED
+                            "WHP LocalApicEmulation capability is required for hw-interrupts",
                         )
-                        .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
-                        WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-                        WHvCreateVirtualProcessor(p, 0, 0)
-                            .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
-                        p
-                    }
-                } else {
-                    let p =
-                        WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
-                    WHvSetPartitionProperty(
-                        p,
-                        WHvPartitionPropertyCodeProcessorCount,
-                        &NUM_CPU as *const _ as *const _,
-                        std::mem::size_of_val(&NUM_CPU) as _,
-                    )
-                    .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
-                    WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-                    WHvCreateVirtualProcessor(p, 0, 0)
-                        .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
-                    p
+                        .into(),
+                    ));
                 }
+
+                let p = WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
+                WHvSetPartitionProperty(
+                    p,
+                    WHvPartitionPropertyCodeProcessorCount,
+                    &NUM_CPU as *const _ as *const _,
+                    std::mem::size_of_val(&NUM_CPU) as _,
+                )
+                .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+
+                let apic_mode: u32 = 1; // WHvX64LocalApicEmulationModeXApic
+                WHvSetPartitionProperty(
+                    p,
+                    WHvPartitionPropertyCodeLocalApicEmulationMode,
+                    &apic_mode as *const _ as *const _,
+                    std::mem::size_of_val(&apic_mode) as _,
+                )
+                .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+
+                WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+                WHvCreateVirtualProcessor(p, 0, 0)
+                    .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
+
+                // Initialize the LAPIC via the bulk interrupt-controller
+                // state API (individual APIC register writes via
+                // WHvSetVirtualProcessorRegisters fail with ACCESS_DENIED).
+                Self::init_lapic_bulk(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+                p
             }
 
             #[cfg(not(feature = "hw-interrupts"))]
@@ -248,10 +178,6 @@ impl WhpVm {
                 mgr.get_surrogate_process()
                     .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?
             },
-            #[cfg(feature = "hw-interrupts")]
-            lapic_emulation,
-            #[cfg(feature = "hw-interrupts")]
-            lapic_timer_active: false,
             #[cfg(feature = "hw-interrupts")]
             timer_stop: None,
             #[cfg(feature = "hw-interrupts")]
@@ -284,27 +210,8 @@ impl WhpVm {
             )?;
         }
         state.truncate(written as usize);
-        log::info!(
-            "[WHP] init_lapic_bulk: got {} bytes of LAPIC state",
-            written
-        );
 
-        // SVR (offset 0xF0): enable APIC (bit 8) + spurious vector 0xFF
-        Self::write_lapic_u32(&mut state, 0xF0, 0x1FF);
-        // TPR (offset 0x80): 0 = accept all interrupt priorities
-        Self::write_lapic_u32(&mut state, 0x80, 0);
-        // DFR (offset 0xE0): 0xFFFFFFFF = flat model
-        Self::write_lapic_u32(&mut state, 0xE0, 0xFFFF_FFFF);
-        // LDR (offset 0xD0): set logical APIC ID for flat model
-        Self::write_lapic_u32(&mut state, 0xD0, 1 << 24);
-        // LINT0 (offset 0x350): masked
-        Self::write_lapic_u32(&mut state, 0x350, 0x0001_0000);
-        // LINT1 (offset 0x360): NMI delivery, not masked
-        Self::write_lapic_u32(&mut state, 0x360, 0x400);
-        // LVT Timer (offset 0x320): masked initially (configured on PvTimerConfig)
-        Self::write_lapic_u32(&mut state, 0x320, 0x0001_0000);
-        // LVT Error (offset 0x370): masked
-        Self::write_lapic_u32(&mut state, 0x370, 0x0001_0000);
+        super::hw_interrupts::init_lapic_registers(&mut state);
 
         unsafe {
             WHvSetVirtualProcessorInterruptControllerState2(
@@ -316,23 +223,6 @@ impl WhpVm {
         }
 
         Ok(())
-    }
-
-    /// Read a u32 from a LAPIC register page at the given APIC offset.
-    #[cfg(feature = "hw-interrupts")]
-    fn read_lapic_u32(state: &[u8], offset: usize) -> u32 {
-        u32::from_le_bytes([
-            state[offset],
-            state[offset + 1],
-            state[offset + 2],
-            state[offset + 3],
-        ])
-    }
-
-    /// Write a u32 to a LAPIC register page at the given APIC offset.
-    #[cfg(feature = "hw-interrupts")]
-    fn write_lapic_u32(state: &mut [u8], offset: usize, val: u32) {
-        state[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
     }
 
     /// Helper for setting arbitrary registers. Makes sure the same number
@@ -493,7 +383,7 @@ impl VirtualMachine for WhpVm {
                             if self.handle_hw_io_out(port, &data) {
                                 continue;
                             }
-                        } else if let Some(val) = self.handle_hw_io_in(port) {
+                        } else if let Some(val) = super::hw_interrupts::handle_io_in(port) {
                             self.set_registers(&[(
                                 WHvX64RegisterRax,
                                 Align16(WHV_REGISTER_VALUE { Reg64: val }),
@@ -514,7 +404,7 @@ impl VirtualMachine for WhpVm {
                     // thread injects an interrupt via WHvRequestInterrupt,
                     // waking the vCPU from HLT.
                     #[cfg(feature = "hw-interrupts")]
-                    if self.lapic_timer_active {
+                    if self.timer_thread.is_some() {
                         continue;
                     }
                     return Ok(VmExit::Halt());
@@ -567,13 +457,13 @@ impl VirtualMachine for WhpVm {
                 }
                 WHV_RUN_VP_EXIT_REASON(_) => {
                     let rip = exit_context.VpContext.Rip;
-                    log::error!(
+                    tracing::error!(
                         "WHP unknown exit reason {}: RIP={:#x}",
                         exit_context.ExitReason.0,
                         rip,
                     );
                     if let Ok(regs) = self.regs() {
-                        log::error!(
+                        tracing::error!(
                             "  RAX={:#x} RCX={:#x} RDX={:#x}",
                             regs.rax,
                             regs.rcx,
@@ -581,7 +471,7 @@ impl VirtualMachine for WhpVm {
                         );
                     }
                     if let Ok(sregs) = self.sregs() {
-                        log::error!(
+                        tracing::error!(
                             "  CR0={:#x} CR4={:#x} EFER={:#x} APIC_BASE={:#x}",
                             sregs.cr0,
                             sregs.cr4,
@@ -705,15 +595,13 @@ impl VirtualMachine for WhpVm {
         let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
             sregs.into();
 
-        // When LAPIC emulation is active, skip writing APIC_BASE.
-        // The generic CommonSpecialRegisters defaults APIC_BASE to 0
-        // which would globally disable the LAPIC.  On some WHP hosts,
-        // host-side APIC register writes are blocked entirely
-        // (ACCESS_DENIED), so attempting to write even a valid value
-        // would fail and abort set_sregs.  Omitting it lets the VP
-        // keep its default APIC_BASE and the guest configures it.
+        // When LAPIC emulation is active (always with hw-interrupts),
+        // skip writing APIC_BASE. The generic CommonSpecialRegisters
+        // defaults APIC_BASE to 0 which would globally disable the LAPIC.
+        // On some WHP hosts, host-side APIC register writes are blocked
+        // entirely (ACCESS_DENIED).
         #[cfg(feature = "hw-interrupts")]
-        if self.lapic_emulation {
+        {
             let filtered: Vec<_> = whp_regs
                 .iter()
                 .copied()
@@ -721,12 +609,15 @@ impl VirtualMachine for WhpVm {
                 .collect();
             self.set_registers(&filtered)
                 .map_err(|e| RegisterError::SetSregs(e.into()))?;
-            return Ok(());
+            Ok(())
         }
 
-        self.set_registers(&whp_regs)
-            .map_err(|e| RegisterError::SetSregs(e.into()))?;
-        Ok(())
+        #[cfg(not(feature = "hw-interrupts"))]
+        {
+            self.set_registers(&whp_regs)
+                .map_err(|e| RegisterError::SetSregs(e.into()))?;
+            Ok(())
+        }
     }
 
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError> {
@@ -1077,11 +968,6 @@ impl DebuggableVm for WhpVm {
 
 #[cfg(feature = "hw-interrupts")]
 impl WhpVm {
-    /// Hardcoded timer interrupt vector.  The nanvix guest always
-    /// remaps IRQ0 to vector 0x20 via PIC ICW2, so we use that same
-    /// vector directly — no PIC state machine needed.
-    const TIMER_VECTOR: u32 = 0x20;
-
     /// Get the LAPIC state via the bulk interrupt-controller state API.
     fn get_lapic_state(&self) -> windows_result::Result<Vec<u8>> {
         let mut state = vec![0u8; Self::LAPIC_STATE_MAX_SIZE as usize];
@@ -1117,36 +1003,8 @@ impl WhpVm {
     /// delivers through the LAPIC and the guest only acknowledges via PIC.
     fn do_lapic_eoi(&self) {
         if let Ok(mut state) = self.get_lapic_state() {
-            // ISR is at offset 0x100, 8 x 32-bit words (one per 16 bytes).
-            // Scan from highest priority (ISR[7]) to lowest (ISR[0]).
-            for i in (0u32..8).rev() {
-                let offset = 0x100 + (i as usize) * 0x10;
-                let isr_val = Self::read_lapic_u32(&state, offset);
-                if isr_val != 0 {
-                    let bit = 31 - isr_val.leading_zeros();
-                    Self::write_lapic_u32(&mut state, offset, isr_val & !(1u32 << bit));
-                    let _ = self.set_lapic_state(&state);
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Handle a hardware-interrupt IO IN request.
-    /// Returns `Some(value)` if the port was handled, `None` if the
-    /// port should be passed through to the guest handler.
-    ///
-    /// No PIC state machine — PIC data ports return 0xFF (all masked),
-    /// PIC command ports return 0 (no pending IRQ), PIT returns 0.
-    fn handle_hw_io_in(&self, port: u16) -> Option<u64> {
-        match port {
-            // PIC master/slave data ports — return "all masked"
-            0x21 | 0xA1 => Some(0xFF),
-            // PIC master/slave command ports — return 0 (ISR/IRR read)
-            0x20 | 0xA0 => Some(0),
-            // PIT data port read — return 0
-            0x40 => Some(0),
-            _ => None,
+            super::hw_interrupts::lapic_eoi(&mut state);
+            let _ = self.set_lapic_state(&state);
         }
     }
 
@@ -1158,28 +1016,19 @@ impl WhpVm {
         if let Some(handle) = self.timer_thread.take() {
             let _ = handle.join();
         }
-        self.lapic_timer_active = false;
     }
 
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
         if port == OutBAction::PvTimerConfig as u16 {
             if data.len() >= 4 {
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                log::info!(
-                    "[WHP] PvTimerConfig: period_us={period_us}, lapic_emulation={}",
-                    self.lapic_emulation
-                );
 
                 // Stop any existing timer thread before (re-)configuring.
                 self.stop_timer_thread();
 
-                if period_us > 0 && self.lapic_emulation {
-                    // WHP's bulk LAPIC state API does not start the LAPIC
-                    // timer countdown (CurCount stays 0).  Instead we use a
-                    // host-side software timer thread that periodically
-                    // injects interrupts via WHvRequestInterrupt.
+                if period_us > 0 {
                     let partition_raw = self.partition.0;
-                    let vector = Self::TIMER_VECTOR;
+                    let vector = super::hw_interrupts::TIMER_VECTOR;
                     let stop = Arc::new(AtomicBool::new(false));
                     let stop_clone = stop.clone();
                     let period = std::time::Duration::from_micros(period_us as u64);
@@ -1208,38 +1057,12 @@ impl WhpVm {
 
                     self.timer_stop = Some(stop);
                     self.timer_thread = Some(handle);
-                    self.lapic_timer_active = true;
-                    log::info!(
-                        "[WHP] Software timer started (period={period_us}us, vector={vector:#x})"
-                    );
                 }
             }
             return true;
         }
-        // PIC ports (0x20, 0x21, 0xA0, 0xA1): accept as no-ops.
-        // No PIC state machine — we only need LAPIC EOI bridging when
-        // the guest sends a non-specific EOI on the master PIC command
-        // port (0x20, OCW2 byte with bits 7:5 = 001).
-        if port == 0x20 || port == 0x21 || port == 0xA0 || port == 0xA1 {
-            if port == 0x20
-                && !data.is_empty()
-                && (data[0] & 0xE0) == 0x20
-                && self.lapic_timer_active
-            {
-                self.do_lapic_eoi();
-            }
-            return true;
-        }
-        if port == 0x43 || port == 0x40 {
-            return true;
-        }
-        if port == 0x61 {
-            return true;
-        }
-        if port == 0x80 {
-            return true;
-        }
-        false
+        let timer_active = self.timer_thread.is_some();
+        super::hw_interrupts::handle_common_io_out(port, data, timer_active, || self.do_lapic_eoi())
     }
 }
 
@@ -1304,59 +1127,11 @@ mod hw_interrupt_tests {
     use super::*;
 
     #[test]
-    fn lapic_register_helpers() {
+    fn lapic_register_helpers_delegate() {
+        use crate::hypervisor::virtual_machine::hw_interrupts;
         let mut state = vec![0u8; 1024];
-        WhpVm::write_lapic_u32(&mut state, 0xF0, 0x1FF);
-        assert_eq!(WhpVm::read_lapic_u32(&state, 0xF0), 0x1FF);
-
-        WhpVm::write_lapic_u32(&mut state, 0x320, 0x0002_0020);
-        assert_eq!(WhpVm::read_lapic_u32(&state, 0x320), 0x0002_0020);
-    }
-
-    #[test]
-    fn lapic_lvt_timer_periodic() {
-        // LVT Timer: vector 0x20, periodic (bit 17), unmasked
-        let vector: u32 = 0x20;
-        let lvt = vector | (1 << 17);
-        assert_eq!(lvt & 0xFF, 0x20, "vector should be 0x20");
-        assert_ne!(lvt & (1 << 17), 0, "periodic bit should be set");
-        assert_eq!(lvt & (1 << 16), 0, "mask bit should be clear");
-    }
-
-    #[test]
-    fn lapic_timer_initial_count() {
-        // Hyper-V LAPIC timer is 10 MHz with divide-by-1.
-        // 1 tick = 100 ns, so period_us * 10 = initial count.
-        let period_us: u32 = 1000; // 1 ms
-        let initial_count = period_us * 10;
-        assert_eq!(initial_count, 10_000, "1ms should be 10000 ticks");
-
-        let period_us: u32 = 100; // 100 us
-        let initial_count = period_us * 10;
-        assert_eq!(initial_count, 1_000, "100us should be 1000 ticks");
-    }
-
-    #[test]
-    fn lapic_svr_value() {
-        let svr: u64 = 0x1FF;
-        assert_ne!(svr & (1 << 8), 0, "APIC should be enabled");
-        assert_eq!(svr & 0xFF, 0xFF, "spurious vector should be 0xFF");
-    }
-
-    #[test]
-    fn apic_base_re_enable_value() {
-        // When re-enabling: base 0xFEE00000 + BSP (bit 8) + enable (bit 11)
-        let apic_base: u64 = 0xFEE00900;
-        assert_ne!(apic_base & (1 << 8), 0, "BSP flag");
-        assert_ne!(apic_base & (1 << 11), 0, "global enable");
-        assert_eq!(apic_base & 0xFFFFF000, 0xFEE00000, "base address");
-    }
-
-    #[test]
-    fn lapic_divide_config() {
-        // 0x0B = divide-by-1
-        let divide: u32 = 0x0B;
-        assert_eq!(divide, 0x0B, "divide config should be 0x0B (divide-by-1)");
+        hw_interrupts::write_lapic_u32(&mut state, 0xF0, 0x1FF);
+        assert_eq!(hw_interrupts::read_lapic_u32(&state, 0xF0), 0x1FF);
     }
 
     #[test]
@@ -1376,13 +1151,10 @@ mod hw_interrupt_tests {
         );
         let raw = unsafe { capability.Features.AsUINT64 };
         let has_lapic = raw & (1 << 1) != 0; // bit 1 = LocalApicEmulation
-        println!("WHP Features raw: {raw:#018x}");
-        println!("WHP LocalApicEmulation supported: {has_lapic}");
         assert!(
             has_lapic,
             "This host does not support WHP LocalApicEmulation. \
-             hw-interrupts LAPIC timer tests will be skipped. \
-             Windows 11 22H2+ or a recent Windows Server build is typically required."
+             hw-interrupts requires Windows 11 22H2+ or a recent Windows Server build."
         );
     }
 }

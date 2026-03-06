@@ -172,24 +172,6 @@ global_asm!(
     hl_exception_handler = sym super::handle::hl_exception_handler,
 );
 
-// Default no-op IRQ handler for hardware interrupts (vectors 0x20-0x2F).
-// Sends a non-specific EOI to the master PIC and returns.
-// This prevents unhandled-interrupt faults when the in-kernel PIT fires
-// before a guest has installed its own IRQ handler.
-global_asm!(
-    ".globl _default_irq_handler",
-    "_default_irq_handler:",
-    "push rax",
-    "mov al, 0x20",
-    "out 0x20, al", // PIC EOI
-    "pop rax",
-    "iretq",
-);
-
-unsafe extern "C" {
-    fn _default_irq_handler();
-}
-
 pub(in super::super) fn init_idt(pc: *mut ProcCtrl) {
     let idt = unsafe { &raw mut (*pc).idt };
     let set_idt_entry = |idx, handler: unsafe extern "C" fn()| {
@@ -220,14 +202,6 @@ pub(in super::super) fn init_idt(pc: *mut ProcCtrl) {
     set_idt_entry(Exception::SIMDFloatingPointException, _do_excp19); // SIMD Floating-Point Exception
     set_idt_entry(Exception::VirtualizationException, _do_excp20); // Virtualization Exception
     set_idt_entry(Exception::SecurityException, _do_excp30); // Security Exception
-
-    // Install a default no-op IRQ handler at vector 0x20 (IRQ0 after PIC remapping).
-    // This ensures HLT can wake when an in-kernel PIT is active, even before the
-    // guest installs its own IRQ handler.
-    let irq_handler_addr = _default_irq_handler as *const () as u64;
-    unsafe {
-        (&raw mut (*idt).entries[0x20]).write_volatile(IdtEntry::new(irq_handler_addr));
-    }
 
     let idtr = IdtPointer {
         limit: (core::mem::size_of::<IDT>() - 1) as u16,

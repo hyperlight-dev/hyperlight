@@ -31,15 +31,10 @@ use mshv_bindings::{
     FloatingPointUnit, SpecialRegisters, StandardRegisters, XSave, hv_message_type,
     hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
-    hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES, hv_register_assoc,
+    hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
+    hv_partition_synthetic_processor_features, hv_register_assoc,
     hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_create_partition_v2,
     mshv_user_mem_region,
-};
-#[cfg(feature = "hw-interrupts")]
-use mshv_bindings::{
-    HV_INTERCEPT_ACCESS_MASK_WRITE, hv_intercept_parameters,
-    hv_intercept_type_HV_INTERCEPT_TYPE_X64_MSR_INDEX, hv_message_type_HVMSG_X64_MSR_INTERCEPT,
-    mshv_install_intercept,
 };
 #[cfg(feature = "hw-interrupts")]
 use mshv_bindings::{
@@ -82,6 +77,7 @@ pub(crate) fn is_hypervisor_present() -> bool {
 }
 
 /// A MSHV implementation of a single-vcpu VM
+#[derive(Debug)]
 pub(crate) struct MshvVm {
     /// VmFd wrapped in Arc so the timer thread can call
     /// `request_virtual_interrupt` from a background thread.
@@ -98,37 +94,24 @@ pub(crate) struct MshvVm {
     timer_thread: Option<std::thread::JoinHandle<()>>,
 }
 
-impl std::fmt::Debug for MshvVm {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MshvVm")
-            .field("vm_fd", &self.vm_fd)
-            .field("vcpu_fd", &self.vcpu_fd)
-            .finish_non_exhaustive()
-    }
-}
-
 static MSHV: LazyLock<std::result::Result<Mshv, CreateVmError>> =
     LazyLock::new(|| Mshv::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
 
-/// Write a u32 to a LAPIC register at the given APIC offset.
+/// Cast MSHV `LapicState.regs` (`[c_char; 1024]`) to a `&[u8]` slice
+/// for use with the shared LAPIC helpers.
 #[cfg(feature = "hw-interrupts")]
-fn write_lapic_u32(regs: &mut [::std::os::raw::c_char; 1024], offset: usize, val: u32) {
-    let bytes = val.to_le_bytes();
-    regs[offset] = bytes[0] as _;
-    regs[offset + 1] = bytes[1] as _;
-    regs[offset + 2] = bytes[2] as _;
-    regs[offset + 3] = bytes[3] as _;
+fn lapic_regs_as_u8(regs: &[::std::os::raw::c_char; 1024]) -> &[u8] {
+    // Safety: c_char (i8) and u8 have the same size and alignment;
+    // LAPIC register values are treated as raw bytes.
+    unsafe { &*(regs as *const [::std::os::raw::c_char; 1024] as *const [u8; 1024]) }
 }
 
-/// Read a u32 from a LAPIC register at the given APIC offset.
+/// Cast MSHV `LapicState.regs` (`[c_char; 1024]`) to a `&mut [u8]` slice
+/// for use with the shared LAPIC helpers.
 #[cfg(feature = "hw-interrupts")]
-fn read_lapic_u32(regs: &[::std::os::raw::c_char; 1024], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        regs[offset] as u8,
-        regs[offset + 1] as u8,
-        regs[offset + 2] as u8,
-        regs[offset + 3] as u8,
-    ])
+fn lapic_regs_as_u8_mut(regs: &mut [::std::os::raw::c_char; 1024]) -> &mut [u8] {
+    // Safety: same as above.
+    unsafe { &mut *(regs as *mut [::std::os::raw::c_char; 1024] as *mut [u8; 1024]) }
 }
 
 impl MshvVm {
@@ -150,18 +133,12 @@ impl MshvVm {
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
 
         let vcpu_fd = {
-            // No synthetic features needed — timer interrupts are injected
-            // directly via request_virtual_interrupt(), not through SynIC.
-            // The LAPIC (enabled via pt_flags) handles interrupt delivery.
-            #[cfg(feature = "hw-interrupts")]
-            let feature_val = 0u64;
-            #[cfg(not(feature = "hw-interrupts"))]
-            let feature_val = 0u64;
+            let features: hv_partition_synthetic_processor_features = Default::default();
 
             vm_fd
                 .set_partition_property(
                     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
-                    feature_val,
+                    unsafe { features.as_uint64[0] },
                 )
                 .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
 
@@ -179,47 +156,17 @@ impl MshvVm {
         // interrupts can be delivered (request_virtual_interrupt would fail).
         #[cfg(feature = "hw-interrupts")]
         {
+            use super::hw_interrupts::init_lapic_registers;
+
             let mut lapic: LapicState = vcpu_fd
                 .get_lapic()
                 .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
 
-            // SVR (offset 0xF0): bit 8 = enable APIC, bits 0-7 = spurious vector
-            write_lapic_u32(&mut lapic.regs, 0xF0, 0x1FF);
-            // TPR (offset 0x80): 0 = accept all interrupt priorities
-            write_lapic_u32(&mut lapic.regs, 0x80, 0);
-            // DFR (offset 0xE0): 0xFFFFFFFF = flat model
-            write_lapic_u32(&mut lapic.regs, 0xE0, 0xFFFF_FFFF);
-            // LDR (offset 0xD0): set logical APIC ID for flat model
-            write_lapic_u32(&mut lapic.regs, 0xD0, 1 << 24);
-            // LINT0 (offset 0x350): masked — we don't forward PIC through LAPIC;
-            // our PIC is emulated in userspace and not wired to LINT0.
-            write_lapic_u32(&mut lapic.regs, 0x350, 0x0001_0000);
-            // LINT1 (offset 0x360): NMI delivery, not masked
-            write_lapic_u32(&mut lapic.regs, 0x360, 0x400);
-            // LVT Timer (offset 0x320): masked — we use host timer thread instead
-            write_lapic_u32(&mut lapic.regs, 0x320, 0x0001_0000);
-            // LVT Error (offset 0x370): masked
-            write_lapic_u32(&mut lapic.regs, 0x370, 0x0001_0000);
+            init_lapic_registers(lapic_regs_as_u8_mut(&mut lapic.regs));
 
             vcpu_fd
                 .set_lapic(&lapic)
                 .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-
-            // Install MSR intercept for IA32_APIC_BASE (MSR 0x1B) to prevent
-            // the guest from globally disabling the LAPIC. The Nanvix kernel
-            // disables the APIC when no I/O APIC is detected, but we need
-            // the LAPIC enabled for request_virtual_interrupt delivery.
-            //
-            // This may fail with AccessDenied on some kernel versions; in
-            // that case we fall back to re-enabling the LAPIC in the timer
-            // setup path (handle_hw_io_out).
-            let _ = vm_fd.install_intercept(mshv_install_intercept {
-                access_type_mask: HV_INTERCEPT_ACCESS_MASK_WRITE,
-                intercept_type: hv_intercept_type_HV_INTERCEPT_TYPE_X64_MSR_INDEX,
-                intercept_parameter: hv_intercept_parameters {
-                    msr_index: 0x1B, // IA32_APIC_BASE
-                },
-            });
         }
 
         Ok(Self {
@@ -267,8 +214,6 @@ impl VirtualMachine for MshvVm {
             hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT;
         const UNMAPPED_GPA_MESSAGE: hv_message_type = hv_message_type_HVMSG_UNMAPPED_GPA;
         const INVALID_GPA_ACCESS_MESSAGE: hv_message_type = hv_message_type_HVMSG_GPA_INTERCEPT;
-        #[cfg(feature = "hw-interrupts")]
-        const MSR_INTERCEPT_MESSAGE: hv_message_type = hv_message_type_HVMSG_X64_MSR_INTERCEPT;
         #[cfg(gdb)]
         const EXCEPTION_INTERCEPT: hv_message_type = hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT;
 
@@ -337,7 +282,9 @@ impl VirtualMachine for MshvVm {
                                     if self.handle_hw_io_out(port_number, &data) {
                                         continue;
                                     }
-                                } else if let Some(val) = self.handle_hw_io_in(port_number) {
+                                } else if let Some(val) =
+                                    super::hw_interrupts::handle_io_in(port_number)
+                                {
                                     self.vcpu_fd
                                         .set_reg(&[hv_register_assoc {
                                             name: hv_register_name_HV_X64_REGISTER_RAX,
@@ -379,39 +326,6 @@ impl VirtualMachine for MshvVm {
                                 MemoryRegionFlags::WRITE => Ok(VmExit::MmioWrite(gpa)),
                                 _ => Ok(VmExit::Unknown("Unknown MMIO access".to_string())),
                             };
-                        }
-                        #[cfg(feature = "hw-interrupts")]
-                        MSR_INTERCEPT_MESSAGE => {
-                            // Guest is writing to MSR 0x1B (IA32_APIC_BASE).
-                            // Force bit 11 (global APIC enable) to stay set,
-                            // preventing the guest from disabling the LAPIC.
-                            let msr_msg = m
-                                .to_msr_info()
-                                .map_err(|_| RunVcpuError::DecodeIOMessage(msg_type))?;
-                            let rip = msr_msg.header.rip;
-                            let instruction_length = msr_msg.header.instruction_length() as u64;
-                            let msr_val = (msr_msg.rdx << 32) | (msr_msg.rax & 0xFFFF_FFFF);
-
-                            // Force APIC global enable (bit 11) to remain set,
-                            // preserving the standard base address.
-                            let forced_val = msr_val | (1 << 11) | 0xFEE00000;
-                            self.vcpu_fd
-                                .set_reg(&[hv_register_assoc {
-                                    name: hv_register_name_HV_X64_REGISTER_RIP,
-                                    value: hv_register_value {
-                                        reg64: rip + instruction_length,
-                                    },
-                                    ..Default::default()
-                                }])
-                                .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
-
-                            use mshv_bindings::hv_register_name_HV_X64_REGISTER_APIC_BASE;
-                            let _ = self.vcpu_fd.set_reg(&[hv_register_assoc {
-                                name: hv_register_name_HV_X64_REGISTER_APIC_BASE,
-                                value: hv_register_value { reg64: forced_val },
-                                ..Default::default()
-                            }]);
-                            continue;
                         }
                         #[cfg(gdb)]
                         EXCEPTION_INTERCEPT => {
@@ -709,47 +623,14 @@ impl MshvVm {
     /// BSP flag (bit 8) + global enable (bit 11).
     const APIC_BASE_DEFAULT: u64 = 0xFEE00900;
 
-    /// Hardcoded timer interrupt vector.  The nanvix guest always
-    /// remaps IRQ0 to vector 0x20 via PIC ICW2, so we use that same
-    /// vector directly — no PIC state machine needed.
-    const TIMER_VECTOR: u32 = 0x20;
-
     /// Perform LAPIC EOI: clear the highest-priority in-service bit.
     /// Called when the guest sends PIC EOI, since the timer thread
     /// delivers interrupts through the LAPIC and the guest only
     /// acknowledges via PIC.
     fn do_lapic_eoi(&self) {
         if let Ok(mut lapic) = self.vcpu_fd.get_lapic() {
-            // ISR is at offset 0x100, 8 x 32-bit words (one per 16 bytes).
-            // Scan from highest priority (ISR[7]) to lowest (ISR[0]).
-            for i in (0u32..8).rev() {
-                let offset = 0x100 + (i as usize) * 0x10;
-                let isr_val = read_lapic_u32(&lapic.regs, offset);
-                if isr_val != 0 {
-                    let bit = 31 - isr_val.leading_zeros();
-                    write_lapic_u32(&mut lapic.regs, offset, isr_val & !(1u32 << bit));
-                    let _ = self.vcpu_fd.set_lapic(&lapic);
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Handle a hardware-interrupt IO IN request.
-    /// Returns `Some(value)` if the port was handled, `None` if the
-    /// port should be passed through to the guest handler.
-    ///
-    /// No PIC state machine — PIC data ports return 0xFF (all masked),
-    /// PIC command ports return 0 (no pending IRQ), PIT returns 0.
-    fn handle_hw_io_in(&self, port: u16) -> Option<u64> {
-        match port {
-            // PIC master/slave data ports — return "all masked"
-            0x21 | 0xA1 => Some(0xFF),
-            // PIC master/slave command ports — return 0 (ISR/IRR read)
-            0x20 | 0xA0 => Some(0),
-            // PIT data port read — return 0
-            0x40 => Some(0),
-            _ => None,
+            super::hw_interrupts::lapic_eoi(lapic_regs_as_u8_mut(&mut lapic.regs));
+            let _ = self.vcpu_fd.set_lapic(&lapic);
         }
     }
 
@@ -759,8 +640,8 @@ impl MshvVm {
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 if period_us > 0 && self.timer_thread.is_none() {
                     // Re-enable LAPIC if the guest disabled it (via WRMSR
-                    // to MSR 0x1B clearing bit 11). This happens when the
-                    // Nanvix kernel doesn't detect an I/O APIC.
+                    // to MSR 0x1B clearing bit 11).  Some guests clear
+                    // the global APIC enable when no I/O APIC is detected.
                     //
                     // The hypervisor may return 0 for APIC_BASE when the
                     // APIC is globally disabled, so we always restore the
@@ -786,21 +667,18 @@ impl MshvVm {
                     // Re-initialize LAPIC SVR (may have been zeroed when
                     // guest disabled the APIC globally)
                     if let Ok(mut lapic) = self.vcpu_fd.get_lapic() {
-                        let svr = read_lapic_u32(&lapic.regs, 0xF0);
+                        let regs = lapic_regs_as_u8(&lapic.regs);
+                        let svr = super::hw_interrupts::read_lapic_u32(regs, 0xF0);
                         if svr & 0x100 == 0 {
-                            write_lapic_u32(&mut lapic.regs, 0xF0, 0x1FF);
-                            write_lapic_u32(&mut lapic.regs, 0x80, 0); // TPR
+                            let regs_mut = lapic_regs_as_u8_mut(&mut lapic.regs);
+                            super::hw_interrupts::write_lapic_u32(regs_mut, 0xF0, 0x1FF);
+                            super::hw_interrupts::write_lapic_u32(regs_mut, 0x80, 0); // TPR
                             let _ = self.vcpu_fd.set_lapic(&lapic);
                         }
                     }
 
-                    // Start a host timer thread that periodically injects
-                    // interrupts via request_virtual_interrupt (HVCALL 148).
-                    // This replaces the SynIC timer approach and makes MSHV
-                    // consistent with the KVM irqfd and WHP software timer
-                    // patterns.
                     let vm_fd = self.vm_fd.clone();
-                    let vector = Self::TIMER_VECTOR;
+                    let vector = super::hw_interrupts::TIMER_VECTOR;
                     let stop = self.timer_stop.clone();
                     let period = std::time::Duration::from_micros(period_us as u64);
                     self.timer_thread = Some(std::thread::spawn(move || {
@@ -823,30 +701,8 @@ impl MshvVm {
             }
             return true;
         }
-        // PIC ports (0x20, 0x21, 0xA0, 0xA1): accept as no-ops.
-        // No PIC state machine — we only need LAPIC EOI bridging when
-        // the guest sends a non-specific EOI on the master PIC command
-        // port (0x20, OCW2 byte with bits 7:5 = 001).
-        if port == 0x20 || port == 0x21 || port == 0xA0 || port == 0xA1 {
-            if port == 0x20
-                && !data.is_empty()
-                && (data[0] & 0xE0) == 0x20
-                && self.timer_thread.is_some()
-            {
-                self.do_lapic_eoi();
-            }
-            return true;
-        }
-        if port == 0x43 || port == 0x40 {
-            return true;
-        }
-        if port == 0x61 {
-            return true;
-        }
-        if port == 0x80 {
-            return true;
-        }
-        false
+        let timer_active = self.timer_thread.is_some();
+        super::hw_interrupts::handle_common_io_out(port, data, timer_active, || self.do_lapic_eoi())
     }
 }
 
@@ -866,37 +722,15 @@ mod hw_interrupt_tests {
     use super::*;
 
     #[test]
-    fn write_read_lapic_u32_roundtrip() {
+    fn lapic_regs_conversion_roundtrip() {
         let mut regs = [0i8; 1024];
-        write_lapic_u32(&mut regs, 0xF0, 0xDEAD_BEEF);
-        assert_eq!(read_lapic_u32(&regs, 0xF0), 0xDEAD_BEEF);
-    }
-
-    #[test]
-    fn write_read_lapic_u32_multiple_offsets() {
-        let mut regs = [0i8; 1024];
-        write_lapic_u32(&mut regs, 0x80, 0x1234_5678);
-        write_lapic_u32(&mut regs, 0xF0, 0xABCD_EF01);
-        write_lapic_u32(&mut regs, 0xE0, 0xFFFF_FFFF);
-        assert_eq!(read_lapic_u32(&regs, 0x80), 0x1234_5678);
-        assert_eq!(read_lapic_u32(&regs, 0xF0), 0xABCD_EF01);
-        assert_eq!(read_lapic_u32(&regs, 0xE0), 0xFFFF_FFFF);
-    }
-
-    #[test]
-    fn write_read_lapic_u32_zero() {
-        let mut regs = [0xFFu8 as i8; 1024];
-        write_lapic_u32(&mut regs, 0x80, 0);
-        assert_eq!(read_lapic_u32(&regs, 0x80), 0);
-    }
-
-    #[test]
-    fn write_read_lapic_u32_does_not_clobber_neighbors() {
-        let mut regs = [0i8; 1024];
-        write_lapic_u32(&mut regs, 0x80, 0xAAAA_BBBB);
-        // Check that bytes before and after are untouched
-        assert_eq!(regs[0x7F], 0);
-        assert_eq!(regs[0x84], 0);
+        let bytes = lapic_regs_as_u8_mut(&mut regs);
+        super::super::hw_interrupts::write_lapic_u32(bytes, 0xF0, 0xDEAD_BEEF);
+        let bytes = lapic_regs_as_u8(&regs);
+        assert_eq!(
+            super::super::hw_interrupts::read_lapic_u32(bytes, 0xF0),
+            0xDEAD_BEEF
+        );
     }
 
     #[test]
@@ -909,20 +743,5 @@ mod hw_interrupt_tests {
             0xFEE00000,
             "base address should be 0xFEE00000"
         );
-    }
-
-    #[test]
-    fn lapic_svr_init_value() {
-        // SVR = 0x1FF: bit 8 = enable APIC, bits 0-7 = spurious vector 0xFF
-        let svr: u32 = 0x1FF;
-        assert_ne!(svr & 0x100, 0, "APIC enable bit should be set");
-        assert_eq!(svr & 0xFF, 0xFF, "spurious vector should be 0xFF");
-    }
-
-    #[test]
-    fn lapic_lvt_masked_value() {
-        // Masked LVT entry: bit 16 = 1
-        let masked: u32 = 0x0001_0000;
-        assert_ne!(masked & (1 << 16), 0, "mask bit should be set");
     }
 }
