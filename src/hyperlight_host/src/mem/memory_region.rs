@@ -26,7 +26,9 @@ use kvm_bindings::{KVM_MEM_READONLY, kvm_userspace_memory_region};
 use mshv_bindings::{
     MSHV_SET_MEM_BIT_EXECUTABLE, MSHV_SET_MEM_BIT_UNMAP, MSHV_SET_MEM_BIT_WRITABLE,
 };
-#[cfg(mshv3)]
+#[cfg(all(mshv3, target_arch = "aarch64"))]
+use mshv_bindings::{hv_arm64_memory_intercept_message, mshv_user_mem_region};
+#[cfg(all(mshv3, target_arch = "x86_64"))]
 use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
@@ -95,7 +97,7 @@ impl TryFrom<WHV_MEMORY_ACCESS_TYPE> for MemoryRegionFlags {
     }
 }
 
-#[cfg(mshv3)]
+#[cfg(all(mshv3, target_arch = "x86_64"))]
 impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
     type Error = crate::HyperlightError;
 
@@ -109,6 +111,15 @@ impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
                 "unknown memory access type".to_string(),
             )),
         }
+    }
+}
+
+#[cfg(all(mshv3, target_arch = "aarch64"))]
+impl TryFrom<hv_arm64_memory_intercept_message> for MemoryRegionFlags {
+    type Error = crate::HyperlightError;
+
+    fn try_from(_msg: hv_arm64_memory_intercept_message) -> crate::Result<Self> {
+        unimplemented!("try_from")
     }
 }
 

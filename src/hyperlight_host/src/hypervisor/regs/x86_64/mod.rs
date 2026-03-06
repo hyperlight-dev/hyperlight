@@ -14,25 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
-#[cfg(target_arch = "x86_64")]
-pub(crate) use x86_64::*;
+mod debug_regs;
+mod fpu;
+mod special_regs;
+mod standard_regs;
 
-#[cfg(target_arch = "aarch64")]
-mod aarch64;
-#[cfg(target_os = "windows")]
-use std::collections::HashSet;
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) use aarch64::*;
+pub(crate) use debug_regs::*;
+pub(crate) use fpu::*;
+pub(crate) use special_regs::*;
+pub(crate) use standard_regs::*;
 
 #[cfg(target_os = "windows")]
-#[derive(Debug, PartialEq)]
-pub(crate) enum FromWhpRegisterError {
-    MissingRegister(HashSet<i32>),
-    InvalidLength(usize),
-    InvalidEncoding,
-    DuplicateRegister(i32),
-    InvalidRegister(i32),
-}
+pub(crate) use super::FromWhpRegisterError;

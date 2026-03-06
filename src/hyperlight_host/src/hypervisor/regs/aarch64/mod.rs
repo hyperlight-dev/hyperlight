@@ -14,25 +14,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
-#[cfg(target_arch = "x86_64")]
-pub(crate) use x86_64::*;
+// TODO(aarch64): implement real register definitions
 
-#[cfg(target_arch = "aarch64")]
-mod aarch64;
-#[cfg(target_os = "windows")]
-use std::collections::HashSet;
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub(crate) struct CommonRegisters {
+    _placeholder: u64,
+}
 
-#[cfg(target_arch = "aarch64")]
-pub(crate) use aarch64::*;
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub(crate) struct CommonSpecialRegisters {
+    _placeholder: u64,
+}
 
-#[cfg(target_os = "windows")]
-#[derive(Debug, PartialEq)]
-pub(crate) enum FromWhpRegisterError {
-    MissingRegister(HashSet<i32>),
-    InvalidLength(usize),
-    InvalidEncoding,
-    DuplicateRegister(i32),
-    InvalidRegister(i32),
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub(crate) struct CommonFpu {
+    _placeholder: u64,
+}
+
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub(crate) struct CommonDebugRegs {
+    _placeholder: u64,
 }
