@@ -14,11 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/layout.rs")]
 #[cfg_attr(target_arch = "x86", path = "arch/i686/layout.rs")]
+#[cfg_attr(
+    all(target_arch = "x86_64", feature = "init-paging"),
+    path = "arch/amd64/layout.rs"
+)]
+#[cfg_attr(
+    all(target_arch = "x86_64", not(feature = "init-paging")),
+    path = "arch/i686/layout.rs"
+)]
 mod arch;
 
-pub use arch::{MAX_GPA, MAX_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN};
+pub use arch::{MAX_GPA, MAX_GVA};
+#[cfg(feature = "init-paging")]
+pub use arch::{SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN};
 
 // offsets down from the top of scratch memory for various things
 pub const SCRATCH_TOP_SIZE_OFFSET: u64 = 0x08;

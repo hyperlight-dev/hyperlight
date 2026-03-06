@@ -265,6 +265,7 @@ fn filtered_mappings<'a>(
             return None;
         }
         // neither does the mapping of the snapshot's own page tables
+        #[cfg(feature = "init-paging")]
         if mapping.virt_base >= hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64
             && mapping.virt_base <= hyperlight_common::layout::SNAPSHOT_PT_GVA_MAX as u64
         {
