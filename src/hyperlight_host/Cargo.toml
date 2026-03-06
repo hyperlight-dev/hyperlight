@@ -137,7 +137,7 @@ mshv3 = ["dep:mshv-bindings", "dep:mshv-ioctls"]
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]
 build-metadata = ["dep:built"]
-nanvix-unstable = []
+nanvix-unstable = ["hyperlight-common/nanvix-unstable"]
 
 [[bench]]
 name = "benchmarks"

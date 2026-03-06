@@ -679,7 +679,22 @@ impl GuestSharedMemory {
             MemoryRegionType::Scratch => {
                 MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE
             }
-            MemoryRegionType::Snapshot => MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+            // Without nanvix-unstable (default), the snapshot is read-only
+            // because guest page tables provide CoW semantics for writable
+            // pages.  With nanvix-unstable there are no guest page tables,
+            // so the snapshot must be writable — otherwise writes (including
+            // the CPU setting the "Accessed" bit in GDT descriptors during
+            // segment loads) cause EPT violations that KVM retries forever.
+            MemoryRegionType::Snapshot => {
+                #[cfg(not(feature = "nanvix-unstable"))]
+                {
+                    MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE
+                }
+                #[cfg(feature = "nanvix-unstable")]
+                {
+                    MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE
+                }
+            }
             #[allow(clippy::panic)]
             // In the future, all the host side knowledge about memory
             // region types should collapse down to Snapshot vs
