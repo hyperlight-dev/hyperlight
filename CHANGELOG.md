@@ -4,8 +4,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.13.0] - 2026-03-06
+
+### Fixed
+* fix(windows): prevent WHvDeletePartition race by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1101
+* Fix guest tracing filter by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/977
+* Add crashdump example and include snapshot/scratch in core dumps by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1264
+
 ### Changed
+* Make mem::exe::LoadInfo a struct, instead of an alias by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1099
+* Update snapshots by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1098
 * **Breaking:** `GuestFunctionDefinition::new` now takes a typed function pointer instead of `usize` by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1241
+
+### Added
+* Enable CoW by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1229
+
+### Removed
+* Remove host function definition regions by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1178
 
 ## [v0.12.0] - 2025-12-09
 
@@ -239,8 +254,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.12.0..HEAD>
-[v0.12.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0...v0.12.0>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.0..HEAD>
+[v0.13.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.12.0...v0.13.0>
+[v0.12.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.11.0...v0.12.0>
 [v0.11.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0...v0.11.0>
 [v0.10.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.9.0...v0.10.0>
 [v0.9.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.8.0...v0.9.0>

@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-common"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-macro"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "env_logger",
  "hyperlight-component-util",
@@ -1436,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-component-util"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "itertools 0.14.0",
  "prettyplease",
@@ -1459,7 +1459,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "flatbuffers",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-bin"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "buddy_system_allocator",
  "cc",
@@ -1490,7 +1490,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-macro"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-guest-tracing"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "hyperlight-common",
  "spin",
@@ -1510,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight-host"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "bitflags 2.11.0",
@@ -1596,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "hyperlight_guest_capi"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cbindgen",
  "flatbuffers",
