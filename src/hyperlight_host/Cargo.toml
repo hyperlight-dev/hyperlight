@@ -40,7 +40,7 @@ tracing = { version = "0.1.44", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-core = "0.1.36"
 tracing-opentelemetry = { version = "0.32.1", optional = true }
-hyperlight-common = { workspace = true, default-features = true, features = [ "std", "init-paging" ] }
+hyperlight-common = { workspace = true, default-features = true, features = [ "std" ] }
 hyperlight-guest-tracing = { workspace = true, default-features = true, optional = true }
 vmm-sys-util = "0.15.0"
 crossbeam-channel = "0.5.15"
@@ -137,7 +137,7 @@ mshv3 = ["dep:mshv-bindings", "dep:mshv-ioctls"]
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]
 build-metadata = ["dep:built"]
-init-paging = []
+init-paging = ["hyperlight-common/init-paging"]
 
 [[bench]]
 name = "benchmarks"
