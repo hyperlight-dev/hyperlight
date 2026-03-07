@@ -93,6 +93,15 @@ impl ExeInfo {
             ExeInfo::Elf(elf) => elf.get_va_size(),
         }
     }
+
+    /// Returns the hyperlight version string embedded in the guest binary, if
+    /// the binary was built with a version of `hyperlight-guest-bin` that
+    /// supports version tagging.
+    pub fn guest_bin_version(&self) -> Option<&str> {
+        match self {
+            ExeInfo::Elf(elf) => elf.guest_bin_version(),
+        }
+    }
     // todo: this doesn't morally need to be &mut self, since we're
     // copying into target, but the PE loader chooses to apply
     // relocations in its owned representation of the PE contents,
@@ -101,5 +110,133 @@ impl ExeInfo {
         match self {
             ExeInfo::Elf(elf) => elf.load_at(load_addr, target),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperlight_testing::{dummy_guest_as_string, simple_guest_as_string};
+
+    use super::ExeInfo;
+
+    /// Read the simpleguest binary and patch the version note descriptor to `"0.0.0"`.
+    fn simpleguest_with_patched_version() -> Vec<u8> {
+        let path = simple_guest_as_string().expect("failed to locate simpleguest");
+        let mut bytes = std::fs::read(path).expect("failed to read simpleguest");
+
+        let elf = goblin::elf::Elf::parse(&bytes).expect("failed to parse ELF");
+
+        // Use goblin's note iterator to locate the version note.
+        let note = elf
+            .iter_note_sections(
+                &bytes,
+                Some(hyperlight_common::version_note::HYPERLIGHT_VERSION_SECTION),
+            )
+            .expect("note section should exist")
+            .find_map(|n| n.ok())
+            .expect("should contain a valid note");
+
+        // Compute byte offsets from the slice pointers goblin gives us.
+        let desc_offset = note.desc.as_ptr() as usize - bytes.as_ptr() as usize;
+        // Walk backwards from desc: skip padded name (4-byte aligned) and
+        // the descsz + n_type fields (4 bytes each) to reach the descsz offset.
+        let descsz_offset = desc_offset - (note.name.len() + 1).next_multiple_of(4) - 8;
+
+        let fake_version = b"0.0.0\0";
+        assert!(fake_version.len() <= note.desc.len());
+
+        bytes[desc_offset..desc_offset + fake_version.len()].copy_from_slice(fake_version);
+        bytes[descsz_offset..descsz_offset + 4]
+            .copy_from_slice(&(fake_version.len() as u32).to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn exe_info_exposes_guest_bin_version() {
+        let path = simple_guest_as_string().expect("failed to locate simpleguest");
+        let info = ExeInfo::from_file(&path).expect("failed to load ELF");
+
+        let version = info
+            .guest_bin_version()
+            .expect("simpleguest should have a version note");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn dummyguest_has_no_version_section() {
+        let path = dummy_guest_as_string().expect("failed to locate dummyguest");
+        let info = ExeInfo::from_file(&path).expect("failed to load ELF");
+
+        assert!(
+            info.guest_bin_version().is_none(),
+            "dummyguest should not have a version note"
+        );
+    }
+
+    /// A guest not built with hyperlight-guest-bin has no version note and
+    /// should be accepted (no version check is performed).
+    #[test]
+    fn from_env_accepts_guest_without_version_note() {
+        let path = dummy_guest_as_string().expect("failed to locate dummyguest");
+
+        let result = crate::sandbox::snapshot::Snapshot::from_env(
+            crate::GuestBinary::FilePath(path),
+            crate::sandbox::SandboxConfiguration::default(),
+        );
+
+        assert!(result.is_ok(), "should accept guest without version note");
+    }
+
+    /// Patch the version section in-memory to simulate a version mismatch.
+    #[test]
+    fn patched_version_reports_mismatch() {
+        let bytes = simpleguest_with_patched_version();
+
+        let info = ExeInfo::from_buf(&bytes).expect("failed to load patched ELF");
+        assert_eq!(info.guest_bin_version(), Some("0.0.0"));
+        assert_ne!(
+            info.guest_bin_version().unwrap(),
+            env!("CARGO_PKG_VERSION"),
+            "patched version should differ from host version"
+        );
+    }
+
+    /// Load an unpatched simpleguest through `Snapshot::from_env` and verify
+    /// that it succeeds when the embedded version matches the host version.
+    #[test]
+    fn from_env_accepts_matching_version() {
+        let path = simple_guest_as_string().expect("failed to locate simpleguest");
+
+        let result = crate::sandbox::snapshot::Snapshot::from_env(
+            crate::GuestBinary::FilePath(path),
+            crate::sandbox::SandboxConfiguration::default(),
+        );
+
+        assert!(result.is_ok(), "should accept matching version");
+    }
+
+    /// Load a patched guest binary through `Snapshot::from_env` and verify
+    /// that a version mismatch produces `GuestBinVersionMismatch`.
+    #[test]
+    fn from_env_rejects_version_mismatch() {
+        let bytes = simpleguest_with_patched_version();
+
+        let result = crate::sandbox::snapshot::Snapshot::from_env(
+            crate::GuestBinary::Buffer(&bytes),
+            crate::sandbox::SandboxConfiguration::default(),
+        );
+
+        assert!(result.is_err(), "should reject mismatched version");
+        let err = result.err().expect("already checked is_err");
+        assert!(
+            matches!(
+                err,
+                crate::HyperlightError::GuestBinVersionMismatch {
+                    ref guest_bin_version,
+                    ref host_version,
+                } if guest_bin_version == "0.0.0" && host_version == env!("CARGO_PKG_VERSION")
+            ),
+            "expected GuestBinVersionMismatch, got: {err}"
+        );
     }
 }
