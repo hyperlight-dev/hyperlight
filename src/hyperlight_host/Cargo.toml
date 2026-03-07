@@ -133,6 +133,7 @@ trace_guest = ["dep:opentelemetry", "dep:tracing-opentelemetry", "dep:hyperlight
 mem_profile = [ "trace_guest", "dep:framehop", "dep:fallible-iterator", "hyperlight-common/mem_profile" ]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv3 = ["dep:mshv-bindings", "dep:mshv-ioctls"]
+guest-semaphore = []
 # This enables easy debug in the guest
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]

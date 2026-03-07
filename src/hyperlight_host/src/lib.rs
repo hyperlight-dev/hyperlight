@@ -94,6 +94,9 @@ pub use sandbox::MultiUseSandbox;
 pub use sandbox::UninitializedSandbox;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
+/// The re-export for the `GuestSemaphore` type
+#[cfg(feature = "guest-semaphore")]
+pub use sandbox::uninitialized::GuestSemaphore;
 
 /// The universal `Result` type used throughout the Hyperlight codebase.
 pub type Result<T> = core::result::Result<T, error::HyperlightError>;
