@@ -15,7 +15,12 @@ limitations under the License.
 */
 
 use std::os::raw::c_void;
+#[cfg(feature = "hw-interrupts")]
+use std::sync::Arc;
+#[cfg(feature = "hw-interrupts")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use hyperlight_common::outb::OutBAction;
 #[cfg(feature = "trace_guest")]
 use tracing::Span;
 #[cfg(feature = "trace_guest")]
@@ -71,6 +76,12 @@ pub(crate) struct WhpVm {
     partition: WHV_PARTITION_HANDLE,
     // Surrogate process for memory mapping
     surrogate_process: SurrogateProcess,
+    /// Signal to stop the software timer thread.
+    #[cfg(feature = "hw-interrupts")]
+    timer_stop: Option<Arc<AtomicBool>>,
+    /// Handle for the software timer thread.
+    #[cfg(feature = "hw-interrupts")]
+    timer_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 // Safety: `WhpVm` is !Send because it holds `SurrogateProcess` which contains a raw pointer
@@ -83,33 +94,135 @@ unsafe impl Send for WhpVm {}
 impl WhpVm {
     pub(crate) fn new() -> Result<Self, CreateVmError> {
         const NUM_CPU: u32 = 1;
+
         let partition = unsafe {
-            let partition =
-                WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
-            WHvSetPartitionProperty(
-                partition,
-                WHvPartitionPropertyCodeProcessorCount,
-                &NUM_CPU as *const _ as *const _,
-                std::mem::size_of_val(&NUM_CPU) as _,
-            )
-            .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
-            WHvSetupPartition(partition).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-            WHvCreateVirtualProcessor(partition, 0, 0)
-                .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
-            partition
+            #[cfg(feature = "hw-interrupts")]
+            {
+                // Check whether the WHP host supports LAPIC emulation.
+                // Bit 1 of WHV_CAPABILITY_FEATURES = LocalApicEmulation.
+                // LAPIC emulation is required for timer interrupt delivery.
+                const LAPIC_EMULATION_BIT: u64 = 1 << 1;
+
+                let mut capability: WHV_CAPABILITY = Default::default();
+                let has_lapic = WHvGetCapability(
+                    WHvCapabilityCodeFeatures,
+                    &mut capability as *mut _ as *mut c_void,
+                    std::mem::size_of::<WHV_CAPABILITY>() as u32,
+                    None,
+                )
+                .is_ok()
+                    && (capability.Features.AsUINT64 & LAPIC_EMULATION_BIT != 0);
+
+                if !has_lapic {
+                    return Err(CreateVmError::InitializeVm(
+                        windows_result::Error::new(
+                            HRESULT::from_win32(0x32), // ERROR_NOT_SUPPORTED
+                            "WHP LocalApicEmulation capability is required for hw-interrupts",
+                        )
+                        .into(),
+                    ));
+                }
+
+                let p = WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
+                WHvSetPartitionProperty(
+                    p,
+                    WHvPartitionPropertyCodeProcessorCount,
+                    &NUM_CPU as *const _ as *const _,
+                    std::mem::size_of_val(&NUM_CPU) as _,
+                )
+                .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+
+                let apic_mode: u32 = 1; // WHvX64LocalApicEmulationModeXApic
+                WHvSetPartitionProperty(
+                    p,
+                    WHvPartitionPropertyCodeLocalApicEmulationMode,
+                    &apic_mode as *const _ as *const _,
+                    std::mem::size_of_val(&apic_mode) as _,
+                )
+                .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+
+                WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+                WHvCreateVirtualProcessor(p, 0, 0)
+                    .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
+
+                // Initialize the LAPIC via the bulk interrupt-controller
+                // state API (individual APIC register writes via
+                // WHvSetVirtualProcessorRegisters fail with ACCESS_DENIED).
+                Self::init_lapic_bulk(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+                p
+            }
+
+            #[cfg(not(feature = "hw-interrupts"))]
+            {
+                let p = WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
+                WHvSetPartitionProperty(
+                    p,
+                    WHvPartitionPropertyCodeProcessorCount,
+                    &NUM_CPU as *const _ as *const _,
+                    std::mem::size_of_val(&NUM_CPU) as _,
+                )
+                .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+                WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+                WHvCreateVirtualProcessor(p, 0, 0)
+                    .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
+                p
+            }
         };
 
-        // Create the surrogate process with the total memory size
-        let mgr = get_surrogate_process_manager()
-            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
-        let surrogate_process = mgr
-            .get_surrogate_process()
-            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
-
-        Ok(WhpVm {
+        let vm = WhpVm {
             partition,
-            surrogate_process,
-        })
+            surrogate_process: {
+                let mgr = get_surrogate_process_manager()
+                    .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+                mgr.get_surrogate_process()
+                    .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?
+            },
+            #[cfg(feature = "hw-interrupts")]
+            timer_stop: None,
+            #[cfg(feature = "hw-interrupts")]
+            timer_thread: None,
+        };
+
+        Ok(vm)
+    }
+
+    /// Maximum size for the interrupt controller state blob.
+    const LAPIC_STATE_MAX_SIZE: u32 = 4096;
+
+    /// Initialize the LAPIC via the bulk interrupt-controller state API.
+    /// Individual APIC register writes via `WHvSetVirtualProcessorRegisters`
+    /// fail with ACCESS_DENIED on WHP when LAPIC emulation is enabled,
+    /// so we use `WHvGet/SetVirtualProcessorInterruptControllerState2`
+    /// to read-modify-write the entire LAPIC register page.
+    #[cfg(feature = "hw-interrupts")]
+    unsafe fn init_lapic_bulk(partition: WHV_PARTITION_HANDLE) -> windows_result::Result<()> {
+        let mut state = vec![0u8; Self::LAPIC_STATE_MAX_SIZE as usize];
+        let mut written: u32 = 0;
+
+        unsafe {
+            WHvGetVirtualProcessorInterruptControllerState2(
+                partition,
+                0,
+                state.as_mut_ptr() as *mut c_void,
+                Self::LAPIC_STATE_MAX_SIZE,
+                Some(&mut written),
+            )?;
+        }
+        state.truncate(written as usize);
+
+        super::hw_interrupts::init_lapic_registers(&mut state);
+
+        unsafe {
+            WHvSetVirtualProcessorInterruptControllerState2(
+                partition,
+                0,
+                state.as_ptr() as *const c_void,
+                state.len() as u32,
+            )?;
+        }
+
+        Ok(())
     }
 
     /// Helper for setting arbitrary registers. Makes sure the same number
@@ -224,85 +337,155 @@ impl VirtualMachine for WhpVm {
         // it sets the guest span, no other traces or spans must be setup in between these calls.
         #[cfg(feature = "trace_guest")]
         tc.setup_guest_trace(Span::current().context());
-        unsafe {
-            WHvRunVirtualProcessor(
-                self.partition,
-                0,
-                &mut exit_context as *mut _ as *mut c_void,
-                std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
-            )
-            .map_err(|e| RunVcpuError::Unknown(e.into()))?;
-        }
-        let result = match exit_context.ExitReason {
-            WHvRunVpExitReasonX64IoPortAccess => unsafe {
-                let instruction_length = exit_context.VpContext._bitfield & 0xF;
-                let rip = exit_context.VpContext.Rip + instruction_length as u64;
-                self.set_registers(&[(
-                    WHvX64RegisterRip,
-                    Align16(WHV_REGISTER_VALUE { Reg64: rip }),
-                )])
-                .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
-                VmExit::IoOut(
-                    exit_context.Anonymous.IoPortAccess.PortNumber,
-                    exit_context
+
+        loop {
+            unsafe {
+                WHvRunVirtualProcessor(
+                    self.partition,
+                    0,
+                    &mut exit_context as *mut _ as *mut c_void,
+                    std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
+                )
+                .map_err(|e| RunVcpuError::Unknown(e.into()))?;
+            }
+
+            match exit_context.ExitReason {
+                WHvRunVpExitReasonX64IoPortAccess => unsafe {
+                    let instruction_length = exit_context.VpContext._bitfield & 0xF;
+                    let rip = exit_context.VpContext.Rip + instruction_length as u64;
+                    let port = exit_context.Anonymous.IoPortAccess.PortNumber;
+                    let rax = exit_context.Anonymous.IoPortAccess.Rax;
+                    let is_write = exit_context
                         .Anonymous
                         .IoPortAccess
-                        .Rax
-                        .to_le_bytes()
-                        .to_vec(),
-                )
-            },
-            WHvRunVpExitReasonX64Halt => VmExit::Halt(),
-            WHvRunVpExitReasonMemoryAccess => {
-                let gpa = unsafe { exit_context.Anonymous.MemoryAccess.Gpa };
-                let access_info = unsafe {
-                    WHV_MEMORY_ACCESS_TYPE(
-                        // 2 first bits are the access type, see https://learn.microsoft.com/en-us/virtualization/api/hypervisor-platform/funcs/memoryaccess#syntax
-                        (exit_context.Anonymous.MemoryAccess.AccessInfo.AsUINT32 & 0b11) as i32,
-                    )
-                };
-                let access_info = MemoryRegionFlags::try_from(access_info)
-                    .map_err(|_| RunVcpuError::ParseGpaAccessInfo)?;
-                match access_info {
-                    MemoryRegionFlags::READ => VmExit::MmioRead(gpa),
-                    MemoryRegionFlags::WRITE => VmExit::MmioWrite(gpa),
-                    _ => VmExit::Unknown("Unknown memory access type".to_string()),
-                }
-            }
-            // Execution was cancelled by the host.
-            WHvRunVpExitReasonCanceled => VmExit::Cancelled(),
-            #[cfg(gdb)]
-            WHvRunVpExitReasonException => {
-                let exception = unsafe { exit_context.Anonymous.VpException };
+                        .AccessInfo
+                        .Anonymous
+                        ._bitfield
+                        & 1
+                        != 0;
 
-                // Get the DR6 register to see which breakpoint was hit
-                let dr6 = {
-                    let names = [WHvX64RegisterDr6];
-                    let mut out: [Align16<WHV_REGISTER_VALUE>; 1] = unsafe { std::mem::zeroed() };
-                    unsafe {
-                        WHvGetVirtualProcessorRegisters(
-                            self.partition,
-                            0,
-                            names.as_ptr(),
-                            1,
-                            out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
-                        )
-                        .map_err(|e| RunVcpuError::GetDr6(e.into()))?;
+                    self.set_registers(&[(
+                        WHvX64RegisterRip,
+                        Align16(WHV_REGISTER_VALUE { Reg64: rip }),
+                    )])
+                    .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
+
+                    // OutBAction::Halt always means "I'm done", regardless
+                    // of whether a timer is active.
+                    if is_write && port == OutBAction::Halt as u16 {
+                        return Ok(VmExit::Halt());
                     }
-                    unsafe { out[0].0.Reg64 }
-                };
 
-                VmExit::Debug {
-                    dr6,
-                    exception: exception.ExceptionType as u32,
+                    #[cfg(feature = "hw-interrupts")]
+                    {
+                        if is_write {
+                            let data = rax.to_le_bytes();
+                            if self.handle_hw_io_out(port, &data) {
+                                continue;
+                            }
+                        } else if let Some(val) = super::hw_interrupts::handle_io_in(port) {
+                            self.set_registers(&[(
+                                WHvX64RegisterRax,
+                                Align16(WHV_REGISTER_VALUE { Reg64: val }),
+                            )])
+                            .map_err(|e| RunVcpuError::Unknown(e.into()))?;
+                            continue;
+                        }
+                    }
+
+                    // Suppress unused variable warnings when hw-interrupts is disabled
+                    let _ = is_write;
+
+                    return Ok(VmExit::IoOut(port, rax.to_le_bytes().to_vec()));
+                },
+                WHvRunVpExitReasonX64Halt => {
+                    // With software timer active, re-enter the guest.
+                    // WHvRunVirtualProcessor will block until the timer
+                    // thread injects an interrupt via WHvRequestInterrupt,
+                    // waking the vCPU from HLT.
+                    #[cfg(feature = "hw-interrupts")]
+                    if self.timer_thread.is_some() {
+                        continue;
+                    }
+                    return Ok(VmExit::Halt());
+                }
+                WHvRunVpExitReasonMemoryAccess => {
+                    let gpa = unsafe { exit_context.Anonymous.MemoryAccess.Gpa };
+                    let access_info = unsafe {
+                        WHV_MEMORY_ACCESS_TYPE(
+                            (exit_context.Anonymous.MemoryAccess.AccessInfo.AsUINT32 & 0b11) as i32,
+                        )
+                    };
+                    let access_info = MemoryRegionFlags::try_from(access_info)
+                        .map_err(|_| RunVcpuError::ParseGpaAccessInfo)?;
+                    return match access_info {
+                        MemoryRegionFlags::READ => Ok(VmExit::MmioRead(gpa)),
+                        MemoryRegionFlags::WRITE => Ok(VmExit::MmioWrite(gpa)),
+                        _ => Ok(VmExit::Unknown("Unknown memory access type".to_string())),
+                    };
+                }
+                // Execution was cancelled by the host.
+                WHvRunVpExitReasonCanceled => {
+                    return Ok(VmExit::Cancelled());
+                }
+                #[cfg(gdb)]
+                WHvRunVpExitReasonException => {
+                    let exception = unsafe { exit_context.Anonymous.VpException };
+
+                    // Get the DR6 register to see which breakpoint was hit
+                    let dr6 = {
+                        let names = [WHvX64RegisterDr6];
+                        let mut out: [Align16<WHV_REGISTER_VALUE>; 1] =
+                            unsafe { std::mem::zeroed() };
+                        unsafe {
+                            WHvGetVirtualProcessorRegisters(
+                                self.partition,
+                                0,
+                                names.as_ptr(),
+                                1,
+                                out.as_mut_ptr() as *mut WHV_REGISTER_VALUE,
+                            )
+                            .map_err(|e| RunVcpuError::GetDr6(e.into()))?;
+                        }
+                        unsafe { out[0].0.Reg64 }
+                    };
+
+                    return Ok(VmExit::Debug {
+                        dr6,
+                        exception: exception.ExceptionType as u32,
+                    });
+                }
+                WHV_RUN_VP_EXIT_REASON(_) => {
+                    let rip = exit_context.VpContext.Rip;
+                    tracing::error!(
+                        "WHP unknown exit reason {}: RIP={:#x}",
+                        exit_context.ExitReason.0,
+                        rip,
+                    );
+                    if let Ok(regs) = self.regs() {
+                        tracing::error!(
+                            "  RAX={:#x} RCX={:#x} RDX={:#x}",
+                            regs.rax,
+                            regs.rcx,
+                            regs.rdx
+                        );
+                    }
+                    if let Ok(sregs) = self.sregs() {
+                        tracing::error!(
+                            "  CR0={:#x} CR4={:#x} EFER={:#x} APIC_BASE={:#x}",
+                            sregs.cr0,
+                            sregs.cr4,
+                            sregs.efer,
+                            sregs.apic_base
+                        );
+                    }
+                    return Ok(VmExit::Unknown(format!(
+                        "Unknown exit reason '{}' at RIP={:#x}",
+                        exit_context.ExitReason.0, rip
+                    )));
                 }
             }
-            WHV_RUN_VP_EXIT_REASON(_) => VmExit::Unknown(format!(
-                "Unknown exit reason '{}'",
-                exit_context.ExitReason.0
-            )),
-        };
-        Ok(result)
+        }
     }
 
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
@@ -411,9 +594,30 @@ impl VirtualMachine for WhpVm {
     fn set_sregs(&self, sregs: &CommonSpecialRegisters) -> std::result::Result<(), RegisterError> {
         let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
             sregs.into();
-        self.set_registers(&whp_regs)
-            .map_err(|e| RegisterError::SetSregs(e.into()))?;
-        Ok(())
+
+        // When LAPIC emulation is active (always with hw-interrupts),
+        // skip writing APIC_BASE. The generic CommonSpecialRegisters
+        // defaults APIC_BASE to 0 which would globally disable the LAPIC.
+        // On some WHP hosts, host-side APIC register writes are blocked
+        // entirely (ACCESS_DENIED).
+        #[cfg(feature = "hw-interrupts")]
+        {
+            let filtered: Vec<_> = whp_regs
+                .iter()
+                .copied()
+                .filter(|(name, _)| *name != WHvX64RegisterApicBase)
+                .collect();
+            self.set_registers(&filtered)
+                .map_err(|e| RegisterError::SetSregs(e.into()))?;
+            Ok(())
+        }
+
+        #[cfg(not(feature = "hw-interrupts"))]
+        {
+            self.set_registers(&whp_regs)
+                .map_err(|e| RegisterError::SetSregs(e.into()))?;
+            Ok(())
+        }
     }
 
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError> {
@@ -762,8 +966,112 @@ impl DebuggableVm for WhpVm {
     }
 }
 
+#[cfg(feature = "hw-interrupts")]
+impl WhpVm {
+    /// Get the LAPIC state via the bulk interrupt-controller state API.
+    fn get_lapic_state(&self) -> windows_result::Result<Vec<u8>> {
+        let mut state = vec![0u8; Self::LAPIC_STATE_MAX_SIZE as usize];
+        let mut written: u32 = 0;
+
+        unsafe {
+            WHvGetVirtualProcessorInterruptControllerState2(
+                self.partition,
+                0,
+                state.as_mut_ptr() as *mut c_void,
+                Self::LAPIC_STATE_MAX_SIZE,
+                Some(&mut written),
+            )?;
+        }
+        state.truncate(written as usize);
+        Ok(state)
+    }
+
+    /// Set the LAPIC state via the bulk interrupt-controller state API.
+    fn set_lapic_state(&self, state: &[u8]) -> windows_result::Result<()> {
+        unsafe {
+            WHvSetVirtualProcessorInterruptControllerState2(
+                self.partition,
+                0,
+                state.as_ptr() as *const c_void,
+                state.len() as u32,
+            )
+        }
+    }
+
+    /// Perform LAPIC EOI: clear the highest-priority in-service bit.
+    /// Called when the guest sends PIC EOI, since the LAPIC timer
+    /// delivers through the LAPIC and the guest only acknowledges via PIC.
+    fn do_lapic_eoi(&self) {
+        if let Ok(mut state) = self.get_lapic_state() {
+            super::hw_interrupts::lapic_eoi(&mut state);
+            let _ = self.set_lapic_state(&state);
+        }
+    }
+
+    /// Stop the software timer thread if running.
+    fn stop_timer_thread(&mut self) {
+        if let Some(stop) = self.timer_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        if let Some(handle) = self.timer_thread.take() {
+            let _ = handle.join();
+        }
+    }
+
+    fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
+        if port == OutBAction::PvTimerConfig as u16 {
+            if data.len() >= 4 {
+                let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+
+                // Stop any existing timer thread before (re-)configuring.
+                self.stop_timer_thread();
+
+                if period_us > 0 {
+                    let partition_raw = self.partition.0;
+                    let vector = super::hw_interrupts::TIMER_VECTOR;
+                    let stop = Arc::new(AtomicBool::new(false));
+                    let stop_clone = stop.clone();
+                    let period = std::time::Duration::from_micros(period_us as u64);
+
+                    let handle = std::thread::spawn(move || {
+                        while !stop_clone.load(Ordering::Relaxed) {
+                            std::thread::sleep(period);
+                            if stop_clone.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let partition = WHV_PARTITION_HANDLE(partition_raw);
+                            let interrupt = WHV_INTERRUPT_CONTROL {
+                                _bitfield: 0, // Type=Fixed, DestMode=Physical, Trigger=Edge
+                                Destination: 0,
+                                Vector: vector,
+                            };
+                            let _ = unsafe {
+                                WHvRequestInterrupt(
+                                    partition,
+                                    &interrupt,
+                                    std::mem::size_of::<WHV_INTERRUPT_CONTROL>() as u32,
+                                )
+                            };
+                        }
+                    });
+
+                    self.timer_stop = Some(stop);
+                    self.timer_thread = Some(handle);
+                }
+            }
+            return true;
+        }
+        let timer_active = self.timer_thread.is_some();
+        super::hw_interrupts::handle_common_io_out(port, data, timer_active, || self.do_lapic_eoi())
+    }
+}
+
 impl Drop for WhpVm {
     fn drop(&mut self) {
+        // Stop the software timer thread before tearing down the partition.
+        #[cfg(feature = "hw-interrupts")]
+        self.stop_timer_thread();
+
         // HyperlightVm::drop() calls set_dropped() before this runs.
         // set_dropped() ensures no WHvCancelRunVirtualProcessor calls are in progress
         // or will be made in the future, so it's safe to delete the partition.
@@ -811,4 +1119,42 @@ unsafe fn try_load_whv_map_gpa_range2() -> windows_result::Result<WHvMapGpaRange
     }
 
     unsafe { Ok(std::mem::transmute_copy(&address)) }
+}
+
+#[cfg(test)]
+#[cfg(feature = "hw-interrupts")]
+mod hw_interrupt_tests {
+    use super::*;
+
+    #[test]
+    fn lapic_register_helpers_delegate() {
+        use crate::hypervisor::virtual_machine::hw_interrupts;
+        let mut state = vec![0u8; 1024];
+        hw_interrupts::write_lapic_u32(&mut state, 0xF0, 0x1FF);
+        assert_eq!(hw_interrupts::read_lapic_u32(&state, 0xF0), 0x1FF);
+    }
+
+    #[test]
+    fn check_lapic_emulation_capability() {
+        let mut capability: WHV_CAPABILITY = Default::default();
+        let result = unsafe {
+            WHvGetCapability(
+                WHvCapabilityCodeFeatures,
+                &mut capability as *mut _ as *mut std::os::raw::c_void,
+                std::mem::size_of::<WHV_CAPABILITY>() as u32,
+                None,
+            )
+        };
+        assert!(
+            result.is_ok(),
+            "WHvGetCapability(Features) failed: {result:?}"
+        );
+        let raw = unsafe { capability.Features.AsUINT64 };
+        let has_lapic = raw & (1 << 1) != 0; // bit 1 = LocalApicEmulation
+        assert!(
+            has_lapic,
+            "This host does not support WHP LocalApicEmulation. \
+             hw-interrupts requires Windows 11 22H2+ or a recent Windows Server build."
+        );
+    }
 }

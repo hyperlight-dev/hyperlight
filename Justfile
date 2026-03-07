@@ -87,6 +87,9 @@ test-like-ci config=default-target hypervisor="kvm":
     @# with only one driver enabled + build-metadata + init-paging
     just test {{config}} build-metadata,init-paging,{{ if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
 
+    @# with hw-interrupts enabled (+ explicit driver on Linux)
+    {{ if os() == "linux" { if hypervisor == "mshv3" { "just test " + config + " mshv3,hw-interrupts" } else { "just test " + config + " kvm,hw-interrupts" } } else { "just test " + config + " hw-interrupts" } }}
+
     @# make sure certain cargo features compile
     just check
 
@@ -150,6 +153,9 @@ build-test-like-ci config=default-target hypervisor="kvm":
 
     @# Run Rust tests with single driver
     {{ if os() == "linux" { "just test " + config+ " " + if hypervisor == "mshv3" { "mshv3" } else { "kvm" } } else { "" } }}
+
+    @# Run Rust tests with hw-interrupts
+    {{ if os() == "linux" { if hypervisor == "mshv3" { "just test " + config + " mshv3,hw-interrupts" } else { "just test " + config + " kvm,hw-interrupts" } } else { "just test " + config + " hw-interrupts" } }}
 
     @# Run Rust Gdb tests
     just test-rust-gdb-debugging {{config}}
@@ -283,6 +289,7 @@ check:
     {{ cargo-cmd }} check -p hyperlight-host --features print_debug  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features gdb  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,mem_profile  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features hw-interrupts  {{ target-triple-flag }}
 
 fmt-check:
     rustup +nightly component list | grep -q "rustfmt.*installed" || rustup component add rustfmt --toolchain nightly
