@@ -29,9 +29,13 @@ use crate::func::host_functions::{HostFunction, register_host_function};
 use crate::func::{ParameterTuple, SupportedReturnType};
 #[cfg(feature = "build-metadata")]
 use crate::log_build_details;
+#[cfg(feature = "guest-semaphore")]
+use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::ExclusiveSharedMemory;
+#[cfg(feature = "guest-semaphore")]
+use crate::mem::shared_mem::SharedMemory;
 use crate::sandbox::SandboxConfiguration;
 use crate::{MultiUseSandbox, Result, new_error};
 
@@ -52,6 +56,53 @@ pub(crate) struct SandboxRuntimeConfig {
     /// in `set_up_hypervisor_partition`.
     #[cfg(crashdump)]
     pub(crate) entry_point: Option<u64>,
+}
+
+/// A counting semaphore backed by a u64 in guest shared memory.
+///
+/// Created via [`UninitializedSandbox::guest_semaphore()`]. The host
+/// manipulates the counter with [`increment()`](Self::increment) and
+/// [`decrement()`](Self::decrement); the guest reads the same location
+/// with a volatile load at the agreed-upon GPA.
+#[cfg(feature = "guest-semaphore")]
+pub struct GuestSemaphore {
+    ptr: *mut u64,
+    value: u64,
+}
+
+// SAFETY: The pointer targets mmap'd shared memory owned by the sandbox.
+// Access must be externally synchronised (e.g. via Mutex<GuestSemaphore>).
+#[cfg(feature = "guest-semaphore")]
+unsafe impl Send for GuestSemaphore {}
+
+#[cfg(feature = "guest-semaphore")]
+impl GuestSemaphore {
+    /// Increments the counter by one and writes it to guest memory with
+    /// a volatile store.
+    pub fn increment(&mut self) -> Result<()> {
+        self.value = self
+            .value
+            .checked_add(1)
+            .ok_or_else(|| new_error!("GuestSemaphore overflow"))?;
+        unsafe { core::ptr::write_volatile(self.ptr, self.value) };
+        Ok(())
+    }
+
+    /// Decrements the counter by one and writes it to guest memory with
+    /// a volatile store.
+    pub fn decrement(&mut self) -> Result<()> {
+        self.value = self
+            .value
+            .checked_sub(1)
+            .ok_or_else(|| new_error!("GuestSemaphore underflow"))?;
+        unsafe { core::ptr::write_volatile(self.ptr, self.value) };
+        Ok(())
+    }
+
+    /// Returns the current host-side value of the counter.
+    pub fn value(&self) -> u64 {
+        self.value
+    }
 }
 
 /// A preliminary sandbox that represents allocated memory and registered host functions,
@@ -169,6 +220,48 @@ impl<'a> From<GuestBinary<'a>> for GuestEnvironment<'a, '_> {
 }
 
 impl UninitializedSandbox {
+    /// Creates a [`GuestSemaphore`] backed by a u64 counter at the given
+    /// guest physical address (GPA).
+    ///
+    /// The GPA must fall within the sandbox's allocated memory region.
+    /// The returned semaphore owns a host-side pointer into the shared
+    /// memory mapping and exposes safe `increment()` / `decrement()`
+    /// operations that use volatile writes so the guest can observe
+    /// changes.
+    ///
+    /// # Safety contract
+    ///
+    /// The caller must ensure the `GuestSemaphore` does not outlive the
+    /// sandbox's underlying shared memory mapping (which stays alive
+    /// through `evolve()` into `MultiUseSandbox`).
+    #[cfg(feature = "guest-semaphore")]
+    pub fn guest_semaphore(&mut self, gpa: usize) -> Result<GuestSemaphore> {
+        let base = SandboxMemoryLayout::BASE_ADDRESS;
+        let mem_size = self.mgr.shared_mem.mem_size();
+
+        if gpa < base {
+            return Err(new_error!(
+                "GPA {:#x} is below the sandbox base address ({:#x})",
+                gpa,
+                base
+            ));
+        }
+
+        let offset = gpa - base;
+
+        if offset >= mem_size {
+            return Err(new_error!(
+                "GPA {:#x} (offset {:#x}) is outside the sandbox memory region (size {:#x})",
+                gpa,
+                offset,
+                mem_size
+            ));
+        }
+
+        let ptr = unsafe { self.mgr.shared_mem.base_ptr().add(offset) as *mut u64 };
+        Ok(GuestSemaphore { ptr, value: 0 })
+    }
+
     // Creates a new uninitialized sandbox from a pre-built snapshot.
     // Note that since memory configuration is part of the snapshot the only configuration
     // that can be changed (from the original snapshot) is the configuration defines the behaviour of
