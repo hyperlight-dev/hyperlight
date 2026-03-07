@@ -260,6 +260,9 @@ impl VirtualMachine for KvmVm {
                         if let Ok(bytes) = data[..4].try_into() {
                             let period_us = u32::from_le_bytes(bytes) as u64;
                             if period_us > 0 && self.timer_thread.is_none() {
+                                // Reset the stop flag — a previous halt (e.g. the
+                                // init halt during evolve()) may have set it.
+                                self.timer_stop.store(false, Ordering::Relaxed);
                                 let eventfd = self.timer_irq_eventfd.try_clone().map_err(|e| {
                                     RunVcpuError::Unknown(HypervisorError::KvmError(e.into()))
                                 })?;
