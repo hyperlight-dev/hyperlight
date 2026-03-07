@@ -352,6 +352,17 @@ impl Snapshot {
             GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
         };
 
+        // Check guest/host version compatibility.
+        let host_version = env!("CARGO_PKG_VERSION");
+        if let Some(v) = exe_info.guest_bin_version()
+            && v != host_version
+        {
+            return Err(crate::HyperlightError::GuestBinVersionMismatch {
+                guest_bin_version: v.to_string(),
+                host_version: host_version.to_string(),
+            });
+        }
+
         let guest_blob_size = blob.as_ref().map(|b| b.data.len()).unwrap_or(0);
         let guest_blob_mem_flags = blob.as_ref().map(|b| b.permissions);
 

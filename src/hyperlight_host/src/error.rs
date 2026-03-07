@@ -108,6 +108,20 @@ pub enum HyperlightError {
     #[error("The guest offset {0} is invalid.")]
     GuestOffsetIsInvalid(usize),
 
+    /// The guest binary was built with a different hyperlight-guest-bin version than the host expects.
+    /// Hyperlight currently provides no backwards compatibility guarantees for guest binaries,
+    /// so the guest and host versions must match exactly. This might change in the future.
+    #[error(
+        "Guest binary was built with hyperlight-guest-bin {guest_bin_version}, \
+         but the host is running hyperlight {host_version}"
+    )]
+    GuestBinVersionMismatch {
+        /// Version of hyperlight-guest-bin the guest was compiled against.
+        guest_bin_version: String,
+        /// Version of hyperlight-host.
+        host_version: String,
+    },
+
     /// A Host function was called by the guest but it was not registered.
     #[error("HostFunction {0} was not found")]
     HostFunctionNotFound(String),
@@ -345,6 +359,7 @@ impl HyperlightError {
             | HyperlightError::Error(_)
             | HyperlightError::FailedToGetValueFromParameter()
             | HyperlightError::FieldIsMissingInGuestLogData(_)
+            | HyperlightError::GuestBinVersionMismatch { .. }
             | HyperlightError::GuestError(_, _)
             | HyperlightError::GuestExecutionHungOnHostFunctionCall()
             | HyperlightError::GuestFunctionCallAlreadyInProgress()

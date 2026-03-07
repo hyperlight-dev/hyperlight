@@ -30,3 +30,15 @@ latest release page that contain: the `hyperlight_guest.h` header and the
 C API library.
 The `hyperlight_guest.h` header contains the corresponding APIs to register
 guest functions and call host functions from within the guest.
+
+## Version compatibility
+
+Guest binaries built with `hyperlight-guest-bin` automatically embed the crate
+version in an ELF note section (`.note.hyperlight.version`). When the host
+loads a guest binary, it checks this version and rejects the binary if it does
+not match the host's version of `hyperlight-host`.
+
+Hyperlight currently provides no backwards compatibility guarantees for guest
+binaries — the guest and host crate versions must match exactly. If you see a
+`GuestBinVersionMismatch` error, rebuild the guest binary with a matching
+version of `hyperlight-guest-bin`.

@@ -45,6 +45,9 @@ pub(crate) struct ElfInfo {
     shdrs: Vec<ResolvedSectionHeader>,
     entry: u64,
     relocs: Vec<Reloc>,
+    /// The hyperlight version string embedded by `hyperlight-guest-bin`, if
+    /// present. Used to detect version/ABI mismatches between guest and host.
+    guest_bin_version: Option<String>,
 }
 
 #[cfg(feature = "mem_profile")]
@@ -120,6 +123,11 @@ impl ElfInfo {
         {
             log_then_return!("ELF must have at least one PT_LOAD header");
         }
+
+        // Look for the hyperlight version note embedded by
+        // hyperlight-guest-bin.
+        let guest_bin_version = Self::read_version_note(&elf, bytes);
+
         Ok(ElfInfo {
             payload: bytes.to_vec(),
             phdrs: elf.program_headers,
@@ -138,11 +146,37 @@ impl ElfInfo {
                 .collect(),
             entry: elf.entry,
             relocs,
+            guest_bin_version,
         })
     }
+
+    /// Read the hyperlight version note from the ELF binary
+    fn read_version_note<'a>(elf: &Elf<'a>, bytes: &'a [u8]) -> Option<String> {
+        use hyperlight_common::version_note::{
+            HYPERLIGHT_NOTE_NAME, HYPERLIGHT_NOTE_TYPE, HYPERLIGHT_VERSION_SECTION,
+        };
+
+        let notes = elf.iter_note_sections(bytes, Some(HYPERLIGHT_VERSION_SECTION))?;
+        for note in notes {
+            let Ok(note) = note else { continue };
+            if note.name == HYPERLIGHT_NOTE_NAME && note.n_type == HYPERLIGHT_NOTE_TYPE {
+                let desc = core::str::from_utf8(note.desc).ok()?;
+                return Some(desc.trim_end_matches('\0').to_string());
+            }
+        }
+        None
+    }
+
     pub(crate) fn entrypoint_va(&self) -> u64 {
         self.entry
     }
+
+    /// Returns the hyperlight version string embedded in the guest binary, if
+    /// present. Used to detect version/ABI mismatches between guest and host.
+    pub(crate) fn guest_bin_version(&self) -> Option<&str> {
+        self.guest_bin_version.as_deref()
+    }
+
     pub(crate) fn get_base_va(&self) -> u64 {
         #[allow(clippy::unwrap_used)] // guaranteed not to panic because of the check in new()
         let min_phdr = self
