@@ -639,6 +639,9 @@ impl MshvVm {
             if data.len() >= 4 {
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 if period_us > 0 && self.timer_thread.is_none() {
+                    // Reset the stop flag — a previous halt (e.g. the
+                    // init halt during evolve()) may have set it.
+                    self.timer_stop.store(false, Ordering::Relaxed);
                     // Re-enable LAPIC if the guest disabled it (via WRMSR
                     // to MSR 0x1B clearing bit 11).  Some guests clear
                     // the global APIC enable when no I/O APIC is detected.
