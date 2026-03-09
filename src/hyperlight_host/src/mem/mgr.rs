@@ -20,7 +20,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr};
-#[cfg(all(feature = "crashdump", feature = "init-paging"))]
+#[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
 
@@ -35,7 +35,7 @@ use crate::mem::memory_region::{
 use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
 
-#[cfg(all(feature = "crashdump", feature = "init-paging"))]
+#[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
 fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
     match kind {
         MappingKind::Basic(BasicMapping {
@@ -72,7 +72,7 @@ fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegion
 /// in both guest and host address space and has the same flags.
 ///
 /// Returns `true` if the region was coalesced, `false` if a new region is needed.
-#[cfg(all(feature = "crashdump", feature = "init-paging"))]
+#[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
 fn try_coalesce_region(
     regions: &mut [CrashDumpRegion],
     virt_base: usize,
@@ -94,7 +94,7 @@ fn try_coalesce_region(
 
 /// Check dynamic mmap regions for a GPA that wasn't found in snapshot/scratch,
 /// and push matching regions.
-#[cfg(all(feature = "crashdump", feature = "init-paging"))]
+#[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
 fn resolve_from_mmap_regions(
     regions: &mut Vec<CrashDumpRegion>,
     mapping: &hyperlight_common::vmem::Mapping,
@@ -511,9 +511,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
     /// Build the list of guest memory regions for a crash dump.
     ///
-    /// With `init-paging` enabled, walks the guest page tables to discover
+    /// By default, walks the guest page tables to discover
     /// GVA→GPA mappings and translates them to host-backed regions.
-    #[cfg(all(feature = "crashdump", feature = "init-paging"))]
+    #[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
     pub(crate) fn get_guest_memory_regions(
         &mut self,
         root_pt: u64,
@@ -592,7 +592,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Without paging, GVA == GPA (identity mapped), so we return the
     /// snapshot and scratch regions directly at their known addresses
     /// alongside any dynamic mmap regions.
-    #[cfg(all(feature = "crashdump", not(feature = "init-paging")))]
+    #[cfg(all(feature = "crashdump", feature = "nanvix-unstable"))]
     pub(crate) fn get_guest_memory_regions(
         &mut self,
         _root_pt: u64,
@@ -748,7 +748,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 }
 
 #[cfg(test)]
-#[cfg(all(feature = "init-paging", target_arch = "x86_64"))]
+#[cfg(all(not(feature = "nanvix-unstable"), target_arch = "x86_64"))]
 mod tests {
     use hyperlight_common::vmem::{MappingKind, PAGE_TABLE_SIZE};
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};

@@ -40,7 +40,7 @@ tracing = { version = "0.1.44", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-core = "0.1.36"
 tracing-opentelemetry = { version = "0.32.1", optional = true }
-hyperlight-common = { workspace = true, default-features = true, features = [ "std", "init-paging" ] }
+hyperlight-common = { workspace = true, default-features = true, features = [ "std" ] }
 hyperlight-guest-tracing = { workspace = true, default-features = true, optional = true }
 vmm-sys-util = "0.15.0"
 crossbeam-channel = "0.5.15"
@@ -122,7 +122,7 @@ cfg_aliases = "0.2.1"
 built = { version = "0.8.0", optional = true, features = ["chrono", "git2"] }
 
 [features]
-default = ["kvm", "mshv3", "build-metadata", "init-paging"]
+default = ["kvm", "mshv3", "build-metadata"]
 function_call_metrics = []
 executable_heap = []
 # This feature enables printing of debug information to stdout in debug builds
@@ -137,7 +137,7 @@ mshv3 = ["dep:mshv-bindings", "dep:mshv-ioctls"]
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]
 build-metadata = ["dep:built"]
-init-paging = []
+nanvix-unstable = []
 
 [[bench]]
 name = "benchmarks"

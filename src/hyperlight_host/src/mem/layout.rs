@@ -102,7 +102,7 @@ pub(crate) struct SandboxMemoryLayout {
     code_size: usize,
     // The offset in the sandbox memory where the code starts
     guest_code_offset: usize,
-    #[cfg_attr(not(feature = "init-paging"), allow(unused))]
+    #[cfg_attr(feature = "nanvix-unstable", allow(unused))]
     pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
 
     // The size of the scratch region in physical memory; note that
@@ -174,9 +174,9 @@ impl SandboxMemoryLayout {
     const MAX_MEMORY_SIZE: usize = 0x4000_0000 - Self::BASE_ADDRESS;
 
     /// The base address of the sandbox's memory.
-    #[cfg(feature = "init-paging")]
+    #[cfg(not(feature = "nanvix-unstable"))]
     pub(crate) const BASE_ADDRESS: usize = 0x1000;
-    #[cfg(not(feature = "init-paging"))]
+    #[cfg(feature = "nanvix-unstable")]
     pub(crate) const BASE_ADDRESS: usize = 0x0;
 
     // the offset into a sandbox's input/output buffer where the stack starts
@@ -422,7 +422,7 @@ impl SandboxMemoryLayout {
 
     /// Returns the memory regions associated with this memory layout,
     /// suitable for passing to a hypervisor for mapping into memory
-    #[cfg_attr(not(feature = "init-paging"), allow(unused))]
+    #[cfg_attr(feature = "nanvix-unstable", allow(unused))]
     pub(crate) fn get_memory_regions_<K: MemoryRegionKind>(
         &self,
         host_base: K::HostBaseType,

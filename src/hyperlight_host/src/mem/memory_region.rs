@@ -220,7 +220,7 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
 
 /// Type for memory regions that only track guest addresses.
 ///
-#[cfg_attr(not(feature = "init-paging"), allow(dead_code))]
+#[cfg_attr(feature = "nanvix-unstable", allow(dead_code))]
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub(crate) struct GuestMemoryRegion {}
 
@@ -292,7 +292,7 @@ impl HostGuestMemoryRegion {
     }
 }
 
-#[cfg_attr(not(feature = "init-paging"), allow(unused))]
+#[cfg_attr(feature = "nanvix-unstable", allow(unused))]
 pub(crate) struct MemoryRegionVecBuilder<K: MemoryRegionKind> {
     guest_base_phys_addr: usize,
     host_base_virt_addr: K::HostBaseType,

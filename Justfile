@@ -84,8 +84,8 @@ test-like-ci config=default-target hypervisor="kvm":
     @# with default features
     just test {{config}}
 
-    @# with only one driver enabled + build-metadata + init-paging
-    just test {{config}} build-metadata,init-paging,{{ if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
+    @# with only one driver enabled + build-metadata
+    just test {{config}} build-metadata,{{ if hypervisor == "mshv3" {"mshv3"} else {"kvm"} }}
 
     @# make sure certain cargo features compile
     just check
@@ -212,23 +212,23 @@ test target=default-target features="": (test-unit target features) (test-isolat
 
 # runs unit tests
 test-unit target=default-target features="":
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --lib
 
 # runs tests that requires being run separately, for example due to global state
 test-isolated target=default-target features="" :
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --test integration_test -- log_message --exact --ignored
     @# metrics tests
-    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics,init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact 
+    {{ cargo-cmd }} test {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F function_call_metrics," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} -p hyperlight-host --lib -- metrics::tests::test_metrics_are_emitted --exact
 
 # runs integration tests
 test-integration target=default-target features="":
     @# run execute_on_heap test with feature "executable_heap" on (runs with off during normal tests)
-    {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F init-paging,executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
+    {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
 
     @# run the rest of the integration tests
-    {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F init-paging," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
+    {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
 
 # tests compilation with no default features on different platforms
 test-compilation-no-default-features target=default-target:
@@ -236,7 +236,7 @@ test-compilation-no-default-features target=default-target:
     {{ if os() == "linux" { "! " + cargo-cmd + " check -p hyperlight-host --no-default-features "+target-triple-flag+" 2> /dev/null" } else { "" } }}
     @# Windows should succeed even without default features
     {{ if os() == "windows" { cargo-cmd + " check -p hyperlight-host --no-default-features" } else { "" } }}
-    @# Linux should succeed with a hypervisor driver but without init-paging
+    @# Linux should succeed with a hypervisor driver but without default features
     {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features kvm" } else { "" } }}  {{ target-triple-flag }}
     {{ if os() == "linux" { cargo-cmd + " check -p hyperlight-host --no-default-features --features mshv3" } else { "" } }}  {{ target-triple-flag }}
 

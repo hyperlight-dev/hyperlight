@@ -33,7 +33,7 @@ use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
     MXCSR_DEFAULT,
 };
-#[cfg(all(test, feature = "init-paging"))]
+#[cfg(all(test, not(feature = "nanvix-unstable")))]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
 use crate::hypervisor::virtual_machine::{
     CreateVmError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VirtualMachine,
@@ -305,7 +305,7 @@ impl VirtualMachine for KvmVm {
     }
 
     #[cfg(test)]
-    #[cfg(feature = "init-paging")]
+    #[cfg(not(feature = "nanvix-unstable"))]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
         if std::mem::size_of_val(xsave) != XSAVE_BUFFER_SIZE {
             return Err(RegisterError::XsaveSizeMismatch {

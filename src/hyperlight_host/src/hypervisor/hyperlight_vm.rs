@@ -443,10 +443,10 @@ impl HyperlightVm {
             None => return Err(CreateHyperlightVmError::NoHypervisorFound),
         };
 
-        #[cfg(feature = "init-paging")]
+        #[cfg(not(feature = "nanvix-unstable"))]
         vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(_pml4_addr))
             .map_err(VmError::Register)?;
-        #[cfg(not(feature = "init-paging"))]
+        #[cfg(feature = "nanvix-unstable")]
         vm.set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())
             .map_err(VmError::Register)?;
 
@@ -691,16 +691,16 @@ impl HyperlightVm {
 
     /// Get the current base page table physical address.
     ///
-    /// With `init-paging`, reads CR3 from the vCPU special registers.
-    /// Without `init-paging`, returns 0 (identity-mapped, no page tables).
+    /// By default, reads CR3 from the vCPU special registers.
+    /// With `nanvix-unstable`, returns 0 (identity-mapped, no page tables).
     pub(crate) fn get_root_pt(&self) -> Result<u64, AccessPageTableError> {
-        #[cfg(feature = "init-paging")]
+        #[cfg(not(feature = "nanvix-unstable"))]
         {
             let sregs = self.vm.sregs()?;
             // Mask off the flags bits
             Ok(sregs.cr3 & !0xfff_u64)
         }
-        #[cfg(not(feature = "init-paging"))]
+        #[cfg(feature = "nanvix-unstable")]
         {
             Ok(0)
         }
@@ -1043,7 +1043,7 @@ impl HyperlightVm {
         self.vm.set_debug_regs(&CommonDebugRegs::default())?;
         self.vm.reset_xsave()?;
 
-        #[cfg(feature = "init-paging")]
+        #[cfg(not(feature = "nanvix-unstable"))]
         {
             // Restore the full special registers from snapshot, but update CR3
             // to point to the new (relocated) page tables
@@ -1052,11 +1052,11 @@ impl HyperlightVm {
             self.pending_tlb_flush = true;
             self.vm.set_sregs(&sregs)?;
         }
-        #[cfg(not(feature = "init-paging"))]
+        #[cfg(feature = "nanvix-unstable")]
         {
             let _ = (cr3, sregs); // suppress unused warnings
             // TODO: This is probably not correct.
-            // Let's deal with it when we clean up the init-paging feature
+            // Let's deal with it when we clean up the nanvix-unstable feature
             self.vm
                 .set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())?;
         }
@@ -1591,7 +1591,7 @@ mod debug {
 }
 
 #[cfg(test)]
-#[cfg(feature = "init-paging")]
+#[cfg(not(feature = "nanvix-unstable"))]
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use std::sync::{Arc, Mutex};

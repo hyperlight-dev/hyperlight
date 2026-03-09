@@ -352,7 +352,7 @@ impl Snapshot {
         let guest_blob_size = blob.as_ref().map(|b| b.data.len()).unwrap_or(0);
         let guest_blob_mem_flags = blob.as_ref().map(|b| b.permissions);
 
-        #[cfg_attr(not(feature = "init-paging"), allow(unused_mut))]
+        #[cfg_attr(feature = "nanvix-unstable", allow(unused_mut))]
         let mut layout = crate::mem::layout::SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
@@ -373,7 +373,7 @@ impl Snapshot {
         blob.map(|x| layout.write_init_data(&mut memory, x.data))
             .transpose()?;
 
-        #[cfg(feature = "init-paging")]
+        #[cfg(not(feature = "nanvix-unstable"))]
         {
             // Set up page table entries for the snapshot
             let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);

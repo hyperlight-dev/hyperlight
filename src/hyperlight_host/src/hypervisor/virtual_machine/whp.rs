@@ -581,7 +581,7 @@ impl VirtualMachine for WhpVm {
     }
 
     #[cfg(test)]
-    #[cfg(feature = "init-paging")]
+    #[cfg(not(feature = "nanvix-unstable"))]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
         // Get the required buffer size by calling with NULL buffer.
         // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns
