@@ -23,10 +23,14 @@ limitations under the License.
     all(target_arch = "x86_64", feature = "nanvix-unstable"),
     path = "arch/i686/layout.rs"
 )]
+#[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/layout.rs")]
 mod arch;
 
 pub use arch::{MAX_GPA, MAX_GVA};
-#[cfg(all(target_arch = "x86_64", not(feature = "nanvix-unstable")))]
+#[cfg(any(
+    all(target_arch = "x86_64", not(feature = "nanvix-unstable")),
+    target_arch = "aarch64"
+))]
 pub use arch::{SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN};
 
 // offsets down from the top of scratch memory for various things

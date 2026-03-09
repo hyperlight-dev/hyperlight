@@ -24,6 +24,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_arch = "aarch64")]
+pub(crate) use aarch64::*;
 use hyperlight_common::log_level::GuestLogFilter;
 use tracing_core::LevelFilter;
 

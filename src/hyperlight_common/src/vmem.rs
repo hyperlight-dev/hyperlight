@@ -16,6 +16,7 @@ limitations under the License.
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vmem.rs")]
 #[cfg_attr(target_arch = "x86", path = "arch/i686/vmem.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/vmem.rs")]
 mod arch;
 
 /// This is always the page size that the /guest/ is being compiled
