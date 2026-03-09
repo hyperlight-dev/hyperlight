@@ -34,7 +34,7 @@ guest functions and call host functions from within the guest.
 ## Version compatibility
 
 Guest binaries built with `hyperlight-guest-bin` automatically embed the crate
-version in an ELF note section (`.note.hyperlight.version`). When the host
+version in an ELF note section (`.note.hyperlight-version`). When the host
 loads a guest binary, it checks this version and rejects the binary if it does
 not match the host's version of `hyperlight-host`.
 

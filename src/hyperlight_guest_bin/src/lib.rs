@@ -120,15 +120,18 @@ pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister =
     GuestFunctionRegister::new();
 
 const VERSION_STR: &str = env!("CARGO_PKG_VERSION");
-const VERSION_NUL_LEN: usize = VERSION_STR.len() + 1;
 
 // Embed the hyperlight-guest-bin crate version as a proper ELF note so the
 // host can verify ABI compatibility at load time.
 #[used]
-#[unsafe(link_section = ".note.hyperlight.version")]
+#[unsafe(link_section = ".note.hyperlight-version")]
 static HYPERLIGHT_VERSION_NOTE: hyperlight_common::version_note::ElfNote<
-    { hyperlight_common::version_note::HYPERLIGHT_NOTE_NAME.len() + 1 },
-    VERSION_NUL_LEN,
+    {
+        hyperlight_common::version_note::padded_name_size(
+            hyperlight_common::version_note::HYPERLIGHT_NOTE_NAME.len() + 1,
+        )
+    },
+    { hyperlight_common::version_note::padded_desc_size(VERSION_STR.len() + 1) },
 > = hyperlight_common::version_note::ElfNote::new(
     hyperlight_common::version_note::HYPERLIGHT_NOTE_NAME,
     VERSION_STR,

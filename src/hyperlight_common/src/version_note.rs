@@ -16,12 +16,12 @@ limitations under the License.
 
 //! ELF note types for embedding hyperlight version metadata in guest binaries.
 //!
-//! Guest binaries built with `hyperlight-guest-bin` include a `.note.hyperlight.version`
+//! Guest binaries built with `hyperlight-guest-bin` include a `.note.hyperlight-version`
 //! ELF note section containing the crate version they were compiled against.
 //! The host reads this section at load time to verify ABI compatibility.
 
 /// The ELF note section name used to embed the hyperlight-guest-bin version in guest binaries.
-pub const HYPERLIGHT_VERSION_SECTION: &str = ".note.hyperlight.version";
+pub const HYPERLIGHT_VERSION_SECTION: &str = ".note.hyperlight-version";
 
 /// The owner name used in the ELF note header for hyperlight version metadata.
 pub const HYPERLIGHT_NOTE_NAME: &str = "Hyperlight";
@@ -29,25 +29,53 @@ pub const HYPERLIGHT_NOTE_NAME: &str = "Hyperlight";
 /// The note type value used in the ELF note header for hyperlight version metadata.
 pub const HYPERLIGHT_NOTE_TYPE: u32 = 1;
 
-/// A byte array with 4-byte alignment, used for ELF note name/descriptor
-/// fields. The compiler inserts trailing padding automatically so that the
-/// next field starts at a 4-byte boundary.
-#[repr(C, align(4))]
-struct Aligned4<const N: usize>(pub(self) [u8; N]);
+/// Size of the ELF note header (namesz + descsz + type, each u32).
+const NOTE_HEADER_SIZE: usize = 3 * size_of::<u32>();
+
+/// Compute the padded size of the name field for a 64-bit ELF note.
+///
+/// The name must be padded so that the descriptor starts at an 8-byte
+/// aligned offset from the start of the note entry:
+/// `(NOTE_HEADER_SIZE + padded_name) % 8 == 0`.
+pub const fn padded_name_size(name_len_with_nul: usize) -> usize {
+    let desc_offset = NOTE_HEADER_SIZE + name_len_with_nul;
+    let padding = (8 - (desc_offset % 8)) % 8;
+    name_len_with_nul + padding
+}
+
+/// Compute the padded size of the descriptor field for a 64-bit ELF note.
+///
+/// The descriptor must be padded so that the next note entry starts at
+/// an 8-byte aligned offset: `padded_desc % 8 == 0`.
+pub const fn padded_desc_size(desc_len_with_nul: usize) -> usize {
+    let padding = (8 - (desc_len_with_nul % 8)) % 8;
+    desc_len_with_nul + padding
+}
 
 /// An ELF note structure suitable for embedding in a `#[link_section]` static.
 ///
-/// `NAME_SZ` and `DESC_SZ` must include the null terminator.
-/// The `+ 1` can't be hidden inside the struct because stable Rust doesn't
-/// allow `[u8; N + 1]` in struct fields. [`Aligned4`] handles the 4-byte
-/// alignment padding required by the note format.
+/// Follows the System V gABI note format as specified in
+/// <https://www.sco.com/developers/gabi/latest/ch5.pheader.html#note_section>.
+///
+/// `NAME_SZ` and `DESC_SZ` are the **padded** sizes of the name and descriptor
+/// arrays (including null terminator and alignment padding). Use
+/// [`padded_name_size`] and [`padded_desc_size`] to compute them from
+/// `str.len() + 1` (the null-terminated length).
+///
+/// The constructor enforces these constraints with compile-time assertions.
 #[repr(C)]
 pub struct ElfNote<const NAME_SZ: usize, const DESC_SZ: usize> {
     namesz: u32,
     descsz: u32,
     n_type: u32,
-    name: Aligned4<NAME_SZ>,
-    desc: Aligned4<DESC_SZ>,
+    // NAME_SZ includes the null terminator and padding to align `desc`
+    // to an 8-byte boundary. Must equal `padded_name_size(namesz)`.
+    // Enforced at compile time by `new()`.
+    name: [u8; NAME_SZ],
+    // DESC_SZ includes the null terminator and padding so the total
+    // note size is a multiple of 8. Must equal `padded_desc_size(descsz)`.
+    // Enforced at compile time by `new()`.
+    desc: [u8; DESC_SZ],
 }
 
 // SAFETY: ElfNote contains only plain data (`u32` and `[u8; N]`).
@@ -58,15 +86,39 @@ unsafe impl<const N: usize, const D: usize> Sync for ElfNote<N, D> {}
 impl<const NAME_SZ: usize, const DESC_SZ: usize> ElfNote<NAME_SZ, DESC_SZ> {
     /// Create a new ELF note from a name string, descriptor string, and type.
     ///
-    /// `NAME_SZ` and `DESC_SZ` must equal `name.len() + 1` and `desc.len() + 1`
-    /// respectively (the `+ 1` accounts for the null terminator).
+    /// # Panics
+    ///
+    /// Panics at compile time if `NAME_SZ` or `DESC_SZ` don't match
+    /// `padded_name_size(name.len() + 1)` or `padded_desc_size(desc.len() + 1)`.
     pub const fn new(name: &str, desc: &str, n_type: u32) -> Self {
+        // NAME_SZ and DESC_SZ must match the padded sizes.
+        assert!(
+            NAME_SZ == padded_name_size(name.len() + 1),
+            "NAME_SZ must equal padded_name_size(name.len() + 1)"
+        );
+        assert!(
+            DESC_SZ == padded_desc_size(desc.len() + 1),
+            "DESC_SZ must equal padded_desc_size(desc.len() + 1)"
+        );
+
+        // desc must start at an 8-byte aligned offset from the note start.
+        assert!(
+            core::mem::offset_of!(Self, desc) % 8 == 0,
+            "desc is not 8-byte aligned"
+        );
+
+        // Total note size must be a multiple of 8 for next-entry alignment.
+        assert!(
+            size_of::<Self>() % 8 == 0,
+            "total note size is not 8-byte aligned"
+        );
+
         Self {
-            namesz: NAME_SZ as u32,
-            descsz: DESC_SZ as u32,
+            namesz: (name.len() + 1) as u32,
+            descsz: (desc.len() + 1) as u32,
             n_type,
-            name: Aligned4(pad_str_to_array(name)),
-            desc: Aligned4(pad_str_to_array(desc)),
+            name: pad_str_to_array(name),
+            desc: pad_str_to_array(desc),
         }
     }
 }

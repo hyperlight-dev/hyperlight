@@ -138,9 +138,10 @@ mod tests {
 
         // Compute byte offsets from the slice pointers goblin gives us.
         let desc_offset = note.desc.as_ptr() as usize - bytes.as_ptr() as usize;
-        // Walk backwards from desc: skip padded name (4-byte aligned) and
-        // the descsz + n_type fields (4 bytes each) to reach the descsz offset.
-        let descsz_offset = desc_offset - (note.name.len() + 1).next_multiple_of(4) - 8;
+        // Walk backwards from desc to find descsz: skip padded name and
+        // the descsz + n_type fields (4 bytes each).
+        let name_padded = hyperlight_common::version_note::padded_name_size(note.name.len() + 1);
+        let descsz_offset = desc_offset - name_padded - 8;
 
         let fake_version = b"0.0.0\0";
         assert!(fake_version.len() <= note.desc.len());
