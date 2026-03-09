@@ -63,7 +63,7 @@ pub const fn padded_desc_size(desc_len_with_nul: usize) -> usize {
 /// `str.len() + 1` (the null-terminated length).
 ///
 /// The constructor enforces these constraints with compile-time assertions.
-#[repr(C)]
+#[repr(C, align(8))]
 pub struct ElfNote<const NAME_SZ: usize, const DESC_SZ: usize> {
     namesz: u32,
     descsz: u32,
