@@ -121,49 +121,6 @@ pub(super) fn get_guest_log_filter(guest_max_log_level: Option<LevelFilter>) -> 
     GuestLogFilter::from(guest_log_level_filter).into()
 }
 
-/// Represents a Hyperlight Virtual Machine instance.
-///
-/// This struct manages the lifecycle of the VM, including:
-/// - The underlying hypervisor implementation (e.g., KVM, MSHV, WHP).
-/// - Memory management, including initial sandbox regions and dynamic mappings.
-/// - The vCPU execution loop and handling of VM exits (I/O, MMIO, interrupts).
-pub(crate) struct HyperlightVm {
-    #[cfg(gdb)]
-    pub(super) vm: Box<dyn DebuggableVm>,
-    #[cfg(not(gdb))]
-    pub(super) vm: Box<dyn VirtualMachine>,
-    pub(super) page_size: usize,
-    pub(super) entrypoint: NextAction, // only present if this vm has not yet been initialised
-    pub(super) rsp_gva: u64,
-    pub(super) interrupt_handle: Arc<dyn InterruptHandleImpl>,
-
-    pub(super) next_slot: u32, // Monotonically increasing slot number
-    pub(super) freed_slots: Vec<u32>, // Reusable slots from unmapped regions
-
-    pub(super) snapshot_slot: u32,
-    // The current snapshot region, used to keep it alive as long as
-    // it is used & when unmapping
-    pub(super) snapshot_memory: Option<GuestSharedMemory>,
-    pub(super) scratch_slot: u32, // The slot number used for the scratch region
-    // The current scratch region, used to keep it alive as long as it
-    // is used & when unmapping
-    pub(super) scratch_memory: Option<GuestSharedMemory>,
-
-    pub(super) mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
-
-    pub(super) pending_tlb_flush: bool,
-
-    #[cfg(gdb)]
-    pub(super) gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
-    #[cfg(gdb)]
-    pub(super) sw_breakpoints: HashMap<u64, u8>, // addr -> original instruction
-    #[cfg(feature = "mem_profile")]
-    pub(super) trace_info: MemTraceInfo,
-    #[cfg(crashdump)]
-    pub(super) rt_cfg: SandboxRuntimeConfig,
-}
-
-
 /// DispatchGuestCall error
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchGuestCallError {
@@ -395,6 +352,49 @@ pub enum HyperlightVmError {
     #[error("Access page table error: {0}")]
     AccessPageTable(#[from] AccessPageTableError),
 }
+
+/// Represents a Hyperlight Virtual Machine instance.
+///
+/// This struct manages the lifecycle of the VM, including:
+/// - The underlying hypervisor implementation (e.g., KVM, MSHV, WHP).
+/// - Memory management, including initial sandbox regions and dynamic mappings.
+/// - The vCPU execution loop and handling of VM exits (I/O, MMIO, interrupts).
+pub(crate) struct HyperlightVm {
+    #[cfg(gdb)]
+    pub(super) vm: Box<dyn DebuggableVm>,
+    #[cfg(not(gdb))]
+    pub(super) vm: Box<dyn VirtualMachine>,
+    pub(super) page_size: usize,
+    pub(super) entrypoint: NextAction, // only present if this vm has not yet been initialised
+    pub(super) rsp_gva: u64,
+    pub(super) interrupt_handle: Arc<dyn InterruptHandleImpl>,
+
+    pub(super) next_slot: u32, // Monotonically increasing slot number
+    pub(super) freed_slots: Vec<u32>, // Reusable slots from unmapped regions
+
+    pub(super) snapshot_slot: u32,
+    // The current snapshot region, used to keep it alive as long as
+    // it is used & when unmapping
+    pub(super) snapshot_memory: Option<GuestSharedMemory>,
+    pub(super) scratch_slot: u32, // The slot number used for the scratch region
+    // The current scratch region, used to keep it alive as long as it
+    // is used & when unmapping
+    pub(super) scratch_memory: Option<GuestSharedMemory>,
+
+    pub(super) mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
+
+    pub(super) pending_tlb_flush: bool,
+
+    #[cfg(gdb)]
+    pub(super) gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
+    #[cfg(gdb)]
+    pub(super) sw_breakpoints: HashMap<u64, u8>, // addr -> original instruction
+    #[cfg(feature = "mem_profile")]
+    pub(super) trace_info: MemTraceInfo,
+    #[cfg(crashdump)]
+    pub(super) rt_cfg: SandboxRuntimeConfig,
+}
+
 impl HyperlightVm {
     /// Map a region of host memory into the sandbox.
     ///
