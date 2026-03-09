@@ -527,7 +527,7 @@ impl MultiUseSandbox {
     /// for the lifetime of `self`.
     #[instrument(err(Debug), skip(self, rgn), parent = Span::current())]
     #[cfg(target_os = "linux")]
-    unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
+    pub unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
         if self.poisoned {
             return Err(crate::HyperlightError::PoisonedSandbox);
         }
