@@ -897,7 +897,7 @@ impl HyperlightVm {
                     let all_regions = self.get_mapped_regions();
                     match get_memory_access_violation(
                         addr as usize,
-                        MemoryRegionFlags::WRITE,
+                        MemoryRegionFlags::READ,
                         all_regions,
                     ) {
                         Some(MemoryAccess::AccessViolation(region_flags)) => {
