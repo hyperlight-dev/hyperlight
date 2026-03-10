@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Weekly Coverage
+
+on:
+  schedule:
+    # Runs every Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  coverage:
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        hypervisor: [kvm]
+        cpu: [amd]
+    runs-on: ${{ fromJson(
+        format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}"]',
+          matrix.hypervisor,
+          matrix.cpu)) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+        with:
+          rust-toolchain: "1.89"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix cargo home permissions
+        run: |
+          sudo chown -R $(id -u):$(id -g) /opt/cargo || true
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "${{ runner.os }}-debug"
+          cache-on-failure: "true"
+
+      - name: Build guest binaries
+        run: just guests
+
+      - name: Install cargo-llvm-cov
+        run: |
+          cargo install cargo-llvm-cov
+          rustup component add llvm-tools
+
+      - name: Generate coverage report
+        run: just coverage-ci ${{ matrix.hypervisor }}
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo '## 📊 Code Coverage Report' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          if [ -f target/coverage/summary.txt ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat target/coverage/summary.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo '⚠️ Coverage report was not generated.' >> $GITHUB_STEP_SUMMARY
+          fi
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '> 📥 For a detailed per-file breakdown, download the **HTML coverage report** from the Artifacts section below.' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload HTML coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html-${{ matrix.hypervisor }}-${{ matrix.cpu }}
+          path: target/coverage/html/
+
+      - name: Upload LCOV coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-lcov-${{ matrix.hypervisor }}-${{ matrix.cpu }}
+          path: target/coverage/lcov.info
