@@ -34,6 +34,7 @@ use hyperlight_guest::guest_handle::handle::GuestHandle;
 
 // === Modules ===
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/mod.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/mod.rs")]
 mod arch;
 // temporarily expose the architecture-specific exception interface;
 // this should be replaced with something a bit more abstract in the
@@ -49,12 +50,13 @@ pub mod guest_function {
 pub mod guest_logger;
 pub mod host_comm;
 pub mod memory;
+#[cfg(target_arch = "x86_64")]
 pub mod paging;
 
 // Globals
-#[cfg(feature = "mem_profile")]
+#[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 struct ProfiledLockedHeap<const ORDER: usize>(LockedHeap<ORDER>);
-#[cfg(feature = "mem_profile")]
+#[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 unsafe impl<const ORDER: usize> alloc::alloc::GlobalAlloc for ProfiledLockedHeap<ORDER> {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let addr = unsafe { self.0.alloc(layout) };
@@ -107,10 +109,10 @@ unsafe impl<const ORDER: usize> alloc::alloc::GlobalAlloc for ProfiledLockedHeap
 }
 
 // === Globals ===
-#[cfg(not(feature = "mem_profile"))]
+#[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
-#[cfg(feature = "mem_profile")]
+#[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 #[global_allocator]
 pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap<32> =
     ProfiledLockedHeap(LockedHeap::<32>::empty());
@@ -191,9 +193,9 @@ pub(crate) extern "C" fn generic_init(
 
         let heap_start = (*peb_ptr).guest_heap.ptr as usize;
         let heap_size = (*peb_ptr).guest_heap.size as usize;
-        #[cfg(not(feature = "mem_profile"))]
+        #[cfg(not(all(feature = "mem_profile", target_arch = "x86_64")))]
         let heap_allocator = &HEAP_ALLOCATOR;
-        #[cfg(feature = "mem_profile")]
+        #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
         let heap_allocator = &HEAP_ALLOCATOR.0;
         heap_allocator
             .try_lock()

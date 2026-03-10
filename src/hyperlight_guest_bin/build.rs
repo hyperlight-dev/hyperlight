@@ -42,85 +42,93 @@ fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(include_dir: 
 fn cargo_main() {
     println!("cargo:rerun-if-changed=third_party");
 
-    let mut cfg = cc::Build::new();
+    let target = env::var("TARGET").expect("cargo TARGET not set");
+    let is_x86_64 = target.starts_with("x86_64");
 
-    if cfg!(feature = "printf") {
-        cfg.include("third_party/printf")
-            .file("third_party/printf/printf.c");
-    }
+    // Skip C/musl compilation on aarch64 since no musl support yet
+    if is_x86_64 {
+        let mut cfg = cc::Build::new();
 
-    if cfg!(feature = "libc") {
-        let entries = glob::glob("third_party/musl/**/*.[cs]") // .c and .s files
-            .expect("glob pattern should be valid")
-            .filter_map(Result::ok);
-        cfg.files(entries);
-
-        cfg.include("third_party/musl/src/include")
-            .include("third_party/musl/include")
-            .include("third_party/musl/src/internal")
-            .include("third_party/musl/arch/generic")
-            .include("third_party/musl/arch/x86_64");
-    }
-
-    if cfg!(any(feature = "printf", feature = "libc")) {
-        cfg.define("HYPERLIGHT", None); // used in certain musl files for conditional compilation
-
-        // silence compiler warnings
-        cfg.flag("-Wno-unused-command-line-argument") // including .s files makes clang believe arguments are unused
-            .flag("-Wno-sign-compare")
-            .flag("-Wno-bitwise-op-parentheses")
-            .flag("-Wno-unknown-pragmas")
-            .flag("-Wno-shift-op-parentheses")
-            .flag("-Wno-logical-op-parentheses")
-            .flag("-Wno-unused-but-set-variable")
-            .flag("-Wno-unused-parameter")
-            .flag("-Wno-string-plus-int");
-
-        cfg.flag("-fPIC");
-        // This is a terrible hack, because
-        // - we need stack clash protection, because we have put the
-        //   stack right smack in the middle of everything in the guest
-        // - clang refuses to do stack clash protection unless it is
-        //   required by a target ABI (Windows, MacOS) or the target is
-        //   is Linux or FreeBSD (see Clang.cpp RenderSCPOptions
-        //   https://github.com/llvm/llvm-project/blob/1bb52e9/clang/lib/Driver/ToolChains/Clang.cpp#L3724).
-        //   Hopefully a flag to force stack clash protection on generic
-        //   targets will eventually show up.
-        cfg.flag("--target=x86_64-unknown-linux-none");
-
-        // We don't use a different stack for all interrupts, so there
-        // can be no red zone
-        cfg.flag("-mno-red-zone");
-
-        // We don't support stack protectors at the moment, but Arch Linux clang
-        // auto-enables them for -linux platforms, so explicitly disable them.
-        cfg.flag("-fno-stack-protector");
-        cfg.flag("-fstack-clash-protection");
-        cfg.flag("-mstack-probe-size=4096");
-        cfg.compiler(
-            env::var("HYPERLIGHT_GUEST_clang")
-                .as_deref()
-                .unwrap_or("clang"),
-        );
-
-        if cfg!(windows) {
-            unsafe { env::set_var("AR_x86_64_unknown_none", "llvm-ar") };
+        if cfg!(feature = "printf") {
+            cfg.include("third_party/printf")
+                .file("third_party/printf/printf.c");
         }
-        cfg.compile("hyperlight_guest_bin");
+
+        if cfg!(feature = "libc") {
+            let entries = glob::glob("third_party/musl/**/*.[cs]") // .c and .s files
+                .expect("glob pattern should be valid")
+                .filter_map(Result::ok);
+            cfg.files(entries);
+
+            cfg.include("third_party/musl/src/include")
+                .include("third_party/musl/include")
+                .include("third_party/musl/src/internal")
+                .include("third_party/musl/arch/generic")
+                .include("third_party/musl/arch/x86_64");
+        }
+
+        if cfg!(any(feature = "printf", feature = "libc")) {
+            cfg.define("HYPERLIGHT", None); // used in certain musl files for conditional compilation
+
+            // silence compiler warnings
+            cfg.flag("-Wno-unused-command-line-argument") // including .s files makes clang believe arguments are unused
+                .flag("-Wno-sign-compare")
+                .flag("-Wno-bitwise-op-parentheses")
+                .flag("-Wno-unknown-pragmas")
+                .flag("-Wno-shift-op-parentheses")
+                .flag("-Wno-logical-op-parentheses")
+                .flag("-Wno-unused-but-set-variable")
+                .flag("-Wno-unused-parameter")
+                .flag("-Wno-string-plus-int");
+
+            cfg.flag("-fPIC");
+            // This is a terrible hack, because
+            // - we need stack clash protection, because we have put the
+            //   stack right smack in the middle of everything in the guest
+            // - clang refuses to do stack clash protection unless it is
+            //   required by a target ABI (Windows, MacOS) or the target is
+            //   is Linux or FreeBSD (see Clang.cpp RenderSCPOptions
+            //   https://github.com/llvm/llvm-project/blob/1bb52e9/clang/lib/Driver/ToolChains/Clang.cpp#L3724).
+            //   Hopefully a flag to force stack clash protection on generic
+            //   targets will eventually show up.
+            cfg.flag("--target=x86_64-unknown-linux-none");
+
+            // We don't use a different stack for all interrupts, so there
+            // can be no red zone
+            cfg.flag("-mno-red-zone");
+
+            // We don't support stack protectors at the moment, but Arch Linux clang
+            // auto-enables them for -linux platforms, so explicitly disable them.
+            cfg.flag("-fno-stack-protector");
+            cfg.flag("-fstack-clash-protection");
+            cfg.flag("-mstack-probe-size=4096");
+            cfg.compiler(
+                env::var("HYPERLIGHT_GUEST_clang")
+                    .as_deref()
+                    .unwrap_or("clang"),
+            );
+
+            if cfg!(windows) {
+                unsafe { env::set_var("AR_x86_64_unknown_none", "llvm-ar") };
+            }
+            cfg.compile("hyperlight_guest_bin");
+        }
     }
 
     let out_dir = env::var("OUT_DIR").expect("cargo OUT_DIR not set");
     let include_dir = PathBuf::from(&out_dir).join("include");
     fs::create_dir_all(&include_dir)
         .unwrap_or_else(|e| panic!("Could not create include dir {:?}: {}", &include_dir, e));
-    if cfg!(feature = "printf") {
-        copy_includes(&include_dir, "third_party/printf/");
-    }
-    if cfg!(feature = "libc") {
-        copy_includes(&include_dir, "third_party/musl/include");
-        copy_includes(&include_dir, "third_party/musl/arch/generic");
-        copy_includes(&include_dir, "third_party/musl/arch/x86_64");
-        copy_includes(&include_dir, "third_party/musl/src/internal");
+    if is_x86_64 {
+        if cfg!(feature = "printf") {
+            copy_includes(&include_dir, "third_party/printf/");
+        }
+        if cfg!(feature = "libc") {
+            copy_includes(&include_dir, "third_party/musl/include");
+            copy_includes(&include_dir, "third_party/musl/arch/generic");
+            copy_includes(&include_dir, "third_party/musl/arch/x86_64");
+            copy_includes(&include_dir, "third_party/musl/src/internal");
+        }
     }
     /* do not canonicalize: clang has trouble with UNC paths */
     let include_str = include_dir
