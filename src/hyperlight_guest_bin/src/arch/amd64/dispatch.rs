@@ -69,7 +69,6 @@ core::arch::global_asm!("
     flush_done:
     call {internal_dispatch_function}\n
     mov dx, 108\n
-    xor eax, eax\n
     out dx, eax\n
     cli\n
     hlt\n

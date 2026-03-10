@@ -174,7 +174,6 @@ core::arch::global_asm!("
     xor ebp, ebp\n
     call {generic_init}\n
     mov dx, 108\n
-    xor eax, eax\n
     out dx, eax\n
     cli\n
     hlt\n
