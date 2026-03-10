@@ -270,9 +270,12 @@ impl VirtualMachine for KvmVm {
                                     // Reset the stop flag — a previous halt (e.g. the
                                     // init halt during evolve()) may have set it.
                                     self.timer_stop.store(false, Ordering::Relaxed);
-                                    let eventfd = self.timer_irq_eventfd.try_clone().map_err(|e| {
-                                        RunVcpuError::Unknown(HypervisorError::KvmError(e.into()))
-                                    })?;
+                                    let eventfd =
+                                        self.timer_irq_eventfd.try_clone().map_err(|e| {
+                                            RunVcpuError::Unknown(HypervisorError::KvmError(
+                                                e.into(),
+                                            ))
+                                        })?;
                                     let stop = self.timer_stop.clone();
                                     let period = std::time::Duration::from_micros(period_us);
                                     self.timer_thread = Some(std::thread::spawn(move || {
