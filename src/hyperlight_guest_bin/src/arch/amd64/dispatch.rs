@@ -69,6 +69,9 @@ core::arch::global_asm!("
     flush_done:
     call {internal_dispatch_function}\n
     mov dx, 108\n
-    out dx, al\n
+    xor eax, eax\n
+    out dx, eax\n
+    cli\n
+    hlt\n
     .cfi_endproc
 ", internal_dispatch_function = sym crate::guest_function::call::internal_dispatch_function);

@@ -257,26 +257,34 @@ impl VirtualMachine for KvmVm {
                     if port == OutBAction::PvTimerConfig as u16 {
                         // The guest is configuring the timer period.
                         // Extract the period in microseconds (LE u32).
-                        if let Ok(bytes) = data[..4].try_into() {
-                            let period_us = u32::from_le_bytes(bytes) as u64;
-                            if period_us > 0 && self.timer_thread.is_none() {
-                                // Reset the stop flag — a previous halt (e.g. the
-                                // init halt during evolve()) may have set it.
-                                self.timer_stop.store(false, Ordering::Relaxed);
-                                let eventfd = self.timer_irq_eventfd.try_clone().map_err(|e| {
-                                    RunVcpuError::Unknown(HypervisorError::KvmError(e.into()))
-                                })?;
-                                let stop = self.timer_stop.clone();
-                                let period = std::time::Duration::from_micros(period_us);
-                                self.timer_thread = Some(std::thread::spawn(move || {
-                                    while !stop.load(Ordering::Relaxed) {
-                                        std::thread::sleep(period);
-                                        if stop.load(Ordering::Relaxed) {
-                                            break;
-                                        }
-                                        let _ = eventfd.write(1);
+                        if let Some(bytes4) = data.get(..4) {
+                            if let Ok(bytes) = bytes4.try_into() {
+                                let period_us = u32::from_le_bytes(bytes) as u64;
+                                if period_us == 0 {
+                                    // Stop existing timer if any.
+                                    if let Some(thread) = self.timer_thread.take() {
+                                        self.timer_stop.store(true, Ordering::Relaxed);
+                                        let _ = thread.join();
                                     }
-                                }));
+                                } else if self.timer_thread.is_none() {
+                                    // Reset the stop flag — a previous halt (e.g. the
+                                    // init halt during evolve()) may have set it.
+                                    self.timer_stop.store(false, Ordering::Relaxed);
+                                    let eventfd = self.timer_irq_eventfd.try_clone().map_err(|e| {
+                                        RunVcpuError::Unknown(HypervisorError::KvmError(e.into()))
+                                    })?;
+                                    let stop = self.timer_stop.clone();
+                                    let period = std::time::Duration::from_micros(period_us);
+                                    self.timer_thread = Some(std::thread::spawn(move || {
+                                        while !stop.load(Ordering::Relaxed) {
+                                            std::thread::sleep(period);
+                                            if stop.load(Ordering::Relaxed) {
+                                                break;
+                                            }
+                                            let _ = eventfd.write(1);
+                                        }
+                                    }));
+                                }
                             }
                         }
                         continue;

@@ -231,6 +231,16 @@ impl WhpVm {
         }
         state.truncate(written as usize);
 
+        // init_lapic_registers writes up to offset 0x374 (LVT Error at 0x370).
+        // Bail out if the buffer returned by WHP is too small.
+        const MIN_LAPIC_STATE_SIZE: usize = 0x374;
+        if state.len() < MIN_LAPIC_STATE_SIZE {
+            return Err(windows_result::Error::new(
+                HRESULT::from_win32(0x32), // ERROR_NOT_SUPPORTED
+                "WHP LAPIC state buffer is too small for init_lapic_registers",
+            ));
+        }
+
         super::hw_interrupts::init_lapic_registers(&mut state);
 
         unsafe {

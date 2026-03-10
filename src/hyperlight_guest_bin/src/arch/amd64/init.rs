@@ -174,6 +174,9 @@ core::arch::global_asm!("
     xor ebp, ebp\n
     call {generic_init}\n
     mov dx, 108\n
-    out dx, al\n
+    xor eax, eax\n
+    out dx, eax\n
+    cli\n
+    hlt\n
     .cfi_endproc\n
 ", generic_init = sym crate::generic_init);

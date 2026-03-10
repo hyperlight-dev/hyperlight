@@ -638,7 +638,13 @@ impl MshvVm {
         if port == OutBAction::PvTimerConfig as u16 {
             if data.len() >= 4 {
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                if period_us > 0 && self.timer_thread.is_none() {
+                if period_us == 0 {
+                    // Stop existing timer if any.
+                    if let Some(thread) = self.timer_thread.take() {
+                        self.timer_stop.store(true, Ordering::Relaxed);
+                        let _ = thread.join();
+                    }
+                } else if self.timer_thread.is_none() {
                     // Reset the stop flag — a previous halt (e.g. the
                     // init halt during evolve()) may have set it.
                     self.timer_stop.store(false, Ordering::Relaxed);

@@ -586,8 +586,16 @@ fn test_timer_interrupts(period_us: i32, max_spin: i32) -> i32 {
         );
     }
 
+    // Vector 0x20 needs bytes at offset 0x200..0x210 (16-byte entry).
+    // Ensure the IDT is large enough.
+    const VECTOR: usize = 0x20;
+    let required_end = (VECTOR + 1) * 16; // byte just past the entry
+    if (idtr.limit as usize + 1) < required_end {
+        return -1; // IDT too small
+    }
+
     // Write a 16-byte IDT entry at vector 0x20 (offset = 0x20 * 16 = 0x200)
-    let entry_ptr = (idtr.base as usize + 0x20 * 16) as *mut u8;
+    let entry_ptr = (idtr.base as usize + VECTOR * 16) as *mut u8;
     unsafe {
         // offset_low (bits 0-15 of handler)
         core::ptr::write_volatile(entry_ptr as *mut u16, handler_addr as u16);
@@ -609,6 +617,9 @@ fn test_timer_interrupts(period_us: i32, max_spin: i32) -> i32 {
     //    Divisor = period_us * 1_193_182 / 1_000_000 (PIT oscillator is 1.193182 MHz).
     //    On KVM the in-kernel PIT handles these IO writes directly.
     //    On MSHV/WHP these ports are silently absorbed (timer is set via OutBAction::PvTimerConfig).
+    if period_us <= 0 {
+        return -1; // invalid period
+    }
     let divisor = ((period_us as u64) * 1_193_182 / 1_000_000).clamp(1, 0xFFFF) as u16;
     unsafe {
         // Command: channel 0, lobyte/hibyte access, mode 2 (rate generator)
