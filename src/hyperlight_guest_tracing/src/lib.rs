@@ -17,6 +17,7 @@ limitations under the License.
 #![no_std]
 
 /// Expose invariant TSC module
+#[cfg(target_arch = "x86_64")]
 pub mod invariant_tsc;
 
 /// Defines internal guest state
