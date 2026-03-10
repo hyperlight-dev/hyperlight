@@ -16,6 +16,7 @@ limitations under the License.
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/prim_alloc.rs")]
 #[cfg_attr(target_arch = "x86", path = "arch/i686/prim_alloc.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/prim_alloc.rs")]
 mod arch;
 
 /// Allocate n contiguous physical pages and return the physical
