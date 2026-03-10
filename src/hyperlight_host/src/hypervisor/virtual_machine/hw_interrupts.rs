@@ -90,14 +90,7 @@ pub(crate) fn handle_common_io_out(
 /// # Panics
 /// Panics if `offset + 4 > state.len()`.
 pub(crate) fn write_lapic_u32(state: &mut [u8], offset: usize, val: u32) {
-    let end = offset + 4;
-    assert!(
-        end <= state.len(),
-        "write_lapic_u32: offset {:#x} out of bounds (state len {:#x})",
-        offset,
-        state.len()
-    );
-    state[offset..end].copy_from_slice(&val.to_le_bytes());
+    state[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
 }
 
 /// Read a u32 from a LAPIC register page at the given APIC offset.
@@ -105,13 +98,6 @@ pub(crate) fn write_lapic_u32(state: &mut [u8], offset: usize, val: u32) {
 /// # Panics
 /// Panics if `offset + 4 > state.len()`.
 pub(crate) fn read_lapic_u32(state: &[u8], offset: usize) -> u32 {
-    let end = offset + 4;
-    assert!(
-        end <= state.len(),
-        "read_lapic_u32: offset {:#x} out of bounds (state len {:#x})",
-        offset,
-        state.len()
-    );
     u32::from_le_bytes([
         state[offset],
         state[offset + 1],
@@ -272,14 +258,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "out of bounds")]
+    #[should_panic]
     fn write_lapic_u32_panics_on_short_buffer() {
         let mut state = vec![0u8; 4];
         write_lapic_u32(&mut state, 2, 0xDEAD); // offset 2 + 4 = 6 > 4
     }
 
     #[test]
-    #[should_panic(expected = "out of bounds")]
+    #[should_panic]
     fn read_lapic_u32_panics_on_short_buffer() {
         let state = vec![0u8; 4];
         read_lapic_u32(&state, 2); // offset 2 + 4 = 6 > 4
