@@ -195,49 +195,17 @@ impl KvmVm {
             debug_regs: kvm_guest_debug::default(),
         })
     }
-}
 
-impl VirtualMachine for KvmVm {
-    unsafe fn map_memory(
-        &mut self,
-        (slot, region): (u32, &MemoryRegion),
-    ) -> std::result::Result<(), MapMemoryError> {
-        let mut kvm_region: kvm_userspace_memory_region = region.into();
-        kvm_region.slot = slot;
-        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }
-            .map_err(|e| MapMemoryError::Hypervisor(e.into()))
-    }
-
-    fn unmap_memory(
-        &mut self,
-        (slot, region): (u32, &MemoryRegion),
-    ) -> std::result::Result<(), UnmapMemoryError> {
-        let mut kvm_region: kvm_userspace_memory_region = region.into();
-        kvm_region.slot = slot;
-        // Setting memory_size to 0 unmaps the slot's region
-        // From https://docs.kernel.org/virt/kvm/api.html
-        // > Deleting a slot is done by passing zero for memory_size.
-        kvm_region.memory_size = 0;
-        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }
-            .map_err(|e| UnmapMemoryError::Hypervisor(e.into()))
-    }
-
-    fn run_vcpu(
-        &mut self,
-        #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
-    ) -> std::result::Result<VmExit, RunVcpuError> {
-        // setup_trace_guest must be called right before vcpu_run.run() call, because
-        // it sets the guest span, no other traces or spans must be setup in between these calls.
-        #[cfg(feature = "trace_guest")]
-        tc.setup_guest_trace(Span::current().context());
-
-        // When hw-interrupts is enabled, the in-kernel PIC + LAPIC deliver
-        // interrupts triggered by the host-side timer thread via irqfd.
-        // There is no in-kernel PIT; guest PIT port writes are no-ops.
-        // The guest signals "I'm done" by writing to OutBAction::Halt
-        // (an IO port exit) instead of using HLT, because the in-kernel
-        // LAPIC absorbs HLT (never returns VcpuExit::Hlt to userspace).
-        #[cfg(feature = "hw-interrupts")]
+    /// Run the vCPU loop with hardware interrupt support.
+    ///
+    /// When hw-interrupts is enabled, the in-kernel PIC + LAPIC deliver
+    /// interrupts triggered by the host-side timer thread via irqfd.
+    /// There is no in-kernel PIT; guest PIT port writes are no-ops.
+    /// The guest signals "I'm done" by writing to OutBAction::Halt
+    /// (an IO port exit) instead of using HLT, because the in-kernel
+    /// LAPIC absorbs HLT (never returns VcpuExit::Hlt to userspace).
+    #[cfg(feature = "hw-interrupts")]
+    fn run_vcpu_hw_interrupts(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
         loop {
             match self.vcpu_fd.run() {
                 Ok(VcpuExit::Hlt) => {
@@ -318,8 +286,11 @@ impl VirtualMachine for KvmVm {
                 }
             }
         }
+    }
 
-        #[cfg(not(feature = "hw-interrupts"))]
+    /// Run the vCPU once without hardware interrupt support (default path).
+    #[cfg(not(feature = "hw-interrupts"))]
+    fn run_vcpu_default(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
         match self.vcpu_fd.run() {
             Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
             Ok(VcpuExit::IoOut(port, _)) if port == OutBAction::Halt as u16 => Ok(VmExit::Halt()),
@@ -342,6 +313,48 @@ impl VirtualMachine for KvmVm {
                 other
             ))),
         }
+    }
+}
+
+impl VirtualMachine for KvmVm {
+    unsafe fn map_memory(
+        &mut self,
+        (slot, region): (u32, &MemoryRegion),
+    ) -> std::result::Result<(), MapMemoryError> {
+        let mut kvm_region: kvm_userspace_memory_region = region.into();
+        kvm_region.slot = slot;
+        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }
+            .map_err(|e| MapMemoryError::Hypervisor(e.into()))
+    }
+
+    fn unmap_memory(
+        &mut self,
+        (slot, region): (u32, &MemoryRegion),
+    ) -> std::result::Result<(), UnmapMemoryError> {
+        let mut kvm_region: kvm_userspace_memory_region = region.into();
+        kvm_region.slot = slot;
+        // Setting memory_size to 0 unmaps the slot's region
+        // From https://docs.kernel.org/virt/kvm/api.html
+        // > Deleting a slot is done by passing zero for memory_size.
+        kvm_region.memory_size = 0;
+        unsafe { self.vm_fd.set_user_memory_region(kvm_region) }
+            .map_err(|e| UnmapMemoryError::Hypervisor(e.into()))
+    }
+
+    fn run_vcpu(
+        &mut self,
+        #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
+    ) -> std::result::Result<VmExit, RunVcpuError> {
+        // setup_trace_guest must be called right before vcpu_run.run() call, because
+        // it sets the guest span, no other traces or spans must be setup in between these calls.
+        #[cfg(feature = "trace_guest")]
+        tc.setup_guest_trace(Span::current().context());
+
+        #[cfg(feature = "hw-interrupts")]
+        return self.run_vcpu_hw_interrupts();
+
+        #[cfg(not(feature = "hw-interrupts"))]
+        self.run_vcpu_default()
     }
 
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
