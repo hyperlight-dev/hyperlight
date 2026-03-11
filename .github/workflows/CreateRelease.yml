@@ -72,8 +72,16 @@ jobs:
 
   benchmarks:
     needs: [build-guests]
-    uses: ./.github/workflows/Benchmarks.yml
+    strategy:
+      fail-fast: true
+      matrix:
+        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
+        cpu: [amd, intel]
+    uses: ./.github/workflows/dep_benchmarks.yml
     secrets: inherit
+    with:
+      hypervisor: ${{ matrix.hypervisor }}
+      cpu: ${{ matrix.cpu }}
     permissions:
       contents: read
 
