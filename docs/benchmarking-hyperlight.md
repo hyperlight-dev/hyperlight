@@ -4,8 +4,8 @@ Hyperlight uses the [Criterion](https://bheisler.github.io/criterion.rs/book/ind
 
 ## When Benchmarks are ran
 
-1. Every time a branch gets a push
-    - Compares the current branch benchmarking results to the "dev-latest" release (which is the most recent push to "main" branch). This is done as part of `dep_rust.yml`, which is invoked by `ValidatePullRequest.yml`. These benchmarks are for the developer to compare their branch to main, and the results can only be seen in the GitHub action logs, and nothing is saved. 
+1. Daily (scheduled)
+    - Benchmarks run daily via `DailyBenchmarks.yml`, comparing results against the previous day's run. Results are stored as workflow artifacts with 90-day retention.
 
     ```
     sandboxes/create_sandbox
@@ -15,7 +15,7 @@ Hyperlight uses the [Criterion](https://bheisler.github.io/criterion.rs/book/ind
     ```
    
 2. For each release
-    - For each release, benchmarks are ran as part of the release pipeline in `CreateRelease.yml`, which invokes `Benchmarks.yml`. These benchmark results are compared to the previous release, and are uploaded as port of the "Release assets" on the GitHub release page.
+    - For each release, benchmarks are ran as part of the release pipeline in `CreateRelease.yml`, which invokes `dep_benchmarks.yml`. These benchmark results are compared to the previous release, and are uploaded as part of the "Release assets" on the GitHub release page.
 
 Currently, benchmarks are ran on windows, linux-kvm (ubuntu), and linux-hyperv (mariner). Only release builds are benchmarked, not debug.
 
