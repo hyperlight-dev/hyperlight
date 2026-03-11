@@ -125,27 +125,6 @@ jobs:
       cpu: ${{ matrix.cpu }}
       config: ${{ matrix.config }}
 
-  # Run benchmarks - release only, needs guest artifacts, runs in parallel with build-test
-  benchmarks:
-    needs:
-      - docs-pr
-      - build-guests
-    # Required because update-guest-locks is skipped on non-dependabot PRs,
-    # and a skipped dependency transitively skips all downstream jobs.
-    # See: https://github.com/actions/runner/issues/2205
-    if: ${{ !cancelled() && !failure() }}
-    strategy:
-      fail-fast: true
-      matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
-        cpu: [amd, intel]
-    uses: ./.github/workflows/dep_benchmarks.yml
-    secrets: inherit
-    with: 
-      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
-      hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
-
   fuzzing:
     needs:
       - docs-pr
@@ -187,7 +166,6 @@ jobs:
       - code-checks
       - build-test
       - run-examples
-      - benchmarks
       - fuzzing
       - spelling
       - license-headers
