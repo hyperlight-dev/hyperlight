@@ -2,7 +2,7 @@
 
 Hyperlight uses the [Criterion](https://bheisler.github.io/criterion.rs/book/index.html) framework to run and analyze benchmarks. A benefit to this framework is that it doesn't require the nightly toolchain.
 
-## When Benchmarks are ran
+## When Benchmarks are run
 
 1. Daily (scheduled)
     - Benchmarks run daily via `DailyBenchmarks.yml`, comparing results against the previous day's run. Results are stored as workflow artifacts with 90-day retention.
@@ -15,9 +15,9 @@ Hyperlight uses the [Criterion](https://bheisler.github.io/criterion.rs/book/ind
     ```
    
 2. For each release
-    - For each release, benchmarks are ran as part of the release pipeline in `CreateRelease.yml`, which invokes `dep_benchmarks.yml`. These benchmark results are compared to the previous release, and are uploaded as part of the "Release assets" on the GitHub release page.
+    - For each release, benchmarks are run as part of the release pipeline in `CreateRelease.yml`, which invokes `dep_benchmarks.yml`. These benchmark results are compared to the previous release, and are uploaded as part of the "Release assets" on the GitHub release page.
 
-Currently, benchmarks are ran on windows, linux-kvm (ubuntu), and linux-hyperv (mariner). Only release builds are benchmarked, not debug.
+Currently, benchmarks are run on windows, linux-kvm (ubuntu), and linux-hyperv (mariner). Only release builds are benchmarked, not debug.
 
 ## Criterion artifacts
 
