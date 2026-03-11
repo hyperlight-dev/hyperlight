@@ -3,6 +3,9 @@
 name: Weekly Coverage
 
 on:
+  pull_request:
+      paths:
+        - .github/workflows/Coverage.yml
   schedule:
     # Runs every Monday at 06:00 UTC
     - cron: '0 6 * * 1'
