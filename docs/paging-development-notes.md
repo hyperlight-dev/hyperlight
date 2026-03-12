@@ -2,66 +2,153 @@
 
 When running on a Type 1 hypervisor, servicing a Stage 2 translation
 page fault is relatively quite expensive, since it requires quite a
-lot of context switches.  To help alleviate this, Hyperlight uses an
-unusual design in which the guest is aware of readonly snapshot from
+lot of context switches.  To help alleviate this, Hyperlight uses a
+design in which the guest is aware of a readonly snapshot from
 which it is being run, and manages its own copy-on-write.
 
 Because of this, there are two very fundamental regions of the guest
-physical address space, which are always populated: one, at the very
-bottom of memory, is a (hypervisor-enforced) readonly mapping of the
-base snapshot from which this guest is being evolved. Another, at the
-top of memory, is simply a large bag of blank pages: scratch memory
-into which this VM can write.
+physical address space, which are always populated: one, near the
+bottom of memory (starting at GPA `0x1000`), is a
+(hypervisor-enforced) readonly mapping of the base snapshot from which
+this guest is being evolved. Another, at the top of memory, is simply
+a large bag of blank pages: scratch memory into which this VM can
+write.
+
+```
+  Guest Physical Address Space (GPA)
+
+  +-------------------------------+ MAX_GPA
+  |    Exn Stack, Bookkeeping     |
+  |    (scratch size, allocator   |
+  |     state, reserved PT slot)  |
+  +-------------------------------+
+  |      Free Scratch Memory      |
+  +-------------------------------+
+  |         Output Data           |
+  +-------------------------------+
+  |         Input Data            |
+  +-------------------------------+
+  |                               |
+  |     (unmapped — no RAM        |
+  |      backing these addrs)     |
+  |                               |
+  +-------------------------------+
+  |                               |
+  |  Snapshot (RO / CoW on write) |
+  |    Guest Page Tables          |
+  |    Init Data                  |
+  |    Guest Heap                 |
+  |    PEB                        |
+  |    Guest Binary               |
+  |                               |
+  +-------------------------------+ 0x1000
+  |    (null guard page)          |
+  +-------------------------------+ 0x0000
+```
+
+
 
 ## The scratch map
 
 Whenever the guest needs to write to a page in the snapshot region, it
 will need to copy it into a page in the scratch region, and change the
-original virtual address to point to the new page.  The page table
+original virtual address to point to the new page.
+
+```
+  CoW page fault flow:
+
+  BEFORE (guest writes to CoW page -> fault)
+
+    PTE for VA 0x5000:
+    +----------+-----+-----+
+    | GPA      | CoW | R/O |    Points to snapshot page
+    | 0x5000   |  1  |  1  |
+    +----------+-----+-----+
+         |
+         v
+    Snapshot region (readonly)
+    +--------------------+
+    | original content   |  GPA 0x5000
+    +--------------------+
+
+  AFTER (fault handler resolves)
+
+    1. Allocate fresh page from scratch (bump allocator)
+    2. Copy snapshot page -> new scratch page
+    3. Update PTE to point to scratch page
+
+    PTE for VA 0x5000:
+    +----------+-----+-----+
+    | GPA      | CoW | R/W |    Points to scratch page
+    | 0xf_ff.. |  0  |  1  |
+    +----------+-----+-----+
+         |
+         v
+    Scratch region (writable)
+    +--------------------+
+    | copied content     |  (new GPA in scratch)
+    +--------------------+
+
+    Snapshot page at GPA 0x5000 is untouched.
+```
+
+The page table
 entries to do this will likely need to be copied themselves, and so a
 ready supply of already-mapped scratch pages to use for replacement
-page tables is needed. Currently, the guest accomplishes this by
-keeping an identity mapping of the entire scratch memory around.
+page tables is set up by the Host. The guest keeps a mapping of the entire scratch
+physical memory into virtual memory at a fixed offset
+(`scratch_base_gva - scratch_base_gpa`), so that any scratch physical
+address can be accessed by adding this offset.
 
 The host and the guest need to agree on the location of this mapping,
 so that (a) the host can create it when first setting up a blank guest
 and (b) the host can ignore it when taking a snapshot (see below).
 
-Currently, the host always creates the scratch map at the top of
-virtual memory.  In the future, we may add support for a guest to
+The host creates the scratch map at the top of virtual memory
+(`MAX_GVA - scratch_size + 1`) and at the top of physical memory
+(`MAX_GPA - scratch_size + 1`). In the future, we may add support for a guest to
 request that it be moved.
 
 ## The snapshot mapping
 
-Do we actually need to have a physmap type mapping of the entire
-snapshot memory? We only really use it when copying from it in which
-case we ought to have the VA that we need to copy from already. There
-is one major exception to this, which is the page tables
-themselves. The page tables themselves must be mapped at some VA so
-that we can copy them.
+The snapshot page tables must be mapped at some virtual address so
+that the guest can read and copy them during CoW operations.
+Today, the host simply
+copies the page tables into scratch when restoring a sandbox, and the
+guest works on those scratch copies directly. 
 
-Setting this VA statically on the host is a bit annoying, since we are
-already using the top of memory for the scratchmap. Unfortunately,
-since the size of the page tables changes as the sandbox evolves
-through e.g. snapshot/restore, we cannot preallocate it...
+## Top-of-scratch metadata layout
 
-Let's just be stupid and leave them at 0xffff_0000_0000_0000 for now.
+The top page of the scratch region contains structured metadata at
+fixed offsets down from the top:
+
+| Offset from top | Field                                |
+|-----------------|--------------------------------------|
+| `0x08`          | Scratch size (`u64`)                 |
+| `0x10`          | Allocator state (`u64`)              |
+| `0x18`          | Reserved snapshot PT base (`u64`)    |
+| `0x20`          | Exception stack starts here          |
+
+These offsets are defined as `SCRATCH_TOP_*` constants in
+`hyperlight_common::layout`.
 
 ## The physical page allocator
 
 The host needs to be able to reset the state of the physical page
-allocator when resuming from a snapshot. Currently, we use a simple
-bump allocator as a physical page allocator, with no support for free,
+allocator when resuming from a snapshot. We use a simple bump
+allocator as a physical page allocator, with no support for free,
 since pages not in use will automatically be omitted from a snapshot.
-Therefore, the allocator state is nothing but a single `u64` that
-tracks the address of the first free page. This `u64` will always be
-located at the top of scratch physical memory.
+The allocator state is a single `u64` tracking the address of the
+first free page, located at offset `0x10` from the top of scratch
+(see layout above). The guest advances it atomically via `lock xadd`.
 
 ## The guest exception stack
 
 Similarly, the guest needs a stack that is always writable, in order
-to be able to take exceptions to it.  The remainder of the top page of
-the scratch memory is used for this.
+to be able to take exceptions to it. The exception stack begins at
+offset `0x20` from the top of the scratch region (below the metadata
+fields described above) and grows downward through the remainder of
+the top page.
 
 ## Taking a snapshot
 
@@ -90,20 +177,26 @@ calls, i.e. there may be no calls in flight at the time of
 snapshotting. This is not enforced, but odd things may happen if it is
 violated.
 
-When a snapshot is taken, any outstanding buffers which the guest has
-indicated it is waiting for the host to write to will be moved to the
-bottom of the new scratch region and zeroed.
+I/O buffers are statically allocated at the bottom of the scratch
+region:
 
-Q: how will the guest know about this?  Maybe A: The guest nominates a
-virtual address that it wants to have this sort of bookkeeping
-information mapped at, and the snapshot creation process treats that
-address specially writing out a manifest
+```
++-------------------------------------------+ (top of scratch)
+|       Exn Stack, Bookkeeping              |
+|  (scratch size, allocator state,          |
+|   reserved PT base)                       |
++-------------------------------------------+
+|           Free Scratch Memory             |
++-------------------------------------------+
+|                Output Data                |
++-------------------------------------------+
+|                Input Data                 |
++-------------------------------------------+ (scratch base)
+```
 
-Q: how do we want to manage buffer
-allocation/freeing/reallocation/etc? Maybe A: for now we will mostly
-ignore because we only need 1-2 buffers inflight at a time. We can
-emulate the current paradigm by recreating a new buffer out of the
-free space in the original buffer on call, etc etc.
+The minimum scratch size (`min_scratch_size()`) accounts for these
+buffers plus overhead for the Task State Segment (TSS), Interrupt Descriptor Table (IDT), page table CoW, a minimal
+non-exception stack, and the exception stack and metadata.
 
 ## Creating a fresh guest
 
@@ -113,11 +206,10 @@ which simply map the segments of that ELF to the appropriate places in
 virtual memory.  If the ELF has segments whose virtual addresses
 overlap with the scratch map, an error will be returned.
 
-The initial stack pointer will point to the top of the second-highest
-page of the scratch map, but this should usually be changed by early
-init code in the guest, since it will otherwise be difficult to detect
-collisions between the guest stack and the scratch physical page
-allocator.
+In the current startup path, the host enters the guest with
+`RSP` pointing to the exception stack. Early guest init then
+allocates the main stack at `MAIN_STACK_TOP_GVA`, switches to it,
+and continues generic initialization.
 
 # Architecture-specific details of virtual memory setup
 
