@@ -23,7 +23,7 @@ jobs:
     outputs:
       docs-only: ${{ steps.docs-only.outputs.result }}
     steps:
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: changes
         with:
           filters: |
