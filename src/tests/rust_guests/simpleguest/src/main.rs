@@ -32,7 +32,7 @@ use alloc::{format, vec};
 use core::alloc::Layout;
 use core::ffi::c_char;
 use core::hint::black_box;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -499,6 +499,171 @@ fn outb_with_port(port: u32, value: u32) {
     }
 }
 
+// =============================================================================
+// Hardware timer interrupt test infrastructure
+// =============================================================================
+
+/// Counter incremented by the timer interrupt handler.
+static TIMER_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
+
+// Timer IRQ handler (vector 0x20 = IRQ0 after PIC remapping).
+// Increments the global counter, sends PIC EOI, and returns from interrupt.
+//
+// This handler is intentionally minimal: it only touches RAX, uses `lock inc`
+// for the atomic counter update, and sends a non-specific EOI to the master PIC.
+//
+// NOTE: global_asm! on x86_64 in Rust defaults to Intel syntax.
+core::arch::global_asm!(
+    ".globl _timer_irq_handler",
+    "_timer_irq_handler:",
+    "push rax",
+    "lock inc dword ptr [rip + {counter}]",
+    "mov al, 0x20",
+    "out 0x20, al",
+    "pop rax",
+    "iretq",
+    counter = sym TIMER_IRQ_COUNT,
+);
+
+unsafe extern "C" {
+    fn _timer_irq_handler();
+}
+
+/// IDT pointer structure for SIDT/LIDT instructions.
+#[repr(C, packed)]
+struct IdtPtr {
+    limit: u16,
+    base: u64,
+}
+
+/// Test hardware timer interrupt delivery.
+///
+/// This function:
+/// 1. Initializes the PIC (remaps IRQ0 to vector 0x20)
+/// 2. Installs an IDT entry for vector 0x20 pointing to `_timer_irq_handler`
+/// 3. Programs PIT channel 0 as a rate generator at the requested period
+/// 4. Arms the PV timer by writing the period to VmAction::PvTimerConfig port (for MSHV/WHP)
+/// 5. Enables interrupts (STI) and busy-waits for timer delivery
+/// 6. Disables interrupts (CLI) and returns the interrupt count
+///
+/// Parameters:
+/// - `period_us`: timer period in microseconds (written to VmAction::PvTimerConfig port)
+/// - `max_spin`:  maximum busy-wait iterations before giving up
+///
+/// Returns the number of timer interrupts received.
+#[guest_function("TestTimerInterrupts")]
+fn test_timer_interrupts(period_us: i32, max_spin: i32) -> i32 {
+    // Reset counter
+    TIMER_IRQ_COUNT.store(0, Ordering::SeqCst);
+
+    // 1) Initialize PIC — remap IRQ0 to vector 0x20
+    unsafe {
+        // Master PIC
+        core::arch::asm!("out 0x20, al", in("al") 0x11u8, options(nomem, nostack)); // ICW1
+        core::arch::asm!("out 0x21, al", in("al") 0x20u8, options(nomem, nostack)); // ICW2: base 0x20
+        core::arch::asm!("out 0x21, al", in("al") 0x04u8, options(nomem, nostack)); // ICW3
+        core::arch::asm!("out 0x21, al", in("al") 0x01u8, options(nomem, nostack)); // ICW4
+        core::arch::asm!("out 0x21, al", in("al") 0xFEu8, options(nomem, nostack)); // IMR: unmask IRQ0
+
+        // Slave PIC
+        core::arch::asm!("out 0xA0, al", in("al") 0x11u8, options(nomem, nostack)); // ICW1
+        core::arch::asm!("out 0xA1, al", in("al") 0x28u8, options(nomem, nostack)); // ICW2: base 0x28
+        core::arch::asm!("out 0xA1, al", in("al") 0x02u8, options(nomem, nostack)); // ICW3
+        core::arch::asm!("out 0xA1, al", in("al") 0x01u8, options(nomem, nostack)); // ICW4
+        core::arch::asm!("out 0xA1, al", in("al") 0xFFu8, options(nomem, nostack)); // IMR: mask all
+    }
+
+    // 2) Install IDT entry for vector 0x20 (timer interrupt)
+    let handler_addr = _timer_irq_handler as *const () as u64;
+
+    // Read current IDT base via SIDT
+    let mut idtr = IdtPtr { limit: 0, base: 0 };
+    unsafe {
+        core::arch::asm!(
+            "sidt [{}]",
+            in(reg) &mut idtr as *mut IdtPtr,
+            options(nostack, preserves_flags)
+        );
+    }
+
+    // Vector 0x20 needs bytes at offset 0x200..0x210 (16-byte entry).
+    // Ensure the IDT is large enough.
+    const VECTOR: usize = 0x20;
+    let required_end = (VECTOR + 1) * 16; // byte just past the entry
+    if (idtr.limit as usize + 1) < required_end {
+        return -1; // IDT too small
+    }
+
+    // Write a 16-byte IDT entry at vector 0x20 (offset = 0x20 * 16 = 0x200)
+    let entry_ptr = (idtr.base as usize + VECTOR * 16) as *mut u8;
+    unsafe {
+        // offset_low (bits 0-15 of handler)
+        core::ptr::write_volatile(entry_ptr as *mut u16, handler_addr as u16);
+        // selector: 0x08 = kernel code segment
+        core::ptr::write_volatile(entry_ptr.add(2) as *mut u16, 0x08);
+        // IST=0, reserved=0
+        core::ptr::write_volatile(entry_ptr.add(4), 0);
+        // type_attr: 0x8E = interrupt gate, present, DPL=0
+        core::ptr::write_volatile(entry_ptr.add(5), 0x8E);
+        // offset_mid (bits 16-31)
+        core::ptr::write_volatile(entry_ptr.add(6) as *mut u16, (handler_addr >> 16) as u16);
+        // offset_high (bits 32-63)
+        core::ptr::write_volatile(entry_ptr.add(8) as *mut u32, (handler_addr >> 32) as u32);
+        // reserved
+        core::ptr::write_volatile(entry_ptr.add(12) as *mut u32, 0);
+    }
+
+    // Ensure the IDT writes are visible before enabling interrupts.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+    // 3) Program PIT channel 0 as rate generator (mode 2).
+    //    Divisor = period_us * 1_193_182 / 1_000_000 (PIT oscillator is 1.193182 MHz).
+    //    On KVM the in-kernel PIT handles these IO writes directly.
+    //    On MSHV/WHP these ports are silently absorbed (timer is set via VmAction::PvTimerConfig).
+    if period_us <= 0 {
+        return -1; // invalid period
+    }
+    let divisor = ((period_us as u64) * 1_193_182 / 1_000_000).clamp(1, 0xFFFF) as u16;
+    unsafe {
+        // Command: channel 0, lobyte/hibyte access, mode 2 (rate generator)
+        core::arch::asm!("out 0x43, al", in("al") 0x34u8, options(nomem, nostack));
+        // Channel 0 data: low byte of divisor
+        core::arch::asm!("out 0x40, al", in("al") (divisor & 0xFF) as u8, options(nomem, nostack));
+        // Channel 0 data: high byte of divisor
+        core::arch::asm!("out 0x40, al", in("al") (divisor >> 8) as u8, options(nomem, nostack));
+    }
+
+    // 4) Arm timer: write period_us to VmAction::PvTimerConfig port
+    unsafe {
+        core::arch::asm!(
+            "out dx, eax",
+            in("dx") hyperlight_common::outb::VmAction::PvTimerConfig as u16,
+            in("eax") period_us as u32,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    // 5) Enable interrupts and wait for at least one timer tick
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
+
+    let max = max_spin as u32;
+    for _ in 0..max {
+        if TIMER_IRQ_COUNT.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    // 6) Disable interrupts and return count
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+    }
+
+    TIMER_IRQ_COUNT.load(Ordering::SeqCst) as i32
+}
+
 static mut COUNTER: i32 = 0;
 
 #[guest_function("AddToStatic")]
@@ -823,7 +988,14 @@ fn corrupt_output_size_prefix() -> i32 {
         buf[12..16].copy_from_slice(&[0u8; 4]);
         buf[16..24].copy_from_slice(&8_u64.to_le_bytes());
 
-        core::arch::asm!("hlt", options(noreturn));
+        core::arch::asm!(
+            "out dx, eax",
+            "cli",
+            "hlt",
+            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
+            in("eax") 0u32,
+            options(noreturn),
+        );
     }
 }
 
@@ -839,7 +1011,14 @@ fn corrupt_output_back_pointer() -> i32 {
         buf[8..16].copy_from_slice(&[0u8; 8]);
         buf[16..24].copy_from_slice(&0xDEAD_u64.to_le_bytes());
 
-        core::arch::asm!("hlt", options(noreturn));
+        core::arch::asm!(
+            "out dx, eax",
+            "cli",
+            "hlt",
+            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
+            in("eax") 0u32,
+            options(noreturn),
+        );
     }
 }
 

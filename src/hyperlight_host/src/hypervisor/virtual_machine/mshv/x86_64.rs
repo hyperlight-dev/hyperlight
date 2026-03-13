@@ -16,8 +16,15 @@ limitations under the License.
 
 #[cfg(gdb)]
 use std::fmt::Debug;
+#[cfg(feature = "hw-interrupts")]
+use std::sync::Arc;
 use std::sync::LazyLock;
+#[cfg(feature = "hw-interrupts")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use hyperlight_common::outb::VmAction;
+#[cfg(feature = "hw-interrupts")]
+use mshv_bindings::LapicState;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
@@ -26,8 +33,15 @@ use mshv_bindings::{
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
     hv_partition_synthetic_processor_features, hv_register_assoc,
-    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_user_mem_region,
+    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_create_partition_v2,
+    mshv_user_mem_region,
 };
+#[cfg(feature = "hw-interrupts")]
+use mshv_bindings::{
+    hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED, hv_register_name_HV_X64_REGISTER_RAX,
+};
+#[cfg(feature = "hw-interrupts")]
+use mshv_ioctls::InterruptRequest;
 use mshv_ioctls::{Mshv, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
@@ -65,12 +79,40 @@ pub(crate) fn is_hypervisor_present() -> bool {
 /// A MSHV implementation of a single-vcpu VM
 #[derive(Debug)]
 pub(crate) struct MshvVm {
+    /// VmFd wrapped in Arc so the timer thread can call
+    /// `request_virtual_interrupt` from a background thread.
+    #[cfg(feature = "hw-interrupts")]
+    vm_fd: Arc<VmFd>,
+    #[cfg(not(feature = "hw-interrupts"))]
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
+    /// Signals the timer thread to stop.
+    #[cfg(feature = "hw-interrupts")]
+    timer_stop: Arc<AtomicBool>,
+    /// Handle to the background timer thread (if started).
+    #[cfg(feature = "hw-interrupts")]
+    timer_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 static MSHV: LazyLock<std::result::Result<Mshv, CreateVmError>> =
     LazyLock::new(|| Mshv::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
+
+/// Cast MSHV `LapicState.regs` (`[c_char; 1024]`) to a `&[u8]` slice
+/// for use with the shared LAPIC helpers.
+#[cfg(feature = "hw-interrupts")]
+fn lapic_regs_as_u8(regs: &[::std::os::raw::c_char; 1024]) -> &[u8] {
+    // Safety: c_char (i8) and u8 have the same size and alignment;
+    // LAPIC register values are treated as raw bytes.
+    unsafe { &*(regs as *const [::std::os::raw::c_char; 1024] as *const [u8; 1024]) }
+}
+
+/// Cast MSHV `LapicState.regs` (`[c_char; 1024]`) to a `&mut [u8]` slice
+/// for use with the shared LAPIC helpers.
+#[cfg(feature = "hw-interrupts")]
+fn lapic_regs_as_u8_mut(regs: &mut [::std::os::raw::c_char; 1024]) -> &mut [u8] {
+    // Safety: same as above.
+    unsafe { &mut *(regs as *mut [::std::os::raw::c_char; 1024] as *mut [u8; 1024]) }
+}
 
 impl MshvVm {
     /// Create a new instance of a MshvVm
@@ -78,22 +120,30 @@ impl MshvVm {
     pub(crate) fn new() -> std::result::Result<Self, CreateVmError> {
         let mshv = MSHV.as_ref().map_err(|e| e.clone())?;
 
-        let pr = Default::default();
-        // It's important to avoid create_vm() and explicitly use
-        // create_vm_with_args() with an empty arguments structure
-        // here, because otherwise the partition is set up with a SynIC.
+        #[allow(unused_mut)]
+        let mut pr: mshv_create_partition_v2 = Default::default();
+        // Enable LAPIC for hw-interrupts — required for interrupt delivery
+        // via request_virtual_interrupt. MSHV_PT_BIT_LAPIC = bit 0.
+        #[cfg(feature = "hw-interrupts")]
+        {
+            pr.pt_flags = 1u64; // LAPIC
+        }
+        // It's important to use create_vm_with_args() (not create_vm()),
+        // because create_vm() sets up a SynIC partition by default.
         let vm_fd = mshv
             .create_vm_with_args(&pr)
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
 
         let vcpu_fd = {
             let features: hv_partition_synthetic_processor_features = Default::default();
+
             vm_fd
                 .set_partition_property(
                     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
                     unsafe { features.as_uint64[0] },
                 )
                 .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+
             vm_fd
                 .initialize()
                 .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
@@ -103,7 +153,35 @@ impl MshvVm {
                 .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?
         };
 
-        Ok(Self { vm_fd, vcpu_fd })
+        // Initialize the virtual LAPIC when hw-interrupts is enabled.
+        // LAPIC defaults to disabled (SVR bit 8 = 0), which means no APIC
+        // interrupts can be delivered (request_virtual_interrupt would fail).
+        #[cfg(feature = "hw-interrupts")]
+        {
+            use super::super::x86_64::hw_interrupts::init_lapic_registers;
+
+            let mut lapic: LapicState = vcpu_fd
+                .get_lapic()
+                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+            init_lapic_registers(lapic_regs_as_u8_mut(&mut lapic.regs));
+
+            vcpu_fd
+                .set_lapic(&lapic)
+                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        }
+
+        Ok(Self {
+            #[cfg(feature = "hw-interrupts")]
+            vm_fd: Arc::new(vm_fd),
+            #[cfg(not(feature = "hw-interrupts"))]
+            vm_fd,
+            vcpu_fd,
+            #[cfg(feature = "hw-interrupts")]
+            timer_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "hw-interrupts")]
+            timer_thread: None,
+        })
     }
 }
 
@@ -128,6 +206,7 @@ impl VirtualMachine for MshvVm {
             .map_err(|e| UnmapMemoryError::Hypervisor(e.into()))
     }
 
+    #[cfg_attr(not(feature = "hw-interrupts"), allow(clippy::never_loop))]
     fn run_vcpu(
         &mut self,
         #[cfg(feature = "trace_guest")] tc: &mut SandboxTraceContext,
@@ -144,82 +223,158 @@ impl VirtualMachine for MshvVm {
         // it sets the guest span, no other traces or spans must be setup in between these calls.
         #[cfg(feature = "trace_guest")]
         tc.setup_guest_trace(Span::current().context());
-        let exit_reason = self.vcpu_fd.run();
 
-        let result = match exit_reason {
-            Ok(m) => match m.header.message_type {
-                HALT_MESSAGE => VmExit::Halt(),
-                IO_PORT_INTERCEPT_MESSAGE => {
-                    let io_message = m
-                        .to_ioport_info()
-                        .map_err(|_| RunVcpuError::DecodeIOMessage(m.header.message_type))?;
-                    let port_number = io_message.port_number;
-                    let rip = io_message.header.rip;
-                    let rax = io_message.rax;
-                    let instruction_length = io_message.header.instruction_length() as u64;
+        loop {
+            let exit_reason = self.vcpu_fd.run();
 
-                    // mshv, unlike kvm, does not automatically increment RIP
-                    self.vcpu_fd
-                        .set_reg(&[hv_register_assoc {
-                            name: hv_register_name_HV_X64_REGISTER_RIP,
-                            value: hv_register_value {
-                                reg64: rip + instruction_length,
-                            },
-                            ..Default::default()
-                        }])
-                        .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
-                    VmExit::IoOut(port_number, rax.to_le_bytes().to_vec())
-                }
-                UNMAPPED_GPA_MESSAGE => {
-                    let mimo_message = m
-                        .to_memory_info()
-                        .map_err(|_| RunVcpuError::DecodeIOMessage(m.header.message_type))?;
-                    let addr = mimo_message.guest_physical_address;
-                    match MemoryRegionFlags::try_from(mimo_message)
-                        .map_err(|_| RunVcpuError::ParseGpaAccessInfo)?
-                    {
-                        MemoryRegionFlags::READ => VmExit::MmioRead(addr),
-                        MemoryRegionFlags::WRITE => VmExit::MmioWrite(addr),
-                        _ => VmExit::Unknown("Unknown MMIO access".to_string()),
+            match exit_reason {
+                Ok(m) => {
+                    let msg_type = m.header.message_type;
+                    match msg_type {
+                        HALT_MESSAGE => {
+                            // With timer thread active, re-enter the guest.
+                            // The hypervisor will deliver pending timer
+                            // interrupts on the next run(), waking the
+                            // vCPU from HLT.
+                            #[cfg(feature = "hw-interrupts")]
+                            if self.timer_thread.is_some() {
+                                continue;
+                            }
+                            return Ok(VmExit::Halt());
+                        }
+                        IO_PORT_INTERCEPT_MESSAGE => {
+                            let io_message = m
+                                .to_ioport_info()
+                                .map_err(|_| RunVcpuError::DecodeIOMessage(msg_type))?;
+                            let port_number = io_message.port_number;
+                            let rip = io_message.header.rip;
+                            let rax = io_message.rax;
+                            let instruction_length = io_message.header.instruction_length() as u64;
+                            let is_write = io_message.header.intercept_access_type != 0;
+
+                            // mshv, unlike kvm, does not automatically increment RIP
+                            self.vcpu_fd
+                                .set_reg(&[hv_register_assoc {
+                                    name: hv_register_name_HV_X64_REGISTER_RIP,
+                                    value: hv_register_value {
+                                        reg64: rip + instruction_length,
+                                    },
+                                    ..Default::default()
+                                }])
+                                .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
+
+                            // VmAction::Halt always means "I'm done", regardless
+                            // of whether a timer is active.
+                            if is_write && port_number == VmAction::Halt as u16 {
+                                // Stop the timer thread before returning.
+                                #[cfg(feature = "hw-interrupts")]
+                                {
+                                    self.timer_stop.store(true, Ordering::Relaxed);
+                                    if let Some(h) = self.timer_thread.take() {
+                                        let _ = h.join();
+                                    }
+                                }
+                                return Ok(VmExit::Halt());
+                            }
+
+                            #[cfg(feature = "hw-interrupts")]
+                            {
+                                if is_write {
+                                    let data = rax.to_le_bytes();
+                                    if self.handle_hw_io_out(port_number, &data) {
+                                        continue;
+                                    }
+                                } else if let Some(val) =
+                                    super::super::x86_64::hw_interrupts::handle_io_in(port_number)
+                                {
+                                    self.vcpu_fd
+                                        .set_reg(&[hv_register_assoc {
+                                            name: hv_register_name_HV_X64_REGISTER_RAX,
+                                            value: hv_register_value { reg64: val },
+                                            ..Default::default()
+                                        }])
+                                        .map_err(|e| RunVcpuError::Unknown(e.into()))?;
+                                    continue;
+                                }
+                            }
+
+                            // Suppress unused variable warning when hw-interrupts is disabled
+                            let _ = is_write;
+
+                            return Ok(VmExit::IoOut(port_number, rax.to_le_bytes().to_vec()));
+                        }
+                        UNMAPPED_GPA_MESSAGE => {
+                            let mimo_message = m
+                                .to_memory_info()
+                                .map_err(|_| RunVcpuError::DecodeIOMessage(msg_type))?;
+                            let addr = mimo_message.guest_physical_address;
+                            return match MemoryRegionFlags::try_from(mimo_message)
+                                .map_err(|_| RunVcpuError::ParseGpaAccessInfo)?
+                            {
+                                MemoryRegionFlags::READ => Ok(VmExit::MmioRead(addr)),
+                                MemoryRegionFlags::WRITE => Ok(VmExit::MmioWrite(addr)),
+                                _ => Ok(VmExit::Unknown("Unknown MMIO access".to_string())),
+                            };
+                        }
+                        INVALID_GPA_ACCESS_MESSAGE => {
+                            let mimo_message = m
+                                .to_memory_info()
+                                .map_err(|_| RunVcpuError::DecodeIOMessage(msg_type))?;
+                            let gpa = mimo_message.guest_physical_address;
+                            let access_info = MemoryRegionFlags::try_from(mimo_message)
+                                .map_err(|_| RunVcpuError::ParseGpaAccessInfo)?;
+                            return match access_info {
+                                MemoryRegionFlags::READ => Ok(VmExit::MmioRead(gpa)),
+                                MemoryRegionFlags::WRITE => Ok(VmExit::MmioWrite(gpa)),
+                                _ => Ok(VmExit::Unknown("Unknown MMIO access".to_string())),
+                            };
+                        }
+                        #[cfg(gdb)]
+                        EXCEPTION_INTERCEPT => {
+                            let ex_info = m
+                                .to_exception_info()
+                                .map_err(|_| RunVcpuError::DecodeIOMessage(msg_type))?;
+                            let DebugRegisters { dr6, .. } = self
+                                .vcpu_fd
+                                .get_debug_regs()
+                                .map_err(|e| RunVcpuError::GetDr6(e.into()))?;
+                            return Ok(VmExit::Debug {
+                                dr6,
+                                exception: ex_info.exception_vector as u32,
+                            });
+                        }
+                        other => {
+                            return Ok(VmExit::Unknown(format!(
+                                "Unknown MSHV VCPU exit: {:?}",
+                                other
+                            )));
+                        }
                     }
                 }
-                INVALID_GPA_ACCESS_MESSAGE => {
-                    let mimo_message = m
-                        .to_memory_info()
-                        .map_err(|_| RunVcpuError::DecodeIOMessage(m.header.message_type))?;
-                    let gpa = mimo_message.guest_physical_address;
-                    let access_info = MemoryRegionFlags::try_from(mimo_message)
-                        .map_err(|_| RunVcpuError::ParseGpaAccessInfo)?;
-                    match access_info {
-                        MemoryRegionFlags::READ => VmExit::MmioRead(gpa),
-                        MemoryRegionFlags::WRITE => VmExit::MmioWrite(gpa),
-                        _ => VmExit::Unknown("Unknown MMIO access".to_string()),
+                Err(e) => match e.errno() {
+                    libc::EINTR => {
+                        // When the timer thread is active, EINTR may be
+                        // a spurious signal. Continue the run loop to
+                        // let the hypervisor deliver any pending timer
+                        // interrupt.
+                        #[cfg(feature = "hw-interrupts")]
+                        if self.timer_thread.is_some() {
+                            continue;
+                        }
+                        return Ok(VmExit::Cancelled());
                     }
-                }
-                #[cfg(gdb)]
-                EXCEPTION_INTERCEPT => {
-                    let ex_info = m
-                        .to_exception_info()
-                        .map_err(|_| RunVcpuError::DecodeIOMessage(m.header.message_type))?;
-                    let DebugRegisters { dr6, .. } = self
-                        .vcpu_fd
-                        .get_debug_regs()
-                        .map_err(|e| RunVcpuError::GetDr6(e.into()))?;
-                    VmExit::Debug {
-                        dr6,
-                        exception: ex_info.exception_vector as u32,
+                    libc::EAGAIN => {
+                        #[cfg(not(feature = "hw-interrupts"))]
+                        {
+                            return Ok(VmExit::Retry());
+                        }
+                        #[cfg(feature = "hw-interrupts")]
+                        continue;
                     }
-                }
-                other => VmExit::Unknown(format!("Unknown MSHV VCPU exit: {:?}", other)),
-            },
-            Err(e) => match e.errno() {
-                // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
-                libc::EINTR => VmExit::Cancelled(),
-                libc::EAGAIN => VmExit::Retry(),
-                _ => Err(RunVcpuError::Unknown(e.into()))?,
-            },
-        };
-        Ok(result)
+                    _ => return Err(RunVcpuError::Unknown(e.into())),
+                },
+            }
+        }
     }
 
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
@@ -461,5 +616,147 @@ impl DebuggableVm for MshvVm {
         } else {
             Err(DebugError::HwBreakpointNotFound(addr))
         }
+    }
+}
+
+#[cfg(feature = "hw-interrupts")]
+impl MshvVm {
+    /// Standard x86 APIC base MSR value: base address 0xFEE00000 +
+    /// BSP flag (bit 8) + global enable (bit 11).
+    const APIC_BASE_DEFAULT: u64 = 0xFEE00900;
+
+    /// Perform LAPIC EOI: clear the highest-priority in-service bit.
+    /// Called when the guest sends PIC EOI, since the timer thread
+    /// delivers interrupts through the LAPIC and the guest only
+    /// acknowledges via PIC.
+    fn do_lapic_eoi(&self) {
+        if let Ok(mut lapic) = self.vcpu_fd.get_lapic() {
+            super::super::x86_64::hw_interrupts::lapic_eoi(lapic_regs_as_u8_mut(&mut lapic.regs));
+            let _ = self.vcpu_fd.set_lapic(&lapic);
+        }
+    }
+
+    fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
+        if port == VmAction::PvTimerConfig as u16 {
+            if data.len() >= 4 {
+                let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                if period_us == 0 {
+                    // Stop existing timer if any.
+                    if let Some(thread) = self.timer_thread.take() {
+                        self.timer_stop.store(true, Ordering::Relaxed);
+                        let _ = thread.join();
+                    }
+                } else if self.timer_thread.is_none() {
+                    // Reset the stop flag — a previous halt (e.g. the
+                    // init halt during evolve()) may have set it.
+                    self.timer_stop.store(false, Ordering::Relaxed);
+                    // Re-enable LAPIC if the guest disabled it (via WRMSR
+                    // to MSR 0x1B clearing bit 11).  Some guests clear
+                    // the global APIC enable when no I/O APIC is detected.
+                    //
+                    // The hypervisor may return 0 for APIC_BASE when the
+                    // APIC is globally disabled, so we always restore the
+                    // standard value (0xFEE00900).
+                    use mshv_bindings::hv_register_name_HV_X64_REGISTER_APIC_BASE;
+                    let mut apic_base_reg = [hv_register_assoc {
+                        name: hv_register_name_HV_X64_REGISTER_APIC_BASE,
+                        value: hv_register_value { reg64: 0 },
+                        ..Default::default()
+                    }];
+                    if self.vcpu_fd.get_reg(&mut apic_base_reg).is_ok() {
+                        let cur = unsafe { apic_base_reg[0].value.reg64 };
+                        if cur & (1 << 11) == 0 {
+                            let _ = self.vcpu_fd.set_reg(&[hv_register_assoc {
+                                name: hv_register_name_HV_X64_REGISTER_APIC_BASE,
+                                value: hv_register_value {
+                                    reg64: Self::APIC_BASE_DEFAULT,
+                                },
+                                ..Default::default()
+                            }]);
+                        }
+                    }
+                    // Re-initialize LAPIC SVR (may have been zeroed when
+                    // guest disabled the APIC globally)
+                    if let Ok(mut lapic) = self.vcpu_fd.get_lapic() {
+                        let regs = lapic_regs_as_u8(&lapic.regs);
+                        let svr = super::super::x86_64::hw_interrupts::read_lapic_u32(regs, 0xF0);
+                        if svr & 0x100 == 0 {
+                            let regs_mut = lapic_regs_as_u8_mut(&mut lapic.regs);
+                            super::super::x86_64::hw_interrupts::write_lapic_u32(
+                                regs_mut, 0xF0, 0x1FF,
+                            );
+                            super::super::x86_64::hw_interrupts::write_lapic_u32(regs_mut, 0x80, 0); // TPR
+                            let _ = self.vcpu_fd.set_lapic(&lapic);
+                        }
+                    }
+
+                    let vm_fd = self.vm_fd.clone();
+                    let vector = super::super::x86_64::hw_interrupts::TIMER_VECTOR;
+                    let stop = self.timer_stop.clone();
+                    let period = std::time::Duration::from_micros(period_us as u64);
+                    self.timer_thread = Some(std::thread::spawn(move || {
+                        while !stop.load(Ordering::Relaxed) {
+                            std::thread::sleep(period);
+                            if stop.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let _ = vm_fd.request_virtual_interrupt(&InterruptRequest {
+                                interrupt_type: hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED,
+                                apic_id: 0,
+                                vector,
+                                level_triggered: false,
+                                logical_destination_mode: false,
+                                long_mode: false,
+                            });
+                        }
+                    }));
+                }
+            }
+            return true;
+        }
+        let timer_active = self.timer_thread.is_some();
+        super::super::x86_64::hw_interrupts::handle_common_io_out(port, data, timer_active, || {
+            self.do_lapic_eoi()
+        })
+    }
+}
+
+#[cfg(feature = "hw-interrupts")]
+impl Drop for MshvVm {
+    fn drop(&mut self) {
+        self.timer_stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.timer_thread.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "hw-interrupts")]
+mod hw_interrupt_tests {
+    use super::*;
+
+    #[test]
+    fn lapic_regs_conversion_roundtrip() {
+        let mut regs = [0i8; 1024];
+        let bytes = lapic_regs_as_u8_mut(&mut regs);
+        super::super::super::x86_64::hw_interrupts::write_lapic_u32(bytes, 0xF0, 0xDEAD_BEEF);
+        let bytes = lapic_regs_as_u8(&regs);
+        assert_eq!(
+            super::super::super::x86_64::hw_interrupts::read_lapic_u32(bytes, 0xF0),
+            0xDEAD_BEEF
+        );
+    }
+
+    #[test]
+    fn apic_base_default_value() {
+        let base = MshvVm::APIC_BASE_DEFAULT;
+        assert_ne!(base & (1 << 8), 0, "BSP flag should be set");
+        assert_ne!(base & (1 << 11), 0, "global enable should be set");
+        assert_eq!(
+            base & 0xFFFFF000,
+            0xFEE00000,
+            "base address should be 0xFEE00000"
+        );
     }
 }

@@ -38,6 +38,10 @@ pub(crate) mod mshv;
 #[cfg(target_os = "windows")]
 pub(crate) mod whp;
 
+/// Shared x86-64 helpers for hardware interrupt support (MSHV and WHP)
+#[cfg(feature = "hw-interrupts")]
+pub(crate) mod x86_64;
+
 static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 
 /// Returns which type of hypervisor is available, if any
@@ -141,10 +145,10 @@ pub(crate) enum VmExit {
     Unknown(String),
     /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
     #[cfg_attr(
-        target_os = "windows",
+        any(target_os = "windows", feature = "hw-interrupts"),
         expect(
             dead_code,
-            reason = "Retry() is never constructed on Windows, but it is still matched on (which dead_code lint ignores)"
+            reason = "Retry() is never constructed on Windows or with hw-interrupts (EAGAIN causes continue instead)"
         )
     )]
     Retry(),
