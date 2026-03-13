@@ -315,6 +315,11 @@ clippy target=default-target: (witguest-wit)
 clippyw target=default-target: (witguest-wit)
     {{ cargo-cmd }} clippy --all-targets --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
 
+# Cross-check for linux from a windows host using clippy (no linking needed).
+# Only checks lib targets to avoid dev-dependencies (criterion->alloca) that need a C cross-compiler.
+clippyl target=default-target:
+    {{ cargo-cmd }} clippy --lib --all-features --target x86_64-unknown-linux-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
+
 clippy-guests target=default-target: (witguest-wit) (ensure-cargo-hyperlight)
     cd src/tests/rust_guests/simpleguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
     cd src/tests/rust_guests/witguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings
