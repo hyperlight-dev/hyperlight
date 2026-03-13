@@ -30,7 +30,7 @@ fn panic(_info: &PanicInfo) -> ! {
 }
 
 fn halt() {
-    // OutBAction::Halt = 108; using raw constant to avoid pulling in
+    // VmAction::Halt = 108; using raw constant to avoid pulling in
     // anyhow (via hyperlight_common's TryFrom impl) which requires alloc.
     unsafe {
         asm!(

@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! Shared helpers for the `hw-interrupts` feature, used by MSHV and WHP
-//! backends.  KVM uses an in-kernel IRQ chip so it handles most of
-//! this transparently.
+//! Shared x86-64 helpers for the `hw-interrupts` feature, used by
+//! MSHV and WHP backends.  KVM uses an in-kernel IRQ chip so it
+//! handles most of this transparently.
 
 /// Hardcoded timer interrupt vector.  The guest remaps IRQ0 to
 /// vector 0x20 via PIC ICW2, so we use that same vector directly

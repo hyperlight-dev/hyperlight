@@ -22,7 +22,7 @@ use std::sync::LazyLock;
 #[cfg(feature = "hw-interrupts")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use hyperlight_common::outb::OutBAction;
+use hyperlight_common::outb::VmAction;
 #[cfg(feature = "hw-interrupts")]
 use mshv_bindings::LapicState;
 #[cfg(gdb)]
@@ -128,6 +128,8 @@ impl MshvVm {
         {
             pr.pt_flags = 1u64; // LAPIC
         }
+        // It's important to use create_vm_with_args() (not create_vm()),
+        // because create_vm() sets up a SynIC partition by default.
         let vm_fd = mshv
             .create_vm_with_args(&pr)
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
@@ -156,7 +158,7 @@ impl MshvVm {
         // interrupts can be delivered (request_virtual_interrupt would fail).
         #[cfg(feature = "hw-interrupts")]
         {
-            use super::hw_interrupts::init_lapic_registers;
+            use super::super::x86_64::hw_interrupts::init_lapic_registers;
 
             let mut lapic: LapicState = vcpu_fd
                 .get_lapic()
@@ -261,9 +263,9 @@ impl VirtualMachine for MshvVm {
                                 }])
                                 .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
 
-                            // OutBAction::Halt always means "I'm done", regardless
+                            // VmAction::Halt always means "I'm done", regardless
                             // of whether a timer is active.
-                            if is_write && port_number == OutBAction::Halt as u16 {
+                            if is_write && port_number == VmAction::Halt as u16 {
                                 // Stop the timer thread before returning.
                                 #[cfg(feature = "hw-interrupts")]
                                 {
@@ -283,7 +285,7 @@ impl VirtualMachine for MshvVm {
                                         continue;
                                     }
                                 } else if let Some(val) =
-                                    super::hw_interrupts::handle_io_in(port_number)
+                                    super::super::x86_64::hw_interrupts::handle_io_in(port_number)
                                 {
                                     self.vcpu_fd
                                         .set_reg(&[hv_register_assoc {
@@ -629,13 +631,13 @@ impl MshvVm {
     /// acknowledges via PIC.
     fn do_lapic_eoi(&self) {
         if let Ok(mut lapic) = self.vcpu_fd.get_lapic() {
-            super::hw_interrupts::lapic_eoi(lapic_regs_as_u8_mut(&mut lapic.regs));
+            super::super::x86_64::hw_interrupts::lapic_eoi(lapic_regs_as_u8_mut(&mut lapic.regs));
             let _ = self.vcpu_fd.set_lapic(&lapic);
         }
     }
 
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
-        if port == OutBAction::PvTimerConfig as u16 {
+        if port == VmAction::PvTimerConfig as u16 {
             if data.len() >= 4 {
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 if period_us == 0 {
@@ -677,17 +679,19 @@ impl MshvVm {
                     // guest disabled the APIC globally)
                     if let Ok(mut lapic) = self.vcpu_fd.get_lapic() {
                         let regs = lapic_regs_as_u8(&lapic.regs);
-                        let svr = super::hw_interrupts::read_lapic_u32(regs, 0xF0);
+                        let svr = super::super::x86_64::hw_interrupts::read_lapic_u32(regs, 0xF0);
                         if svr & 0x100 == 0 {
                             let regs_mut = lapic_regs_as_u8_mut(&mut lapic.regs);
-                            super::hw_interrupts::write_lapic_u32(regs_mut, 0xF0, 0x1FF);
-                            super::hw_interrupts::write_lapic_u32(regs_mut, 0x80, 0); // TPR
+                            super::super::x86_64::hw_interrupts::write_lapic_u32(
+                                regs_mut, 0xF0, 0x1FF,
+                            );
+                            super::super::x86_64::hw_interrupts::write_lapic_u32(regs_mut, 0x80, 0); // TPR
                             let _ = self.vcpu_fd.set_lapic(&lapic);
                         }
                     }
 
                     let vm_fd = self.vm_fd.clone();
-                    let vector = super::hw_interrupts::TIMER_VECTOR;
+                    let vector = super::super::x86_64::hw_interrupts::TIMER_VECTOR;
                     let stop = self.timer_stop.clone();
                     let period = std::time::Duration::from_micros(period_us as u64);
                     self.timer_thread = Some(std::thread::spawn(move || {
@@ -711,7 +715,9 @@ impl MshvVm {
             return true;
         }
         let timer_active = self.timer_thread.is_some();
-        super::hw_interrupts::handle_common_io_out(port, data, timer_active, || self.do_lapic_eoi())
+        super::super::x86_64::hw_interrupts::handle_common_io_out(port, data, timer_active, || {
+            self.do_lapic_eoi()
+        })
     }
 }
 
@@ -734,10 +740,10 @@ mod hw_interrupt_tests {
     fn lapic_regs_conversion_roundtrip() {
         let mut regs = [0i8; 1024];
         let bytes = lapic_regs_as_u8_mut(&mut regs);
-        super::super::hw_interrupts::write_lapic_u32(bytes, 0xF0, 0xDEAD_BEEF);
+        super::super::super::x86_64::hw_interrupts::write_lapic_u32(bytes, 0xF0, 0xDEAD_BEEF);
         let bytes = lapic_regs_as_u8(&regs);
         assert_eq!(
-            super::super::hw_interrupts::read_lapic_u32(bytes, 0xF0),
+            super::super::super::x86_64::hw_interrupts::read_lapic_u32(bytes, 0xF0),
             0xDEAD_BEEF
         );
     }

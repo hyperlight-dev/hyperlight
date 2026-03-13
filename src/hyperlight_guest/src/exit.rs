@@ -18,34 +18,6 @@ use core::arch::asm;
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::outb::OutBAction;
-use tracing::instrument;
-
-/// Signal successful completion of the guest's work and return control
-/// to the host.  This replaces the previous `hlt`-based exit: under the
-/// `hw-interrupts` feature, `hlt` becomes a wait-for-interrupt (the
-/// in-kernel IRQ chip wakes the vCPU), so we use an explicit IO-port
-/// write (port 108) to trigger a VM exit that the host treats as a
-/// clean shutdown.
-///
-/// This function never returns — the host does not re-enter the guest
-/// after seeing the Halt port.
-#[inline(never)]
-#[instrument(skip_all, level = "Trace")]
-pub fn halt() {
-    #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]
-    {
-        // Send data before halting
-        // If there is no data, this doesn't do anything
-        // The reason we do this here instead of in `hlt` asm function
-        // is to avoid allocating before halting, which leaks memory
-        // because the guest is not expected to resume execution after halting.
-        hyperlight_guest_tracing::flush();
-    }
-
-    unsafe {
-        out32(OutBAction::Halt as u16, 0);
-    }
-}
 
 /// Exits the VM with an Abort OUT action and code 0.
 #[unsafe(no_mangle)]

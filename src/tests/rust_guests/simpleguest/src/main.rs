@@ -542,12 +542,12 @@ struct IdtPtr {
 /// 1. Initializes the PIC (remaps IRQ0 to vector 0x20)
 /// 2. Installs an IDT entry for vector 0x20 pointing to `_timer_irq_handler`
 /// 3. Programs PIT channel 0 as a rate generator at the requested period
-/// 4. Arms the PV timer by writing the period to OutBAction::PvTimerConfig port (for MSHV/WHP)
+/// 4. Arms the PV timer by writing the period to VmAction::PvTimerConfig port (for MSHV/WHP)
 /// 5. Enables interrupts (STI) and busy-waits for timer delivery
 /// 6. Disables interrupts (CLI) and returns the interrupt count
 ///
 /// Parameters:
-/// - `period_us`: timer period in microseconds (written to OutBAction::PvTimerConfig port)
+/// - `period_us`: timer period in microseconds (written to VmAction::PvTimerConfig port)
 /// - `max_spin`:  maximum busy-wait iterations before giving up
 ///
 /// Returns the number of timer interrupts received.
@@ -613,10 +613,13 @@ fn test_timer_interrupts(period_us: i32, max_spin: i32) -> i32 {
         core::ptr::write_volatile(entry_ptr.add(12) as *mut u32, 0);
     }
 
+    // Ensure the IDT writes are visible before enabling interrupts.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
     // 3) Program PIT channel 0 as rate generator (mode 2).
     //    Divisor = period_us * 1_193_182 / 1_000_000 (PIT oscillator is 1.193182 MHz).
     //    On KVM the in-kernel PIT handles these IO writes directly.
-    //    On MSHV/WHP these ports are silently absorbed (timer is set via OutBAction::PvTimerConfig).
+    //    On MSHV/WHP these ports are silently absorbed (timer is set via VmAction::PvTimerConfig).
     if period_us <= 0 {
         return -1; // invalid period
     }
@@ -630,11 +633,11 @@ fn test_timer_interrupts(period_us: i32, max_spin: i32) -> i32 {
         core::arch::asm!("out 0x40, al", in("al") (divisor >> 8) as u8, options(nomem, nostack));
     }
 
-    // 4) Arm timer: write period_us to OutBAction::PvTimerConfig port
+    // 4) Arm timer: write period_us to VmAction::PvTimerConfig port
     unsafe {
         core::arch::asm!(
             "out dx, eax",
-            in("dx") hyperlight_common::outb::OutBAction::PvTimerConfig as u16,
+            in("dx") hyperlight_common::outb::VmAction::PvTimerConfig as u16,
             in("eax") period_us as u32,
             options(nomem, nostack, preserves_flags)
         );
@@ -989,7 +992,7 @@ fn corrupt_output_size_prefix() -> i32 {
             "out dx, eax",
             "cli",
             "hlt",
-            in("dx") hyperlight_common::outb::OutBAction::Halt as u16,
+            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
             in("eax") 0u32,
             options(noreturn),
         );
@@ -1012,7 +1015,7 @@ fn corrupt_output_back_pointer() -> i32 {
             "out dx, eax",
             "cli",
             "hlt",
-            in("dx") hyperlight_common::outb::OutBAction::Halt as u16,
+            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
             in("eax") 0u32,
             options(noreturn),
         );

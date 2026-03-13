@@ -20,7 +20,7 @@ use std::sync::LazyLock;
 #[cfg(feature = "hw-interrupts")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use hyperlight_common::outb::OutBAction;
+use hyperlight_common::outb::VmAction;
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
 use kvm_bindings::{
@@ -135,7 +135,7 @@ impl KvmVm {
         //
         // Instead of creating an in-kernel PIT (create_pit2), we use a
         // host-side timer thread + irqfd to inject IRQ0 at the rate
-        // requested by the guest via OutBAction::PvTimerConfig (port 107).
+        // requested by the guest via VmAction::PvTimerConfig (port 107).
         // This eliminates the in-kernel PIT device. Guest PIT port writes
         // (0x40, 0x43) become no-ops handled in the run loop.
         #[cfg(feature = "hw-interrupts")]
@@ -201,7 +201,7 @@ impl KvmVm {
     /// When hw-interrupts is enabled, the in-kernel PIC + LAPIC deliver
     /// interrupts triggered by the host-side timer thread via irqfd.
     /// There is no in-kernel PIT; guest PIT port writes are no-ops.
-    /// The guest signals "I'm done" by writing to OutBAction::Halt
+    /// The guest signals "I'm done" by writing to VmAction::Halt
     /// (an IO port exit) instead of using HLT, because the in-kernel
     /// LAPIC absorbs HLT (never returns VcpuExit::Hlt to userspace).
     #[cfg(feature = "hw-interrupts")]
@@ -214,7 +214,7 @@ impl KvmVm {
                     continue;
                 }
                 Ok(VcpuExit::IoOut(port, data)) => {
-                    if port == OutBAction::Halt as u16 {
+                    if port == VmAction::Halt as u16 {
                         // Stop the timer thread before returning.
                         self.timer_stop.store(true, Ordering::Relaxed);
                         if let Some(h) = self.timer_thread.take() {
@@ -222,39 +222,12 @@ impl KvmVm {
                         }
                         return Ok(VmExit::Halt());
                     }
-                    if port == OutBAction::PvTimerConfig as u16 {
-                        // The guest is configuring the timer period.
-                        // Extract the period in microseconds (LE u32).
-                        if let Some(bytes4) = data.get(..4)
-                            && let Ok(bytes) = bytes4.try_into()
-                        {
-                            let period_us = u32::from_le_bytes(bytes) as u64;
-                            if period_us == 0 {
-                                // Stop existing timer if any.
-                                if let Some(thread) = self.timer_thread.take() {
-                                    self.timer_stop.store(true, Ordering::Relaxed);
-                                    let _ = thread.join();
-                                }
-                            } else if self.timer_thread.is_none() {
-                                // Reset the stop flag — a previous halt (e.g. the
-                                // init halt during evolve()) may have set it.
-                                self.timer_stop.store(false, Ordering::Relaxed);
-                                let eventfd = self.timer_irq_eventfd.try_clone().map_err(|e| {
-                                    RunVcpuError::Unknown(HypervisorError::KvmError(e.into()))
-                                })?;
-                                let stop = self.timer_stop.clone();
-                                let period = std::time::Duration::from_micros(period_us);
-                                self.timer_thread = Some(std::thread::spawn(move || {
-                                    while !stop.load(Ordering::Relaxed) {
-                                        std::thread::sleep(period);
-                                        if stop.load(Ordering::Relaxed) {
-                                            break;
-                                        }
-                                        let _ = eventfd.write(1);
-                                    }
-                                }));
-                            }
-                        }
+                    if port == VmAction::PvTimerConfig as u16 {
+                        let data_copy: [u8; 4] = data
+                            .get(..4)
+                            .and_then(|s| s.try_into().ok())
+                            .unwrap_or([0; 4]);
+                        self.handle_pv_timer_config(&data_copy)?;
                         continue;
                     }
                     // PIT ports (0x40-0x43): no in-kernel PIT, so these
@@ -288,12 +261,44 @@ impl KvmVm {
         }
     }
 
+    #[cfg(feature = "hw-interrupts")]
+    fn handle_pv_timer_config(&mut self, data: &[u8; 4]) -> std::result::Result<(), RunVcpuError> {
+        let period_us = u32::from_le_bytes(*data) as u64;
+        if period_us == 0 {
+            // Stop existing timer if any.
+            if let Some(thread) = self.timer_thread.take() {
+                self.timer_stop.store(true, Ordering::Relaxed);
+                let _ = thread.join();
+            }
+        } else if self.timer_thread.is_none() {
+            // Reset the stop flag — a previous halt (e.g. the
+            // init halt during evolve()) may have set it.
+            self.timer_stop.store(false, Ordering::Relaxed);
+            let eventfd = self
+                .timer_irq_eventfd
+                .try_clone()
+                .map_err(|e| RunVcpuError::Unknown(HypervisorError::KvmError(e.into())))?;
+            let stop = self.timer_stop.clone();
+            let period = std::time::Duration::from_micros(period_us);
+            self.timer_thread = Some(std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(period);
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let _ = eventfd.write(1);
+                }
+            }));
+        }
+        Ok(())
+    }
+
     /// Run the vCPU once without hardware interrupt support (default path).
     #[cfg(not(feature = "hw-interrupts"))]
     fn run_vcpu_default(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
         match self.vcpu_fd.run() {
             Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
-            Ok(VcpuExit::IoOut(port, _)) if port == OutBAction::Halt as u16 => Ok(VmExit::Halt()),
+            Ok(VcpuExit::IoOut(port, _)) if port == VmAction::Halt as u16 => Ok(VmExit::Halt()),
             Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
             Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
             Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
@@ -609,8 +614,8 @@ mod hw_interrupt_tests {
 
     #[test]
     fn halt_port_is_not_standard_device() {
-        // OutBAction::Halt port must not overlap in-kernel PIC/PIT/speaker ports
-        const HALT: u16 = OutBAction::Halt as u16;
+        // VmAction::Halt port must not overlap in-kernel PIC/PIT/speaker ports
+        const HALT: u16 = VmAction::Halt as u16;
         const _: () = assert!(HALT != 0x20 && HALT != 0x21);
         const _: () = assert!(HALT != 0xA0 && HALT != 0xA1);
         const _: () = assert!(HALT != 0x40 && HALT != 0x41 && HALT != 0x42 && HALT != 0x43);

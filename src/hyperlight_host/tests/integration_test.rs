@@ -1849,12 +1849,12 @@ fn memory_region_types_are_publicly_accessible() {
     }
 }
 
-/// Test that hardware timer interrupts are delivered to the guest via OutBAction::PvTimerConfig port.
+/// Test that hardware timer interrupts are delivered to the guest via VmAction::PvTimerConfig port.
 ///
 /// The guest function `TestTimerInterrupts`:
 ///  1. Initializes the PIC (IRQ0 -> vector 0x20)
 ///  2. Installs an IDT entry for vector 0x20
-///  3. Arms the timer via OutBAction::PvTimerConfig port
+///  3. Arms the timer via VmAction::PvTimerConfig port
 ///  4. Enables interrupts and busy-waits
 ///  5. Returns the number of timer interrupts received
 ///

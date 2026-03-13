@@ -20,7 +20,7 @@ use std::sync::Arc;
 #[cfg(feature = "hw-interrupts")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use hyperlight_common::outb::OutBAction;
+use hyperlight_common::outb::VmAction;
 #[cfg(feature = "trace_guest")]
 use tracing::Span;
 #[cfg(feature = "trace_guest")]
@@ -194,7 +194,13 @@ impl WhpVm {
             }
         };
 
-        let vm = WhpVm {
+        let mgr = get_surrogate_process_manager()
+            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+        let surrogate_process = mgr
+            .get_surrogate_process()
+            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+
+        Ok(WhpVm {
             partition,
             surrogate_process,
             file_mappings: Vec::new(),
@@ -202,9 +208,7 @@ impl WhpVm {
             timer_stop: None,
             #[cfg(feature = "hw-interrupts")]
             timer_thread: None,
-        };
-
-        Ok(vm)
+        })
     }
 
     /// Maximum size for the interrupt controller state blob.
@@ -241,7 +245,7 @@ impl WhpVm {
             ));
         }
 
-        super::hw_interrupts::init_lapic_registers(&mut state);
+        super::x86_64::hw_interrupts::init_lapic_registers(&mut state);
 
         unsafe {
             WHvSetVirtualProcessorInterruptControllerState2(
@@ -423,9 +427,9 @@ impl VirtualMachine for WhpVm {
                     )])
                     .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
 
-                    // OutBAction::Halt always means "I'm done", regardless
+                    // VmAction::Halt always means "I'm done", regardless
                     // of whether a timer is active.
-                    if is_write && port == OutBAction::Halt as u16 {
+                    if is_write && port == VmAction::Halt as u16 {
                         return Ok(VmExit::Halt());
                     }
 
@@ -436,7 +440,7 @@ impl VirtualMachine for WhpVm {
                             if self.handle_hw_io_out(port, &data) {
                                 continue;
                             }
-                        } else if let Some(val) = super::hw_interrupts::handle_io_in(port) {
+                        } else if let Some(val) = super::x86_64::hw_interrupts::handle_io_in(port) {
                             self.set_registers(&[(
                                 WHvX64RegisterRax,
                                 Align16(WHV_REGISTER_VALUE { Reg64: val }),
@@ -1056,7 +1060,7 @@ impl WhpVm {
     /// delivers through the LAPIC and the guest only acknowledges via PIC.
     fn do_lapic_eoi(&self) {
         if let Ok(mut state) = self.get_lapic_state() {
-            super::hw_interrupts::lapic_eoi(&mut state);
+            super::x86_64::hw_interrupts::lapic_eoi(&mut state);
             let _ = self.set_lapic_state(&state);
         }
     }
@@ -1072,7 +1076,7 @@ impl WhpVm {
     }
 
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
-        if port == OutBAction::PvTimerConfig as u16 {
+        if port == VmAction::PvTimerConfig as u16 {
             if data.len() >= 4 {
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
 
@@ -1081,7 +1085,7 @@ impl WhpVm {
 
                 if period_us > 0 {
                     let partition_raw = self.partition.0;
-                    let vector = super::hw_interrupts::TIMER_VECTOR;
+                    let vector = super::x86_64::hw_interrupts::TIMER_VECTOR;
                     let stop = Arc::new(AtomicBool::new(false));
                     let stop_clone = stop.clone();
                     let period = std::time::Duration::from_micros(period_us as u64);
@@ -1115,7 +1119,9 @@ impl WhpVm {
             return true;
         }
         let timer_active = self.timer_thread.is_some();
-        super::hw_interrupts::handle_common_io_out(port, data, timer_active, || self.do_lapic_eoi())
+        super::x86_64::hw_interrupts::handle_common_io_out(port, data, timer_active, || {
+            self.do_lapic_eoi()
+        })
     }
 }
 
@@ -1186,7 +1192,7 @@ mod hw_interrupt_tests {
 
     #[test]
     fn lapic_register_helpers_delegate() {
-        use crate::hypervisor::virtual_machine::hw_interrupts;
+        use crate::hypervisor::virtual_machine::x86_64::hw_interrupts;
         let mut state = vec![0u8; 1024];
         hw_interrupts::write_lapic_u32(&mut state, 0xF0, 0x1FF);
         assert_eq!(hw_interrupts::read_lapic_u32(&state, 0xF0), 0x1FF);

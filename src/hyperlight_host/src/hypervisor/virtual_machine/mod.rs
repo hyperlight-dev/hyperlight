@@ -38,9 +38,9 @@ pub(crate) mod mshv;
 #[cfg(target_os = "windows")]
 pub(crate) mod whp;
 
-/// Shared helpers for hardware interrupt support (MSHV and WHP)
+/// Shared x86-64 helpers for hardware interrupt support (MSHV and WHP)
 #[cfg(feature = "hw-interrupts")]
-pub(crate) mod hw_interrupts;
+pub(crate) mod x86_64;
 
 static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 
