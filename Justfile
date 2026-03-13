@@ -451,6 +451,57 @@ fuzz-trace-timed max_time fuzz-target="fuzz_guest_trace":
 build-trace-fuzzers:
     cargo +nightly fuzz build fuzz_guest_trace --features trace
 
+####################
+### COVERAGE #######
+####################
+
+# install cargo-llvm-cov if not already installed and ensure llvm-tools component is available
+ensure-cargo-llvm-cov:
+    command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install cargo-llvm-cov
+    rustup component add llvm-tools 2>/dev/null || true
+
+# host-side packages to collect coverage for (guest/no_std crates are excluded because they
+# define #[panic_handler] and cannot be compiled for the host target under coverage instrumentation)
+coverage-packages := "-p hyperlight-common -p hyperlight-host -p hyperlight-testing -p hyperlight-component-util -p hyperlight-component-macro"
+
+# generate a text coverage summary to stdout (run `just guests` first to build guest binaries)
+coverage: ensure-cargo-llvm-cov
+    cargo llvm-cov {{ coverage-packages }}
+
+# generate an HTML coverage report to target/coverage/html/ (run `just guests` first to build guest binaries)
+coverage-html: ensure-cargo-llvm-cov
+    cargo llvm-cov {{ coverage-packages }} --html --output-dir target/coverage/html
+
+# generate LCOV coverage output to target/coverage/lcov.info (run `just guests` first to build guest binaries)
+coverage-lcov: ensure-cargo-llvm-cov
+    mkdir -p target/coverage
+    cargo llvm-cov {{ coverage-packages }} --lcov --output-path target/coverage/lcov.info
+
+# generate coverage for CI: mirrors test-like-ci by running all feature combinations,
+# accumulating profdata across runs, then generating LCOV + HTML + text reports.
+# (run `just guests` first to build guest binaries)
+coverage-ci hypervisor="kvm": ensure-cargo-llvm-cov
+    mkdir -p target/coverage
+    cargo llvm-cov clean --workspace
+
+    @# Phase 1: default features (all drivers)
+    cargo llvm-cov {{ coverage-packages }} --no-report
+
+    @# Phase 2: single driver + build-metadata (matches test-like-ci single-driver pass)
+    cargo llvm-cov {{ coverage-packages }} --no-default-features --features build-metadata,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --no-report
+
+    @# Phase 3: crashdump feature tests
+    cargo llvm-cov {{ coverage-packages }} --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --no-report -- test_crashdump
+
+    @# Phase 4: tracing feature tests (host-side only; hyperlight-guest-tracing is no_std)
+    cargo llvm-cov -p hyperlight-common --no-default-features --features trace_guest --no-report
+    cargo llvm-cov -p hyperlight-host --no-default-features --features trace_guest,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --no-report
+
+    @# Generate merged reports from all accumulated profile data
+    cargo llvm-cov report --html --output-dir target/coverage/html
+    cargo llvm-cov report --lcov --output-path target/coverage/lcov.info
+    cargo llvm-cov report | tee target/coverage/summary.txt
+
 ###################
 ### FLATBUFFERS ###
 ###################
