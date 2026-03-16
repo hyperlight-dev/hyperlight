@@ -135,6 +135,12 @@ pub(crate) enum VmExit {
     MmioRead(u64),
     /// The vCPU tried to write to the given (unmapped) addr
     MmioWrite(u64),
+    /// The vCPU tried to read from the given MSR
+    #[cfg(all(kvm, target_arch = "x86_64"))]
+    MsrRead(u32),
+    /// The vCPU tried to write to the given MSR with the given value
+    #[cfg(all(kvm, target_arch = "x86_64"))]
+    MsrWrite { msr_index: u32, value: u64 },
     /// The vCPU execution has been cancelled
     Cancelled(),
     /// The vCPU has exited for a reason that is not handled by Hyperlight
@@ -179,6 +185,11 @@ pub enum CreateVmError {
     HypervisorNotAvailable(HypervisorError),
     #[error("Initialize VM failed: {0}")]
     InitializeVm(HypervisorError),
+    #[cfg(all(kvm, target_arch = "x86_64"))]
+    #[error(
+        "KVM MSR filtering not supported (requires KVM_CAP_X86_USER_SPACE_MSR and KVM_CAP_X86_MSR_FILTER)"
+    )]
+    MsrFilterNotSupported,
     #[error("Set Partition Property failed: {0}")]
     SetPartitionProperty(HypervisorError),
     #[cfg(target_os = "windows")]

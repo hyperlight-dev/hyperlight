@@ -165,6 +165,16 @@ impl DispatchGuestCallError {
                 region_flags,
             }) => HyperlightError::MemoryAccessViolation(addr, access_type, region_flags),
 
+            #[cfg(all(kvm, target_arch = "x86_64"))]
+            DispatchGuestCallError::Run(RunVmError::MsrReadViolation(msr_index)) => {
+                HyperlightError::MsrReadViolation(msr_index)
+            }
+
+            #[cfg(all(kvm, target_arch = "x86_64"))]
+            DispatchGuestCallError::Run(RunVmError::MsrWriteViolation { msr_index, value }) => {
+                HyperlightError::MsrWriteViolation(msr_index, value)
+            }
+
             // Leave others as is
             other => HyperlightVmError::DispatchGuestCall(other).into(),
         };
@@ -215,6 +225,12 @@ pub enum RunVmError {
     MmioReadUnmapped(u64),
     #[error("MMIO WRITE access to unmapped address {0:#x}")]
     MmioWriteUnmapped(u64),
+    #[cfg(all(kvm, target_arch = "x86_64"))]
+    #[error("Guest attempted to read from MSR {0:#x}")]
+    MsrReadViolation(u32),
+    #[cfg(all(kvm, target_arch = "x86_64"))]
+    #[error("Guest attempted to write {value:#x} to MSR {msr_index:#x}")]
+    MsrWriteViolation { msr_index: u32, value: u64 },
     #[error("vCPU run failed: {0}")]
     RunVcpu(#[from] RunVcpuError),
     #[error("Unexpected VM exit: {0}")]
@@ -657,6 +673,14 @@ impl HyperlightVm {
                             break Err(RunVmError::MmioWriteUnmapped(addr));
                         }
                     }
+                }
+                #[cfg(all(kvm, target_arch = "x86_64"))]
+                Ok(VmExit::MsrRead(msr_index)) => {
+                    break Err(RunVmError::MsrReadViolation(msr_index));
+                }
+                #[cfg(all(kvm, target_arch = "x86_64"))]
+                Ok(VmExit::MsrWrite { msr_index, value }) => {
+                    break Err(RunVmError::MsrWriteViolation { msr_index, value });
                 }
                 Ok(VmExit::Cancelled()) => {
                     // If cancellation was not requested for this specific guest function call,
