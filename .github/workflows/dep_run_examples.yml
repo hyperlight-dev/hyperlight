@@ -40,8 +40,8 @@ jobs:
     timeout-minutes: 15
     runs-on: ${{ fromJson(
         format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
-          (inputs.hypervisor == 'hyperv' || inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
-          inputs.hypervisor == 'hyperv' && 'win2022' || inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
+          inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux', 
+          inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
           inputs.cpu)) }} 
     steps:
       - uses: actions/checkout@v6

@@ -45,7 +45,7 @@ jobs:
   build-rust-windows:
     # see https://github.com/orgs/community/discussions/26286#discussioncomment-3251208 for why we need to check the ref
     if: ${{ contains(github.ref, 'refs/heads/release/') }} ||  ${{ github.ref=='refs/heads/main' }}
-    runs-on: windows-2022
+    runs-on: windows-2025
     needs: [release-blocker-check]
 
     steps:
@@ -75,7 +75,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
+        hypervisor: ['hyperv-ws2025', mshv3, kvm]
         cpu: [amd, intel]
     uses: ./.github/workflows/dep_benchmarks.yml
     secrets: inherit
@@ -148,9 +148,7 @@ jobs:
 
       - name: Archive benchmarks
         run: |
-          # windows (hyperv = Server 2022, hyperv-ws2025 = Server 2025)
-          tar -zcvf benchmarks_Windows_hyperv_amd.tar.gz benchmarks_Windows_hyperv_amd
-          tar -zcvf benchmarks_Windows_hyperv_intel.tar.gz benchmarks_Windows_hyperv_intel
+          # windows (server 2025)
           tar -zcvf benchmarks_Windows_hyperv-ws2025_amd.tar.gz benchmarks_Windows_hyperv-ws2025_amd
           tar -zcvf benchmarks_Windows_hyperv-ws2025_intel.tar.gz benchmarks_Windows_hyperv-ws2025_intel
           # kvm
@@ -176,8 +174,6 @@ jobs:
         if: ${{ contains(github.ref, 'refs/heads/release/') }}
         run: |
             gh release create v${{ env.HYPERLIGHT_VERSION }} -t "Release v${{ env.HYPERLIGHT_VERSION }}" --notes-file RELEASE_NOTES.md \
-            benchmarks_Windows_hyperv_amd.tar.gz \
-            benchmarks_Windows_hyperv_intel.tar.gz \
             benchmarks_Windows_hyperv-ws2025_amd.tar.gz \
             benchmarks_Windows_hyperv-ws2025_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \
@@ -194,8 +190,6 @@ jobs:
         run: |
             gh release delete dev-latest -y --cleanup-tag || true
             gh release create dev-latest -t "Latest prerelease from main branch" --notes-file RELEASE_NOTES.md --latest=false -p \
-            benchmarks_Windows_hyperv_amd.tar.gz \
-            benchmarks_Windows_hyperv_intel.tar.gz \
             benchmarks_Windows_hyperv-ws2025_amd.tar.gz \
             benchmarks_Windows_hyperv-ws2025_intel.tar.gz \
             benchmarks_Linux_kvm_amd.tar.gz \

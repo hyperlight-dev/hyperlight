@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
+        hypervisor: ['hyperv-ws2025', mshv3, kvm]
         cpu: [amd, intel]
     uses: ./.github/workflows/dep_benchmarks.yml
     secrets: inherit
