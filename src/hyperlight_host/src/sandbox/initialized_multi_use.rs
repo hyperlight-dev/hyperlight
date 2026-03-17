@@ -2011,4 +2011,76 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    #[cfg(all(kvm, target_arch = "x86_64"))]
+    fn test_msr_read_write_denied() {
+        use crate::hypervisor::virtual_machine::{HypervisorType, get_available_hypervisor};
+
+        match get_available_hypervisor() {
+            Some(HypervisorType::Kvm) => {}
+            _ => {
+                return;
+            }
+        }
+
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            None,
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+        let msr_index: u32 = 0xC000_0102; // IA32_KERNEL_GS_BASE
+
+        // RDMSR should be intercepted
+        let result = sbox.call::<u64>("ReadMSR", msr_index);
+        assert!(
+            matches!(
+                &result,
+                Err(HyperlightError::MsrReadViolation(idx)) if *idx == msr_index
+            ),
+            "RDMSR 0x{:X}: expected MsrReadViolation, got: {:?}",
+            msr_index,
+            result
+        );
+        assert!(sbox.poisoned());
+
+        // Restore before next call
+        sbox.restore(snapshot.clone()).unwrap();
+
+        // WRMSR should be intercepted
+        let result = sbox.call::<()>("WriteMSR", (msr_index, 0x5u64));
+        assert!(
+            matches!(
+                &result,
+                Err(HyperlightError::MsrWriteViolation(idx, _)) if *idx == msr_index
+            ),
+            "WRMSR 0x{:X}: expected MsrWriteViolation, got: {:?}",
+            msr_index,
+            result
+        );
+        assert!(sbox.poisoned());
+
+        // Also verify that MSR access works when explicitly allowed
+        let mut cfg = SandboxConfiguration::default();
+        unsafe { cfg.set_allow_msr(true) };
+
+        let mut sbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+            Some(cfg),
+        )
+        .unwrap()
+        .evolve()
+        .unwrap();
+
+        let msr_index: u32 = 0xC000_0102; // IA32_KERNEL_GS_BASE
+        let value: u64 = 0x5;
+
+        sbox.call::<()>("WriteMSR", (msr_index, value)).unwrap();
+        let read_value: u64 = sbox.call("ReadMSR", msr_index).unwrap();
+        assert_eq!(read_value, value);
+    }
 }

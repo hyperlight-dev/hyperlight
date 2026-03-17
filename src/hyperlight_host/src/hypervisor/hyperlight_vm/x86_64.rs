@@ -91,7 +91,14 @@ impl HyperlightVm {
 
         let vm: VmType = match get_available_hypervisor() {
             #[cfg(kvm)]
-            Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
+            Some(HypervisorType::Kvm) => {
+                let kvm_vm = KvmVm::new().map_err(VmError::CreateVm)?;
+                #[cfg(target_arch = "x86_64")]
+                if !config.get_allow_msr() {
+                    kvm_vm.enable_msr_filter().map_err(VmError::CreateVm)?;
+                }
+                Box::new(kvm_vm)
+            }
             #[cfg(mshv3)]
             Some(HypervisorType::Mshv) => Box::new(MshvVm::new().map_err(VmError::CreateVm)?),
             #[cfg(target_os = "windows")]

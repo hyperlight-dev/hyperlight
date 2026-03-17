@@ -19,10 +19,14 @@ use std::sync::LazyLock;
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
 use kvm_bindings::{
-    kvm_debugregs, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region, kvm_xsave,
+    kvm_debugregs, kvm_enable_cap, kvm_fpu, kvm_regs, kvm_sregs, kvm_userspace_memory_region,
+    kvm_xsave,
 };
 use kvm_ioctls::Cap::UserMemory;
-use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
+use kvm_ioctls::{
+    Cap, Kvm, MsrExitReason, MsrFilterDefaultAction, MsrFilterRange, MsrFilterRangeFlags, VcpuExit,
+    VcpuFd, VmFd,
+};
 use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -136,6 +140,44 @@ impl KvmVm {
             debug_regs: kvm_guest_debug::default(),
         })
     }
+
+    /// Enable MSR filtering: tell KVM to exit to userspace on filtered MSR
+    /// access, then install a deny-all filter so every RDMSR/WRMSR traps.
+    ///
+    /// Requires KVM_CAP_X86_USER_SPACE_MSR and KVM_CAP_X86_MSR_FILTER
+    pub(crate) fn enable_msr_filter(&self) -> std::result::Result<(), CreateVmError> {
+        let hv = KVM.as_ref().map_err(|e| e.clone())?;
+        if !hv.check_extension(Cap::X86UserSpaceMsr) || !hv.check_extension(Cap::X86MsrFilter) {
+            tracing::error!(
+                "KVM does not support KVM_CAP_X86_USER_SPACE_MSR or KVM_CAP_X86_MSR_FILTER."
+            );
+            return Err(CreateVmError::MsrFilterNotSupported);
+        }
+
+        let cap = kvm_enable_cap {
+            cap: Cap::X86UserSpaceMsr as u32,
+            args: [MsrExitReason::Filter.bits() as u64, 0, 0, 0],
+            ..Default::default()
+        };
+        self.vm_fd
+            .enable_cap(&cap)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+        // At least one range is required when using KVM_MSR_FILTER_DEFAULT_DENY.
+        let bitmap = [0u8; 1]; // 1 byte covers 8 MSRs, all bits 0 (deny)
+        self.vm_fd
+            .set_msr_filter(
+                MsrFilterDefaultAction::DENY,
+                &[MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: 0,
+                    msr_count: 1,
+                    bitmap: &bitmap,
+                }],
+            )
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        Ok(())
+    }
 }
 
 impl VirtualMachine for KvmVm {
@@ -176,6 +218,40 @@ impl VirtualMachine for KvmVm {
             Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
             Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
             Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
+            // KVM_EXIT_X86_RDMSR / KVM_EXIT_X86_WRMSR (KVM API §5, kvm_run structure):
+            //
+            //   The "index" field tells userspace which MSR the guest wants to
+            //   read/write.  If the request was unsuccessful, userspace indicates
+            //   that with a "1" in the "error" field.  "This will inject a #GP
+            //   into the guest when the VCPU is executed again."
+            //
+            //   "for KVM_EXIT_IO, KVM_EXIT_MMIO, [...] KVM_EXIT_X86_RDMSR and
+            //    KVM_EXIT_X86_WRMSR the corresponding operations are complete
+            //    (and guest state is consistent) only after userspace has
+            //    re-entered the kernel with KVM_RUN."
+            //
+            // We set error=1 and then re-run with `immediate_exit` to let KVM
+            // inject the #GP without executing further guest code. From the
+            // kvm_run docs: "[immediate_exit] is polled once when KVM_RUN
+            // starts; if non-zero, KVM_RUN exits immediately, returning
+            // -EINTR."
+            Ok(VcpuExit::X86Rdmsr(msr_exit)) => {
+                let msr_index = msr_exit.index;
+                *msr_exit.error = 1;
+                self.vcpu_fd.set_kvm_immediate_exit(1);
+                let _ = self.vcpu_fd.run();
+                self.vcpu_fd.set_kvm_immediate_exit(0);
+                Ok(VmExit::MsrRead(msr_index))
+            }
+            Ok(VcpuExit::X86Wrmsr(msr_exit)) => {
+                let msr_index = msr_exit.index;
+                let value = msr_exit.data;
+                *msr_exit.error = 1;
+                self.vcpu_fd.set_kvm_immediate_exit(1);
+                let _ = self.vcpu_fd.run();
+                self.vcpu_fd.set_kvm_immediate_exit(0);
+                Ok(VmExit::MsrWrite { msr_index, value })
+            }
             #[cfg(gdb)]
             Ok(VcpuExit::Debug(debug_exit)) => Ok(VmExit::Debug {
                 dr6: debug_exit.dr6,
