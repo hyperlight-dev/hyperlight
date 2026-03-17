@@ -400,19 +400,35 @@ fn emit_value_toplevel(s: &mut State, v: Option<u32>, id: Ident, vt: &Value) -> 
             }
         }
         Value::Flags(ns) => {
-            let (vs, toks) = gather_needed_vars(s, v, |_| {
+            let (vs, toks) = gather_needed_vars(s, v, |s| {
                 let ns = ns
                     .iter()
                     .map(|n| {
                         let orig_name = n.name;
                         let id = kebab_to_var(orig_name);
-                        quote! { pub #id: bool }
+                        let derives = if s.is_wasmtime_guest {
+                            quote! { #[component(name = #orig_name)] }
+                        } else {
+                            TokenStream::new()
+                        };
+                        quote! { #derives pub #id: bool }
                     })
                     .collect::<Vec<_>>();
                 quote! { #(#ns),* }
             });
             let vs = emit_type_defn_var_list(s, vs);
+            let derives = if s.is_wasmtime_guest {
+                quote! {
+                    #[derive(::wasmtime::component::ComponentType)]
+                    #[derive(::wasmtime::component::Lift)]
+                    #[derive(::wasmtime::component::Lower)]
+                    #[component(flags)]
+                }
+            } else {
+                TokenStream::new()
+            };
             quote! {
+                #derives
                 #[derive(Debug, Clone, PartialEq)]
                 pub struct #id #vs { #toks }
             }
