@@ -202,6 +202,8 @@ pub enum RunVcpuError {
     IncrementRip(HypervisorError),
     #[error("Parse GPA access info failed")]
     ParseGpaAccessInfo,
+    #[error("Unexpected vCPU exit: {0}")]
+    UnexpectedExit(String),
     #[error("Unknown error: {0}")]
     Unknown(HypervisorError),
 }

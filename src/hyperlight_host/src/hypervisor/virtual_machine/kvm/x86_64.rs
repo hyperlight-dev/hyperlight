@@ -207,12 +207,9 @@ impl KvmVm {
         loop {
             match self.vcpu_fd.run() {
                 Ok(VcpuExit::Hlt) => {
-                    // The in-kernel LAPIC normally handles HLT internally.
-                    // If we somehow get here, just re-enter the guest.
-                    tracing::trace!(
-                        "KVM hw-interrupts: unexpected VcpuExit::Hlt, re-entering guest"
-                    );
-                    continue;
+                    return Err(RunVcpuError::UnexpectedExit(
+                        "KVM hw-interrupts: unexpected VcpuExit::Hlt".to_string(),
+                    ));
                 }
                 Ok(VcpuExit::IoOut(port, data)) => {
                     if port == VmAction::Halt as u16 {
