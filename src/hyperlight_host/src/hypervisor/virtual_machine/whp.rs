@@ -38,14 +38,14 @@ use crate::hypervisor::regs::{
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
+#[cfg(feature = "hw-interrupts")]
+use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 use crate::hypervisor::virtual_machine::{
     CreateVmError, HypervisorError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError,
     VirtualMachine, VmExit, XSAVE_MIN_SIZE,
 };
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
-#[cfg(feature = "hw-interrupts")]
-use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 

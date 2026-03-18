@@ -38,10 +38,10 @@ use crate::hypervisor::regs::{
 };
 #[cfg(feature = "hw-interrupts")]
 use crate::hypervisor::virtual_machine::HypervisorError;
-#[cfg(feature = "hw-interrupts")]
-use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 #[cfg(all(test, not(feature = "nanvix-unstable")))]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
+#[cfg(feature = "hw-interrupts")]
+use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 use crate::hypervisor::virtual_machine::{
     CreateVmError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VirtualMachine,
     VmExit,

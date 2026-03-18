@@ -53,13 +53,13 @@ use crate::hypervisor::regs::{
 };
 #[cfg(all(test, not(feature = "nanvix-unstable")))]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
+#[cfg(feature = "hw-interrupts")]
+use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 use crate::hypervisor::virtual_machine::{
     CreateVmError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VirtualMachine,
     VmExit, XSAVE_MIN_SIZE,
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
-#[cfg(feature = "hw-interrupts")]
-use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
