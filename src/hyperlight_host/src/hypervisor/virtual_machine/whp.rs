@@ -964,7 +964,7 @@ impl WhpVm {
 
     /// Enable LAPIC emulation on the given partition.
     fn enable_lapic_emulation(partition: WHV_PARTITION_HANDLE) -> Result<(), CreateVmError> {
-        let apic_mode: u32 = 1; // WHvX64LocalApicEmulationModeXApic
+        let apic_mode = WHvX64LocalApicEmulationModeXApic;
         unsafe {
             WHvSetPartitionProperty(
                 partition,
