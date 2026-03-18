@@ -89,17 +89,15 @@ jobs:
     # See: https://github.com/actions/runner/issues/2205
     if: ${{ !cancelled() && !failure() }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
-        cpu: [amd, intel]
+        pool: ['hld-win2022-intel', 'hld-win2025-intel', 'windows-2025-test-intel']
         config: [debug, release]
     uses: ./.github/workflows/dep_build_test.yml
     secrets: inherit
     with: 
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
-      hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
+      pool: ${{ matrix.pool }}
       config: ${{ matrix.config }}
 
   # Run examples - needs guest artifacts, runs in parallel with build-test
@@ -112,18 +110,35 @@ jobs:
     # See: https://github.com/actions/runner/issues/2205
     if: ${{ !cancelled() && !failure() }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        hypervisor: [hyperv, 'hyperv-ws2025', mshv3, kvm]
-        cpu: [amd, intel]
+        pool: ['hld-win2022-intel', 'hld-win2025-intel', 'windows-2025-test-intel']
         config: [debug, release]
     uses: ./.github/workflows/dep_run_examples.yml
     secrets: inherit
     with: 
       docs_only: ${{ needs.docs-pr.outputs.docs-only }}
-      hypervisor: ${{ matrix.hypervisor }}
-      cpu: ${{ matrix.cpu }}
+      pool: ${{ matrix.pool }}
       config: ${{ matrix.config }}
+
+  # Run benchmarks on existing and new win2025 pools to compare
+  benchmarks:
+    needs:
+      - docs-pr
+      - build-guests
+    if: ${{ !cancelled() && !failure() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pool: ['hld-win2022-intel', 'hld-win2025-intel', 'windows-2025-test-intel']
+    uses: ./.github/workflows/dep_benchmarks.yml
+    secrets: inherit
+    with:
+      docs_only: ${{ needs.docs-pr.outputs.docs-only }}
+      hypervisor: hyperv-ws2025
+      cpu: intel
+      pool: ${{ matrix.pool }}
+      retention_days: 5
 
   fuzzing:
     needs:
@@ -166,6 +181,7 @@ jobs:
       - code-checks
       - build-test
       - run-examples
+      - benchmarks
       - fuzzing
       - spelling
       - license-headers

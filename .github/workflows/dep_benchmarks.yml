@@ -56,6 +56,11 @@ on:
         required: false
         type: number
         default: 5
+      pool:
+        description: Override 1ES pool name (bypasses hypervisor/cpu pool logic)
+        required: false
+        type: string
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -72,7 +77,7 @@ jobs:
   run-benchmarks:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 30
-    runs-on: ${{ fromJson(
+    runs-on: ${{ inputs.pool != '' && fromJson(format('["self-hosted", "1ES.Pool={0}"]', inputs.pool)) || fromJson(
         format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
           (inputs.hypervisor == 'hyperv' || inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
           inputs.hypervisor == 'hyperv' && 'win2022' || inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
@@ -134,7 +139,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: benchmarks_${{ runner.os }}_${{ inputs.hypervisor }}_${{ inputs.cpu }}
+          name: benchmarks_${{ runner.os }}_${{ inputs.pool != '' && inputs.pool || format('{0}_{1}', inputs.hypervisor, inputs.cpu) }}
           path: ./target/criterion/
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}

@@ -10,16 +10,12 @@ on:
         required: false
         type: string
         default: "false"
-      hypervisor:
-        description: Hypervisor for this run (passed from caller matrix)
+      pool:
+        description: 1ES pool name for this run
         required: true
         type: string
       config:
         description: Build configuration for this run (passed from caller matrix)
-        required: true
-        type: string
-      cpu:
-        description: CPU architecture for the build (passed from caller matrix)
         required: true
         type: string
 
@@ -38,13 +34,27 @@ jobs:
   build-and-test:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 45
-    runs-on: ${{ fromJson(
-        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
-          (inputs.hypervisor == 'hyperv' || inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
-          inputs.hypervisor == 'hyperv' && 'win2022' || inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
-          inputs.cpu)) }} 
+    runs-on: ["self-hosted", "Windows", "X64", "1ES.Pool=${{ inputs.pool }}"] 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Diagnose Hyper-V status
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Write-Host "=== Windows Version ==="
+          cmd /c ver
+          Write-Host "`n=== Hyper-V Features ==="
+          Get-WindowsOptionalFeature -Online | Where-Object {$_.FeatureName -match 'Hyper-V|HypervisorPlatform|VirtualMachinePlatform'} | Format-Table
+          Write-Host "`n=== Hyper-V Services ==="
+          Get-Service -Name vmcompute,vmms -ErrorAction SilentlyContinue | Format-Table Name,Status,StartType
+          Write-Host "`n=== WHP API Check ==="
+          $whpDll = "$env:SystemRoot\System32\WinHvPlatform.dll"
+          if (Test-Path $whpDll) { Write-Host "WinHvPlatform.dll found: $((Get-Item $whpDll).VersionInfo.FileVersion)" } else { Write-Host "WinHvPlatform.dll NOT FOUND" }
+          Write-Host "`n=== Hypervisor Present (firmware) ==="
+          (Get-WmiObject Win32_ComputerSystem).HypervisorPresent
+          Write-Host "`n=== BCDEdit hypervisor launch type ==="
+          bcdedit /enum '{current}' | Select-String -Pattern 'hypervisor'
 
       - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
         with:
@@ -103,7 +113,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # with only one driver enabled (kvm/mshv3 features are unix-only, no-op on Windows)
-          just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
+          just test ${{ inputs.config }}
 
       - name: Run Rust Gdb tests
         env:
