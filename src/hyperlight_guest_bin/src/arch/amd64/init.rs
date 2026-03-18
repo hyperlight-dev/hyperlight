@@ -173,9 +173,12 @@ core::arch::global_asm!("
     mov rsp, r8\n
     xor ebp, ebp\n
     call {generic_init}\n
-    mov dx, 108\n
+    mov dx, {halt_port}\n
     out dx, eax\n
     cli\n
     hlt\n
     .cfi_endproc\n
-", generic_init = sym crate::generic_init);
+",
+    generic_init = sym crate::generic_init,
+    halt_port = const hyperlight_common::outb::VmAction::Halt as u16,
+);
