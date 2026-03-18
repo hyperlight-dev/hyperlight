@@ -259,10 +259,13 @@ impl KvmVm {
     fn handle_pv_timer_config(&mut self, data: &[u8]) {
         use super::super::x86_64::hw_interrupts::handle_pv_timer_config;
 
-        let eventfd_clone = self
-            .timer_irq_eventfd
-            .try_clone()
-            .expect("failed to clone eventfd");
+        let eventfd_clone = match self.timer_irq_eventfd.try_clone() {
+            Ok(fd) => fd,
+            Err(e) => {
+                tracing::warn!("failed to clone eventfd for timer config: {e}");
+                return;
+            }
+        };
         handle_pv_timer_config(&mut self.timer, data, move || {
             let _ = eventfd_clone.write(1);
         });
