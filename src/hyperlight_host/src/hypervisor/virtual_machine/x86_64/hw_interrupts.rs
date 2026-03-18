@@ -23,6 +23,14 @@ limitations under the License.
 /// — no PIC state machine needed.
 pub(crate) const TIMER_VECTOR: u32 = 0x20;
 
+/// Minimum allowed timer period in microseconds (100 µs).
+/// Prevents runaway interrupt injection from a malicious or buggy guest.
+pub(crate) const MIN_TIMER_PERIOD_US: u64 = 100;
+
+/// Maximum allowed timer period in microseconds (10 seconds).
+/// Prevents unreasonably long sleep durations in the timer thread.
+pub(crate) const MAX_TIMER_PERIOD_US: u64 = 10_000_000;
+
 /// Handle an IO IN request for hardware-interrupt related ports.
 /// Returns `Some(value)` if the port was handled, `None` if the
 /// port should be passed through to the guest handler.

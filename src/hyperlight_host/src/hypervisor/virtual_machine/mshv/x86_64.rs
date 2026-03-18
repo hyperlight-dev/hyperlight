@@ -123,10 +123,11 @@ impl MshvVm {
         #[allow(unused_mut)]
         let mut pr: mshv_create_partition_v2 = Default::default();
         // Enable LAPIC for hw-interrupts — required for interrupt delivery
-        // via request_virtual_interrupt. MSHV_PT_BIT_LAPIC = bit 0.
+        // via request_virtual_interrupt.
         #[cfg(feature = "hw-interrupts")]
         {
-            pr.pt_flags = 1u64; // LAPIC
+            use mshv_bindings::MSHV_PT_BIT_LAPIC;
+            pr.pt_flags = 1u64 << MSHV_PT_BIT_LAPIC;
         }
         // It's important to use create_vm_with_args() (not create_vm()),
         // because create_vm() sets up a SynIC partition by default.
@@ -352,15 +353,9 @@ impl VirtualMachine for MshvVm {
                     }
                 }
                 Err(e) => match e.errno() {
+                    // InterruptHandle::kill() sends a signal to interrupt the vcpu,
+                    // which causes EINTR. Always honour it as cancellation.
                     libc::EINTR => {
-                        // When the timer thread is active, EINTR may be
-                        // a spurious signal. Continue the run loop to
-                        // let the hypervisor deliver any pending timer
-                        // interrupt.
-                        #[cfg(feature = "hw-interrupts")]
-                        if self.timer_thread.is_some() {
-                            continue;
-                        }
                         return Ok(VmExit::Cancelled());
                     }
                     libc::EAGAIN => {
@@ -639,6 +634,10 @@ impl MshvVm {
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
         if port == VmAction::PvTimerConfig as u16 {
             if data.len() >= 4 {
+                use super::super::x86_64::hw_interrupts::{
+                    MAX_TIMER_PERIOD_US, MIN_TIMER_PERIOD_US,
+                };
+
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 if period_us == 0 {
                     // Stop existing timer if any.
@@ -693,7 +692,9 @@ impl MshvVm {
                     let vm_fd = self.vm_fd.clone();
                     let vector = super::super::x86_64::hw_interrupts::TIMER_VECTOR;
                     let stop = self.timer_stop.clone();
-                    let period = std::time::Duration::from_micros(period_us as u64);
+                    let period_us =
+                        (period_us as u64).clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
+                    let period = std::time::Duration::from_micros(period_us);
                     self.timer_thread = Some(std::thread::spawn(move || {
                         while !stop.load(Ordering::Relaxed) {
                             std::thread::sleep(period);

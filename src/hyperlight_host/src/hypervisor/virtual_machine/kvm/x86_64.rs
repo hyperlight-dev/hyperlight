@@ -211,6 +211,7 @@ impl KvmVm {
                 Ok(VcpuExit::Hlt) => {
                     // The in-kernel LAPIC normally handles HLT internally.
                     // If we somehow get here, just re-enter the guest.
+                    tracing::trace!("KVM hw-interrupts: unexpected VcpuExit::Hlt, re-entering guest");
                     continue;
                 }
                 Ok(VcpuExit::IoOut(port, data)) => {
@@ -263,6 +264,10 @@ impl KvmVm {
 
     #[cfg(feature = "hw-interrupts")]
     fn handle_pv_timer_config(&mut self, data: &[u8; 4]) -> std::result::Result<(), RunVcpuError> {
+        use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::{
+            MAX_TIMER_PERIOD_US, MIN_TIMER_PERIOD_US,
+        };
+
         let period_us = u32::from_le_bytes(*data) as u64;
         if period_us == 0 {
             // Stop existing timer if any.
@@ -271,6 +276,7 @@ impl KvmVm {
                 let _ = thread.join();
             }
         } else if self.timer_thread.is_none() {
+            let period_us = period_us.clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
             // Reset the stop flag — a previous halt (e.g. the
             // init halt during evolve()) may have set it.
             self.timer_stop.store(false, Ordering::Relaxed);

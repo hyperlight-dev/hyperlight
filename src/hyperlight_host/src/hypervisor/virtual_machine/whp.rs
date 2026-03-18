@@ -430,6 +430,9 @@ impl VirtualMachine for WhpVm {
                     // VmAction::Halt always means "I'm done", regardless
                     // of whether a timer is active.
                     if is_write && port == VmAction::Halt as u16 {
+                        // Stop the timer thread before returning.
+                        #[cfg(feature = "hw-interrupts")]
+                        self.stop_timer_thread();
                         return Ok(VmExit::Halt());
                     }
 
@@ -1078,17 +1081,21 @@ impl WhpVm {
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
         if port == VmAction::PvTimerConfig as u16 {
             if data.len() >= 4 {
+                use super::x86_64::hw_interrupts::{MAX_TIMER_PERIOD_US, MIN_TIMER_PERIOD_US};
+
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
 
                 // Stop any existing timer thread before (re-)configuring.
                 self.stop_timer_thread();
 
                 if period_us > 0 {
+                    let period_us =
+                        (period_us as u64).clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
                     let partition_raw = self.partition.0;
                     let vector = super::x86_64::hw_interrupts::TIMER_VECTOR;
                     let stop = Arc::new(AtomicBool::new(false));
                     let stop_clone = stop.clone();
-                    let period = std::time::Duration::from_micros(period_us as u64);
+                    let period = std::time::Duration::from_micros(period_us);
 
                     let handle = std::thread::spawn(move || {
                         while !stop_clone.load(Ordering::Relaxed) {
