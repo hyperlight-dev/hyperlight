@@ -664,9 +664,7 @@ impl MshvVm {
                     let svr = super::super::x86_64::hw_interrupts::read_lapic_u32(regs, 0xF0);
                     if svr & 0x100 == 0 {
                         let regs_mut = lapic_regs_as_u8_mut(&mut lapic.regs);
-                        super::super::x86_64::hw_interrupts::write_lapic_u32(
-                            regs_mut, 0xF0, 0x1FF,
-                        );
+                        super::super::x86_64::hw_interrupts::write_lapic_u32(regs_mut, 0xF0, 0x1FF);
                         super::super::x86_64::hw_interrupts::write_lapic_u32(regs_mut, 0x80, 0); // TPR
                         let _ = self.vcpu_fd.set_lapic(&lapic);
                     }
