@@ -154,6 +154,66 @@ pub(crate) fn lapic_eoi(state: &mut [u8]) {
     }
 }
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+/// Shared timer thread that periodically calls an inject function.
+///
+/// Each backend passes a closure for interrupt injection:
+/// - KVM: `eventfd.write(1)`
+/// - MSHV: `vm_fd.request_virtual_interrupt(...)`
+/// - WHP: `WHvRequestInterrupt(...)`
+///
+/// The `Drop` impl stops the thread automatically.
+#[derive(Debug)]
+pub(crate) struct TimerThread {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl TimerThread {
+    /// Start a timer thread that calls `inject_fn` every `period`.
+    /// The period is clamped to [`MIN_TIMER_PERIOD_US`, `MAX_TIMER_PERIOD_US`].
+    pub(crate) fn start(period: Duration, inject_fn: impl Fn() + Send + 'static) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        let handle = std::thread::spawn(move || {
+            while !stop_clone.load(Ordering::Relaxed) {
+                std::thread::sleep(period);
+                if stop_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                inject_fn();
+            }
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    /// Stop the timer thread and join it.
+    pub(crate) fn stop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+
+    /// Returns `true` if the timer thread is running.
+    pub(crate) fn is_active(&self) -> bool {
+        self.handle.is_some()
+    }
+}
+
+impl Drop for TimerThread {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

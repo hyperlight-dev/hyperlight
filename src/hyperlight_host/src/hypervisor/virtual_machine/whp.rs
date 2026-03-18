@@ -15,10 +15,6 @@ limitations under the License.
 */
 
 use std::os::raw::c_void;
-#[cfg(feature = "hw-interrupts")]
-use std::sync::Arc;
-#[cfg(feature = "hw-interrupts")]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use hyperlight_common::outb::VmAction;
 #[cfg(feature = "trace_guest")]
@@ -48,6 +44,8 @@ use crate::hypervisor::virtual_machine::{
 };
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
+#[cfg(feature = "hw-interrupts")]
+use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
@@ -98,12 +96,9 @@ pub(crate) struct WhpVm {
     /// Tracks host-side file mappings (view_base, mapping_handle) for
     /// cleanup on unmap or drop. Only populated for MappedFile regions.
     file_mappings: Vec<(HandleWrapper, *mut c_void)>,
-    /// Signal to stop the software timer thread.
+    /// Handle to the background timer (if started).
     #[cfg(feature = "hw-interrupts")]
-    timer_stop: Option<Arc<AtomicBool>>,
-    /// Handle for the software timer thread.
-    #[cfg(feature = "hw-interrupts")]
-    timer_thread: Option<std::thread::JoinHandle<()>>,
+    timer: Option<TimerThread>,
 }
 
 // Safety: `WhpVm` is !Send because it holds `SurrogateProcess` which contains a raw pointer
@@ -205,9 +200,7 @@ impl WhpVm {
             surrogate_process,
             file_mappings: Vec::new(),
             #[cfg(feature = "hw-interrupts")]
-            timer_stop: None,
-            #[cfg(feature = "hw-interrupts")]
-            timer_thread: None,
+            timer: None,
         })
     }
 
@@ -432,7 +425,9 @@ impl VirtualMachine for WhpVm {
                     if is_write && port == VmAction::Halt as u16 {
                         // Stop the timer thread before returning.
                         #[cfg(feature = "hw-interrupts")]
-                        self.stop_timer_thread();
+                        if let Some(mut t) = self.timer.take() {
+                            t.stop();
+                        }
                         return Ok(VmExit::Halt());
                     }
 
@@ -464,7 +459,7 @@ impl VirtualMachine for WhpVm {
                     // thread injects an interrupt via WHvRequestInterrupt,
                     // waking the vCPU from HLT.
                     #[cfg(feature = "hw-interrupts")]
-                    if self.timer_thread.is_some() {
+                    if self.timer.as_ref().is_some_and(|t| t.is_active()) {
                         continue;
                     }
                     return Ok(VmExit::Halt());
@@ -1068,16 +1063,6 @@ impl WhpVm {
         }
     }
 
-    /// Stop the software timer thread if running.
-    fn stop_timer_thread(&mut self) {
-        if let Some(stop) = self.timer_stop.take() {
-            stop.store(true, Ordering::Relaxed);
-        }
-        if let Some(handle) = self.timer_thread.take() {
-            let _ = handle.join();
-        }
-    }
-
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
         if port == VmAction::PvTimerConfig as u16 {
             if data.len() >= 4 {
@@ -1086,46 +1071,37 @@ impl WhpVm {
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
 
                 // Stop any existing timer thread before (re-)configuring.
-                self.stop_timer_thread();
+                if let Some(mut t) = self.timer.take() {
+                    t.stop();
+                }
 
                 if period_us > 0 {
                     let period_us =
                         (period_us as u64).clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
                     let partition_raw = self.partition.0;
                     let vector = super::x86_64::hw_interrupts::TIMER_VECTOR;
-                    let stop = Arc::new(AtomicBool::new(false));
-                    let stop_clone = stop.clone();
                     let period = std::time::Duration::from_micros(period_us);
 
-                    let handle = std::thread::spawn(move || {
-                        while !stop_clone.load(Ordering::Relaxed) {
-                            std::thread::sleep(period);
-                            if stop_clone.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            let partition = WHV_PARTITION_HANDLE(partition_raw);
-                            let interrupt = WHV_INTERRUPT_CONTROL {
-                                _bitfield: 0, // Type=Fixed, DestMode=Physical, Trigger=Edge
-                                Destination: 0,
-                                Vector: vector,
-                            };
-                            let _ = unsafe {
-                                WHvRequestInterrupt(
-                                    partition,
-                                    &interrupt,
-                                    std::mem::size_of::<WHV_INTERRUPT_CONTROL>() as u32,
-                                )
-                            };
-                        }
-                    });
-
-                    self.timer_stop = Some(stop);
-                    self.timer_thread = Some(handle);
+                    self.timer = Some(TimerThread::start(period, move || {
+                        let partition = WHV_PARTITION_HANDLE(partition_raw);
+                        let interrupt = WHV_INTERRUPT_CONTROL {
+                            _bitfield: 0, // Type=Fixed, DestMode=Physical, Trigger=Edge
+                            Destination: 0,
+                            Vector: vector,
+                        };
+                        let _ = unsafe {
+                            WHvRequestInterrupt(
+                                partition,
+                                &interrupt,
+                                std::mem::size_of::<WHV_INTERRUPT_CONTROL>() as u32,
+                            )
+                        };
+                    }));
                 }
             }
             return true;
         }
-        let timer_active = self.timer_thread.is_some();
+        let timer_active = self.timer.as_ref().is_some_and(|t| t.is_active());
         super::x86_64::hw_interrupts::handle_common_io_out(port, data, timer_active, || {
             self.do_lapic_eoi()
         })
@@ -1141,7 +1117,9 @@ impl Drop for WhpVm {
 
         // Stop the software timer thread before tearing down the partition.
         #[cfg(feature = "hw-interrupts")]
-        self.stop_timer_thread();
+        if let Some(mut t) = self.timer.take() {
+            t.stop();
+        }
 
         // HyperlightVm::drop() calls set_dropped() before this runs.
         // set_dropped() ensures no WHvCancelRunVirtualProcessor calls are in progress

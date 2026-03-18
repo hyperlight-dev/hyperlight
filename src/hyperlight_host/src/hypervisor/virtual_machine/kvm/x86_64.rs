@@ -14,11 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#[cfg(feature = "hw-interrupts")]
-use std::sync::Arc;
 use std::sync::LazyLock;
-#[cfg(feature = "hw-interrupts")]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use hyperlight_common::outb::VmAction;
 #[cfg(gdb)]
@@ -42,6 +38,8 @@ use crate::hypervisor::regs::{
 };
 #[cfg(feature = "hw-interrupts")]
 use crate::hypervisor::virtual_machine::HypervisorError;
+#[cfg(feature = "hw-interrupts")]
+use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 #[cfg(all(test, not(feature = "nanvix-unstable")))]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
 use crate::hypervisor::virtual_machine::{
@@ -102,12 +100,9 @@ pub(crate) struct KvmVm {
     /// writes to this to inject periodic timer interrupts.
     #[cfg(feature = "hw-interrupts")]
     timer_irq_eventfd: EventFd,
-    /// Signals the timer thread to stop.
+    /// Handle to the background timer (if started).
     #[cfg(feature = "hw-interrupts")]
-    timer_stop: Arc<AtomicBool>,
-    /// Handle to the background timer thread (if started).
-    #[cfg(feature = "hw-interrupts")]
-    timer_thread: Option<std::thread::JoinHandle<()>>,
+    timer: Option<TimerThread>,
 
     // KVM, as opposed to mshv/whp, has no get_guest_debug() ioctl, so we must track the state ourselves
     #[cfg(gdb)]
@@ -188,9 +183,7 @@ impl KvmVm {
             #[cfg(feature = "hw-interrupts")]
             timer_irq_eventfd,
             #[cfg(feature = "hw-interrupts")]
-            timer_stop: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "hw-interrupts")]
-            timer_thread: None,
+            timer: None,
             #[cfg(gdb)]
             debug_regs: kvm_guest_debug::default(),
         })
@@ -217,9 +210,8 @@ impl KvmVm {
                 Ok(VcpuExit::IoOut(port, data)) => {
                     if port == VmAction::Halt as u16 {
                         // Stop the timer thread before returning.
-                        self.timer_stop.store(true, Ordering::Relaxed);
-                        if let Some(h) = self.timer_thread.take() {
-                            let _ = h.join();
+                        if let Some(mut t) = self.timer.take() {
+                            t.stop();
                         }
                         return Ok(VmExit::Halt());
                     }
@@ -271,29 +263,18 @@ impl KvmVm {
         let period_us = u32::from_le_bytes(*data) as u64;
         if period_us == 0 {
             // Stop existing timer if any.
-            if let Some(thread) = self.timer_thread.take() {
-                self.timer_stop.store(true, Ordering::Relaxed);
-                let _ = thread.join();
+            if let Some(mut t) = self.timer.take() {
+                t.stop();
             }
-        } else if self.timer_thread.is_none() {
+        } else if self.timer.is_none() {
             let period_us = period_us.clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
-            // Reset the stop flag — a previous halt (e.g. the
-            // init halt during evolve()) may have set it.
-            self.timer_stop.store(false, Ordering::Relaxed);
             let eventfd = self
                 .timer_irq_eventfd
                 .try_clone()
                 .map_err(|e| RunVcpuError::Unknown(HypervisorError::KvmError(e.into())))?;
-            let stop = self.timer_stop.clone();
             let period = std::time::Duration::from_micros(period_us);
-            self.timer_thread = Some(std::thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    std::thread::sleep(period);
-                    if stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let _ = eventfd.write(1);
-                }
+            self.timer = Some(TimerThread::start(period, move || {
+                let _ = eventfd.write(1);
             }));
         }
         Ok(())
@@ -600,16 +581,6 @@ impl DebuggableVm for KvmVm {
             .set_guest_debug(&self.debug_regs)
             .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
         Ok(())
-    }
-}
-
-#[cfg(feature = "hw-interrupts")]
-impl Drop for KvmVm {
-    fn drop(&mut self) {
-        self.timer_stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.timer_thread.take() {
-            let _ = h.join();
-        }
     }
 }
 

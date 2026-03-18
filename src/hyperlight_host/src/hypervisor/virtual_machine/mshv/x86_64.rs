@@ -19,8 +19,6 @@ use std::fmt::Debug;
 #[cfg(feature = "hw-interrupts")]
 use std::sync::Arc;
 use std::sync::LazyLock;
-#[cfg(feature = "hw-interrupts")]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use hyperlight_common::outb::VmAction;
 #[cfg(feature = "hw-interrupts")]
@@ -60,6 +58,8 @@ use crate::hypervisor::virtual_machine::{
     VmExit, XSAVE_MIN_SIZE,
 };
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
+#[cfg(feature = "hw-interrupts")]
+use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
@@ -86,12 +86,9 @@ pub(crate) struct MshvVm {
     #[cfg(not(feature = "hw-interrupts"))]
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
-    /// Signals the timer thread to stop.
+    /// Handle to the background timer (if started).
     #[cfg(feature = "hw-interrupts")]
-    timer_stop: Arc<AtomicBool>,
-    /// Handle to the background timer thread (if started).
-    #[cfg(feature = "hw-interrupts")]
-    timer_thread: Option<std::thread::JoinHandle<()>>,
+    timer: Option<TimerThread>,
 }
 
 static MSHV: LazyLock<std::result::Result<Mshv, CreateVmError>> =
@@ -179,9 +176,7 @@ impl MshvVm {
             vm_fd,
             vcpu_fd,
             #[cfg(feature = "hw-interrupts")]
-            timer_stop: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "hw-interrupts")]
-            timer_thread: None,
+            timer: None,
         })
     }
 }
@@ -238,7 +233,7 @@ impl VirtualMachine for MshvVm {
                             // interrupts on the next run(), waking the
                             // vCPU from HLT.
                             #[cfg(feature = "hw-interrupts")]
-                            if self.timer_thread.is_some() {
+                            if self.timer.as_ref().is_some_and(|t| t.is_active()) {
                                 continue;
                             }
                             return Ok(VmExit::Halt());
@@ -270,9 +265,8 @@ impl VirtualMachine for MshvVm {
                                 // Stop the timer thread before returning.
                                 #[cfg(feature = "hw-interrupts")]
                                 {
-                                    self.timer_stop.store(true, Ordering::Relaxed);
-                                    if let Some(h) = self.timer_thread.take() {
-                                        let _ = h.join();
+                                    if let Some(mut t) = self.timer.take() {
+                                        t.stop();
                                     }
                                 }
                                 return Ok(VmExit::Halt());
@@ -641,14 +635,10 @@ impl MshvVm {
                 let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 if period_us == 0 {
                     // Stop existing timer if any.
-                    if let Some(thread) = self.timer_thread.take() {
-                        self.timer_stop.store(true, Ordering::Relaxed);
-                        let _ = thread.join();
+                    if let Some(mut t) = self.timer.take() {
+                        t.stop();
                     }
-                } else if self.timer_thread.is_none() {
-                    // Reset the stop flag — a previous halt (e.g. the
-                    // init halt during evolve()) may have set it.
-                    self.timer_stop.store(false, Ordering::Relaxed);
+                } else if self.timer.is_none() {
                     // Re-enable LAPIC if the guest disabled it (via WRMSR
                     // to MSR 0x1B clearing bit 11).  Some guests clear
                     // the global APIC enable when no I/O APIC is detected.
@@ -691,44 +681,27 @@ impl MshvVm {
 
                     let vm_fd = self.vm_fd.clone();
                     let vector = super::super::x86_64::hw_interrupts::TIMER_VECTOR;
-                    let stop = self.timer_stop.clone();
                     let period_us =
                         (period_us as u64).clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
                     let period = std::time::Duration::from_micros(period_us);
-                    self.timer_thread = Some(std::thread::spawn(move || {
-                        while !stop.load(Ordering::Relaxed) {
-                            std::thread::sleep(period);
-                            if stop.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            let _ = vm_fd.request_virtual_interrupt(&InterruptRequest {
-                                interrupt_type: hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED,
-                                apic_id: 0,
-                                vector,
-                                level_triggered: false,
-                                logical_destination_mode: false,
-                                long_mode: false,
-                            });
-                        }
+                    self.timer = Some(TimerThread::start(period, move || {
+                        let _ = vm_fd.request_virtual_interrupt(&InterruptRequest {
+                            interrupt_type: hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED,
+                            apic_id: 0,
+                            vector,
+                            level_triggered: false,
+                            logical_destination_mode: false,
+                            long_mode: false,
+                        });
                     }));
                 }
             }
             return true;
         }
-        let timer_active = self.timer_thread.is_some();
+        let timer_active = self.timer.as_ref().is_some_and(|t| t.is_active());
         super::super::x86_64::hw_interrupts::handle_common_io_out(port, data, timer_active, || {
             self.do_lapic_eoi()
         })
-    }
-}
-
-#[cfg(feature = "hw-interrupts")]
-impl Drop for MshvVm {
-    fn drop(&mut self) {
-        self.timer_stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.timer_thread.take() {
-            let _ = h.join();
-        }
     }
 }
 
