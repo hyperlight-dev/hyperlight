@@ -116,32 +116,7 @@ impl WhpVm {
 
         let partition = unsafe {
             #[cfg(feature = "hw-interrupts")]
-            {
-                // Check whether the WHP host supports LAPIC emulation.
-                // Bit 1 of WHV_CAPABILITY_FEATURES = LocalApicEmulation.
-                // LAPIC emulation is required for timer interrupt delivery.
-                const LAPIC_EMULATION_BIT: u64 = 1 << 1;
-
-                let mut capability: WHV_CAPABILITY = Default::default();
-                let has_lapic = WHvGetCapability(
-                    WHvCapabilityCodeFeatures,
-                    &mut capability as *mut _ as *mut c_void,
-                    std::mem::size_of::<WHV_CAPABILITY>() as u32,
-                    None,
-                )
-                .is_ok()
-                    && (capability.Features.AsUINT64 & LAPIC_EMULATION_BIT != 0);
-
-                if !has_lapic {
-                    return Err(CreateVmError::InitializeVm(
-                        windows_result::Error::new(
-                            HRESULT::from_win32(0x32), // ERROR_NOT_SUPPORTED
-                            "WHP LocalApicEmulation capability is required for hw-interrupts",
-                        )
-                        .into(),
-                    ));
-                }
-            }
+            Self::check_lapic_emulation_support()?;
 
             let p = WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
             WHvSetPartitionProperty(
@@ -153,16 +128,7 @@ impl WhpVm {
             .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
 
             #[cfg(feature = "hw-interrupts")]
-            {
-                let apic_mode: u32 = 1; // WHvX64LocalApicEmulationModeXApic
-                WHvSetPartitionProperty(
-                    p,
-                    WHvPartitionPropertyCodeLocalApicEmulationMode,
-                    &apic_mode as *const _ as *const _,
-                    std::mem::size_of_val(&apic_mode) as _,
-                )
-                .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
-            }
+            Self::enable_lapic_emulation(p)?;
 
             WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
             WHvCreateVirtualProcessor(p, 0, 0)
@@ -190,54 +156,6 @@ impl WhpVm {
             #[cfg(feature = "hw-interrupts")]
             timer: None,
         })
-    }
-
-    /// Maximum size for the interrupt controller state blob.
-    const LAPIC_STATE_MAX_SIZE: u32 = 4096;
-
-    /// Initialize the LAPIC via the bulk interrupt-controller state API.
-    /// Individual APIC register writes via `WHvSetVirtualProcessorRegisters`
-    /// fail with ACCESS_DENIED on WHP when LAPIC emulation is enabled,
-    /// so we use `WHvGet/SetVirtualProcessorInterruptControllerState2`
-    /// to read-modify-write the entire LAPIC register page.
-    #[cfg(feature = "hw-interrupts")]
-    unsafe fn init_lapic_bulk(partition: WHV_PARTITION_HANDLE) -> windows_result::Result<()> {
-        let mut state = vec![0u8; Self::LAPIC_STATE_MAX_SIZE as usize];
-        let mut written: u32 = 0;
-
-        unsafe {
-            WHvGetVirtualProcessorInterruptControllerState2(
-                partition,
-                0,
-                state.as_mut_ptr() as *mut c_void,
-                Self::LAPIC_STATE_MAX_SIZE,
-                Some(&mut written),
-            )?;
-        }
-        state.truncate(written as usize);
-
-        // init_lapic_registers writes up to offset 0x374 (LVT Error at 0x370).
-        // Bail out if the buffer returned by WHP is too small.
-        const MIN_LAPIC_STATE_SIZE: usize = 0x374;
-        if state.len() < MIN_LAPIC_STATE_SIZE {
-            return Err(windows_result::Error::new(
-                HRESULT::from_win32(0x32), // ERROR_NOT_SUPPORTED
-                "WHP LAPIC state buffer is too small for init_lapic_registers",
-            ));
-        }
-
-        super::x86_64::hw_interrupts::init_lapic_registers(&mut state);
-
-        unsafe {
-            WHvSetVirtualProcessorInterruptControllerState2(
-                partition,
-                0,
-                state.as_ptr() as *const c_void,
-                state.len() as u32,
-            )?;
-        }
-
-        Ok(())
     }
 
     /// Helper for setting arbitrary registers. Makes sure the same number
@@ -1011,6 +929,98 @@ impl DebuggableVm for WhpVm {
 
 #[cfg(feature = "hw-interrupts")]
 impl WhpVm {
+    /// Maximum size for the interrupt controller state blob.
+    const LAPIC_STATE_MAX_SIZE: u32 = 4096;
+
+    /// Check whether the WHP host supports LAPIC emulation.
+    /// Bit 1 of WHV_CAPABILITY_FEATURES = LocalApicEmulation.
+    /// LAPIC emulation is required for timer interrupt delivery.
+    fn check_lapic_emulation_support() -> Result<(), CreateVmError> {
+        const LAPIC_EMULATION_BIT: u64 = 1 << 1;
+
+        let mut capability: WHV_CAPABILITY = Default::default();
+        let has_lapic = unsafe {
+            WHvGetCapability(
+                WHvCapabilityCodeFeatures,
+                &mut capability as *mut _ as *mut c_void,
+                std::mem::size_of::<WHV_CAPABILITY>() as u32,
+                None,
+            )
+            .is_ok()
+                && (capability.Features.AsUINT64 & LAPIC_EMULATION_BIT != 0)
+        };
+
+        if !has_lapic {
+            return Err(CreateVmError::InitializeVm(
+                windows_result::Error::new(
+                    HRESULT::from_win32(0x32), // ERROR_NOT_SUPPORTED
+                    "WHP LocalApicEmulation capability is required for hw-interrupts",
+                )
+                .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Enable LAPIC emulation on the given partition.
+    fn enable_lapic_emulation(partition: WHV_PARTITION_HANDLE) -> Result<(), CreateVmError> {
+        let apic_mode: u32 = 1; // WHvX64LocalApicEmulationModeXApic
+        unsafe {
+            WHvSetPartitionProperty(
+                partition,
+                WHvPartitionPropertyCodeLocalApicEmulationMode,
+                &apic_mode as *const _ as *const _,
+                std::mem::size_of_val(&apic_mode) as _,
+            )
+            .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+        }
+        Ok(())
+    }
+
+    /// Initialize the LAPIC via the bulk interrupt-controller state API.
+    /// Individual APIC register writes via `WHvSetVirtualProcessorRegisters`
+    /// fail with ACCESS_DENIED on WHP when LAPIC emulation is enabled,
+    /// so we use `WHvGet/SetVirtualProcessorInterruptControllerState2`
+    /// to read-modify-write the entire LAPIC register page.
+    unsafe fn init_lapic_bulk(partition: WHV_PARTITION_HANDLE) -> windows_result::Result<()> {
+        let mut state = vec![0u8; Self::LAPIC_STATE_MAX_SIZE as usize];
+        let mut written: u32 = 0;
+
+        unsafe {
+            WHvGetVirtualProcessorInterruptControllerState2(
+                partition,
+                0,
+                state.as_mut_ptr() as *mut c_void,
+                Self::LAPIC_STATE_MAX_SIZE,
+                Some(&mut written),
+            )?;
+        }
+        state.truncate(written as usize);
+
+        // init_lapic_registers writes up to offset 0x374 (LVT Error at 0x370).
+        // Bail out if the buffer returned by WHP is too small.
+        const MIN_LAPIC_STATE_SIZE: usize = 0x374;
+        if state.len() < MIN_LAPIC_STATE_SIZE {
+            return Err(windows_result::Error::new(
+                HRESULT::from_win32(0x32), // ERROR_NOT_SUPPORTED
+                "WHP LAPIC state buffer is too small for init_lapic_registers",
+            ));
+        }
+
+        super::x86_64::hw_interrupts::init_lapic_registers(&mut state);
+
+        unsafe {
+            WHvSetVirtualProcessorInterruptControllerState2(
+                partition,
+                0,
+                state.as_ptr() as *const c_void,
+                state.len() as u32,
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Get the LAPIC state via the bulk interrupt-controller state API.
     fn get_lapic_state(&self) -> windows_result::Result<Vec<u8>> {
         let mut state = vec![0u8; Self::LAPIC_STATE_MAX_SIZE as usize];

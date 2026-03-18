@@ -110,6 +110,42 @@ pub(crate) struct KvmVm {
 static KVM: LazyLock<std::result::Result<Kvm, CreateVmError>> =
     LazyLock::new(|| Kvm::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
 
+#[cfg(feature = "hw-interrupts")]
+impl KvmVm {
+    /// Create the in-kernel IRQ chip and register an irqfd for GSI 0.
+    ///
+    /// When hw-interrupts is enabled, create the in-kernel IRQ chip
+    /// (PIC + IOAPIC + LAPIC) before creating the vCPU so the
+    /// per-vCPU LAPIC is initialised in virtual-wire mode (LINT0 = ExtINT).
+    /// The guest programs the PIC remap via standard IO port writes,
+    /// which the in-kernel PIC handles transparently.
+    ///
+    /// Instead of creating an in-kernel PIT (create_pit2), we use a
+    /// host-side timer thread + irqfd to inject IRQ0 at the rate
+    /// requested by the guest via VmAction::PvTimerConfig (port 107).
+    /// This eliminates the in-kernel PIT device. Guest PIT port writes
+    /// (0x40, 0x43) become no-ops handled in the run loop.
+    fn setup_irqfd(vm_fd: &VmFd) -> std::result::Result<EventFd, CreateVmError> {
+        vm_fd
+            .create_irq_chip()
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+        // Create an EventFd and register it via irqfd for GSI 0 (IRQ0).
+        // When the timer thread writes to this EventFd, the in-kernel
+        // PIC will assert IRQ0, which is delivered as the vector the
+        // guest configured during PIC remap (typically vector 0x20).
+        let eventfd = EventFd::new(0).map_err(|e| {
+            CreateVmError::InitializeVm(
+                kvm_ioctls::Error::new(e.raw_os_error().unwrap_or(libc::EIO)).into(),
+            )
+        })?;
+        vm_fd
+            .register_irqfd(&eventfd, 0)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        Ok(eventfd)
+    }
+}
+
 impl KvmVm {
     /// Create a new instance of a `KvmVm`
     #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
@@ -120,37 +156,8 @@ impl KvmVm {
             .create_vm_with_type(0)
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
 
-        // When hw-interrupts is enabled, create the in-kernel IRQ chip
-        // (PIC + IOAPIC + LAPIC) before creating the vCPU so the
-        // per-vCPU LAPIC is initialised in virtual-wire mode (LINT0 = ExtINT).
-        // The guest programs the PIC remap via standard IO port writes,
-        // which the in-kernel PIC handles transparently.
-        //
-        // Instead of creating an in-kernel PIT (create_pit2), we use a
-        // host-side timer thread + irqfd to inject IRQ0 at the rate
-        // requested by the guest via VmAction::PvTimerConfig (port 107).
-        // This eliminates the in-kernel PIT device. Guest PIT port writes
-        // (0x40, 0x43) become no-ops handled in the run loop.
         #[cfg(feature = "hw-interrupts")]
-        let timer_irq_eventfd = {
-            vm_fd
-                .create_irq_chip()
-                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-
-            // Create an EventFd and register it via irqfd for GSI 0 (IRQ0).
-            // When the timer thread writes to this EventFd, the in-kernel
-            // PIC will assert IRQ0, which is delivered as the vector the
-            // guest configured during PIC remap (typically vector 0x20).
-            let eventfd = EventFd::new(0).map_err(|e| {
-                CreateVmError::InitializeVm(
-                    kvm_ioctls::Error::new(e.raw_os_error().unwrap_or(libc::EIO)).into(),
-                )
-            })?;
-            vm_fd
-                .register_irqfd(&eventfd, 0)
-                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-            eventfd
-        };
+        let timer_irq_eventfd = Self::setup_irqfd(&vm_fd)?;
 
         let vcpu_fd = vm_fd
             .create_vcpu(0)

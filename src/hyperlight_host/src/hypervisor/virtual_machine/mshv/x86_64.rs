@@ -94,23 +94,6 @@ pub(crate) struct MshvVm {
 static MSHV: LazyLock<std::result::Result<Mshv, CreateVmError>> =
     LazyLock::new(|| Mshv::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
 
-/// Cast MSHV `LapicState.regs` (`[c_char; 1024]`) to a `&[u8]` slice
-/// for use with the shared LAPIC helpers.
-#[cfg(feature = "hw-interrupts")]
-fn lapic_regs_as_u8(regs: &[::std::os::raw::c_char; 1024]) -> &[u8] {
-    // Safety: c_char (i8) and u8 have the same size and alignment;
-    // LAPIC register values are treated as raw bytes.
-    unsafe { &*(regs as *const [::std::os::raw::c_char; 1024] as *const [u8; 1024]) }
-}
-
-/// Cast MSHV `LapicState.regs` (`[c_char; 1024]`) to a `&mut [u8]` slice
-/// for use with the shared LAPIC helpers.
-#[cfg(feature = "hw-interrupts")]
-fn lapic_regs_as_u8_mut(regs: &mut [::std::os::raw::c_char; 1024]) -> &mut [u8] {
-    // Safety: same as above.
-    unsafe { &mut *(regs as *mut [::std::os::raw::c_char; 1024] as *mut [u8; 1024]) }
-}
-
 impl MshvVm {
     /// Create a new instance of a MshvVm
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
@@ -155,19 +138,7 @@ impl MshvVm {
         // LAPIC defaults to disabled (SVR bit 8 = 0), which means no APIC
         // interrupts can be delivered (request_virtual_interrupt would fail).
         #[cfg(feature = "hw-interrupts")]
-        {
-            use super::super::x86_64::hw_interrupts::init_lapic_registers;
-
-            let mut lapic: LapicState = vcpu_fd
-                .get_lapic()
-                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-
-            init_lapic_registers(lapic_regs_as_u8_mut(&mut lapic.regs));
-
-            vcpu_fd
-                .set_lapic(&lapic)
-                .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-        }
+        Self::init_lapic(&vcpu_fd)?;
 
         Ok(Self {
             #[cfg(feature = "hw-interrupts")]
@@ -608,11 +579,44 @@ impl DebuggableVm for MshvVm {
     }
 }
 
+/// Cast MSHV `LapicState.regs` (`[c_char; 1024]`) to a `&[u8]` slice
+/// for use with the shared LAPIC helpers.
+#[cfg(feature = "hw-interrupts")]
+fn lapic_regs_as_u8(regs: &[::std::os::raw::c_char; 1024]) -> &[u8] {
+    // Safety: c_char (i8) and u8 have the same size and alignment;
+    // LAPIC register values are treated as raw bytes.
+    unsafe { &*(regs as *const [::std::os::raw::c_char; 1024] as *const [u8; 1024]) }
+}
+
+/// Cast MSHV `LapicState.regs` (`[c_char; 1024]`) to a `&mut [u8]` slice
+/// for use with the shared LAPIC helpers.
+#[cfg(feature = "hw-interrupts")]
+fn lapic_regs_as_u8_mut(regs: &mut [::std::os::raw::c_char; 1024]) -> &mut [u8] {
+    // Safety: same as above.
+    unsafe { &mut *(regs as *mut [::std::os::raw::c_char; 1024] as *mut [u8; 1024]) }
+}
+
 #[cfg(feature = "hw-interrupts")]
 impl MshvVm {
     /// Standard x86 APIC base MSR value: base address 0xFEE00000 +
     /// BSP flag (bit 8) + global enable (bit 11).
     const APIC_BASE_DEFAULT: u64 = 0xFEE00900;
+
+    /// Initialize the virtual LAPIC to sensible defaults.
+    fn init_lapic(vcpu_fd: &VcpuFd) -> std::result::Result<(), CreateVmError> {
+        use super::super::x86_64::hw_interrupts::init_lapic_registers;
+
+        let mut lapic: LapicState = vcpu_fd
+            .get_lapic()
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+        init_lapic_registers(lapic_regs_as_u8_mut(&mut lapic.regs));
+
+        vcpu_fd
+            .set_lapic(&lapic)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        Ok(())
+    }
 
     /// Perform LAPIC EOI: clear the highest-priority in-service bit.
     /// Called when the guest sends PIC EOI, since the timer thread
