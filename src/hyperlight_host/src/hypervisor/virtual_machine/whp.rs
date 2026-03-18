@@ -1047,46 +1047,35 @@ impl WhpVm {
     fn do_lapic_eoi(&self) {
         if let Ok(mut state) = self.get_lapic_state() {
             super::x86_64::hw_interrupts::lapic_eoi(&mut state);
-            let _ = self.set_lapic_state(&state);
+            if let Err(e) = self.set_lapic_state(&state) {
+                tracing::warn!("WHP set_lapic_state (EOI) failed: {e}");
+            }
         }
     }
 
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
         if port == VmAction::PvTimerConfig as u16 {
-            if data.len() >= 4 {
-                use super::x86_64::hw_interrupts::{MAX_TIMER_PERIOD_US, MIN_TIMER_PERIOD_US};
-
-                let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-
-                // Stop any existing timer thread before (re-)configuring.
-                if let Some(mut t) = self.timer.take() {
-                    t.stop();
-                }
-
-                if period_us > 0 {
-                    let period_us =
-                        (period_us as u64).clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
-                    let partition_raw = self.partition.0;
-                    let vector = super::x86_64::hw_interrupts::TIMER_VECTOR;
-                    let period = std::time::Duration::from_micros(period_us);
-
-                    self.timer = Some(TimerThread::start(period, move || {
-                        let partition = WHV_PARTITION_HANDLE(partition_raw);
-                        let interrupt = WHV_INTERRUPT_CONTROL {
-                            _bitfield: 0, // Type=Fixed, DestMode=Physical, Trigger=Edge
-                            Destination: 0,
-                            Vector: vector,
-                        };
-                        let _ = unsafe {
-                            WHvRequestInterrupt(
-                                partition,
-                                &interrupt,
-                                std::mem::size_of::<WHV_INTERRUPT_CONTROL>() as u32,
-                            )
-                        };
-                    }));
-                }
-            }
+            let partition_raw = self.partition.0;
+            let vector = super::x86_64::hw_interrupts::TIMER_VECTOR;
+            super::x86_64::hw_interrupts::handle_pv_timer_config(
+                &mut self.timer,
+                data,
+                move || {
+                    let partition = WHV_PARTITION_HANDLE(partition_raw);
+                    let interrupt = WHV_INTERRUPT_CONTROL {
+                        _bitfield: 0, // Type=Fixed, DestMode=Physical, Trigger=Edge
+                        Destination: 0,
+                        Vector: vector,
+                    };
+                    let _ = unsafe {
+                        WHvRequestInterrupt(
+                            partition,
+                            &interrupt,
+                            std::mem::size_of::<WHV_INTERRUPT_CONTROL>() as u32,
+                        )
+                    };
+                },
+            );
             return true;
         }
         let timer_active = self.timer.as_ref().is_some_and(|t| t.is_active());

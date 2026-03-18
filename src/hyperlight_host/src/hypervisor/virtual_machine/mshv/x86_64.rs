@@ -627,75 +627,66 @@ impl MshvVm {
 
     fn handle_hw_io_out(&mut self, port: u16, data: &[u8]) -> bool {
         if port == VmAction::PvTimerConfig as u16 {
-            if data.len() >= 4 {
-                use super::super::x86_64::hw_interrupts::{
-                    MAX_TIMER_PERIOD_US, MIN_TIMER_PERIOD_US,
-                };
-
-                let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                if period_us == 0 {
-                    // Stop existing timer if any.
-                    if let Some(mut t) = self.timer.take() {
-                        t.stop();
+            // Re-enable LAPIC if the guest disabled it (via WRMSR
+            // to MSR 0x1B clearing bit 11).  Some guests clear
+            // the global APIC enable when no I/O APIC is detected.
+            //
+            // The hypervisor may return 0 for APIC_BASE when the
+            // APIC is globally disabled, so we always restore the
+            // standard value (0xFEE00900).
+            if self.timer.is_none() {
+                use mshv_bindings::hv_register_name_HV_X64_REGISTER_APIC_BASE;
+                let mut apic_base_reg = [hv_register_assoc {
+                    name: hv_register_name_HV_X64_REGISTER_APIC_BASE,
+                    value: hv_register_value { reg64: 0 },
+                    ..Default::default()
+                }];
+                if self.vcpu_fd.get_reg(&mut apic_base_reg).is_ok() {
+                    let cur = unsafe { apic_base_reg[0].value.reg64 };
+                    if cur & (1 << 11) == 0 {
+                        let _ = self.vcpu_fd.set_reg(&[hv_register_assoc {
+                            name: hv_register_name_HV_X64_REGISTER_APIC_BASE,
+                            value: hv_register_value {
+                                reg64: Self::APIC_BASE_DEFAULT,
+                            },
+                            ..Default::default()
+                        }]);
                     }
-                } else if self.timer.is_none() {
-                    // Re-enable LAPIC if the guest disabled it (via WRMSR
-                    // to MSR 0x1B clearing bit 11).  Some guests clear
-                    // the global APIC enable when no I/O APIC is detected.
-                    //
-                    // The hypervisor may return 0 for APIC_BASE when the
-                    // APIC is globally disabled, so we always restore the
-                    // standard value (0xFEE00900).
-                    use mshv_bindings::hv_register_name_HV_X64_REGISTER_APIC_BASE;
-                    let mut apic_base_reg = [hv_register_assoc {
-                        name: hv_register_name_HV_X64_REGISTER_APIC_BASE,
-                        value: hv_register_value { reg64: 0 },
-                        ..Default::default()
-                    }];
-                    if self.vcpu_fd.get_reg(&mut apic_base_reg).is_ok() {
-                        let cur = unsafe { apic_base_reg[0].value.reg64 };
-                        if cur & (1 << 11) == 0 {
-                            let _ = self.vcpu_fd.set_reg(&[hv_register_assoc {
-                                name: hv_register_name_HV_X64_REGISTER_APIC_BASE,
-                                value: hv_register_value {
-                                    reg64: Self::APIC_BASE_DEFAULT,
-                                },
-                                ..Default::default()
-                            }]);
-                        }
+                }
+                // Re-initialize LAPIC SVR (may have been zeroed when
+                // guest disabled the APIC globally)
+                if let Ok(mut lapic) = self.vcpu_fd.get_lapic() {
+                    let regs = lapic_regs_as_u8(&lapic.regs);
+                    let svr = super::super::x86_64::hw_interrupts::read_lapic_u32(regs, 0xF0);
+                    if svr & 0x100 == 0 {
+                        let regs_mut = lapic_regs_as_u8_mut(&mut lapic.regs);
+                        super::super::x86_64::hw_interrupts::write_lapic_u32(
+                            regs_mut, 0xF0, 0x1FF,
+                        );
+                        super::super::x86_64::hw_interrupts::write_lapic_u32(regs_mut, 0x80, 0); // TPR
+                        let _ = self.vcpu_fd.set_lapic(&lapic);
                     }
-                    // Re-initialize LAPIC SVR (may have been zeroed when
-                    // guest disabled the APIC globally)
-                    if let Ok(mut lapic) = self.vcpu_fd.get_lapic() {
-                        let regs = lapic_regs_as_u8(&lapic.regs);
-                        let svr = super::super::x86_64::hw_interrupts::read_lapic_u32(regs, 0xF0);
-                        if svr & 0x100 == 0 {
-                            let regs_mut = lapic_regs_as_u8_mut(&mut lapic.regs);
-                            super::super::x86_64::hw_interrupts::write_lapic_u32(
-                                regs_mut, 0xF0, 0x1FF,
-                            );
-                            super::super::x86_64::hw_interrupts::write_lapic_u32(regs_mut, 0x80, 0); // TPR
-                            let _ = self.vcpu_fd.set_lapic(&lapic);
-                        }
-                    }
-
-                    let vm_fd = self.vm_fd.clone();
-                    let vector = super::super::x86_64::hw_interrupts::TIMER_VECTOR;
-                    let period_us =
-                        (period_us as u64).clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
-                    let period = std::time::Duration::from_micros(period_us);
-                    self.timer = Some(TimerThread::start(period, move || {
-                        let _ = vm_fd.request_virtual_interrupt(&InterruptRequest {
-                            interrupt_type: hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED,
-                            apic_id: 0,
-                            vector,
-                            level_triggered: false,
-                            logical_destination_mode: false,
-                            long_mode: false,
-                        });
-                    }));
                 }
             }
+
+            let vm_fd = Arc::clone(&self.vm_fd);
+            let vector = super::super::x86_64::hw_interrupts::TIMER_VECTOR;
+            super::super::x86_64::hw_interrupts::handle_pv_timer_config(
+                &mut self.timer,
+                data,
+                move || {
+                    if let Err(e) = vm_fd.request_virtual_interrupt(&InterruptRequest {
+                        interrupt_type: hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED,
+                        apic_id: 0,
+                        vector,
+                        level_triggered: false,
+                        logical_destination_mode: false,
+                        long_mode: false,
+                    }) {
+                        tracing::warn!("MSHV request_virtual_interrupt failed: {e}");
+                    }
+                },
+            );
             return true;
         }
         let timer_active = self.timer.as_ref().is_some_and(|t| t.is_active());

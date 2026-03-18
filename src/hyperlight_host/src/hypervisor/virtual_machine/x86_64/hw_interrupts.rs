@@ -159,6 +159,32 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Handles PV timer configuration from guest IO out.
+/// Parses the timer period from `data`, stops any existing timer,
+/// and starts a new TimerThread if `period_us > 0`.
+/// Returns `true` if the port was handled, `false` otherwise.
+pub(crate) fn handle_pv_timer_config(
+    timer: &mut Option<TimerThread>,
+    data: &[u8],
+    inject_fn: impl Fn() + Send + 'static,
+) -> bool {
+    if data.len() >= 4 {
+        let period_us = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        // Stop existing timer if any.
+        if let Some(mut t) = timer.take() {
+            t.stop();
+        }
+        if period_us > 0 {
+            let clamped = (period_us as u64).clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
+            let period = Duration::from_micros(clamped);
+            *timer = Some(TimerThread::start(period, inject_fn));
+        }
+        true
+    } else {
+        false
+    }
+}
+
 /// Shared timer thread that periodically calls an inject function.
 ///
 /// Each backend passes a closure for interrupt injection:

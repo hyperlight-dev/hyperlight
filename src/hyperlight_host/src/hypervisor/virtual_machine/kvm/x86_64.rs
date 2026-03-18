@@ -36,8 +36,6 @@ use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
     MXCSR_DEFAULT,
 };
-#[cfg(feature = "hw-interrupts")]
-use crate::hypervisor::virtual_machine::HypervisorError;
 #[cfg(all(test, not(feature = "nanvix-unstable")))]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
 #[cfg(feature = "hw-interrupts")]
@@ -218,11 +216,7 @@ impl KvmVm {
                         return Ok(VmExit::Halt());
                     }
                     if port == VmAction::PvTimerConfig as u16 {
-                        let data_copy: [u8; 4] = data
-                            .get(..4)
-                            .and_then(|s| s.try_into().ok())
-                            .unwrap_or([0; 4]);
-                        self.handle_pv_timer_config(&data_copy)?;
+                        self.handle_pv_timer_config(data);
                         continue;
                     }
                     // PIT ports (0x40-0x43): no in-kernel PIT, so these
@@ -257,29 +251,16 @@ impl KvmVm {
     }
 
     #[cfg(feature = "hw-interrupts")]
-    fn handle_pv_timer_config(&mut self, data: &[u8; 4]) -> std::result::Result<(), RunVcpuError> {
-        use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::{
-            MAX_TIMER_PERIOD_US, MIN_TIMER_PERIOD_US,
-        };
+    fn handle_pv_timer_config(&mut self, data: &[u8]) {
+        use super::super::x86_64::hw_interrupts::handle_pv_timer_config;
 
-        let period_us = u32::from_le_bytes(*data) as u64;
-        if period_us == 0 {
-            // Stop existing timer if any.
-            if let Some(mut t) = self.timer.take() {
-                t.stop();
-            }
-        } else if self.timer.is_none() {
-            let period_us = period_us.clamp(MIN_TIMER_PERIOD_US, MAX_TIMER_PERIOD_US);
-            let eventfd = self
-                .timer_irq_eventfd
-                .try_clone()
-                .map_err(|e| RunVcpuError::Unknown(HypervisorError::KvmError(e.into())))?;
-            let period = std::time::Duration::from_micros(period_us);
-            self.timer = Some(TimerThread::start(period, move || {
-                let _ = eventfd.write(1);
-            }));
-        }
-        Ok(())
+        let eventfd_clone = self
+            .timer_irq_eventfd
+            .try_clone()
+            .expect("failed to clone eventfd");
+        handle_pv_timer_config(&mut self.timer, data, move || {
+            let _ = eventfd_clone.write(1);
+        });
     }
 
     /// Run the vCPU once without hardware interrupt support (default path).
