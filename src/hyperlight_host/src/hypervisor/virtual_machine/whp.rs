@@ -141,16 +141,19 @@ impl WhpVm {
                         .into(),
                     ));
                 }
+            }
 
-                let p = WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
-                WHvSetPartitionProperty(
-                    p,
-                    WHvPartitionPropertyCodeProcessorCount,
-                    &NUM_CPU as *const _ as *const _,
-                    std::mem::size_of_val(&NUM_CPU) as _,
-                )
-                .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
+            let p = WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
+            WHvSetPartitionProperty(
+                p,
+                WHvPartitionPropertyCodeProcessorCount,
+                &NUM_CPU as *const _ as *const _,
+                std::mem::size_of_val(&NUM_CPU) as _,
+            )
+            .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
 
+            #[cfg(feature = "hw-interrupts")]
+            {
                 let apic_mode: u32 = 1; // WHvX64LocalApicEmulationModeXApic
                 WHvSetPartitionProperty(
                     p,
@@ -159,34 +162,19 @@ impl WhpVm {
                     std::mem::size_of_val(&apic_mode) as _,
                 )
                 .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
-
-                WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-                WHvCreateVirtualProcessor(p, 0, 0)
-                    .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
-
-                // Initialize the LAPIC via the bulk interrupt-controller
-                // state API (individual APIC register writes via
-                // WHvSetVirtualProcessorRegisters fail with ACCESS_DENIED).
-                Self::init_lapic_bulk(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-
-                p
             }
 
-            #[cfg(not(feature = "hw-interrupts"))]
-            {
-                let p = WHvCreatePartition().map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
-                WHvSetPartitionProperty(
-                    p,
-                    WHvPartitionPropertyCodeProcessorCount,
-                    &NUM_CPU as *const _ as *const _,
-                    std::mem::size_of_val(&NUM_CPU) as _,
-                )
-                .map_err(|e| CreateVmError::SetPartitionProperty(e.into()))?;
-                WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
-                WHvCreateVirtualProcessor(p, 0, 0)
-                    .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
-                p
-            }
+            WHvSetupPartition(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+            WHvCreateVirtualProcessor(p, 0, 0)
+                .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
+
+            // Initialize the LAPIC via the bulk interrupt-controller
+            // state API (individual APIC register writes via
+            // WHvSetVirtualProcessorRegisters fail with ACCESS_DENIED).
+            #[cfg(feature = "hw-interrupts")]
+            Self::init_lapic_bulk(p).map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+            p
         };
 
         let mgr = get_surrogate_process_manager()
