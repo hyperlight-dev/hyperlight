@@ -220,7 +220,8 @@ impl KvmVm {
                         return Ok(VmExit::Halt());
                     }
                     if port == VmAction::PvTimerConfig as u16 {
-                        self.handle_pv_timer_config(data);
+                        let data_copy = data.to_vec();
+                        self.handle_pv_timer_config(&data_copy);
                         continue;
                     }
                     // PIT ports (0x40-0x43): no in-kernel PIT, so these
