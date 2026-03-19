@@ -32,20 +32,16 @@ use super::file_mapping::prepare_file_cow;
 use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
 use crate::HyperlightError::{self, SnapshotSandboxMismatch};
-use crate::Result;
 use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::hypervisor::InterruptHandle;
 use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
-#[cfg(target_os = "linux")]
-use crate::log_then_return;
-use crate::mem::memory_region::MemoryRegion;
-#[cfg(target_os = "linux")]
-use crate::mem::memory_region::MemoryRegionFlags;
+use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::{HostSharedMemory, SharedMemory as _};
 use crate::metrics::{
     METRIC_GUEST_ERROR, METRIC_GUEST_ERROR_LABEL_CODE, maybe_time_and_emit_guest_call,
 };
+use crate::{Result, log_then_return};
 
 /// A fully initialized sandbox that can execute guest functions multiple times.
 ///
@@ -525,7 +521,6 @@ impl MultiUseSandbox {
     /// The caller must ensure the host memory region remains valid and unmodified
     /// for the lifetime of `self`.
     #[instrument(err(Debug), skip(self, rgn), parent = Span::current())]
-    #[cfg(target_os = "linux")]
     pub unsafe fn map_region(&mut self, rgn: &MemoryRegion) -> Result<()> {
         if self.poisoned {
             return Err(crate::HyperlightError::PoisonedSandbox);
@@ -914,9 +909,7 @@ mod tests {
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
     use hyperlight_testing::simple_guest_as_string;
 
-    #[cfg(target_os = "linux")]
     use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
-    #[cfg(target_os = "linux")]
     use crate::mem::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, SharedMemory as _};
     use crate::sandbox::SandboxConfiguration;
     use crate::{GuestBinary, HyperlightError, MultiUseSandbox, Result, UninitializedSandbox};
@@ -955,7 +948,6 @@ mod tests {
         }
 
         // map_region should fail when poisoned
-        #[cfg(target_os = "linux")]
         {
             let map_mem = allocate_guest_memory();
             let guest_base = 0x0;
@@ -965,7 +957,6 @@ mod tests {
         }
 
         // map_file_cow should fail when poisoned
-        #[cfg(target_os = "linux")]
         {
             let temp_file = std::env::temp_dir().join("test_poison_map_file.bin");
             let res = sbox.map_file_cow(&temp_file, 0x0, None).unwrap_err();
@@ -1227,7 +1218,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn test_mmap() {
         let mut sbox = UninitializedSandbox::new(
@@ -1263,7 +1253,6 @@ mod tests {
     }
 
     // Makes sure MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE executable but not writable
-    #[cfg(target_os = "linux")]
     #[test]
     fn test_mmap_write_exec() {
         let mut sbox = UninitializedSandbox::new(
@@ -1312,7 +1301,6 @@ mod tests {
         };
     }
 
-    #[cfg(target_os = "linux")]
     fn page_aligned_memory(src: &[u8]) -> GuestSharedMemory {
         use hyperlight_common::mem::PAGE_SIZE_USIZE;
 
@@ -1326,29 +1314,33 @@ mod tests {
         guest_mem
     }
 
-    #[cfg(target_os = "linux")]
     fn region_for_memory(
         mem: &GuestSharedMemory,
         guest_base: usize,
         flags: MemoryRegionFlags,
     ) -> MemoryRegion {
-        let ptr = mem.base_addr();
+        #[cfg(not(windows))]
+        let host_base = mem.base_addr();
+        #[cfg(windows)]
+        let host_base = mem.host_region_base();
         let len = mem.mem_size();
+        let host_end =
+            <crate::mem::memory_region::HostGuestMemoryRegion as crate::mem::memory_region::MemoryRegionKind>::add(
+                host_base, len,
+            );
         MemoryRegion {
-            host_region: ptr..(ptr + len),
+            host_region: host_base..host_end,
             guest_region: guest_base..(guest_base + len),
             flags,
             region_type: MemoryRegionType::Heap,
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn allocate_guest_memory() -> GuestSharedMemory {
         page_aligned_memory(b"test data for snapshot")
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn snapshot_restore_handles_remapping_correctly() {
         let mut sbox: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
