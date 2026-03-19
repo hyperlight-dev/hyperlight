@@ -5,6 +5,7 @@ set dotenv-load := true
 
 set-env-command := if os() == "windows" { "$env:" } else { "export " }
 bin-suffix := if os() == "windows" { ".bat" } else { ".sh" }
+nightly-toolchain := "nightly-2026-02-27"
 
 ################
 ### cross-rs ###
@@ -295,25 +296,25 @@ check:
     {{ cargo-cmd }} check -p hyperlight-host --features hw-interrupts  {{ target-triple-flag }}
 
 fmt-check: (ensure-nightly-fmt)
-    cargo +nightly fmt --all -- --check
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml -- --check
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml -- --check
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml -- --check
-    cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml -- --check
+    cargo +{{nightly-toolchain}} fmt --all -- --check
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml -- --check
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml -- --check
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml -- --check
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml -- --check
 
 [private]
 ensure-nightly-fmt:
-    {{ if os() == "windows" { "if (-not (rustup +nightly component list | Select-String 'rustfmt.*installed')) { rustup component add rustfmt --toolchain nightly }" } else { "rustup +nightly component list | grep -q 'rustfmt.*installed' || rustup component add rustfmt --toolchain nightly" } }}
+    {{ if os() == "windows" { "if (-not (rustup +"+nightly-toolchain+" component list | Select-String 'rustfmt.*installed')) { rustup component add rustfmt --toolchain "+nightly-toolchain+" }" } else { "rustup +"+nightly-toolchain+" component list | grep -q 'rustfmt.*installed' || rustup component add rustfmt --toolchain "+nightly-toolchain } }}
 
 check-license-headers:
     ./dev/check-license-headers.sh
 
 fmt-apply: (ensure-nightly-fmt)
-    cargo +nightly fmt --all
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml
-    cargo +nightly fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml
-    cargo +nightly fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
+    cargo +{{nightly-toolchain}} fmt --all
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/simpleguest/Cargo.toml
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/dummyguest/Cargo.toml
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/tests/rust_guests/witguest/Cargo.toml
+    cargo +{{nightly-toolchain}} fmt --manifest-path src/hyperlight_guest_capi/Cargo.toml
 
 clippy target=default-target: (witguest-wit)
     {{ cargo-cmd }} clippy --all-targets --all-features --profile={{ if target == "debug" { "dev" } else { target } }}  {{ target-triple-flag }} -- -D warnings

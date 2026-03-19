@@ -4,6 +4,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.13.1] - 2026-03-19
+
+### Fixed
+* Explicitly error out on host-guest version mismatch by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1252
+
+### Added
+* Hardware interrupt support by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1272
+* Copy-on-write file mapping support with labels by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1320, https://github.com/hyperlight-dev/hyperlight/pull/1322
+* Re-export host functions from the `hyperlight_host` package by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1314
+* Make `map_region` public by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1293
+* Nanvix: `GuestCounter` API and i686 guest layout behind `nanvix-unstable` feature flag by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1270, https://github.com/hyperlight-dev/hyperlight/pull/1271
+
 ## [v0.13.0] - 2026-03-06
 
 ### Fixed
@@ -254,7 +266,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.1..HEAD>
+[v0.13.1]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.0...v0.13.1>
 [v0.13.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.12.0...v0.13.0>
 [v0.12.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.11.0...v0.12.0>
 [v0.11.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0...v0.11.0>
