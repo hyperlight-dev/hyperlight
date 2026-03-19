@@ -206,11 +206,6 @@ impl KvmVm {
     fn run_vcpu_hw_interrupts(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
         loop {
             match self.vcpu_fd.run() {
-                Ok(VcpuExit::Hlt) => {
-                    return Err(RunVcpuError::UnexpectedExit(
-                        "KVM hw-interrupts: unexpected VcpuExit::Hlt".to_string(),
-                    ));
-                }
                 Ok(VcpuExit::IoOut(port, data)) => {
                     if port == VmAction::Halt as u16 {
                         // Stop the timer thread before returning.
