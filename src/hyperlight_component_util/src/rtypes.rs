@@ -120,7 +120,12 @@ fn emit_resource_ref(s: &mut State, n: u32, path: Vec<ImportExport>) -> TokenStr
     trait_path.push(rtrait.clone());
     let t = s.resolve_trait_immut(true, &trait_path);
     let tvis = emit_tvis(s, t.tv_idxs());
-    quote! { <#sv::#extras #instance_type as #rp #tns::#instance_mod::#rtrait #tvis>::T }
+    let trait_ref = if tns.is_empty() {
+        quote! { #rp #instance_mod::#rtrait }
+    } else {
+        quote! { #rp #tns::#instance_mod::#rtrait }
+    };
+    quote! { <#sv::#extras #instance_type as #trait_ref #tvis>::T }
 }
 
 /// Try to find a way to refer to the given type variable from the
@@ -174,7 +179,11 @@ fn try_find_local_var_id(
             let rp = s.root_path();
             let tns = wn.namespace_path();
             let helper = kebab_to_namespace(wn.name);
-            Some(quote! { #rp #tns::#helper::#name })
+            if tns.is_empty() {
+                Some(quote! { #rp #helper::#name })
+            } else {
+                Some(quote! { #rp #tns::#helper::#name })
+            }
         } else {
             let hp = s.helper_path();
             Some(quote! { #hp #name })
@@ -735,8 +744,13 @@ fn emit_extern_decl<'a, 'b, 'c>(
             let rp = s.root_path();
             let tns = wn.namespace_path();
             let tn = kebab_to_type(wn.name);
+            let trait_bound = if tns.is_empty() {
+                quote! { #rp #tn }
+            } else {
+                quote! { #rp #tns::#tn }
+            };
             quote! {
-                type #tn: #rp #tns::#tn #vs;
+                type #tn: #trait_bound #vs;
                 fn #getter(&mut self) -> impl ::core::borrow::BorrowMut<Self::#tn>;
             }
         }
