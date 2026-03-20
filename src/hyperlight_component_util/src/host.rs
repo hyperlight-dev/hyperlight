@@ -135,8 +135,13 @@ fn emit_export_instance<'a, 'b, 'c>(s: &'c mut State<'a, 'b>, wn: WitName, it: &
     let (root_ns, root_base_name) = s.root_component_name.unwrap();
     let wrapper_name = kebab_to_wrapper_name(root_base_name);
     let imports_name = kebab_to_imports_name(root_base_name);
+    let trait_path = if ns.is_empty() {
+        quote! { #trait_name }
+    } else {
+        quote! { #ns::#trait_name }
+    };
     s.root_mod.items.extend(quote! {
-        impl<I: #root_ns::#imports_name, S: ::hyperlight_host::sandbox::Callable> #ns::#trait_name <#(#tvs),*> for #wrapper_name<I, S> {
+        impl<I: #root_ns::#imports_name, S: ::hyperlight_host::sandbox::Callable> #trait_path <#(#tvs),*> for #wrapper_name<I, S> {
             #(#exports)*
         }
     });
