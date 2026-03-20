@@ -721,14 +721,9 @@ impl GuestSharedMemory {
             ),
         };
         let guest_base = guest_base as usize;
-        #[cfg(not(windows))]
-        let host_base = self.base_addr();
-        #[cfg(windows)]
-        let host_base = self.host_region_base();
-        let host_end = <HostGuestMemoryRegion as MemoryRegionKind>::add(host_base, self.mem_size());
         MemoryRegion {
             guest_region: guest_base..(guest_base + self.mem_size()),
-            host_region: host_base..host_end,
+            host_region: self.host_region_base()..self.host_region_end(),
             region_type,
             flags,
         }
@@ -779,15 +774,30 @@ pub trait SharedMemory {
     }
 
     /// Extract a base address that can be mapped into a VM for this
-    /// SharedMemory
-    #[cfg(target_os = "windows")]
-    fn host_region_base(&self) -> super::memory_region::HostRegionBase {
-        super::memory_region::HostRegionBase {
-            from_handle: self.region().handle.into(),
-            handle_base: self.region().ptr as usize,
-            handle_size: self.region().size,
-            offset: PAGE_SIZE_USIZE,
+    /// SharedMemory.
+    ///
+    /// On Linux this returns a raw `usize` pointer. On Windows it
+    /// returns a [`HostRegionBase`](super::memory_region::HostRegionBase)
+    /// that carries the file-mapping handle metadata needed by WHP.
+    fn host_region_base(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
+        #[cfg(not(windows))]
+        {
+            self.base_addr()
         }
+        #[cfg(windows)]
+        {
+            super::memory_region::HostRegionBase {
+                from_handle: self.region().handle.into(),
+                handle_base: self.region().ptr as usize,
+                handle_size: self.region().size,
+                offset: PAGE_SIZE_USIZE,
+            }
+        }
+    }
+
+    /// Return the end address of the host region (base + usable size).
+    fn host_region_end(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
+        <HostGuestMemoryRegion as MemoryRegionKind>::add(self.host_region_base(), self.mem_size())
     }
 
     /// Run some code with exclusive access to the SharedMemory

@@ -1319,17 +1319,9 @@ mod tests {
         guest_base: usize,
         flags: MemoryRegionFlags,
     ) -> MemoryRegion {
-        #[cfg(not(windows))]
-        let host_base = mem.base_addr();
-        #[cfg(windows)]
-        let host_base = mem.host_region_base();
         let len = mem.mem_size();
-        let host_end =
-            <crate::mem::memory_region::HostGuestMemoryRegion as crate::mem::memory_region::MemoryRegionKind>::add(
-                host_base, len,
-            );
         MemoryRegion {
-            host_region: host_base..host_end,
+            host_region: mem.host_region_base()..mem.host_region_end(),
             guest_region: guest_base..(guest_base + len),
             flags,
             region_type: MemoryRegionType::Heap,
