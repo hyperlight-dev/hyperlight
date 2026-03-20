@@ -111,3 +111,12 @@ jobs:
           path: src/tests/rust_guests/witguest/twoworlds.wasm
           retention-days: 1
           if-no-files-found: error
+
+      - name: Upload collision.wasm
+        if: inputs.config == 'debug'
+        uses: actions/upload-artifact@v7
+        with:
+          name: collision-wasm
+          path: src/tests/rust_guests/witguest/collision.wasm
+          retention-days: 1
+          if-no-files-found: error
