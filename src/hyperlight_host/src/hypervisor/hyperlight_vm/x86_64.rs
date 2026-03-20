@@ -292,7 +292,6 @@ impl HyperlightVm {
         let mut rflags = 1 << 1; // RFLAGS.1 is RES1
         if self.pending_tlb_flush {
             rflags |= 1 << 6; // set ZF if we need a tlb flush done before anything else executes
-            self.pending_tlb_flush = false;
         }
         // set RIP and RSP, reset others
         let regs = CommonRegisters {
@@ -319,13 +318,20 @@ impl HyperlightVm {
             .set_fpu(&CommonFpu::default())
             .map_err(DispatchGuestCallError::SetupRegs)?;
 
-        self.run(
-            mem_mgr,
-            host_funcs,
-            #[cfg(gdb)]
-            dbg_mem_access_fn,
-        )
-        .map_err(DispatchGuestCallError::Run)
+        let result = self
+            .run(
+                mem_mgr,
+                host_funcs,
+                #[cfg(gdb)]
+                dbg_mem_access_fn,
+            )
+            .map_err(DispatchGuestCallError::Run);
+
+        // Clear the TLB flush flag only after run() returns. The guest
+        // may have been cancelled before it executed the flush.
+        self.pending_tlb_flush = false;
+
+        result
     }
 
     /// Resets the following vCPU state:
