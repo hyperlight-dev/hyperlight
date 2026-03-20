@@ -472,3 +472,82 @@ mod pick_world_binding_test2 {
         assert_eq!(first_import.r#value, "dummyValue");
     }
 }
+
+// Test that name collision disambiguation works correctly.
+// Both a:pkg and b:pkg define an interface called "types".
+// The collision detection should generate disambiguated names
+// (e.g., PkgTypes instead of just Types) for the import trait members.
+mod collision_bindings {
+    hyperlight_component_macro::host_bindgen!("../tests/rust_guests/witguest/collision.wasm");
+}
+mod collision_test {
+    use crate::collision_bindings::*;
+
+    // Verify that the disambiguated types and record types exist
+    // and can be instantiated. This confirms that two interfaces
+    // both named "types" from different packages (a:pkg and b:pkg)
+    // generate distinct trait members (APkgTypes vs BPkgTypes).
+    #[test]
+    fn collision_types_are_distinct() {
+        let info = a::pkg::types::Info {
+            name: String::from("hello"),
+            value: 42,
+        };
+        let detail = b::pkg::types::Detail {
+            label: String::from("world"),
+            count: 99,
+        };
+        assert_eq!(info.name, "hello");
+        assert_eq!(info.value, 42);
+        assert_eq!(detail.label, "world");
+        assert_eq!(detail.count, 99);
+    }
+
+    // Verify the imports trait has distinct associated types for each
+    // colliding interface, ensuring a host implementation can provide
+    // separate implementations for each.
+    struct CollisionHost;
+
+    impl a::pkg::Types for CollisionHost {
+        fn get_info(&mut self) -> a::pkg::types::Info {
+            a::pkg::types::Info {
+                name: String::from("test-info"),
+                value: 1,
+            }
+        }
+    }
+
+    impl b::pkg::Types for CollisionHost {
+        fn get_detail(&mut self) -> b::pkg::types::Detail {
+            b::pkg::types::Detail {
+                label: String::from("test-detail"),
+                count: 2,
+            }
+        }
+    }
+
+    #[allow(refining_impl_trait)]
+    impl test::collision::CollisionTestImports for CollisionHost {
+        type APkgTypes = Self;
+        fn a_pkg_types(&mut self) -> &mut Self {
+            self
+        }
+        type BPkgTypes = Self;
+        fn b_pkg_types(&mut self) -> &mut Self {
+            self
+        }
+    }
+
+    #[test]
+    fn collision_host_impl_compiles() {
+        // This test verifies that the trait implementation compiles correctly,
+        // meaning the generated trait has distinct associated types for each
+        // colliding import. The existence of this test (and the fact it compiles)
+        // is the assertion.
+        let mut host = CollisionHost;
+        let info = a::pkg::Types::get_info(&mut host);
+        assert_eq!(info.name, "test-info");
+        let detail = b::pkg::Types::get_detail(&mut host);
+        assert_eq!(detail.label, "test-detail");
+    }
+}
