@@ -733,6 +733,9 @@ impl MultiUseSandbox {
             }
         })();
 
+        // Clear partial abort bytes so they don't leak across calls.
+        self.mem_mgr.abort_buffer.clear();
+
         // In the happy path we do not need to clear io-buffers from the host because:
         // - the serialized guest function call is zeroed out by the guest during deserialization, see call to `try_pop_shared_input_data_into::<FunctionCall>()`
         // - the serialized guest function result is zeroed out by us (the host) during deserialization, see `get_guest_function_call_result`
