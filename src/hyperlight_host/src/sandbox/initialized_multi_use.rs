@@ -1467,6 +1467,33 @@ mod tests {
         );
     }
 
+    /// Test that stale abort buffer bytes from a previous call don't
+    /// leak into the next call.
+    #[test]
+    fn stale_abort_buffer_does_not_leak_across_calls() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        // Simulate a partial abort
+        sbox.mem_mgr.abort_buffer.extend_from_slice(&[0xAA; 1020]);
+
+        let res = sbox.call::<String>("Echo", "hello".to_string());
+        assert!(
+            res.is_ok(),
+            "Expected Ok after stale abort buffer, got: {:?}",
+            res.unwrap_err()
+        );
+
+        // The buffer should be empty after the call.
+        assert!(
+            sbox.mem_mgr.abort_buffer.is_empty(),
+            "abort_buffer should be empty after a guest call"
+        );
+    }
+
     /// Test that sandboxes can be created and evolved with different heap sizes
     #[test]
     fn test_sandbox_creation_various_sizes() {
