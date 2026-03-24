@@ -91,7 +91,7 @@ crossbeam-queue = "0.3.12"
 tracing-serde = "0.2.0"
 serial_test = "3.4.0"
 hyperlight-testing = { workspace = true }
-env_logger = "0.11.8"
+env_logger = "0.11.10"
 tracing-forest = { version = "0.3.1", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
 tracing = "0.1.44"
 tracing-subscriber = {version = "0.3.23", features = ["std", "env-filter"]}

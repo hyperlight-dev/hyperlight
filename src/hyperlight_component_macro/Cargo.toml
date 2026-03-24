@@ -23,4 +23,4 @@ syn = { version = "2.0.117" }
 itertools = { version = "0.14.0" }
 prettyplease = { version = "0.2.37" }
 hyperlight-component-util = { workspace = true }
-env_logger = { version = "0.11.8" }
+env_logger = { version = "0.11.10" }
