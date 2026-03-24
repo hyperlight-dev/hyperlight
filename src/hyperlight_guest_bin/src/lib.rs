@@ -116,6 +116,10 @@ pub(crate) static HEAP_ALLOCATOR: ProfiledLockedHeap<32> =
     ProfiledLockedHeap(LockedHeap::<32>::empty());
 
 pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
+/// Canary value set to 0xDEAD_BEEF during init. If this reads as 0
+/// after snapshot restore while GUEST_HANDLE is None, the snapshot
+/// memory for this region was not properly restored.
+pub static mut GUEST_HANDLE_CANARY: u64 = 0;
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
     GuestFunctionRegister::new();
 
@@ -205,6 +209,7 @@ pub(crate) extern "C" fn generic_init(
 ) -> u64 {
     unsafe {
         GUEST_HANDLE = GuestHandle::init(peb_address as *mut HyperlightPEB);
+        GUEST_HANDLE_CANARY = 0xDEAD_BEEF;
         #[allow(static_mut_refs)]
         let peb_ptr = GUEST_HANDLE.peb().unwrap();
 

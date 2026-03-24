@@ -86,6 +86,16 @@ pub(crate) fn internal_dispatch_function() {
     };
 
     let handle = unsafe { GUEST_HANDLE };
+    let canary = unsafe { crate::GUEST_HANDLE_CANARY };
+
+    if handle.peb().is_none() || canary != 0xDEAD_BEEF {
+        panic!(
+            "GUEST_HANDLE is None! canary={:#x} (expected 0xDEADBEEF), peb={:#x}. \
+             If canary is also 0, snapshot memory was not restored for this page.",
+            canary,
+            handle.peb().map_or(0, |p| p as u64),
+        );
+    }
 
     let function_call = handle
         .try_pop_shared_input_data_into::<FunctionCall>()
