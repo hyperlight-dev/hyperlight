@@ -77,18 +77,18 @@ impl HyperlightSandboxTarget {
     /// Sends an event to the Hypervisor that tells it to resume vCPU execution
     /// Note: The method waits for a confirmation message
     pub(crate) fn resume_vcpu(&mut self) -> Result<(), GdbTargetError> {
-        log::info!("Resume vCPU execution");
+        tracing::info!("Resume vCPU execution");
 
         match self.send_command(DebugMsg::Continue)? {
             DebugResponse::Continue => Ok(()),
             DebugResponse::NotAllowed => {
-                log::error!("Action not allowed at this time, crash might have occurred");
+                tracing::error!("Action not allowed at this time, crash might have occurred");
                 // This is a consequence of the target crashing or being in an invalid state
                 // we cannot continue execution, but we can still read registers and memory
                 Ok(())
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(GdbTargetError::UnexpectedMessage)
             }
         }
@@ -103,16 +103,16 @@ impl HyperlightSandboxTarget {
     /// and continue executing
     /// Note: The method waits for a confirmation message
     pub(crate) fn disable_debug(&mut self) -> Result<(), GdbTargetError> {
-        log::info!("Disable debugging and resume execution");
+        tracing::info!("Disable debugging and resume execution");
 
         match self.send_command(DebugMsg::DisableDebug)? {
             DebugResponse::DisableDebug => Ok(()),
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(GdbTargetError::UnexpectedError)
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(GdbTargetError::UnexpectedMessage)
             }
         }
@@ -123,7 +123,7 @@ impl HyperlightSandboxTarget {
         if let Some(handle) = &self.interrupt_handle {
             handle.kill_from_debugger()
         } else {
-            log::warn!("No interrupt handle set, cannot interrupt vCPU");
+            tracing::warn!("No interrupt handle set, cannot interrupt vCPU");
 
             false
         }
@@ -156,7 +156,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         gva: <Self::Arch as Arch>::Usize,
         data: &mut [u8],
     ) -> TargetResult<usize, Self> {
-        log::debug!("Read addr: {:X} len: {:X}", gva, data.len());
+        tracing::debug!("Read addr: {:X} len: {:X}", gva, data.len());
 
         match self.send_command(DebugMsg::ReadAddr(gva, data.len()))? {
             DebugResponse::ReadAddr(v) => {
@@ -165,11 +165,11 @@ impl SingleThreadBase for HyperlightSandboxTarget {
                 Ok(v.len())
             }
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(TargetError::NonFatal)
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
             }
         }
@@ -180,23 +180,23 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         gva: <Self::Arch as Arch>::Usize,
         data: &[u8],
     ) -> TargetResult<(), Self> {
-        log::debug!("Write addr: {:X} len: {:X}", gva, data.len());
+        tracing::debug!("Write addr: {:X} len: {:X}", gva, data.len());
         let v = Vec::from(data);
 
         match self.send_command(DebugMsg::WriteAddr(gva, v))? {
             DebugResponse::WriteAddr => Ok(()),
             DebugResponse::NotAllowed => {
-                log::error!("Action not allowed at this time, crash might have occurred");
+                tracing::error!("Action not allowed at this time, crash might have occurred");
                 // This is a consequence of the target crashing or being in an invalid state
                 // we cannot continue execution, but we can still read registers and memory
                 Ok(())
             }
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(TargetError::NonFatal)
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
             }
         }
@@ -206,7 +206,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         &mut self,
         regs: &mut <Self::Arch as Arch>::Registers,
     ) -> TargetResult<(), Self> {
-        log::debug!("Read regs");
+        tracing::debug!("Read regs");
 
         match self.send_command(DebugMsg::ReadRegisters)? {
             DebugResponse::ReadRegisters(boxed_regs) => {
@@ -236,12 +236,12 @@ impl SingleThreadBase for HyperlightSandboxTarget {
                 Ok(())
             }
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(TargetError::NonFatal)
             }
 
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
             }
         }
@@ -251,7 +251,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         &mut self,
         regs: &<Self::Arch as Arch>::Registers,
     ) -> TargetResult<(), Self> {
-        log::debug!("Write regs");
+        tracing::debug!("Write regs");
 
         let common_regs = CommonRegisters {
             rax: regs.regs[0],
@@ -291,17 +291,17 @@ impl SingleThreadBase for HyperlightSandboxTarget {
         ))))? {
             DebugResponse::WriteRegisters => Ok(()),
             DebugResponse::NotAllowed => {
-                log::error!("Action not allowed at this time, crash might have occurred");
+                tracing::error!("Action not allowed at this time, crash might have occurred");
                 // This is a consequence of the target crashing or being in an invalid state
                 // we cannot continue execution, but we can still read registers and memory
                 Ok(())
             }
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(TargetError::NonFatal)
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
             }
         }
@@ -314,7 +314,7 @@ impl SingleThreadBase for HyperlightSandboxTarget {
 
 impl SectionOffsets for HyperlightSandboxTarget {
     fn get_section_offsets(&mut self) -> Result<Offsets<<Self::Arch as Arch>::Usize>, Self::Error> {
-        log::debug!("Get section offsets");
+        tracing::debug!("Get section offsets");
 
         match self.send_command(DebugMsg::GetCodeSectionOffset)? {
             DebugResponse::GetCodeSectionOffset(text) => Ok(Offsets::Segments {
@@ -322,11 +322,11 @@ impl SectionOffsets for HyperlightSandboxTarget {
                 data_seg: None,
             }),
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(GdbTargetError::UnexpectedError)
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(GdbTargetError::UnexpectedMessage)
             }
         }
@@ -348,22 +348,22 @@ impl HwBreakpoint for HyperlightSandboxTarget {
         addr: <Self::Arch as Arch>::Usize,
         _kind: <Self::Arch as Arch>::BreakpointKind,
     ) -> TargetResult<bool, Self> {
-        log::debug!("Add hw breakpoint at address {:X}", addr);
+        tracing::debug!("Add hw breakpoint at address {:X}", addr);
 
         match self.send_command(DebugMsg::AddHwBreakpoint(addr))? {
             DebugResponse::AddHwBreakpoint(rsp) => Ok(rsp),
             DebugResponse::NotAllowed => {
-                log::error!("Action not allowed at this time, crash might have occurred");
+                tracing::error!("Action not allowed at this time, crash might have occurred");
                 // This is a consequence of the target crashing or being in an invalid state
                 // we cannot continue execution, but we can still read registers and memory
                 Err(TargetError::NonFatal)
             }
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(TargetError::NonFatal)
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
             }
         }
@@ -374,22 +374,22 @@ impl HwBreakpoint for HyperlightSandboxTarget {
         addr: <Self::Arch as Arch>::Usize,
         _kind: <Self::Arch as Arch>::BreakpointKind,
     ) -> TargetResult<bool, Self> {
-        log::debug!("Remove hw breakpoint at address {:X}", addr);
+        tracing::debug!("Remove hw breakpoint at address {:X}", addr);
 
         match self.send_command(DebugMsg::RemoveHwBreakpoint(addr))? {
             DebugResponse::RemoveHwBreakpoint(rsp) => Ok(rsp),
             DebugResponse::NotAllowed => {
-                log::error!("Action not allowed at this time, crash might have occurred");
+                tracing::error!("Action not allowed at this time, crash might have occurred");
                 // This is a consequence of the target crashing or being in an invalid state
                 // we cannot continue execution, but we can still read registers and memory
                 Err(TargetError::NonFatal)
             }
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(TargetError::NonFatal)
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
             }
         }
@@ -402,22 +402,22 @@ impl SwBreakpoint for HyperlightSandboxTarget {
         addr: <Self::Arch as Arch>::Usize,
         _kind: <Self::Arch as Arch>::BreakpointKind,
     ) -> TargetResult<bool, Self> {
-        log::debug!("Add sw breakpoint at address {:X}", addr);
+        tracing::debug!("Add sw breakpoint at address {:X}", addr);
 
         match self.send_command(DebugMsg::AddSwBreakpoint(addr))? {
             DebugResponse::AddSwBreakpoint(rsp) => Ok(rsp),
             DebugResponse::NotAllowed => {
-                log::error!("Action not allowed at this time, crash might have occurred");
+                tracing::error!("Action not allowed at this time, crash might have occurred");
                 // This is a consequence of the target crashing or being in an invalid state
                 // we cannot continue execution, but we can still read registers and memory
                 Err(TargetError::NonFatal)
             }
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(TargetError::NonFatal)
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
             }
         }
@@ -428,22 +428,22 @@ impl SwBreakpoint for HyperlightSandboxTarget {
         addr: <Self::Arch as Arch>::Usize,
         _kind: <Self::Arch as Arch>::BreakpointKind,
     ) -> TargetResult<bool, Self> {
-        log::debug!("Remove sw breakpoint at address {:X}", addr);
+        tracing::debug!("Remove sw breakpoint at address {:X}", addr);
 
         match self.send_command(DebugMsg::RemoveSwBreakpoint(addr))? {
             DebugResponse::RemoveSwBreakpoint(rsp) => Ok(rsp),
             DebugResponse::NotAllowed => {
-                log::error!("Action not allowed at this time, crash might have occurred");
+                tracing::error!("Action not allowed at this time, crash might have occurred");
                 // This is a consequence of the target crashing or being in an invalid state
                 // we cannot continue execution, but we can still read registers and memory
                 Err(TargetError::NonFatal)
             }
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(TargetError::NonFatal)
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(TargetError::Fatal(GdbTargetError::UnexpectedMessage))
             }
         }
@@ -454,7 +454,7 @@ impl SingleThreadResume for HyperlightSandboxTarget {
     /// Resumes the execution of the vCPU
     /// Note: We do not handle signals passed to this method
     fn resume(&mut self, _signal: Option<Signal>) -> Result<(), Self::Error> {
-        log::debug!("Resume");
+        tracing::debug!("Resume");
         self.resume_vcpu()
     }
     fn support_single_step(&mut self) -> Option<SingleThreadSingleStepOps<'_, Self>> {
@@ -466,21 +466,21 @@ impl SingleThreadSingleStep for HyperlightSandboxTarget {
     /// Steps the vCPU execution by
     /// Note: We do not handle signals passed to this method
     fn step(&mut self, _signal: Option<Signal>) -> Result<(), Self::Error> {
-        log::debug!("Step");
+        tracing::debug!("Step");
         match self.send_command(DebugMsg::Step)? {
             DebugResponse::Step => Ok(()),
             DebugResponse::ErrorOccurred => {
-                log::error!("Error occurred");
+                tracing::error!("Error occurred");
                 Err(GdbTargetError::UnexpectedError)
             }
             DebugResponse::NotAllowed => {
-                log::error!("Action not allowed at this time, crash might have occurred");
+                tracing::error!("Action not allowed at this time, crash might have occurred");
                 // This is a consequence of the target crashing or being in an invalid state
                 // we cannot continue execution, but we can still read registers and memory
                 Ok(())
             }
             msg => {
-                log::error!("Unexpected message received: {:?}", msg);
+                tracing::error!("Unexpected message received: {:?}", msg);
                 Err(GdbTargetError::UnexpectedMessage)
             }
         }

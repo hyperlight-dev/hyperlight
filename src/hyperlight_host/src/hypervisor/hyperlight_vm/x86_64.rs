@@ -405,7 +405,7 @@ impl HyperlightVm {
                 self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))?;
 
                 loop {
-                    log::debug!("Debug wait for event to resume vCPU");
+                    tracing::debug!("Debug wait for event to resume vCPU");
                     // Wait for a message from gdb
                     let req = self.recv_dbg_msg()?;
 
@@ -447,7 +447,7 @@ impl HyperlightVm {
                                     _,
                                 ))) => DebugResponse::ErrorOccurred,
                                 Err(e) => {
-                                    log::error!("Error processing debug request: {:?}", e);
+                                    tracing::error!("Error processing debug request: {:?}", e);
                                     return Err(HandleDebugError::ProcessRequest(e));
                                 }
                             }
@@ -478,7 +478,7 @@ impl HyperlightVm {
                 self.send_dbg_msg(DebugResponse::VcpuStopped(stop_reason))?;
 
                 loop {
-                    log::debug!("Debug wait for event to resume vCPU");
+                    tracing::debug!("Debug wait for event to resume vCPU");
                     // Wait for a message from gdb
                     let req = self.recv_dbg_msg()?;
 
@@ -640,7 +640,7 @@ pub(super) mod debug {
                         self.vm
                             .add_hw_breakpoint(addr)
                             .map_err(|e| {
-                                log::error!("Failed to add hw breakpoint: {:?}", e);
+                                tracing::error!("Failed to add hw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -649,7 +649,7 @@ pub(super) mod debug {
                     DebugMsg::AddSwBreakpoint(addr) => Ok(DebugResponse::AddSwBreakpoint(
                         self.add_sw_breakpoint(addr, mem_access)
                             .map_err(|e| {
-                                log::error!("Failed to add sw breakpoint: {:?}", e);
+                                tracing::error!("Failed to add sw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -657,7 +657,7 @@ pub(super) mod debug {
                     )),
                     DebugMsg::Continue => {
                         self.vm.set_single_step(false).map_err(|e| {
-                            log::error!("Failed to continue execution: {:?}", e);
+                            tracing::error!("Failed to continue execution: {:?}", e);
 
                             e
                         })?;
@@ -666,7 +666,7 @@ pub(super) mod debug {
                     }
                     DebugMsg::DisableDebug => {
                         self.vm.set_debug(false).map_err(|e| {
-                            log::error!("Failed to disable debugging: {:?}", e);
+                            tracing::error!("Failed to disable debugging: {:?}", e);
                             e
                         })?;
 
@@ -686,7 +686,7 @@ pub(super) mod debug {
                         let mut data = vec![0u8; len];
 
                         self.read_addrs(addr, &mut data, mem_access).map_err(|e| {
-                            log::error!("Failed to read from address: {:?}", e);
+                            tracing::error!("Failed to read from address: {:?}", e);
 
                             e
                         })?;
@@ -702,7 +702,7 @@ pub(super) mod debug {
                         self.vm
                             .remove_hw_breakpoint(addr)
                             .map_err(|e| {
-                                log::error!("Failed to remove hw breakpoint: {:?}", e);
+                                tracing::error!("Failed to remove hw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -711,7 +711,7 @@ pub(super) mod debug {
                     DebugMsg::RemoveSwBreakpoint(addr) => Ok(DebugResponse::RemoveSwBreakpoint(
                         self.remove_sw_breakpoint(addr, mem_access)
                             .map_err(|e| {
-                                log::error!("Failed to remove sw breakpoint: {:?}", e);
+                                tracing::error!("Failed to remove sw breakpoint: {:?}", e);
 
                                 e
                             })
@@ -719,7 +719,7 @@ pub(super) mod debug {
                     )),
                     DebugMsg::Step => {
                         self.vm.set_single_step(true).map_err(|e| {
-                            log::error!("Failed to enable step instruction: {:?}", e);
+                            tracing::error!("Failed to enable step instruction: {:?}", e);
 
                             e
                         })?;
@@ -728,7 +728,7 @@ pub(super) mod debug {
                     }
                     DebugMsg::WriteAddr(addr, data) => {
                         self.write_addrs(addr, &data, mem_access).map_err(|e| {
-                            log::error!("Failed to write to address: {:?}", e);
+                            tracing::error!("Failed to write to address: {:?}", e);
 
                             e
                         })?;
@@ -767,7 +767,7 @@ pub(super) mod debug {
         ) -> std::result::Result<(), super::SendDbgMsgError> {
             use super::SendDbgMsgError;
 
-            log::debug!("Sending {:?}", cmd);
+            tracing::debug!("Sending {:?}", cmd);
 
             let gdb_conn = self
                 .gdb_conn
@@ -784,7 +784,7 @@ pub(super) mod debug {
             mem_access: &DebugMemoryAccess,
         ) -> std::result::Result<(), ProcessDebugRequestError> {
             let data_len = data.len();
-            log::debug!("Read addr: {:X} len: {:X}", gva, data_len);
+            tracing::debug!("Read addr: {:X} len: {:X}", gva, data_len);
 
             while !data.is_empty() {
                 let gpa = self.vm.translate_gva(gva)?;
@@ -812,7 +812,7 @@ pub(super) mod debug {
             mem_access: &DebugMemoryAccess,
         ) -> std::result::Result<(), ProcessDebugRequestError> {
             let data_len = data.len();
-            log::debug!("Write addr: {:X} len: {:X}", gva, data_len);
+            tracing::debug!("Write addr: {:X} len: {:X}", gva, data_len);
 
             while !data.is_empty() {
                 let gpa = self.vm.translate_gva(gva)?;
