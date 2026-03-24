@@ -45,7 +45,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust toolchain
-        uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+        uses: hyperlight-dev/ci-setup-workflow@v1.9.0
         with:
           rust-toolchain: "1.89"
         env:
