@@ -459,6 +459,105 @@ fuzz-trace-timed max_time fuzz-target="fuzz_guest_trace":
 build-trace-fuzzers:
     cargo +nightly fuzz build fuzz_guest_trace --features trace
 
+####################
+### COVERAGE #######
+####################
+
+# install cargo-llvm-cov if not already installed and ensure nightly toolchain + llvm-tools are available
+ensure-cargo-llvm-cov:
+    command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install cargo-llvm-cov --locked
+    rustup toolchain install nightly 2>/dev/null
+    rustup component add llvm-tools --toolchain nightly 2>/dev/null
+
+# host-side packages to collect coverage for (guest/no_std crates are excluded because they
+# define #[panic_handler] and cannot be compiled for the host target under coverage instrumentation)
+coverage-packages := "-p hyperlight-common -p hyperlight-host -p hyperlight-testing -p hyperlight-component-util -p hyperlight-component-macro"
+
+# run all tests and examples with coverage instrumentation, collecting profdata without
+# generating a report. Mirrors test-like-ci + run-examples-like-ci to exercise all code paths
+# across all feature combinations. Uses nightly for branch coverage.
+#
+# Uses the show-env approach so that cargo produces separate binaries per feature combination.
+# This avoids "mismatched data" warnings that occur when `cargo llvm-cov --no-report` recompiles
+# a crate with different features, overwriting the previous binary and orphaning its profraw data.
+#
+# (run `just guests` first to build guest binaries)
+coverage-run hypervisor="kvm": ensure-cargo-llvm-cov
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Set up coverage instrumentation environment variables (RUSTFLAGS, LLVM_PROFILE_FILE, etc.)
+    # and clean previous artifacts. All subsequent cargo commands inherit instrumentation.
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    cargo +nightly llvm-cov clean --workspace
+
+    # tests with default features (all drivers; skip stress tests — too slow under instrumentation)
+    cargo +nightly test {{ coverage-packages }} --tests -- --skip stress_test
+
+    # tests with single driver + build-metadata
+    cargo +nightly test {{ coverage-packages }} --no-default-features --features build-metadata,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
+
+    # isolated tests (require running separately due to global state)
+    cargo +nightly test -p hyperlight-host --lib -- sandbox::uninitialized::tests::test_log_trace --exact --ignored
+    cargo +nightly test -p hyperlight-host --lib -- sandbox::outb::tests::test_log_outb_log --exact --ignored
+    cargo +nightly test -p hyperlight-host --test integration_test -- log_message --exact --ignored
+    cargo +nightly test -p hyperlight-host --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --lib -- metrics::tests::test_metrics_are_emitted --exact
+
+    # integration test with executable_heap feature
+    cargo +nightly test {{ coverage-packages }} --no-default-features -F executable_heap,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --test integration_test -- execute_on_heap
+
+    # crashdump tests + example
+    cargo +nightly test {{ coverage-packages }} --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- test_crashdump
+    cargo +nightly run --no-default-features --features crashdump,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example crashdump
+
+    # tracing feature tests (host-side only; hyperlight-guest-tracing is no_std)
+    cargo +nightly test -p hyperlight-common --no-default-features --features trace_guest --tests -- --skip stress_test
+    cargo +nightly test -p hyperlight-host --no-default-features --features trace_guest,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --tests -- --skip stress_test
+
+    # examples: metrics, logging, tracing
+    cargo +nightly run --example metrics
+    cargo +nightly run --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example metrics
+    cargo +nightly run --example logging
+    cargo +nightly run --example tracing
+    cargo +nightly run --no-default-features -F function_call_metrics,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example tracing
+    cargo +nightly test --no-default-features -F gdb,{{ if hypervisor == "mshv3" { "mshv3" } else { "kvm" } }} --example guest-debugging
+
+# generate a text coverage summary to stdout
+# for this to work you need to run `coverage-run hypervisor` beforehand
+coverage hypervisor="kvm":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    cargo +nightly llvm-cov report
+
+# generate an HTML coverage report to target/coverage/html/
+# for this to work you need to run `coverage-run hypervisor` beforehand
+coverage-html hypervisor="kvm":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    cargo +nightly llvm-cov report --html --output-dir target/coverage/html
+
+# generate LCOV coverage output to target/coverage/lcov.info
+# for this to work you need to run `coverage-run hypervisor` beforehand
+coverage-lcov hypervisor="kvm":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    mkdir -p target/coverage
+    cargo +nightly llvm-cov report --lcov --output-path target/coverage/lcov.info
+
+# generate all coverage reports for CI: HTML + LCOV + text summary.
+# (run `just guests` first to build guest binaries)
+coverage-ci hypervisor="kvm": (coverage-run hypervisor)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source <(cargo +nightly llvm-cov show-env --export-prefix --branch)
+    mkdir -p target/coverage
+    cargo +nightly llvm-cov report --html --output-dir target/coverage/html
+    cargo +nightly llvm-cov report --lcov --output-path target/coverage/lcov.info
+    cargo +nightly llvm-cov report | tee target/coverage/summary.txt
+
 ###################
 ### FLATBUFFERS ###
 ###################
