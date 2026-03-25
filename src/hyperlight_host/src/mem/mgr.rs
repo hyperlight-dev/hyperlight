@@ -881,10 +881,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Compute the G2H virtqueue Layout from scratch region addresses.
     pub(crate) fn g2h_virtq_layout(&self) -> Result<hyperlight_common::virtq::Layout> {
         let base = self.layout.get_g2h_ring_gva();
-        let depth = self.layout.sandbox_memory_config.get_g2h_queue_depth();
+        let depth = self.layout.sandbox_memory_config.get_g2h_queue_depth() as u16;
 
-        let nz = NonZeroU16::new(depth as u16)
-            .ok_or_else(|| new_error!("G2H queue depth is zero"))?;
+        let nz = NonZeroU16::new(depth).ok_or_else(|| new_error!("G2H queue depth is zero"))?;
 
         unsafe { VirtqLayout::from_base(base, nz) }
             .map_err(|e| new_error!("Invalid G2H virtq layout: {:?}", e))
@@ -893,10 +892,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Compute the H2G virtqueue Layout from scratch region addresses.
     pub(crate) fn h2g_virtq_layout(&self) -> Result<hyperlight_common::virtq::Layout> {
         let base = self.layout.get_h2g_ring_gva();
-        let depth = self.layout.sandbox_memory_config.get_h2g_queue_depth();
+        let depth = self.layout.sandbox_memory_config.get_h2g_queue_depth() as u16;
 
-        let nz = NonZeroU16::new(depth as u16)
-            .ok_or_else(|| new_error!("H2G queue depth is zero"))?;
+        let nz = NonZeroU16::new(depth).ok_or_else(|| new_error!("H2G queue depth is zero"))?;
 
         unsafe { VirtqLayout::from_base(base, nz) }
             .map_err(|e| new_error!("Invalid H2G virtq layout: {:?}", e))

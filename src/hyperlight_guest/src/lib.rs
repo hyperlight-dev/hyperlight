@@ -26,6 +26,7 @@ pub mod exit;
 pub mod layout;
 pub mod prim_alloc;
 pub mod types;
+pub mod virtq_mem;
 
 pub mod guest_handle {
     pub mod handle;
