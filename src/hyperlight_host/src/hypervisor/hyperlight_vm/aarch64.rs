@@ -89,11 +89,15 @@ impl HyperlightVm {
         unimplemented!("get_snapshot_sregs")
     }
 
-    pub(crate) fn reset_vcpu(
+    pub(crate) fn reset_vm_state(&mut self) -> std::result::Result<(), RegisterError> {
+        unimplemented!("reset_vm_state")
+    }
+
+    pub(crate) fn restore_sregs(
         &mut self,
         _cr3: u64,
         _sregs: &CommonSpecialRegisters,
     ) -> std::result::Result<(), RegisterError> {
-        unimplemented!("reset_vcpu")
+        unimplemented!("restore_sregs")
     }
 }

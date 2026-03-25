@@ -235,7 +235,7 @@ test-integration target=default-target features="":
     {{ cargo-cmd }} test {{ if features =="" {"--features executable_heap"} else if features=="no-default-features" {"--no-default-features --features executable_heap"} else {"--no-default-features -F executable_heap," + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test integration_test execute_on_heap
 
     @# run the rest of the integration tests
-    {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*'
+    {{ cargo-cmd }} test -p hyperlight-host {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} --profile={{ if target == "debug" { "dev" } else { target } }} {{ target-triple-flag }} --test '*' -- --nocapture
 
 # tests compilation with no default features on different platforms
 test-compilation-no-default-features target=default-target:
@@ -322,6 +322,11 @@ clippy target=default-target: (witguest-wit)
 # for use on a linux host-machine when cross-compiling to windows. Uses the windows-gnu which should be sufficient for most purposes
 clippyw target=default-target: (witguest-wit)
     {{ cargo-cmd }} clippy --all-targets --all-features --target x86_64-pc-windows-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
+
+# Cross-check for linux from a windows host using clippy (no linking needed).
+# Only checks lib targets to avoid dev-dependencies (criterion->alloca) that need a C cross-compiler.
+clippyl target=default-target:
+    {{ cargo-cmd }} clippy --lib --all-features --target x86_64-unknown-linux-gnu --profile={{ if target == "debug" { "dev" } else { target } }}  -- -D warnings
 
 clippy-guests target=default-target: (witguest-wit) (ensure-cargo-hyperlight)
     cd src/tests/rust_guests/simpleguest && cargo hyperlight clippy --profile={{ if target == "debug" { "dev" } else { target } }} -- -D warnings

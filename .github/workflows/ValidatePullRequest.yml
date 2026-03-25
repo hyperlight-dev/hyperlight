@@ -89,7 +89,7 @@ jobs:
     # See: https://github.com/actions/runner/issues/2205
     if: ${{ !cancelled() && !failure() }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         hypervisor: ['hyperv-ws2025', mshv3, kvm]
         cpu: [amd, intel]
@@ -112,7 +112,7 @@ jobs:
     # See: https://github.com/actions/runner/issues/2205
     if: ${{ !cancelled() && !failure() }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         hypervisor: ['hyperv-ws2025', mshv3, kvm]
         cpu: [amd, intel]

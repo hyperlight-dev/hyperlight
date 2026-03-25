@@ -37,7 +37,7 @@ defaults:
 jobs:
   build-and-test:
     if: ${{ inputs.docs_only == 'false' }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     runs-on: ${{ fromJson(
         format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=build-and-test-{3}-{4}-{5}-{6}"]', 
           inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux', 

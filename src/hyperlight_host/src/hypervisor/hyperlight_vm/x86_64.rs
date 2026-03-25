@@ -40,9 +40,9 @@ use crate::hypervisor::gdb::{
 };
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebugMemoryAccessError};
-use crate::hypervisor::regs::{
-    CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
-};
+#[cfg(not(target_os = "windows"))]
+use crate::hypervisor::regs::CommonDebugRegs;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
 #[cfg(not(gdb))]
 use crate::hypervisor::virtual_machine::VirtualMachine;
 #[cfg(kvm)]
@@ -335,27 +335,39 @@ impl HyperlightVm {
     }
 
     /// Resets the following vCPU state:
-    /// - General purpose registers
-    /// - Debug registers
-    /// - XSAVE (includes FPU/SSE state with proper FCW and MXCSR defaults)
-    /// - Special registers (restored from snapshot, with CR3 updated to new page table location)
+    /// - On Windows: calls WHvResetPartition (resets all per-VP state including
+    ///   GP registers, debug registers, XSAVE, MSRs, APIC, etc.)
+    /// - On Linux: explicitly resets GP registers, debug registers, and XSAVE
+    ///
+    /// This does NOT restore special registers — call `restore_sregs` separately
+    /// after memory mappings are established.
     // TODO: check if other state needs to be reset
-    pub(crate) fn reset_vcpu(
+    pub(crate) fn reset_vm_state(&mut self) -> std::result::Result<(), RegisterError> {
+        #[cfg(target_os = "windows")]
+        self.vm.reset_partition()?;
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.vm.set_regs(&CommonRegisters {
+                rflags: 1 << 1, // Reserved bit always set
+                ..Default::default()
+            })?;
+            self.vm.set_debug_regs(&CommonDebugRegs::default())?;
+            self.vm.reset_xsave()?;
+        }
+
+        Ok(())
+    }
+
+    /// Restores special registers from snapshot with CR3 updated to the
+    /// new page table location.
+    pub(crate) fn restore_sregs(
         &mut self,
         cr3: u64,
         sregs: &CommonSpecialRegisters,
     ) -> std::result::Result<(), RegisterError> {
-        self.vm.set_regs(&CommonRegisters {
-            rflags: 1 << 1, // Reserved bit always set
-            ..Default::default()
-        })?;
-        self.vm.set_debug_regs(&CommonDebugRegs::default())?;
-        self.vm.reset_xsave()?;
-
         #[cfg(not(feature = "nanvix-unstable"))]
         {
-            // Restore the full special registers from snapshot, but update CR3
-            // to point to the new (relocated) page tables
             let mut sregs = *sregs;
             sregs.cr3 = cr3;
             self.pending_tlb_flush = true;
@@ -885,7 +897,9 @@ mod tests {
     use super::*;
     #[cfg(kvm)]
     use crate::hypervisor::regs::FP_CONTROL_WORD_DEFAULT;
-    use crate::hypervisor::regs::{CommonSegmentRegister, CommonTableRegister, MXCSR_DEFAULT};
+    use crate::hypervisor::regs::{
+        CommonDebugRegs, CommonSegmentRegister, CommonTableRegister, MXCSR_DEFAULT,
+    };
     use crate::hypervisor::virtual_machine::VirtualMachine;
     use crate::mem::layout::SandboxMemoryLayout;
     use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegionFlags};
@@ -912,7 +926,7 @@ mod tests {
     // Dirty State Builders - Create non-default vCPU state for testing reset
     // ==========================================================================
 
-    /// Build dirty general purpose registers for testing reset_vcpu.
+    /// Build dirty general purpose registers for testing reset.
     fn dirty_regs() -> CommonRegisters {
         CommonRegisters {
             rax: 0x1111111111111111,
@@ -936,7 +950,7 @@ mod tests {
         }
     }
 
-    /// Build dirty FPU state for testing reset_vcpu.
+    /// Build dirty FPU state for testing reset.
     fn dirty_fpu() -> CommonFpu {
         CommonFpu {
             fpr: [[0xAB; 16]; 8],
@@ -951,7 +965,7 @@ mod tests {
         }
     }
 
-    /// Build dirty special registers for testing reset_vcpu.
+    /// Build dirty special registers for testing reset.
     /// Must be consistent for 64-bit long mode (CR0/CR4/EFER).
     fn dirty_sregs(_pml4_addr: u64) -> CommonSpecialRegisters {
         let segment = CommonSegmentRegister {
@@ -1020,7 +1034,7 @@ mod tests {
         }
     }
 
-    /// Build dirty debug registers for testing reset_vcpu.
+    /// Build dirty debug registers for testing reset.
     ///
     /// DR6 bit layout (Intel SDM / AMD APM):
     ///   Bits 0-3 (B0-B3): Breakpoint condition detected - software writable/clearable
@@ -1064,8 +1078,8 @@ mod tests {
         }
     }
 
-    /// Returns default test values for reset_vcpu parameters.
-    /// Uses standard 64-bit defaults since reset_vcpu now restores full sregs from snapshot.
+    /// Returns default test values for restore_sregs parameters.
+    /// Uses standard 64-bit defaults since restore_sregs restores full sregs from snapshot.
     fn default_sregs() -> CommonSpecialRegisters {
         CommonSpecialRegisters::standard_64bit_defaults(0)
     }
@@ -1189,9 +1203,18 @@ mod tests {
     // Assertion Helpers - Verify vCPU state after reset
     // ==========================================================================
 
-    /// Assert that debug registers are in reset state.
-    /// Reserved bits in DR6/DR7 are read-only (set by CPU), so we only check
-    /// that writable bits are cleared to 0 and DR0-DR3 are zeroed.
+    /// Assert that debug registers are in architectural reset state.
+    ///
+    /// On Linux (KVM/MSHV): reset_vm_state explicitly zeroes debug registers.
+    ///
+    /// On Windows: WHvResetPartition resets to power-on defaults per
+    /// Intel SDM Vol. 3, Table 10-1:
+    ///   DR0-DR3 = 0 (breakpoint addresses cleared)
+    ///   DR6 = 0xFFFF0FF0 (reserved bits set, writable bits cleared)
+    ///   DR7 = 0x00000400 (reserved bit 10 set, all enables cleared)
+    ///
+    /// Reserved bits in DR6/DR7 are read-only and CPU-dependent, so we only
+    /// verify that writable bits are cleared to 0 and DR0-DR3 are zeroed.
     fn assert_debug_regs_reset(vm: &dyn VirtualMachine) {
         let debug_regs = vm.debug_regs().unwrap();
         let expected = CommonDebugRegs {
@@ -1206,19 +1229,58 @@ mod tests {
     }
 
     /// Assert that general-purpose registers are in reset state.
-    /// After reset, all registers should be zeroed except rflags which has
-    /// reserved bit 1 always set.
+    ///
+    /// On Linux (KVM/MSHV): reset_vm_state explicitly zeroes all GP regs and sets
+    /// rflags = 0x2, so we verify all-zeros.
+    ///
+    /// On Windows: WHvResetPartition sets architectural power-on defaults
+    /// per Intel SDM Vol. 3, Table 10-1:
+    ///   RIP = 0xFFF0 (reset vector)
+    ///   RDX = CPUID signature (CPU-dependent stepping/model/family)
+    ///   RFLAGS = 0x2 (only reserved bit 1 set)
+    ///   All other GP regs = 0
+    /// These are overwritten by dispatch_call_from_host before guest execution,
+    /// but we still verify the power-on state is correct.
     fn assert_regs_reset(vm: &dyn VirtualMachine) {
+        let regs = vm.regs().unwrap();
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(
-            vm.regs().unwrap(),
+            regs,
             CommonRegisters {
-                rflags: 1 << 1, // Reserved bit 1 is always set
+                rflags: 1 << 1,
                 ..Default::default()
             }
         );
+        #[cfg(target_os = "windows")]
+        {
+            // WHvResetPartition sets x86 power-on reset values
+            // (Intel SDM Vol. 3, Table 10-1)
+            let expected = CommonRegisters {
+                rip: 0xFFF0,   // Reset vector
+                rdx: regs.rdx, // CPUID signature (CPU-dependent)
+                rflags: 0x2,   // Reserved bit 1
+                ..Default::default()
+            };
+            assert_ne!(
+                regs.rdx, 0x4444444444444444,
+                "RDX should not retain dirty value"
+            );
+            assert_eq!(regs, expected);
+        }
     }
 
     /// Assert that FPU state is in reset state.
+    ///
+    /// On Linux (KVM/MSHV): reset_vm_state calls reset_xsave which zeroes FPU state
+    /// and sets FCW/MXCSR to defaults.
+    ///
+    /// On Windows: WHvResetPartition resets to power-on defaults per
+    /// Intel SDM Vol. 3, Table 10-1 (FINIT-equivalent state):
+    ///   FCW = 0x037F (all exceptions masked, precision=64-bit, round=nearest)
+    ///   FSW = 0, FTW = 0 (all empty), FOP = 0, FIP = 0, FDP = 0
+    ///   MXCSR = 0x1F80 (all SIMD exceptions masked, round=nearest)
+    ///   ST0-ST7 = 0, XMM0-XMM15 = 0
+    ///
     /// Handles hypervisor-specific quirks (KVM MXCSR, empty FPU registers).
     fn assert_fpu_reset(vm: &dyn VirtualMachine) {
         let fpu = vm.fpu().unwrap();
@@ -1228,8 +1290,14 @@ mod tests {
         assert_eq!(fpu, expected_fpu);
     }
 
-    /// Assert that special registers are in reset state.
-    /// Handles hypervisor-specific differences in hidden descriptor cache fields.
+    /// Assert that special registers match the expected snapshot state.
+    ///
+    /// After reset, sregs are explicitly restored from the snapshot
+    /// (with CR3 updated). This verifies they match the expected 64-bit
+    /// long mode configuration from CommonSpecialRegisters::standard_64bit_defaults.
+    ///
+    /// Handles hypervisor-specific differences in hidden descriptor cache fields
+    /// (unusable, granularity, type_ for unused segments).
     fn assert_sregs_reset(vm: &dyn VirtualMachine, pml4_addr: u64) {
         let defaults = CommonSpecialRegisters::standard_64bit_defaults(pml4_addr);
         let sregs = vm.sregs().unwrap();
@@ -1339,7 +1407,7 @@ mod tests {
         dirtied_mask
     }
 
-    /// Dirty the legacy XSAVE region (bytes 0-511) for testing reset_vcpu.
+    /// Dirty the legacy XSAVE region (bytes 0-511) for testing reset.
     /// This includes FPU/x87 state, SSE state, and reserved areas.
     ///
     /// Layout (from Intel SDM Table 13-1):
@@ -1629,7 +1697,8 @@ mod tests {
         assert_eq!(got_sregs, expected_sregs);
 
         // Reset the vCPU
-        hyperlight_vm.reset_vcpu(0, &default_sregs()).unwrap();
+        hyperlight_vm.reset_vm_state().unwrap();
+        hyperlight_vm.restore_sregs(0, &default_sregs()).unwrap();
 
         // Verify registers are reset to defaults
         assert_regs_reset(hyperlight_vm.vm.as_ref());
@@ -1694,7 +1763,7 @@ mod tests {
             "xsave should be zeroed except for hypervisor-specific fields"
         );
 
-        // Verify sregs are reset to defaults (CR3 is 0 as passed to reset_vcpu)
+        // Verify sregs are reset to defaults
         assert_sregs_reset(hyperlight_vm.vm.as_ref(), 0);
     }
 
@@ -1758,7 +1827,8 @@ mod tests {
             assert_eq!(regs, expected_dirty);
 
             // Reset vcpu
-            hyperlight_vm.reset_vcpu(0, &default_sregs()).unwrap();
+            hyperlight_vm.reset_vm_state().unwrap();
+            hyperlight_vm.restore_sregs(0, &default_sregs()).unwrap();
 
             // Check registers are reset to defaults
             assert_regs_reset(hyperlight_vm.vm.as_ref());
@@ -1882,7 +1952,8 @@ mod tests {
             }
 
             // Reset vcpu
-            hyperlight_vm.reset_vcpu(0, &default_sregs()).unwrap();
+            hyperlight_vm.reset_vm_state().unwrap();
+            hyperlight_vm.restore_sregs(0, &default_sregs()).unwrap();
 
             // Check FPU is reset to defaults
             assert_fpu_reset(hyperlight_vm.vm.as_ref());
@@ -1933,7 +2004,8 @@ mod tests {
             assert_eq!(debug_regs, expected_dirty);
 
             // Reset vcpu
-            hyperlight_vm.reset_vcpu(0, &default_sregs()).unwrap();
+            hyperlight_vm.reset_vm_state().unwrap();
+            hyperlight_vm.restore_sregs(0, &default_sregs()).unwrap();
 
             // Check debug registers are reset to default values
             assert_debug_regs_reset(hyperlight_vm.vm.as_ref());
@@ -1982,9 +2054,10 @@ mod tests {
             assert_eq!(sregs, expected_dirty);
 
             // Reset vcpu
-            hyperlight_vm.reset_vcpu(0, &default_sregs()).unwrap();
+            hyperlight_vm.reset_vm_state().unwrap();
+            hyperlight_vm.restore_sregs(0, &default_sregs()).unwrap();
 
-            // Check registers are reset to defaults (CR3 is 0 as passed to reset_vcpu)
+            // Check registers are reset to defaults
             let sregs = hyperlight_vm.vm.sregs().unwrap();
             let mut expected_reset = CommonSpecialRegisters::standard_64bit_defaults(0);
             normalize_sregs_for_run_tests(&mut expected_reset, &sregs);
@@ -2020,7 +2093,11 @@ mod tests {
             let root_pt_addr = ctx.ctx.vm.get_root_pt().unwrap();
             let segment_state = ctx.ctx.vm.get_snapshot_sregs().unwrap();
 
-            ctx.ctx.vm.reset_vcpu(root_pt_addr, &segment_state).unwrap();
+            ctx.ctx.vm.reset_vm_state().unwrap();
+            ctx.ctx
+                .vm
+                .restore_sregs(root_pt_addr, &segment_state)
+                .unwrap();
 
             // Re-run from entrypoint (flag=1 means guest skips dirty phase, just does FXSAVE)
             // Use stack_top - 8 to match initialise()'s behavior (simulates call pushing return addr)
