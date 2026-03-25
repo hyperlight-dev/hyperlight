@@ -41,6 +41,22 @@ use crate::mem::memory_region::{HostRegionBase, MemoryRegionKind};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::{Result, log_then_return};
 
+/// Returns the guest-side permission flags for file mappings.
+///
+/// With the `nanvix-unstable` feature, files are mapped as
+/// `READ | WRITE | EXECUTE` (copy-on-write). Otherwise the default
+/// is `READ | EXECUTE` (read-only + executable).
+fn file_mapping_flags() -> MemoryRegionFlags {
+    #[cfg(feature = "nanvix-unstable")]
+    {
+        MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE
+    }
+    #[cfg(not(feature = "nanvix-unstable"))]
+    {
+        MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE
+    }
+}
+
 /// A prepared (host-side) file mapping ready to be applied to a VM.
 ///
 /// Created by [`prepare_file_cow`]. The host-side OS resources (file
@@ -166,7 +182,7 @@ impl PreparedFileMapping {
                 Ok(MemoryRegion {
                     host_region: host_base..host_end,
                     guest_region: guest_start..guest_end,
-                    flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+                    flags: file_mapping_flags(),
                     region_type: MemoryRegionType::MappedFile,
                 })
             }
@@ -186,7 +202,7 @@ impl PreparedFileMapping {
                     host_region: *mmap_base as usize
                         ..(*mmap_base as usize).wrapping_add(*mmap_size),
                     guest_region: guest_start..guest_end,
-                    flags: MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+                    flags: file_mapping_flags(),
                     region_type: MemoryRegionType::MappedFile,
                 })
             }
@@ -294,9 +310,11 @@ pub(crate) fn prepare_file_cow(
         use std::os::windows::io::AsRawHandle;
 
         use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::System::Memory::{
-            CreateFileMappingW, FILE_MAP_READ, MapViewOfFile, PAGE_READONLY,
-        };
+        use windows::Win32::System::Memory::{CreateFileMappingW, MapViewOfFile};
+        #[cfg(feature = "nanvix-unstable")]
+        use windows::Win32::System::Memory::{FILE_MAP_COPY, PAGE_WRITECOPY};
+        #[cfg(not(feature = "nanvix-unstable"))]
+        use windows::Win32::System::Memory::{FILE_MAP_READ, PAGE_READONLY};
 
         let file = std::fs::File::options().read(true).open(file_path)?;
         let file_size = file.metadata()?.len();
@@ -312,18 +330,23 @@ pub(crate) fn prepare_file_cow(
 
         let file_handle = HANDLE(file.as_raw_handle());
 
-        // Create a read-only file mapping object backed by the actual file.
+        // nanvix-unstable maps files as RWX (CoW), so use
+        // PAGE_WRITECOPY / FILE_MAP_COPY; otherwise PAGE_READONLY
+        #[cfg(feature = "nanvix-unstable")]
+        let (page_prot, map_access) = (PAGE_WRITECOPY, FILE_MAP_COPY);
+        #[cfg(not(feature = "nanvix-unstable"))]
+        let (page_prot, map_access) = (PAGE_READONLY, FILE_MAP_READ);
+
         // Pass 0,0 for size to use the file's actual size — Windows will
         // NOT extend a read-only file, so requesting page-aligned size
         // would fail for files smaller than one page.
         let mapping_handle =
-            unsafe { CreateFileMappingW(file_handle, None, PAGE_READONLY, 0, 0, None) }
+            unsafe { CreateFileMappingW(file_handle, None, page_prot, 0, 0, None) }
                 .map_err(|e| HyperlightError::Error(format!("CreateFileMappingW failed: {e}")))?;
 
-        // Map a read-only view into the host process.
         // Passing 0 for dwNumberOfBytesToMap maps the entire file; the OS
         // rounds up to the next page boundary and zero-fills the remainder.
-        let view = unsafe { MapViewOfFile(mapping_handle, FILE_MAP_READ, 0, 0, 0) };
+        let view = unsafe { MapViewOfFile(mapping_handle, map_access, 0, 0, 0) };
         if view.Value.is_null() {
             unsafe {
                 let _ = windows::Win32::Foundation::CloseHandle(mapping_handle);
@@ -363,12 +386,15 @@ pub(crate) fn prepare_file_cow(
             // MSHV's map_user_memory requires host-writable pages (the
             // kernel module calls get_user_pages with write access).
             // KVM's KVM_MEM_READONLY slots work with read-only host pages.
+            // nanvix-unstable needs PROT_WRITE for CoW guest mappings.
             // PROT_EXEC is never needed — the hypervisor backs guest R+X
             // pages without requiring host-side execute permission.
-            #[cfg(mshv3)]
-            let prot = libc::PROT_READ | libc::PROT_WRITE;
-            #[cfg(not(mshv3))]
-            let prot = libc::PROT_READ;
+            let needs_write = cfg!(mshv3) || cfg!(feature = "nanvix-unstable");
+            let prot = if needs_write {
+                libc::PROT_READ | libc::PROT_WRITE
+            } else {
+                libc::PROT_READ
+            };
 
             libc::mmap(
                 std::ptr::null_mut(),
