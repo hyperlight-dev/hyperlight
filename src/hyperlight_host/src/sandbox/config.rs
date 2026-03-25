@@ -80,6 +80,9 @@ pub struct SandboxConfiguration {
     /// Number of descriptors for the host-to-guest virtqueue. Must be a power of 2.
     /// Default: 32
     h2g_queue_depth: usize,
+    /// Number of physical pages to allocate for each virtqueue's buffer pool.
+    /// Default: 8 pages (32KB).
+    virtq_pool_pages: usize,
 }
 
 impl SandboxConfiguration {
@@ -103,6 +106,8 @@ impl SandboxConfiguration {
     pub const DEFAULT_G2H_QUEUE_DEPTH: usize = 64;
     /// The default H2G virtqueue depth (number of descriptors, must be power of 2)
     pub const DEFAULT_H2G_QUEUE_DEPTH: usize = 32;
+    /// The default number of physical pages per virtqueue buffer pool
+    pub const DEFAULT_VIRTQ_POOL_PAGES: usize = 8;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -126,6 +131,7 @@ impl SandboxConfiguration {
             interrupt_vcpu_sigrtmin_offset,
             g2h_queue_depth: Self::DEFAULT_G2H_QUEUE_DEPTH,
             h2g_queue_depth: Self::DEFAULT_H2G_QUEUE_DEPTH,
+            virtq_pool_pages: Self::DEFAULT_VIRTQ_POOL_PAGES,
             #[cfg(gdb)]
             guest_debug_info,
             #[cfg(crashdump)]
@@ -229,6 +235,26 @@ impl SandboxConfiguration {
     /// Get the H2G virtqueue depth (number of descriptors).
     pub fn get_h2g_queue_depth(&self) -> usize {
         self.h2g_queue_depth
+    }
+
+    /// Get the number of physical pages per virtqueue buffer pool.
+    pub fn get_virtq_pool_pages(&self) -> usize {
+        self.virtq_pool_pages
+    }
+
+    /// Set the G2H virtqueue depth (number of descriptors, must be power of 2).
+    pub fn set_g2h_queue_depth(&mut self, depth: usize) {
+        self.g2h_queue_depth = depth;
+    }
+
+    /// Set the H2G virtqueue depth (number of descriptors, must be power of 2).
+    pub fn set_h2g_queue_depth(&mut self, depth: usize) {
+        self.h2g_queue_depth = depth;
+    }
+
+    /// Set the number of physical pages per virtqueue buffer pool.
+    pub fn set_virtq_pool_pages(&mut self, pages: usize) {
+        self.virtq_pool_pages = pages;
     }
 
     /// Set the size of the scratch regiong

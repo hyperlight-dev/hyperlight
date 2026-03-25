@@ -544,6 +544,9 @@ fn guest_malloc_abort() {
 
     let mut cfg = SandboxConfiguration::default();
     cfg.set_heap_size(heap_size);
+    cfg.set_g2h_queue_depth(2);
+    cfg.set_h2g_queue_depth(2);
+    cfg.set_virtq_pool_pages(2);
     with_rust_sandbox_cfg(cfg, |mut sbox2| {
         let err = sbox2
             .call::<i32>(
@@ -620,6 +623,9 @@ fn guest_panic_no_alloc() {
 
     let mut cfg = SandboxConfiguration::default();
     cfg.set_heap_size(heap_size);
+    cfg.set_g2h_queue_depth(2);
+    cfg.set_h2g_queue_depth(2);
+    cfg.set_virtq_pool_pages(2);
     with_rust_sandbox_cfg(cfg, |mut sbox| {
         let res = sbox
             .call::<i32>(
@@ -1679,7 +1685,9 @@ fn exception_handler_installation_and_validation() {
 /// This validates that the exception handling path does not require heap allocations.
 #[test]
 fn fill_heap_and_cause_exception() {
-    with_rust_sandbox(|mut sandbox| {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_virtq_pool_pages(2);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
         let result = sandbox.call::<()>("FillHeapAndCauseException", ());
 
         // The call should fail with an exception error since there's no handler installed

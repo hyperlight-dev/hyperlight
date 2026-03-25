@@ -41,9 +41,9 @@ pub const SCRATCH_TOP_G2H_RING_GVA_OFFSET: u64 = 0x28;
 pub const SCRATCH_TOP_H2G_RING_GVA_OFFSET: u64 = 0x30;
 pub const SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET: u64 = 0x38;
 pub const SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET: u64 = 0x3a;
+pub const SCRATCH_TOP_VIRTQ_POOL_PAGES_OFFSET: u64 = 0x3c;
 pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x40;
 
-// fields must not overlap, and exception stack address must be 16-byte aligned.
 const _: () = {
     assert!(SCRATCH_TOP_SIZE_OFFSET + 8 <= SCRATCH_TOP_ALLOCATOR_OFFSET);
     assert!(SCRATCH_TOP_ALLOCATOR_OFFSET + 8 <= SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET);
@@ -52,7 +52,8 @@ const _: () = {
     assert!(SCRATCH_TOP_G2H_RING_GVA_OFFSET + 8 <= SCRATCH_TOP_H2G_RING_GVA_OFFSET);
     assert!(SCRATCH_TOP_H2G_RING_GVA_OFFSET + 8 <= SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET);
     assert!(SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET + 2 <= SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET);
-    assert!(SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET + 2 <= SCRATCH_TOP_EXN_STACK_OFFSET);
+    assert!(SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET + 2 <= SCRATCH_TOP_VIRTQ_POOL_PAGES_OFFSET);
+    assert!(SCRATCH_TOP_VIRTQ_POOL_PAGES_OFFSET + 2 <= SCRATCH_TOP_EXN_STACK_OFFSET);
     assert!(SCRATCH_TOP_EXN_STACK_OFFSET % 0x10 == 0);
 };
 
@@ -72,9 +73,13 @@ pub fn scratch_base_gva(size: usize) -> u64 {
     (MAX_GVA - size + 1) as u64
 }
 
+pub const fn scratch_top_ptr<T>(offset: u64) -> *mut T {
+    (MAX_GVA as u64 - offset + 1) as *mut T
+}
+
 /// Compute the byte offset from the scratch base to the G2H ring.
 ///
-/// TODO(ring): Remove input/output
+/// TODO(virtq): Remove input/output
 pub const fn g2h_ring_scratch_offset(input_data_size: usize, output_data_size: usize) -> usize {
     let io_off = input_data_size + output_data_size;
     let align = crate::virtq::Descriptor::ALIGN;
