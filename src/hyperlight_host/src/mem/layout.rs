@@ -340,6 +340,8 @@ impl SandboxMemoryLayout {
         let min_scratch_size = hyperlight_common::layout::min_scratch_size(
             cfg.get_input_data_size(),
             cfg.get_output_data_size(),
+            cfg.get_g2h_queue_depth(),
+            cfg.get_h2g_queue_depth(),
         );
         if scratch_size < min_scratch_size {
             return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
@@ -483,13 +485,55 @@ impl SandboxMemoryLayout {
         0
     }
 
+    /// Get the offset into the scratch region of the G2H ring.
+    fn get_g2h_ring_scratch_offset(&self) -> usize {
+        hyperlight_common::layout::g2h_ring_scratch_offset(
+            self.sandbox_memory_config.get_input_data_size(),
+            self.sandbox_memory_config.get_output_data_size(),
+        )
+    }
+
+    /// Get the size of the G2H ring in bytes.
+    fn get_g2h_ring_size(&self) -> usize {
+        hyperlight_common::virtq::Layout::query_size(
+            self.sandbox_memory_config.get_g2h_queue_depth(),
+        )
+    }
+
+    /// Get the offset into the scratch region of the H2G ring.
+    fn get_h2g_ring_scratch_offset(&self) -> usize {
+        hyperlight_common::layout::h2g_ring_scratch_offset(
+            self.sandbox_memory_config.get_input_data_size(),
+            self.sandbox_memory_config.get_output_data_size(),
+            self.sandbox_memory_config.get_g2h_queue_depth(),
+        )
+    }
+
+    /// Get the size of the H2G ring in bytes.
+    fn get_h2g_ring_size(&self) -> usize {
+        hyperlight_common::virtq::Layout::query_size(
+            self.sandbox_memory_config.get_h2g_queue_depth(),
+        )
+    }
+
+    /// Get the GVA of the G2H ring in guest address space.
+    pub(crate) fn get_g2h_ring_gva(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size)
+            + self.get_g2h_ring_scratch_offset() as u64
+    }
+
+    /// Get the GVA of the H2G ring in guest address space.
+    pub(crate) fn get_h2g_ring_gva(&self) -> u64 {
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size)
+            + self.get_h2g_ring_scratch_offset() as u64
+    }
+
     /// Get the offset from the beginning of the scratch region to the
     /// location where page tables will be eagerly copied on restore
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
-        (self.sandbox_memory_config.get_input_data_size()
-            + self.sandbox_memory_config.get_output_data_size())
-        .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
+        let after_rings = self.get_h2g_ring_scratch_offset() + self.get_h2g_ring_size();
+        after_rings.next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
     }
 
     /// Get the base GPA to which the page tables will be eagerly
@@ -594,6 +638,8 @@ impl SandboxMemoryLayout {
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
             self.sandbox_memory_config.get_input_data_size(),
             self.sandbox_memory_config.get_output_data_size(),
+            self.sandbox_memory_config.get_g2h_queue_depth(),
+            self.sandbox_memory_config.get_h2g_queue_depth(),
         );
         let min_scratch = min_fixed_scratch + size;
         if self.scratch_size < min_scratch {
@@ -816,6 +862,10 @@ impl SandboxMemoryLayout {
         // initialised here, because they are in the scratch
         // region---they are instead set in
         // [`SandboxMemoryManager::update_scratch_bookkeeping`].
+        //
+        // Virtqueue ring layouts are also communicated via scratch-top
+        // metadata (queue depths), not the PEB. Both host and guest
+        // compute ring addresses from shared offset functions.
 
         Ok(())
     }

@@ -2,3 +2,6 @@
 	path = src/hyperlight_libc/third_party/picolibc
 	url = https://github.com/hyperlight-dev/picolibc-bsd.git
 	shallow = true
+[submodule "src/hyperlight_libc/third_party/mimalloc"]
+	path = src/hyperlight_libc/third_party/mimalloc
+	url = https://github.com/microsoft/mimalloc

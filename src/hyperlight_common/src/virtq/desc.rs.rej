@@ -1,0 +1,23 @@
+diff a/src/hyperlight_common/src/virtq/desc.rs b/src/hyperlight_common/src/virtq/desc.rs	(rejected hunks)
+@@ -58,12 +58,15 @@ pub struct Descriptor {
+     pub flags: u16,
+ }
+ 
+-const _: () = assert!(core::mem::size_of::<Descriptor>() == 16);
+-const _: () = assert!(Descriptor::ALIGN == 16);
+-const _: () = assert!(Descriptor::ADDR_OFFSET == 0);
+-const _: () = assert!(Descriptor::LEN_OFFSET == 8);
+-const _: () = assert!(Descriptor::ID_OFFSET == 12);
+-const _: () = assert!(Descriptor::FLAGS_OFFSET == 14);
++#[allow(clippy::disallowed_macros)]
++const _: () = {
++    assert!(core::mem::size_of::<Descriptor>() == 16);
++    assert!(Descriptor::ALIGN == 16);
++    assert!(Descriptor::ADDR_OFFSET == 0);
++    assert!(Descriptor::LEN_OFFSET == 8);
++    assert!(Descriptor::ID_OFFSET == 12);
++    assert!(Descriptor::FLAGS_OFFSET == 14);
++};
+ 
+ impl Descriptor {
+     // VIRTIO spec requires 16-byte alignment for descriptors
