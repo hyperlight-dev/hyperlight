@@ -632,6 +632,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
             scratch_size - SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET as usize,
             self.layout.sandbox_memory_config.get_h2g_queue_depth() as u16,
         )?;
+        self.scratch_mem.write::<u16>(
+            scratch_size - SCRATCH_TOP_VIRTQ_POOL_PAGES_OFFSET as usize,
+            self.layout.sandbox_memory_config.get_virtq_pool_pages() as u16,
+        )?;
 
         // Copy page tables from `shared_mem` into scratch. PT bytes
         // are appended to the snapshot blob at build time and live

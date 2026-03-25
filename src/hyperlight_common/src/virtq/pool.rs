@@ -126,6 +126,30 @@ pub trait BufferProvider {
     fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError>;
 }
 
+impl<T: BufferProvider> BufferProvider for alloc::rc::Rc<T> {
+    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
+        (**self).alloc(len)
+    }
+    fn dealloc(&self, alloc: Allocation) -> Result<(), AllocError> {
+        (**self).dealloc(alloc)
+    }
+    fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
+        (**self).resize(old_alloc, new_len)
+    }
+}
+
+impl<T: BufferProvider> BufferProvider for alloc::sync::Arc<T> {
+    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
+        (**self).alloc(len)
+    }
+    fn dealloc(&self, alloc: Allocation) -> Result<(), AllocError> {
+        (**self).dealloc(alloc)
+    }
+    fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
+        (**self).resize(old_alloc, new_len)
+    }
+}
+
 /// The owner of a mapped buffer, ensuring its lifetime.
 ///
 /// Holds a pool allocation and provides direct access to the underlying
