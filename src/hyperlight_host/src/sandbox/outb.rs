@@ -227,6 +227,10 @@ pub(crate) fn handle_outb(
             eprint!("{}", ch);
             Ok(())
         }
+        OutBAction::VirtqNotify => {
+            // TODO(ring): acknowledge notification but no-op for now.
+            Ok(())
+        }
         #[cfg(feature = "trace_guest")]
         OutBAction::TraceBatch => Ok(()),
         #[cfg(feature = "mem_profile")]

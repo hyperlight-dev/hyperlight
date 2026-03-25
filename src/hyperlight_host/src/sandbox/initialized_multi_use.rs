@@ -1144,6 +1144,8 @@ mod tests {
         let min_scratch = hyperlight_common::layout::min_scratch_size(
             cfg.get_input_data_size(),
             cfg.get_output_data_size(),
+            cfg.get_g2h_queue_depth(),
+            cfg.get_h2g_queue_depth(),
         );
         cfg.set_scratch_size(min_scratch + 0x10000 + 0x10000);
 

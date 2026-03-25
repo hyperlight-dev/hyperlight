@@ -878,57 +878,25 @@ impl SharedMemory for GuestSharedMemory {
     }
 }
 
-/// An unsafe marker trait for types for which all bit patterns are valid.
-/// This is required in order for it to be safe to read a value of a particular
-/// type out of the sandbox from the HostSharedMemory.
-///
-/// # Safety
-/// This must only be implemented for types for which all bit patterns
-/// are valid. It requires that any (non-undef/poison) value of the
-/// correct size can be transmuted to the type.
-pub unsafe trait AllValid {}
-unsafe impl AllValid for u8 {}
-unsafe impl AllValid for u16 {}
-unsafe impl AllValid for u32 {}
-unsafe impl AllValid for u64 {}
-unsafe impl AllValid for i8 {}
-unsafe impl AllValid for i16 {}
-unsafe impl AllValid for i32 {}
-unsafe impl AllValid for i64 {}
-unsafe impl AllValid for [u8; 16] {}
-
 impl HostSharedMemory {
-    /// Read a value of type T, whose representation is the same
-    /// between the sandbox and the host, and which has no invalid bit
-    /// patterns
-    pub fn read<T: AllValid>(&self, offset: usize) -> Result<T> {
+    /// Read a value of type T from the sandbox at the given offset.
+    ///
+    /// T must implement [`bytemuck::Pod`] which guarantees all bit
+    /// patterns are valid and there is no padding.
+    pub fn read<T: bytemuck::Pod>(&self, offset: usize) -> Result<T> {
         bounds_check!(offset, std::mem::size_of::<T>(), self.mem_size());
-        unsafe {
-            let mut ret: core::mem::MaybeUninit<T> = core::mem::MaybeUninit::uninit();
-            {
-                let slice: &mut [u8] = core::slice::from_raw_parts_mut(
-                    ret.as_mut_ptr() as *mut u8,
-                    std::mem::size_of::<T>(),
-                );
-                self.copy_to_slice(slice, offset)?;
-            }
-            Ok(ret.assume_init())
-        }
+        let mut val = T::zeroed();
+        self.copy_to_slice(bytemuck::bytes_of_mut(&mut val), offset)?;
+        Ok(val)
     }
 
-    /// Write a value of type T, whose representation is the same
-    /// between the sandbox and the host, and which has no invalid bit
-    /// patterns
-    pub fn write<T: AllValid>(&self, offset: usize, data: T) -> Result<()> {
+    /// Write a value of type T into the sandbox at the given offset.
+    ///
+    /// T must implement [`bytemuck::Pod`] which guarantees all bit
+    /// patterns are valid and there is no padding.
+    pub fn write<T: bytemuck::Pod>(&self, offset: usize, data: T) -> Result<()> {
         bounds_check!(offset, std::mem::size_of::<T>(), self.mem_size());
-        unsafe {
-            let slice: &[u8] = core::slice::from_raw_parts(
-                core::ptr::addr_of!(data) as *const u8,
-                std::mem::size_of::<T>(),
-            );
-            self.copy_from_slice(slice, offset)?;
-        }
-        Ok(())
+        self.copy_from_slice(bytemuck::bytes_of(&data), offset)
     }
 
     /// Copy the contents of the slice into the sandbox at the

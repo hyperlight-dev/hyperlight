@@ -37,8 +37,17 @@ pub const MAX_GPA: usize = 0x0000_000f_ffff_ffff;
 /// - A page for the smallest possible non-exception stack
 /// - (up to) 3 pages for mapping that
 /// - Two pages for the exception stack and metadata
-/// - A page-aligned amount of memory for I/O buffers (for now)
-pub fn min_scratch_size(input_data_size: usize, output_data_size: usize) -> usize {
-    (input_data_size + output_data_size).next_multiple_of(crate::vmem::PAGE_SIZE)
+/// - A page-aligned amount of memory for I/O buffers and virtqueue rings
+pub fn min_scratch_size(
+    input_data_size: usize,
+    output_data_size: usize,
+    g2h_num_descs: usize,
+    h2g_num_descs: usize,
+) -> usize {
+    let g2h_ring_size = crate::virtq::Layout::query_size(g2h_num_descs);
+    let h2g_ring_size = crate::virtq::Layout::query_size(h2g_num_descs);
+
+    (input_data_size + output_data_size + g2h_ring_size + h2g_ring_size)
+        .next_multiple_of(crate::vmem::PAGE_SIZE)
         + 12 * crate::vmem::PAGE_SIZE
 }

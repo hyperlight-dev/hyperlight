@@ -59,14 +59,16 @@ pub struct Descriptor {
 }
 
 const _: () = assert!(core::mem::size_of::<Descriptor>() == 16);
+const _: () = assert!(Descriptor::ALIGN == 16);
 const _: () = assert!(Descriptor::ADDR_OFFSET == 0);
 const _: () = assert!(Descriptor::LEN_OFFSET == 8);
 const _: () = assert!(Descriptor::ID_OFFSET == 12);
 const _: () = assert!(Descriptor::FLAGS_OFFSET == 14);
 
 impl Descriptor {
+    // VIRTIO spec requires 16-byte alignment for descriptors
+    pub const ALIGN: usize = 16;
     pub const SIZE: usize = core::mem::size_of::<Self>();
-    pub const ALIGN: usize = core::mem::align_of::<Self>();
 
     pub const ADDR_OFFSET: usize = core::mem::offset_of!(Self, addr);
     pub const LEN_OFFSET: usize = core::mem::offset_of!(Self, len);

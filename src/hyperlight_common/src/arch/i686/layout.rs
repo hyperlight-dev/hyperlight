@@ -21,10 +21,11 @@ pub const MAX_GVA: usize = 0xffff_ffff;
 /// regions are large enough to reach that address.
 pub const MAX_GPA: usize = 0xFEDF_FFFF;
 
-/// Minimum scratch region size: IO buffers (page-aligned) plus 12 pages
-/// for bookkeeping and the exception stack. Page table space is validated
-/// separately by `set_pt_size()`.
-pub fn min_scratch_size(input_data_size: usize, output_data_size: usize) -> usize {
-    (input_data_size + output_data_size).next_multiple_of(crate::vmem::PAGE_SIZE)
-        + 12 * crate::vmem::PAGE_SIZE
+pub fn min_scratch_size(
+    _input_data_size: usize,
+    _output_data_size: usize,
+    _g2h_num_descs: usize,
+    _h2g_num_descs: usize,
+) -> usize {
+    crate::vmem::PAGE_SIZE
 }

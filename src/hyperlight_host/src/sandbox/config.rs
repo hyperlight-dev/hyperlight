@@ -74,6 +74,12 @@ pub struct SandboxConfiguration {
     interrupt_vcpu_sigrtmin_offset: u8,
     /// How much writable memory to offer the guest
     scratch_size: usize,
+    /// Number of descriptors for the G2H (guest-to-host) virtqueue. Must be a power of 2.
+    /// Default: 64 sized to 2x H2G depth for deadlock prevention.
+    g2h_queue_depth: usize,
+    /// Number of descriptors for the host-to-guest virtqueue. Must be a power of 2.
+    /// Default: 32
+    h2g_queue_depth: usize,
 }
 
 impl SandboxConfiguration {
@@ -93,6 +99,10 @@ impl SandboxConfiguration {
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
     /// The default size of the scratch region
     pub const DEFAULT_SCRATCH_SIZE: usize = 0x48000;
+    /// The default G2H virtqueue depth (number of descriptors, must be power of 2)
+    pub const DEFAULT_G2H_QUEUE_DEPTH: usize = 64;
+    /// The default H2G virtqueue depth (number of descriptors, must be power of 2)
+    pub const DEFAULT_H2G_QUEUE_DEPTH: usize = 32;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -114,6 +124,8 @@ impl SandboxConfiguration {
             scratch_size,
             interrupt_retry_delay,
             interrupt_vcpu_sigrtmin_offset,
+            g2h_queue_depth: Self::DEFAULT_G2H_QUEUE_DEPTH,
+            h2g_queue_depth: Self::DEFAULT_H2G_QUEUE_DEPTH,
             #[cfg(gdb)]
             guest_debug_info,
             #[cfg(crashdump)]
@@ -207,6 +219,16 @@ impl SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_scratch_size(&self) -> usize {
         self.scratch_size
+    }
+
+    /// Get the G2H virtqueue depth (number of descriptors).
+    pub fn get_g2h_queue_depth(&self) -> usize {
+        self.g2h_queue_depth
+    }
+
+    /// Get the H2G virtqueue depth (number of descriptors).
+    pub fn get_h2g_queue_depth(&self) -> usize {
+        self.h2g_queue_depth
     }
 
     /// Set the size of the scratch regiong
