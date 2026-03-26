@@ -369,6 +369,12 @@ impl RingCursor {
     pub fn wrap(&self) -> bool {
         self.wrap
     }
+
+    /// Reset cursor to initial state.
+    pub fn reset(&mut self) {
+        self.head = 0;
+        self.wrap = true;
+    }
 }
 
 /// Producer (driver) side of a packed virtqueue.
@@ -817,6 +823,18 @@ impl<M: MemOps> RingProducer<M> {
 
         Ok(should_notify(evt, self.len() as u16, old, new))
     }
+
+    /// Reset to initial state matching a freshly zeroed ring.
+    pub fn reset(&mut self) {
+        let size = self.desc_table.len();
+        self.avail_cursor.reset();
+        self.used_cursor.reset();
+        self.num_free = size;
+        self.id_free.clear();
+        self.id_free.extend(0..size as u16);
+        self.id_num.iter_mut().for_each(|n| *n = 0);
+        self.event_flags_shadow = EventFlags::ENABLE;
+    }
 }
 
 /// Consumer (device) side of a packed virtqueue.
@@ -1163,6 +1181,16 @@ impl<M: MemOps> RingConsumer<M> {
             .map_err(|_| RingError::MemError)?;
 
         Ok(should_notify(evt, self.desc_table.len() as u16, old, new))
+    }
+
+    /// Reset to initial state matching a freshly zeroed ring.
+    /// Does not reallocate internal buffers.
+    pub fn reset(&mut self) {
+        self.avail_cursor.reset();
+        self.used_cursor.reset();
+        self.id_num.iter_mut().for_each(|n| *n = 0);
+        self.num_inflight = 0;
+        self.event_flags_shadow = EventFlags::ENABLE;
     }
 }
 
@@ -2973,6 +3001,113 @@ pub(crate) mod tests {
         for _ in 0..3 {
             let (_, _) = consumer.poll_available().unwrap();
         }
+    }
+
+    #[test]
+    fn test_ring_cursor_reset() {
+        let mut cursor = RingCursor::new(16);
+        cursor.advance_by(5);
+        assert_eq!(cursor.head(), 5);
+
+        cursor.reset();
+        assert_eq!(cursor, RingCursor::new(16));
+        assert_eq!(cursor.head(), 0);
+        assert!(cursor.wrap());
+    }
+
+    #[test]
+    fn test_ring_cursor_reset_after_wrap() {
+        let mut cursor = RingCursor::new(4);
+        // Advance past the wrap point
+        cursor.advance_by(5);
+        assert_eq!(cursor.head(), 1);
+        assert!(!cursor.wrap());
+
+        cursor.reset();
+        assert_eq!(cursor.head(), 0);
+        assert!(cursor.wrap());
+    }
+
+    #[test]
+    fn test_ring_producer_reset_matches_new() {
+        let ring = make_ring(8);
+        let fresh = make_producer(&ring);
+
+        let mut used = make_producer(&ring);
+        // Mutate state
+        used.submit_one(0x1000, 64, false).unwrap();
+        used.submit_one(0x2000, 128, true).unwrap();
+
+        used.reset();
+
+        assert_eq!(used.avail_cursor, fresh.avail_cursor);
+        assert_eq!(used.used_cursor, fresh.used_cursor);
+        assert_eq!(used.num_free, fresh.num_free);
+        assert_eq!(used.id_free.len(), fresh.id_free.len());
+        assert_eq!(used.id_num.as_slice(), fresh.id_num.as_slice());
+        assert_eq!(used.event_flags_shadow, fresh.event_flags_shadow);
+    }
+
+    #[test]
+    fn test_ring_producer_reset_id_free_complete() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+
+        // Submit and consume several descriptors
+        for i in 0..4u64 {
+            producer.submit_one(0x1000 + i * 0x100, 64, false).unwrap();
+        }
+        assert_eq!(producer.num_free, 4);
+
+        producer.reset();
+
+        assert_eq!(producer.num_free, 8);
+        assert_eq!(producer.id_free.len(), 8);
+        // All IDs 0..8 should be present
+        for id in 0..8u16 {
+            assert!(producer.id_free.contains(&id));
+        }
+    }
+
+    #[test]
+    fn test_ring_consumer_reset_matches_new() {
+        let ring = make_ring(8);
+        let fresh = make_consumer(&ring);
+
+        let mut used = make_consumer(&ring);
+
+        // Submit from producer side so consumer has something to poll
+        let mut producer = make_producer(&ring);
+        producer.submit_one(0x1000, 64, false).unwrap();
+
+        // Consumer polls the available descriptor
+        let (id, _chain) = used.poll_available().unwrap();
+        used.submit_used(id, 64).unwrap();
+
+        used.reset();
+
+        assert_eq!(used.avail_cursor, fresh.avail_cursor);
+        assert_eq!(used.used_cursor, fresh.used_cursor);
+        assert_eq!(used.id_num.as_slice(), fresh.id_num.as_slice());
+        assert_eq!(used.num_inflight, fresh.num_inflight);
+        assert_eq!(used.event_flags_shadow, fresh.event_flags_shadow);
+    }
+
+    #[test]
+    fn test_ring_consumer_reset_clears_inflight() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+        let mut consumer = make_consumer(&ring);
+
+        // Submit and poll two items (consume but do not complete)
+        producer.submit_one(0x1000, 64, false).unwrap();
+        producer.submit_one(0x2000, 64, false).unwrap();
+        let _ = consumer.poll_available().unwrap();
+        let _ = consumer.poll_available().unwrap();
+        assert_eq!(consumer.num_inflight, 2);
+
+        consumer.reset();
+        assert_eq!(consumer.num_inflight, 0);
     }
 }
 

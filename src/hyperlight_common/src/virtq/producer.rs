@@ -329,6 +329,13 @@ where
         }
         Ok(())
     }
+
+    /// Reset ring and inflight state to initial values.
+    /// Does not reset the buffer pool; call pool.reset() separately if needed.
+    pub fn reset(&mut self) {
+        self.inner.reset();
+        self.inflight.fill(None);
+    }
 }
 
 /// Builder for configuring a descriptor chain's buffer layout.
@@ -786,5 +793,46 @@ mod tests {
         let cqe = producer.poll().unwrap().unwrap();
         assert_eq!(cqe.token, token);
         assert_eq!(&cqe.data[..], b"response data");
+    }
+
+    #[test]
+    fn test_virtq_producer_reset() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        // Submit and complete a round trip
+        let mut se = producer.chain().entry(32).completion(64).build().unwrap();
+        se.write_all(b"hello").unwrap();
+        producer.submit(se).unwrap();
+
+        let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry.data().as_ref(), b"hello");
+        consumer.complete(completion).unwrap();
+        let _ = producer.poll().unwrap().unwrap();
+
+        // Now reset
+        producer.reset();
+
+        // All inflight slots should be None
+        assert!(producer.inflight.iter().all(|s| s.is_none()));
+        // Ring state should be back to initial
+        assert_eq!(producer.inner.num_free(), producer.inner.len());
+    }
+
+    #[test]
+    fn test_virtq_producer_reset_clears_inflight() {
+        let ring = make_ring(16);
+        let (mut producer, _consumer, _notifier) = make_test_producer(&ring);
+
+        // Submit without completing
+        let se = producer.chain().completion(64).build().unwrap();
+        producer.submit(se).unwrap();
+
+        assert!(producer.inflight.iter().any(|s| s.is_some()));
+
+        producer.reset();
+
+        assert!(producer.inflight.iter().all(|s| s.is_none()));
+        assert_eq!(producer.inner.num_free(), producer.inner.len());
     }
 }

@@ -441,6 +441,12 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
 
         Ok(Bytes::from(buf))
     }
+
+    /// Reset ring and inflight state to initial values.
+    pub fn reset(&mut self) {
+        self.inner.reset();
+        self.inflight.fill(None);
+    }
 }
 
 /// Parse a descriptor chain into entry/completion buffer elements.
@@ -629,5 +635,49 @@ mod tests {
         let data = entry.into_data();
         assert_eq!(data.as_ref(), b"abc");
         consumer.complete(completion).unwrap();
+    }
+
+    #[test]
+    fn test_virtq_consumer_reset() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        // Submit and poll (but do not complete)
+        let se = producer.chain().completion(16).build().unwrap();
+        producer.submit(se).unwrap();
+
+        let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        assert!(consumer.inflight.iter().any(|s| s.is_some()));
+
+        // Complete first so we do not leak
+        consumer.complete(completion).unwrap();
+
+        consumer.reset();
+
+        assert!(consumer.inflight.iter().all(|s| s.is_none()));
+        assert_eq!(consumer.inner.num_inflight(), 0);
+    }
+
+    #[test]
+    fn test_virtq_consumer_reset_clears_inflight() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        // Submit two entries and poll both
+        let se1 = producer.chain().completion(16).build().unwrap();
+        producer.submit(se1).unwrap();
+        let se2 = producer.chain().completion(16).build().unwrap();
+        producer.submit(se2).unwrap();
+
+        let (_e1, c1) = consumer.poll(1024).unwrap().unwrap();
+        let (_e2, c2) = consumer.poll(1024).unwrap().unwrap();
+        // Complete both before reset
+        consumer.complete(c1).unwrap();
+        consumer.complete(c2).unwrap();
+
+        consumer.reset();
+
+        assert!(consumer.inflight.iter().all(|s| s.is_none()));
+        assert_eq!(consumer.inner.num_inflight(), 0);
     }
 }
