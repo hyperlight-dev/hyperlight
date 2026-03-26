@@ -197,6 +197,7 @@ name = "hyperlight-guest"
 version = "0.15.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest-tracing",

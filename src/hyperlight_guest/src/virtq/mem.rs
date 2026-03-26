@@ -27,33 +27,27 @@ use hyperlight_common::virtq::MemOps;
 #[derive(Clone, Copy, Debug)]
 pub struct GuestMemOps;
 
-impl MemOps for GuestMemOps {
+// SAFETY: GuestMemOps treats virtqueue addresses as directly mapped guest
+// virtual addresses and performs the required acquire/release operations.
+unsafe impl MemOps for GuestMemOps {
     type Error = Infallible;
 
-    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error> {
-        let src = addr as *const u8;
-        unsafe {
-            ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), dst.len());
-        }
-        Ok(dst.len())
+    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
+        unsafe { ptr::copy_nonoverlapping(addr as *const u8, dst.as_mut_ptr(), dst.len()) };
+        Ok(())
     }
 
-    fn write(&self, addr: u64, src: &[u8]) -> Result<usize, Self::Error> {
-        let dst = addr as *mut u8;
-        unsafe {
-            ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
-        }
-        Ok(src.len())
+    fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error> {
+        unsafe { ptr::copy_nonoverlapping(src.as_ptr(), addr as *mut u8, src.len()) };
+        Ok(())
     }
 
     fn load_acquire(&self, addr: u64) -> Result<u16, Self::Error> {
-        let ptr = addr as *const AtomicU16;
-        Ok(unsafe { (*ptr).load(Ordering::Acquire) })
+        Ok(unsafe { (*(addr as *const AtomicU16)).load(Ordering::Acquire) })
     }
 
     fn store_release(&self, addr: u64, val: u16) -> Result<(), Self::Error> {
-        let ptr = addr as *const AtomicU16;
-        unsafe { (*ptr).store(val, Ordering::Release) };
+        unsafe { (*(addr as *const AtomicU16)).store(val, Ordering::Release) };
         Ok(())
     }
 

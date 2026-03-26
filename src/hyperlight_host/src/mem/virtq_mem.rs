@@ -82,23 +82,25 @@ impl HostMemOps {
     }
 }
 
-impl MemOps for HostMemOps {
+// SAFETY: HostMemOps bounds-checks guest addresses against scratch memory before
+// accessing them and uses atomic operations for acquire/release accesses.
+unsafe impl MemOps for HostMemOps {
     type Error = HostMemError;
 
-    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
         let offset = self.to_offset(addr)?;
         self.scratch
             .copy_to_slice(dst, offset)
             .map_err(|e| HostMemError::SharedMem(e.to_string()))?;
-        Ok(dst.len())
+        Ok(())
     }
 
-    fn write(&self, addr: u64, src: &[u8]) -> Result<usize, Self::Error> {
+    fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error> {
         let offset = self.to_offset(addr)?;
         self.scratch
             .copy_from_slice(src, offset)
             .map_err(|e| HostMemError::SharedMem(e.to_string()))?;
-        Ok(src.len())
+        Ok(())
     }
 
     fn load_acquire(&self, addr: u64) -> Result<u16, Self::Error> {
