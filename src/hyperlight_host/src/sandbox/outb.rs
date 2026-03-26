@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::sync::{Arc, Mutex};
 
+use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterValue};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
@@ -180,6 +181,71 @@ fn outb_abort(
     Ok(())
 }
 
+/// Handle a guest-to-host function call received via the G2H virtqueue.
+fn outb_virtq_call(
+    mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    host_funcs: &Arc<Mutex<FunctionRegistry>>,
+) -> Result<(), HandleOutbError> {
+    use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
+
+    let consumer = mem_mgr.g2h_consumer.as_mut().ok_or_else(|| {
+        HandleOutbError::ReadHostFunctionCall("G2H consumer not initialized".into())
+    })?;
+
+    let (entry, completion) = consumer
+        .poll(8192)
+        .map_err(|e| HandleOutbError::ReadHostFunctionCall(format!("G2H poll: {e}")))?
+        .ok_or_else(|| HandleOutbError::ReadHostFunctionCall("G2H poll: no entry".into()))?;
+
+    // Parse: skip VirtqMsgHeader, deserialize FunctionCall from remainder
+    let entry_data = entry.data();
+    if entry_data.len() < VirtqMsgHeader::SIZE {
+        return Err(HandleOutbError::ReadHostFunctionCall(
+            "G2H entry too short".into(),
+        ));
+    }
+    let payload = &entry_data[VirtqMsgHeader::SIZE..];
+    let call = FunctionCall::try_from(payload)
+        .map_err(|e| HandleOutbError::ReadHostFunctionCall(e.to_string()))?;
+
+    // Dispatch the host function (same as CallFunction path)
+    let name = call.function_name.clone();
+    let args: Vec<ParameterValue> = call.parameters.unwrap_or(vec![]);
+    let res = host_funcs
+        .try_lock()
+        .map_err(|e| HandleOutbError::LockFailed(file!(), line!(), e.to_string()))?
+        .call_host_function(&name, args)
+        .map_err(|e| GuestError::new(ErrorCode::HostFunctionError, e.to_string()));
+
+    // Serialize response: VirtqMsgHeader + FunctionCallResult
+    let func_result = FunctionCallResult::new(res);
+    let mut builder = flatbuffers::FlatBufferBuilder::new();
+    let result_payload = func_result.encode(&mut builder);
+
+    let resp_header = VirtqMsgHeader::new(MsgKind::Response, 0, result_payload.len() as u32);
+    let resp_header_bytes = bytemuck::bytes_of(&resp_header);
+
+    // Write response into the completion buffer
+    match completion {
+        hyperlight_common::virtq::SendCompletion::Writable(mut wc) => {
+            wc.write_all(resp_header_bytes)
+                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
+            wc.write_all(result_payload)
+                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
+            consumer
+                .complete(wc.into())
+                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
+        }
+        hyperlight_common::virtq::SendCompletion::Ack(ack) => {
+            consumer
+                .complete(ack.into())
+                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn handle_outb(
@@ -227,10 +293,7 @@ pub(crate) fn handle_outb(
             eprint!("{}", ch);
             Ok(())
         }
-        OutBAction::VirtqNotify => {
-            // TODO(ring): acknowledge notification but no-op for now.
-            Ok(())
-        }
+        OutBAction::VirtqNotify => outb_virtq_call(mem_mgr, host_funcs),
         #[cfg(feature = "trace_guest")]
         OutBAction::TraceBatch => Ok(()),
         #[cfg(feature = "mem_profile")]

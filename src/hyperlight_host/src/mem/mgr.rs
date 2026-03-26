@@ -21,6 +21,20 @@ use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
 };
+
+use super::virtq_mem::HostMemOps;
+
+/// No-op notifier for host-side consumer.
+/// The host resumes the VM to notify the guest, not via the ring.
+#[derive(Clone, Copy)]
+pub(crate) struct HostNotifier;
+
+impl hyperlight_common::virtq::Notifier for HostNotifier {
+    fn notify(&self, _stats: hyperlight_common::virtq::QueueStats) {}
+}
+
+/// Type alias for the host-side G2H virtqueue consumer.
+pub(crate) type G2hConsumer = hyperlight_common::virtq::VirtqConsumer<HostMemOps, HostNotifier>;
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::virtq::Layout as VirtqLayout;
@@ -136,7 +150,6 @@ impl ReadonlySharedMemory {
 pub(crate) use unused_hack::SnapshotSharedMemory;
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
-#[derive(Clone)]
 pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// Shared memory for the Sandbox
     pub(crate) shared_mem: SnapshotSharedMemory<S>,
@@ -156,6 +169,23 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// restored snapshot's own generation number so the guest-visible
     /// counter tracks which snapshot the sandbox is a clone of.
     pub(crate) snapshot_count: u64,
+    /// G2H virtqueue consumer, created after sandbox init.
+    pub(crate) g2h_consumer: Option<G2hConsumer>,
+}
+
+impl<S: Clone> Clone for SandboxMemoryManager<S> {
+    fn clone(&self) -> Self {
+        Self {
+            shared_mem: self.shared_mem.clone(),
+            scratch_mem: self.scratch_mem.clone(),
+            layout: self.layout,
+            entrypoint: self.entrypoint,
+            mapped_rgns: self.mapped_rgns,
+            abort_buffer: self.abort_buffer.clone(),
+            snapshot_count: self.snapshot_count,
+            g2h_consumer: None, // consumer is not cloned; re-init if needed
+        }
+    }
 }
 
 /// Buffer for building guest page tables during snapshot creation.
@@ -291,6 +321,7 @@ where
             mapped_rgns: 0,
             abort_buffer: Vec::new(),
             snapshot_count: 0,
+            g2h_consumer: None,
         }
     }
 
@@ -361,6 +392,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             mapped_rgns: self.mapped_rgns,
             abort_buffer: self.abort_buffer,
             snapshot_count: self.snapshot_count,
+            g2h_consumer: None,
         };
         let guest_mgr = SandboxMemoryManager {
             shared_mem: gshm,
@@ -370,8 +402,10 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             mapped_rgns: self.mapped_rgns,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
             snapshot_count: self.snapshot_count,
+            g2h_consumer: None,
         };
         host_mgr.update_scratch_bookkeeping()?;
+        host_mgr.init_g2h_consumer()?;
         Ok((host_mgr, guest_mgr))
     }
 }
@@ -568,6 +602,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.snapshot_count = snapshot.snapshot_generation();
 
         self.update_scratch_bookkeeping()?;
+        self.init_g2h_consumer()?;
         Ok((gsnapshot, gscratch))
     }
 
@@ -636,6 +671,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
             scratch_size - SCRATCH_TOP_VIRTQ_POOL_PAGES_OFFSET as usize,
             self.layout.sandbox_memory_config.get_virtq_pool_pages() as u16,
         )?;
+        // Increment generation so the guest detects stale ring state.
+        let gen_offset = scratch_size - SCRATCH_TOP_VIRTQ_GENERATION_OFFSET as usize;
+        let gen_val: u16 = self.scratch_mem.read(gen_offset).unwrap_or(0);
+        self.scratch_mem
+            .write::<u16>(gen_offset, gen_val.wrapping_add(1))?;
 
         // Copy page tables from `shared_mem` into scratch. PT bytes
         // are appended to the snapshot blob at build time and live
@@ -902,6 +942,32 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         unsafe { VirtqLayout::from_base(base, nz) }
             .map_err(|e| new_error!("Invalid H2G virtq layout: {:?}", e))
+    }
+
+    /// Create a [`HostMemOps`] instance backed by this manager's
+    /// scratch shared memory.
+    pub(crate) fn host_mem_ops(&self) -> HostMemOps {
+        let scratch_base_gva =
+            hyperlight_common::layout::scratch_base_gva(self.scratch_mem.mem_size());
+        HostMemOps::new(&self.scratch_mem, scratch_base_gva)
+    }
+
+    /// Initialize the G2H virtqueue consumer.
+    /// Must be called after scratch bookkeeping is written.
+    pub(crate) fn init_g2h_consumer(&mut self) -> Result<()> {
+        match &mut self.g2h_consumer {
+            Some(consumer) => {
+                consumer.reset();
+            }
+            None => {
+                let layout = self.g2h_virtq_layout()?;
+                let mem_ops = self.host_mem_ops();
+                let consumer =
+                    hyperlight_common::virtq::VirtqConsumer::new(layout, mem_ops, HostNotifier);
+                self.g2h_consumer = Some(consumer);
+            }
+        }
+        Ok(())
     }
 }
 

@@ -15,30 +15,27 @@ limitations under the License.
 */
 
 //! Guest-side virtqueue initialization.
-//!
-//! Zeroes ring memory and creates VirtqProducer instances by allocating
-//! buffer pool pages from the scratch page allocator.
-
-pub(crate) mod state;
 
 use hyperlight_common::layout::{
     SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET, SCRATCH_TOP_G2H_RING_GVA_OFFSET,
     SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET, SCRATCH_TOP_H2G_RING_GVA_OFFSET,
-    SCRATCH_TOP_VIRTQ_POOL_PAGES_OFFSET, scratch_top_ptr,
+    SCRATCH_TOP_VIRTQ_GENERATION_OFFSET, SCRATCH_TOP_VIRTQ_POOL_PAGES_OFFSET, scratch_top_ptr,
 };
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use hyperlight_common::virtq::Layout as VirtqLayout;
 use hyperlight_guest::prim_alloc::alloc_phys_pages;
+use hyperlight_guest::virtq::context::GuestContext;
 
 use crate::paging::phys_to_virt;
 
-/// Initialize virtqueue producers for G2H and H2G queues.
+/// Initialize virtqueue context.
 pub(crate) fn init_virtqueues() {
     let g2h_gva = unsafe { *scratch_top_ptr::<u64>(SCRATCH_TOP_G2H_RING_GVA_OFFSET) };
     let g2h_depth = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET) };
     let h2g_gva = unsafe { *scratch_top_ptr::<u64>(SCRATCH_TOP_H2G_RING_GVA_OFFSET) };
     let h2g_depth = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET) };
     let pool_pages = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_VIRTQ_POOL_PAGES_OFFSET) } as u64;
+    let generation = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_VIRTQ_GENERATION_OFFSET) };
 
     assert!(g2h_depth > 0 && h2g_depth > 0);
     assert!(g2h_gva != 0 && h2g_gva != 0);
@@ -58,11 +55,9 @@ pub(crate) fn init_virtqueues() {
     let pool_size = pool_pages as usize * PAGE_SIZE_USIZE;
     unsafe { core::ptr::write_bytes(pool_ptr, 0, pool_size) };
 
-    // Create G2H producer
-    unsafe {
-        state::init_g2h_producer(g2h_gva, g2h_depth, pool_gva, pool_size);
-    }
+    // Create and install global context
+    let ctx = unsafe { GuestContext::new(g2h_gva, g2h_depth, pool_gva, pool_size, generation) };
+    hyperlight_guest::virtq::set_global_context(ctx);
 
-    // TODO(virtq): add other direction's producer
     let _ = (h2g_gva, h2g_depth);
 }

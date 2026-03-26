@@ -36,8 +36,17 @@ pub fn call_host_function<T>(
 where
     T: TryFrom<ReturnValue>,
 {
-    let handle = unsafe { GUEST_HANDLE };
-    handle.call_host_function::<T>(function_name, parameters, return_type)
+    #[cfg(feature = "virtq")]
+    {
+        hyperlight_guest::virtq::with_context(|ctx| {
+            ctx.call_host_function(function_name, parameters, return_type)
+        })
+    }
+    #[cfg(not(feature = "virtq"))]
+    {
+        let handle = unsafe { GUEST_HANDLE };
+        handle.call_host_function::<T>(function_name, parameters, return_type)
+    }
 }
 
 pub fn call_host<T>(function_name: impl AsRef<str>, args: impl ParameterTuple) -> Result<T>

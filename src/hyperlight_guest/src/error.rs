@@ -17,10 +17,11 @@ limitations under the License.
 use alloc::format;
 use alloc::string::{String, ToString as _};
 
-use anyhow;
-pub use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+pub(crate) use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::flatbuffer_wrappers::guest_error::GuestError;
 use hyperlight_common::func::Error as FuncError;
-use serde_json;
+use hyperlight_common::virtq::VirtqError;
+use {anyhow, serde_json};
 
 pub type Result<T> = core::result::Result<T, HyperlightGuestError>;
 
@@ -77,6 +78,24 @@ impl From<FuncError> for HyperlightGuestError {
                 ErrorCode::GuestFunctionParameterTypeMismatch,
                 e.to_string(),
             ),
+        }
+    }
+}
+
+impl From<VirtqError> for HyperlightGuestError {
+    fn from(e: VirtqError) -> Self {
+        Self {
+            kind: ErrorCode::GuestError,
+            message: format!("virtq: {e}"),
+        }
+    }
+}
+
+impl From<GuestError> for HyperlightGuestError {
+    fn from(e: GuestError) -> Self {
+        Self {
+            kind: e.code,
+            message: e.message,
         }
     }
 }
