@@ -516,6 +516,12 @@ impl<const N: usize> Slab<N> {
     pub const fn slot_size() -> usize {
         N
     }
+
+    /// Reset the slab to initial state which is all slots free.
+    pub fn reset(&mut self) {
+        self.used_slots.clear();
+        self.last_free_run = None;
+    }
 }
 
 #[inline]
@@ -546,6 +552,13 @@ impl<const L: usize, const U: usize> BufferPool<L, U> {
         Ok(Self {
             inner: inner.into(),
         })
+    }
+
+    /// Reset the pool to initial state
+    pub fn reset(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.lower.reset();
+        inner.upper.reset();
     }
 }
 
@@ -1170,6 +1183,87 @@ mod tests {
 
         slab.dealloc(a3).unwrap();
         slab.dealloc(a4).unwrap();
+    }
+
+    #[test]
+    fn test_slab_reset_returns_to_initial_state() {
+        let mut slab = make_slab::<256>(4096);
+        let initial_free = slab.free_bytes();
+        let initial_cap = slab.capacity();
+
+        // Allocate some slots
+        let _a1 = slab.alloc(256).unwrap();
+        let _a2 = slab.alloc(512).unwrap();
+        assert!(slab.free_bytes() < initial_free);
+
+        slab.reset();
+
+        assert_eq!(slab.free_bytes(), initial_free);
+        assert_eq!(slab.capacity(), initial_cap);
+        assert!(slab.last_free_run.is_none());
+        assert_eq!(slab.used_slots.count_ones(..), 0);
+
+        // Should be able to allocate the full capacity again
+        let a = slab.alloc(initial_cap).unwrap();
+        assert_eq!(a.len, initial_cap);
+    }
+
+    #[test]
+    fn test_slab_reset_matches_new() {
+        let base = align_up(0x10000, 256) as u64;
+        let region = 4096;
+
+        let fresh = Slab::<256>::new(base, region).unwrap();
+
+        let mut used = Slab::<256>::new(base, region).unwrap();
+        let _a = used.alloc(256).unwrap();
+        let _b = used.alloc(1024).unwrap();
+        used.reset();
+
+        assert_eq!(used.free_bytes(), fresh.free_bytes());
+        assert_eq!(used.capacity(), fresh.capacity());
+        assert_eq!(
+            used.used_slots.count_ones(..),
+            fresh.used_slots.count_ones(..)
+        );
+        assert!(used.last_free_run.is_none());
+        assert!(fresh.last_free_run.is_none());
+    }
+
+    #[test]
+    fn test_buffer_pool_reset_returns_to_initial_state() {
+        let pool = make_pool::<256, 4096>(0x20000);
+
+        // Allocate from both tiers
+        let a1 = pool.inner.borrow_mut().alloc(128).unwrap();
+        let a2 = pool.inner.borrow_mut().alloc(8192).unwrap();
+        assert!(a1.len > 0);
+        assert!(a2.len > 0);
+
+        pool.reset();
+
+        let inner = pool.inner.borrow();
+        assert_eq!(inner.lower.used_slots.count_ones(..), 0);
+        assert_eq!(inner.upper.used_slots.count_ones(..), 0);
+        assert!(inner.lower.last_free_run.is_none());
+        assert!(inner.upper.last_free_run.is_none());
+    }
+
+    #[test]
+    fn test_buffer_pool_reset_allows_reallocation() {
+        let pool = make_pool::<256, 4096>(0x20000);
+
+        // Fill up some allocations
+        let mut allocs = Vec::new();
+        for _ in 0..5 {
+            allocs.push(pool.inner.borrow_mut().alloc(256).unwrap());
+        }
+
+        pool.reset();
+
+        // Should be able to allocate as if fresh
+        let a = pool.inner.borrow_mut().alloc(256).unwrap();
+        assert!(a.len > 0);
     }
 }
 

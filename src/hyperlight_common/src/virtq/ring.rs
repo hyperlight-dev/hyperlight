@@ -910,7 +910,6 @@ impl<M: MemOps> RingProducer<M> {
         self.id_num.iter_mut().for_each(|n| *n = 0);
         self.event_flags_shadow = EventFlags::ENABLE;
     }
-
     /// Reset the ring to the "N slots submitted, none completed" state.
     ///
     /// `ids` contains the descriptor IDs that are in-flight.
@@ -3258,7 +3257,6 @@ pub(crate) mod tests {
         consumer.reset();
         assert_eq!(consumer.num_inflight, 0);
     }
-
     #[test]
     fn test_reset_prefilled_sets_cursors() {
         let ring = make_ring(8);
