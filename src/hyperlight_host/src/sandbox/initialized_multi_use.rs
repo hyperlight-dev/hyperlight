@@ -287,35 +287,64 @@ impl MultiUseSandbox {
             return Err(SnapshotSandboxMismatch);
         }
 
-        // Reset VM/vCPU state before memory restore.
-        self.vm.reset_vm_state().map_err(|e| {
-            self.poisoned = true;
-            HyperlightVmError::Restore(e)
-        })?;
+        // A prior failed restore may have swapped mem_mgr.shared_mem
+        // without updating the hypervisor's GPA mapping. Track this
+        // so we can force a remap below if needed.
+        let was_poisoned = self.poisoned;
 
+        // Assume poisoned: any failure below leaves the sandbox
+        // inconsistent. Only cleared at the end on success.
+        self.poisoned = true;
+
+        // Failure here may partially reset vCPU state. The sandbox is
+        // poisoned, and the next restore() retry will call
+        // reset_vm_state() again which is idempotent.
+        self.vm
+            .reset_vm_state()
+            .map_err(HyperlightVmError::Restore)?;
+
+        // Failure here may leave mem_mgr with partially swapped
+        // shared_mem/scratch_mem. The sandbox is poisoned, and if
+        // shared_mem was swapped without updating the hypervisor, the
+        // was_poisoned path below handles it on the retry.
         let (gsnapshot, gscratch) = self.mem_mgr.restore_snapshot(&snapshot)?;
         if let Some(gsnapshot) = gsnapshot {
+            // Failure here leaves the hypervisor pointing at the old
+            // (possibly freed) snapshot. The sandbox is poisoned, and
+            // the next restore() will remap via the was_poisoned path.
+            self.vm
+                .update_snapshot_mapping(gsnapshot)
+                .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        } else if was_poisoned {
+            // restore_snapshot() skipped the swap because shared_mem
+            // already matched, but the hypervisor may still point at
+            // the old backing from before the failed restore. Force
+            // a remap. Failure leaves us still poisoned for the same
+            // reason as above.
+            let snap_mem = snapshot.memory().to_mgr_snapshot_mem()?;
+            let (_, gsnapshot) = snap_mem.build();
             self.vm
                 .update_snapshot_mapping(gsnapshot)
                 .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         }
         if let Some(gscratch) = gscratch {
+            // Failure here leaves the hypervisor pointing at old
+            // scratch. The sandbox is poisoned; scratch size is fixed
+            // per sandbox so retry will zero the same allocation and
+            // remap here again.
             self.vm
                 .update_scratch_mapping(gscratch)
                 .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         }
 
+        // Failure here means sregs (CR3, etc.) are not set. The
+        // sandbox is poisoned; retry will call restore_sregs() again.
         let sregs = snapshot.sregs().ok_or_else(|| {
             HyperlightError::Error("snapshot from running sandbox should have sregs".to_string())
         })?;
-        // TODO (ludfjig): Go through the rest of possible errors in this `MultiUseSandbox::restore` function
-        // and determine if they should also poison the sandbox.
         self.vm
             .restore_sregs(snapshot.root_pt_gpa(), sregs)
-            .map_err(|e| {
-                self.poisoned = true;
-                HyperlightVmError::Restore(e)
-            })?;
+            .map_err(HyperlightVmError::Restore)?;
 
         self.vm.set_stack_top(snapshot.stack_top_gva());
         self.vm.set_entrypoint(snapshot.entrypoint());
@@ -327,12 +356,19 @@ impl MultiUseSandbox {
         let regions_to_map = snapshot_regions.difference(&current_regions);
 
         for region in regions_to_unmap {
+            // Failure here leaves extra regions mapped. The sandbox is
+            // poisoned; retry will attempt the unmap again since the
+            // region will still be in the current set.
             self.vm
                 .unmap_region(region)
                 .map_err(HyperlightVmError::UnmapRegion)?;
         }
 
         for region in regions_to_map {
+            // Failure here leaves regions missing. The sandbox is
+            // poisoned; retry will attempt the map again since the
+            // region will still be in the snapshot set.
+            //
             // Safety: The region has been mapped before, and at that point the caller promised that the memory region is valid
             // in their call to `MultiUseSandbox::map_region`
             unsafe { self.vm.map_region(region) }.map_err(HyperlightVmError::MapRegion)?;
@@ -341,9 +377,8 @@ impl MultiUseSandbox {
         // The restored snapshot is now our most current snapshot
         self.snapshot = Some(snapshot.clone());
 
-        // Clear poison state when successfully restoring from snapshot.
+        // Clear poison state: restore completed successfully.
         //
-        // # Safety:
         // This is safe because:
         // 1. Snapshots can only be taken from non-poisoned sandboxes (verified at snapshot creation)
         // 2. Restoration completely replaces all memory state, eliminating:
