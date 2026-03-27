@@ -16,16 +16,19 @@ limitations under the License.
 
 use std::os::raw::c_void;
 
+use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use hyperlight_common::outb::VmAction;
 #[cfg(feature = "trace_guest")]
 use tracing::Span;
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use windows::Win32::Foundation::{CloseHandle, FreeLibrary, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, FreeLibrary, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Hypervisor::*;
 use windows::Win32::System::LibraryLoader::*;
-use windows::Win32::System::Memory::{MEMORY_MAPPED_VIEW_ADDRESS, UnmapViewOfFile};
-use windows::core::s;
+use windows::Win32::System::Memory::{
+    CreateFileMappingA, MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE, UnmapViewOfFile,
+};
+use windows::core::{PCSTR, s};
 use windows_result::HRESULT;
 
 #[cfg(gdb)]
@@ -44,7 +47,10 @@ use crate::hypervisor::virtual_machine::{
     VirtualMachine, VmExit,
 };
 use crate::hypervisor::wrappers::HandleWrapper;
-use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
+use crate::mem::layout::SandboxMemoryLayout;
+use crate::mem::memory_region::{
+    MemoryRegion, MemoryRegionFlags, MemoryRegionType, SurrogateMapping,
+};
 #[cfg(feature = "trace_guest")]
 use crate::sandbox::trace::TraceContext as SandboxTraceContext;
 
@@ -86,6 +92,134 @@ fn release_file_mapping(view_base: *mut c_void, mapping_handle: HandleWrapper) {
     }
 }
 
+/// GPA for the NPT flush dummy page. Placed just past the maximum
+/// snapshot region so it can never collide with guest memory.
+const NPT_FLUSH_GPA: u64 =
+    (SandboxMemoryLayout::BASE_ADDRESS + SandboxMemoryLayout::MAX_MEMORY_SIZE) as u64;
+
+/// A single dummy page mapped at a fixed GPA whose permissions are
+/// toggled on each [`reset_partition`](VirtualMachine::reset_partition)
+/// call. On AMD SVM, `WHvResetPartition` does not flush the NPT
+/// (GPA→HPA) TLB. Changing a GPA mapping's permissions via
+/// `WHvMapGpaRange2` is the only WHP API path that triggers
+/// `ValFlushNestedTb` (an NPT TbGeneration bump), which causes
+/// `SVM_TLB_FLUSH_CURRENT_ASID` on the next VMRUN.
+#[derive(Debug)]
+struct NptFlushPage {
+    /// Backing file-mapping handle.
+    handle: HANDLE,
+    /// Address of the page in the surrogate process.
+    surrogate_addr: *mut c_void,
+    /// Cached function pointer for `WHvMapGpaRange2`.
+    map_gpa_range2: WHvMapGpaRange2Func,
+    /// Toggled on each flush to alternate the GPA permission between
+    /// READ and READ|WRITE.
+    toggle: bool,
+}
+
+impl NptFlushPage {
+    const GPA_FLAGS_READ: WHV_MAP_GPA_RANGE_FLAGS = WHvMapGpaRangeFlagRead;
+    const GPA_FLAGS_READWRITE: WHV_MAP_GPA_RANGE_FLAGS =
+        WHV_MAP_GPA_RANGE_FLAGS(WHvMapGpaRangeFlagRead.0 | WHvMapGpaRangeFlagWrite.0);
+
+    /// Allocate a dummy page, map it into the surrogate process, and
+    /// create the initial GPA mapping at [`NPT_FLUSH_GPA`].
+    fn new(
+        partition: WHV_PARTITION_HANDLE,
+        surrogate_process: &mut SurrogateProcess,
+    ) -> Result<Self, CreateVmError> {
+        let handle = unsafe {
+            CreateFileMappingA(
+                INVALID_HANDLE_VALUE,
+                None,
+                PAGE_READWRITE,
+                0,
+                PAGE_SIZE_USIZE as u32,
+                PCSTR::null(),
+            )
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?
+        };
+
+        let surrogate_addr = surrogate_process
+            .map(
+                handle.into(),
+                0, // sentinel key; MapViewOfFile never returns 0
+                PAGE_SIZE_USIZE,
+                &SurrogateMapping::SandboxMemory,
+            )
+            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+
+        let map_gpa_range2 = unsafe {
+            try_load_whv_map_gpa_range2().map_err(|e| CreateVmError::InitializeVm(e.into()))?
+        };
+
+        let res = unsafe {
+            map_gpa_range2(
+                partition,
+                surrogate_process.process_handle.into(),
+                surrogate_addr,
+                NPT_FLUSH_GPA,
+                PAGE_SIZE_USIZE as u64,
+                Self::GPA_FLAGS_READ,
+            )
+        };
+        if res.is_err() {
+            return Err(CreateVmError::InitializeVm(
+                windows_result::Error::from_hresult(res).into(),
+            ));
+        }
+
+        Ok(Self {
+            handle,
+            surrogate_addr,
+            map_gpa_range2,
+            toggle: false,
+        })
+    }
+
+    /// Toggle the dummy page's GPA permission to force an NPT TLB
+    /// flush. VID skips the hypercall when permissions are unchanged,
+    /// so we alternate between READ and READ|WRITE.
+    fn flush(
+        &mut self,
+        partition: WHV_PARTITION_HANDLE,
+        surrogate_process: &SurrogateProcess,
+    ) -> std::result::Result<(), RegisterError> {
+        self.toggle = !self.toggle;
+        let flags = if self.toggle {
+            Self::GPA_FLAGS_READWRITE
+        } else {
+            Self::GPA_FLAGS_READ
+        };
+        let res = unsafe {
+            (self.map_gpa_range2)(
+                partition,
+                surrogate_process.process_handle.into(),
+                self.surrogate_addr,
+                NPT_FLUSH_GPA,
+                PAGE_SIZE_USIZE as u64,
+                flags,
+            )
+        };
+        if res.is_err() {
+            return Err(RegisterError::ResetPartition(
+                windows_result::Error::from_hresult(res).into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for NptFlushPage {
+    fn drop(&mut self) {
+        // The surrogate mapping is freed when SurrogateProcess drops;
+        // we only need to close the file-mapping handle.
+        if let Err(e) = unsafe { CloseHandle(self.handle) } {
+            tracing::error!("Failed to close NPT flush page handle: {:?}", e);
+        }
+    }
+}
+
 /// A Windows Hypervisor Platform implementation of a single-vcpu VM
 #[derive(Debug)]
 pub(crate) struct WhpVm {
@@ -98,6 +232,9 @@ pub(crate) struct WhpVm {
     /// Handle to the background timer (if started).
     #[cfg(feature = "hw-interrupts")]
     timer: Option<TimerThread>,
+    /// Dummy page whose GPA permissions are toggled to force NPT TLB
+    /// flushes after `WHvResetPartition` on AMD SVM hosts.
+    npt_flush: NptFlushPage,
 }
 
 // Safety: `WhpVm` is !Send because it holds `SurrogateProcess` which contains a raw pointer
@@ -105,8 +242,8 @@ pub(crate) struct WhpVm {
 // in the surrogate process. It is never dereferenced, only used for address arithmetic and
 // resource management (unmapping). This is a system resource that is not bound to the creating
 // thread and can be safely transferred between threads.
-// `file_mappings` contains raw pointers that are also kernel resource handles,
-// safe to use from any thread.
+// `file_mappings` and `NptFlushPage` contain raw pointers that are also kernel
+// resource handles, safe to use from any thread.
 unsafe impl Send for WhpVm {}
 
 impl WhpVm {
@@ -144,9 +281,11 @@ impl WhpVm {
 
         let mgr = get_surrogate_process_manager()
             .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
-        let surrogate_process = mgr
+        let mut surrogate_process = mgr
             .get_surrogate_process()
             .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+
+        let npt_flush = NptFlushPage::new(partition, &mut surrogate_process)?;
 
         Ok(WhpVm {
             partition,
@@ -154,6 +293,7 @@ impl WhpVm {
             file_mappings: Vec::new(),
             #[cfg(feature = "hw-interrupts")]
             timer: None,
+            npt_flush,
         })
     }
 
@@ -729,21 +869,12 @@ impl VirtualMachine for WhpVm {
             WHvResetPartition(self.partition)
                 .map_err(|e| RegisterError::ResetPartition(e.into()))?;
 
-            // WHvResetPartition resets the VMCB but may not update the
-            // hypervisor's internal register-change tracking used for
-            // TLB flush decisions on AMD SVM. Explicitly re-announce
-            // the post-reset CR0 (PG=0) via the WHP API so that the
-            // subsequent restore_sregs() write of CR0 with PG=1 is
-            // detected as a paging-mode change, triggering
-            // SVM_TLB_FLUSH_CURRENT_ASID on the next VMRUN.
-            let post_reset_sregs = self.sregs()?;
-            self.set_registers(&[(
-                WHvX64RegisterCr0,
-                Align16(WHV_REGISTER_VALUE {
-                    Reg64: post_reset_sregs.cr0,
-                }),
-            )])
-            .map_err(|e| RegisterError::ResetPartition(e.into()))?;
+            // WHvResetPartition does not flush the NPT (GPA→HPA) TLB
+            // on AMD SVM. Toggle the dummy page's GPA permission to
+            // trigger a TbGeneration bump, forcing the next VMRUN to
+            // issue SVM_TLB_FLUSH_CURRENT_ASID.
+            self.npt_flush
+                .flush(self.partition, &self.surrogate_process)?;
 
             // WHvResetPartition resets LAPIC to power-on defaults.
             // Re-initialize it when LAPIC emulation is active.
@@ -751,13 +882,12 @@ impl VirtualMachine for WhpVm {
             Self::init_lapic_bulk(self.partition)
                 .map_err(|e| RegisterError::ResetPartition(e.into()))?;
 
-            // With hw-interrupts, set_sregs filters out APIC_BASE to
-            // avoid disabling the LAPIC (the snapshot sregs default it
-            // to 0). On AMD/SVM this means SVM_CLEAN_FIELD_AVIC is
-            // never dirtied after the VMCB rebuild, causing the CPU to
-            // use stale cached AVIC state on VMRUN which corrupts guest
-            // memory reads. Re-writing APIC_BASE to its post-reset
-            // value forces the dirty bit via ValSetEmulatedApicBase.
+            // set_sregs filters out APIC_BASE (the snapshot sregs
+            // default it to 0, which would disable the LAPIC). This
+            // means APIC_BASE is never written after the VMCB rebuild,
+            // so the AVIC clean bit stays set and the CPU may use stale
+            // cached AVIC state. Re-writing the post-reset value forces
+            // the hypervisor to dirty SVM_CLEAN_FIELD_AVIC.
             #[cfg(feature = "hw-interrupts")]
             {
                 let apic_base = self.sregs()?.apic_base;
