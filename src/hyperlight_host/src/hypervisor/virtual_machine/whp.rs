@@ -112,15 +112,10 @@ struct NptFlushPage {
     surrogate_addr: *mut c_void,
     /// Cached function pointer for `WHvMapGpaRange2`.
     map_gpa_range2: WHvMapGpaRange2Func,
-    /// Toggled on each flush to alternate the GPA permission between
-    /// READ and READ|WRITE.
-    toggle: bool,
 }
 
 impl NptFlushPage {
     const GPA_FLAGS_READ: WHV_MAP_GPA_RANGE_FLAGS = WHvMapGpaRangeFlagRead;
-    const GPA_FLAGS_READWRITE: WHV_MAP_GPA_RANGE_FLAGS =
-        WHV_MAP_GPA_RANGE_FLAGS(WHvMapGpaRangeFlagRead.0 | WHvMapGpaRangeFlagWrite.0);
 
     /// Allocate a dummy page, map it into the surrogate process, and
     /// create the initial GPA mapping at [`NPT_FLUSH_GPA`].
@@ -173,24 +168,22 @@ impl NptFlushPage {
             handle,
             surrogate_addr,
             map_gpa_range2,
-            toggle: false,
         })
     }
 
-    /// Toggle the dummy page's GPA permission to force an NPT TLB
-    /// flush. VID skips the hypercall when permissions are unchanged,
-    /// so we alternate between READ and READ|WRITE.
+    /// Force an NPT TLB flush by unmapping and remapping the dummy
+    /// page. An unmap+remap cycle forces VID through the full
+    /// delete+create GPA range path (bypassing `TryUpdateInPlace`),
+    /// which guarantees the hypervisor issues `ValFlushNestedTb`.
     fn flush(
         &mut self,
         partition: WHV_PARTITION_HANDLE,
         surrogate_process: &SurrogateProcess,
     ) -> std::result::Result<(), RegisterError> {
-        self.toggle = !self.toggle;
-        let flags = if self.toggle {
-            Self::GPA_FLAGS_READWRITE
-        } else {
-            Self::GPA_FLAGS_READ
-        };
+        unsafe {
+            WHvUnmapGpaRange(partition, NPT_FLUSH_GPA, PAGE_SIZE_USIZE as u64)
+                .map_err(|e| RegisterError::ResetPartition(e.into()))?;
+        }
         let res = unsafe {
             (self.map_gpa_range2)(
                 partition,
@@ -198,7 +191,7 @@ impl NptFlushPage {
                 self.surrogate_addr,
                 NPT_FLUSH_GPA,
                 PAGE_SIZE_USIZE as u64,
-                flags,
+                Self::GPA_FLAGS_READ,
             )
         };
         if res.is_err() {
