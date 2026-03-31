@@ -23,7 +23,7 @@ permissions:
 jobs:
   fuzz:
     if: ${{ inputs.docs_only == 'false' }}
-    runs-on: [ self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd" ]
+    runs-on: [ self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=fuzz-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}" ]
     strategy:
       matrix:
         target: ${{ fromJson(inputs.targets) }}

@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   publish-hyperlight-packages:
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=publish-hyperlight-packages-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
 
     if: ${{ startsWith(github.ref, 'refs/heads/release/v') || inputs.dry_run }}
 

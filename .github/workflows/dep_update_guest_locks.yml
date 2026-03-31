@@ -23,7 +23,7 @@ defaults:
 
 jobs:
   update-guest-locks:
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=update-guest-locks-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     timeout-minutes: 15
     steps:
       # Get GitHub App token for pushing commits back to the PR

@@ -29,7 +29,7 @@ jobs:
   build-guests:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 15
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=build-guests-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     steps:
       - uses: actions/checkout@v6
 

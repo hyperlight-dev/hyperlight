@@ -32,9 +32,12 @@ jobs:
         cpu: [amd, intel]
         config: [debug, release]
     runs-on: ${{ fromJson(
-        format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}"]', 
+        format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}", "JobId=musl-{2}-{3}-{4}"]', 
           matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, 
-          matrix.cpu)) }}
+          matrix.cpu,
+          github.run_id,
+          github.run_number,
+          github.run_attempt)) }}
     env:
       TARGET_TRIPLE: x86_64-unknown-linux-musl
     steps:
