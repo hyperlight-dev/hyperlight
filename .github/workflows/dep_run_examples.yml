@@ -39,10 +39,11 @@ jobs:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 15
     runs-on: ${{ fromJson(
-        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=run-examples-{3}-{4}-{5}"]', 
+        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=run-examples-{3}-{4}-{5}-{6}"]', 
           inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux', 
           inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
           inputs.cpu,
+          inputs.config,
           github.run_id,
           github.run_number,
           github.run_attempt)) }} 

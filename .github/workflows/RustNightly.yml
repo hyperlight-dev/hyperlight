@@ -32,9 +32,10 @@ jobs:
         cpu: [amd, intel]
         config: [debug, release]
     runs-on: ${{ fromJson(
-        format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}", "JobId=musl-{2}-{3}-{4}"]', 
+        format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}", "JobId=musl-{2}-{3}-{4}-{5}-{6}"]', 
           matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, 
           matrix.cpu,
+          matrix.config,
           github.run_id,
           github.run_number,
           github.run_attempt)) }}
