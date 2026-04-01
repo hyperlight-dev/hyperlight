@@ -91,7 +91,7 @@ on amd64 as well.
 ## Top-of-scratch metadata layout
 
 The top of the scratch region contains structured metadata at fixed
-offsets such as the scratch size, allocator state and where the excpetions starts.
+offsets such as the scratch size, allocator state and where the exceptions starts.
 These offsets are defined as `SCRATCH_TOP_*` constants in
 [`hyperlight_common::layout`](../src/hyperlight_common/src/layout.rs), which has detailed comments on each
 field.
