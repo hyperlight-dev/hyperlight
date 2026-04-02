@@ -2,51 +2,138 @@
 
 This document explains how to build a binary to be used as a Hyperlight guest.
 
-When building a guest, one needs to follow some rules so that the resulting
-binary can be used with Hyperlight:
-- the binary must not use the standard library
-- the expected entrypoint function signature is `void hyperlight_main(void)` or
-  `pub fn hyperlight_main()`
-- Hyperlight expects 
-  `hl_Vec* c_guest_dispatch_function(const hl_FunctionCall *functioncall)` or
-  `pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>>`
-  to be defined in the binary so that in case the host calls a function that is
-  not registered by the guest, this function is called instead.
-- to be callable by the host, a function needs to be registered by the guest in
-  the `hyperlight_main` function.
+A Hyperlight guest is a regular ELF binary built for a custom target. It runs
+without an operating system, exposes functions that the host can call, and may
+call functions registered by the host. Builds use `cargo hyperlight build`,
+which sets up the target, sysroot, and environment variables.
+
+Install [`cargo-hyperlight`](https://github.com/hyperlight-dev/cargo-hyperlight)
+with:
+
+```sh
+cargo install --locked cargo-hyperlight
+```
+
+To scaffold a working host plus guest project, run:
+
+```sh
+cargo hyperlight new my-project
+```
+
+Pass `--no-host` to generate only a guest crate, or `--no-guest` to generate
+only a host crate.
+
+The rest of this document explains what the generated guest contains and how to
+build one by hand.
 
 ## Rust guest binary
 
-In the case of a binary that is written in Rust, one needs to make use of the
-Hyperlight crate, `hyperlight_guest` and `hyperlight_guest_bin` that contains the types and APIs that enable
-the guest to:
-- register functions that can be called by the host application
-- call host functions that have been registered by the host.
+### Minimal guest
 
-### Requirements
+A minimal Rust guest depends only on `hyperlight-guest-bin` and uses its
+attribute macros to register guest functions and declare host functions.
 
-- **`#![no_std]`**: Hyperlight guests run in a minimal environment without an operating system
-- **`#![no_main]`**: The entry point is `hyperlight_main`, not the standard `main` function
-- **`extern crate alloc`**: Required for heap allocations (Vec, String, etc.)
-- **`extern crate hyperlight_guest_bin`**: Required to link the guest runtime (panic handler, etc.)
+`Cargo.toml`:
+
+```toml
+[package]
+name = "my-guest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hyperlight-guest-bin = "*"  # use the latest version from crates.io
+```
+
+`src/main.rs`:
+
+```rust
+#![no_std]
+#![no_main]
+extern crate alloc;
+
+use alloc::string::String;
+
+use hyperlight_guest_bin::error::Result;
+use hyperlight_guest_bin::{guest_function, host_function};
+
+// Declare a host function the guest can call. The string is the name the
+// host registered it under. If omitted, the Rust function name is used.
+#[host_function("GetWeekday")]
+fn get_weekday() -> Result<String>;
+
+// Register a guest function the host can call.
+#[guest_function("SayHello")]
+fn say_hello(name: String) -> Result<String> {
+    let weekday = get_weekday()?;
+    Ok(alloc::format!("Hello, {name}! Today is {weekday}."))
+}
+```
+
+Build with:
+
+```sh
+cargo hyperlight build
+```
+
+The resulting binary in `target/x86_64-hyperlight-none/<profile>/my-guest` is
+what the host loads with `GuestBinary::FilePath(...)`.
+
+#### What the macros generate
+
+* `#[guest_function]` registers the function with the guest runtime so the host
+  can call it by name. Argument and return types must be supported parameter
+  and return types, or `Result<T, HyperlightGuestError>` wrapping one.
+* `#[host_function]` turns an `extern`-style signature into a stub that
+  marshals arguments to the host and returns the host's reply.
+* The runtime provides a default `hyperlight_main` entry point and a default
+  dispatch function. You do not need to write either one for a typical guest.
+
+#### Required attributes
+
+* `#![no_std]` because there is no operating system in the guest.
+* `#![no_main]` because the entry point is `hyperlight_main`, not `main`.
+* `extern crate alloc` to use `Vec`, `String`, and other heap types.
+
+### Advanced: manual entry point and dispatch
+
+The macros are optional. A guest can define the underlying symbols directly,
+which is useful for advanced setup work or custom dispatch logic (for example
+the WIT-based guests in `src/tests/rust_guests/witguest`).
+
+The host expects two guest symbols:
+
+* `pub extern "C" fn hyperlight_main()` runs once at guest startup. Use it to
+  register functions or initialize global state.
+* `pub extern "Rust" fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>, HyperlightGuestError>`
+  is invoked when the host calls a function name that is not registered.
+
+`hyperlight-guest-bin` exposes `#[main]` and `#[dispatch]` macros that generate
+these symbols from a regular Rust function, so most "advanced" guests still use
+the macros rather than writing the raw `extern "C"` items themselves.
+
+If you mix the manual form with `#[guest_function]`, registrations from the
+macro still happen automatically. Your `hyperlight_main` only needs to do
+whatever extra setup the macros do not cover.
 
 ### Troubleshooting
 
 #### "duplicate lang item `panic_impl`" error
 
-This error occurs when the standard library's panic handler conflicts with
-`hyperlight_guest_bin`'s panic handler. To fix this:
+This error means the standard library's panic handler is being linked
+alongside `hyperlight_guest_bin`'s. To fix:
 
-1. Ensure `hyperlight-common` has `default-features = false` in your `Cargo.toml`
-2. Make sure your crate has `#![no_std]` at the top of `main.rs`
-3. Run `cargo clean` to clear any stale build artifacts
-4. Use `cargo hyperlight build` instead of `cargo build`
+1. Ensure your crate has `#![no_std]` at the top of `main.rs`.
+2. Confirm any transitive dependency on `hyperlight-common` uses
+   `default-features = false`.
+3. Run `cargo clean` to clear stale artifacts.
+4. Build with `cargo hyperlight build`, not `cargo build`.
 
 #### Build errors with dependencies
 
-If you see errors related to building dependencies (like serde), ensure you're using
-`cargo hyperlight build`. This sets up the proper environment variables and sysroot
-for the custom Hyperlight target.
+If you see errors building dependencies (such as `serde`), make sure you are
+using `cargo hyperlight build`. It sets up the environment variables and
+sysroot needed for the custom Hyperlight target.
 
 ## C guest binary
 
@@ -55,6 +142,9 @@ latest release page that contain: the `hyperlight_guest.h` header and the
 C API library.
 The `hyperlight_guest.h` header contains the corresponding APIs to register
 guest functions and call host functions from within the guest.
+
+See [src/tests/c_guests/c_simpleguest/main.c](../src/tests/c_guests/c_simpleguest/main.c)
+for a complete example.
 
 ## Version compatibility
 
