@@ -546,7 +546,8 @@ fn guest_malloc_abort() {
     cfg.set_heap_size(heap_size);
     cfg.set_g2h_queue_depth(2);
     cfg.set_h2g_queue_depth(2);
-    cfg.set_virtq_pool_pages(2);
+    cfg.set_g2h_pool_pages(3);
+    cfg.set_h2g_pool_pages(1);
     with_rust_sandbox_cfg(cfg, |mut sbox2| {
         let err = sbox2
             .call::<i32>(
@@ -625,7 +626,8 @@ fn guest_panic_no_alloc() {
     cfg.set_heap_size(heap_size);
     cfg.set_g2h_queue_depth(2);
     cfg.set_h2g_queue_depth(2);
-    cfg.set_virtq_pool_pages(2);
+    cfg.set_g2h_pool_pages(3);
+    cfg.set_h2g_pool_pages(1);
     with_rust_sandbox_cfg(cfg, |mut sbox| {
         let res = sbox
             .call::<i32>(
@@ -1686,7 +1688,7 @@ fn exception_handler_installation_and_validation() {
 #[test]
 fn fill_heap_and_cause_exception() {
     let mut cfg = SandboxConfiguration::default();
-    cfg.set_virtq_pool_pages(2);
+    cfg.set_scratch_size(0x60000);
     with_rust_sandbox_cfg(cfg, |mut sandbox| {
         let result = sandbox.call::<()>("FillHeapAndCauseException", ());
 

@@ -737,7 +737,7 @@ impl MultiUseSandbox {
             let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
             let buffer = fc.encode(&mut builder);
 
-            self.mem_mgr.write_guest_function_call(buffer)?;
+            self.mem_mgr.write_guest_function_call_virtq(buffer)?;
 
             let dispatch_res = self.vm.dispatch_call_from_host(
                 &mut self.mem_mgr,
@@ -754,7 +754,7 @@ impl MultiUseSandbox {
                 return Err(error);
             }
 
-            let guest_result = self.mem_mgr.get_guest_function_call_result()?.into_inner();
+            let guest_result = self.mem_mgr.read_h2g_result_from_g2h()?.into_inner();
 
             match guest_result {
                 Ok(val) => Ok(val),

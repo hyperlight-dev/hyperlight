@@ -26,7 +26,7 @@ use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::virtq;
 use tracing::instrument;
 
-use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
+use crate::REGISTERED_GUEST_FUNCTIONS;
 
 core::arch::global_asm!(
     ".weak guest_dispatch_function",
@@ -99,34 +99,32 @@ pub(crate) fn internal_dispatch_function() {
         tracing::span!(tracing::Level::INFO, "internal_dispatch_function").entered()
     };
 
-    let handle = unsafe { GUEST_HANDLE };
-
     // After snapshot restore, the ring memory is zeroed but the
     // producer's cursors are stale. Check once per dispatch entry.
-    virtq::reset_global_context();
+    virtq::maybe_reset_global_context();
+    virtq::with_context(|ctx| ctx.drain_g2h_completions());
 
-    let function_call = handle
-        .try_pop_shared_input_data_into::<FunctionCall>()
-        .expect("Function call deserialization failed");
+    let function_call = virtq::with_context(|ctx| {
+        ctx.recv_h2g_call()
+            .expect("H2G: expected a host-to-guest call")
+    });
 
     let res = call_guest_function(function_call);
 
-    match res {
-        Ok(bytes) => {
-            handle
-                .push_shared_output_data(bytes.as_slice())
-                .expect("Failed to serialize function call result");
-        }
+    let res_bytes = match res {
+        Ok(bytes) => bytes,
         Err(err) => {
             let guest_error = Err(GuestError::new(err.kind, err.message));
             let fcr = FunctionCallResult::new(guest_error);
             let mut builder = FlatBufferBuilder::new();
-            let data = fcr.encode(&mut builder);
-            handle
-                .push_shared_output_data(data)
-                .expect("Failed to serialize function call result");
+            fcr.encode(&mut builder).to_vec()
         }
-    }
+    };
+
+    virtq::with_context(|ctx| {
+        ctx.send_h2g_result(&res_bytes)
+            .expect("H2G: failed to send result");
+    });
 
     // All this tracing logic shall be done right before the call to `hlt` which is done after this
     // function returns

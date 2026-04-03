@@ -282,6 +282,13 @@ where
         *slot = Some(inflight);
 
         let should_notify = self.inner.should_notify_since(cursor_before)?;
+
+        // TODO(virtq): for now simulate current outb behavior of only
+        // notifying on bidirectional (request/response) entries.
+        // Eventually this should be decoupled from the buffer layout
+        // and driven entirely by event suppression rules.
+        let should_notify = should_notify && matches!(inflight, Inflight::ReadWrite { .. });
+
         if should_notify {
             self.notifier.notify(QueueStats {
                 num_free: self.inner.num_free(),
@@ -290,6 +297,17 @@ where
         }
 
         Ok(Token(id))
+    }
+
+    /// Signal backpressure to the consumer.
+    ///
+    /// Bypasses event suppression. Call this when submit fails with a backpressure error and the consumer needs to drain.
+    #[inline]
+    pub fn notify_backpressure(&self) {
+        self.notifier.notify(QueueStats {
+            num_free: self.inner.num_free(),
+            num_inflight: self.inner.num_inflight(),
+        });
     }
 
     /// Get the current used cursor position.
@@ -330,10 +348,20 @@ where
         Ok(())
     }
 
-    /// Reset ring and inflight state to initial values.
-    /// Does not reset the buffer pool; call pool.reset() separately if needed.
+    /// Reset ring, inflight, and pool state to initial values.
+    ///
+    /// # Safety
+    ///
+    /// All [`RecvCompletion`]s (and their backing [`Bytes`]) from
+    /// previous `poll()` calls must have been dropped before calling
+    /// this. Outstanding completions hold pool allocations via
+    /// `BufferOwner`; resetting the pool while they exist would cause
+    /// double-free on drop.
+    ///
+    /// TODO(virtq): properly restore state after snapshot instead of just resetting everything
     pub fn reset(&mut self) {
         self.inner.reset();
+        self.pool.reset();
         self.inflight.fill(None);
     }
 }
@@ -343,14 +371,14 @@ where
 /// If dropped without building, no resources are leaked (allocations are
 /// deferred to [`build`](Self::build)).
 #[must_use = "call .build() to create a SendEntry"]
-pub struct ChainBuilder<M: MemOps + Clone, P: BufferProvider + Clone> {
+pub struct ChainBuilder<M: MemOps, P: BufferProvider + Clone> {
     mem: M,
     pool: P,
     entry_cap: Option<usize>,
     cqe_cap: Option<usize>,
 }
 
-impl<M: MemOps + Clone, P: BufferProvider + Clone> ChainBuilder<M, P> {
+impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
     fn new(mem: M, pool: P) -> Self {
         Self {
             mem,
