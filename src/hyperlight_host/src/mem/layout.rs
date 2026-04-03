@@ -313,7 +313,7 @@ impl SandboxMemoryLayout {
     /// Both the scratch region and the snapshot region are bounded by
     /// this size. The value is arbitrary but chosen to be large enough
     /// for most workloads while preventing accidental resource exhaustion.
-    const MAX_MEMORY_SIZE: usize = (16 * 1024 * 1024 * 1024) - Self::BASE_ADDRESS; // 16 GiB - BASE_ADDRESS
+    pub(crate) const MAX_MEMORY_SIZE: usize = (16 * 1024 * 1024 * 1024) - Self::BASE_ADDRESS; // 16 GiB - BASE_ADDRESS
 
     /// The base address of the sandbox's memory.
     #[cfg(not(feature = "nanvix-unstable"))]
