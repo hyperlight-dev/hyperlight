@@ -21,24 +21,12 @@ use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
 };
-
-use super::virtq_mem::HostMemOps;
-
-/// No-op notifier for host-side consumer.
-/// The host resumes the VM to notify the guest, not via the ring.
-#[derive(Clone, Copy)]
-pub(crate) struct HostNotifier;
-
-impl hyperlight_common::virtq::Notifier for HostNotifier {
-    fn notify(&self, _stats: hyperlight_common::virtq::QueueStats) {}
-}
-
-/// Type alias for the host-side G2H virtqueue consumer.
-pub(crate) type G2hConsumer = hyperlight_common::virtq::VirtqConsumer<HostMemOps, HostNotifier>;
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
-use hyperlight_common::virtq::Layout as VirtqLayout;
-use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr};
+use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
+use hyperlight_common::virtq::{self, Layout as VirtqLayout};
+use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
@@ -47,12 +35,27 @@ use super::layout::SandboxMemoryLayout;
 use super::shared_mem::{
     ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
 };
+use super::virtq_mem::HostMemOps;
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(crashdump)]
 use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
+
+/// Type alias for the host-side G2H virtqueue consumer.
+pub(crate) type G2hConsumer = virtq::VirtqConsumer<HostMemOps, HostNotifier>;
+/// Type alias for the host-side H2G virtqueue consumer.
+pub(crate) type H2gConsumer = virtq::VirtqConsumer<HostMemOps, HostNotifier>;
+
+/// No-op notifier for host-side consumer.
+/// The host resumes the VM to notify the guest, not via the ring.
+#[derive(Clone, Copy)]
+pub(crate) struct HostNotifier;
+
+impl virtq::Notifier for HostNotifier {
+    fn notify(&self, _stats: virtq::QueueStats) {}
+}
 
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
@@ -171,9 +174,13 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) snapshot_count: u64,
     /// G2H virtqueue consumer, created after sandbox init.
     pub(crate) g2h_consumer: Option<G2hConsumer>,
+    /// H2G virtqueue consumer, created after sandbox init.
+    pub(crate) h2g_consumer: Option<H2gConsumer>,
+    /// Saved H2G pool GVA for prefilling after snapshot restore.
+    pub(crate) h2g_pool_gva: Option<u64>,
 }
 
-impl<S: Clone> Clone for SandboxMemoryManager<S> {
+impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
     fn clone(&self) -> Self {
         Self {
             shared_mem: self.shared_mem.clone(),
@@ -183,7 +190,9 @@ impl<S: Clone> Clone for SandboxMemoryManager<S> {
             mapped_rgns: self.mapped_rgns,
             abort_buffer: self.abort_buffer.clone(),
             snapshot_count: self.snapshot_count,
-            g2h_consumer: None, // consumer is not cloned; re-init if needed
+            g2h_consumer: None,
+            h2g_consumer: None,
+            h2g_pool_gva: self.h2g_pool_gva,
         }
     }
 }
@@ -322,6 +331,8 @@ where
             abort_buffer: Vec::new(),
             snapshot_count: 0,
             g2h_consumer: None,
+            h2g_consumer: None,
+            h2g_pool_gva: None,
         }
     }
 
@@ -393,6 +404,8 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             abort_buffer: self.abort_buffer,
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
+            h2g_consumer: None,
+            h2g_pool_gva: None,
         };
         let guest_mgr = SandboxMemoryManager {
             shared_mem: gshm,
@@ -403,9 +416,12 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
             snapshot_count: self.snapshot_count,
             g2h_consumer: None,
+            h2g_consumer: None,
+            h2g_pool_gva: None,
         };
         host_mgr.update_scratch_bookkeeping()?;
         host_mgr.init_g2h_consumer()?;
+        host_mgr.init_h2g_consumer()?;
         Ok((host_mgr, guest_mgr))
     }
 }
@@ -499,6 +515,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
     /// Writes a guest function call to memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
+    #[allow(dead_code)]
     pub(crate) fn write_guest_function_call(&mut self, buffer: &[u8]) -> Result<()> {
         validate_guest_function_call_buffer(buffer).map_err(|e| {
             new_error!(
@@ -517,6 +534,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
     /// Reads a function call result from memory.
     /// A function call result can be either an error or a successful return value.
+    #[allow(dead_code)]
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_function_call_result(&mut self) -> Result<FunctionCallResult> {
         self.scratch_mem.try_pop_buffer_into::<FunctionCallResult>(
@@ -603,6 +621,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         self.update_scratch_bookkeeping()?;
         self.init_g2h_consumer()?;
+        self.init_h2g_consumer()?;
+        self.restore_h2g_prefill()?;
         Ok((gsnapshot, gscratch))
     }
 
@@ -668,14 +688,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.layout.sandbox_memory_config.get_h2g_queue_depth() as u16,
         )?;
         self.scratch_mem.write::<u16>(
-            scratch_size - SCRATCH_TOP_VIRTQ_POOL_PAGES_OFFSET as usize,
-            self.layout.sandbox_memory_config.get_virtq_pool_pages() as u16,
+            scratch_size - SCRATCH_TOP_G2H_POOL_PAGES_OFFSET as usize,
+            self.layout.sandbox_memory_config.get_g2h_pool_pages() as u16,
         )?;
-        // Increment generation so the guest detects stale ring state.
-        let gen_offset = scratch_size - SCRATCH_TOP_VIRTQ_GENERATION_OFFSET as usize;
-        let gen_val: u16 = self.scratch_mem.read(gen_offset).unwrap_or(0);
-        self.scratch_mem
-            .write::<u16>(gen_offset, gen_val.wrapping_add(1))?;
+        self.scratch_mem.write::<u16>(
+            scratch_size - SCRATCH_TOP_H2G_POOL_PAGES_OFFSET as usize,
+            self.layout.sandbox_memory_config.get_h2g_pool_pages() as u16,
+        )?;
 
         // Copy page tables from `shared_mem` into scratch. PT bytes
         // are appended to the snapshot blob at build time and live
@@ -923,7 +942,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     }
 
     /// Compute the G2H virtqueue Layout from scratch region addresses.
-    pub(crate) fn g2h_virtq_layout(&self) -> Result<hyperlight_common::virtq::Layout> {
+    pub(crate) fn g2h_virtq_layout(&self) -> Result<virtq::Layout> {
         let base = self.layout.get_g2h_ring_gva();
         let depth = self.layout.sandbox_memory_config.get_g2h_queue_depth() as u16;
 
@@ -934,7 +953,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     }
 
     /// Compute the H2G virtqueue Layout from scratch region addresses.
-    pub(crate) fn h2g_virtq_layout(&self) -> Result<hyperlight_common::virtq::Layout> {
+    pub(crate) fn h2g_virtq_layout(&self) -> Result<virtq::Layout> {
         let base = self.layout.get_h2g_ring_gva();
         let depth = self.layout.sandbox_memory_config.get_h2g_queue_depth() as u16;
 
@@ -962,12 +981,151 @@ impl SandboxMemoryManager<HostSharedMemory> {
             None => {
                 let layout = self.g2h_virtq_layout()?;
                 let mem_ops = self.host_mem_ops();
-                let consumer =
-                    hyperlight_common::virtq::VirtqConsumer::new(layout, mem_ops, HostNotifier);
+                let consumer = virtq::VirtqConsumer::new(layout, mem_ops, HostNotifier);
                 self.g2h_consumer = Some(consumer);
             }
         }
         Ok(())
+    }
+
+    /// Initialize the H2G virtqueue consumer.
+    ///
+    /// Must be called after scratch bookkeeping is written. Avail suppression is set to Disable
+    /// so guest prefill/refill operations do not trigger VM exits.
+    pub(crate) fn init_h2g_consumer(&mut self) -> Result<()> {
+        match &mut self.h2g_consumer {
+            Some(consumer) => {
+                consumer.reset();
+                consumer
+                    .set_avail_suppression(virtq::SuppressionKind::Disable)
+                    .map_err(|e| new_error!("H2G avail suppression: {:?}", e))?;
+            }
+            None => {
+                let layout = self.h2g_virtq_layout()?;
+                let mem_ops = self.host_mem_ops();
+                let mut consumer = virtq::VirtqConsumer::new(layout, mem_ops, HostNotifier);
+                consumer
+                    .set_avail_suppression(virtq::SuppressionKind::Disable)
+                    .map_err(|e| new_error!("H2G avail suppression: {:?}", e))?;
+                self.h2g_consumer = Some(consumer);
+            }
+        }
+        Ok(())
+    }
+
+    /// Prefill the H2G ring with writable descriptors after snapshot restore.
+    ///
+    /// Uses a temporary `RingProducer` to write descriptors into the H2G ring
+    /// so the host consumer can poll them. The guest's `restore_from_ring`
+    /// will later reconstruct its inflight state from these descriptors.
+    pub(crate) fn restore_h2g_prefill(&mut self) -> Result<()> {
+        let pool_gva = match self.h2g_pool_gva {
+            Some(gva) => gva,
+            None => return Ok(()),
+        };
+
+        let layout = self.h2g_virtq_layout()?;
+        let mem_ops = self.host_mem_ops();
+        let h2g_depth = self.layout.sandbox_memory_config.get_h2g_queue_depth();
+
+        // Pool size from config
+        let slot_size = PAGE_SIZE_USIZE;
+        let pool_size = self.layout.sandbox_memory_config.get_h2g_pool_pages() * PAGE_SIZE_USIZE;
+        let slot_count = pool_size / slot_size;
+
+        let mut producer = virtq::RingProducer::new(layout, mem_ops);
+        let prefill_count = core::cmp::min(slot_count, h2g_depth);
+
+        // Write descriptors in reverse order to match the guest's LIFO
+        // allocation pattern (RecyclePool::alloc pops from the end of
+        // the free list, so the first prefill gets the highest address).
+        for i in (0..prefill_count).rev() {
+            let addr = pool_gva + (i * slot_size) as u64;
+            producer
+                .submit_one(addr, slot_size as u32, true)
+                .map_err(|e| new_error!("H2G prefill submit: {:?}", e))?;
+        }
+
+        Ok(())
+    }
+
+    /// Write a guest function call into the H2G virtqueue.
+    ///
+    /// Polls the H2G consumer for a prefilled entry from the guest,
+    /// writes `VirtqMsgHeader::Request` followed by `buffer` into the
+    /// writable completion, and completes the entry.
+    pub(crate) fn write_guest_function_call_virtq(&mut self, buffer: &[u8]) -> Result<()> {
+        let consumer = self
+            .h2g_consumer
+            .as_mut()
+            .ok_or_else(|| new_error!("H2G consumer not initialized"))?;
+
+        let (entry, completion) = consumer
+            .poll(8192)
+            .map_err(|e| new_error!("H2G poll: {:?}", e))?
+            .ok_or_else(|| new_error!("H2G: no prefilled entry available"))?;
+
+        // Consume the entry data - this should be empty
+        drop(entry);
+
+        let header = VirtqMsgHeader::new(MsgKind::Request, 0, buffer.len() as u32);
+
+        let virtq::SendCompletion::Writable(mut wc) = completion else {
+            return Err(new_error!(
+                "H2G: expected writable completion, got non-writable (ring corruption)"
+            ));
+        };
+
+        wc.write_all(bytemuck::bytes_of(&header))
+            .map_err(|e| new_error!("H2G write header: {:?}", e))?;
+        wc.write_all(buffer)
+            .map_err(|e| new_error!("H2G write payload: {:?}", e))?;
+
+        consumer
+            .complete(wc.into())
+            .map_err(|e| new_error!("H2G complete: {:?}", e))?;
+
+        Ok(())
+    }
+
+    /// Read the H2G result from G2H after the guest halts.
+    ///
+    /// The guest submitted the Response on G2H with
+    pub(crate) fn read_h2g_result_from_g2h(&mut self) -> Result<FunctionCallResult> {
+        let consumer = self
+            .g2h_consumer
+            .as_mut()
+            .ok_or_else(|| new_error!("G2H consumer not initialized"))?;
+
+        let Some((entry, completion)) = consumer
+            .poll(8192)
+            .map_err(|e| new_error!("G2H poll for H2G result: {:?}", e))?
+        else {
+            return Err(new_error!("G2H: no H2G result entry after halt"));
+        };
+
+        let entry_data = entry.data();
+        if entry_data.len() < VirtqMsgHeader::SIZE {
+            return Err(new_error!("G2H: result entry too short"));
+        }
+
+        let hdr: &VirtqMsgHeader = bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
+        if hdr.kind != MsgKind::Response as u8 {
+            return Err(new_error!(
+                "G2H: expected Response after halt, got kind={}",
+                hdr.kind
+            ));
+        }
+
+        let payload = &entry_data[VirtqMsgHeader::SIZE..];
+        let fcr = FunctionCallResult::try_from(payload)
+            .map_err(|e| new_error!("G2H: malformed FunctionCallResult: {}", e))?;
+
+        consumer
+            .complete(completion)
+            .map_err(|e| new_error!("G2H complete: {:?}", e))?;
+
+        Ok(fcr)
     }
 }
 

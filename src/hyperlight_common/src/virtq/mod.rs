@@ -157,6 +157,7 @@ mod event;
 pub mod msg;
 mod pool;
 mod producer;
+pub mod recycle_pool;
 mod ring;
 
 use core::num::NonZeroU16;
@@ -170,7 +171,7 @@ pub use producer::*;
 pub use ring::*;
 use thiserror::Error;
 
-/// A trait for notifying about new requests in the virtqueue.
+/// A trait for notifying the consumer about virtqueue events.
 pub trait Notifier {
     fn notify(&self, stats: QueueStats);
 }
@@ -439,15 +440,14 @@ pub(crate) mod test_utils {
         }
     }
 
+    type TestProducer = VirtqProducer<Arc<TestMem>, TestNotifier, TestPool>;
+    type TestConsumer = VirtqConsumer<Arc<TestMem>, TestNotifier>;
+
     /// Create test infrastructure: a producer, consumer, and notifier backed
     /// by the supplied [`OwnedRing`].
     pub(crate) fn make_test_producer(
         ring: &OwnedRing,
-    ) -> (
-        VirtqProducer<Arc<TestMem>, TestNotifier, TestPool>,
-        VirtqConsumer<Arc<TestMem>, TestNotifier>,
-        TestNotifier,
-    ) {
+    ) -> (TestProducer, TestConsumer, TestNotifier) {
         let layout = ring.layout();
         let mem = ring.mem();
 

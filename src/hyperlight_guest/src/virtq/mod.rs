@@ -81,11 +81,13 @@ pub fn set_global_context(ctx: GuestContext) {
 
 /// Reset the global context if a snapshot restore was detected.
 /// Compares the virtq generation counter in scratch-top metadata.
-pub fn reset_global_context() {
+pub fn maybe_reset_global_context() {
     if !is_initialized() {
         return;
     }
-    let current_gen = read_gen();
+
+    let current_gen = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET) };
+
     with_context(|ctx| {
         if current_gen != ctx.generation() {
             ctx.reset(current_gen);
@@ -93,7 +95,7 @@ pub fn reset_global_context() {
     });
 }
 
-/// Read the current virtqueue generation from scratch-top metadata.
+/// Read the current snapshot generation from scratch-top metadata.
 fn read_gen() -> u64 {
     unsafe { *scratch_top_ptr::<u64>(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET) }
 }

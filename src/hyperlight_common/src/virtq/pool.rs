@@ -79,7 +79,6 @@ limitations under the License.
 //!   owning slab (`Slab::resize`) but will never move allocations between
 //!   slabs.
 
-#[cfg(all(test, loom))]
 use alloc::sync::Arc;
 use core::cmp::Ordering;
 
@@ -124,6 +123,9 @@ pub trait BufferProvider {
 
     /// Resize by trying in-place grow; otherwise reserve a new block and free old.
     fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError>;
+
+    /// Reset the pool to initial state.
+    fn reset(&self) {}
 }
 
 impl<T: BufferProvider> BufferProvider for alloc::rc::Rc<T> {
@@ -136,9 +138,12 @@ impl<T: BufferProvider> BufferProvider for alloc::rc::Rc<T> {
     fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
         (**self).resize(old_alloc, new_len)
     }
+    fn reset(&self) {
+        (**self).reset()
+    }
 }
 
-impl<T: BufferProvider> BufferProvider for alloc::sync::Arc<T> {
+impl<T: BufferProvider> BufferProvider for Arc<T> {
     fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
         (**self).alloc(len)
     }
@@ -147,6 +152,9 @@ impl<T: BufferProvider> BufferProvider for alloc::sync::Arc<T> {
     }
     fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
         (**self).resize(old_alloc, new_len)
+    }
+    fn reset(&self) {
+        (**self).reset()
     }
 }
 
@@ -540,9 +548,10 @@ struct Inner<const L: usize, const U: usize> {
 }
 
 /// Two tier buffer pool with small and large slabs.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BufferPool<const L: usize = 256, const U: usize = 4096> {
-    inner: AtomicRefCell<Inner<L, U>>,
+    // TODO: Use Rc instead, relax Sync + Send bounds
+    inner: Arc<AtomicRefCell<Inner<L, U>>>,
 }
 
 impl<const L: usize, const U: usize> BufferPool<L, U> {
@@ -550,15 +559,8 @@ impl<const L: usize, const U: usize> BufferPool<L, U> {
     pub fn new(base_addr: u64, region_len: usize) -> Result<Self, AllocError> {
         let inner = Inner::<L, U>::new(base_addr, region_len)?;
         Ok(Self {
-            inner: inner.into(),
+            inner: Arc::new(inner.into()),
         })
-    }
-
-    /// Reset the pool to initial state
-    pub fn reset(&self) {
-        let mut inner = self.inner.borrow_mut();
-        inner.lower.reset();
-        inner.upper.reset();
     }
 }
 
@@ -671,6 +673,12 @@ impl<const L: usize, const U: usize> BufferProvider for BufferPool<L, U> {
 
     fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
         self.inner.borrow_mut().resize(old_alloc, new_len)
+    }
+
+    fn reset(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.lower.reset();
+        inner.upper.reset();
     }
 }
 

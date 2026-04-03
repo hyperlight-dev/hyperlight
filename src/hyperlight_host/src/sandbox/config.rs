@@ -80,9 +80,14 @@ pub struct SandboxConfiguration {
     /// Number of descriptors for the host-to-guest virtqueue. Must be a power of 2.
     /// Default: 32
     h2g_queue_depth: usize,
-    /// Number of physical pages to allocate for each virtqueue's buffer pool.
+    /// Number of physical pages for the G2H (guest-to-host) buffer pool.
+    /// If not set, derived from `input_data_size` for backward compatibility.
     /// Default: 8 pages (32KB).
-    virtq_pool_pages: usize,
+    g2h_pool_pages: Option<usize>,
+    /// Number of physical pages for the H2G (host-to-guest) buffer pool.
+    /// If not set, derived from `output_data_size` for backward compatibility.
+    /// Default: 4 page (16KB).
+    h2g_pool_pages: Option<usize>,
 }
 
 impl SandboxConfiguration {
@@ -106,8 +111,10 @@ impl SandboxConfiguration {
     pub const DEFAULT_G2H_QUEUE_DEPTH: usize = 64;
     /// The default H2G virtqueue depth (number of descriptors, must be power of 2)
     pub const DEFAULT_H2G_QUEUE_DEPTH: usize = 32;
-    /// The default number of physical pages per virtqueue buffer pool
-    pub const DEFAULT_VIRTQ_POOL_PAGES: usize = 8;
+    /// The default number of G2H buffer pool pages
+    pub const DEFAULT_G2H_POOL_PAGES: usize = 8;
+    /// The default number of H2G buffer pool pages
+    pub const DEFAULT_H2G_POOL_PAGES: usize = 4;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
@@ -131,7 +138,8 @@ impl SandboxConfiguration {
             interrupt_vcpu_sigrtmin_offset,
             g2h_queue_depth: Self::DEFAULT_G2H_QUEUE_DEPTH,
             h2g_queue_depth: Self::DEFAULT_H2G_QUEUE_DEPTH,
-            virtq_pool_pages: Self::DEFAULT_VIRTQ_POOL_PAGES,
+            g2h_pool_pages: None,
+            h2g_pool_pages: None,
             #[cfg(gdb)]
             guest_debug_info,
             #[cfg(crashdump)]
@@ -139,15 +147,21 @@ impl SandboxConfiguration {
         }
     }
 
-    /// Set the size of the memory buffer that is made available for input to the guest
-    /// the minimum value is MIN_INPUT_SIZE
+    /// Set the size of the legacy input data buffer (host-to-guest).
+    ///
+    /// Deprecated: use [`set_h2g_pool_pages`](Self::set_h2g_pool_pages) instead.
+    /// When `h2g_pool_pages` is not set, the H2G pool size is derived
+    /// from this value for backward compatibility.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_input_data_size(&mut self, input_data_size: usize) {
         self.input_data_size = max(input_data_size, Self::MIN_INPUT_SIZE);
     }
 
-    /// Set the size of the memory buffer that is made available for output from the guest
-    /// the minimum value is MIN_OUTPUT_SIZE
+    /// Set the size of the legacy output data buffer (guest-to-host).
+    ///
+    /// Deprecated: use [`set_g2h_pool_pages`](Self::set_g2h_pool_pages) instead.
+    /// When `g2h_pool_pages` is not set, the G2H pool size is derived
+    /// from this value for backward compatibility.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_output_data_size(&mut self, output_data_size: usize) {
         self.output_data_size = max(output_data_size, Self::MIN_OUTPUT_SIZE);
@@ -228,33 +242,65 @@ impl SandboxConfiguration {
     }
 
     /// Get the G2H virtqueue depth (number of descriptors).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn get_g2h_queue_depth(&self) -> usize {
         self.g2h_queue_depth
     }
 
     /// Get the H2G virtqueue depth (number of descriptors).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn get_h2g_queue_depth(&self) -> usize {
         self.h2g_queue_depth
     }
 
-    /// Get the number of physical pages per virtqueue buffer pool.
-    pub fn get_virtq_pool_pages(&self) -> usize {
-        self.virtq_pool_pages
-    }
-
     /// Set the G2H virtqueue depth (number of descriptors, must be power of 2).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_g2h_queue_depth(&mut self, depth: usize) {
         self.g2h_queue_depth = depth;
     }
 
     /// Set the H2G virtqueue depth (number of descriptors, must be power of 2).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub fn set_h2g_queue_depth(&mut self, depth: usize) {
         self.h2g_queue_depth = depth;
     }
 
-    /// Set the number of physical pages per virtqueue buffer pool.
-    pub fn set_virtq_pool_pages(&mut self, pages: usize) {
-        self.virtq_pool_pages = pages;
+    /// Get the number of G2H buffer pool pages.
+    /// Falls back to deriving from `output_data_size` if not explicitly set
+    /// (output = guest-to-host direction).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_g2h_pool_pages(&self) -> usize {
+        self.g2h_pool_pages.unwrap_or_else(|| {
+            let pages = self
+                .output_data_size
+                .div_ceil(hyperlight_common::mem::PAGE_SIZE_USIZE);
+            pages.max(Self::DEFAULT_G2H_POOL_PAGES)
+        })
+    }
+
+    /// Get the number of H2G buffer pool pages.
+    /// Falls back to deriving from `input_data_size` if not explicitly set
+    /// (input = host-to-guest direction).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_h2g_pool_pages(&self) -> usize {
+        self.h2g_pool_pages.unwrap_or_else(|| {
+            let pages = self
+                .input_data_size
+                .div_ceil(hyperlight_common::mem::PAGE_SIZE_USIZE);
+            pages.max(Self::DEFAULT_H2G_POOL_PAGES)
+        })
+    }
+
+    /// Set the number of G2H buffer pool pages.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_g2h_pool_pages(&mut self, pages: usize) {
+        self.g2h_pool_pages = Some(pages);
+    }
+
+    /// Set the number of H2G buffer pool pages.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_h2g_pool_pages(&mut self, pages: usize) {
+        self.h2g_pool_pages = Some(pages);
     }
 
     /// Set the size of the scratch regiong

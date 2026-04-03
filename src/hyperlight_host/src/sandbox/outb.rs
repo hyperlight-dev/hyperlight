@@ -21,6 +21,8 @@ use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult,
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::outb::{Exception, OutBAction};
+use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
+use hyperlight_common::virtq::{self};
 use log::{Level, Record};
 use tracing::{Span, instrument};
 use tracing_log::format_trace;
@@ -186,29 +188,39 @@ fn outb_virtq_call(
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     host_funcs: &Arc<Mutex<FunctionRegistry>>,
 ) -> Result<(), HandleOutbError> {
-    use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
-
     let consumer = mem_mgr.g2h_consumer.as_mut().ok_or_else(|| {
         HandleOutbError::ReadHostFunctionCall("G2H consumer not initialized".into())
     })?;
 
-    let (entry, completion) = consumer
+    let Some((entry, completion)) = consumer
         .poll(8192)
         .map_err(|e| HandleOutbError::ReadHostFunctionCall(format!("G2H poll: {e}")))?
-        .ok_or_else(|| HandleOutbError::ReadHostFunctionCall("G2H poll: no entry".into()))?;
+    else {
+        // No G2H entry - can happen when guest H2G prefill
+        // triggers VirtqNotify before suppression is set.
+        return Ok(());
+    };
 
-    // Parse: skip VirtqMsgHeader, deserialize FunctionCall from remainder
     let entry_data = entry.data();
     if entry_data.len() < VirtqMsgHeader::SIZE {
         return Err(HandleOutbError::ReadHostFunctionCall(
             "G2H entry too short".into(),
         ));
     }
+    let hdr: VirtqMsgHeader = *bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
     let payload = &entry_data[VirtqMsgHeader::SIZE..];
+
+    // TODO(virtq): Only Requests (host function callbacks) arrive via outb.
+    if hdr.kind != MsgKind::Request as u8 {
+        return Err(HandleOutbError::ReadHostFunctionCall(format!(
+            "G2H: expected Request via outb, got kind={}",
+            hdr.kind
+        )));
+    }
+
     let call = FunctionCall::try_from(payload)
         .map_err(|e| HandleOutbError::ReadHostFunctionCall(e.to_string()))?;
 
-    // Dispatch the host function (same as CallFunction path)
     let name = call.function_name.clone();
     let args: Vec<ParameterValue> = call.parameters.unwrap_or(vec![]);
     let res = host_funcs
@@ -226,22 +238,19 @@ fn outb_virtq_call(
     let resp_header_bytes = bytemuck::bytes_of(&resp_header);
 
     // Write response into the completion buffer
-    match completion {
-        hyperlight_common::virtq::SendCompletion::Writable(mut wc) => {
-            wc.write_all(resp_header_bytes)
-                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
-            wc.write_all(result_payload)
-                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
-            consumer
-                .complete(wc.into())
-                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
-        }
-        hyperlight_common::virtq::SendCompletion::Ack(ack) => {
-            consumer
-                .complete(ack.into())
-                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
-        }
-    }
+    let virtq::SendCompletion::Writable(mut wc) = completion else {
+        return Err(HandleOutbError::WriteHostFunctionResponse(
+            "G2H: expected writable completion, got ack (ring corruption)".into(),
+        ));
+    };
+
+    wc.write_all(resp_header_bytes)
+        .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
+    wc.write_all(result_payload)
+        .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
+    consumer
+        .complete(wc.into())
+        .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
 
     Ok(())
 }

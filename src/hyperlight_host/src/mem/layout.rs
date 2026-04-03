@@ -494,6 +494,7 @@ impl SandboxMemoryLayout {
     }
 
     /// Get the size of the G2H ring in bytes.
+    #[allow(dead_code)]
     fn get_g2h_ring_size(&self) -> usize {
         hyperlight_common::virtq::Layout::query_size(
             self.sandbox_memory_config.get_g2h_queue_depth(),
