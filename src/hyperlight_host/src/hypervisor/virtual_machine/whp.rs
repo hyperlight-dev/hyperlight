@@ -119,6 +119,225 @@ impl Drop for NoSurrogateGuard {
     }
 }
 
+/// Workaround for a Hyper-V bug on AMD SVM where the `ObScrubPartition`
+/// path (invoked by `WHvResetPartition`) does not flush the Nested Page
+/// Table (NPT) TLB. After reset, stale GPA-to-HPA translations from
+/// the previous guest execution persist, causing the guest to read
+/// wrong physical memory. Intel is unaffected.
+///
+/// This bug most commonly surfaces as the `interrupt_same_thread_no_barrier`
+/// integration test failing on AMD Windows hosts. @ludfjig has verified
+/// the fix works on Windows Insider builds; this workaround can be
+/// removed once that fix ships in a released version of Windows.
+///
+/// The workaround unmaps and remaps a dummy page after each
+/// `WHvResetPartition`, which forces the hypervisor to invalidate
+/// NPT entries.
+mod npt_flush {
+    use std::os::raw::c_void;
+
+    use hyperlight_common::mem::PAGE_SIZE_USIZE;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows::Win32::System::Hypervisor::*;
+    use windows::Win32::System::Memory::{
+        CreateFileMappingA, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc,
+        VirtualFree,
+    };
+    use windows::core::PCSTR;
+
+    use super::WHvMapGpaRange2Func;
+    use crate::hypervisor::surrogate_process::SurrogateProcess;
+    use crate::hypervisor::virtual_machine::{CreateVmError, RegisterError};
+    use crate::hypervisor::wrappers::HandleWrapper;
+    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::mem::memory_region::SurrogateMapping;
+
+    /// GPA for the dummy page. Placed just past the maximum snapshot
+    /// region so it can never collide with guest memory.
+    const GPA: u64 =
+        (SandboxMemoryLayout::BASE_ADDRESS + SandboxMemoryLayout::MAX_MEMORY_SIZE) as u64;
+
+    #[derive(Debug)]
+    pub(super) enum NptInvalidator {
+        /// Surrogate mode: the dummy page lives in the surrogate process and
+        /// is (re)mapped via `WHvMapGpaRange2`.
+        Surrogate {
+            handle: HANDLE,
+            surrogate_addr: *mut c_void,
+            process_handle: HandleWrapper,
+            map_gpa_range2: WHvMapGpaRange2Func,
+        },
+        /// No-surrogate mode (`HYPERLIGHT_MAX_SURROGATES=0`): the dummy page is
+        /// a host-owned committed page (re)mapped via `WHvMapGpaRange`.
+        NoSurrogate { host_addr: *mut c_void },
+    }
+
+    impl NptInvalidator {
+        const FLAGS: WHV_MAP_GPA_RANGE_FLAGS = WHvMapGpaRangeFlagRead;
+
+        /// Allocate a dummy page in the surrogate process and create the
+        /// initial GPA mapping via `WHvMapGpaRange2`.
+        pub(super) fn new_surrogate(
+            partition: WHV_PARTITION_HANDLE,
+            surrogate_process: &mut SurrogateProcess,
+        ) -> Result<Self, CreateVmError> {
+            let handle = unsafe {
+                CreateFileMappingA(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    0,
+                    PAGE_SIZE_USIZE as u32,
+                    PCSTR::null(),
+                )
+                .map_err(|e| CreateVmError::InitializeVm(e.into()))?
+            };
+
+            let surrogate_addr = surrogate_process
+                .map(
+                    handle.into(),
+                    0, // sentinel key; MapViewOfFile never returns 0
+                    PAGE_SIZE_USIZE,
+                    &SurrogateMapping::SandboxMemory,
+                )
+                .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+
+            let map_gpa_range2 = unsafe {
+                super::try_load_whv_map_gpa_range2()
+                    .map_err(|e| CreateVmError::InitializeVm(e.into()))?
+            };
+
+            let process_handle = surrogate_process.process_handle;
+
+            let res = unsafe {
+                map_gpa_range2(
+                    partition,
+                    process_handle.into(),
+                    surrogate_addr,
+                    GPA,
+                    PAGE_SIZE_USIZE as u64,
+                    Self::FLAGS,
+                )
+            };
+            if res.is_err() {
+                return Err(CreateVmError::InitializeVm(
+                    windows_result::Error::from_hresult(res).into(),
+                ));
+            }
+
+            Ok(Self::Surrogate {
+                handle,
+                surrogate_addr,
+                process_handle,
+                map_gpa_range2,
+            })
+        }
+
+        /// Allocate a host-owned dummy page and create the initial GPA mapping
+        /// via `WHvMapGpaRange`. Used when surrogates are disabled.
+        pub(super) fn new_no_surrogate(
+            partition: WHV_PARTITION_HANDLE,
+        ) -> Result<Self, CreateVmError> {
+            let host_addr = unsafe {
+                VirtualAlloc(
+                    None,
+                    PAGE_SIZE_USIZE,
+                    MEM_COMMIT | MEM_RESERVE,
+                    PAGE_READWRITE,
+                )
+            };
+            if host_addr.is_null() {
+                return Err(CreateVmError::InitializeVm(
+                    windows_result::Error::from_thread().into(),
+                ));
+            }
+
+            let res = unsafe {
+                WHvMapGpaRange(
+                    partition,
+                    host_addr as *const c_void,
+                    GPA,
+                    PAGE_SIZE_USIZE as u64,
+                    Self::FLAGS,
+                )
+            };
+            if let Err(e) = res {
+                unsafe {
+                    let _ = VirtualFree(host_addr, 0, MEM_RELEASE);
+                }
+                return Err(CreateVmError::InitializeVm(e.into()));
+            }
+
+            Ok(Self::NoSurrogate { host_addr })
+        }
+
+        /// Force an NPT TLB flush by unmapping and remapping the dummy page.
+        pub(super) fn flush(
+            &mut self,
+            partition: WHV_PARTITION_HANDLE,
+        ) -> std::result::Result<(), RegisterError> {
+            unsafe {
+                WHvUnmapGpaRange(partition, GPA, PAGE_SIZE_USIZE as u64)
+                    .map_err(|e| RegisterError::ResetPartition(e.into()))?;
+            }
+            match self {
+                Self::Surrogate {
+                    surrogate_addr,
+                    process_handle,
+                    map_gpa_range2,
+                    ..
+                } => {
+                    let res = unsafe {
+                        (*map_gpa_range2)(
+                            partition,
+                            (*process_handle).into(),
+                            *surrogate_addr,
+                            GPA,
+                            PAGE_SIZE_USIZE as u64,
+                            Self::FLAGS,
+                        )
+                    };
+                    if res.is_err() {
+                        return Err(RegisterError::ResetPartition(
+                            windows_result::Error::from_hresult(res).into(),
+                        ));
+                    }
+                }
+                Self::NoSurrogate { host_addr } => unsafe {
+                    WHvMapGpaRange(
+                        partition,
+                        *host_addr as *const c_void,
+                        GPA,
+                        PAGE_SIZE_USIZE as u64,
+                        Self::FLAGS,
+                    )
+                    .map_err(|e| RegisterError::ResetPartition(e.into()))?;
+                },
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for NptInvalidator {
+        fn drop(&mut self) {
+            match self {
+                // The surrogate mapping is freed when SurrogateProcess drops;
+                // we only need to close the file-mapping handle.
+                Self::Surrogate { handle, .. } => {
+                    if let Err(e) = unsafe { CloseHandle(*handle) } {
+                        tracing::error!("Failed to close NptInvalidator handle: {:?}", e);
+                    }
+                }
+                Self::NoSurrogate { host_addr } => {
+                    if let Err(e) = unsafe { VirtualFree(*host_addr, 0, MEM_RELEASE) } {
+                        tracing::error!("Failed to free NptInvalidator page: {:?}", e);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A Windows Hypervisor Platform implementation of a single-vcpu VM
 #[derive(Debug)]
 pub(crate) struct WhpVm {
@@ -136,6 +355,10 @@ pub(crate) struct WhpVm {
     /// Handle to the background timer (if started).
     #[cfg(feature = "hw-interrupts")]
     timer: Option<TimerThread>,
+    /// Dummy page that is unmapped and remapped to force NPT TLB
+    /// flushes after `WHvResetPartition` on AMD SVM hosts.
+    /// See the [`npt_flush`] module for details.
+    npt_flush: npt_flush::NptInvalidator,
 }
 
 // Safety: `WhpVm` is !Send because it holds `Option<SurrogateProcess>` which
@@ -145,8 +368,8 @@ pub(crate) struct WhpVm {
 // (unmapping). This is a system resource that is not bound to the creating
 // thread and can be safely transferred between threads. When the `Option` is
 // `None` (surrogates disabled), no such pointer exists.
-// `file_mappings` contains raw pointers that are also kernel resource handles,
-// safe to use from any thread.
+// `file_mappings` and `NptInvalidator` contain raw pointers that are also
+// kernel resource handles, safe to use from any thread.
 unsafe impl Send for WhpVm {}
 
 impl WhpVm {
@@ -186,7 +409,7 @@ impl WhpVm {
             p
         };
 
-        let surrogate_process = if no_surrogate {
+        let mut surrogate_process = if no_surrogate {
             None
         } else {
             let mgr = get_surrogate_process_manager()
@@ -197,6 +420,11 @@ impl WhpVm {
             )
         };
 
+        let npt_flush = match &mut surrogate_process {
+            Some(surrogate) => npt_flush::NptInvalidator::new_surrogate(partition, surrogate)?,
+            None => npt_flush::NptInvalidator::new_no_surrogate(partition)?,
+        };
+
         Ok(WhpVm {
             partition,
             surrogate_process,
@@ -204,6 +432,7 @@ impl WhpVm {
             _no_surrogate_guard: no_surrogate_guard,
             #[cfg(feature = "hw-interrupts")]
             timer: None,
+            npt_flush,
         })
     }
 
@@ -801,6 +1030,9 @@ impl VirtualMachine for WhpVm {
         unsafe {
             WHvResetPartition(self.partition)
                 .map_err(|e| RegisterError::ResetPartition(e.into()))?;
+
+            // Flush NPT TLB (AMD SVM workaround, see npt_flush module).
+            self.npt_flush.flush(self.partition)?;
 
             // WHvResetPartition resets LAPIC to power-on defaults.
             // Re-initialize it when LAPIC emulation is active.
