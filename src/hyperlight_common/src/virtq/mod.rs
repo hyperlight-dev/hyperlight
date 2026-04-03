@@ -151,18 +151,19 @@ limitations under the License.
 //! ```
 
 mod access;
+mod buffer;
 mod consumer;
 mod desc;
 mod event;
 pub mod msg;
 mod pool;
 mod producer;
-pub mod recycle_pool;
 mod ring;
 
 use core::num::NonZeroU16;
 
 pub use access::*;
+pub use buffer::*;
 pub use consumer::*;
 pub use desc::*;
 pub use event::*;
@@ -992,7 +993,7 @@ mod fuzz {
         }
     }
 
-    unsafe impl MemOps for Arc<LoomMem> {
+    unsafe impl MemOps for LoomMem {
         type Error = MemErr;
 
         fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
