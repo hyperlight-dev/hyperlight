@@ -104,9 +104,19 @@ pub enum HyperlightError {
     #[error("Unsupported type: {0}")]
     GuestInterfaceUnsupportedType(String),
 
-    /// The guest offset is invalid.
-    #[error("The guest offset {0} is invalid.")]
-    GuestOffsetIsInvalid(usize),
+    /// The guest binary was built with a different hyperlight-guest-bin version than the host expects.
+    /// Hyperlight currently provides no backwards compatibility guarantees for guest binaries,
+    /// so the guest and host versions must match exactly. This might change in the future.
+    #[error(
+        "Guest binary was built with hyperlight-guest-bin {guest_bin_version}, \
+         but the host is running hyperlight {host_version}"
+    )]
+    GuestBinVersionMismatch {
+        /// Version of hyperlight-guest-bin the guest was compiled against.
+        guest_bin_version: String,
+        /// Version of hyperlight-host.
+        host_version: String,
+    },
 
     /// A Host function was called by the guest but it was not registered.
     #[error("HostFunction {0} was not found")]
@@ -230,10 +240,6 @@ pub enum HyperlightError {
     #[error("Failed To Convert Return Value {0:?} to {1:?}")]
     ReturnValueConversionFailure(ReturnValue, &'static str),
 
-    /// Attempted to process a snapshot but the snapshot size does not match the current memory size
-    #[error("Snapshot Size Mismatch: Memory Size {0:?} Snapshot Size {1:?}")]
-    SnapshotSizeMismatch(usize, usize),
-
     /// Tried to restore snapshot to a sandbox that is not the same as the one the snapshot was taken from
     #[error("Snapshot was taken from a different sandbox")]
     SnapshotSandboxMismatch,
@@ -325,7 +331,6 @@ impl HyperlightError {
             | HyperlightError::PoisonedSandbox
             | HyperlightError::ExecutionAccessViolation(_)
             | HyperlightError::MemoryAccessViolation(_, _, _)
-            | HyperlightError::SnapshotSizeMismatch(_, _)
             | HyperlightError::MemoryRegionSizeMismatch(_, _, _)
             // HyperlightVmError::Restore is already handled manually in restore(), but we mark it
             // as poisoning here too for defense in depth.
@@ -350,11 +355,11 @@ impl HyperlightError {
             | HyperlightError::Error(_)
             | HyperlightError::FailedToGetValueFromParameter()
             | HyperlightError::FieldIsMissingInGuestLogData(_)
+            | HyperlightError::GuestBinVersionMismatch { .. }
             | HyperlightError::GuestError(_, _)
             | HyperlightError::GuestExecutionHungOnHostFunctionCall()
             | HyperlightError::GuestFunctionCallAlreadyInProgress()
             | HyperlightError::GuestInterfaceUnsupportedType(_)
-            | HyperlightError::GuestOffsetIsInvalid(_)
             | HyperlightError::HostFunctionNotFound(_)
             | HyperlightError::HyperlightVmError(HyperlightVmError::Create(_))
             | HyperlightError::HyperlightVmError(HyperlightVmError::Initialize(_))

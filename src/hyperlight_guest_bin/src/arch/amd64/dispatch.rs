@@ -68,6 +68,12 @@ core::arch::global_asm!("
     mov cr4, rdi
     flush_done:
     call {internal_dispatch_function}\n
+    mov dx, {halt_port}\n
+    out dx, eax\n
+    cli\n
     hlt\n
     .cfi_endproc
-", internal_dispatch_function = sym crate::guest_function::call::internal_dispatch_function);
+",
+    internal_dispatch_function = sym crate::guest_function::call::internal_dispatch_function,
+    halt_port = const hyperlight_common::outb::VmAction::Halt as u16,
+);

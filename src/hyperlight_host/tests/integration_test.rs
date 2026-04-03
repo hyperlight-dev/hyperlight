@@ -1768,3 +1768,108 @@ fn interrupt_cancel_delete_race() {
         handle.join().unwrap();
     }
 }
+
+/// Compile-time regression guard for public visibility of memory
+/// region types.
+///
+/// This test MUST live in an integration test (not a unit test)
+/// because integration tests are compiled as separate crates and can
+/// only access items marked `pub`. A unit test inside the crate
+/// would also see `pub(crate)` items, defeating the purpose.
+///
+/// If any of these types or fields revert to `pub(crate)`, this test
+/// will fail to **compile** — catching the regression before CI even
+/// runs the test binary.
+#[test]
+fn memory_region_types_are_publicly_accessible() {
+    use hyperlight_host::mem::memory_region::{
+        HostGuestMemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind, MemoryRegionType,
+    };
+
+    // This test is a compile-time guard. If it compiles, it passes.
+    // Every line below would cause a compile error if the referenced
+    // type, variant, or field reverted to pub(crate).
+
+    // MemoryRegionType enum and all its variants are pub
+    let _rt = MemoryRegionType::Code;
+    let _rt = MemoryRegionType::InitData;
+    let _rt = MemoryRegionType::Peb;
+    let _rt = MemoryRegionType::Heap;
+    let _rt = MemoryRegionType::Scratch;
+    let _rt = MemoryRegionType::Snapshot;
+    let _rt = MemoryRegionType::MappedFile;
+
+    // MemoryRegionFlags is pub and combinable
+    let _flags = MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
+
+    // SurrogateMapping enum and MemoryRegionType::surrogate_mapping()
+    // are pub (Windows only).
+    #[cfg(target_os = "windows")]
+    {
+        use hyperlight_host::mem::memory_region::SurrogateMapping;
+
+        let mapping = MemoryRegionType::MappedFile.surrogate_mapping();
+        let _: SurrogateMapping = mapping;
+        let _ = SurrogateMapping::SandboxMemory;
+        let _ = SurrogateMapping::ReadOnlyFile;
+    }
+
+    // MemoryRegion_ struct and all its fields are pub (struct literal
+    // construction requires every field to be pub).
+    #[cfg(not(target_os = "windows"))]
+    {
+        let base: <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType = 0x1000;
+        let _region = MemoryRegion_::<HostGuestMemoryRegion> {
+            guest_region: 0x1000..0x2000,
+            host_region: base..<HostGuestMemoryRegion as MemoryRegionKind>::add(base, 0x1000),
+            flags: MemoryRegionFlags::READ,
+            region_type: MemoryRegionType::Code,
+        };
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use hyperlight_host::hypervisor::wrappers::HandleWrapper;
+        use hyperlight_host::mem::memory_region::HostRegionBase;
+        use windows::Win32::Foundation::HANDLE;
+
+        let host_base = HostRegionBase {
+            from_handle: HandleWrapper::from(HANDLE(std::ptr::null_mut())),
+            handle_base: 0x1000,
+            handle_size: 0x1000,
+            offset: 0,
+        };
+        let _region = MemoryRegion_::<HostGuestMemoryRegion> {
+            guest_region: 0x1000..0x2000,
+            host_region: host_base
+                ..<HostGuestMemoryRegion as MemoryRegionKind>::add(host_base, 0x1000),
+            flags: MemoryRegionFlags::READ,
+            region_type: MemoryRegionType::Code,
+        };
+    }
+}
+
+/// Test that hardware timer interrupts are delivered to the guest via VmAction::PvTimerConfig port.
+///
+/// The guest function `TestTimerInterrupts`:
+///  1. Initializes the PIC (IRQ0 -> vector 0x20)
+///  2. Installs an IDT entry for vector 0x20
+///  3. Arms the timer via VmAction::PvTimerConfig port
+///  4. Enables interrupts and busy-waits
+///  5. Returns the number of timer interrupts received
+///
+/// Requires the `hw-interrupts` feature on the host side.
+#[test]
+#[cfg(feature = "hw-interrupts")]
+fn hw_timer_interrupts() {
+    with_rust_sandbox(|mut sbox| {
+        // 1ms period, up to 100M spin iterations (should fire well before that)
+        let count: i32 = sbox
+            .call("TestTimerInterrupts", (1000_i32, 100_000_000_i32))
+            .unwrap();
+        assert!(
+            count > 0,
+            "Expected at least one timer interrupt, got {count}"
+        );
+    });
+}

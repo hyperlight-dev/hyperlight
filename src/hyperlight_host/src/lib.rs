@@ -94,6 +94,9 @@ pub use sandbox::MultiUseSandbox;
 pub use sandbox::UninitializedSandbox;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
+/// The re-export for the `GuestCounter` type
+#[cfg(feature = "nanvix-unstable")]
+pub use sandbox::uninitialized::GuestCounter;
 
 /// The universal `Result` type used throughout the Hyperlight codebase.
 pub type Result<T> = core::result::Result<T, error::HyperlightError>;

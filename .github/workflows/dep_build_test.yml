@@ -39,14 +39,18 @@ jobs:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 45
     runs-on: ${{ fromJson(
-        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}"]', 
-          (inputs.hypervisor == 'hyperv' || inputs.hypervisor == 'hyperv-ws2025') && 'Windows' || 'Linux', 
-          inputs.hypervisor == 'hyperv' && 'win2022' || inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
-          inputs.cpu)) }} 
+        format('["self-hosted", "{0}", "X64", "1ES.Pool=hld-{1}-{2}", "JobId=build-and-test-{3}-{4}-{5}-{6}"]', 
+          inputs.hypervisor == 'hyperv-ws2025' && 'Windows' || 'Linux', 
+          inputs.hypervisor == 'hyperv-ws2025' && 'win2025' || inputs.hypervisor == 'mshv3' && 'azlinux3-mshv' || inputs.hypervisor, 
+          inputs.cpu,
+          inputs.config,
+          github.run_id,
+          github.run_number,
+          github.run_attempt)) }} 
     steps:
       - uses: actions/checkout@v6
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
         with:
           rust-toolchain: "1.89"
         env:
@@ -104,6 +108,11 @@ jobs:
         run: |
           # with only one driver enabled (kvm/mshv3 features are unix-only, no-op on Windows)
           just test ${{ inputs.config }} ${{ inputs.hypervisor == 'mshv3' && 'mshv3' || 'kvm' }}
+
+      - name: Run Rust tests with hw-interrupts
+        run: |
+          # with hw-interrupts feature enabled (+ explicit driver on Linux)
+          just test ${{ inputs.config }} ${{ runner.os == 'Linux' && (inputs.hypervisor == 'mshv3' && 'mshv3,hw-interrupts' || 'kvm,hw-interrupts') || 'hw-interrupts' }}
 
       - name: Run Rust Gdb tests
         env:

@@ -63,20 +63,155 @@ limitations under the License.
 use std::fmt::Debug;
 use std::mem::{offset_of, size_of};
 
-use hyperlight_common::mem::{GuestMemoryRegion, HyperlightPEB, PAGE_SIZE_USIZE};
+use hyperlight_common::mem::{HyperlightPEB, PAGE_SIZE_USIZE};
 use tracing::{Span, instrument};
 
 use super::memory_region::MemoryRegionType::{Code, Heap, InitData, Peb};
 use super::memory_region::{
-    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
+    DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind,
     MemoryRegionVecBuilder,
 };
-use super::shared_mem::{ExclusiveSharedMemory, SharedMemory};
-use crate::error::HyperlightError::{
-    GuestOffsetIsInvalid, MemoryRequestTooBig, MemoryRequestTooSmall,
-};
+#[cfg(any(gdb, feature = "mem_profile"))]
+use super::shared_mem::HostSharedMemory;
+use super::shared_mem::{ExclusiveSharedMemory, ReadonlySharedMemory};
+use crate::error::HyperlightError::{MemoryRequestTooBig, MemoryRequestTooSmall};
 use crate::sandbox::SandboxConfiguration;
 use crate::{Result, new_error};
+
+pub(crate) enum BaseGpaRegion<Sn, Sc> {
+    Snapshot(Sn),
+    Scratch(Sc),
+    Mmap(MemoryRegion),
+}
+
+// It's an invariant of this type, checked on creation, that the
+// offset is in bounds for the base region.
+pub(crate) struct ResolvedGpa<Sn, Sc> {
+    pub(crate) offset: usize,
+    pub(crate) base: BaseGpaRegion<Sn, Sc>,
+}
+
+impl AsRef<[u8]> for ExclusiveSharedMemory {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+impl AsRef<[u8]> for ReadonlySharedMemory {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<Sn, Sc> ResolvedGpa<Sn, Sc> {
+    pub(crate) fn with_memories<Sn2, Sc2>(self, sn: Sn2, sc: Sc2) -> ResolvedGpa<Sn2, Sc2> {
+        ResolvedGpa {
+            offset: self.offset,
+            base: match self.base {
+                BaseGpaRegion::Snapshot(_) => BaseGpaRegion::Snapshot(sn),
+                BaseGpaRegion::Scratch(_) => BaseGpaRegion::Scratch(sc),
+                BaseGpaRegion::Mmap(r) => BaseGpaRegion::Mmap(r),
+            },
+        }
+    }
+}
+impl<'a> BaseGpaRegion<&'a [u8], &'a [u8]> {
+    pub(crate) fn as_ref<'b>(&'b self) -> &'a [u8] {
+        match self {
+            BaseGpaRegion::Snapshot(sn) => sn,
+            BaseGpaRegion::Scratch(sc) => sc,
+            BaseGpaRegion::Mmap(r) => unsafe {
+                #[allow(clippy::useless_conversion)]
+                let host_region_base: usize = r.host_region.start.into();
+                #[allow(clippy::useless_conversion)]
+                let host_region_end: usize = r.host_region.end.into();
+                let len = host_region_end - host_region_base;
+                std::slice::from_raw_parts(host_region_base as *const u8, len)
+            },
+        }
+    }
+}
+impl<'a> ResolvedGpa<&'a [u8], &'a [u8]> {
+    pub(crate) fn as_ref<'b>(&'b self) -> &'a [u8] {
+        let base = self.base.as_ref();
+        if self.offset > base.len() {
+            return &[];
+        }
+        &self.base.as_ref()[self.offset..]
+    }
+}
+#[cfg(any(gdb, feature = "mem_profile"))]
+#[allow(unused)] // may be unused when nanvix-unstable is also enabled
+pub(crate) trait ReadableSharedMemory {
+    fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()>;
+}
+#[cfg(any(gdb, feature = "mem_profile"))]
+impl ReadableSharedMemory for &HostSharedMemory {
+    fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
+        HostSharedMemory::copy_to_slice(self, slice, offset)
+    }
+}
+#[cfg(any(gdb, feature = "mem_profile"))]
+mod coherence_hack {
+    use super::{ExclusiveSharedMemory, ReadonlySharedMemory};
+    #[allow(unused)] // it actually is; see the impl below
+    pub(super) trait SharedMemoryAsRefMarker: AsRef<[u8]> {}
+    impl SharedMemoryAsRefMarker for ExclusiveSharedMemory {}
+    impl SharedMemoryAsRefMarker for &ExclusiveSharedMemory {}
+    impl SharedMemoryAsRefMarker for ReadonlySharedMemory {}
+    impl SharedMemoryAsRefMarker for &ReadonlySharedMemory {}
+}
+#[cfg(any(gdb, feature = "mem_profile"))]
+impl<T: coherence_hack::SharedMemoryAsRefMarker> ReadableSharedMemory for T {
+    fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()> {
+        let ss: &[u8] = self.as_ref();
+        let end = offset + slice.len();
+        if end > ss.len() {
+            return Err(new_error!(
+                "Attempt to read up to {} in memory of size {}",
+                offset + slice.len(),
+                self.as_ref().len()
+            ));
+        }
+        slice.copy_from_slice(&ss[offset..end]);
+        Ok(())
+    }
+}
+#[cfg(any(gdb, feature = "mem_profile"))]
+impl<Sn: ReadableSharedMemory, Sc: ReadableSharedMemory> ResolvedGpa<Sn, Sc> {
+    #[allow(unused)] // may be unused when nanvix-unstable is also enabled
+    pub(crate) fn copy_to_slice(&self, slice: &mut [u8]) -> Result<()> {
+        match &self.base {
+            BaseGpaRegion::Snapshot(sn) => sn.copy_to_slice(slice, self.offset),
+            BaseGpaRegion::Scratch(sc) => sc.copy_to_slice(slice, self.offset),
+            BaseGpaRegion::Mmap(r) => unsafe {
+                #[allow(clippy::useless_conversion)]
+                let host_region_base: usize = r.host_region.start.into();
+                #[allow(clippy::useless_conversion)]
+                let host_region_end: usize = r.host_region.end.into();
+                let len = host_region_end - host_region_base;
+                // Safety: it's a documented invariant of MemoryRegion
+                // that the memory must remain alive as long as the
+                // sandbox is alive, and the way this code is used,
+                // the lifetimes of the snapshot and scratch memories
+                // ensure that the sandbox is still alive. This could
+                // perhaps be cleaned up/improved/made harder to
+                // misuse significantly, but it would require a much
+                // larger rework.
+                let ss = std::slice::from_raw_parts(host_region_base as *const u8, len);
+                let end = self.offset + slice.len();
+                if end > ss.len() {
+                    return Err(new_error!(
+                        "Attempt to read up to {} in memory of size {}",
+                        self.offset + slice.len(),
+                        ss.len()
+                    ));
+                }
+                slice.copy_from_slice(&ss[self.offset..end]);
+                Ok(())
+            },
+        }
+    }
+}
 
 #[derive(Copy, Clone)]
 pub(crate) struct SandboxMemoryLayout {
@@ -92,6 +227,8 @@ pub(crate) struct SandboxMemoryLayout {
     peb_output_data_offset: usize,
     peb_init_data_offset: usize,
     peb_heap_data_offset: usize,
+    #[cfg(feature = "nanvix-unstable")]
+    peb_file_mappings_offset: usize,
 
     guest_heap_buffer_offset: usize,
     init_data_offset: usize,
@@ -108,70 +245,75 @@ pub(crate) struct SandboxMemoryLayout {
     // The size of the scratch region in physical memory; note that
     // this will appear under the top of physical memory.
     scratch_size: usize,
+    // The size of the snapshot region in physical memory; note that
+    // this will appear somewhere near the base of physical memory.
+    snapshot_size: usize,
 }
 
 impl Debug for SandboxMemoryLayout {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SandboxMemoryLayout")
-            .field(
-                "Total Memory Size",
-                &format_args!("{:#x}", self.get_memory_size().unwrap_or(0)),
-            )
-            .field("Heap Size", &format_args!("{:#x}", self.heap_size))
-            .field(
-                "Init Data Size",
-                &format_args!("{:#x}", self.init_data_size),
-            )
-            .field("PEB Address", &format_args!("{:#x}", self.peb_address))
-            .field("PEB Offset", &format_args!("{:#x}", self.peb_offset))
-            .field("Code Size", &format_args!("{:#x}", self.code_size))
-            .field(
-                "Input Data Offset",
-                &format_args!("{:#x}", self.peb_input_data_offset),
-            )
-            .field(
-                "Output Data Offset",
-                &format_args!("{:#x}", self.peb_output_data_offset),
-            )
-            .field(
-                "Init Data Offset",
-                &format_args!("{:#x}", self.peb_init_data_offset),
-            )
-            .field(
-                "Guest Heap Offset",
-                &format_args!("{:#x}", self.peb_heap_data_offset),
-            )
-            .field(
-                "Guest Heap Buffer Offset",
-                &format_args!("{:#x}", self.guest_heap_buffer_offset),
-            )
-            .field(
-                "Init Data Offset",
-                &format_args!("{:#x}", self.init_data_offset),
-            )
-            .field("PT Size", &format_args!("{:#x}", self.pt_size.unwrap_or(0)))
-            .field(
-                "Guest Code Offset",
-                &format_args!("{:#x}", self.guest_code_offset),
-            )
-            .field(
-                "Scratch region size",
-                &format_args!("{:#x}", self.scratch_size),
-            )
-            .finish()
+        let mut ff = f.debug_struct("SandboxMemoryLayout");
+        ff.field(
+            "Total Memory Size",
+            &format_args!("{:#x}", self.get_memory_size().unwrap_or(0)),
+        )
+        .field("Heap Size", &format_args!("{:#x}", self.heap_size))
+        .field(
+            "Init Data Size",
+            &format_args!("{:#x}", self.init_data_size),
+        )
+        .field("PEB Address", &format_args!("{:#x}", self.peb_address))
+        .field("PEB Offset", &format_args!("{:#x}", self.peb_offset))
+        .field("Code Size", &format_args!("{:#x}", self.code_size))
+        .field(
+            "Input Data Offset",
+            &format_args!("{:#x}", self.peb_input_data_offset),
+        )
+        .field(
+            "Output Data Offset",
+            &format_args!("{:#x}", self.peb_output_data_offset),
+        )
+        .field(
+            "Init Data Offset",
+            &format_args!("{:#x}", self.peb_init_data_offset),
+        )
+        .field(
+            "Guest Heap Offset",
+            &format_args!("{:#x}", self.peb_heap_data_offset),
+        );
+        #[cfg(feature = "nanvix-unstable")]
+        ff.field(
+            "File Mappings Offset",
+            &format_args!("{:#x}", self.peb_file_mappings_offset),
+        );
+        ff.field(
+            "Guest Heap Buffer Offset",
+            &format_args!("{:#x}", self.guest_heap_buffer_offset),
+        )
+        .field(
+            "Init Data Offset",
+            &format_args!("{:#x}", self.init_data_offset),
+        )
+        .field("PT Size", &format_args!("{:#x}", self.pt_size.unwrap_or(0)))
+        .field(
+            "Guest Code Offset",
+            &format_args!("{:#x}", self.guest_code_offset),
+        )
+        .field(
+            "Scratch region size",
+            &format_args!("{:#x}", self.scratch_size),
+        )
+        .finish()
     }
 }
 
 impl SandboxMemoryLayout {
     /// The maximum amount of memory a single sandbox will be allowed.
     ///
-    /// Currently, both the scratch region and the snapshot region are
-    /// bounded by this size. The current value is essentially
-    /// arbitrary and chosen for historical reasons; the modern
-    /// sandbox virtual memory layout can support much more, so this
-    /// could be increased should use cases for larger sandboxes
-    /// arise.
-    const MAX_MEMORY_SIZE: usize = 0x4000_0000 - Self::BASE_ADDRESS;
+    /// Both the scratch region and the snapshot region are bounded by
+    /// this size. The value is arbitrary but chosen to be large enough
+    /// for most workloads while preventing accidental resource exhaustion.
+    const MAX_MEMORY_SIZE: usize = (16 * 1024 * 1024 * 1024) - Self::BASE_ADDRESS; // 16 GiB - BASE_ADDRESS
 
     /// The base address of the sandbox's memory.
     #[cfg(not(feature = "nanvix-unstable"))]
@@ -211,25 +353,44 @@ impl SandboxMemoryLayout {
         let peb_output_data_offset = peb_offset + offset_of!(HyperlightPEB, output_stack);
         let peb_init_data_offset = peb_offset + offset_of!(HyperlightPEB, init_data);
         let peb_heap_data_offset = peb_offset + offset_of!(HyperlightPEB, guest_heap);
+        #[cfg(feature = "nanvix-unstable")]
+        let peb_file_mappings_offset = peb_offset + offset_of!(HyperlightPEB, file_mappings);
 
         // The following offsets are the actual values that relate to memory layout,
         // which are written to PEB struct
         let peb_address = Self::BASE_ADDRESS + peb_offset;
-        // make sure heap buffer starts at 4K boundary
-        let guest_heap_buffer_offset = (peb_heap_data_offset + size_of::<GuestMemoryRegion>())
-            .next_multiple_of(PAGE_SIZE_USIZE);
+        // make sure heap buffer starts at 4K boundary.
+        // The FileMappingInfo array is stored immediately after the PEB struct.
+        // We statically reserve space for MAX_FILE_MAPPINGS entries so that
+        // the heap never overlaps the array, even when all slots are used.
+        // The host writes file mapping metadata here via write_file_mapping_entry;
+        // the guest only reads the entries. We don't know at layout time how
+        // many file mappings the host will register, so we reserve space for
+        // the maximum number.
+        // The heap starts at the next page boundary after this reserved area.
+        #[cfg(feature = "nanvix-unstable")]
+        let file_mappings_array_end = peb_offset
+            + size_of::<HyperlightPEB>()
+            + hyperlight_common::mem::MAX_FILE_MAPPINGS
+                * size_of::<hyperlight_common::mem::FileMappingInfo>();
+        #[cfg(feature = "nanvix-unstable")]
+        let guest_heap_buffer_offset = file_mappings_array_end.next_multiple_of(PAGE_SIZE_USIZE);
+        #[cfg(not(feature = "nanvix-unstable"))]
+        let guest_heap_buffer_offset =
+            (peb_offset + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE_USIZE);
 
         // make sure init data starts at 4K boundary
         let init_data_offset =
             (guest_heap_buffer_offset + heap_size).next_multiple_of(PAGE_SIZE_USIZE);
-
-        Ok(Self {
+        let mut ret = Self {
             peb_offset,
             heap_size,
             peb_input_data_offset,
             peb_output_data_offset,
             peb_init_data_offset,
             peb_heap_data_offset,
+            #[cfg(feature = "nanvix-unstable")]
+            peb_file_mappings_offset,
             sandbox_memory_config: cfg,
             code_size,
             guest_heap_buffer_offset,
@@ -240,7 +401,10 @@ impl SandboxMemoryLayout {
             init_data_permissions,
             pt_size: None,
             scratch_size,
-        })
+            snapshot_size: 0,
+        };
+        ret.set_snapshot_size(ret.get_memory_size()?);
+        Ok(ret)
     }
 
     /// Get the offset in guest memory to the output data size
@@ -350,6 +514,32 @@ impl SandboxMemoryLayout {
         self.peb_heap_data_offset
     }
 
+    /// Get the offset in guest memory to the file_mappings count field
+    /// (the `size` field of the `GuestMemoryRegion` in the PEB).
+    #[cfg(feature = "nanvix-unstable")]
+    pub(crate) fn get_file_mappings_size_offset(&self) -> usize {
+        self.peb_file_mappings_offset
+    }
+
+    /// Get the offset in guest memory to the file_mappings pointer field.
+    #[cfg(feature = "nanvix-unstable")]
+    fn get_file_mappings_pointer_offset(&self) -> usize {
+        self.get_file_mappings_size_offset() + size_of::<u64>()
+    }
+
+    /// Get the offset in snapshot memory where the FileMappingInfo array starts
+    /// (immediately after the PEB struct, within the same page).
+    #[cfg(feature = "nanvix-unstable")]
+    pub(crate) fn get_file_mappings_array_offset(&self) -> usize {
+        self.peb_offset + size_of::<HyperlightPEB>()
+    }
+
+    /// Get the guest address of the FileMappingInfo array.
+    #[cfg(feature = "nanvix-unstable")]
+    fn get_file_mappings_array_gva(&self) -> u64 {
+        (Self::BASE_ADDRESS + self.get_file_mappings_array_offset()) as u64
+    }
+
     /// Get the offset of the heap pointer in guest memory,
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_heap_pointer_offset(&self) -> usize {
@@ -410,8 +600,15 @@ impl SandboxMemoryLayout {
         if self.scratch_size < min_scratch {
             return Err(MemoryRequestTooSmall(self.scratch_size, min_scratch));
         }
+        let old_pt_size = self.pt_size.unwrap_or(0);
+        self.snapshot_size = self.snapshot_size - old_pt_size + size;
         self.pt_size = Some(size);
         Ok(())
+    }
+
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub(crate) fn set_snapshot_size(&mut self, new_size: usize) {
+        self.snapshot_size = new_size;
     }
 
     /// Get the size of the memory region used for page tables
@@ -446,12 +643,21 @@ impl SandboxMemoryLayout {
             ));
         }
 
-        // PEB
-        let heap_offset = builder.push_page_aligned(
-            size_of::<HyperlightPEB>(),
-            MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
-            Peb,
-        );
+        // PEB + preallocated FileMappingInfo array
+        #[cfg(feature = "nanvix-unstable")]
+        let heap_offset = {
+            let peb_and_array_size = size_of::<HyperlightPEB>()
+                + hyperlight_common::mem::MAX_FILE_MAPPINGS
+                    * size_of::<hyperlight_common::mem::FileMappingInfo>();
+            builder.push_page_aligned(
+                peb_and_array_size,
+                MemoryRegionFlags::READ | MemoryRegionFlags::WRITE,
+                Peb,
+            )
+        };
+        #[cfg(not(feature = "nanvix-unstable"))]
+        let heap_offset =
+            builder.push_page_aligned(size_of::<HyperlightPEB>(), MemoryRegionFlags::READ, Peb);
 
         let expected_heap_offset = TryInto::<usize>::try_into(self.guest_heap_buffer_offset)?;
 
@@ -519,74 +725,91 @@ impl SandboxMemoryLayout {
         Ok(())
     }
 
-    /// Write the finished memory layout to `shared_mem` and return
-    /// `Ok` if successful.
+    /// Write the finished memory layout to `mem` and return `Ok` if
+    /// successful.
     ///
-    /// Note: `shared_mem` may have been modified, even if `Err` was returned
+    /// Note: `mem` may have been modified, even if `Err` was returned
     /// from this function.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write(
-        &self,
-        shared_mem: &mut ExclusiveSharedMemory,
-        guest_offset: usize,
-        //TODO: Unused remove
-        _size: usize,
-    ) -> Result<()> {
+    pub(crate) fn write_peb(&self, mem: &mut [u8]) -> Result<()> {
+        let guest_offset = SandboxMemoryLayout::BASE_ADDRESS;
+
+        fn write_u64(mem: &mut [u8], offset: usize, value: u64) -> Result<()> {
+            if offset + 8 > mem.len() {
+                return Err(new_error!(
+                    "Cannot write to offset {} in slice of len {}",
+                    offset,
+                    mem.len()
+                ));
+            }
+            mem[offset..offset + 8].copy_from_slice(&u64::to_ne_bytes(value));
+            Ok(())
+        }
+
         macro_rules! get_address {
             ($something:ident) => {
                 u64::try_from(guest_offset + self.$something)?
             };
         }
 
-        if guest_offset != SandboxMemoryLayout::BASE_ADDRESS
-            && guest_offset != shared_mem.base_addr()
-        {
-            return Err(GuestOffsetIsInvalid(guest_offset));
-        }
-
         // Start of setting up the PEB. The following are in the order of the PEB fields
 
-        // Skip guest_dispatch_function_ptr_offset because it is set by the guest
-
-        // Skip code, is set when loading binary
-        // skip outb and outb context, is set when running in_proc
-
         // Set up input buffer pointer
-        shared_mem.write_u64(
+        write_u64(
+            mem,
             self.get_input_data_size_offset(),
             self.sandbox_memory_config
                 .get_input_data_size()
                 .try_into()?,
         )?;
-        shared_mem.write_u64(
+        write_u64(
+            mem,
             self.get_input_data_pointer_offset(),
             self.get_input_data_buffer_gva(),
         )?;
 
         // Set up output buffer pointer
-        shared_mem.write_u64(
+        write_u64(
+            mem,
             self.get_output_data_size_offset(),
             self.sandbox_memory_config
                 .get_output_data_size()
                 .try_into()?,
         )?;
-        shared_mem.write_u64(
+        write_u64(
+            mem,
             self.get_output_data_pointer_offset(),
             self.get_output_data_buffer_gva(),
         )?;
 
         // Set up init data pointer
-        shared_mem.write_u64(
+        write_u64(
+            mem,
             self.get_init_data_size_offset(),
             (self.get_unaligned_memory_size() - self.init_data_offset).try_into()?,
         )?;
         let addr = get_address!(init_data_offset);
-        shared_mem.write_u64(self.get_init_data_pointer_offset(), addr)?;
+        write_u64(mem, self.get_init_data_pointer_offset(), addr)?;
 
         // Set up heap buffer pointer
         let addr = get_address!(guest_heap_buffer_offset);
-        shared_mem.write_u64(self.get_heap_size_offset(), self.heap_size.try_into()?)?;
-        shared_mem.write_u64(self.get_heap_pointer_offset(), addr)?;
+        write_u64(mem, self.get_heap_size_offset(), self.heap_size.try_into()?)?;
+        write_u64(mem, self.get_heap_pointer_offset(), addr)?;
+
+        // Set up the file_mappings descriptor in the PEB.
+        // - The `size` field holds the number of valid FileMappingInfo
+        //   entries currently written (initially 0 — entries are added
+        //   later by map_file_cow / evolve).
+        // - The `ptr` field holds the guest address of the preallocated
+        //   FileMappingInfo array
+        #[cfg(feature = "nanvix-unstable")]
+        write_u64(mem, self.get_file_mappings_size_offset(), 0)?;
+        #[cfg(feature = "nanvix-unstable")]
+        write_u64(
+            mem,
+            self.get_file_mappings_pointer_offset(),
+            self.get_file_mappings_array_gva(),
+        )?;
 
         // End of setting up the PEB
 
@@ -596,6 +819,37 @@ impl SandboxMemoryLayout {
         // [`SandboxMemoryManager::update_scratch_bookkeeping`].
 
         Ok(())
+    }
+
+    /// Determine what region this gpa is in, and its offset into that region
+    pub(crate) fn resolve_gpa(
+        &self,
+        gpa: u64,
+        mmap_regions: &[MemoryRegion],
+    ) -> Option<ResolvedGpa<(), ()>> {
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(self.scratch_size);
+        if gpa >= scratch_base && gpa < scratch_base + self.scratch_size as u64 {
+            return Some(ResolvedGpa {
+                offset: (gpa - scratch_base) as usize,
+                base: BaseGpaRegion::Scratch(()),
+            });
+        } else if gpa >= SandboxMemoryLayout::BASE_ADDRESS as u64
+            && gpa < SandboxMemoryLayout::BASE_ADDRESS as u64 + self.snapshot_size as u64
+        {
+            return Some(ResolvedGpa {
+                offset: gpa as usize - SandboxMemoryLayout::BASE_ADDRESS,
+                base: BaseGpaRegion::Snapshot(()),
+            });
+        }
+        for rgn in mmap_regions {
+            if gpa >= rgn.guest_region.start as u64 && gpa < rgn.guest_region.end as u64 {
+                return Some(ResolvedGpa {
+                    offset: gpa as usize - rgn.guest_region.start,
+                    base: BaseGpaRegion::Mmap(rgn.clone()),
+                });
+            }
+        }
+        None
     }
 }
 
@@ -611,7 +865,14 @@ mod tests {
         // in order of layout
         expected_size += layout.code_size;
 
-        expected_size += size_of::<HyperlightPEB>().next_multiple_of(PAGE_SIZE_USIZE);
+        // PEB + preallocated FileMappingInfo array
+        #[cfg(feature = "nanvix-unstable")]
+        let peb_and_array = size_of::<HyperlightPEB>()
+            + hyperlight_common::mem::MAX_FILE_MAPPINGS
+                * size_of::<hyperlight_common::mem::FileMappingInfo>();
+        #[cfg(not(feature = "nanvix-unstable"))]
+        let peb_and_array = size_of::<HyperlightPEB>();
+        expected_size += peb_and_array.next_multiple_of(PAGE_SIZE_USIZE);
 
         expected_size += layout.heap_size.next_multiple_of(PAGE_SIZE_USIZE);
 
@@ -631,8 +892,9 @@ mod tests {
     #[test]
     fn test_max_memory_sandbox() {
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_scratch_size(0x40004000);
-        cfg.set_input_data_size(0x40000000);
+        // scratch_size exceeds 16 GiB limit
+        cfg.set_scratch_size(17 * 1024 * 1024 * 1024);
+        cfg.set_input_data_size(16 * 1024 * 1024 * 1024);
         let layout = SandboxMemoryLayout::new(cfg, 4096, 4096, None);
         assert!(matches!(layout.unwrap_err(), MemoryRequestTooBig(..)));
     }

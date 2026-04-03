@@ -12,7 +12,10 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-*/
+ */
+#[cfg(feature = "nanvix-unstable")]
+use std::mem::offset_of;
+
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
     FunctionCall, validate_guest_function_call_buffer,
@@ -25,13 +28,13 @@ use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
 
 use super::layout::SandboxMemoryLayout;
-use super::shared_mem::{ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, SharedMemory};
+use super::shared_mem::{
+    ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
+};
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(crashdump)]
-use crate::mem::memory_region::{
-    CrashDumpRegion, HostGuestMemoryRegion, MemoryRegionFlags, MemoryRegionType,
-};
+use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
 
@@ -65,6 +68,7 @@ fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegion
             }
             (flags, MemoryRegionType::Scratch)
         }
+        MappingKind::Unmapped => (MemoryRegionFlags::empty(), MemoryRegionType::Snapshot),
     }
 }
 
@@ -92,46 +96,48 @@ fn try_coalesce_region(
     false
 }
 
-/// Check dynamic mmap regions for a GPA that wasn't found in snapshot/scratch,
-/// and push matching regions.
-#[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
-fn resolve_from_mmap_regions(
-    regions: &mut Vec<CrashDumpRegion>,
-    mapping: &hyperlight_common::vmem::Mapping,
-    virt_base: usize,
-    virt_end: usize,
-    mmap_regions: &[MemoryRegion],
-) {
-    let phys_start = mapping.phys_base as usize;
-    let phys_end = (mapping.phys_base + mapping.len) as usize;
-
-    for rgn in mmap_regions {
-        if phys_start >= rgn.guest_region.start && phys_end <= rgn.guest_region.end {
-            let offset = phys_start - rgn.guest_region.start;
-            let host_base = HostGuestMemoryRegion::to_addr(rgn.host_region.start) + offset;
-            let host_end = host_base + mapping.len as usize;
-            let flags = rgn.flags;
-
-            if try_coalesce_region(regions, virt_base, virt_end, host_base, flags) {
-                continue;
-            }
-
-            regions.push(CrashDumpRegion {
-                guest_region: virt_base..virt_end,
-                host_region: host_base..host_end,
-                flags,
-                region_type: rgn.region_type,
-            });
-        }
+// It would be nice to have a simple type alias
+// `SnapshotSharedMemory<S: SharedMemory>` that abstracts over the
+// fact that the snapshot shared memory is `ReadonlySharedMemory`
+// normally, but there is (temporary) support for writable
+// `GuestSharedMemory` with `#[cfg(feature =
+// "nanvix-unstable")]`. Unfortunately, rustc gets annoyed about an
+// unused type parameter, unless one goes to a little bit of effort to
+// trick it...
+mod unused_hack {
+    #[cfg(not(unshared_snapshot_mem))]
+    use crate::mem::shared_mem::ReadonlySharedMemory;
+    use crate::mem::shared_mem::SharedMemory;
+    pub trait SnapshotSharedMemoryT {
+        type T<S: SharedMemory>;
+    }
+    pub struct SnapshotSharedMemory_;
+    impl SnapshotSharedMemoryT for SnapshotSharedMemory_ {
+        #[cfg(not(unshared_snapshot_mem))]
+        type T<S: SharedMemory> = ReadonlySharedMemory;
+        #[cfg(unshared_snapshot_mem)]
+        type T<S: SharedMemory> = S;
+    }
+    pub type SnapshotSharedMemory<S> = <SnapshotSharedMemory_ as SnapshotSharedMemoryT>::T<S>;
+}
+impl ReadonlySharedMemory {
+    pub(crate) fn to_mgr_snapshot_mem(
+        &self,
+    ) -> Result<SnapshotSharedMemory<ExclusiveSharedMemory>> {
+        #[cfg(not(unshared_snapshot_mem))]
+        let ret = self.clone();
+        #[cfg(unshared_snapshot_mem)]
+        let ret = self.copy_to_writable()?;
+        Ok(ret)
     }
 }
-
+pub(crate) use unused_hack::SnapshotSharedMemory;
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
 #[derive(Clone)]
-pub(crate) struct SandboxMemoryManager<S> {
+pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// Shared memory for the Sandbox
-    pub(crate) shared_mem: S,
+    pub(crate) shared_mem: SnapshotSharedMemory<S>,
     /// Scratch memory for the Sandbox
     pub(crate) scratch_mem: S,
     /// The memory layout of the underlying shared memory
@@ -240,7 +246,7 @@ where
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new(
         layout: SandboxMemoryLayout,
-        shared_mem: S,
+        shared_mem: SnapshotSharedMemory<S>,
         scratch_mem: S,
         entrypoint: NextAction,
     ) -> Self {
@@ -257,12 +263,6 @@ where
     /// Get mutable access to the abort buffer
     pub(crate) fn get_abort_buffer_mut(&mut self) -> &mut Vec<u8> {
         &mut self.abort_buffer
-    }
-
-    /// Get `SharedMemory` in `self` as a mutable reference
-    #[cfg(test)]
-    pub(crate) fn get_shared_mem_mut(&mut self) -> &mut S {
-        &mut self.shared_mem
     }
 
     /// Create a snapshot with the given mapped regions
@@ -293,22 +293,10 @@ where
 impl SandboxMemoryManager<ExclusiveSharedMemory> {
     pub(crate) fn from_snapshot(s: &Snapshot) -> Result<Self> {
         let layout = *s.layout();
-        let mut shared_mem = ExclusiveSharedMemory::new(s.mem_size())?;
-        shared_mem.copy_from_slice(s.memory(), 0)?;
+        let shared_mem = s.memory().to_mgr_snapshot_mem()?;
         let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
         let entrypoint = s.entrypoint();
         Ok(Self::new(layout, shared_mem, scratch_mem, entrypoint))
-    }
-
-    /// Write memory layout
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_memory_layout(&mut self) -> Result<()> {
-        let mem_size = self.shared_mem.mem_size();
-        self.layout.write(
-            &mut self.shared_mem,
-            SandboxMemoryLayout::BASE_ADDRESS,
-            mem_size,
-        )
     }
 
     /// Wraps ExclusiveSharedMemory::build
@@ -351,6 +339,67 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
+    /// Write a [`FileMappingInfo`] entry into the PEB's preallocated array.
+    ///
+    /// Reads the current entry count from the PEB, validates that the
+    /// array isn't full ([`MAX_FILE_MAPPINGS`]), writes the entry at the
+    /// next available slot, and increments the count.
+    ///
+    /// This is the **only** place that writes to the PEB file mappings
+    /// array — both `MultiUseSandbox::map_file_cow` and the evolve loop
+    /// call through here so the logic is not duplicated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`MAX_FILE_MAPPINGS`] has been reached.
+    ///
+    /// [`FileMappingInfo`]: hyperlight_common::mem::FileMappingInfo
+    /// [`MAX_FILE_MAPPINGS`]: hyperlight_common::mem::MAX_FILE_MAPPINGS
+    #[cfg(feature = "nanvix-unstable")]
+    pub(crate) fn write_file_mapping_entry(
+        &mut self,
+        guest_addr: u64,
+        size: u64,
+        label: &[u8; hyperlight_common::mem::FILE_MAPPING_LABEL_MAX_LEN + 1],
+    ) -> Result<()> {
+        use hyperlight_common::mem::{FileMappingInfo, MAX_FILE_MAPPINGS};
+
+        // Read the current entry count from the PEB. This is the source
+        // of truth — it survives snapshot/restore because the PEB is
+        // part of shared memory that gets snapshotted.
+        let current_count =
+            self.shared_mem
+                .read::<u64>(self.layout.get_file_mappings_size_offset())? as usize;
+
+        if current_count >= MAX_FILE_MAPPINGS {
+            return Err(crate::new_error!(
+                "file mapping limit reached ({} of {})",
+                current_count,
+                MAX_FILE_MAPPINGS,
+            ));
+        }
+
+        // Write the entry into the next available slot.
+        let entry_offset = self.layout.get_file_mappings_array_offset()
+            + current_count * std::mem::size_of::<FileMappingInfo>();
+        let guest_addr_offset = offset_of!(FileMappingInfo, guest_addr);
+        let size_offset = offset_of!(FileMappingInfo, size);
+        let label_offset = offset_of!(FileMappingInfo, label);
+        self.shared_mem
+            .write::<u64>(entry_offset + guest_addr_offset, guest_addr)?;
+        self.shared_mem
+            .write::<u64>(entry_offset + size_offset, size)?;
+        self.shared_mem
+            .copy_from_slice(label, entry_offset + label_offset)?;
+
+        // Increment the entry count.
+        let new_count = (current_count + 1) as u64;
+        self.shared_mem
+            .write::<u64>(self.layout.get_file_mappings_size_offset(), new_count)?;
+
+        Ok(())
+    }
+
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
@@ -438,16 +487,25 @@ impl SandboxMemoryManager<HostSharedMemory> {
     pub(crate) fn restore_snapshot(
         &mut self,
         snapshot: &Snapshot,
-    ) -> Result<(Option<GuestSharedMemory>, Option<GuestSharedMemory>)> {
-        let gsnapshot = if self.shared_mem.mem_size() == snapshot.mem_size() {
+    ) -> Result<(
+        Option<SnapshotSharedMemory<GuestSharedMemory>>,
+        Option<GuestSharedMemory>,
+    )> {
+        let gsnapshot = if *snapshot.memory() == self.shared_mem {
+            // If the snapshot memory is already the correct memory,
+            // which is readonly, don't bother with restoring it,
+            // since its contents must be the same.  Note that in the
+            // #[cfg(unshared_snapshot_mem)] case, this condition will
+            // never be true, since even immediately after a restore,
+            // self.shared_mem is a (writable) copy, not the original
+            // shared_mem.
             None
         } else {
-            let new_snapshot_mem = ExclusiveSharedMemory::new(snapshot.mem_size())?;
+            let new_snapshot_mem = snapshot.memory().to_mgr_snapshot_mem()?;
             let (hsnapshot, gsnapshot) = new_snapshot_mem.build();
             self.shared_mem = hsnapshot;
             Some(gsnapshot)
         };
-        self.shared_mem.restore_from_snapshot(snapshot)?;
         let new_scratch_size = snapshot.layout().get_scratch_size();
         let gscratch = if new_scratch_size == self.scratch_mem.mem_size() {
             self.scratch_mem.zero()?;
@@ -498,13 +556,21 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         // Copy the page tables into the scratch region
         let snapshot_pt_end = self.shared_mem.mem_size();
-        let snapshot_pt_start = snapshot_pt_end - self.layout.get_pt_size();
-        self.shared_mem.with_exclusivity(|snap| {
-            self.scratch_mem.with_exclusivity(|scratch| {
-                let bytes = &snap.as_slice()[snapshot_pt_start..snapshot_pt_end];
-                scratch.copy_from_slice(bytes, self.layout.get_pt_base_scratch_offset())
-            })
-        })???;
+        let snapshot_pt_size = self.layout.get_pt_size();
+        let snapshot_pt_start = snapshot_pt_end - snapshot_pt_size;
+        self.scratch_mem.with_exclusivity(|scratch| {
+            #[cfg(not(unshared_snapshot_mem))]
+            let bytes = &self.shared_mem.as_slice()[snapshot_pt_start..snapshot_pt_end];
+            #[cfg(unshared_snapshot_mem)]
+            let bytes = {
+                let mut bytes = vec![0u8; snapshot_pt_size];
+                self.shared_mem
+                    .copy_to_slice(&mut bytes, snapshot_pt_start)?;
+                bytes
+            };
+            #[allow(clippy::needless_borrow)]
+            scratch.copy_from_slice(&bytes, self.layout.get_pt_base_scratch_offset())
+        })??;
 
         Ok(())
     }
@@ -519,24 +585,21 @@ impl SandboxMemoryManager<HostSharedMemory> {
         root_pt: u64,
         mmap_regions: &[MemoryRegion],
     ) -> Result<Vec<CrashDumpRegion>> {
-        use crate::sandbox::snapshot::{SharedMemoryPageTableBuffer, access_gpa};
+        use crate::sandbox::snapshot::SharedMemoryPageTableBuffer;
 
-        let scratch_size = self.scratch_mem.mem_size();
         let len = hyperlight_common::layout::MAX_GVA;
 
-        let regions = self.shared_mem.with_exclusivity(|snapshot| {
-            self.scratch_mem.with_exclusivity(|scratch| {
+        let regions = self.shared_mem.with_contents(|snapshot| {
+            self.scratch_mem.with_contents(|scratch| {
                 let pt_buf =
-                    SharedMemoryPageTableBuffer::new(snapshot, scratch, scratch_size, root_pt);
+                    SharedMemoryPageTableBuffer::new(snapshot, scratch, self.layout, root_pt);
 
                 let mappings: Vec<_> =
                     unsafe { hyperlight_common::vmem::virt_to_phys(&pt_buf, 0, len as u64) }
                         .collect();
 
                 if mappings.is_empty() {
-                    return Err(new_error!(
-                        "No page table mappings found (len {len})",
-                    ));
+                    return Err(new_error!("No page table mappings found (len {len})",));
                 }
 
                 let mut regions: Vec<CrashDumpRegion> = Vec::new();
@@ -544,22 +607,13 @@ impl SandboxMemoryManager<HostSharedMemory> {
                     let virt_base = mapping.virt_base as usize;
                     let virt_end = (mapping.virt_base + mapping.len) as usize;
 
-                    if let Some((mem, offset)) =
-                        access_gpa(snapshot, scratch, scratch_size, mapping.phys_base)
+                    if let Some(resolved) = self.layout.resolve_gpa(mapping.phys_base, mmap_regions)
                     {
                         let (flags, region_type) = mapping_kind_to_flags(&mapping.kind);
-
-                        if offset >= mem.mem_size() {
-                            tracing::error!(
-                                "Mapping for GPA {:#x} offset {:#x} out of bounds (size {:#x}), skipping",
-                                mapping.phys_base, offset, mem.mem_size(),
-                            );
-                            continue;
-                        }
-
-                        let host_base = mem.base_addr() + offset;
-                        let host_len =
-                            (mapping.len as usize).min(mem.mem_size().saturating_sub(offset));
+                        let resolved = resolved.with_memories(snapshot, scratch);
+                        let contents = resolved.as_ref();
+                        let host_base = contents.as_ptr() as usize;
+                        let host_len = (mapping.len as usize).min(contents.len());
 
                         if try_coalesce_region(&mut regions, virt_base, virt_end, host_base, flags)
                         {
@@ -572,11 +626,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
                             flags,
                             region_type,
                         });
-                    } else {
-                        // GPA not in snapshot/scratch — check dynamic mmap regions
-                        resolve_from_mmap_regions(
-                            &mut regions, mapping, virt_base, virt_end, mmap_regions,
-                        );
                     }
                 }
 
@@ -598,6 +647,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
         _root_pt: u64,
         mmap_regions: &[MemoryRegion],
     ) -> Result<Vec<CrashDumpRegion>> {
+        use crate::mem::memory_region::HostGuestMemoryRegion;
+
         let snapshot_base = SandboxMemoryLayout::BASE_ADDRESS;
         let snapshot_size = self.shared_mem.mem_size();
         let snapshot_host = self.shared_mem.base_addr();
@@ -658,11 +709,9 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         use crate::sandbox::snapshot::{SharedMemoryPageTableBuffer, access_gpa};
 
-        let scratch_size = self.scratch_mem.mem_size();
-
-        self.shared_mem.with_exclusivity(|snap| {
-            self.scratch_mem.with_exclusivity(|scratch| {
-                let pt_buf = SharedMemoryPageTableBuffer::new(snap, scratch, scratch_size, root_pt);
+        self.shared_mem.with_contents(|snap| {
+            self.scratch_mem.with_contents(|scratch| {
+                let pt_buf = SharedMemoryPageTableBuffer::new(snap, scratch, self.layout, root_pt);
 
                 // Walk page tables to get all mappings that cover the GVA range
                 let mappings: Vec<_> = unsafe {
@@ -702,7 +751,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
                     // Translate the GPA to host memory
                     let gpa = mapping.phys_base + page_offset as u64;
-                    let (mem, offset) = access_gpa(snap, scratch, scratch_size, gpa)
+                    let (mem, offset) = access_gpa(snap, scratch, self.layout, gpa)
                         .ok_or_else(|| {
                             new_error!(
                                 "Failed to resolve GPA {:#x} to host memory (GVA {:#x})",
@@ -712,7 +761,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
                         })?;
 
                     let slice = mem
-                        .as_slice()
                         .get(offset..offset + bytes_to_copy)
                         .ok_or_else(|| {
                             new_error!(

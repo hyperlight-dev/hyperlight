@@ -24,3 +24,4 @@ hyperlight-guest-tracing = { workspace = true, default-features = false, optiona
 [features]
 default = []
 trace_guest = ["dep:hyperlight-guest-tracing", "hyperlight-guest-tracing?/trace"]
+nanvix-unstable = ["hyperlight-common/nanvix-unstable"]

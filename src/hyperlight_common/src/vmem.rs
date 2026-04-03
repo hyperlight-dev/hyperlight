@@ -16,6 +16,7 @@ limitations under the License.
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vmem.rs")]
 #[cfg_attr(target_arch = "x86", path = "arch/i686/vmem.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/vmem.rs")]
 mod arch;
 
 /// This is always the page size that the /guest/ is being compiled
@@ -195,6 +196,7 @@ pub struct CowMapping {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum MappingKind {
+    Unmapped,
     Basic(BasicMapping),
     Cow(CowMapping),
     /* TODO: What useful things other than basic mappings actually

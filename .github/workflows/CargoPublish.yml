@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   publish-hyperlight-packages:
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=publish-hyperlight-packages-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
 
     if: ${{ startsWith(github.ref, 'refs/heads/release/v') || inputs.dry_run }}
 
@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
         with:
           rust-toolchain: "1.89"
 

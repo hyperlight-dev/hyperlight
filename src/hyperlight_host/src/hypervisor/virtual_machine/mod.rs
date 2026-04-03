@@ -38,6 +38,10 @@ pub(crate) mod mshv;
 #[cfg(target_os = "windows")]
 pub(crate) mod whp;
 
+/// Shared x86-64 helpers for hardware interrupt support (MSHV and WHP)
+#[cfg(feature = "hw-interrupts")]
+pub(crate) mod x86_64;
+
 static AVAILABLE_HYPERVISOR: OnceLock<Option<HypervisorType>> = OnceLock::new();
 
 /// Returns which type of hypervisor is available, if any
@@ -111,8 +115,8 @@ pub(crate) const XSAVE_MIN_SIZE: usize = 576;
 #[cfg(all(any(kvm, mshv3), test, not(feature = "nanvix-unstable")))]
 pub(crate) const XSAVE_BUFFER_SIZE: usize = 4096;
 
-// Compiler error if no hypervisor type is available
-#[cfg(not(any(kvm, mshv3, target_os = "windows")))]
+// Compiler error if no hypervisor type is available (not applicable on aarch64 yet)
+#[cfg(not(any(kvm, mshv3, target_os = "windows", target_arch = "aarch64")))]
 compile_error!(
     "No hypervisor type is available for the current platform. Please enable either the `kvm` or `mshv3` cargo feature."
 );
@@ -121,7 +125,12 @@ compile_error!(
 pub(crate) enum VmExit {
     /// The vCPU has exited due to a debug event (usually breakpoint)
     #[cfg(gdb)]
-    Debug { dr6: u64, exception: u32 },
+    Debug {
+        #[cfg(target_arch = "x86_64")]
+        dr6: u64,
+        #[cfg(target_arch = "x86_64")]
+        exception: u32,
+    },
     /// The vCPU has halted
     Halt(),
     /// The vCPU has issued a write to the given port with the given value
@@ -136,10 +145,10 @@ pub(crate) enum VmExit {
     Unknown(String),
     /// The operation should be retried, for example this can happen on Linux where a call to run the CPU can return EAGAIN
     #[cfg_attr(
-        target_os = "windows",
+        any(target_os = "windows", feature = "hw-interrupts"),
         expect(
             dead_code,
-            reason = "Retry() is never constructed on Windows, but it is still matched on (which dead_code lint ignores)"
+            reason = "Retry() is never constructed on Windows or with hw-interrupts (EAGAIN causes continue instead)"
         )
     )]
     Retry(),

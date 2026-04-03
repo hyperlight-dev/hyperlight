@@ -152,7 +152,7 @@ fn guest_crash_auto_dump(guest_path: &str) -> hyperlight_host::Result<()> {
     // Map a file as read-only into the guest at a known address.
     let mapping_file = create_mapping_file();
     let guest_base: u64 = 0x200000000;
-    let len = sandbox.map_file_cow(mapping_file.as_path(), guest_base)?;
+    let len = sandbox.map_file_cow(mapping_file.as_path(), guest_base, None)?;
     println!("Mapped {len} bytes at guest address {guest_base:#x} (read-only).");
 
     // Call WriteMappedBuffer — the guest maps the address in its page tables
@@ -259,7 +259,7 @@ fn guest_crash_with_dump_disabled(guest_path: &str) -> hyperlight_host::Result<(
 
     let mapping_file = create_mapping_file();
     let guest_base: u64 = 0x200000000;
-    let len = sandbox.map_file_cow(mapping_file.as_path(), guest_base)?;
+    let len = sandbox.map_file_cow(mapping_file.as_path(), guest_base, None)?;
 
     println!("Calling guest function 'WriteMappedBuffer' on read-only region...");
     let result = sandbox.call::<bool>("WriteMappedBuffer", (guest_base, len));
@@ -401,7 +401,7 @@ mod tests {
         // automatically. This mapping lets us verify that GDB can read
         // a specific sentinel string from a known address.
         let len = sbox
-            .map_file_cow(&data_file, MAP_GUEST_BASE)
+            .map_file_cow(&data_file, MAP_GUEST_BASE, None)
             .expect("map_file_cow");
 
         // Read the mapped region back through the guest and verify it

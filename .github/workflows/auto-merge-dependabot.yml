@@ -23,7 +23,7 @@ jobs:
     steps:
 
       # Gets the GitHub App token
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: get-app-token
         with:
           # required

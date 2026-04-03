@@ -23,13 +23,13 @@ defaults:
 
 jobs:
   update-guest-locks:
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=update-guest-locks-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     timeout-minutes: 15
     steps:
       # Get GitHub App token for pushing commits back to the PR
       # Uses the same app as auto-merge-dependabot.yml
       - name: Get GitHub App token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: get-app-token
         with:
           app-id: ${{ secrets.DEPENDABOT_APP_ID }}
@@ -45,7 +45,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust toolchain
-        uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+        uses: hyperlight-dev/ci-setup-workflow@v1.9.0
         with:
           rust-toolchain: "1.89"
         env:

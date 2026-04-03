@@ -5,9 +5,9 @@ publish = false
 edition = "2021"
 
 [dependencies]
-addr2line = "0.26.0"
+addr2line = "0.26.1"
 piet-common = { version = "0.8.0", features = [ "png" ] }
-blake3 = { version = "1.8.3" }
+blake3 = { version = "1.8.4" }
 
 [[bin]]
 name = "trace_dump"

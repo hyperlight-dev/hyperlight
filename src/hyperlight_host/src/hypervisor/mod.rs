@@ -31,7 +31,7 @@ pub(crate) mod surrogate_process;
 pub(crate) mod surrogate_process_manager;
 /// Safe wrappers around windows types like `PSTR`
 #[cfg(target_os = "windows")]
-pub(crate) mod wrappers;
+pub mod wrappers;
 
 #[cfg(crashdump)]
 pub(crate) mod crashdump;
@@ -170,7 +170,7 @@ impl LinuxInterruptHandle {
                 break;
             }
 
-            log::info!("Sending signal to kill vcpu thread...");
+            tracing::info!("Sending signal to kill vcpu thread...");
             sent_signal = true;
             // Acquire ordering to synchronize with the Release store in set_tid()
             // This ensures we see the correct tid value for the currently running vcpu
@@ -376,7 +376,7 @@ impl InterruptHandleImpl for WindowsInterruptHandle {
                 guard.dropped = true;
             }
             Err(e) => {
-                log::error!("Failed to acquire partition_state write lock: {}", e);
+                tracing::error!("Failed to acquire partition_state write lock: {}", e);
             }
         }
     }
@@ -404,7 +404,7 @@ impl InterruptHandle for WindowsInterruptHandle {
         let guard = match self.partition_state.read() {
             Ok(guard) => guard,
             Err(e) => {
-                log::error!("Failed to acquire partition_state read lock: {}", e);
+                tracing::error!("Failed to acquire partition_state read lock: {}", e);
                 return false;
             }
         };
@@ -432,7 +432,7 @@ impl InterruptHandle for WindowsInterruptHandle {
         let guard = match self.partition_state.read() {
             Ok(guard) => guard,
             Err(e) => {
-                log::error!("Failed to acquire partition_state read lock: {}", e);
+                tracing::error!("Failed to acquire partition_state read lock: {}", e);
                 return false;
             }
         };
@@ -449,7 +449,7 @@ impl InterruptHandle for WindowsInterruptHandle {
         match self.partition_state.read() {
             Ok(guard) => guard.dropped,
             Err(e) => {
-                log::error!("Failed to acquire partition_state read lock: {}", e);
+                tracing::error!("Failed to acquire partition_state read lock: {}", e);
                 true // Assume dropped if we can't acquire lock
             }
         }
@@ -469,6 +469,7 @@ pub(crate) mod tests {
     use crate::sandbox::{SandboxConfiguration, UninitializedSandbox};
     use crate::{Result, is_hypervisor_present, new_error};
 
+    #[cfg_attr(feature = "hw-interrupts", ignore)]
     #[test]
     fn test_initialise() -> Result<()> {
         if !is_hypervisor_present() {
@@ -493,6 +494,7 @@ pub(crate) mod tests {
             gshm,
             &config,
             exn_stack_top_gva,
+            page_size::get(),
             #[cfg(any(crashdump, gdb))]
             rt_cfg,
             sandbox.load_info,

@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::sync::LazyLock;
 
+use hyperlight_common::outb::VmAction;
 #[cfg(gdb)]
 use kvm_bindings::kvm_guest_debug;
 use kvm_bindings::{
@@ -26,6 +27,8 @@ use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use tracing::{Span, instrument};
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+#[cfg(feature = "hw-interrupts")]
+use vmm_sys_util::eventfd::EventFd;
 
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
@@ -35,6 +38,8 @@ use crate::hypervisor::regs::{
 };
 #[cfg(all(test, not(feature = "nanvix-unstable")))]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
+#[cfg(feature = "hw-interrupts")]
+use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 use crate::hypervisor::virtual_machine::{
     CreateVmError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VirtualMachine,
     VmExit,
@@ -89,6 +94,14 @@ pub(crate) struct KvmVm {
     vm_fd: VmFd,
     vcpu_fd: VcpuFd,
 
+    /// EventFd registered via irqfd for GSI 0 (IRQ0). A timer thread
+    /// writes to this to inject periodic timer interrupts.
+    #[cfg(feature = "hw-interrupts")]
+    timer_irq_eventfd: EventFd,
+    /// Handle to the background timer (if started).
+    #[cfg(feature = "hw-interrupts")]
+    timer: Option<TimerThread>,
+
     // KVM, as opposed to mshv/whp, has no get_guest_debug() ioctl, so we must track the state ourselves
     #[cfg(gdb)]
     debug_regs: kvm_guest_debug,
@@ -96,6 +109,42 @@ pub(crate) struct KvmVm {
 
 static KVM: LazyLock<std::result::Result<Kvm, CreateVmError>> =
     LazyLock::new(|| Kvm::new().map_err(|e| CreateVmError::HypervisorNotAvailable(e.into())));
+
+#[cfg(feature = "hw-interrupts")]
+impl KvmVm {
+    /// Create the in-kernel IRQ chip and register an irqfd for GSI 0.
+    ///
+    /// When hw-interrupts is enabled, create the in-kernel IRQ chip
+    /// (PIC + IOAPIC + LAPIC) before creating the vCPU so the
+    /// per-vCPU LAPIC is initialised in virtual-wire mode (LINT0 = ExtINT).
+    /// The guest programs the PIC remap via standard IO port writes,
+    /// which the in-kernel PIC handles transparently.
+    ///
+    /// Instead of creating an in-kernel PIT (create_pit2), we use a
+    /// host-side timer thread + irqfd to inject IRQ0 at the rate
+    /// requested by the guest via VmAction::PvTimerConfig (port 107).
+    /// This eliminates the in-kernel PIT device. Guest PIT port writes
+    /// (0x40, 0x43) become no-ops handled in the run loop.
+    fn setup_irqfd(vm_fd: &VmFd) -> std::result::Result<EventFd, CreateVmError> {
+        vm_fd
+            .create_irq_chip()
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+
+        // Create an EventFd and register it via irqfd for GSI 0 (IRQ0).
+        // When the timer thread writes to this EventFd, the in-kernel
+        // PIC will assert IRQ0, which is delivered as the vector the
+        // guest configured during PIC remap (typically vector 0x20).
+        let eventfd = EventFd::new(0).map_err(|e| {
+            CreateVmError::InitializeVm(
+                kvm_ioctls::Error::new(e.raw_os_error().unwrap_or(libc::EIO)).into(),
+            )
+        })?;
+        vm_fd
+            .register_irqfd(&eventfd, 0)
+            .map_err(|e| CreateVmError::InitializeVm(e.into()))?;
+        Ok(eventfd)
+    }
+}
 
 impl KvmVm {
     /// Create a new instance of a `KvmVm`
@@ -106,6 +155,10 @@ impl KvmVm {
         let vm_fd = hv
             .create_vm_with_type(0)
             .map_err(|e| CreateVmError::CreateVmFd(e.into()))?;
+
+        #[cfg(feature = "hw-interrupts")]
+        let timer_irq_eventfd = Self::setup_irqfd(&vm_fd)?;
+
         let vcpu_fd = vm_fd
             .create_vcpu(0)
             .map_err(|e| CreateVmError::CreateVcpuFd(e.into()))?;
@@ -132,9 +185,112 @@ impl KvmVm {
         Ok(Self {
             vm_fd,
             vcpu_fd,
+            #[cfg(feature = "hw-interrupts")]
+            timer_irq_eventfd,
+            #[cfg(feature = "hw-interrupts")]
+            timer: None,
             #[cfg(gdb)]
             debug_regs: kvm_guest_debug::default(),
         })
+    }
+
+    /// Run the vCPU loop with hardware interrupt support.
+    ///
+    /// When hw-interrupts is enabled, the in-kernel PIC + LAPIC deliver
+    /// interrupts triggered by the host-side timer thread via irqfd.
+    /// There is no in-kernel PIT; guest PIT port writes are no-ops.
+    /// The guest signals "I'm done" by writing to VmAction::Halt
+    /// (an IO port exit) instead of using HLT, because the in-kernel
+    /// LAPIC absorbs HLT (never returns VcpuExit::Hlt to userspace).
+    #[cfg(feature = "hw-interrupts")]
+    fn run_vcpu_hw_interrupts(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
+        loop {
+            match self.vcpu_fd.run() {
+                Ok(VcpuExit::IoOut(port, data)) => {
+                    if port == VmAction::Halt as u16 {
+                        // Stop the timer thread before returning.
+                        if let Some(mut t) = self.timer.take() {
+                            t.stop();
+                        }
+                        return Ok(VmExit::Halt());
+                    }
+                    if port == VmAction::PvTimerConfig as u16 {
+                        let data_copy = data.to_vec();
+                        self.handle_pv_timer_config(&data_copy);
+                        continue;
+                    }
+                    // PIT ports (0x40-0x43): no in-kernel PIT, so these
+                    // exit to userspace. Silently ignore them.
+                    if (0x40..=0x43).contains(&port) {
+                        continue;
+                    }
+                    return Ok(VmExit::IoOut(port, data.to_vec()));
+                }
+                Ok(VcpuExit::MmioRead(addr, _)) => return Ok(VmExit::MmioRead(addr)),
+                Ok(VcpuExit::MmioWrite(addr, _)) => return Ok(VmExit::MmioWrite(addr)),
+                #[cfg(gdb)]
+                Ok(VcpuExit::Debug(debug_exit)) => {
+                    return Ok(VmExit::Debug {
+                        dr6: debug_exit.dr6,
+                        exception: debug_exit.exception,
+                    });
+                }
+                Err(e) => match e.errno() {
+                    libc::EINTR => return Ok(VmExit::Cancelled()),
+                    libc::EAGAIN => continue,
+                    _ => return Err(RunVcpuError::Unknown(e.into())),
+                },
+                Ok(other) => {
+                    return Ok(VmExit::Unknown(format!(
+                        "Unknown KVM VCPU exit: {:?}",
+                        other
+                    )));
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "hw-interrupts")]
+    fn handle_pv_timer_config(&mut self, data: &[u8]) {
+        use super::super::x86_64::hw_interrupts::handle_pv_timer_config;
+
+        let eventfd_clone = match self.timer_irq_eventfd.try_clone() {
+            Ok(fd) => fd,
+            Err(e) => {
+                tracing::warn!("failed to clone eventfd for timer config: {e}");
+                return;
+            }
+        };
+        handle_pv_timer_config(&mut self.timer, data, move || {
+            let _ = eventfd_clone.write(1);
+        });
+    }
+
+    /// Run the vCPU once without hardware interrupt support (default path).
+    #[cfg(not(feature = "hw-interrupts"))]
+    fn run_vcpu_default(&mut self) -> std::result::Result<VmExit, RunVcpuError> {
+        match self.vcpu_fd.run() {
+            Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
+            Ok(VcpuExit::IoOut(port, _)) if port == VmAction::Halt as u16 => Ok(VmExit::Halt()),
+            Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
+            Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
+            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
+            #[cfg(gdb)]
+            Ok(VcpuExit::Debug(debug_exit)) => Ok(VmExit::Debug {
+                dr6: debug_exit.dr6,
+                exception: debug_exit.exception,
+            }),
+            Err(e) => match e.errno() {
+                // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
+                libc::EINTR => Ok(VmExit::Cancelled()),
+                libc::EAGAIN => Ok(VmExit::Retry()),
+                _ => Err(RunVcpuError::Unknown(e.into())),
+            },
+            Ok(other) => Ok(VmExit::Unknown(format!(
+                "Unknown KVM VCPU exit: {:?}",
+                other
+            ))),
+        }
     }
 }
 
@@ -171,27 +327,12 @@ impl VirtualMachine for KvmVm {
         // it sets the guest span, no other traces or spans must be setup in between these calls.
         #[cfg(feature = "trace_guest")]
         tc.setup_guest_trace(Span::current().context());
-        match self.vcpu_fd.run() {
-            Ok(VcpuExit::Hlt) => Ok(VmExit::Halt()),
-            Ok(VcpuExit::IoOut(port, data)) => Ok(VmExit::IoOut(port, data.to_vec())),
-            Ok(VcpuExit::MmioRead(addr, _)) => Ok(VmExit::MmioRead(addr)),
-            Ok(VcpuExit::MmioWrite(addr, _)) => Ok(VmExit::MmioWrite(addr)),
-            #[cfg(gdb)]
-            Ok(VcpuExit::Debug(debug_exit)) => Ok(VmExit::Debug {
-                dr6: debug_exit.dr6,
-                exception: debug_exit.exception,
-            }),
-            Err(e) => match e.errno() {
-                // InterruptHandle::kill() sends a signal (SIGRTMIN+offset) to interrupt the vcpu, which causes EINTR
-                libc::EINTR => Ok(VmExit::Cancelled()),
-                libc::EAGAIN => Ok(VmExit::Retry()),
-                _ => Err(RunVcpuError::Unknown(e.into())),
-            },
-            Ok(other) => Ok(VmExit::Unknown(format!(
-                "Unknown KVM VCPU exit: {:?}",
-                other
-            ))),
-        }
+
+        #[cfg(feature = "hw-interrupts")]
+        return self.run_vcpu_hw_interrupts();
+
+        #[cfg(not(feature = "hw-interrupts"))]
+        self.run_vcpu_default()
     }
 
     fn regs(&self) -> std::result::Result<CommonRegisters, RegisterError> {
@@ -426,5 +567,21 @@ impl DebuggableVm for KvmVm {
             .set_guest_debug(&self.debug_regs)
             .map_err(|e| RegisterError::SetDebugRegs(e.into()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "hw-interrupts")]
+mod hw_interrupt_tests {
+    use super::*;
+
+    #[test]
+    fn halt_port_is_not_standard_device() {
+        // VmAction::Halt port must not overlap in-kernel PIC/PIT/speaker ports
+        const HALT: u16 = VmAction::Halt as u16;
+        const _: () = assert!(HALT != 0x20 && HALT != 0x21);
+        const _: () = assert!(HALT != 0xA0 && HALT != 0xA1);
+        const _: () = assert!(HALT != 0x40 && HALT != 0x41 && HALT != 0x42 && HALT != 0x43);
+        const _: () = assert!(HALT != 0x61);
     }
 }

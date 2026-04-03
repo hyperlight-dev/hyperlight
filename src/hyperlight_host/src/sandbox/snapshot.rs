@@ -26,8 +26,8 @@ use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::exe::LoadInfo;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::memory_region::MemoryRegion;
-use crate::mem::mgr::GuestPageTableBuffer;
-use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
+use crate::mem::mgr::{GuestPageTableBuffer, SnapshotSharedMemory};
+use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::uninitialized::{GuestBinary, GuestEnvironment};
 
@@ -70,7 +70,7 @@ pub struct Snapshot {
     /// configuration id will share the same layout
     layout: crate::mem::layout::SandboxMemoryLayout,
     /// Memory of the sandbox at the time this snapshot was taken
-    memory: Vec<u8>,
+    memory: ReadonlySharedMemory,
     /// The memory regions that were mapped when this snapshot was
     /// taken (excluding initial sandbox regions)
     regions: Vec<MemoryRegion>,
@@ -175,40 +175,32 @@ fn hash(memory: &[u8], regions: &[MemoryRegion]) -> Result<[u8; 32]> {
 }
 
 pub(crate) fn access_gpa<'a>(
-    snap: &'a ExclusiveSharedMemory,
-    scratch: &'a ExclusiveSharedMemory,
-    scratch_size: usize,
+    snap: &'a [u8],
+    scratch: &'a [u8],
+    layout: SandboxMemoryLayout,
     gpa: u64,
-) -> Option<(&'a ExclusiveSharedMemory, usize)> {
-    let scratch_base = scratch_base_gpa(scratch_size);
-    if gpa >= scratch_base && gpa < scratch_base + scratch_size as u64 {
-        Some((scratch, (gpa - scratch_base) as usize))
-    } else if gpa >= SandboxMemoryLayout::BASE_ADDRESS as u64
-        && gpa < SandboxMemoryLayout::BASE_ADDRESS as u64 + snap.mem_size() as u64
-    {
-        Some((snap, gpa as usize - SandboxMemoryLayout::BASE_ADDRESS))
-    } else {
-        None
-    }
+) -> Option<(&'a [u8], usize)> {
+    let resolved = layout.resolve_gpa(gpa, &[])?.with_memories(snap, scratch);
+    Some((resolved.base.as_ref(), resolved.offset))
 }
 
 pub(crate) struct SharedMemoryPageTableBuffer<'a> {
-    snap: &'a ExclusiveSharedMemory,
-    scratch: &'a ExclusiveSharedMemory,
-    scratch_size: usize,
+    snap: &'a [u8],
+    scratch: &'a [u8],
+    layout: SandboxMemoryLayout,
     root: u64,
 }
 impl<'a> SharedMemoryPageTableBuffer<'a> {
     pub(crate) fn new(
-        snap: &'a ExclusiveSharedMemory,
-        scratch: &'a ExclusiveSharedMemory,
-        scratch_size: usize,
+        snap: &'a [u8],
+        scratch: &'a [u8],
+        layout: SandboxMemoryLayout,
         root: u64,
     ) -> Self {
         Self {
             snap,
             scratch,
-            scratch_size,
+            layout,
             root,
         }
     }
@@ -219,8 +211,8 @@ impl<'a> hyperlight_common::vmem::TableReadOps for SharedMemoryPageTableBuffer<'
         addr + offset
     }
     unsafe fn read_entry(&self, addr: u64) -> u64 {
-        let memoff = access_gpa(self.snap, self.scratch, self.scratch_size, addr);
-        let Some(pte_bytes) = memoff.and_then(|(mem, off)| mem.as_slice().get(off..off + 8)) else {
+        let memoff = access_gpa(self.snap, self.scratch, self.layout, addr);
+        let Some(pte_bytes) = memoff.and_then(|(mem, off)| mem.get(off..off + 8)) else {
             // Attacker-controlled data pointed out-of-bounds. We'll
             // default to returning 0 in this case, which, for most
             // architectures (including x86-64 and arm64, the ones we
@@ -249,19 +241,19 @@ impl<'a> core::convert::AsRef<SharedMemoryPageTableBuffer<'a>> for SharedMemoryP
     }
 }
 fn filtered_mappings<'a>(
-    snap: &'a ExclusiveSharedMemory,
-    scratch: &'a ExclusiveSharedMemory,
+    snap: &'a [u8],
+    scratch: &'a [u8],
     regions: &[MemoryRegion],
-    scratch_size: usize,
+    layout: SandboxMemoryLayout,
     root_pt: u64,
 ) -> Vec<(Mapping, &'a [u8])> {
-    let op = SharedMemoryPageTableBuffer::new(snap, scratch, scratch_size, root_pt);
+    let op = SharedMemoryPageTableBuffer::new(snap, scratch, layout, root_pt);
     unsafe {
         hyperlight_common::vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64)
     }
     .filter_map(move |mapping| {
         // the scratch map doesn't count
-        if mapping.virt_base >= scratch_base_gva(scratch_size) {
+        if mapping.virt_base >= scratch_base_gva(layout.get_scratch_size()) {
             return None;
         }
         // neither does the mapping of the snapshot's own page tables
@@ -272,8 +264,7 @@ fn filtered_mappings<'a>(
             return None;
         }
         // todo: is it useful to warn if we can't resolve this?
-        let contents =
-            unsafe { guest_page(snap, scratch, regions, scratch_size, mapping.phys_base) }?;
+        let contents = unsafe { guest_page(snap, scratch, regions, layout, mapping.phys_base) }?;
         Some((mapping, contents))
     })
     .collect()
@@ -287,32 +278,19 @@ fn filtered_mappings<'a>(
 /// alive and must not be mutated by any other thread: references to
 /// these regions may be created and live for `'a`.
 unsafe fn guest_page<'a>(
-    snap: &'a ExclusiveSharedMemory,
-    scratch: &'a ExclusiveSharedMemory,
+    snap: &'a [u8],
+    scratch: &'a [u8],
     regions: &[MemoryRegion],
-    scratch_size: usize,
+    layout: SandboxMemoryLayout,
     gpa: u64,
 ) -> Option<&'a [u8]> {
-    if !gpa.is_multiple_of(PAGE_SIZE as u64) {
+    let resolved = layout
+        .resolve_gpa(gpa, regions)?
+        .with_memories(snap, scratch);
+    if resolved.as_ref().len() < PAGE_SIZE {
         return None;
     }
-    let gpa_u = gpa as usize;
-    for rgn in regions {
-        if gpa_u >= rgn.guest_region.start && gpa_u + PAGE_SIZE <= rgn.guest_region.end {
-            let off = gpa_u - rgn.guest_region.start;
-            #[allow(clippy::useless_conversion)]
-            let host_region_base: usize = rgn.host_region.start.into();
-            return Some(unsafe {
-                std::slice::from_raw_parts((host_region_base + off) as *const u8, PAGE_SIZE)
-            });
-        }
-    }
-    let (mem, off) = access_gpa(snap, scratch, scratch_size, gpa)?;
-    if off + PAGE_SIZE <= mem.as_slice().len() {
-        Some(&mem.as_slice()[off..off + PAGE_SIZE])
-    } else {
-        None
-    }
+    Some(&resolved.as_ref()[..PAGE_SIZE])
 }
 
 fn map_specials(pt_buf: &GuestPageTableBuffer, scratch_size: usize) {
@@ -350,6 +328,17 @@ impl Snapshot {
             GuestBinary::Buffer(buffer) => ExeInfo::from_buf(buffer)?,
         };
 
+        // Check guest/host version compatibility.
+        let host_version = env!("CARGO_PKG_VERSION");
+        if let Some(v) = exe_info.guest_bin_version()
+            && v != host_version
+        {
+            return Err(crate::HyperlightError::GuestBinVersionMismatch {
+                guest_bin_version: v.to_string(),
+                host_version: host_version.to_string(),
+            });
+        }
+
         let guest_blob_size = blob.as_ref().map(|b| b.data.len()).unwrap_or(0);
         let guest_blob_mem_flags = blob.as_ref().map(|b| b.permissions);
 
@@ -370,6 +359,8 @@ impl Snapshot {
             load_addr.try_into()?,
             &mut memory[layout.get_guest_code_offset()..],
         )?;
+
+        layout.write_peb(&mut memory)?;
 
         blob.map(|x| layout.write_init_data(&mut memory, x.data))
             .transpose()?;
@@ -424,7 +415,7 @@ impl Snapshot {
 
         Ok(Self {
             sandbox_id: SANDBOX_CONFIGURATION_COUNTER.fetch_add(1, Ordering::Relaxed),
-            memory,
+            memory: ReadonlySharedMemory::from_bytes(&memory)?,
             layout,
             regions: extra_regions,
             load_info,
@@ -445,7 +436,7 @@ impl Snapshot {
     /// instance of `Self` with the snapshot stored therein.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn new<S: SharedMemory>(
-        shared_mem: &mut S,
+        shared_mem: &mut SnapshotSharedMemory<S>,
         scratch_mem: &mut S,
         sandbox_id: u64,
         mut layout: SandboxMemoryLayout,
@@ -456,22 +447,19 @@ impl Snapshot {
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
     ) -> Result<Self> {
-        let memory = shared_mem.with_exclusivity(|snap_e| {
-            scratch_mem.with_exclusivity(|scratch_e| {
-                let scratch_size = layout.get_scratch_size();
-
+        use std::collections::HashMap;
+        let mut phys_seen = HashMap::<u64, usize>::new();
+        let memory = shared_mem.with_contents(|snap_c| {
+            scratch_mem.with_contents(|scratch_c| {
                 // Pass 1: count how many pages need to live
                 let live_pages =
-                    filtered_mappings(snap_e, scratch_e, &regions, scratch_size, root_pt_gpa);
+                    filtered_mappings(snap_c, scratch_c, &regions, layout, root_pt_gpa);
 
                 // Pass 2: copy them, and map them
                 // TODO: Look for opportunities to hugepage map
                 let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
                 let mut snapshot_memory: Vec<u8> = Vec::new();
                 for (mapping, contents) in live_pages {
-                    let new_offset = snapshot_memory.len();
-                    snapshot_memory.extend(contents);
-                    let new_gpa = new_offset + SandboxMemoryLayout::BASE_ADDRESS;
                     let kind = match mapping.kind {
                         MappingKind::Cow(cm) => MappingKind::Cow(cm),
                         MappingKind::Basic(bm) if bm.writable => MappingKind::Cow(CowMapping {
@@ -483,9 +471,15 @@ impl Snapshot {
                             writable: false,
                             executable: bm.executable,
                         }),
+                        MappingKind::Unmapped => continue,
                     };
+                    let new_gpa = phys_seen.entry(mapping.phys_base).or_insert_with(|| {
+                        let new_offset = snapshot_memory.len();
+                        snapshot_memory.extend(contents);
+                        new_offset + SandboxMemoryLayout::BASE_ADDRESS
+                    });
                     let mapping = Mapping {
-                        phys_base: new_gpa as u64,
+                        phys_base: *new_gpa as u64,
                         virt_base: mapping.virt_base,
                         len: PAGE_SIZE as u64,
                         kind,
@@ -500,6 +494,7 @@ impl Snapshot {
                 Ok::<Vec<u8>, crate::HyperlightError>(snapshot_memory)
             })
         })???;
+        layout.set_snapshot_size(memory.len());
 
         // We do not need the original regions anymore, as any uses of
         // them in the guest have been incorporated into the snapshot
@@ -510,7 +505,7 @@ impl Snapshot {
         Ok(Self {
             sandbox_id,
             layout,
-            memory,
+            memory: ReadonlySharedMemory::from_bytes(&memory)?,
             regions,
             load_info,
             hash,
@@ -530,15 +525,9 @@ impl Snapshot {
         &self.regions
     }
 
-    /// Return the size of the snapshot in bytes.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn mem_size(&self) -> usize {
-        self.memory.len()
-    }
-
     /// Return the main memory contents of the snapshot
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn memory(&self) -> &[u8] {
+    pub(crate) fn memory(&self) -> &ReadonlySharedMemory {
         &self.memory
     }
 
@@ -586,18 +575,19 @@ mod tests {
     use crate::hypervisor::regs::CommonSpecialRegisters;
     use crate::mem::exe::LoadInfo;
     use crate::mem::layout::SandboxMemoryLayout;
-    use crate::mem::mgr::{GuestPageTableBuffer, SandboxMemoryManager};
-    use crate::mem::shared_mem::{ExclusiveSharedMemory, HostSharedMemory, SharedMemory};
+    use crate::mem::mgr::{GuestPageTableBuffer, SandboxMemoryManager, SnapshotSharedMemory};
+    use crate::mem::shared_mem::{
+        ExclusiveSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
+    };
 
     fn default_sregs() -> CommonSpecialRegisters {
         CommonSpecialRegisters::default()
     }
 
-    fn make_simple_pt_mems() -> (SandboxMemoryManager<HostSharedMemory>, u64) {
-        let cfg = crate::sandbox::SandboxConfiguration::default();
-        let scratch_mem = ExclusiveSharedMemory::new(cfg.get_scratch_size()).unwrap();
-        let pt_base = PAGE_SIZE + SandboxMemoryLayout::BASE_ADDRESS;
-        let pt_buf = GuestPageTableBuffer::new(pt_base);
+    const SIMPLE_PT_BASE: usize = PAGE_SIZE + SandboxMemoryLayout::BASE_ADDRESS;
+
+    fn make_simple_pt_mem(contents: &[u8]) -> SnapshotSharedMemory<ExclusiveSharedMemory> {
+        let pt_buf = GuestPageTableBuffer::new(SIMPLE_PT_BASE);
         let mapping = Mapping {
             phys_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
             virt_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
@@ -612,86 +602,36 @@ mod tests {
         super::map_specials(&pt_buf, PAGE_SIZE);
         let pt_bytes = pt_buf.into_bytes();
 
-        let mut snapshot_mem = ExclusiveSharedMemory::new(PAGE_SIZE + pt_bytes.len()).unwrap();
+        let mut snapshot_mem = vec![0u8; PAGE_SIZE + pt_bytes.len()];
+        snapshot_mem[0..PAGE_SIZE].copy_from_slice(contents);
+        snapshot_mem[PAGE_SIZE..].copy_from_slice(&pt_bytes);
+        ReadonlySharedMemory::from_bytes(&snapshot_mem)
+            .unwrap()
+            .to_mgr_snapshot_mem()
+            .unwrap()
+    }
 
-        snapshot_mem.copy_from_slice(&pt_bytes, PAGE_SIZE).unwrap();
+    fn make_simple_pt_mgr() -> (SandboxMemoryManager<HostSharedMemory>, u64) {
+        let cfg = crate::sandbox::SandboxConfiguration::default();
+        let scratch_mem = ExclusiveSharedMemory::new(cfg.get_scratch_size()).unwrap();
         let mgr = SandboxMemoryManager::new(
             SandboxMemoryLayout::new(cfg, 4096, 0x3000, None).unwrap(),
-            snapshot_mem,
+            make_simple_pt_mem(&[0u8; PAGE_SIZE]),
             scratch_mem,
             super::NextAction::None,
         );
         let (mgr, _) = mgr.build().unwrap();
-        (mgr, pt_base as u64)
-    }
-
-    #[test]
-    fn restore() {
-        // Simplified version of the original test
-        let data1 = vec![b'a'; PAGE_SIZE];
-        let data2 = vec![b'b'; PAGE_SIZE];
-
-        let (mut mgr, pt_base) = make_simple_pt_mems();
-        mgr.shared_mem.copy_from_slice(&data1, 0).unwrap();
-
-        // Take snapshot of data1
-        let snapshot = super::Snapshot::new(
-            &mut mgr.shared_mem,
-            &mut mgr.scratch_mem,
-            0,
-            mgr.layout,
-            LoadInfo::dummy(),
-            Vec::new(),
-            pt_base,
-            0,
-            default_sregs(),
-            super::NextAction::None,
-        )
-        .unwrap();
-
-        // Modify memory to data2
-        mgr.shared_mem.copy_from_slice(&data2, 0).unwrap();
-        mgr.shared_mem
-            .with_exclusivity(|e| assert_eq!(&e.as_slice()[0..data2.len()], &data2[..]))
-            .unwrap();
-
-        // Restore should bring back data1
-        let _ = mgr.restore_snapshot(&snapshot).unwrap();
-        mgr.shared_mem
-            .with_exclusivity(|e| assert_eq!(&e.as_slice()[0..data1.len()], &data1[..]))
-            .unwrap();
-    }
-
-    #[test]
-    fn snapshot_mem_size() {
-        let (mut mgr, pt_base) = make_simple_pt_mems();
-        let size = mgr.shared_mem.mem_size();
-
-        let snapshot = super::Snapshot::new(
-            &mut mgr.shared_mem,
-            &mut mgr.scratch_mem,
-            0,
-            mgr.layout,
-            LoadInfo::dummy(),
-            Vec::new(),
-            pt_base,
-            0,
-            default_sregs(),
-            super::NextAction::None,
-        )
-        .unwrap();
-        assert_eq!(snapshot.mem_size(), size);
+        (mgr, SIMPLE_PT_BASE as u64)
     }
 
     #[test]
     fn multiple_snapshots_independent() {
-        let (mut mgr, pt_base) = make_simple_pt_mems();
+        let (mut mgr, pt_base) = make_simple_pt_mgr();
 
         // Create first snapshot with pattern A
         let pattern_a = vec![0xAA; PAGE_SIZE];
-        mgr.shared_mem.copy_from_slice(&pattern_a, 0).unwrap();
         let snapshot_a = super::Snapshot::new(
-            &mut mgr.shared_mem,
+            &mut make_simple_pt_mem(&pattern_a).build().0,
             &mut mgr.scratch_mem,
             1,
             mgr.layout,
@@ -706,9 +646,8 @@ mod tests {
 
         // Create second snapshot with pattern B
         let pattern_b = vec![0xBB; PAGE_SIZE];
-        mgr.shared_mem.copy_from_slice(&pattern_b, 0).unwrap();
         let snapshot_b = super::Snapshot::new(
-            &mut mgr.shared_mem,
+            &mut make_simple_pt_mem(&pattern_b).build().0,
             &mut mgr.scratch_mem,
             2,
             mgr.layout,
@@ -721,19 +660,16 @@ mod tests {
         )
         .unwrap();
 
-        // Clear memory
-        mgr.shared_mem.copy_from_slice(&[0; PAGE_SIZE], 0).unwrap();
-
         // Restore snapshot A
         mgr.restore_snapshot(&snapshot_a).unwrap();
         mgr.shared_mem
-            .with_exclusivity(|e| assert_eq!(&e.as_slice()[0..pattern_a.len()], &pattern_a[..]))
+            .with_contents(|contents| assert_eq!(&contents[0..pattern_a.len()], &pattern_a[..]))
             .unwrap();
 
         // Restore snapshot B
         mgr.restore_snapshot(&snapshot_b).unwrap();
         mgr.shared_mem
-            .with_exclusivity(|e| assert_eq!(&e.as_slice()[0..pattern_b.len()], &pattern_b[..]))
+            .with_contents(|contents| assert_eq!(&contents[0..pattern_b.len()], &pattern_b[..]))
             .unwrap();
     }
 }

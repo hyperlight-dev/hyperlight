@@ -39,10 +39,8 @@ use windows::core::PCSTR;
 use super::memory_region::{
     HostGuestMemoryRegion, MemoryRegion, MemoryRegionFlags, MemoryRegionKind, MemoryRegionType,
 };
-use crate::HyperlightError::SnapshotSizeMismatch;
 #[cfg(target_os = "windows")]
 use crate::HyperlightError::WindowsAPIError;
-use crate::sandbox::snapshot::Snapshot;
 use crate::{HyperlightError, Result, log_then_return, new_error};
 
 /// Makes sure that the given `offset` and `size` are within the bounds of the memory with size `mem_size`.
@@ -648,14 +646,15 @@ impl ExclusiveSharedMemory {
     /// the GuestSharedMemory.
     pub fn build(self) -> (HostSharedMemory, GuestSharedMemory) {
         let lock = Arc::new(RwLock::new(()));
+        let hshm = HostSharedMemory {
+            region: self.region.clone(),
+            lock: lock.clone(),
+        };
         (
-            HostSharedMemory {
-                region: self.region.clone(),
-                lock: lock.clone(),
-            },
+            hshm,
             GuestSharedMemory {
                 region: self.region.clone(),
-                lock: lock.clone(),
+                lock,
             },
         )
     }
@@ -664,6 +663,34 @@ impl ExclusiveSharedMemory {
     #[cfg(target_os = "windows")]
     pub fn get_mmap_file_handle(&self) -> HANDLE {
         self.region.handle
+    }
+
+    /// Create a [`HostSharedMemory`] view of this region without
+    /// consuming `self`. Used in tests where the full `build()` /
+    /// `evolve()` pipeline is not available.
+    #[cfg(all(test, feature = "nanvix-unstable"))]
+    pub(crate) fn as_host_shared_memory(&self) -> HostSharedMemory {
+        let lock = Arc::new(RwLock::new(()));
+        HostSharedMemory {
+            region: self.region.clone(),
+            lock,
+        }
+    }
+}
+
+fn mapping_at(
+    s: &impl SharedMemory,
+    gpa: u64,
+    region_type: MemoryRegionType,
+    flags: MemoryRegionFlags,
+) -> MemoryRegion {
+    let guest_base = gpa as usize;
+
+    MemoryRegion {
+        guest_region: guest_base..(guest_base + s.mem_size()),
+        host_region: s.host_region_base()..s.host_region_end(),
+        region_type,
+        flags,
     }
 }
 
@@ -679,46 +706,24 @@ impl GuestSharedMemory {
             MemoryRegionType::Scratch => {
                 MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE
             }
-            // Without nanvix-unstable (default), the snapshot is read-only
-            // because guest page tables provide CoW semantics for writable
-            // pages.  With nanvix-unstable there are no guest page tables,
-            // so the snapshot must be writable — otherwise writes (including
-            // the CPU setting the "Accessed" bit in GDT descriptors during
-            // segment loads) cause EPT violations that KVM retries forever.
+            #[cfg(unshared_snapshot_mem)]
             MemoryRegionType::Snapshot => {
-                #[cfg(not(feature = "nanvix-unstable"))]
-                {
-                    MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE
-                }
-                #[cfg(feature = "nanvix-unstable")]
-                {
-                    MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE
-                }
+                MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE
             }
             #[allow(clippy::panic)]
-            // In the future, all the host side knowledge about memory
-            // region types should collapse down to Snapshot vs
-            // Scratch, at which time this panicking case will be
-            // unnecessary. For now, we will panic if one of the
-            // legacy regions ends up in this function, which very
-            // much should be impossible (since the only callers of it
-            // directly pass a literal new-style region type).
+            // This will not ever actually panic: the only places this
+            // is called are HyperlightVm::update_snapshot_mapping and
+            // HyperlightVm::update_scratch_mapping. The latter
+            // statically uses the Scratch region type, and the former
+            // does not use this at all when the unshared_snapshot_mem
+            // feature is not set, since in that case the scratch
+            // mapping type is ReadonlySharedMemory, not
+            // GuestSharedMemory.
             _ => panic!(
                 "GuestSharedMemory::mapping_at should only be used for Scratch or Snapshot regions"
             ),
         };
-        let guest_base = guest_base as usize;
-        #[cfg(not(windows))]
-        let host_base = self.base_addr();
-        #[cfg(windows)]
-        let host_base = self.host_region_base();
-        let host_end = <HostGuestMemoryRegion as MemoryRegionKind>::add(host_base, self.mem_size());
-        MemoryRegion {
-            guest_region: guest_base..(guest_base + self.mem_size()),
-            host_region: host_base..host_end,
-            region_type,
-            flags,
-        }
+        mapping_at(self, guest_base, region_type, flags)
     }
 }
 
@@ -766,15 +771,30 @@ pub trait SharedMemory {
     }
 
     /// Extract a base address that can be mapped into a VM for this
-    /// SharedMemory
-    #[cfg(target_os = "windows")]
-    fn host_region_base(&self) -> super::memory_region::HostRegionBase {
-        super::memory_region::HostRegionBase {
-            from_handle: self.region().handle.into(),
-            handle_base: self.region().ptr as usize,
-            handle_size: self.region().size,
-            offset: PAGE_SIZE_USIZE,
+    /// SharedMemory.
+    ///
+    /// On Linux this returns a raw `usize` pointer. On Windows it
+    /// returns a [`HostRegionBase`](super::memory_region::HostRegionBase)
+    /// that carries the file-mapping handle metadata needed by WHP.
+    fn host_region_base(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
+        #[cfg(not(windows))]
+        {
+            self.base_addr()
         }
+        #[cfg(windows)]
+        {
+            super::memory_region::HostRegionBase {
+                from_handle: self.region().handle.into(),
+                handle_base: self.region().ptr as usize,
+                handle_size: self.region().size,
+                offset: PAGE_SIZE_USIZE,
+            }
+        }
+    }
+
+    /// Return the end address of the host region (base + usable size).
+    fn host_region_end(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
+        <HostGuestMemoryRegion as MemoryRegionKind>::add(self.host_region_base(), self.mem_size())
     }
 
     /// Run some code with exclusive access to the SharedMemory
@@ -787,12 +807,13 @@ pub trait SharedMemory {
         f: F,
     ) -> Result<T>;
 
-    /// Restore a SharedMemory from a snapshot with matching size
-    fn restore_from_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
-        if snapshot.memory().len() != self.mem_size() {
-            return Err(SnapshotSizeMismatch(self.mem_size(), snapshot.mem_size()));
-        }
-        self.with_exclusivity(|e| e.copy_from_slice(snapshot.memory(), 0))?
+    /// Run some code that is allowed to access the contents of the
+    /// SharedMemory as if it is a normal slice.  By default, this is
+    /// implemented via [`SharedMemory::with_exclusivity`], which is
+    /// the correct implementation for a memory that can be mutated,
+    /// but a [`ReadonlySharedMemory`], can support this.
+    fn with_contents<T, F: FnOnce(&[u8]) -> T>(&mut self, f: F) -> Result<T> {
+        self.with_exclusivity(|m| f(m.as_slice()))
     }
 
     /// Zero a shared memory region
@@ -1975,5 +1996,99 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/// A ReadonlySharedMemory is a different kind of shared memory,
+/// separate from the exclusive/host/guest lifecycle, used to
+/// represent read-only mappings of snapshot pages into the guest
+/// efficiently.
+#[derive(Clone, Debug)]
+pub struct ReadonlySharedMemory {
+    region: Arc<HostMapping>,
+}
+// Safety: HostMapping is only non-Send/Sync (causing
+// ReadonlySharedMemory to not be automatically Send/Sync) because raw
+// pointers are not ("as a lint", as the Rust docs say). We don't want
+// to mark HostMapping Send/Sync immediately, because that could
+// socially imply that it's "safe" to use unsafe accesses from
+// multiple threads at once in more cases, including ones that don't
+// actually ensure immutability/synchronisation. Since
+// ReadonlySharedMemory can only be accessed by reading, and reading
+// concurrently from multiple threads is not racy,
+// ReadonlySharedMemory can be Send and Sync.
+unsafe impl Send for ReadonlySharedMemory {}
+unsafe impl Sync for ReadonlySharedMemory {}
+
+impl ReadonlySharedMemory {
+    pub(crate) fn from_bytes(contents: &[u8]) -> Result<Self> {
+        let mut anon = ExclusiveSharedMemory::new(contents.len())?;
+        anon.copy_from_slice(contents, 0)?;
+        Ok(ReadonlySharedMemory {
+            region: anon.region,
+        })
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.base_ptr(), self.mem_size()) }
+    }
+
+    #[cfg(unshared_snapshot_mem)]
+    pub(crate) fn copy_to_writable(&self) -> Result<ExclusiveSharedMemory> {
+        let mut writable = ExclusiveSharedMemory::new(self.mem_size())?;
+        writable.copy_from_slice(self.as_slice(), 0)?;
+        Ok(writable)
+    }
+
+    #[cfg(not(unshared_snapshot_mem))]
+    pub(crate) fn build(self) -> (Self, Self) {
+        (self.clone(), self)
+    }
+
+    #[cfg(not(unshared_snapshot_mem))]
+    pub(crate) fn mapping_at(
+        &self,
+        guest_base: u64,
+        region_type: MemoryRegionType,
+    ) -> MemoryRegion {
+        #[allow(clippy::panic)]
+        // This will not ever actually panic: the only place this is
+        // called is HyperlightVm::update_snapshot_mapping, which
+        // always calls it with the Snapshot region type.
+        if region_type != MemoryRegionType::Snapshot {
+            panic!("ReadonlySharedMemory::mapping_at should only be used for Snapshot regions");
+        }
+        mapping_at(
+            self,
+            guest_base,
+            region_type,
+            MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
+        )
+    }
+}
+
+impl SharedMemory for ReadonlySharedMemory {
+    fn region(&self) -> &HostMapping {
+        &self.region
+    }
+    // There's no way to get exclusive (and therefore writable) access
+    // to a ReadonlySharedMemory.
+    fn with_exclusivity<T, F: FnOnce(&mut ExclusiveSharedMemory) -> T>(
+        &mut self,
+        _: F,
+    ) -> Result<T> {
+        Err(new_error!(
+            "Cannot take exclusive access to a ReadonlySharedMemory"
+        ))
+    }
+    // However, just access to the contents as a slice is doable
+    fn with_contents<T, F: FnOnce(&[u8]) -> T>(&mut self, f: F) -> Result<T> {
+        Ok(f(self.as_slice()))
+    }
+}
+
+impl<S: SharedMemory> PartialEq<S> for ReadonlySharedMemory {
+    fn eq(&self, other: &S) -> bool {
+        self.raw_ptr() == other.raw_ptr()
     }
 }

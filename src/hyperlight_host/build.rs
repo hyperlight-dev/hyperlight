@@ -99,12 +99,16 @@ fn main() -> Result<()> {
     // Essentially the kvm and mshv3 features are ignored on windows as long as you use #[cfg(kvm)] and not #[cfg(feature = "kvm")].
     // You should never use #[cfg(feature = "kvm")] or #[cfg(feature = "mshv3")] in the codebase.
     cfg_aliases::cfg_aliases! {
-        gdb: { all(feature = "gdb", debug_assertions) },
+        gdb: { all(feature = "gdb", debug_assertions, target_arch = "x86_64") },
         kvm: { all(feature = "kvm", target_os = "linux") },
         mshv3: { all(feature = "mshv3", target_os = "linux") },
-        crashdump: { all(feature = "crashdump") },
+        crashdump: { all(feature = "crashdump", target_arch = "x86_64") },
         // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.
         print_debug: { all(feature = "print_debug", debug_assertions) },
+        // the nanvix-unstable and gdb features both (only
+        // temporarily!) need to use writable/un-shared snapshot
+        // memories, and so can't share
+        unshared_snapshot_mem: { any(feature = "nanvix-unstable", feature = "gdb") },
     }
 
     #[cfg(feature = "build-metadata")]

@@ -26,11 +26,11 @@ jobs:
   linux-checks:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 30
-    runs-on: ["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-amd"]
+    runs-on: ["self-hosted", "Linux", "X64", "1ES.Pool=hld-kvm-amd", "JobId=linux-checks-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     steps:
       - uses: actions/checkout@v6
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
         with:
           rust-toolchain: "1.89" 
         env:
@@ -98,11 +98,11 @@ jobs:
   windows-checks:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 30
-    runs-on: ["self-hosted", "Windows", "X64", "1ES.Pool=hld-win2025-amd"]
+    runs-on: ["self-hosted", "Windows", "X64", "1ES.Pool=hld-win2025-amd", "JobId=windows-checks-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     steps:
       - uses: actions/checkout@v6
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
         with:
           rust-toolchain: "1.89" 
         env:

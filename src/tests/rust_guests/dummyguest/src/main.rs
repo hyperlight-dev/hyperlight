@@ -30,8 +30,16 @@ fn panic(_info: &PanicInfo) -> ! {
 }
 
 fn halt() {
+    // VmAction::Halt = 108; using raw constant to avoid pulling in
+    // anyhow (via hyperlight_common's TryFrom impl) which requires alloc.
     unsafe {
-        asm!("hlt");
+        asm!(
+            "out dx, eax",
+            "cli",
+            "hlt",
+            in("dx") 108u16,
+            in("eax") 0u32,
+        );
     }
 }
 

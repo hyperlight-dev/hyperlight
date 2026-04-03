@@ -20,6 +20,8 @@ use fallible_iterator::FallibleIterator;
 use framehop::Unwinder;
 
 use crate::hypervisor::regs::CommonRegisters;
+#[cfg(not(unshared_snapshot_mem))]
+use crate::mem::layout::ReadableSharedMemory;
 use crate::mem::layout::SandboxMemoryLayout;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::shared_mem::HostSharedMemory;
@@ -96,10 +98,15 @@ impl MemTraceInfo {
         mem_mgr: &SandboxMemoryManager<HostSharedMemory>,
     ) -> Result<Vec<u64>> {
         let mut read_stack = |addr| {
+            let mut buf: [u8; 8] = [0u8; 8];
             mem_mgr
                 .shared_mem
-                .read::<u64>((addr - SandboxMemoryLayout::BASE_ADDRESS as u64) as usize)
-                .map_err(|_| ())
+                .copy_to_slice(
+                    &mut buf,
+                    (addr - SandboxMemoryLayout::BASE_ADDRESS as u64) as usize,
+                )
+                .map_err(|_| ())?;
+            Ok(u64::from_ne_bytes(buf))
         };
         let mut cache = self
             .unwind_cache

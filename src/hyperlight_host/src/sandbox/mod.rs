@@ -16,6 +16,8 @@ limitations under the License.
 
 /// Configuration needed to establish a sandbox.
 pub mod config;
+/// Host-side file mapping preparation for `map_file_cow`.
+pub(crate) mod file_mapping;
 /// Functionality for reading, but not modifying host functions
 pub(crate) mod host_funcs;
 /// Functionality for dealing with initialized sandboxes that can

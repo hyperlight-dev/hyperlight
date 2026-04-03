@@ -121,6 +121,25 @@ pub static mut GUEST_HANDLE: GuestHandle = GuestHandle::new();
 pub(crate) static mut REGISTERED_GUEST_FUNCTIONS: GuestFunctionRegister<GuestFunc> =
     GuestFunctionRegister::new();
 
+const VERSION_STR: &str = env!("CARGO_PKG_VERSION");
+
+// Embed the hyperlight-guest-bin crate version as a proper ELF note so the
+// host can verify ABI compatibility at load time.
+#[used]
+#[unsafe(link_section = ".note.hyperlight-version")]
+static HYPERLIGHT_VERSION_NOTE: hyperlight_common::version_note::ElfNote<
+    {
+        hyperlight_common::version_note::padded_name_size(
+            hyperlight_common::version_note::HYPERLIGHT_NOTE_NAME.len() + 1,
+        )
+    },
+    { hyperlight_common::version_note::padded_desc_size(VERSION_STR.len() + 1) },
+> = hyperlight_common::version_note::ElfNote::new(
+    hyperlight_common::version_note::HYPERLIGHT_NOTE_NAME,
+    VERSION_STR,
+    hyperlight_common::version_note::HYPERLIGHT_NOTE_TYPE,
+);
+
 /// The size of one page in the host OS, which may have some impacts
 /// on how buffers for host consumption should be aligned. Code only
 /// working with the guest page tables should use

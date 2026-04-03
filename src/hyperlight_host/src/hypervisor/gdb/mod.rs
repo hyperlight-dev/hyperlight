@@ -21,7 +21,7 @@ mod x86_64_target;
 use std::io::{self, ErrorKind};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
-use std::{slice, thread};
+use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use event_loop::event_loop_thread;
@@ -36,10 +36,10 @@ use super::regs::CommonRegisters;
 use crate::HyperlightError;
 use crate::hypervisor::regs::CommonFpu;
 use crate::hypervisor::virtual_machine::{HypervisorError, RegisterError, VirtualMachine};
-use crate::mem::layout::SandboxMemoryLayout;
+use crate::mem::layout::BaseGpaRegion;
 use crate::mem::memory_region::MemoryRegion;
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::{HostSharedMemory, SharedMemory};
+use crate::mem::shared_mem::HostSharedMemory;
 
 #[derive(Debug, Error)]
 pub enum GdbTargetError {
@@ -95,18 +95,11 @@ pub enum DebugMemoryAccessError {
     LockFailed(&'static str, u32, String),
     #[error("Failed to translate guest address {0:#x}")]
     TranslateGuestAddress(u64),
+    #[error("Failed to write to read-only region")]
+    WriteToReadOnly,
 }
 
 impl DebugMemoryAccess {
-    // TODO: There is a lot of common logic between both of these
-    // functions, as well as guest_page/access_gpa in snapshot.rs. It
-    // would be nice to factor that out at some point, but the
-    // snapshot versions deal with ExclusiveSharedMemory, since we
-    // never expect a guest to be running concurrent with a snapshot,
-    // and doesn't want to make unnecessary copies, since it runs over
-    // relatively large volumes of data, so it's not clear if it's
-    // terribly easy to combine them
-
     /// Reads memory from the guest's address space with a maximum length of a PAGE_SIZE
     ///
     /// # Arguments
@@ -120,74 +113,17 @@ impl DebugMemoryAccess {
         data: &mut [u8],
         gpa: u64,
     ) -> std::result::Result<(), DebugMemoryAccessError> {
-        let read_len = data.len();
+        let mgr = self
+            .dbg_mem_access_fn
+            .try_lock()
+            .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?;
 
-        let mem_offset = (gpa as usize)
-            .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
-            .ok_or_else(|| {
-                log::warn!(
-                    "gpa={:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
-                    gpa,
-                    gpa,
-                    SandboxMemoryLayout::BASE_ADDRESS
-                );
-                DebugMemoryAccessError::TranslateGuestAddress(gpa)
-            })?;
-
-        // First check the mapped memory regions to see if the address is within any of them
-        let mut region_found = false;
-        for reg in self.guest_mmap_regions.iter() {
-            if reg.guest_region.contains(&mem_offset) {
-                log::debug!("Found mapped region containing {:X}: {:#?}", gpa, reg);
-
-                // Region found - calculate the offset within the region
-                let region_offset = mem_offset.checked_sub(reg.guest_region.start).ok_or_else(|| {
-                    log::warn!(
-                        "Cannot calculate offset in memory region: mem_offset={:#X}, base={:#X}",
-                        mem_offset,
-                        reg.guest_region.start,
-                    );
-                    DebugMemoryAccessError::TranslateGuestAddress(mem_offset as u64)
-                })?;
-
-                let host_start_ptr = <_ as Into<usize>>::into(reg.host_region.start);
-                let bytes: &[u8] = unsafe {
-                    slice::from_raw_parts(host_start_ptr as *const u8, reg.guest_region.len())
-                };
-                data[..read_len].copy_from_slice(&bytes[region_offset..region_offset + read_len]);
-
-                region_found = true;
-                break;
-            }
-        }
-
-        if !region_found {
-            let mut mgr = self
-                .dbg_mem_access_fn
-                .try_lock()
-                .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?;
-            let scratch_base =
-                hyperlight_common::layout::scratch_base_gpa(mgr.scratch_mem.mem_size());
-            let (mem, offset, name): (&mut HostSharedMemory, _, _) = if gpa >= scratch_base {
-                (
-                    &mut mgr.scratch_mem,
-                    (gpa - scratch_base) as usize,
-                    "scratch",
-                )
-            } else {
-                (&mut mgr.shared_mem, mem_offset, "snapshot")
-            };
-            log::debug!(
-                "No mapped region found containing {:X}. Trying {} memory at offset {:X} ...",
-                gpa,
-                name,
-                offset
-            );
-            mem.copy_to_slice(&mut data[..read_len], offset)
-                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?;
-        }
-
-        Ok(())
+        mgr.layout
+            .resolve_gpa(gpa, &self.guest_mmap_regions)
+            .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?
+            .with_memories(&mgr.shared_mem, &mgr.scratch_mem)
+            .copy_to_slice(data)
+            .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))
     }
 
     /// Writes memory from the guest's address space with a maximum length of a PAGE_SIZE
@@ -203,74 +139,30 @@ impl DebugMemoryAccess {
         data: &[u8],
         gpa: u64,
     ) -> std::result::Result<(), DebugMemoryAccessError> {
-        let write_len = data.len();
+        let mgr = self
+            .dbg_mem_access_fn
+            .try_lock()
+            .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?;
 
-        let mem_offset = (gpa as usize)
-            .checked_sub(SandboxMemoryLayout::BASE_ADDRESS)
-            .ok_or_else(|| {
-                log::warn!(
-                    "gpa={:#X} causes subtract with underflow: \"gpa - BASE_ADDRESS={:#X}-{:#X}\"",
-                    gpa,
-                    gpa,
-                    SandboxMemoryLayout::BASE_ADDRESS
-                );
-                DebugMemoryAccessError::TranslateGuestAddress(gpa)
-            })?;
+        let resolved = mgr
+            .layout
+            .resolve_gpa(gpa, &self.guest_mmap_regions)
+            .ok_or(DebugMemoryAccessError::TranslateGuestAddress(gpa))?;
 
-        // First check the mapped memory regions to see if the address is within any of them
-        let mut region_found = false;
-        for reg in self.guest_mmap_regions.iter() {
-            if reg.guest_region.contains(&mem_offset) {
-                log::debug!("Found mapped region containing {:X}: {:#?}", gpa, reg);
-
-                // Region found - calculate the offset within the region
-                let region_offset = mem_offset.checked_sub(reg.guest_region.start).ok_or_else(|| {
-                    log::warn!(
-                        "Cannot calculate offset in memory region: mem_offset={:#X}, base={:#X}",
-                        mem_offset,
-                        reg.guest_region.start,
-                    );
-                    DebugMemoryAccessError::TranslateGuestAddress(mem_offset as u64)
-                })?;
-
-                let host_start_ptr = <_ as Into<usize>>::into(reg.host_region.start);
-                let bytes: &mut [u8] = unsafe {
-                    slice::from_raw_parts_mut(host_start_ptr as *mut u8, reg.guest_region.len())
-                };
-                bytes[region_offset..region_offset + write_len].copy_from_slice(&data[..write_len]);
-
-                region_found = true;
-                break;
-            }
+        // We can only safely write (without causing UB in the host
+        // process) if the address is in the scratch region
+        match resolved.base {
+            #[cfg(unshared_snapshot_mem)]
+            BaseGpaRegion::Snapshot(()) => mgr
+                .shared_mem
+                .copy_from_slice(data, resolved.offset)
+                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e))),
+            BaseGpaRegion::Scratch(()) => mgr
+                .scratch_mem
+                .copy_from_slice(data, resolved.offset)
+                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e))),
+            _ => Err(DebugMemoryAccessError::WriteToReadOnly),
         }
-
-        if !region_found {
-            let mut mgr = self
-                .dbg_mem_access_fn
-                .try_lock()
-                .map_err(|e| DebugMemoryAccessError::LockFailed(file!(), line!(), e.to_string()))?;
-            let scratch_base =
-                hyperlight_common::layout::scratch_base_gpa(mgr.scratch_mem.mem_size());
-            let (mem, offset, name): (&mut HostSharedMemory, _, _) = if gpa >= scratch_base {
-                (
-                    &mut mgr.scratch_mem,
-                    (gpa - scratch_base) as usize,
-                    "scratch",
-                )
-            } else {
-                (&mut mgr.shared_mem, mem_offset, "snapshot")
-            };
-            log::debug!(
-                "No mapped region found containing {:X}. Trying {} memory at offset {:X} ...",
-                gpa,
-                name,
-                offset
-            );
-            mem.copy_from_slice(&data[..write_len], offset)
-                .map_err(|e| DebugMemoryAccessError::CopyFailed(Box::new(e)))?;
-        }
-
-        Ok(())
     }
 }
 
@@ -415,14 +307,14 @@ pub(crate) fn create_gdb_thread(
     let (gdb_conn, hyp_conn) = DebugCommChannel::unbounded();
     let socket = format!("localhost:{}", port);
 
-    log::info!("Listening on {:?}", socket);
+    tracing::info!("Listening on {:?}", socket);
     let listener = TcpListener::bind(socket)?;
 
-    log::info!("Starting GDB thread");
+    tracing::info!("Starting GDB thread");
     let _handle = thread::Builder::new()
         .name("GDB handler".to_string())
         .spawn(move || -> Result<(), GdbTargetError> {
-            log::info!("Waiting for GDB connection ... ");
+            tracing::info!("Waiting for GDB connection ... ");
             let (conn, _) = listener.accept()?;
 
             let conn: Box<dyn ConnectionExt<Error = io::Error>> = Box::new(conn);
@@ -433,7 +325,7 @@ pub(crate) fn create_gdb_thread(
             // Waits for vCPU to stop at entrypoint breakpoint
             let msg = target.recv()?;
             if let DebugResponse::InterruptHandle(handle) = msg {
-                log::info!("Received interrupt handle: {:?}", handle);
+                tracing::info!("Received interrupt handle: {:?}", handle);
                 target.set_interrupt_handle(handle);
             } else {
                 return Err(GdbTargetError::UnexpectedMessage);
@@ -490,6 +382,7 @@ mod tests {
         use hyperlight_testing::dummy_guest_as_string;
 
         use super::*;
+        use crate::mem::layout::SandboxMemoryLayout;
         use crate::mem::memory_region::{MemoryRegionFlags, MemoryRegionType};
         use crate::sandbox::UninitializedSandbox;
         use crate::sandbox::uninitialized::GuestBinary;

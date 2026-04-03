@@ -12,7 +12,7 @@ Create a PR with this change and merge it into the main branch.
 
 ## Update `CHANGELOG.md`
 
-The `CHANGELOG.md` file is a critical document used to track changes made to Hyperlight. It serves as the foundation for generating release notes, so it's essential to keep it up to date with each release. While not every change needs to be added to this file (since a complete changelog of all PRs will be automatically generated), it's crucial to include all significant updates.
+The `CHANGELOG.md` file is a critical document used to track changes made to Hyperlight. It serves as the foundation for generating release notes, so it's essential to keep it up to date with each release. While not every change needs to be added to this file (since a complete changelog of all PRs will be automatically generated), it's crucial to include all significant and user-facing updates. The changelog entries must follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ### Steps to Update `CHANGELOG.md`:
 

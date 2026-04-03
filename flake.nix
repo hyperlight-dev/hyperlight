@@ -47,6 +47,9 @@
                   chmod +x "$ldlld"
                 fi
               '');
+            passthru = (oA.passthru or {}) // {
+              toolchainVersionAttrs = args;
+            };
           })) // {
             targetPlatforms = [ "x86_64-linux" ];
             badTargetPlatforms = [ ];
@@ -93,9 +96,9 @@
               sha256 = "sha256-sqSWJDUxc+zaz1nBWMAJKTAGBuGWP25GCftIOlCEAtA=";
             };
             nightly = {
-              date = "2026-01-19";
+              date = "2026-02-27";
               channel = "nightly";
-              sha256 = "sha256-Ye65U/qzilPLte800N5oxFOY96shgG8bST8dbrF6Qh0=";
+              sha256 = "sha256-5twI9QsrPl0ryOZ4POGYAivSeI08jgmWnv0wVvzbjcE=";
             };
             "1.89" = {
               date = "2025-08-07";
@@ -191,8 +194,10 @@
           # nothing as well.
           rustup-like-wrapper = name: pkgs.writeShellScriptBin name
             (let
-              clause = name: toolchain:
-                "+${name}) base=\"${toolchain.rust}\"; shift 1; ;;";
+              clause = name: toolchain: ''
+                +${name}) base="${toolchain.rust}"; shift 1; ;;
+                +${name}-${toolchain.rust.toolchainVersionAttrs.date}) base="${toolchain.rust}"; shift 1; ;;
+              '';
               clauses = lib.strings.concatStringsSep "\n"
                 (lib.mapAttrsToList clause toolchains);
             in ''

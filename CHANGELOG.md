@@ -4,6 +4,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.14.0] - 2026-04-01
+
+### Changed
+* Snapshot restore now uses copy-on-write, reducing restore latency by up to 99% (see [paging notes](https://github.com/hyperlight-dev/hyperlight/blob/v0.14.0/docs/paging-development-notes.md)) by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/1315
+* `map_region` on `MultiUseSandbox` now works on Windows by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1330
+* Maximum sandbox memory size increased from ~1 GiB to ~16 GiB by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1340
+
+### Fixed
+* Windows surrogate process manager now uses SHA-stamped filenames to avoid conflicts when multiple Hyperlight versions coexist, and surrogate pool size is configurable via `HYPERLIGHT_INITIAL_SURROGATES` and `HYPERLIGHT_MAX_SURROGATES` environment variables by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1339
+* Fix a race where guest cancellation could cause a pending TLB flush to be lost by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1333
+* Fix spurious `GuestAborted` errors after repeated cancel+restore cycles by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1335
+
+## [v0.13.1] - 2026-03-19
+
+### Fixed
+* Explicitly error out on host-guest version mismatch by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1252
+
+### Added
+* Hardware interrupt support by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1272
+* Copy-on-write file mapping support with labels by @simongdavies in https://github.com/hyperlight-dev/hyperlight/pull/1320, https://github.com/hyperlight-dev/hyperlight/pull/1322
+* Re-export host functions from the `hyperlight_host` package by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1314
+* Make `map_region` public by @jsturtevant in https://github.com/hyperlight-dev/hyperlight/pull/1293
+* Nanvix: `GuestCounter` API and i686 guest layout behind `nanvix-unstable` feature flag by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1270, https://github.com/hyperlight-dev/hyperlight/pull/1271
+
 ## [v0.13.0] - 2026-03-06
 
 ### Fixed
@@ -254,7 +278,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.14.0..HEAD>
+[v0.14.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.1...v0.14.0>
+[v0.13.1]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.0...v0.13.1>
 [v0.13.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.12.0...v0.13.0>
 [v0.12.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.11.0...v0.12.0>
 [v0.11.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.10.0...v0.11.0>

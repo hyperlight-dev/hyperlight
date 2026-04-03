@@ -31,7 +31,9 @@ use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::log_build_details;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
-use crate::mem::shared_mem::ExclusiveSharedMemory;
+#[cfg(feature = "nanvix-unstable")]
+use crate::mem::shared_mem::HostSharedMemory;
+use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::{MultiUseSandbox, Result, new_error};
 
@@ -52,6 +54,96 @@ pub(crate) struct SandboxRuntimeConfig {
     /// in `set_up_hypervisor_partition`.
     #[cfg(crashdump)]
     pub(crate) entry_point: Option<u64>,
+}
+
+/// A host-authoritative shared counter exposed to the guest via a `u64`
+/// in guest scratch memory.
+///
+/// Created via [`UninitializedSandbox::guest_counter()`]. The host owns
+/// the counter value and is the only writer: [`increment()`](Self::increment)
+/// and [`decrement()`](Self::decrement) update the cached value and write
+/// to shared memory via [`HostSharedMemory::write()`]. [`value()`](Self::value)
+/// returns the cached value — the host never reads back from guest memory,
+/// so a malicious guest cannot influence the host's view of the counter.
+///
+/// Thread safety is provided by an internal `Mutex`, so `increment()` and
+/// `decrement()` take `&self` rather than `&mut self`.
+///
+/// The counter holds an `Arc<Mutex<Option<HostSharedMemory>>>` that is
+/// shared with [`UninitializedSandbox`]. The `Option` is `None` until
+/// [`evolve()`](UninitializedSandbox::evolve) populates it, at which point
+/// the counter can issue volatile writes via the proper protocol.
+///
+/// Only one `GuestCounter` may be created per sandbox; a second call to
+/// [`UninitializedSandbox::guest_counter()`] returns an error.
+#[cfg(feature = "nanvix-unstable")]
+pub struct GuestCounter {
+    inner: Mutex<GuestCounterInner>,
+}
+
+#[cfg(feature = "nanvix-unstable")]
+struct GuestCounterInner {
+    deferred_hshm: Arc<Mutex<Option<HostSharedMemory>>>,
+    offset: usize,
+    value: u64,
+}
+
+#[cfg(feature = "nanvix-unstable")]
+impl core::fmt::Debug for GuestCounter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GuestCounter").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "nanvix-unstable")]
+impl GuestCounter {
+    /// Increments the counter by one and writes it to guest memory.
+    pub fn increment(&self) -> Result<()> {
+        let mut inner = self.inner.lock().map_err(|e| new_error!("{e}"))?;
+        let shm = {
+            let guard = inner.deferred_hshm.lock().map_err(|e| new_error!("{e}"))?;
+            guard
+                .as_ref()
+                .ok_or_else(|| {
+                    new_error!("GuestCounter cannot be used before shared memory is built")
+                })?
+                .clone()
+        };
+        let new_value = inner
+            .value
+            .checked_add(1)
+            .ok_or_else(|| new_error!("GuestCounter overflow"))?;
+        shm.write::<u64>(inner.offset, new_value)?;
+        inner.value = new_value;
+        Ok(())
+    }
+
+    /// Decrements the counter by one and writes it to guest memory.
+    pub fn decrement(&self) -> Result<()> {
+        let mut inner = self.inner.lock().map_err(|e| new_error!("{e}"))?;
+        let shm = {
+            let guard = inner.deferred_hshm.lock().map_err(|e| new_error!("{e}"))?;
+            guard
+                .as_ref()
+                .ok_or_else(|| {
+                    new_error!("GuestCounter cannot be used before shared memory is built")
+                })?
+                .clone()
+        };
+        let new_value = inner
+            .value
+            .checked_sub(1)
+            .ok_or_else(|| new_error!("GuestCounter underflow"))?;
+        shm.write::<u64>(inner.offset, new_value)?;
+        inner.value = new_value;
+        Ok(())
+    }
+
+    /// Returns the current host-side value of the counter.
+    pub fn value(&self) -> Result<u64> {
+        let inner = self.inner.lock().map_err(|e| new_error!("{e}"))?;
+        Ok(inner.value)
+    }
 }
 
 /// A preliminary sandbox that represents allocated memory and registered host functions,
@@ -78,6 +170,20 @@ pub struct UninitializedSandbox {
     // This is needed to convey the stack pointer between the snapshot
     // and the HyperlightVm creation
     pub(crate) stack_top_gva: u64,
+    /// Populated by [`evolve()`](Self::evolve) with a [`HostSharedMemory`]
+    /// view of scratch memory. Code that needs host-style volatile access
+    /// before `evolve()` (e.g. `GuestCounter`) can clone this `Arc` and
+    /// will see `Some` once `evolve()` completes.
+    #[cfg(feature = "nanvix-unstable")]
+    pub(crate) deferred_hshm: Arc<Mutex<Option<HostSharedMemory>>>,
+    /// Set to `true` once a [`GuestCounter`] has been handed out via
+    /// [`guest_counter()`](Self::guest_counter). Prevents creating
+    /// multiple counters that would have divergent cached values.
+    #[cfg(feature = "nanvix-unstable")]
+    counter_taken: std::sync::atomic::AtomicBool,
+    /// File mappings prepared by [`Self::map_file_cow`] that will be
+    /// applied to the VM during [`Self::evolve`].
+    pub(crate) pending_file_mappings: Vec<super::file_mapping::PreparedFileMapping>,
 }
 
 impl Debug for UninitializedSandbox {
@@ -169,6 +275,51 @@ impl<'a> From<GuestBinary<'a>> for GuestEnvironment<'a, '_> {
 }
 
 impl UninitializedSandbox {
+    /// Creates a [`GuestCounter`] at a fixed offset in scratch memory.
+    ///
+    /// The counter lives at `SCRATCH_TOP_GUEST_COUNTER_OFFSET` bytes from
+    /// the top of scratch memory, so both host and guest can locate it
+    /// without an explicit GPA parameter.
+    ///
+    /// The returned counter holds an `Arc` clone of the sandbox's
+    /// `deferred_hshm`, so it will automatically gain access to the
+    /// [`HostSharedMemory`] once [`evolve()`](Self::evolve) completes.
+    ///
+    /// This method can only be called once; a second call returns an error
+    /// because multiple counters would have divergent cached values.
+    #[cfg(feature = "nanvix-unstable")]
+    pub fn guest_counter(&mut self) -> Result<GuestCounter> {
+        use std::sync::atomic::Ordering;
+
+        use hyperlight_common::layout::SCRATCH_TOP_GUEST_COUNTER_OFFSET;
+
+        if self.counter_taken.swap(true, Ordering::Relaxed) {
+            return Err(new_error!(
+                "GuestCounter has already been created for this sandbox"
+            ));
+        }
+
+        let scratch_size = self.mgr.scratch_mem.mem_size();
+        if (SCRATCH_TOP_GUEST_COUNTER_OFFSET as usize) > scratch_size {
+            return Err(new_error!(
+                "scratch memory too small for guest counter (size {:#x}, need offset {:#x})",
+                scratch_size,
+                SCRATCH_TOP_GUEST_COUNTER_OFFSET,
+            ));
+        }
+
+        let offset = scratch_size - SCRATCH_TOP_GUEST_COUNTER_OFFSET as usize;
+        let deferred_hshm = self.deferred_hshm.clone();
+
+        Ok(GuestCounter {
+            inner: Mutex::new(GuestCounterInner {
+                deferred_hshm,
+                offset,
+                value: 0,
+            }),
+        })
+    }
+
     // Creates a new uninitialized sandbox from a pre-built snapshot.
     // Note that since memory configuration is part of the snapshot the only configuration
     // that can be changed (from the original snapshot) is the configuration defines the behaviour of
@@ -211,10 +362,8 @@ impl UninitializedSandbox {
             }
         };
 
-        let mut mem_mgr_wrapper =
+        let mem_mgr_wrapper =
             SandboxMemoryManager::<ExclusiveSharedMemory>::from_snapshot(snapshot.as_ref())?;
-
-        mem_mgr_wrapper.write_memory_layout()?;
 
         let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
 
@@ -227,6 +376,11 @@ impl UninitializedSandbox {
             rt_cfg,
             load_info: snapshot.load_info(),
             stack_top_gva: snapshot.stack_top_gva(),
+            #[cfg(feature = "nanvix-unstable")]
+            deferred_hshm: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "nanvix-unstable")]
+            counter_taken: std::sync::atomic::AtomicBool::new(false),
+            pending_file_mappings: Vec::new(),
         };
 
         // If we were passed a writer for host print register it otherwise use the default.
@@ -278,6 +432,94 @@ impl UninitializedSandbox {
         evolve_impl_multi_use(self)
     }
 
+    /// Map the contents of a file into the guest at a particular address.
+    ///
+    /// The file mapping is prepared immediately (host-side OS work) but
+    /// the actual VM-side mapping is deferred until [`evolve()`](Self::evolve).
+    ///
+    /// An optional `label` identifies this mapping in the PEB's
+    /// `FileMappingInfo` array (max 63 bytes, defaults to the file name).
+    ///
+    /// The `guest_base` must be page-aligned and must lie **outside**
+    /// the sandbox's primary shared memory region (`BASE_ADDRESS` to
+    /// `BASE_ADDRESS + shared_mem_size`).
+    ///
+    /// Returns the length of the mapping in bytes.
+    #[instrument(err(Debug), skip(self, file_path, guest_base, label), parent = Span::current())]
+    pub fn map_file_cow(
+        &mut self,
+        file_path: &std::path::Path,
+        guest_base: u64,
+        label: Option<&str>,
+    ) -> crate::Result<u64> {
+        // Fail fast if the preallocated PEB array is already full.
+        if self.pending_file_mappings.len() >= hyperlight_common::mem::MAX_FILE_MAPPINGS {
+            return Err(crate::HyperlightError::Error(format!(
+                "map_file_cow: file mapping limit reached ({} of {})",
+                self.pending_file_mappings.len(),
+                hyperlight_common::mem::MAX_FILE_MAPPINGS,
+            )));
+        }
+
+        // Validate that guest_base is outside the sandbox's primary memory slot.
+        // (Full range check happens after prepare_file_cow when we know the mapped size.)
+        let shared_size = self.mgr.shared_mem.mem_size() as u64;
+        let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS as u64;
+
+        let prepared = super::file_mapping::prepare_file_cow(file_path, guest_base, label)?;
+
+        // Validate full mapped range doesn't overlap shared memory.
+        let mapping_end = guest_base
+            .checked_add(prepared.size as u64)
+            .ok_or_else(|| {
+                crate::HyperlightError::Error(format!(
+                    "map_file_cow: guest address overflow: {:#x} + {:#x}",
+                    guest_base, prepared.size
+                ))
+            })?;
+        let shared_end = base_addr.checked_add(shared_size).ok_or_else(|| {
+            crate::HyperlightError::Error("shared memory end overflow".to_string())
+        })?;
+        if guest_base < shared_end && mapping_end > base_addr {
+            return Err(crate::HyperlightError::Error(format!(
+                "map_file_cow: mapping [{:#x}..{:#x}) overlaps sandbox shared memory [{:#x}..{:#x})",
+                guest_base, mapping_end, base_addr, shared_end,
+            )));
+        }
+
+        let size = prepared.size as u64;
+
+        // Check for overlaps with existing pending file mappings.
+        let new_start = guest_base;
+        let new_end = mapping_end;
+        for existing in &self.pending_file_mappings {
+            let ex_start = existing.guest_base;
+            let ex_end = ex_start.checked_add(existing.size as u64).ok_or_else(|| {
+                crate::HyperlightError::Error(format!(
+                    "map_file_cow: existing mapping address overflow: {:#x} + {:#x}",
+                    ex_start, existing.size
+                ))
+            })?;
+            if new_start < ex_end && new_end > ex_start {
+                return Err(crate::HyperlightError::Error(format!(
+                    "map_file_cow: mapping [{:#x}..{:#x}) overlaps existing mapping [{:#x}..{:#x})",
+                    new_start, new_end, ex_start, ex_end,
+                )));
+            }
+        }
+
+        self.pending_file_mappings.push(prepared);
+        Ok(size)
+    }
+
+    /// Returns the total size of the sandbox shared memory region in bytes.
+    ///
+    /// This is useful for placing file mappings at guest physical addresses
+    /// that don't overlap the primary shared memory slot.
+    pub fn shared_mem_size(&self) -> usize {
+        self.mgr.shared_mem.mem_size()
+    }
+
     /// Sets the maximum log level for guest code execution.
     ///
     /// If not set, the log level is determined by the `RUST_LOG` environment variable,
@@ -305,6 +547,18 @@ impl UninitializedSandbox {
         print_func: impl Into<HostFunction<i32, (String,)>>,
     ) -> Result<()> {
         self.register("HostPrint", print_func)
+    }
+
+    /// Populate the deferred `HostSharedMemory` slot without running
+    /// the full `evolve()` pipeline. Used in tests where guest boot
+    /// is not available.
+    #[cfg(all(test, feature = "nanvix-unstable"))]
+    fn simulate_build(&self) {
+        let hshm = self.mgr.scratch_mem.as_host_shared_memory();
+        #[allow(clippy::unwrap_used)]
+        {
+            *self.deferred_hshm.lock().unwrap() = Some(hshm);
+        }
     }
 }
 // Check to see if the current version of Windows is supported
@@ -1312,6 +1566,70 @@ mod tests {
             )
             .expect("Failed to create new_sandbox");
             let _evolved = new_sandbox.evolve().expect("Failed to evolve new_sandbox");
+        }
+    }
+
+    #[cfg(feature = "nanvix-unstable")]
+    mod guest_counter_tests {
+        use hyperlight_testing::simple_guest_as_string;
+
+        use crate::UninitializedSandbox;
+        use crate::sandbox::uninitialized::GuestBinary;
+
+        fn make_sandbox() -> UninitializedSandbox {
+            UninitializedSandbox::new(
+                GuestBinary::FilePath(simple_guest_as_string().expect("Guest Binary Missing")),
+                None,
+            )
+            .expect("Failed to create sandbox")
+        }
+
+        #[test]
+        fn create_guest_counter() {
+            let mut sandbox = make_sandbox();
+            let counter = sandbox.guest_counter();
+            assert!(counter.is_ok());
+        }
+
+        #[test]
+        fn only_one_counter_allowed() {
+            let mut sandbox = make_sandbox();
+            let _c1 = sandbox.guest_counter().unwrap();
+            let c2 = sandbox.guest_counter();
+            assert!(c2.is_err());
+        }
+
+        #[test]
+        fn fails_before_build() {
+            let mut sandbox = make_sandbox();
+            let counter = sandbox.guest_counter().unwrap();
+            assert!(counter.increment().is_err());
+            assert!(counter.decrement().is_err());
+        }
+
+        #[test]
+        fn increment_decrement() {
+            let mut sandbox = make_sandbox();
+            let counter = sandbox.guest_counter().unwrap();
+            sandbox.simulate_build();
+
+            counter.increment().unwrap();
+            assert_eq!(counter.value().unwrap(), 1);
+            counter.increment().unwrap();
+            assert_eq!(counter.value().unwrap(), 2);
+            counter.decrement().unwrap();
+            assert_eq!(counter.value().unwrap(), 1);
+        }
+
+        #[test]
+        fn underflow_returns_error() {
+            let mut sandbox = make_sandbox();
+            let counter = sandbox.guest_counter().unwrap();
+            sandbox.simulate_build();
+
+            assert_eq!(counter.value().unwrap(), 0);
+            let result = counter.decrement();
+            assert!(result.is_err());
         }
     }
 }

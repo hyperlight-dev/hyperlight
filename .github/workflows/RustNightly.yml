@@ -32,15 +32,19 @@ jobs:
         cpu: [amd, intel]
         config: [debug, release]
     runs-on: ${{ fromJson(
-        format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}"]', 
+        format('["self-hosted", "Linux", "X64", "1ES.Pool=hld-{0}-{1}", "JobId=musl-{2}-{3}-{4}-{5}"]', 
           matrix.hypervisor == 'mshv3' && 'azlinux3-mshv' || matrix.hypervisor, 
-          matrix.cpu)) }}
+          matrix.cpu,
+          matrix.config,
+          github.run_id,
+          github.run_number,
+          github.run_attempt)) }}
     env:
       TARGET_TRIPLE: x86_64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v6
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
         with:
           rust-toolchain: "1.89"
         env:

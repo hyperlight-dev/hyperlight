@@ -29,11 +29,11 @@ jobs:
   build-guests:
     if: ${{ inputs.docs_only == 'false' }}
     timeout-minutes: 15
-    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd"]
+    runs-on: [self-hosted, Linux, X64, "1ES.Pool=hld-kvm-amd", "JobId=build-guests-${{ inputs.config }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}"]
     steps:
       - uses: actions/checkout@v6
 
-      - uses: hyperlight-dev/ci-setup-workflow@v1.8.0
+      - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
         with:
           rust-toolchain: "1.89"
         env:

@@ -26,7 +26,9 @@ use kvm_bindings::{KVM_MEM_READONLY, kvm_userspace_memory_region};
 use mshv_bindings::{
     MSHV_SET_MEM_BIT_EXECUTABLE, MSHV_SET_MEM_BIT_UNMAP, MSHV_SET_MEM_BIT_WRITABLE,
 };
-#[cfg(mshv3)]
+#[cfg(all(mshv3, target_arch = "aarch64"))]
+use mshv_bindings::{hv_arm64_memory_intercept_message, mshv_user_mem_region};
+#[cfg(all(mshv3, target_arch = "x86_64"))]
 use mshv_bindings::{hv_x64_memory_intercept_message, mshv_user_mem_region};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Hypervisor::{self, WHV_MEMORY_ACCESS_TYPE};
@@ -95,7 +97,7 @@ impl TryFrom<WHV_MEMORY_ACCESS_TYPE> for MemoryRegionFlags {
     }
 }
 
-#[cfg(mshv3)]
+#[cfg(all(mshv3, target_arch = "x86_64"))]
 impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
     type Error = crate::HyperlightError;
 
@@ -112,7 +114,19 @@ impl TryFrom<hv_x64_memory_intercept_message> for MemoryRegionFlags {
     }
 }
 
-// only used for debugging
+#[cfg(all(mshv3, target_arch = "aarch64"))]
+impl TryFrom<hv_arm64_memory_intercept_message> for MemoryRegionFlags {
+    type Error = crate::HyperlightError;
+
+    fn try_from(_msg: hv_arm64_memory_intercept_message) -> crate::Result<Self> {
+        unimplemented!("try_from")
+    }
+}
+
+// NOTE: In the future, all host-side knowledge about memory region types
+// should collapse down to Snapshot vs Scratch (see shared_mem.rs).
+// Until then, these variants help distinguish regions for diagnostics
+// and crash dumps. Not part of the public API.
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 /// The type of memory region
 pub enum MemoryRegionType {
@@ -128,6 +142,26 @@ pub enum MemoryRegionType {
     Scratch,
     /// The snapshot region
     Snapshot,
+    /// An externally-mapped file (via [`MultiUseSandbox::map_file_cow`]).
+    /// These regions are backed by file handles (Windows) or mmap
+    /// (Linux) and are read-only + executable. They are cleaned up
+    /// during restore/drop — not part of the guest's own allocator.
+    MappedFile,
+}
+
+#[cfg(target_os = "windows")]
+impl MemoryRegionType {
+    /// Derives the [`SurrogateMapping`] from this region type.
+    ///
+    /// `MappedFile` regions use read-only file-backed mappings with no
+    /// guard pages; all other region types use the standard sandbox
+    /// shared memory mapping with guard pages.
+    pub fn surrogate_mapping(&self) -> SurrogateMapping {
+        match self {
+            MemoryRegionType::MappedFile => SurrogateMapping::ReadOnlyFile,
+            _ => SurrogateMapping::SandboxMemory,
+        }
+    }
 }
 
 /// A trait that distinguishes between different kinds of memory region representations.
@@ -151,6 +185,12 @@ pub trait MemoryRegionKind {
 
 /// Type for memory regions that track both host and guest addresses.
 ///
+/// When one of these is created, it always ends up in a sandbox
+/// quickly. It's an invariant of this type that as long as one of
+/// these is associated with a sandbox, it's always acceptable to read
+/// from it, since a lot of the debug/crashdump/snapshot code
+/// does. (Note: this means that _writable_ HostGuestMemoryRegions are
+/// not possible to support at the moment).
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub struct HostGuestMemoryRegion {}
 
@@ -162,6 +202,22 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
         base + size
     }
 }
+/// Describes how a memory region should be mapped through the surrogate process
+/// pipeline on Windows (WHP).
+///
+/// Different mapping types require different page protections and guard page
+/// behaviour when projected into the surrogate process via `MapViewOfFileNuma2`.
+#[cfg(target_os = "windows")]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum SurrogateMapping {
+    /// Standard sandbox shared memory: mapped with `PAGE_READWRITE` protection
+    /// and guard pages (`PAGE_NOACCESS`) set on the first and last pages.
+    SandboxMemory,
+    /// File-backed read-only mapping: mapped with `PAGE_READONLY` protection
+    /// and **no** guard pages.
+    ReadOnlyFile,
+}
+
 /// A [`HostRegionBase`] keeps track of not just a pointer, but also a
 /// file mapping into which it is pointing.  This is used on WHP,
 /// where mapping the actual pointer into the VM actually involves
@@ -273,7 +329,7 @@ impl MemoryRegionKind for CrashDumpMemoryRegion {
 #[cfg(crashdump)]
 pub(crate) type CrashDumpRegion = MemoryRegion_<CrashDumpMemoryRegion>;
 
-#[cfg(crashdump)]
+#[cfg(all(crashdump, feature = "nanvix-unstable"))]
 impl HostGuestMemoryRegion {
     /// Extract the raw `usize` host address from the platform-specific
     /// host base type.
