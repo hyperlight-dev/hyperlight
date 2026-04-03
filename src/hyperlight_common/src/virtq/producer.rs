@@ -168,8 +168,8 @@ where
     ///   wrote more data than the completion buffer capacity
     pub fn poll(&mut self) -> Result<Option<RecvCompletion>, VirtqError>
     where
-        M: Send + Sync + 'static,
-        P: Send + Sync + 'static,
+        M: Send + 'static,
+        P: Send + 'static,
     {
         let used = match self.inner.poll_used() {
             Ok(u) => u,
@@ -234,8 +234,8 @@ where
     /// ```
     pub fn drain(&mut self, mut f: impl FnMut(Token, Bytes)) -> Result<(), VirtqError>
     where
-        M: Send + Sync + 'static,
-        P: Send + Sync + 'static,
+        M: Send + 'static,
+        P: Send + 'static,
     {
         while let Some(cqe) = self.poll()? {
             f(cqe.token, cqe.data);

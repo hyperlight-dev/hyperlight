@@ -151,18 +151,19 @@ limitations under the License.
 //! ```
 
 mod access;
+mod buffer;
 mod consumer;
 mod desc;
 mod event;
 pub mod msg;
 mod pool;
 mod producer;
-pub mod recycle_pool;
 mod ring;
 
 use core::num::NonZeroU16;
 
 pub use access::*;
+pub use buffer::*;
 pub use consumer::*;
 pub use desc::*;
 pub use event::*;
@@ -440,8 +441,8 @@ pub(crate) mod test_utils {
         }
     }
 
-    type TestProducer = VirtqProducer<Arc<TestMem>, TestNotifier, TestPool>;
-    type TestConsumer = VirtqConsumer<Arc<TestMem>, TestNotifier>;
+    type TestProducer = VirtqProducer<TestMem, TestNotifier, TestPool>;
+    type TestConsumer = VirtqConsumer<TestMem, TestNotifier>;
 
     /// Create test infrastructure: a producer, consumer, and notifier backed
     /// by the supplied [`OwnedRing`].
@@ -474,7 +475,7 @@ mod tests {
 
     /// Helper: build and submit an entry+completion chain using the chain() builder.
     fn send_readwrite(
-        producer: &mut VirtqProducer<Arc<TestMem>, TestNotifier, TestPool>,
+        producer: &mut VirtqProducer<TestMem, TestNotifier, TestPool>,
         entry_data: &[u8],
         cqe_cap: usize,
     ) -> Token {
@@ -957,7 +958,7 @@ mod fuzz {
         }
     }
 
-    impl MemOps for Arc<LoomMem> {
+    impl MemOps for LoomMem {
         type Error = MemErr;
 
         fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error> {

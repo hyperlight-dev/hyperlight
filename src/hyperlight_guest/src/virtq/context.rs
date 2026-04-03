@@ -30,8 +30,9 @@ use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
-use hyperlight_common::virtq::recycle_pool::RecyclePool;
-use hyperlight_common::virtq::{BufferPool, Layout, Notifier, QueueStats, VirtqProducer};
+use hyperlight_common::virtq::{
+    BufferPool, Layout, Notifier, QueueStats, RecyclePool, VirtqProducer,
+};
 
 use super::GuestMemOps;
 use crate::bail;

@@ -20,6 +20,8 @@ limitations under the License.
 //! required by the virtqueue implementation. This allows the virtqueue code to
 //! work with different memory backends e.g. Host vs Guest.
 
+use alloc::sync::Arc;
+
 use bytemuck::Pod;
 
 /// Backend-provided memory access for virtqueue.
@@ -132,5 +134,34 @@ pub trait MemOps {
         let bytes = bytemuck::bytes_of(&val);
         self.write(addr, bytes)?;
         Ok(())
+    }
+}
+
+impl<T: MemOps> MemOps for Arc<T> {
+    type Error = T::Error;
+
+    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error> {
+        (**self).read(addr, dst)
+    }
+
+    fn write(&self, addr: u64, src: &[u8]) -> Result<usize, Self::Error> {
+        (**self).write(addr, src)
+    }
+
+    fn load_acquire(&self, addr: u64) -> Result<u16, Self::Error> {
+        (**self).load_acquire(addr)
+    }
+
+    fn store_release(&self, addr: u64, val: u16) -> Result<(), Self::Error> {
+        (**self).store_release(addr, val)
+    }
+
+    unsafe fn as_slice(&self, addr: u64, len: usize) -> Result<&[u8], Self::Error> {
+        unsafe { (**self).as_slice(addr, len) }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn as_mut_slice(&self, addr: u64, len: usize) -> Result<&mut [u8], Self::Error> {
+        unsafe { (**self).as_mut_slice(addr, len) }
     }
 }

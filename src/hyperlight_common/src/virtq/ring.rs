@@ -1268,46 +1268,53 @@ pub(crate) mod tests {
 
     /// Test MemOps implementation that maintains pointer provenance.
     ///
-    /// This wraps a Vec and provides memory access using the Vec's
-    /// base pointer to preserve provenance for Miri.
+    /// Wraps shared storage behind Arc for cheap cloning. This allows
+    /// producer and consumer to share the same backing memory without
+    /// Arc appearing in the type signatures.
+    #[derive(Clone)]
     pub struct TestMem {
+        inner: Arc<TestMemInner>,
+    }
+
+    struct TestMemInner {
         /// The backing storage - UnsafeCell for interior mutability
         storage: UnsafeCell<Vec<u8>>,
         /// Base address (the address we tell the ring about)
         base_addr: u64,
     }
 
+    // Safety: TestMemInner's UnsafeCell is only accessed from test code
+    // with no real concurrency in unit tests (loom tests use LoomMem).
+    unsafe impl Send for TestMemInner {}
+    unsafe impl Sync for TestMemInner {}
+
     impl TestMem {
         pub fn new(size: usize) -> Self {
             let storage = vec![0u8; size];
             let base_addr = storage.as_ptr() as u64;
             Self {
-                storage: UnsafeCell::new(storage),
-                base_addr,
+                inner: Arc::new(TestMemInner {
+                    storage: UnsafeCell::new(storage),
+                    base_addr,
+                }),
             }
         }
 
         /// Get a pointer with proper provenance for the given address
         fn ptr_for_addr(&self, addr: u64) -> *mut u8 {
-            let storage = unsafe { &mut *self.storage.get() };
+            let storage = unsafe { &mut *self.inner.storage.get() };
             let base_ptr = storage.as_mut_ptr();
-            let offset = (addr - self.base_addr) as usize;
+            let offset = (addr - self.inner.base_addr) as usize;
             // Use wrapping_add to maintain provenance from base_ptr
             base_ptr.wrapping_add(offset)
         }
 
         pub fn base_addr(&self) -> u64 {
-            self.base_addr
+            self.inner.base_addr
         }
     }
 
-    // Safety: TestMem's UnsafeCell is only accessed from test code with no
-    // real concurrency in unit tests (loom tests use their own LoomMem).
-    // Required so Arc<TestMem> satisfies Send + Sync for Bytes::from_owner.
-    unsafe impl Send for TestMem {}
-    unsafe impl Sync for TestMem {}
-
-    impl MemOps for Arc<TestMem> {
+    impl MemOps for TestMem {
         type Error = core::convert::Infallible;
 
         fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error> {
@@ -1361,7 +1368,7 @@ pub(crate) mod tests {
 
     /// Owns the descriptor table and event suppression structures
     pub struct OwnedRing {
-        mem: Arc<TestMem>,
+        mem: TestMem,
         layout: Layout,
     }
 
@@ -1379,7 +1386,7 @@ pub(crate) mod tests {
             // pool size = 0x8000).
             let padding = Descriptor::ALIGN;
             let pool_headroom = 0x100 + 0x8000;
-            let mem = Arc::new(TestMem::new(needed + padding + pool_headroom));
+            let mem = TestMem::new(needed + padding + pool_headroom);
 
             // Align the base address
             let aligned_base = align_up(mem.base_addr() as usize, Descriptor::ALIGN) as u64;
@@ -1392,7 +1399,7 @@ pub(crate) mod tests {
             self.layout
         }
 
-        pub fn mem(&self) -> Arc<TestMem> {
+        pub fn mem(&self) -> TestMem {
             self.mem.clone()
         }
 
@@ -1431,15 +1438,15 @@ pub(crate) mod tests {
         OwnedRing::new(size)
     }
 
-    pub(crate) fn make_producer(ring: &OwnedRing) -> RingProducer<Arc<TestMem>> {
+    pub(crate) fn make_producer(ring: &OwnedRing) -> RingProducer<TestMem> {
         RingProducer::new(ring.layout(), ring.mem())
     }
 
-    pub(crate) fn make_consumer(ring: &OwnedRing) -> RingConsumer<Arc<TestMem>> {
+    pub(crate) fn make_consumer(ring: &OwnedRing) -> RingConsumer<TestMem> {
         RingConsumer::new(ring.layout(), ring.mem())
     }
 
-    fn assert_invariants(ring: &OwnedRing, prod: &RingProducer<Arc<TestMem>>) {
+    fn assert_invariants(ring: &OwnedRing, prod: &RingProducer<TestMem>) {
         let outstanding: u16 = prod.id_num.iter().copied().sum();
         assert_eq!(outstanding as usize + prod.num_free, ring.len());
 

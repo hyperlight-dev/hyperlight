@@ -17,7 +17,6 @@ workspace = true
 [dependencies]
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
 anyhow = { version = "1.0.102", default-features = false }
-atomic_refcell = "0.1.13"
 bitflags = "2.10.0"
 bytemuck = { version = "1.24", features = ["derive"] }
 bytes = { version = "1",  default-features = false }

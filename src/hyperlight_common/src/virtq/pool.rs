@@ -13,50 +13,24 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-//! Simple bitmap-based allocator for virtio buffer management.
+//! Buffer pool implementations for virtqueue buffer management.
 //!
-//! This module provides two layers:
+//! This module provides concrete buffer allocators:
 //!
-//! - [`Slab`] - a fixed-size region allocator with a power-of-two slot size `N`,
-//!   backed by a flat bitmap (`FixedBitSet`).
-//! - [`BufferPool`] - a two-tier pool that composes two slabs: one with small
-//!   slots (e.g. 256 bytes) for control messages / small descriptors, and one
-//!   with page-sized slots (e.g. 4 KiB) for data buffers.
+//! - [`BufferPool`] - a two-tier bitmap pool with small and large slabs,
+//!   intended for G2H descriptors where allocation sizes vary.
+//! - [`RecyclePool`] - a fixed-size free-list recycler for H2G prefill
+//!   entries where all buffers are the same size.
 //!
-//! # Design and algorithm
+//! Both implement [`BufferProvider`] from the [`super::buffer`] module.
+//!
+//! # BufferPool design
 //!
 //! The core allocation strategy is a bitmap allocator that performs a linear
 //! search over the bitmap, but implemented via `fixedbitset`'s SIMD iteration
-//! over zero bits. This is conceptually simpler than tree-based allocators
-//! (e.g. linked lists or bitmaps representing a tree as in
-//! <https://arxiv.org/pdf/2110.10357>), yet for "moderate" region sizes it can
-//! be faster in practice:
+//! over zero bits.
 //!
-//! - `FixedBitSet::zeroes()` and related methods use word/SIMD operations to
-//!   skip over runs of set bits, so the linear search is over words rather than
-//!   individual bits.
-//! - We scan for a contiguous run of free bits corresponding to the required
-//!   number of slots; no auxiliary tree structure is maintained.
-//!
-//! The tree-based approach (bitmap encoding a tree and doing a binary search
-//! in O(log(n)) time) is a natural next step if larger regions or stricter worst
-//! case bounds are required; switching to such a representation should be
-//! relatively straightforward since all allocation paths go through a single
-//! `find_slots` function.
-//!
-//! # Locality characteristics
-//!
-//! The allocator tends to preserve spatial locality:
-//!
-//! - It searches from low indices upward, returning the first run of free
-//!   slots large enough for the request. Slots are merged if necessary.
-//! - Freed runs are cached in `last_free_run` and reused eagerly, which
-//!   introduces a mild LIFO behavior for recently freed blocks.
-//! - As a result, consecutive allocations are likely to end up in nearby slots,
-//!   which keeps virtqueue descriptors, control buffers, and data buffers
-//!   clustered in memory and helps cache performance.
-//!
-//! # Two-tier buffer pool
+//! # Two-tier layout
 //!
 //! [`BufferPool`] divides the underlying region into two slabs with different
 //! slot sizes:
@@ -66,159 +40,40 @@ limitations under the License.
 //!   small structures. Small allocations first try this tier.
 //! - The upper tier (`Slab<U>`, default `U = 4096`) uses page sized slots
 //!   and is intended for larger data buffers.
-//!
-//! The split of the region is currently fixed at a constant fraction
-//! (`LOWER_FRACTION`) for the lower slab and the remainder for the upper slab.
-//!
-//! Allocation policy:
-//!
-//! - Requests `<= L` bytes are first attempted in the lower slab; on
-//!   `OutOfMemory` they fall back to the upper slab.
-//! - Larger requests go directly to the upper slab.
-//! - [`BufferPool::resize`] will try to grow or shrink in place within the
-//!   owning slab (`Slab::resize`) but will never move allocations between
-//!   slabs.
 
-use alloc::sync::Arc;
+use alloc::rc::Rc;
+use core::cell::RefCell;
 use core::cmp::Ordering;
+use core::ops::Deref;
 
-use atomic_refcell::AtomicRefCell;
 use fixedbitset::FixedBitSet;
-use thiserror::Error;
+use smallvec::SmallVec;
 
-use super::access::MemOps;
+use super::buffer::{AllocError, Allocation, BufferProvider};
 
-#[derive(Debug, Error, Copy, Clone)]
-pub enum AllocError {
-    #[error("Invalid region addr {0}")]
-    InvalidAlign(u64),
-    #[error("Invalid free addr {0} and size {1}")]
-    InvalidFree(u64, usize),
-    #[error("Invalid argument")]
-    InvalidArg,
-    #[error("Empty region")]
-    EmptyRegion,
-    #[error("Out of memory")]
-    OutOfMemory,
-    #[error("Overflow")]
-    Overflow,
-}
-
-/// Allocation result
-#[derive(Debug, Clone, Copy)]
-pub struct Allocation {
-    /// Starting address of the allocation
-    pub addr: u64,
-    /// Length of the allocation in bytes rounded up to slab size
-    pub len: usize,
-}
-
-/// Trait for buffer providers.
-pub trait BufferProvider {
-    /// Allocate at least `len` bytes.
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError>;
-
-    /// Free a previously allocated block.
-    fn dealloc(&self, alloc: Allocation) -> Result<(), AllocError>;
-
-    /// Resize by trying in-place grow; otherwise reserve a new block and free old.
-    fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError>;
-
-    /// Reset the pool to initial state.
-    fn reset(&self) {}
-}
-
-impl<T: BufferProvider> BufferProvider for alloc::rc::Rc<T> {
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
-        (**self).alloc(len)
-    }
-    fn dealloc(&self, alloc: Allocation) -> Result<(), AllocError> {
-        (**self).dealloc(alloc)
-    }
-    fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
-        (**self).resize(old_alloc, new_len)
-    }
-    fn reset(&self) {
-        (**self).reset()
-    }
-}
-
-impl<T: BufferProvider> BufferProvider for Arc<T> {
-    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
-        (**self).alloc(len)
-    }
-    fn dealloc(&self, alloc: Allocation) -> Result<(), AllocError> {
-        (**self).dealloc(alloc)
-    }
-    fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
-        (**self).resize(old_alloc, new_len)
-    }
-    fn reset(&self) {
-        (**self).reset()
-    }
-}
-
-/// The owner of a mapped buffer, ensuring its lifetime.
+/// Wrapper asserting `Send + Sync` for single-threaded contexts.
 ///
-/// Holds a pool allocation and provides direct access to the underlying
-/// shared memory via [`MemOps::as_slice`]. Implements `AsRef<[u8]>` so it
-/// can be used with [`Bytes::from_owner`](bytes::Bytes::from_owner) for
-/// zero-copy `Bytes` backed by shared memory.
+/// # Safety
 ///
-/// When dropped, the allocation is returned to the pool.
-#[derive(Debug, Clone)]
-pub struct BufferOwner<P: BufferProvider, M: MemOps> {
-    pub(crate) pool: P,
-    pub(crate) mem: M,
-    pub(crate) alloc: Allocation,
-    pub(crate) written: usize,
-}
+/// The wrapped value must only be accessed from a single thread.
+#[derive(Debug)]
+pub(super) struct SyncWrap<T>(pub(super) T);
 
-impl<P: BufferProvider, M: MemOps> Drop for BufferOwner<P, M> {
-    fn drop(&mut self) {
-        let _ = self.pool.dealloc(self.alloc);
+// SAFETY: The wrapped value must only be accessed from a single thread.
+unsafe impl<T> Send for SyncWrap<T> {}
+// SAFETY: The wrapped value must only be accessed from a single thread.
+unsafe impl<T> Sync for SyncWrap<T> {}
+
+impl<T: Clone> Clone for SyncWrap<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
-impl<P: BufferProvider, M: MemOps> AsRef<[u8]> for BufferOwner<P, M> {
-    fn as_ref(&self) -> &[u8] {
-        let len = self.written.min(self.alloc.len);
-        // Safety: BufferOwner keeps both the pool allocation and the M
-        // alive, so the memory region is valid. Protocol-level descriptor
-        // ownership transfer guarantees no concurrent writes.
-        match unsafe { self.mem.as_slice(self.alloc.addr, len) } {
-            Ok(slice) => slice,
-            Err(_) => &[],
-        }
-    }
-}
-
-/// A guard that runs a cleanup function when dropped, unless dismissed.
-pub struct AllocGuard<F: FnOnce(Allocation)>(Option<(Allocation, F)>);
-
-impl<F: FnOnce(Allocation)> AllocGuard<F> {
-    pub fn new(alloc: Allocation, cleanup: F) -> Self {
-        Self(Some((alloc, cleanup)))
-    }
-
-    pub fn release(mut self) -> Allocation {
-        self.0.take().unwrap().0
-    }
-}
-
-impl<F: FnOnce(Allocation)> core::ops::Deref for AllocGuard<F> {
-    type Target = Allocation;
-
-    fn deref(&self) -> &Allocation {
-        &self.0.as_ref().unwrap().0
-    }
-}
-
-impl<F: FnOnce(Allocation)> Drop for AllocGuard<F> {
-    fn drop(&mut self) {
-        if let Some((alloc, cleanup)) = self.0.take() {
-            cleanup(alloc)
-        }
+impl<T> Deref for SyncWrap<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
     }
 }
 
@@ -550,8 +405,7 @@ struct Inner<const L: usize, const U: usize> {
 /// Two tier buffer pool with small and large slabs.
 #[derive(Debug, Clone)]
 pub struct BufferPool<const L: usize = 256, const U: usize = 4096> {
-    // TODO: Use Rc instead, relax Sync + Send bounds
-    inner: Arc<AtomicRefCell<Inner<L, U>>>,
+    inner: SyncWrap<Rc<RefCell<Inner<L, U>>>>,
 }
 
 impl<const L: usize, const U: usize> BufferPool<L, U> {
@@ -559,7 +413,7 @@ impl<const L: usize, const U: usize> BufferPool<L, U> {
     pub fn new(base_addr: u64, region_len: usize) -> Result<Self, AllocError> {
         let inner = Inner::<L, U>::new(base_addr, region_len)?;
         Ok(Self {
-            inner: Arc::new(inner.into()),
+            inner: SyncWrap(Rc::new(RefCell::new(inner))),
         })
     }
 }
@@ -697,6 +551,102 @@ impl<const L: usize, const U: usize> BufferProvider for BufferPoolSync<L, U> {
             .lock()
             .expect("poisoned mutex")
             .resize(old_alloc, new_len)
+    }
+}
+
+struct RecyclePoolInner {
+    base_addr: u64,
+    slot_size: usize,
+    count: usize,
+    free: SmallVec<[u64; 64]>,
+}
+
+/// A recycling buffer provider with fixed-size slots.
+///
+/// Unlike [`BufferPool`] which uses a bitmap allocator, this holds a
+/// fixed set of same-sized buffer addresses in a free list. Alloc and
+/// dealloc are O(1). Intended for H2G writable buffers that are
+/// pre-allocated once and recycled after each use.
+#[derive(Clone)]
+pub struct RecyclePool {
+    inner: SyncWrap<Rc<RefCell<RecyclePoolInner>>>,
+}
+
+impl RecyclePool {
+    /// Create a new recycling pool by carving `base..base+region_len` into slots of `slot_size` bytes.
+    pub fn new(base_addr: u64, region_len: usize, slot_size: usize) -> Result<Self, AllocError> {
+        if slot_size == 0 {
+            return Err(AllocError::InvalidArg);
+        }
+
+        let count = region_len / slot_size;
+        if count == 0 {
+            return Err(AllocError::EmptyRegion);
+        }
+
+        let mut free = SmallVec::with_capacity(count);
+        for i in 0..count {
+            free.push(base_addr + (i * slot_size) as u64);
+        }
+
+        let inner = RefCell::new(RecyclePoolInner {
+            base_addr,
+            slot_size,
+            count,
+            free,
+        });
+
+        Ok(Self {
+            inner: SyncWrap(Rc::new(inner)),
+        })
+    }
+
+    /// Number of free slots.
+    pub fn num_free(&self) -> usize {
+        self.inner.borrow().free.len()
+    }
+}
+
+impl BufferProvider for RecyclePool {
+    fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
+        let mut inner = self.inner.borrow_mut();
+        if len > inner.slot_size {
+            return Err(AllocError::OutOfMemory);
+        }
+
+        let addr = inner.free.pop().ok_or(AllocError::OutOfMemory)?;
+
+        Ok(Allocation {
+            addr,
+            len: inner.slot_size,
+        })
+    }
+
+    fn dealloc(&self, alloc: Allocation) -> Result<(), AllocError> {
+        let mut inner = self.inner.borrow_mut();
+        inner.free.push(alloc.addr);
+        Ok(())
+    }
+
+    fn resize(&self, old: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
+        let inner = self.inner.borrow();
+        if new_len > inner.slot_size {
+            return Err(AllocError::OutOfMemory);
+        }
+        Ok(old)
+    }
+
+    fn reset(&self) {
+        let mut inner = self.inner.borrow_mut();
+        let base = inner.base_addr;
+        let slot = inner.slot_size;
+        let count = inner.count;
+
+        inner.free.clear();
+
+        for i in 0..count {
+            inner.free.push(base + (i * slot) as u64);
+        }
     }
 }
 
