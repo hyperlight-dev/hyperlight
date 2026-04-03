@@ -519,6 +519,12 @@ impl MultiUseSandbox {
             snapshot.validate_compatibility(&self.mem_mgr.layout, &host_funcs)?;
         }
 
+        // Reset VM/vCPU state before memory restore.
+        self.vm.reset_vm_state().map_err(|e| {
+            self.poisoned = true;
+            HyperlightVmError::Restore(e)
+        })?;
+
         let (gsnapshot, gscratch) = self.mem_mgr.restore_snapshot(&snapshot)?;
         if let Some(gsnapshot) = gsnapshot {
             self.vm
@@ -537,7 +543,7 @@ impl MultiUseSandbox {
         // TODO (ludfjig): Go through the rest of possible errors in this `MultiUseSandbox::restore` function
         // and determine if they should also poison the sandbox.
         self.vm
-            .reset_vcpu(snapshot.root_pt_gpa(), sregs)
+            .restore_sregs(snapshot.root_pt_gpa(), sregs)
             .map_err(|e| {
                 self.poisoned = true;
                 HyperlightVmError::Restore(e)
@@ -1870,7 +1876,7 @@ mod tests {
     }
 
     /// Test that snapshot restore properly resets vCPU debug registers. This test verifies
-    /// that restore() calls reset_vcpu().
+    /// that restore() calls reset_vm_state().
     #[test]
     fn snapshot_restore_resets_debug_registers() {
         let mut sandbox: MultiUseSandbox = {
@@ -1901,7 +1907,7 @@ mod tests {
         let dr0_after_restore: u64 = sandbox.call("GetDr0", ()).unwrap();
         assert_eq!(
             dr0_after_restore, 0,
-            "DR0 should be 0 after restore (reset_vcpu should have been called)"
+            "DR0 should be 0 after restore (reset_vm_state should have been called)"
         );
     }
 
