@@ -1443,7 +1443,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
- "wasmparser 0.246.1",
+ "wasmparser 0.246.2",
 ]
 
 [[package]]
@@ -1456,7 +1456,7 @@ dependencies = [
  "quote",
  "syn",
  "tracing",
- "wasmparser 0.246.1",
+ "wasmparser 0.246.2",
 ]
 
 [[package]]
@@ -4106,9 +4106,9 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
-version = "0.246.1"
+version = "0.246.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d991c35d79bf8336dc1cd632ed4aacf0dc5fac4bc466c670625b037b972bb9c"
+checksum = "71cde4757396defafd25417cfb36aa3161027d06d865b0c24baaae229aac005d"
 dependencies = [
  "bitflags 2.11.0",
  "hashbrown 0.16.1",
