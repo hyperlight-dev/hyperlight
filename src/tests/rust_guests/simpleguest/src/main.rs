@@ -479,6 +479,13 @@ fn log_message(message: String, level: i32) {
     }
 }
 
+#[guest_function("LogMessageN")]
+fn log_message_n(count: i32) {
+    for i in 0..count {
+        log::info!("log entry {}", i);
+    }
+}
+
 #[guest_function("TriggerException")]
 fn trigger_exception() {
     // trigger an undefined instruction exception

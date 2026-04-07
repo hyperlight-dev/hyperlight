@@ -34,6 +34,24 @@ pub enum MsgKind {
     StreamEnd = 0x04,
     /// Cancel a pending request.
     Cancel = 0x05,
+    /// A guest log message (GuestLogData payload follows).
+    Log = 0x06,
+}
+
+impl TryFrom<u8> for MsgKind {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x01 => Ok(Self::Request),
+            0x02 => Ok(Self::Response),
+            0x03 => Ok(Self::StreamChunk),
+            0x04 => Ok(Self::StreamEnd),
+            0x05 => Ok(Self::Cancel),
+            0x06 => Ok(Self::Log),
+            other => Err(other),
+        }
+    }
 }
 
 /// Wire header for all virtqueue messages
@@ -71,5 +89,10 @@ impl VirtqMsgHeader {
             req_id,
             payload_len,
         }
+    }
+
+    /// Parse the kind field into a [`MsgKind`] enum.
+    pub fn msg_kind(&self) -> Result<MsgKind, u8> {
+        MsgKind::try_from(self.kind)
     }
 }

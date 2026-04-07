@@ -544,6 +544,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     }
 
     /// Read guest log data from the `SharedMemory` contained within `self`
+    #[allow(dead_code)]
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
         self.scratch_mem.try_pop_buffer_into::<GuestLogData>(
@@ -1097,35 +1098,48 @@ impl SandboxMemoryManager<HostSharedMemory> {
             .as_mut()
             .ok_or_else(|| new_error!("G2H consumer not initialized"))?;
 
-        let Some((entry, completion)) = consumer
-            .poll(8192)
-            .map_err(|e| new_error!("G2H poll for H2G result: {:?}", e))?
-        else {
-            return Err(new_error!("G2H: no H2G result entry after halt"));
-        };
+        // Drain the G2H queue, processing Log entries inline, until we
+        // find the Response that carries the H2G function call result.
+        loop {
+            let maybe_next = consumer
+                .poll(8192)
+                .map_err(|e| new_error!("G2H poll for H2G result: {:?}", e))?;
 
-        let entry_data = entry.data();
-        if entry_data.len() < VirtqMsgHeader::SIZE {
-            return Err(new_error!("G2H: result entry too short"));
+            let Some((entry, completion)) = maybe_next else {
+                return Err(new_error!("G2H: no H2G result entry after halt"));
+            };
+
+            let entry_data = entry.data();
+            if entry_data.len() < VirtqMsgHeader::SIZE {
+                return Err(new_error!("G2H: result entry too short"));
+            }
+
+            let hdr: &VirtqMsgHeader = bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
+            let payload = &entry_data[VirtqMsgHeader::SIZE..];
+
+            match hdr.msg_kind() {
+                Ok(MsgKind::Response) => {
+                    let fcr = FunctionCallResult::try_from(payload)
+                        .map_err(|e| new_error!("G2H: malformed FunctionCallResult: {}", e))?;
+                    consumer
+                        .complete(completion)
+                        .map_err(|e| new_error!("G2H complete: {:?}", e))?;
+                    return Ok(fcr);
+                }
+                Ok(MsgKind::Log) => {
+                    crate::sandbox::outb::emit_guest_log_from_payload(payload);
+                    consumer
+                        .complete(completion)
+                        .map_err(|e| new_error!("G2H complete log: {:?}", e))?;
+                }
+                Ok(other) => {
+                    return Err(new_error!("G2H: expected Response or Log, got {:?}", other));
+                }
+                Err(unknown) => {
+                    return Err(new_error!("G2H: unknown message kind: 0x{:02x}", unknown));
+                }
+            }
         }
-
-        let hdr: &VirtqMsgHeader = bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
-        if hdr.kind != MsgKind::Response as u8 {
-            return Err(new_error!(
-                "G2H: expected Response after halt, got kind={}",
-                hdr.kind
-            ));
-        }
-
-        let payload = &entry_data[VirtqMsgHeader::SIZE..];
-        let fcr = FunctionCallResult::try_from(payload)
-            .map_err(|e| new_error!("G2H: malformed FunctionCallResult: {}", e))?;
-
-        consumer
-            .complete(completion)
-            .map_err(|e| new_error!("G2H complete: {:?}", e))?;
-
-        Ok(fcr)
     }
 }
 

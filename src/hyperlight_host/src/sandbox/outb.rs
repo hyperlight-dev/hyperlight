@@ -64,46 +64,67 @@ pub enum HandleOutbError {
     MemProfile(String),
 }
 
+#[allow(dead_code)]
 #[instrument(err(Debug), skip_all, parent = Span::current(), level="Trace")]
 pub(super) fn outb_log(
     mgr: &mut SandboxMemoryManager<HostSharedMemory>,
 ) -> Result<(), HandleOutbError> {
-    // This code will create either a logging record or a tracing record for the GuestLogData depending on if the host has set up a tracing subscriber.
-    // In theory as we have enabled the log feature in the Cargo.toml for tracing this should happen
-    // automatically (based on if there is tracing subscriber present) but only works if the event created using macros. (see https://github.com/tokio-rs/tracing/blob/master/tracing/src/macros.rs#L2421 )
-    // The reason that we don't want to use the tracing macros is that we want to be able to explicitly
-    // set the file and line number for the log record which is not possible with macros.
-    // This is because the file and line number come from the  guest not the call site.
-
     let log_data: GuestLogData = mgr
         .read_guest_log_data()
         .map_err(|e| HandleOutbError::ReadLogData(e.to_string()))?;
 
+    emit_guest_log(&log_data);
+    Ok(())
+}
+
+/// Emit a guest log record from a virtqueue payload.
+///
+/// Deserializes [`GuestLogData`] from the raw bytes and emits either
+/// a tracing event or a log record, matching the original `outb_log`
+/// behavior.
+pub(crate) fn emit_guest_log_from_payload(payload: &[u8]) {
+    let Ok(log_data) = GuestLogData::try_from(payload) else {
+        return;
+    };
+    emit_guest_log(&log_data);
+}
+
+fn emit_guest_log(log_data: &GuestLogData) {
+    // This code will create either a logging record or a tracing record
+    // for the GuestLogData depending on if the host has set up a tracing
+    // subscriber.
+    // In theory as we have enabled the log feature in the Cargo.toml for
+    // tracing this should happen automatically (based on if there is a
+    // tracing subscriber present) but only works if the event is created
+    // using macros.
+    // (see https://github.com/tokio-rs/tracing/blob/master/tracing/src/macros.rs#L2421)
+    // The reason that we don't want to use the tracing macros is that we
+    // want to be able to explicitly set the file and line number for the
+    // log record which is not possible with macros.
+    // This is because the file and line number come from the guest not
+    // the call site.
+
     let record_level: Level = (&log_data.level).into();
 
-    // Work out if we need to log or trace
-    // this API is marked as follows but it is the easiest way to work out if we should trace or log
-
-    // Private API for internal use by tracing's macros.
-    //
-    // This function is *not* considered part of `tracing`'s public API, and has no
-    // stability guarantees. If you use it, and it breaks or disappears entirely,
-    // don't say we didn't warn you.
-
+    // Work out if we need to log or trace.
+    // This API is marked as internal but it is the easiest way to work
+    // out if we should trace or log.
     let should_trace = tracing_core::dispatcher::has_been_set();
     let source_file = Some(log_data.source_file.as_str());
     let line = Some(log_data.line);
     let source = Some(log_data.source.as_str());
 
-    // See https://github.com/rust-lang/rust/issues/42253 for the reason this has to be done this way
+    // See https://github.com/rust-lang/rust/issues/42253 for the reason
+    // this has to be done this way.
 
     if should_trace {
-        // Create a tracing event for the GuestLogData
-        // Ideally we would create tracing metadata based on the Guest Log Data
-        // but tracing derives the metadata at compile time
+        // Create a tracing event for the GuestLogData.
+        // Ideally we would create tracing metadata based on the Guest
+        // Log Data but tracing derives the metadata at compile time.
         // see https://github.com/tokio-rs/tracing/issues/2419
-        // so we leave it up to the subscriber to figure out that there are logging fields present with this data
-        format_trace(
+        // So we leave it up to the subscriber to figure out that there
+        // are logging fields present with this data.
+        let _ = format_trace(
             &Record::builder()
                 .args(format_args!("{}", log_data.message))
                 .level(record_level)
@@ -112,8 +133,7 @@ pub(super) fn outb_log(
                 .line(line)
                 .module_path(source)
                 .build(),
-        )
-        .map_err(|e| HandleOutbError::TraceFormat(e.to_string()))?;
+        );
     } else {
         // Create a log record for the GuestLogData
         log::logger().log(
@@ -127,8 +147,6 @@ pub(super) fn outb_log(
                 .build(),
         );
     }
-
-    Ok(())
 }
 
 const ABORT_TERMINATOR: u8 = 0xFF;
@@ -184,6 +202,8 @@ fn outb_abort(
 }
 
 /// Handle a guest-to-host function call received via the G2H virtqueue.
+///
+/// Log entries that arrive before the Request are processed inline.
 fn outb_virtq_call(
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     host_funcs: &Arc<Mutex<FunctionRegistry>>,
@@ -192,31 +212,48 @@ fn outb_virtq_call(
         HandleOutbError::ReadHostFunctionCall("G2H consumer not initialized".into())
     })?;
 
-    let Some((entry, completion)) = consumer
-        .poll(8192)
-        .map_err(|e| HandleOutbError::ReadHostFunctionCall(format!("G2H poll: {e}")))?
-    else {
-        // No G2H entry - can happen when guest H2G prefill
-        // triggers VirtqNotify before suppression is set.
-        return Ok(());
+    // Drain entries, processing Log messages, until we find a Request.
+    let (entry, completion) = loop {
+        let Some((entry, completion)) = consumer
+            .poll(8192)
+            .map_err(|e| HandleOutbError::ReadHostFunctionCall(format!("G2H poll: {e}")))?
+        else {
+            // No G2H entry - backpressure-only notify or prefill notify.
+            return Ok(());
+        };
+
+        let entry_data = entry.data();
+        if entry_data.len() < VirtqMsgHeader::SIZE {
+            return Err(HandleOutbError::ReadHostFunctionCall(
+                "G2H entry too short".into(),
+            ));
+        }
+        let hdr: VirtqMsgHeader = *bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
+
+        match hdr.msg_kind() {
+            Ok(MsgKind::Log) => {
+                let payload = &entry_data[VirtqMsgHeader::SIZE..];
+                emit_guest_log_from_payload(payload);
+                let _ = consumer.complete(completion);
+                continue;
+            }
+            Ok(MsgKind::Request) => break (entry, completion),
+            Ok(other) => {
+                return Err(HandleOutbError::ReadHostFunctionCall(format!(
+                    "G2H: expected Request via outb, got {:?}",
+                    other
+                )));
+            }
+            Err(unknown) => {
+                return Err(HandleOutbError::ReadHostFunctionCall(format!(
+                    "G2H: unknown message kind: 0x{unknown:02x}"
+                )));
+            }
+        }
     };
 
     let entry_data = entry.data();
-    if entry_data.len() < VirtqMsgHeader::SIZE {
-        return Err(HandleOutbError::ReadHostFunctionCall(
-            "G2H entry too short".into(),
-        ));
-    }
-    let hdr: VirtqMsgHeader = *bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
     let payload = &entry_data[VirtqMsgHeader::SIZE..];
-
-    // TODO(virtq): Only Requests (host function callbacks) arrive via outb.
-    if hdr.kind != MsgKind::Request as u8 {
-        return Err(HandleOutbError::ReadHostFunctionCall(format!(
-            "G2H: expected Request via outb, got kind={}",
-            hdr.kind
-        )));
-    }
 
     let call = FunctionCall::try_from(payload)
         .map_err(|e| HandleOutbError::ReadHostFunctionCall(e.to_string()))?;
@@ -269,7 +306,12 @@ pub(crate) fn handle_outb(
         .try_into()
         .map_err(|e: anyhow::Error| HandleOutbError::InvalidPort(e.to_string()))?
     {
-        OutBAction::Log => outb_log(mem_mgr),
+        OutBAction::Log => {
+            // Legacy path - logs now arrive via G2H virtqueue
+            // and are processed inline by outb_virtq_call /
+            // read_h2g_result_from_g2h.
+            Ok(())
+        }
         OutBAction::CallFunction => {
             let call = mem_mgr
                 .get_host_function_call()
