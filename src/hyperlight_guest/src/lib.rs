@@ -31,5 +31,4 @@ pub mod virtq;
 pub mod guest_handle {
     pub mod handle;
     pub mod host_comm;
-    pub mod io;
 }

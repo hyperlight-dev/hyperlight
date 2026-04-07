@@ -554,3 +554,105 @@ fn virtq_backpressure_no_data_loss() {
         assert!((res - 1.234).abs() < f64::EPSILON);
     });
 }
+
+#[test]
+fn virtq_log_tracing_delivery() {
+    // Verify guest logs are emitted as tracing events when a tracing
+    // subscriber is active, matching the behavior of the old outb_log.
+    use hyperlight_testing::tracing_subscriber::TracingSubscriber;
+
+    let subscriber = TracingSubscriber::new(tracing::Level::TRACE);
+
+    tracing::subscriber::with_default(subscriber.clone(), || {
+        with_rust_uninit_sandbox(|mut sbox| {
+            sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+            let mut sandbox = sbox.evolve().unwrap();
+
+            subscriber.clear();
+
+            sandbox
+                .call::<()>("LogMessage", ("tracing delivery test".to_string(), 3_i32))
+                .unwrap();
+
+            // Guest log goes through format_trace which creates tracing
+            // events with log.target = "hyperlight_guest" as a field.
+            let events = subscriber.get_events();
+            assert!(
+                !events.is_empty(),
+                "expected tracing events after guest log call, got none"
+            );
+        });
+    });
+}
+
+#[test]
+fn virtq_log_tracing_levels() {
+    // Verify each guest log level produces tracing events.
+    use hyperlight_testing::tracing_subscriber::TracingSubscriber;
+
+    let subscriber = TracingSubscriber::new(tracing::Level::TRACE);
+
+    tracing::subscriber::with_default(subscriber.clone(), || {
+        with_rust_uninit_sandbox(|mut sbox| {
+            sbox.set_max_guest_log_level(tracing_core::LevelFilter::TRACE);
+            let mut sandbox = sbox.evolve().unwrap();
+
+            // Test each level: 1=Trace, 2=Debug, 3=Info, 4=Warn, 5=Error
+            for level in [1_i32, 2, 3, 4, 5] {
+                subscriber.clear();
+                let msg = format!("level-test-{}", level);
+                sandbox.call::<()>("LogMessage", (msg, level)).unwrap();
+
+                let events = subscriber.get_events();
+                assert!(
+                    !events.is_empty(),
+                    "expected tracing events for guest log level {}",
+                    level
+                );
+            }
+        });
+    });
+}
+
+#[test]
+fn virtq_invalid_guest_function_returns_error() {
+    // Calling a non-existent guest function should return a proper
+    // GuestError, not corrupt data or a hang. This validates that
+    // the virtq error path (MsgKind::Response with GuestError payload)
+    // works end-to-end.
+    with_rust_sandbox_cfg(SandboxConfiguration::default(), |mut sandbox| {
+        let res = sandbox.call::<()>("ThisFunctionDoesNotExist", ());
+        assert!(res.is_err(), "expected error for non-existent function");
+        let err = res.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                HyperlightError::GuestError(
+                    hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::GuestFunctionNotFound,
+                    _
+                )
+            ),
+            "expected GuestFunctionNotFound, got {:?}",
+            err
+        );
+    });
+}
+
+#[test]
+fn virtq_large_payload_roundtrip() {
+    // Verify that larger payloads survive the virtq roundtrip without corruption.
+    with_rust_sandbox_cfg(SandboxConfiguration::default(), |mut sandbox| {
+        // 1KB string
+        let large_msg: String = "X".repeat(1024);
+        let res: String = sandbox.call("Echo", large_msg.clone()).unwrap();
+        assert_eq!(res, large_msg);
+
+        // 1KB byte array
+        let large_bytes = vec![0xABu8; 1024];
+        let res: Vec<u8> = sandbox
+            .call("SetByteArrayToZero", large_bytes.clone())
+            .unwrap();
+        assert_eq!(res.len(), 1024);
+        assert!(res.iter().all(|&b| b == 0));
+    });
+}

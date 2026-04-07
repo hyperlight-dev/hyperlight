@@ -18,21 +18,13 @@ use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use flatbuffers::FlatBufferBuilder;
-use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
-use hyperlight_common::flatbuffer_wrappers::function_types::{
-    FunctionCallResult, ParameterValue, ReturnType, ReturnValue,
-};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
-use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
-use hyperlight_common::outb::OutBAction;
 use tracing::instrument;
 
 use super::handle::GuestHandle;
 use crate::error::{HyperlightGuestError, Result};
-use crate::exit::out32;
 
 impl GuestHandle {
     /// Get user memory region as bytes.
@@ -57,99 +49,6 @@ impl GuestHandle {
 
             Ok(user_memory_region_bytes)
         }
-    }
-
-    /// Get a return value from a host function call.
-    /// This usually requires a host function to be called first using
-    /// `call_host_function_internal`.
-    ///
-    /// When calling `call_host_function<T>`, this function is called
-    /// internally to get the return value.
-    #[instrument(skip_all, level = "Trace")]
-    pub fn get_host_return_value<T: TryFrom<ReturnValue>>(&self) -> Result<T> {
-        let inner = self
-            .try_pop_shared_input_data_into::<FunctionCallResult>()
-            .expect("Unable to deserialize a return value from host")
-            .into_inner();
-
-        match inner {
-            Ok(ret) => T::try_from(ret).map_err(|_| {
-                let expected = core::any::type_name::<T>();
-                HyperlightGuestError::new(
-                    ErrorCode::UnsupportedParameterType,
-                    format!("Host return value could not be converted to expected {expected}",),
-                )
-            }),
-            Err(e) => Err(HyperlightGuestError {
-                kind: e.code,
-                message: e.message,
-            }),
-        }
-    }
-
-    pub fn get_host_return_raw(&self) -> Result<ReturnValue> {
-        let inner = self
-            .try_pop_shared_input_data_into::<FunctionCallResult>()
-            .expect("Unable to deserialize a return value from host")
-            .into_inner();
-
-        match inner {
-            Ok(ret) => Ok(ret),
-            Err(e) => Err(HyperlightGuestError {
-                kind: e.code,
-                message: e.message,
-            }),
-        }
-    }
-
-    /// Call a host function without reading its return value from shared mem.
-    /// This is used by both the Rust and C APIs to reduce code duplication.
-    ///
-    /// Note: The function return value must be obtained by calling
-    /// `get_host_return_value`.
-    #[instrument(skip_all, level = "Trace")]
-    pub fn call_host_function_without_returning_result(
-        &self,
-        function_name: &str,
-        parameters: Option<Vec<ParameterValue>>,
-        return_type: ReturnType,
-    ) -> Result<()> {
-        let estimated_capacity =
-            estimate_flatbuffer_capacity(function_name, parameters.as_deref().unwrap_or(&[]));
-
-        let host_function_call = FunctionCall::new(
-            function_name.to_string(),
-            parameters,
-            FunctionCallType::Host,
-            return_type,
-        );
-
-        let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
-
-        let host_function_call_buffer = host_function_call.encode(&mut builder);
-        self.push_shared_output_data(host_function_call_buffer)?;
-
-        unsafe {
-            out32(OutBAction::CallFunction as u16, 0);
-        }
-
-        Ok(())
-    }
-
-    /// Call a host function with the given parameters and return type.
-    /// This function serializes the function call and its parameters,
-    /// sends it to the host, and then retrieves the return value.
-    ///
-    /// The return value is deserialized into the specified type `T`.
-    #[instrument(skip_all, level = "Info")]
-    pub fn call_host_function<T: TryFrom<ReturnValue>>(
-        &self,
-        function_name: &str,
-        parameters: Option<Vec<ParameterValue>>,
-        return_type: ReturnType,
-    ) -> Result<T> {
-        self.call_host_function_without_returning_result(function_name, parameters, return_type)?;
-        self.get_host_return_value::<T>()
     }
 
     /// Log a message with the specified log level, source, caller, source file, and line number.

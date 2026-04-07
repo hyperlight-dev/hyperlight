@@ -17,12 +17,7 @@ limitations under the License.
 use std::mem::offset_of;
 use std::num::NonZeroU16;
 
-use flatbuffers::FlatBufferBuilder;
-use hyperlight_common::flatbuffer_wrappers::function_call::{
-    FunctionCall, validate_guest_function_call_buffer,
-};
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
-use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
 use hyperlight_common::virtq::{self, Layout as VirtqLayout};
@@ -486,92 +481,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
             .write::<u64>(self.layout.get_file_mappings_size_offset(), new_count)?;
 
         Ok(())
-    }
-
-    /// Reads a host function call from memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
-        self.scratch_mem.try_pop_buffer_into::<FunctionCall>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
-    }
-
-    /// Writes a host function call result to memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_response_from_host_function_call(
-        &mut self,
-        res: &FunctionCallResult,
-    ) -> Result<()> {
-        let mut builder = FlatBufferBuilder::new();
-        let data = res.encode(&mut builder);
-
-        self.scratch_mem.push_buffer(
-            self.layout.get_input_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_input_data_size(),
-            data,
-        )
-    }
-
-    /// Writes a guest function call to memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    #[allow(dead_code)]
-    pub(crate) fn write_guest_function_call(&mut self, buffer: &[u8]) -> Result<()> {
-        validate_guest_function_call_buffer(buffer).map_err(|e| {
-            new_error!(
-                "Guest function call buffer validation failed: {}",
-                e.to_string()
-            )
-        })?;
-
-        self.scratch_mem.push_buffer(
-            self.layout.get_input_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_input_data_size(),
-            buffer,
-        )?;
-        Ok(())
-    }
-
-    /// Reads a function call result from memory.
-    /// A function call result can be either an error or a successful return value.
-    #[allow(dead_code)]
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_guest_function_call_result(&mut self) -> Result<FunctionCallResult> {
-        self.scratch_mem.try_pop_buffer_into::<FunctionCallResult>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
-    }
-
-    /// Read guest log data from the `SharedMemory` contained within `self`
-    #[allow(dead_code)]
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
-        self.scratch_mem.try_pop_buffer_into::<GuestLogData>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
-    }
-
-    pub(crate) fn clear_io_buffers(&mut self) {
-        // Clear the output data buffer
-        loop {
-            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.get_output_data_buffer_scratch_host_offset(),
-                self.layout.sandbox_memory_config.get_output_data_size(),
-            ) else {
-                break;
-            };
-        }
-        // Clear the input data buffer
-        loop {
-            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.get_input_data_buffer_scratch_host_offset(),
-                self.layout.sandbox_memory_config.get_input_data_size(),
-            ) else {
-                break;
-            };
-        }
     }
 
     /// This function restores a memory snapshot from a given snapshot.
@@ -1127,7 +1036,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
                     return Ok(fcr);
                 }
                 Ok(MsgKind::Log) => {
-                    crate::sandbox::outb::emit_guest_log_from_payload(payload);
+                    crate::sandbox::outb::emit_guest_log(payload);
                     consumer
                         .complete(completion)
                         .map_err(|e| new_error!("G2H complete log: {:?}", e))?;
