@@ -19,7 +19,7 @@ pub const PAGE_SIZE: u64 = 1 << 12;
 pub const PAGE_SIZE_USIZE: usize = 1 << 12;
 
 /// A memory region in the guest address space
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct GuestMemoryRegion {
     /// The size of the memory region
@@ -65,7 +65,7 @@ impl Default for FileMappingInfo {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct HyperlightPEB {
     pub input_stack: GuestMemoryRegion,
@@ -79,4 +79,41 @@ pub struct HyperlightPEB {
     /// PEB struct).
     #[cfg(feature = "nanvix-unstable")]
     pub file_mappings: GuestMemoryRegion,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peb_round_trip() {
+        let peb = HyperlightPEB {
+            input_stack: GuestMemoryRegion {
+                size: 0x1111,
+                ptr: 0x2222,
+            },
+            output_stack: GuestMemoryRegion {
+                size: 0x3333,
+                ptr: 0x4444,
+            },
+            init_data: GuestMemoryRegion {
+                size: 0x5555,
+                ptr: 0x6666,
+            },
+            guest_heap: GuestMemoryRegion {
+                size: 0x7777,
+                ptr: 0x8888,
+            },
+            #[cfg(feature = "nanvix-unstable")]
+            file_mappings: GuestMemoryRegion {
+                size: 0x9999,
+                ptr: 0xaaaa,
+            },
+        };
+        let bytes = bytemuck::bytes_of(&peb);
+        let peb2 = *bytemuck::from_bytes::<HyperlightPEB>(bytes);
+        let peb2_bytes = bytemuck::bytes_of(&peb2);
+        assert_eq!(peb, peb2);
+        assert_eq!(bytes, peb2_bytes);
+    }
 }

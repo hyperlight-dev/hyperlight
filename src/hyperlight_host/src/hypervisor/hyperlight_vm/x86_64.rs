@@ -1489,7 +1489,7 @@ mod tests {
 
         let (mut hshm, gshm) = mem_mgr.build().unwrap();
 
-        let peb_address = gshm.layout.peb_address;
+        let peb_address = gshm.layout.peb_address();
         let stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;

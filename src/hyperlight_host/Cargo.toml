@@ -31,6 +31,7 @@ flatbuffers = "25.12.19"
 framehop = { version = "0.16.0", optional = true }
 fallible-iterator = { version = "0.3.0", optional = true }
 blake3 = "1.8.5"
+bytemuck = { version = "1.24", features = ["derive"] }
 page_size = "0.6.0"
 termcolor = "1.2.0"
 bitflags = "2.11.1"

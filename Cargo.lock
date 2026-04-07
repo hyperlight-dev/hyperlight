@@ -1572,6 +1572,7 @@ dependencies = [
  "bitflags 2.11.1",
  "blake3",
  "built",
+ "bytemuck",
  "cfg-if",
  "cfg_aliases",
  "chrono",
