@@ -20,12 +20,14 @@ use alloc::vec::Vec;
 use core::ffi::{CStr, c_char};
 
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
-use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ReturnType};
+use hyperlight_common::flatbuffer_wrappers::function_types::{
+    ParameterType, ReturnType, ReturnValue,
+};
 use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
+use hyperlight_guest::virtq;
 use hyperlight_guest_bin::guest_function::definition::GuestFunctionDefinition;
 use hyperlight_guest_bin::guest_function::register::GuestFunctionRegister;
-use hyperlight_guest_bin::host_comm::call_host_function_without_returning_result;
 
 use crate::types::{FfiFunctionCall, FfiVec};
 static mut REGISTERED_C_GUEST_FUNCTIONS: GuestFunctionRegister<CGuestFunc> =
@@ -98,15 +100,23 @@ pub extern "C" fn hl_register_function_definition(
     unsafe { (&mut *(&raw mut REGISTERED_C_GUEST_FUNCTIONS)).register(func_def) };
 }
 
-/// The caller is responsible for freeing the memory associated with given `FfiFunctionCall`.
+/// Call a host function. The return value can be retrieved with
+/// `hl_get_host_return_value_as_*` immediately after.
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_call_host_function(function_call: &FfiFunctionCall) {
     let parameters = unsafe { function_call.copy_parameters() };
     let func_name = unsafe { function_call.copy_function_name() };
     let return_type = unsafe { function_call.copy_return_type() };
 
-    // Use the non-generic internal implementation
-    // The C API will then call specific getter functions to fetch the properly typed return value
-    let _ = call_host_function_without_returning_result(&func_name, Some(parameters), return_type)
-        .expect("Failed to call host function");
+    virtq::with_context(|ctx| {
+        let result: ReturnValue = ctx
+            .call_host_function(&func_name, Some(parameters), return_type)
+            .expect("Failed to call host function");
+        ctx.stash_host_return(result);
+    });
+}
+
+/// Retrieve the return value stashed by the last `hl_call_host_function`.
+pub(crate) fn take_last_host_return<T: TryFrom<ReturnValue>>() -> T {
+    virtq::with_context(|ctx| ctx.take_host_return::<T>())
 }

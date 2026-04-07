@@ -72,6 +72,7 @@ pub struct GuestContext {
     g2h_producer: G2hProducer,
     h2g_producer: H2gProducer,
     generation: u64,
+    last_host_return: Option<ReturnValue>,
 }
 
 impl GuestContext {
@@ -100,6 +101,7 @@ impl GuestContext {
             g2h_producer,
             h2g_producer,
             generation,
+            last_host_return: None,
         };
 
         ctx.prefill_h2g();
@@ -341,5 +343,28 @@ impl GuestContext {
         entry.write_all(header)?;
         entry.write_all(payload)?;
         self.g2h_producer.submit(entry)
+    }
+
+    /// Stash a host function return value for later retrieval.
+    ///
+    /// Used by the C API's two-step calling convention where
+    /// `hl_call_host_function` and `hl_get_host_return_value_as_*`
+    /// are separate calls.
+    pub fn stash_host_return(&mut self, value: ReturnValue) {
+        self.last_host_return = Some(value);
+    }
+
+    /// Take the stashed host return value.
+    ///
+    /// Panics if no value was stashed or if the type conversion fails.
+    pub fn take_host_return<T: TryFrom<ReturnValue>>(&mut self) -> T {
+        let rv = self
+            .last_host_return
+            .take()
+            .expect("No host return value available");
+        match T::try_from(rv) {
+            Ok(v) => v,
+            Err(_) => panic!("Host return value type mismatch"),
+        }
     }
 }

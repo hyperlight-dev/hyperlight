@@ -49,8 +49,7 @@ use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
-    call_host_function, call_host_function_without_returning_result, get_host_return_value_raw,
-    print_output_with_host_print, read_n_bytes_from_user_memory,
+    call_host_function, print_output_with_host_print, read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{GUEST_HANDLE, guest_function, guest_logger, host_function};
@@ -1045,32 +1044,23 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
         }
     };
 
-    // Because we do not know at compile time the actual return type of the host function to be called
-    // we cannot use the `call_host_function<T>` generic function.
-    // We need to use the `call_host_function_without_returning_result` function that does not retrieve the return
-    // value
-    call_host_function_without_returning_result(
-        &host_func_name,
-        Some(params),
-        func.expected_return_type,
-    )
-    .expect("failed to call host function");
+    // Call the host function with dynamic return type. Since we don't
+    // know T at compile time, use ReturnValue as the return type and
+    // match on the result.
+    let return_value: ReturnValue =
+        call_host_function(&host_func_name, Some(params), func.expected_return_type)?;
 
-    let host_return = get_host_return_value_raw();
-    match host_return {
-        Ok(return_value) => match return_value {
-            ReturnValue::Int(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::UInt(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::Long(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::ULong(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::Float(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::Double(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::String(str) => Ok(get_flatbuffer_result(str.as_str())),
-            ReturnValue::Bool(bool) => Ok(get_flatbuffer_result(bool)),
-            ReturnValue::Void(()) => Ok(get_flatbuffer_result(())),
-            ReturnValue::VecBytes(byte) => Ok(get_flatbuffer_result(byte.as_slice())),
-        },
-        Err(e) => Err(e),
+    match return_value {
+        ReturnValue::Int(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::UInt(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::Long(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::ULong(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::Float(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::Double(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::String(str) => Ok(get_flatbuffer_result(str.as_str())),
+        ReturnValue::Bool(bool) => Ok(get_flatbuffer_result(bool)),
+        ReturnValue::Void(()) => Ok(get_flatbuffer_result(())),
+        ReturnValue::VecBytes(byte) => Ok(get_flatbuffer_result(byte.as_slice())),
     }
 }
 

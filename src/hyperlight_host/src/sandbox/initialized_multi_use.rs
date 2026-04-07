@@ -782,8 +782,6 @@ impl MultiUseSandbox {
         // - any serialized host function call are zeroed out by us (the host) during deserialization, see `get_host_function_call`
         // - any serialized host function result is zeroed out by the guest during deserialization, see `get_host_return_value`
         if let Err(e) = &res {
-            self.mem_mgr.clear_io_buffers();
-
             // Determine if we should poison the sandbox.
             self.poisoned |= e.is_poison_error();
         }
