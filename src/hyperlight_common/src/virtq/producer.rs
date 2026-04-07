@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -124,6 +125,7 @@ pub struct VirtqProducer<M, N, P> {
     notifier: N,
     pool: P,
     inflight: Vec<Option<Inflight>>,
+    pending: VecDeque<RecvCompletion>,
 }
 
 impl<M, N, P> VirtqProducer<M, N, P>
@@ -149,10 +151,14 @@ where
             pool,
             notifier,
             inflight,
+            pending: VecDeque::new(),
         }
     }
 
     /// Poll for a single completion from the device.
+    ///
+    /// Returns buffered completions from prior [`reclaim`](Self::reclaim)
+    /// calls first, then checks the ring for new completions.
     ///
     /// Returns `Ok(Some(completion))` if a completion is available, `Ok(None)` if no
     /// completions are ready (would block), or an error if the device misbehaved.
@@ -167,6 +173,39 @@ where
     /// - [`VirtqError::InvalidState`] - Device returned invalid descriptor ID or
     ///   wrote more data than the completion buffer capacity
     pub fn poll(&mut self) -> Result<Option<RecvCompletion>, VirtqError>
+    where
+        M: Send + 'static,
+        P: Send + 'static,
+    {
+        if let Some(cqe) = self.pending.pop_front() {
+            return Ok(Some(cqe));
+        }
+        self.poll_ring()
+    }
+
+    /// Reclaim ring slots and pool entries from completed descriptors.
+    ///
+    /// Processes all available used entries from the ring: frees entry
+    /// buffer allocations immediately, and buffers completion data for
+    /// later retrieval via [`poll`](Self::poll).
+    ///
+    /// Use this to free resources under backpressure without losing
+    /// completion data. Returns the number of entries reclaimed.
+    pub fn reclaim(&mut self) -> Result<usize, VirtqError>
+    where
+        M: Send + 'static,
+        P: Send + 'static,
+    {
+        let mut count = 0;
+        while let Some(cqe) = self.poll_ring()? {
+            self.pending.push_back(cqe);
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Poll one completion directly from the ring (bypassing pending buffer).
+    fn poll_ring(&mut self) -> Result<Option<RecvCompletion>, VirtqError>
     where
         M: Send + 'static,
         P: Send + 'static,
@@ -363,6 +402,7 @@ where
         self.inner.reset();
         self.pool.reset();
         self.inflight.fill(None);
+        self.pending.clear();
     }
 }
 

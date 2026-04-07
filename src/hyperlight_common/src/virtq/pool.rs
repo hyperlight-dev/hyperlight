@@ -169,7 +169,7 @@ impl<const N: usize> Slab<N> {
             return Err(AllocError::OutOfMemory);
         }
 
-        let idx = self.find_slots(need_slots).ok_or(AllocError::OutOfMemory)?;
+        let idx = self.find_slots(need_slots).ok_or(AllocError::NoSpace)?;
         self.used_slots.insert_range(idx..idx + need_slots);
         let addr = self.addr_of(idx).ok_or(AllocError::Overflow)?;
 
@@ -463,7 +463,7 @@ impl<const L: usize, const U: usize> Inner<L, U> {
         if len <= L {
             match self.lower.alloc(len) {
                 Ok(alloc) => return Ok(alloc),
-                Err(AllocError::OutOfMemory) => {}
+                Err(AllocError::NoSpace) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -614,7 +614,7 @@ impl BufferProvider for RecyclePool {
             return Err(AllocError::OutOfMemory);
         }
 
-        let addr = inner.free.pop().ok_or(AllocError::OutOfMemory)?;
+        let addr = inner.free.pop().ok_or(AllocError::NoSpace)?;
 
         Ok(Allocation {
             addr,
@@ -727,7 +727,7 @@ mod tests {
 
         // Next allocation should fail
         let result = slab.alloc(256);
-        assert!(matches!(result, Err(AllocError::OutOfMemory)));
+        assert!(matches!(result, Err(AllocError::NoSpace)));
 
         // Free one and retry
         slab.dealloc(a2).unwrap();
@@ -1287,7 +1287,7 @@ mod fuzz {
                         assert!(alloc.len >= *size);
                         allocations.push(alloc);
                     }
-                    Err(AllocError::OutOfMemory) => {}
+                    Err(AllocError::NoSpace | AllocError::OutOfMemory) => {}
                     Err(_) => {
                         return false;
                     }
@@ -1318,7 +1318,7 @@ mod fuzz {
                             assert!(new_alloc.len >= *new_size);
                             allocations[idx] = new_alloc;
                         }
-                        Err(AllocError::OutOfMemory) => {}
+                        Err(AllocError::NoSpace | AllocError::OutOfMemory) => {}
                         Err(_) => return false,
                     }
                 }

@@ -17,7 +17,7 @@ limitations under the License.
 //! Guest virtqueue context.
 
 use alloc::vec::Vec;
-use core::num::NonZeroU16;
+use core::result;
 use core::sync::atomic::AtomicU16;
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -31,7 +31,7 @@ use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
 use hyperlight_common::virtq::{
-    BufferPool, Layout, Notifier, QueueStats, RecyclePool, VirtqProducer,
+    self, BufferPool, Layout, Notifier, QueueStats, RecyclePool, Token, VirtqProducer,
 };
 
 use super::GuestMemOps;
@@ -132,19 +132,33 @@ impl GuestContext {
 
         let entry_len = VirtqMsgHeader::SIZE + payload.len();
 
-        let mut entry = self
-            .g2h_producer
-            .chain()
-            .entry(entry_len)
-            .completion(MAX_RESPONSE_CAP)
-            .build()?;
+        let token = match self.try_send_readwrite(hdr_bytes, payload, entry_len) {
+            Ok(tok) => tok,
+            Err(e) if e.is_transient() => {
+                self.g2h_producer.notify_backpressure();
 
-        entry.write_all(hdr_bytes)?;
-        entry.write_all(payload)?;
-        self.g2h_producer.submit(entry)?;
+                if let Err(err) = self.g2h_producer.reclaim() {
+                    bail!("G2H reclaim: {err}");
+                }
 
-        let Some(completion) = self.g2h_producer.poll()? else {
-            bail!("G2H: no completion received");
+                let Ok(tok) = self.try_send_readwrite(hdr_bytes, payload, entry_len) else {
+                    bail!("G2H call retry");
+                };
+
+                tok
+            }
+            Err(e) => bail!("G2H call: {e}"),
+        };
+
+        // Poll completions, skipping earlier entries like log acks
+        // until we find the completion matching our request token.
+        let completion = loop {
+            let Some(cqe) = self.g2h_producer.poll()? else {
+                bail!("G2H: no completion received");
+            };
+            if cqe.token == token {
+                break cqe;
+            }
         };
 
         let result_bytes = &completion.data;
@@ -165,25 +179,6 @@ impl GuestContext {
         Ok(ret)
     }
 
-    /// Pre-fill the H2G queue with completion-only descriptors so the host
-    /// can write incoming call payloads into them.
-    fn prefill_h2g(&mut self) {
-        loop {
-            let entry = match self
-                .h2g_producer
-                .chain()
-                .completion(PAGE_SIZE_USIZE)
-                .build()
-            {
-                Ok(e) => e,
-                Err(_) => break,
-            };
-            if self.h2g_producer.submit(entry).is_err() {
-                break;
-            }
-        }
-    }
-
     /// Receive a host-to-guest function call from the H2G queue.
     pub fn recv_h2g_call(&mut self) -> Result<FunctionCall> {
         let Some(completion) = self.h2g_producer.poll()? else {
@@ -197,8 +192,8 @@ impl GuestContext {
 
         let hdr: &VirtqMsgHeader = bytemuck::from_bytes(&data[..VirtqMsgHeader::SIZE]);
 
-        if hdr.kind != MsgKind::Request as u8 {
-            bail!("H2G: unexpected message kind");
+        if hdr.msg_kind() != Ok(MsgKind::Request) {
+            bail!("H2G: unexpected message kind: 0x{:02x}", hdr.kind);
         }
 
         let payload_end = VirtqMsgHeader::SIZE + hdr.payload_len as usize;
@@ -214,37 +209,93 @@ impl GuestContext {
     /// Send the result of a host-to-guest call back to the host via the
     /// G2H queue, then refill one H2G descriptor slot.
     pub fn send_h2g_result(&mut self, payload: &[u8]) -> Result<()> {
-        // Build a Response message on the G2H queue
-        let reqid = REQUEST_ID.fetch_add(1, Relaxed);
-        let hdr = VirtqMsgHeader::new(MsgKind::Response, reqid, payload.len() as u32);
-        let hdr_bytes = bytemuck::bytes_of(&hdr);
+        self.send_g2h_oneshot(MsgKind::Response, payload)?;
 
-        let entry_len = VirtqMsgHeader::SIZE + payload.len();
-        let mut entry = self.g2h_producer.chain().entry(entry_len).build()?;
-
-        entry.write_all(hdr_bytes)?;
-        entry.write_all(payload)?;
-        self.g2h_producer.submit(entry)?;
-
-        // Refill one H2G completion slot
-        if let Ok(e) = self
+        // Best-effort refill of one H2G slot. Backpressure is expected
+        // (pool/ring may be full), other errors are propagated.
+        match self
             .h2g_producer
             .chain()
             .completion(PAGE_SIZE_USIZE)
             .build()
         {
-            let _ = self.h2g_producer.submit(e);
+            Ok(e) => match self.h2g_producer.submit(e) {
+                Ok(_) => {}
+                Err(virtq::VirtqError::Backpressure) => {}
+                Err(e) => bail!("H2G refill submit: {e}"),
+            },
+            Err(virtq::VirtqError::Backpressure) => {}
+            Err(e) => bail!("H2G refill build: {e}"),
         }
 
         Ok(())
     }
 
-    /// Drain any pending G2H completions (discard them).
+    /// Pre-fill the H2G queue with completion-only descriptors so the host
+    /// can write incoming call payloads into them.
+    fn prefill_h2g(&mut self) {
+        loop {
+            let entry = match self
+                .h2g_producer
+                .chain()
+                .completion(PAGE_SIZE_USIZE)
+                .build()
+            {
+                Ok(e) => e,
+                Err(virtq::VirtqError::Backpressure) => break,
+                Err(e) => panic!("H2G prefill build: {e}"),
+            };
+
+            match self.h2g_producer.submit(entry) {
+                Ok(_) => {}
+                Err(virtq::VirtqError::Backpressure) => break,
+                Err(e) => panic!("H2G prefill submit: {e}"),
+            }
+        }
+    }
+
+    /// Send a one-way message on the G2H queue ReadOnly and no completion.
+    ///
+    /// If the pool or ring is full, triggers backpressure, VM exit so
+    /// the host can drain, then retries once.
+    fn send_g2h_oneshot(&mut self, kind: MsgKind, payload: &[u8]) -> Result<()> {
+        let reqid = REQUEST_ID.fetch_add(1, Relaxed);
+        let hdr = VirtqMsgHeader::new(kind, reqid, payload.len() as u32);
+        let hdr_bytes = bytemuck::bytes_of(&hdr);
+        let entry_len = VirtqMsgHeader::SIZE + payload.len();
+
+        // First attempt
+        match self.try_send_readonly(hdr_bytes, payload, entry_len) {
+            Ok(_) => return Ok(()),
+            Err(virtq::VirtqError::Backpressure) => {
+                // VM exit so host drains and completes G2H entries.
+                self.g2h_producer.notify_backpressure();
+            }
+            Err(e) => bail!("G2H oneshot: {e}"),
+        }
+
+        // Reclaim ring/pool resources from completed entries.
+        if let Err(e) = self.g2h_producer.reclaim() {
+            bail!("G2H oneshot retry: {e}");
+        }
+        // Retry after backpressure
+        match self.try_send_readonly(hdr_bytes, payload, entry_len) {
+            Ok(_) => Ok(()),
+            Err(e) => bail!("G2H oneshot retry: {e}"),
+        }
+    }
+
+    /// Drain any pending G2H completions.
     ///
     /// This is called before checking for H2G calls so that the host
     /// can reclaim G2H response buffers.
     pub fn drain_g2h_completions(&mut self) {
         while let Ok(Some(_)) = self.g2h_producer.poll() {}
+    }
+
+    /// Send a log message via the G2H queue. Fire-and-forget.
+    pub fn emit_log(&mut self, log_data: &[u8]) -> Result<()> {
+        self.send_g2h_oneshot(MsgKind::Log, log_data)
     }
 
     /// Reset ring and pool state after snapshot restore.
@@ -259,5 +310,36 @@ impl GuestContext {
 
     pub(super) fn generation(&self) -> u64 {
         self.generation
+    }
+
+    fn try_send(
+        &mut self,
+        header: &[u8],
+        payload: &[u8],
+        entry_len: usize,
+    ) -> result::Result<Token, virtq::VirtqError> {
+        let mut entry = self.g2h_producer.chain().entry(entry_len).build()?;
+
+        entry.write_all(header)?;
+        entry.write_all(payload)?;
+        self.g2h_producer.submit(entry)
+    }
+
+    fn try_send_readwrite(
+        &mut self,
+        header: &[u8],
+        payload: &[u8],
+        entry_len: usize,
+    ) -> result::Result<Token, virtq::VirtqError> {
+        let mut entry = self
+            .g2h_producer
+            .chain()
+            .entry(entry_len)
+            .completion(MAX_RESPONSE_CAP)
+            .build()?;
+
+        entry.write_all(header)?;
+        entry.write_all(payload)?;
+        self.g2h_producer.submit(entry)
     }
 }

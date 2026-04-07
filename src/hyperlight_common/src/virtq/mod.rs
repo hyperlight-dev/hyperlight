@@ -181,9 +181,13 @@ pub trait Notifier {
 #[derive(Error, Debug)]
 pub enum VirtqError {
     #[error("Ring error: {0}")]
-    RingError(#[from] RingError),
+    RingError(RingError),
     #[error("Allocation error: {0}")]
-    Alloc(#[from] AllocError),
+    Alloc(AllocError),
+    #[error("Ring or pool temporarily full")]
+    Backpressure,
+    #[error("Allocation exceeds pool capacity")]
+    OutOfMemory,
     #[error("Invalid token")]
     BadToken,
     #[error("Invalid chain received")]
@@ -200,6 +204,33 @@ pub enum VirtqError {
     MemoryReadError,
     #[error("No readable buffer in this entry")]
     NoReadableBuffer,
+}
+
+impl VirtqError {
+    /// Check if this error is transient or unrecoverable.
+    #[inline(always)]
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Backpressure)
+    }
+}
+
+impl From<RingError> for VirtqError {
+    fn from(e: RingError) -> Self {
+        match e {
+            RingError::WouldBlock => Self::Backpressure,
+            other => Self::RingError(other),
+        }
+    }
+}
+
+impl From<AllocError> for VirtqError {
+    fn from(e: AllocError) -> Self {
+        match e {
+            AllocError::NoSpace => Self::Backpressure,
+            AllocError::OutOfMemory => Self::OutOfMemory,
+            other => Self::Alloc(other),
+        }
+    }
 }
 
 /// Layout of a packed virtqueue ring in shared memory.
@@ -424,7 +455,7 @@ pub(crate) mod test_utils {
             let addr = self.next.fetch_add(len as u64, Ordering::Relaxed);
             let end = addr + len as u64;
             if end > self.base + self.size as u64 {
-                return Err(AllocError::OutOfMemory);
+                return Err(AllocError::NoSpace);
             }
             Ok(Allocation { addr, len })
         }
@@ -793,6 +824,153 @@ mod tests {
         let expected_second = responses.iter().find(|(t, _)| *t == tok2).unwrap();
         assert_eq!(&expected_first.1[..], b"resp1");
         assert_eq!(&expected_second.1[..], b"resp2");
+    }
+
+    /// Helper: submit a ReadOnly entry (entry data, no completion).
+    fn send_readonly(
+        producer: &mut VirtqProducer<TestMem, TestNotifier, TestPool>,
+        entry_data: &[u8],
+    ) -> Token {
+        let mut se = producer.chain().entry(entry_data.len()).build().unwrap();
+        se.write_all(entry_data).unwrap();
+        producer.submit(se).unwrap()
+    }
+
+    #[test]
+    fn test_reclaim_frees_ring_slots() {
+        let ring = make_ring(4);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Fill the ring with ReadOnly entries
+        send_readonly(&mut producer, b"a");
+        send_readonly(&mut producer, b"b");
+        send_readonly(&mut producer, b"c");
+        send_readonly(&mut producer, b"d");
+
+        // Ring is now full - next submit should fail with Backpressure
+        let mut se = producer.chain().entry(1).build().unwrap();
+        se.write_all(b"e").unwrap();
+        let res = producer.submit(se);
+        assert!(
+            matches!(res, Err(VirtqError::Backpressure)),
+            "expected Backpressure from full ring"
+        );
+
+        // Consumer acks all entries
+        while let Some((_, completion)) = consumer.poll(1024).unwrap() {
+            consumer.complete(completion).unwrap();
+        }
+
+        // Reclaim should free ring slots without losing data
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 4, "expected 4 reclaimed entries");
+
+        // Ring should have space now
+        send_readonly(&mut producer, b"e");
+    }
+
+    #[test]
+    fn test_reclaim_buffers_rw_completions() {
+        let ring = make_ring(4);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Submit a ReadWrite entry
+        let tok = send_readwrite(&mut producer, b"request", 64);
+
+        // Consumer processes and writes response
+        let (_, completion) = consumer.poll(1024).unwrap().unwrap();
+        let SendCompletion::Writable(mut wc) = completion else {
+            panic!("expected writable");
+        };
+        wc.write_all(b"response-data").unwrap();
+        consumer.complete(wc.into()).unwrap();
+
+        // Reclaim buffers the completion (doesn't discard it)
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 1);
+
+        // poll() should return the buffered completion
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, tok);
+        assert_eq!(&cqe.data[..], b"response-data");
+    }
+
+    #[test]
+    fn test_reclaim_then_poll_preserves_order() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Submit 3 entries: RO, RW, RO
+        let tok_ro1 = send_readonly(&mut producer, b"log1");
+        let tok_rw = send_readwrite(&mut producer, b"call", 64);
+        let tok_ro2 = send_readonly(&mut producer, b"log2");
+
+        // Consumer processes all 3
+        let (_, c1) = consumer.poll(1024).unwrap().unwrap();
+        consumer.complete(c1).unwrap(); // ack RO
+
+        let (_, c2) = consumer.poll(1024).unwrap().unwrap();
+        let SendCompletion::Writable(mut wc) = c2 else {
+            panic!("expected writable");
+        };
+        wc.write_all(b"result").unwrap();
+        consumer.complete(wc.into()).unwrap(); // complete RW
+
+        let (_, c3) = consumer.poll(1024).unwrap().unwrap();
+        consumer.complete(c3).unwrap(); // ack RO
+
+        // Reclaim all 3
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 3);
+
+        // poll() returns them in order
+        let cqe1 = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe1.token, tok_ro1);
+        assert!(cqe1.data.is_empty());
+
+        let cqe2 = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe2.token, tok_rw);
+        assert_eq!(&cqe2.data[..], b"result");
+
+        let cqe3 = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe3.token, tok_ro2);
+        assert!(cqe3.data.is_empty());
+
+        // No more
+        assert!(producer.poll().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_reclaim_mixed_with_poll() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Submit and complete 2 entries
+        send_readonly(&mut producer, b"x");
+        let tok_rw = send_readwrite(&mut producer, b"y", 64);
+
+        let (_, c1) = consumer.poll(1024).unwrap().unwrap();
+        consumer.complete(c1).unwrap();
+
+        let (_, c2) = consumer.poll(1024).unwrap().unwrap();
+        let SendCompletion::Writable(mut wc) = c2 else {
+            panic!("expected writable");
+        };
+        wc.write_all(b"reply").unwrap();
+        consumer.complete(wc.into()).unwrap();
+
+        // poll() consumes first entry directly from ring
+        let cqe1 = producer.poll().unwrap().unwrap();
+        assert!(cqe1.data.is_empty());
+
+        // reclaim() buffers second entry
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 1);
+
+        // poll() returns the buffered one
+        let cqe2 = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe2.token, tok_rw);
+        assert_eq!(&cqe2.data[..], b"reply");
     }
 }
 #[cfg(all(test, loom))]

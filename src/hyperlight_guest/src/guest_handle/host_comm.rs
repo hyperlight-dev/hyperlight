@@ -162,7 +162,7 @@ impl GuestHandle {
         source_file: &str,
         line: u32,
     ) {
-        // Closure to send log message to host
+        // Closure to send log message to host via G2H virtqueue
         let _send_to_host = || {
             let guest_log_data = GuestLogData::new(
                 message.to_string(),
@@ -177,12 +177,10 @@ impl GuestHandle {
                 .try_into()
                 .expect("Failed to convert GuestLogData to bytes");
 
-            self.push_shared_output_data(&bytes)
-                .expect("Unable to push log data to shared output data");
-
-            unsafe {
-                out32(OutBAction::Log as u16, 0);
-            }
+            crate::virtq::with_context(|ctx| {
+                ctx.emit_log(&bytes)
+                    .expect("Unable to send log data via virtq");
+            });
         };
 
         #[cfg(all(feature = "trace_guest", target_arch = "x86_64"))]

@@ -33,7 +33,9 @@ pub enum AllocError {
     InvalidArg,
     #[error("Empty region")]
     EmptyRegion,
-    #[error("Out of memory")]
+    #[error("No space available")]
+    NoSpace,
+    #[error("Requested size exceeds pool capacity")]
     OutOfMemory,
     #[error("Overflow")]
     Overflow,
