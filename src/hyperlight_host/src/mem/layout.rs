@@ -60,8 +60,9 @@ limitations under the License.
 //! |                Input Data                 |
 //! +-------------------------------------------+ (scratch size)
 
-use std::fmt::Debug;
-use std::mem::{offset_of, size_of};
+#[cfg(feature = "nanvix-unstable")]
+use std::mem::offset_of;
+use std::mem::size_of;
 
 use hyperlight_common::mem::{HyperlightPEB, PAGE_SIZE_USIZE};
 use tracing::{Span, instrument};
@@ -213,100 +214,27 @@ impl<Sn: ReadableSharedMemory, Sc: ReadableSharedMemory> ResolvedGpa<Sn, Sc> {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct SandboxMemoryLayout {
-    pub(super) sandbox_memory_config: SandboxConfiguration,
+    /// Input data buffer size (from SandboxConfiguration).
+    pub(crate) input_data_size: usize,
+    /// Output data buffer size (from SandboxConfiguration).
+    pub(crate) output_data_size: usize,
     /// The heap size of this sandbox.
-    pub(super) heap_size: usize,
+    pub(crate) heap_size: usize,
+    /// The size of the guest code section.
+    pub(crate) code_size: usize,
+    /// The size of the init data section (guest blob).
     init_data_size: usize,
-
-    /// The following fields are offsets to the actual PEB struct fields.
-    /// They are used when writing the PEB struct itself
-    peb_offset: usize,
-    peb_input_data_offset: usize,
-    peb_output_data_offset: usize,
-    peb_init_data_offset: usize,
-    peb_heap_data_offset: usize,
-    #[cfg(feature = "nanvix-unstable")]
-    peb_file_mappings_offset: usize,
-
-    guest_heap_buffer_offset: usize,
-    init_data_offset: usize,
-    pt_size: Option<usize>,
-
-    // other
-    pub(crate) peb_address: usize,
-    code_size: usize,
-    // The offset in the sandbox memory where the code starts
-    guest_code_offset: usize,
+    /// Permission flags for the init data region.
     #[cfg_attr(feature = "i686-guest", allow(unused))]
-    pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
-
-    // The size of the scratch region in physical memory; note that
-    // this will appear under the top of physical memory.
+    init_data_permissions: Option<MemoryRegionFlags>,
+    /// The size of the scratch region in physical memory.
     scratch_size: usize,
-    // The guest-visible size of the snapshot region in physical
-    // memory. After compaction this may be smaller than the full
-    // snapshot blob (which also contains a PT tail that is only
-    // host-accessible).
+    /// The size of the snapshot region in physical memory.
     snapshot_size: usize,
-}
-
-impl Debug for SandboxMemoryLayout {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut ff = f.debug_struct("SandboxMemoryLayout");
-        ff.field(
-            "Total Memory Size",
-            &format_args!("{:#x}", self.get_memory_size().unwrap_or(0)),
-        )
-        .field("Heap Size", &format_args!("{:#x}", self.heap_size))
-        .field(
-            "Init Data Size",
-            &format_args!("{:#x}", self.init_data_size),
-        )
-        .field("PEB Address", &format_args!("{:#x}", self.peb_address))
-        .field("PEB Offset", &format_args!("{:#x}", self.peb_offset))
-        .field("Code Size", &format_args!("{:#x}", self.code_size))
-        .field(
-            "Input Data Offset",
-            &format_args!("{:#x}", self.peb_input_data_offset),
-        )
-        .field(
-            "Output Data Offset",
-            &format_args!("{:#x}", self.peb_output_data_offset),
-        )
-        .field(
-            "Init Data Offset",
-            &format_args!("{:#x}", self.peb_init_data_offset),
-        )
-        .field(
-            "Guest Heap Offset",
-            &format_args!("{:#x}", self.peb_heap_data_offset),
-        );
-        #[cfg(feature = "nanvix-unstable")]
-        ff.field(
-            "File Mappings Offset",
-            &format_args!("{:#x}", self.peb_file_mappings_offset),
-        );
-        ff.field(
-            "Guest Heap Buffer Offset",
-            &format_args!("{:#x}", self.guest_heap_buffer_offset),
-        )
-        .field(
-            "Init Data Offset",
-            &format_args!("{:#x}", self.init_data_offset),
-        )
-        .field("PT Size", &format_args!("{:#x}", self.pt_size.unwrap_or(0)))
-        .field(
-            "Guest Code Offset",
-            &format_args!("{:#x}", self.guest_code_offset),
-        )
-        .field(
-            "Scratch region size",
-            &format_args!("{:#x}", self.scratch_size),
-        )
-        .finish()
-    }
+    /// The size of the page tables (None if not yet set).
+    pt_size: Option<usize>,
 }
 
 impl SandboxMemoryLayout {
@@ -337,65 +265,19 @@ impl SandboxMemoryLayout {
         if scratch_size > Self::MAX_MEMORY_SIZE {
             return Err(MemoryRequestTooBig(scratch_size, Self::MAX_MEMORY_SIZE));
         }
-        let min_scratch_size = hyperlight_common::layout::min_scratch_size(
-            cfg.get_input_data_size(),
-            cfg.get_output_data_size(),
-        );
+        let input_data_size = cfg.get_input_data_size();
+        let output_data_size = cfg.get_output_data_size();
+        let min_scratch_size =
+            hyperlight_common::layout::min_scratch_size(input_data_size, output_data_size);
         if scratch_size < min_scratch_size {
             return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
         }
 
-        let guest_code_offset = 0;
-        // The following offsets are to the fields of the PEB struct itself!
-        let peb_offset = code_size.next_multiple_of(PAGE_SIZE_USIZE);
-        let peb_input_data_offset = peb_offset + offset_of!(HyperlightPEB, input_stack);
-        let peb_output_data_offset = peb_offset + offset_of!(HyperlightPEB, output_stack);
-        let peb_init_data_offset = peb_offset + offset_of!(HyperlightPEB, init_data);
-        let peb_heap_data_offset = peb_offset + offset_of!(HyperlightPEB, guest_heap);
-        #[cfg(feature = "nanvix-unstable")]
-        let peb_file_mappings_offset = peb_offset + offset_of!(HyperlightPEB, file_mappings);
-
-        // The following offsets are the actual values that relate to memory layout,
-        // which are written to PEB struct
-        let peb_address = Self::BASE_ADDRESS + peb_offset;
-        // make sure heap buffer starts at 4K boundary.
-        // The FileMappingInfo array is stored immediately after the PEB struct.
-        // We statically reserve space for MAX_FILE_MAPPINGS entries so that
-        // the heap never overlaps the array, even when all slots are used.
-        // The host writes file mapping metadata here via write_file_mapping_entry;
-        // the guest only reads the entries. We don't know at layout time how
-        // many file mappings the host will register, so we reserve space for
-        // the maximum number.
-        // The heap starts at the next page boundary after this reserved area.
-        #[cfg(feature = "nanvix-unstable")]
-        let file_mappings_array_end = peb_offset
-            + size_of::<HyperlightPEB>()
-            + hyperlight_common::mem::MAX_FILE_MAPPINGS
-                * size_of::<hyperlight_common::mem::FileMappingInfo>();
-        #[cfg(feature = "nanvix-unstable")]
-        let guest_heap_buffer_offset = file_mappings_array_end.next_multiple_of(PAGE_SIZE_USIZE);
-        #[cfg(not(feature = "nanvix-unstable"))]
-        let guest_heap_buffer_offset =
-            (peb_offset + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE_USIZE);
-
-        // make sure init data starts at 4K boundary
-        let init_data_offset =
-            (guest_heap_buffer_offset + heap_size).next_multiple_of(PAGE_SIZE_USIZE);
         let mut ret = Self {
-            peb_offset,
+            input_data_size,
+            output_data_size,
             heap_size,
-            peb_input_data_offset,
-            peb_output_data_offset,
-            peb_init_data_offset,
-            peb_heap_data_offset,
-            #[cfg(feature = "nanvix-unstable")]
-            peb_file_mappings_offset,
-            sandbox_memory_config: cfg,
             code_size,
-            guest_heap_buffer_offset,
-            peb_address,
-            guest_code_offset,
-            init_data_offset,
             init_data_size,
             init_data_permissions,
             pt_size: None,
@@ -406,18 +288,46 @@ impl SandboxMemoryLayout {
         Ok(ret)
     }
 
-    /// Get the offset in guest memory to the output data size
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_output_data_size_offset(&self) -> usize {
-        // The size field is the first field in the `OutputData` struct
-        self.peb_output_data_offset
+    /// Offset of the PEB struct within the snapshot region.
+    pub(crate) fn peb_offset(&self) -> usize {
+        self.code_size.next_multiple_of(PAGE_SIZE_USIZE)
     }
 
-    /// Get the offset in guest memory to the init data size
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_init_data_size_offset(&self) -> usize {
-        // The init data size is the first field in the `GuestMemoryRegion` struct
-        self.peb_init_data_offset
+    /// Offset of the PEB file_mappings field.
+    #[cfg(feature = "nanvix-unstable")]
+    fn peb_file_mappings_offset(&self) -> usize {
+        self.peb_offset() + offset_of!(HyperlightPEB, file_mappings)
+    }
+
+    /// Guest physical address of the PEB.
+    pub(crate) fn peb_address(&self) -> usize {
+        Self::BASE_ADDRESS + self.peb_offset()
+    }
+
+    /// Offset of the guest heap buffer within the snapshot region.
+    pub(crate) fn guest_heap_buffer_offset(&self) -> usize {
+        #[cfg(feature = "nanvix-unstable")]
+        {
+            let file_mappings_array_end = self.peb_offset()
+                + size_of::<HyperlightPEB>()
+                + hyperlight_common::mem::MAX_FILE_MAPPINGS
+                    * size_of::<hyperlight_common::mem::FileMappingInfo>();
+            file_mappings_array_end.next_multiple_of(PAGE_SIZE_USIZE)
+        }
+        #[cfg(not(feature = "nanvix-unstable"))]
+        {
+            (self.peb_offset() + size_of::<HyperlightPEB>()).next_multiple_of(PAGE_SIZE_USIZE)
+        }
+    }
+
+    /// Offset of the init data section within the snapshot region.
+    pub(crate) fn init_data_offset(&self) -> usize {
+        (self.guest_heap_buffer_offset() + self.heap_size).next_multiple_of(PAGE_SIZE_USIZE)
+    }
+
+    /// The code offset is always 0.
+    pub(crate) fn guest_code_offset(&self) -> usize {
+        0
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
@@ -425,49 +335,17 @@ impl SandboxMemoryLayout {
         self.scratch_size
     }
 
-    /// Get the offset in guest memory to the output data pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_output_data_pointer_offset(&self) -> usize {
-        // This field is immediately after the output data size field,
-        // which is a `u64`.
-        self.get_output_data_size_offset() + size_of::<u64>()
-    }
-
-    /// Get the offset in guest memory to the init data pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_init_data_pointer_offset(&self) -> usize {
-        // The init data pointer is immediately after the init data size field,
-        // which is a `u64`.
-        self.get_init_data_size_offset() + size_of::<u64>()
-    }
-
     /// Get the guest virtual address of the start of output data.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_output_data_buffer_gva(&self) -> u64 {
-        hyperlight_common::layout::scratch_base_gva(self.scratch_size)
-            + self.sandbox_memory_config.get_input_data_size() as u64
+        hyperlight_common::layout::scratch_base_gva(self.scratch_size) + self.input_data_size as u64
     }
 
     /// Get the offset into the host scratch buffer of the start of
     /// the output data.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_output_data_buffer_scratch_host_offset(&self) -> usize {
-        self.sandbox_memory_config.get_input_data_size()
-    }
-
-    /// Get the offset in guest memory to the input data size.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_input_data_size_offset(&self) -> usize {
-        // The input data size is the first field in the input stack's `GuestMemoryRegion` struct
-        self.peb_input_data_offset
-    }
-
-    /// Get the offset in guest memory to the input data pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_input_data_pointer_offset(&self) -> usize {
-        // The input data pointer is immediately after the input
-        // data size field in the input data `GuestMemoryRegion` struct which is a `u64`.
-        self.get_input_data_size_offset() + size_of::<u64>()
+        self.input_data_size
     }
 
     /// Get the guest virtual address of the start of input data
@@ -487,9 +365,8 @@ impl SandboxMemoryLayout {
     /// location where page tables will be eagerly copied on restore
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
-        (self.sandbox_memory_config.get_input_data_size()
-            + self.sandbox_memory_config.get_output_data_size())
-        .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
+        (self.input_data_size + self.output_data_size)
+            .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
     }
 
     /// Get the base GPA to which the page tables will be eagerly
@@ -507,17 +384,11 @@ impl SandboxMemoryLayout {
         self.get_pt_base_gpa() + self.pt_size.unwrap_or(0) as u64
     }
 
-    /// Get the offset in guest memory to the heap size
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_heap_size_offset(&self) -> usize {
-        self.peb_heap_data_offset
-    }
-
     /// Get the offset in guest memory to the file_mappings count field
     /// (the `size` field of the `GuestMemoryRegion` in the PEB).
     #[cfg(feature = "nanvix-unstable")]
     pub(crate) fn get_file_mappings_size_offset(&self) -> usize {
-        self.peb_file_mappings_offset
+        self.peb_file_mappings_offset()
     }
 
     /// Get the offset in guest memory to the file_mappings pointer field.
@@ -530,7 +401,7 @@ impl SandboxMemoryLayout {
     /// (immediately after the PEB struct, within the same page).
     #[cfg(feature = "nanvix-unstable")]
     pub(crate) fn get_file_mappings_array_offset(&self) -> usize {
-        self.peb_offset + size_of::<HyperlightPEB>()
+        self.peb_offset() + size_of::<HyperlightPEB>()
     }
 
     /// Get the guest address of the FileMappingInfo array.
@@ -539,32 +410,24 @@ impl SandboxMemoryLayout {
         (Self::BASE_ADDRESS + self.get_file_mappings_array_offset()) as u64
     }
 
-    /// Get the offset of the heap pointer in guest memory,
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_heap_pointer_offset(&self) -> usize {
-        // The heap pointer is immediately after the
-        // heap size field in the guest heap's `GuestMemoryRegion` struct which is a `u64`.
-        self.get_heap_size_offset() + size_of::<u64>()
-    }
-
     /// Get the total size of guest memory in `self`'s memory
     /// layout.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn get_unaligned_memory_size(&self) -> usize {
-        self.init_data_offset + self.init_data_size
+        self.init_data_offset() + self.init_data_size
     }
 
     /// get the code offset
     /// This is the offset in the sandbox memory where the code starts
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_code_offset(&self) -> usize {
-        self.guest_code_offset
+        self.guest_code_offset()
     }
 
     /// Get the guest address of the code section in the sandbox
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_guest_code_address(&self) -> usize {
-        Self::BASE_ADDRESS + self.guest_code_offset
+        Self::BASE_ADDRESS + self.guest_code_offset()
     }
 
     /// Get the total size of guest memory in `self`'s memory
@@ -592,8 +455,8 @@ impl SandboxMemoryLayout {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
-            self.sandbox_memory_config.get_input_data_size(),
-            self.sandbox_memory_config.get_output_data_size(),
+            self.input_data_size,
+            self.output_data_size,
         );
         let min_scratch = min_fixed_scratch + size;
         if self.scratch_size < min_scratch {
@@ -632,7 +495,7 @@ impl SandboxMemoryLayout {
             Code,
         );
 
-        let expected_peb_offset = TryInto::<usize>::try_into(self.peb_offset)?;
+        let expected_peb_offset = TryInto::<usize>::try_into(self.peb_offset())?;
 
         if peb_offset != expected_peb_offset {
             return Err(new_error!(
@@ -658,7 +521,7 @@ impl SandboxMemoryLayout {
         let heap_offset =
             builder.push_page_aligned(size_of::<HyperlightPEB>(), MemoryRegionFlags::READ, Peb);
 
-        let expected_heap_offset = TryInto::<usize>::try_into(self.guest_heap_buffer_offset)?;
+        let expected_heap_offset = TryInto::<usize>::try_into(self.guest_heap_buffer_offset())?;
 
         if heap_offset != expected_heap_offset {
             return Err(new_error!(
@@ -682,7 +545,7 @@ impl SandboxMemoryLayout {
             Heap,
         );
 
-        let expected_init_data_offset = TryInto::<usize>::try_into(self.init_data_offset)?;
+        let expected_init_data_offset = TryInto::<usize>::try_into(self.init_data_offset())?;
 
         if init_data_offset != expected_init_data_offset {
             return Err(new_error!(
@@ -719,7 +582,7 @@ impl SandboxMemoryLayout {
 
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn write_init_data(&self, out: &mut [u8], bytes: &[u8]) -> Result<()> {
-        out[self.init_data_offset..self.init_data_offset + self.init_data_size]
+        out[self.init_data_offset()..self.init_data_offset() + self.init_data_size]
             .copy_from_slice(bytes);
         Ok(())
     }
@@ -731,84 +594,43 @@ impl SandboxMemoryLayout {
     /// from this function.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn write_peb(&self, mem: &mut [u8]) -> Result<()> {
-        let guest_offset = SandboxMemoryLayout::BASE_ADDRESS;
+        use hyperlight_common::mem::GuestMemoryRegion;
 
-        fn write_u64(mem: &mut [u8], offset: usize, value: u64) -> Result<()> {
-            if offset + 8 > mem.len() {
-                return Err(new_error!(
-                    "Cannot write to offset {} in slice of len {}",
-                    offset,
-                    mem.len()
-                ));
-            }
-            mem[offset..offset + 8].copy_from_slice(&u64::to_ne_bytes(value));
-            Ok(())
-        }
+        let guest_base = Self::BASE_ADDRESS as u64;
 
-        macro_rules! get_address {
-            ($something:ident) => {
-                u64::try_from(guest_offset + self.$something)?
-            };
-        }
+        let peb = HyperlightPEB {
+            input_stack: GuestMemoryRegion {
+                size: self.input_data_size as u64,
+                ptr: self.get_input_data_buffer_gva(),
+            },
+            output_stack: GuestMemoryRegion {
+                size: self.output_data_size as u64,
+                ptr: self.get_output_data_buffer_gva(),
+            },
+            init_data: GuestMemoryRegion {
+                size: (self.get_unaligned_memory_size() - self.init_data_offset()) as u64,
+                ptr: guest_base + self.init_data_offset() as u64,
+            },
+            guest_heap: GuestMemoryRegion {
+                size: self.heap_size as u64,
+                ptr: guest_base + self.guest_heap_buffer_offset() as u64,
+            },
+            // Set up the file_mappings descriptor in the PEB.
+            // - The `size` field holds the number of valid FileMappingInfo
+            //   entries currently written (initially 0 — entries are added
+            //   later by map_file_cow / evolve).
+            // - The `ptr` field holds the guest address of the preallocated
+            //   FileMappingInfo array
+            #[cfg(feature = "nanvix-unstable")]
+            file_mappings: GuestMemoryRegion {
+                size: 0, // entry count, populated later by map_file_cow
+                ptr: self.get_file_mappings_array_gva(),
+            },
+        };
 
-        // Start of setting up the PEB. The following are in the order of the PEB fields
-
-        // Set up input buffer pointer
-        write_u64(
-            mem,
-            self.get_input_data_size_offset(),
-            self.sandbox_memory_config
-                .get_input_data_size()
-                .try_into()?,
-        )?;
-        write_u64(
-            mem,
-            self.get_input_data_pointer_offset(),
-            self.get_input_data_buffer_gva(),
-        )?;
-
-        // Set up output buffer pointer
-        write_u64(
-            mem,
-            self.get_output_data_size_offset(),
-            self.sandbox_memory_config
-                .get_output_data_size()
-                .try_into()?,
-        )?;
-        write_u64(
-            mem,
-            self.get_output_data_pointer_offset(),
-            self.get_output_data_buffer_gva(),
-        )?;
-
-        // Set up init data pointer
-        write_u64(
-            mem,
-            self.get_init_data_size_offset(),
-            (self.get_unaligned_memory_size() - self.init_data_offset).try_into()?,
-        )?;
-        let addr = get_address!(init_data_offset);
-        write_u64(mem, self.get_init_data_pointer_offset(), addr)?;
-
-        // Set up heap buffer pointer
-        let addr = get_address!(guest_heap_buffer_offset);
-        write_u64(mem, self.get_heap_size_offset(), self.heap_size.try_into()?)?;
-        write_u64(mem, self.get_heap_pointer_offset(), addr)?;
-
-        // Set up the file_mappings descriptor in the PEB.
-        // - The `size` field holds the number of valid FileMappingInfo
-        //   entries currently written (initially 0 — entries are added
-        //   later by map_file_cow / evolve).
-        // - The `ptr` field holds the guest address of the preallocated
-        //   FileMappingInfo array
-        #[cfg(feature = "nanvix-unstable")]
-        write_u64(mem, self.get_file_mappings_size_offset(), 0)?;
-        #[cfg(feature = "nanvix-unstable")]
-        write_u64(
-            mem,
-            self.get_file_mappings_pointer_offset(),
-            self.get_file_mappings_array_gva(),
-        )?;
+        let offset = self.peb_offset();
+        peb.write_to(&mut mem[offset..offset + size_of::<HyperlightPEB>()])
+            .map_err(|e| new_error!("failed to write PEB: {}", e))?;
 
         // End of setting up the PEB
 
