@@ -28,6 +28,23 @@ pub struct GuestMemoryRegion {
     pub ptr: u64,
 }
 
+impl GuestMemoryRegion {
+    /// Size of a serialized `GuestMemoryRegion` in bytes.
+    pub const SERIALIZED_SIZE: usize = core::mem::size_of::<Self>();
+
+    /// Write this region's fields in native-endian byte order to `buf`.
+    /// Returns `Ok(())` on success, or `Err` if `buf` is too small.
+    pub fn write_to(&self, buf: &mut [u8]) -> Result<(), &'static str> {
+        if buf.len() < Self::SERIALIZED_SIZE {
+            return Err("buffer too small for GuestMemoryRegion");
+        }
+        let s = core::mem::size_of::<u64>();
+        buf[..s].copy_from_slice(&self.size.to_ne_bytes());
+        buf[s..s * 2].copy_from_slice(&self.ptr.to_ne_bytes());
+        Ok(())
+    }
+}
+
 /// Maximum length of a file mapping label (excluding null terminator).
 pub const FILE_MAPPING_LABEL_MAX_LEN: usize = 63;
 
@@ -79,4 +96,29 @@ pub struct HyperlightPEB {
     /// PEB struct).
     #[cfg(feature = "nanvix-unstable")]
     pub file_mappings: GuestMemoryRegion,
+}
+
+impl HyperlightPEB {
+    /// Write the PEB fields in native-endian byte order to `buf`.
+    /// The buffer must be at least `size_of::<HyperlightPEB>()` bytes.
+    /// Returns `Err` if the buffer is too small.
+    pub fn write_to(&self, buf: &mut [u8]) -> Result<(), &'static str> {
+        if buf.len() < core::mem::size_of::<Self>() {
+            return Err("buffer too small for HyperlightPEB");
+        }
+        let regions = [
+            &self.input_stack,
+            &self.output_stack,
+            &self.init_data,
+            &self.guest_heap,
+            #[cfg(feature = "nanvix-unstable")]
+            &self.file_mappings,
+        ];
+        let mut offset = 0;
+        for region in regions {
+            region.write_to(&mut buf[offset..])?;
+            offset += GuestMemoryRegion::SERIALIZED_SIZE;
+        }
+        Ok(())
+    }
 }

@@ -73,7 +73,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         rng.random::<u64>()
     };
     let peb_addr = {
-        let peb_u64 = u64::try_from(hshm.layout.peb_address)?;
+        let peb_u64 = u64::try_from(hshm.layout.peb_address())?;
         RawPtr::from(peb_u64)
     };
 
