@@ -1080,12 +1080,10 @@ mod tests {
             .unwrap();
     }
 
-    /// Make sure input/output buffers are properly reset after guest call (with host call)
+    /// Make sure pool buffers are properly reset after guest call (with host call)
     #[test]
     fn io_buffer_reset() {
-        let mut cfg = SandboxConfiguration::default();
-        cfg.set_input_data_size(4096);
-        cfg.set_output_data_size(4096);
+        let cfg = SandboxConfiguration::default();
         let path = simple_guest_as_string().unwrap();
         let mut sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
@@ -1140,8 +1138,6 @@ mod tests {
         // total, and then add some more for the eagerly-copied page
         // tables on amd64
         let min_scratch = hyperlight_common::layout::min_scratch_size(
-            cfg.get_input_data_size(),
-            cfg.get_output_data_size(),
             cfg.get_g2h_queue_depth(),
             cfg.get_h2g_queue_depth(),
         );
