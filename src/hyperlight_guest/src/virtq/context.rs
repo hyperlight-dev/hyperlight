@@ -312,7 +312,7 @@ impl GuestContext {
         self.generation
     }
 
-    fn try_send(
+    fn try_send_readonly(
         &mut self,
         header: &[u8],
         payload: &[u8],
