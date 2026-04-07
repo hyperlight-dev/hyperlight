@@ -83,27 +83,20 @@ pub const fn scratch_top_ptr<T>(offset: u64) -> *mut T {
 
 /// Compute the byte offset from the scratch base to the G2H ring.
 ///
-/// TODO(virtq): Remove input/output
-pub const fn g2h_ring_scratch_offset(input_data_size: usize, output_data_size: usize) -> usize {
-    let io_off = input_data_size + output_data_size;
-    let align = crate::virtq::Descriptor::ALIGN;
-
-    (io_off + align - 1) & !(align - 1)
+/// The G2H ring starts at offset 0, aligned to descriptor alignment.
+pub const fn g2h_ring_scratch_offset() -> usize {
+    0
 }
 
 /// Compute the byte offset from the scratch base to the H2G ring.
 ///
-/// TODO(ring): Remove input/output
-pub const fn h2g_ring_scratch_offset(
-    input_data_size: usize,
-    output_data_size: usize,
-    g2h_num_descs: usize,
-) -> usize {
-    let g2h_offset = g2h_ring_scratch_offset(input_data_size, output_data_size);
+/// The H2G ring follows immediately after the G2H ring, aligned to
+/// descriptor alignment.
+pub const fn h2g_ring_scratch_offset(g2h_num_descs: usize) -> usize {
     let g2h_size = crate::virtq::Layout::query_size(g2h_num_descs);
     let align = crate::virtq::Descriptor::ALIGN;
 
-    (g2h_offset + g2h_size + align - 1) & !(align - 1)
+    (g2h_size + align - 1) & !(align - 1)
 }
 
 /// Compute the minimum scratch region size needed for a sandbox.

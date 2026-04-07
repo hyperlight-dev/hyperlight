@@ -568,17 +568,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.snapshot_count,
         )?;
 
-        // Initialise the guest input and output data buffers in
-        // scratch memory. TODO: remove the need for this.
-        self.scratch_mem.write::<u64>(
-            self.layout.get_input_data_buffer_scratch_host_offset(),
-            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
-        )?;
-        self.scratch_mem.write::<u64>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
-        )?;
-
         // Write virtqueue metadata to scratch-top so the guest can
         // discover ring locations without reading the PEB.
         self.update_scratch_bookkeeping_item(

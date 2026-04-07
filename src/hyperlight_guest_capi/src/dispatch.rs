@@ -109,10 +109,22 @@ pub extern "C" fn hl_call_host_function(function_call: &FfiFunctionCall) {
     let return_type = unsafe { function_call.copy_return_type() };
 
     virtq::with_context(|ctx| {
-        let result: ReturnValue = ctx
-            .call_host_function(&func_name, Some(parameters), return_type)
-            .expect("Failed to call host function");
-        ctx.stash_host_return(result);
+        match ctx.call_host_function::<ReturnValue>(&func_name, Some(parameters), return_type) {
+            Ok(result) => ctx.stash_host_return(result),
+            Err(e) => {
+                // Host function returned an error. Abort with the error
+                // message so the host can capture it via the abort buffer.
+                let msg = alloc::ffi::CString::new(e.message)
+                    .unwrap_or_else(|_| alloc::ffi::CString::new("host error").unwrap());
+
+                unsafe {
+                    hyperlight_guest::exit::abort_with_code_and_message(
+                        &[e.kind as u8],
+                        msg.as_ptr(),
+                    );
+                }
+            }
+        }
     });
 }
 
