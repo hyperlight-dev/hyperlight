@@ -72,7 +72,7 @@ pub struct GuestContext {
     g2h_producer: G2hProducer,
     h2g_producer: H2gProducer,
     generation: u64,
-    last_host_return: Option<ReturnValue>,
+    last_host_result: Option<Result<ReturnValue>>,
 }
 
 impl GuestContext {
@@ -101,7 +101,7 @@ impl GuestContext {
             g2h_producer,
             h2g_producer,
             generation,
-            last_host_return: None,
+            last_host_result: None,
         };
 
         ctx.prefill_h2g();
@@ -308,6 +308,7 @@ impl GuestContext {
         // restore_h2g_prefill() wrote matching descriptors to the
         // zeroed ring memory. Both sides are in sync.
         self.generation = new_generation;
+        self.last_host_result = None;
     }
 
     pub(super) fn generation(&self) -> u64 {
@@ -345,24 +346,27 @@ impl GuestContext {
         self.g2h_producer.submit(entry)
     }
 
-    /// Stash a host function return value for later retrieval.
+    /// Stash a host function result for later retrieval.
     ///
     /// Used by the C API's two-step calling convention where
     /// `hl_call_host_function` and `hl_get_host_return_value_as_*`
     /// are separate calls.
-    pub fn stash_host_return(&mut self, value: ReturnValue) {
-        self.last_host_return = Some(value);
+    pub fn stash_host_result(&mut self, result: Result<ReturnValue>) {
+        self.last_host_result = Some(result);
     }
 
     /// Take the stashed host return value.
     ///
     /// Panics if no value was stashed or if the type conversion fails.
+    /// If the stashed result was an error, panics with the error message.
     pub fn take_host_return<T: TryFrom<ReturnValue>>(&mut self) -> T {
-        let rv = self
-            .last_host_return
+        let val = self
+            .last_host_result
             .take()
-            .expect("No host return value available");
-        match T::try_from(rv) {
+            .expect("No host return value available")
+            .expect("Host function returned an error");
+
+        match T::try_from(val) {
             Ok(v) => v,
             Err(_) => panic!("Host return value type mismatch"),
         }
