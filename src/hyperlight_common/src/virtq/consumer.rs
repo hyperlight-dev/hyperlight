@@ -15,18 +15,11 @@ limitations under the License.
 */
 
 use alloc::vec;
-use alloc::vec::Vec;
 
 use bytes::Bytes;
+use fixedbitset::FixedBitSet;
 
 use super::*;
-
-/// In-flight entry tracking.
-///
-/// Stored per descriptor ID while the entry is being processed.
-/// Tracks that a descriptor slot is occupied.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Inflight;
 
 /// Data received from the producer, safely copied out of shared memory.
 ///
@@ -261,7 +254,7 @@ impl AckCompletion {
 pub struct VirtqConsumer<M, N> {
     inner: RingConsumer<M>,
     notifier: N,
-    inflight: Vec<Option<Inflight>>,
+    inflight: FixedBitSet,
 }
 
 impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
@@ -274,7 +267,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     /// * `notifier` - Callback for notifying the driver (producer) about completions
     pub fn new(layout: Layout, mem: M, notifier: N) -> Self {
         let inner = RingConsumer::new(layout, mem);
-        let inflight = vec![None; inner.len()];
+        let inflight = FixedBitSet::with_capacity(inner.len());
 
         Self {
             inner,
@@ -320,16 +313,16 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         }
 
         // Reserve the inflight slot
-        let slot = self
-            .inflight
-            .get_mut(id as usize)
-            .ok_or(VirtqError::InvalidState)?;
-
-        if slot.is_some() {
+        let id_idx = id as usize;
+        if id_idx >= self.inflight.len() {
             return Err(VirtqError::InvalidState);
         }
 
-        *slot = Some(Inflight);
+        if self.inflight.contains(id_idx) {
+            return Err(VirtqError::InvalidState);
+        }
+
+        self.inflight.insert(id_idx);
         let token = Token(id);
 
         // Copy entry data from shared memory
@@ -363,16 +356,13 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         let id = completion.id();
         let written = completion.written() as u32;
 
-        let slot = self
-            .inflight
-            .get_mut(id as usize)
-            .ok_or(VirtqError::InvalidState)?;
-
-        if slot.is_none() {
+        let id_idx = id as usize;
+        let slot_set = id_idx < self.inflight.len() && self.inflight.contains(id_idx);
+        if !slot_set {
             return Err(VirtqError::InvalidState);
         }
 
-        *slot = None;
+        self.inflight.set(id_idx, false);
 
         if self.inner.submit_used_with_notify(id, written)? {
             self.notifier.notify(QueueStats {
@@ -445,7 +435,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     /// Reset ring and inflight state to initial values.
     pub fn reset(&mut self) {
         self.inner.reset();
-        self.inflight.fill(None);
+        self.inflight.clear();
     }
 }
 
@@ -647,14 +637,14 @@ mod tests {
         producer.submit(se).unwrap();
 
         let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
-        assert!(consumer.inflight.iter().any(|s| s.is_some()));
+        assert!(consumer.inflight.count_ones(..) > 0);
 
         // Complete first so we do not leak
         consumer.complete(completion).unwrap();
 
         consumer.reset();
 
-        assert!(consumer.inflight.iter().all(|s| s.is_none()));
+        assert_eq!(consumer.inflight.count_ones(..), 0);
         assert_eq!(consumer.inner.num_inflight(), 0);
     }
 
@@ -677,7 +667,7 @@ mod tests {
 
         consumer.reset();
 
-        assert!(consumer.inflight.iter().all(|s| s.is_none()));
+        assert_eq!(consumer.inflight.count_ones(..), 0);
         assert_eq!(consumer.inner.num_inflight(), 0);
     }
 }

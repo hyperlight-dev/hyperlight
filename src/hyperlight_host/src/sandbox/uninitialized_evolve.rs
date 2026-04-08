@@ -16,7 +16,6 @@ limitations under the License.
 #[cfg(gdb)]
 use std::sync::{Arc, Mutex};
 
-use hyperlight_common::layout::SCRATCH_TOP_H2G_POOL_GVA_OFFSET;
 use rand::RngExt;
 use tracing::{Span, instrument};
 
@@ -27,7 +26,7 @@ use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
 use crate::mem::exe::LoadInfo;
 use crate::mem::mgr::SandboxMemoryManager;
 use crate::mem::ptr::RawPtr;
-use crate::mem::shared_mem::{GuestSharedMemory, SharedMemory};
+use crate::mem::shared_mem::GuestSharedMemory;
 #[cfg(gdb)]
 use crate::sandbox::config::DebugInfo;
 #[cfg(feature = "mem_profile")]
@@ -131,18 +130,6 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         dbg_mem_access_hdl,
     )
     .map_err(HyperlightVmError::Initialize)?;
-
-    // Read the H2G pool GVA that the guest wrote to scratch-top during init.
-    {
-        let scratch_size = hshm.scratch_mem.mem_size();
-        let offset = scratch_size - SCRATCH_TOP_H2G_POOL_GVA_OFFSET as usize;
-
-        if let Ok(gva) = hshm.scratch_mem.read::<u64>(offset)
-            && gva != 0
-        {
-            hshm.h2g_pool_gva = Some(gva);
-        }
-    }
 
     #[cfg(gdb)]
     let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));

@@ -678,29 +678,40 @@ impl<M: MemOps> RingProducer<M> {
     }
 
     /// Get number of free descriptors in the ring.
+    #[inline]
     pub fn num_free(&self) -> usize {
         self.num_free
     }
 
     /// Get number of inflight (submitted but not yet used) descriptors.
+    #[inline]
     pub fn num_inflight(&self) -> usize {
         self.desc_table.len() - self.num_free
     }
 
     /// Check if the ring is full (no free descriptors).
+    #[inline]
     pub fn is_full(&self) -> bool {
         self.num_free == 0
     }
 
     /// Get descriptor table length
+    #[inline]
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.desc_table.len()
     }
 
     /// Get memory accessor reference
+    #[inline]
     pub fn mem(&self) -> &M {
         &self.mem
+    }
+
+    /// Get descriptor table reference
+    #[inline]
+    pub fn desc_table(&self) -> &DescTable {
+        &self.desc_table
     }
 
     /// Get a snapshot of the current available cursor position.
@@ -834,6 +845,31 @@ impl<M: MemOps> RingProducer<M> {
         self.id_free.extend(0..size as u16);
         self.id_num.iter_mut().for_each(|n| *n = 0);
         self.event_flags_shadow = EventFlags::ENABLE;
+    }
+
+    /// Reset the ring to the "N slots submitted, none completed" state.
+    ///
+    /// `ids` contains the descriptor IDs that are in-flight.
+    /// Sets cursors, counters, and `id_num` accordingly. The chain lengths are all set to 1.
+    pub fn reset_prefilled(&mut self, ids: &[u16]) {
+        let size = self.desc_table.len();
+        let count = ids.len();
+        debug_assert!(count <= size);
+
+        let wrapped = count >= size;
+        self.avail_cursor.head = if wrapped { 0 } else { count as u16 };
+        self.avail_cursor.wrap = !wrapped;
+
+        self.used_cursor.head = 0;
+        self.used_cursor.wrap = true;
+
+        self.id_num.iter_mut().for_each(|n| *n = 0);
+        for &id in ids {
+            self.id_num[id as usize] = 1;
+        }
+
+        self.num_free = size - count;
+        self.id_free.clear();
     }
 }
 
@@ -3115,6 +3151,121 @@ pub(crate) mod tests {
 
         consumer.reset();
         assert_eq!(consumer.num_inflight, 0);
+    }
+
+    #[test]
+    fn test_reset_prefilled_sets_cursors() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+        let ids: Vec<u16> = (0..8).collect();
+        producer.reset_prefilled(&ids);
+
+        // avail wrapped once (all 8 slots submitted)
+        assert_eq!(producer.avail_cursor.head(), 0);
+        assert!(!producer.avail_cursor.wrap());
+        // used cursor at initial position
+        assert_eq!(producer.used_cursor.head(), 0);
+        assert!(producer.used_cursor.wrap());
+    }
+
+    #[test]
+    fn test_reset_prefilled_all_ids_inflight() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+        let ids: Vec<u16> = (0..8).collect();
+        producer.reset_prefilled(&ids);
+
+        assert_eq!(producer.num_free, 0);
+        assert!(producer.id_free.is_empty());
+        assert!(producer.id_num.iter().all(|&n| n == 1));
+    }
+
+    #[test]
+    fn test_reset_prefilled_partial() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+        producer.reset_prefilled(&[5, 6, 7, 3]);
+
+        // avail cursor at position 4, no wrap
+        assert_eq!(producer.avail_cursor.head(), 4);
+        assert!(producer.avail_cursor.wrap());
+        // used cursor at initial position
+        assert_eq!(producer.used_cursor.head(), 0);
+        assert!(producer.used_cursor.wrap());
+
+        assert_eq!(producer.num_free, 4);
+        assert!(producer.id_free.is_empty());
+        // Only the specified IDs are in-flight
+        for &id in &[5, 6, 7, 3] {
+            assert_eq!(producer.id_num[id as usize], 1);
+        }
+        for &id in &[0, 1, 2, 4] {
+            assert_eq!(producer.id_num[id as usize], 0);
+        }
+    }
+
+    #[test]
+    fn test_reset_prefilled_then_poll_used() {
+        let ring = make_ring(4);
+        let mut producer = make_producer(&ring);
+
+        // Simulate host prefill: LIFO assigns IDs 3, 2, 1, 0
+        for i in 0..4u64 {
+            producer.submit_one(0x1000 + i * 4096, 4096, true).unwrap();
+        }
+
+        // Consumer marks one as used
+        let mut consumer = make_consumer(&ring);
+        let (id, _chain) = consumer.poll_available().unwrap();
+        consumer.submit_used(id, 64).unwrap();
+
+        // Fresh producer restores via reset_prefilled with all IDs
+        let mut restored = make_producer(&ring);
+        restored.reset_prefilled(&[0, 1, 2, 3]);
+
+        // poll_used should discover the consumed descriptor
+        let used = restored.poll_used().unwrap();
+        assert_eq!(used.id, id);
+    }
+
+    #[test]
+    fn test_desc_table_read_after_submit() {
+        let ring = make_ring(8);
+        let mut writer = make_producer(&ring);
+        writer.submit_one(0x1000, 4096, true).unwrap();
+
+        let reader = make_producer(&ring);
+        let addr = reader.desc_table().desc_addr(0).unwrap();
+        let desc = Descriptor::read_acquire(reader.mem(), addr).unwrap();
+        assert_eq!(desc.addr, 0x1000);
+        assert_eq!(desc.len, 4096);
+        assert!(desc.is_writeable());
+        assert!(desc.is_avail(true));
+        assert!(!desc.is_used(true));
+    }
+
+    #[test]
+    fn test_desc_table_out_of_bounds() {
+        let ring = make_ring(8);
+        let reader = make_producer(&ring);
+        assert!(reader.desc_table().desc_addr(8).is_none());
+    }
+
+    #[test]
+    fn test_desc_table_read_used_descriptor() {
+        let ring = make_ring(8);
+        let mut writer = make_producer(&ring);
+        writer.submit_one(0x1000, 4096, true).unwrap();
+
+        let mut consumer = make_consumer(&ring);
+        let (id, _chain) = consumer.poll_available().unwrap();
+        consumer.submit_used(id, 128).unwrap();
+
+        let reader = make_producer(&ring);
+        let addr = reader.desc_table().desc_addr(0).unwrap();
+        let desc = Descriptor::read_acquire(reader.mem(), addr).unwrap();
+        assert!(desc.is_used(true));
+        assert!(!desc.is_avail(true));
     }
 }
 

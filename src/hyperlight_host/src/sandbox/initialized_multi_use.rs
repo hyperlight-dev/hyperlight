@@ -1194,6 +1194,220 @@ mod tests {
         assert_eq!(res, 0);
     }
 
+    /// Many snapshot restore cycles with state-modifying guest calls.
+    #[test]
+    fn restore_stress_no_pool_corruption() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        for _ in 0..50 {
+            sbox.restore(snapshot.clone()).unwrap();
+            let _ = sbox.call::<i32>("AddToStatic", 1i32).unwrap();
+
+            let res: i32 = sbox.call("GetStatic", ()).unwrap();
+            assert_eq!(res, 1);
+
+            let res: i32 = sbox.call("AddToStatic", 2i32).unwrap();
+            assert_eq!(res, 3);
+        }
+    }
+
+    /// Stress test: snapshot/restore with G2H queue pressure.
+    #[test]
+    fn restore_stress_with_host_calls() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        for i in 0..50 {
+            sbox.restore(snapshot.clone()).unwrap();
+
+            // Fire-and-forget log oneshots - multiple G2H entries queued
+            // without waiting for responses
+            sbox.call::<()>("LogMessageN", 5_i32).unwrap();
+
+            // G2H round-trip with returned data after logs filled the queue
+            let echo: String = sbox.call("Echo", "ping".to_string()).unwrap();
+            assert_eq!(echo, "ping");
+
+            // Multiple calls without restore to exercise queue reuse
+            let res: i32 = sbox.call("AddToStatic", 1i32).unwrap();
+            assert_eq!(res, 1);
+
+            let echo2: String = sbox.call("Echo", format!("echo {i}")).unwrap();
+            assert_eq!(echo2, format!("echo {i}"));
+        }
+    }
+
+    /// Back-to-back restores without any guest call in between.
+    /// The generation bumps twice but the guest only sees the latest value.
+    #[test]
+    fn restore_back_to_back() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let _ = sbox.call::<i32>("AddToStatic", 42i32).unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+
+        // Two restores in a row, no guest calls between them
+        sbox.restore(snapshot.clone()).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
+
+        // Guest should see the snapshot state (static = 42)
+        let res: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(res, 42);
+
+        // Another round: three restores, then call
+        sbox.restore(snapshot.clone()).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
+
+        let res: i32 = sbox.call("AddToStatic", 1i32).unwrap();
+        assert_eq!(res, 43);
+    }
+
+    /// Restore after flooding the G2H queue with log oneshots.
+    #[test]
+    fn restore_after_g2h_pressure() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        for _ in 0..20 {
+            // Flood G2H with many log oneshots to pressure the queue/pool
+            sbox.call::<()>("LogMessageN", 30_i32).unwrap();
+
+            // Restore after heavy G2H usage
+            sbox.restore(snapshot.clone()).unwrap();
+
+            // Verify queue works cleanly after restore
+            sbox.call::<()>("LogMessageN", 5_i32).unwrap();
+            let echo: String = sbox.call("Echo", "ok".to_string()).unwrap();
+            assert_eq!(echo, "ok");
+        }
+    }
+
+    /// Many calls cycling through all descriptor IDs, then restore.
+    /// Ensures restore handles post-wraparound ring state.
+    #[test]
+    fn restore_after_id_wraparound() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        for i in 0..200 {
+            let res: i32 = sbox.call("AddToStatic", 1i32).unwrap();
+            assert_eq!(res, i + 1);
+        }
+
+        // Restore after IDs have wrapped around many times
+        sbox.restore(snapshot.clone()).unwrap();
+
+        let res: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(res, 0);
+
+        // Do another round of wraparound + restore
+        for _ in 0..200 {
+            let _ = sbox.call::<i32>("AddToStatic", 1i32).unwrap();
+        }
+        sbox.restore(snapshot.clone()).unwrap();
+
+        let echo: String = sbox.call("Echo", "after wraparound".to_string()).unwrap();
+        assert_eq!(echo, "after wraparound");
+    }
+
+    /// Restore after a guest exception recovers the sandbox.
+    /// The virtqueue must be fully functional after restore despite
+    /// the guest having been in a broken state.
+    #[test]
+    fn restore_after_guest_error() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        // Normal call first
+        let res: i32 = sbox.call("AddToStatic", 5i32).unwrap();
+        assert_eq!(res, 5);
+
+        // Trigger an exception - guest is now in a broken state
+        let err = sbox.call::<()>("TriggerException", ());
+        assert!(err.is_err());
+
+        // Restore should recover fully
+        sbox.restore(snapshot.clone()).unwrap();
+
+        // Verify everything works after recovery
+        let res: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(res, 0);
+
+        let echo: String = sbox.call("Echo", "recovered".to_string()).unwrap();
+        assert_eq!(echo, "recovered");
+
+        sbox.call::<()>("LogMessageN", 5_i32).unwrap();
+        let res: i32 = sbox.call("AddToStatic", 1i32).unwrap();
+        assert_eq!(res, 1);
+    }
+
+    /// Snapshot immediately after evolve, restore before any calls.
+    /// Baseline test: the virtqueue has never been used.
+    #[test]
+    fn restore_fresh_snapshot() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        // Snapshot immediately - no guest calls yet
+        let snapshot = sbox.snapshot().unwrap();
+
+        sbox.restore(snapshot.clone()).unwrap();
+
+        // First-ever guest call after restore
+        let res: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(res, 0);
+
+        let echo: String = sbox.call("Echo", "first".to_string()).unwrap();
+        assert_eq!(echo, "first");
+
+        // Restore again and verify
+        sbox.restore(snapshot.clone()).unwrap();
+        sbox.call::<()>("LogMessageN", 10_i32).unwrap();
+        let res: i32 = sbox.call("AddToStatic", 7i32).unwrap();
+        assert_eq!(res, 7);
+    }
+
     #[test]
     fn test_trigger_exception_on_guest() {
         let usbox = UninitializedSandbox::new(

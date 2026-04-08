@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! Guest-side virtqueue initialization.
+//! Guest-side virtqueue initialization and reset.
 
 use core::num::NonZeroU16;
 
@@ -39,7 +39,7 @@ pub(crate) fn init_virtqueues() {
     let h2g_depth = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET) };
     let g2h_pages = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_G2H_POOL_PAGES_OFFSET) } as usize;
     let h2g_pages = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET) } as usize;
-    let generation = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET) };
+    let generation = unsafe { *scratch_top_ptr::<u64>(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET) };
 
     assert!(g2h_depth > 0 && h2g_depth > 0 && g2h_pages > 0 && h2g_pages > 0);
     assert!(g2h_gva != 0 && h2g_gva != 0);
@@ -81,11 +81,43 @@ pub(crate) fn init_virtqueues() {
     hyperlight_guest::virtq::set_global_context(ctx);
 }
 
+/// Reset virtqueue state if a snapshot restore was detected.
+///
+/// Compares the generation counter in scratch-top metadata against
+/// the context's cached value. On mismatch, restores H2G from the
+/// host-prefilled ring and allocates a fresh G2H pool.
+pub(crate) fn maybe_reset_virtqueues() {
+    if !hyperlight_guest::virtq::is_initialized() {
+        return;
+    }
+
+    let curr_gen = unsafe { *scratch_top_ptr::<u64>(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET) };
+
+    hyperlight_guest::virtq::with_context(|ctx| {
+        if curr_gen == ctx.generation() {
+            return;
+        }
+
+        // Read host-assigned H2G pool location from scratch-top
+        let h2g_pool_gva = unsafe { *scratch_top_ptr::<u64>(SCRATCH_TOP_H2G_POOL_GVA_OFFSET) };
+        let h2g_pages = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET) };
+        let g2h_pages = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_G2H_POOL_PAGES_OFFSET) };
+
+        let h2g_pages = h2g_pages as usize;
+        let g2h_pages = g2h_pages as usize;
+        let g2h_pool_gva = alloc_pool(g2h_pages);
+
+        ctx.restore_h2g(h2g_pool_gva, h2g_pages * PAGE_SIZE_USIZE);
+        ctx.reset_g2h(g2h_pool_gva, g2h_pages * PAGE_SIZE_USIZE);
+        ctx.set_generation(curr_gen);
+    });
+}
+
 /// Allocate and zero `n` physical pages, returning the GVA.
 fn alloc_pool(n: usize) -> u64 {
     let gpa = unsafe { alloc_phys_pages(n as u64) };
     let ptr = phys_to_virt(gpa).expect("failed to map pool pages");
-    let size = n as usize * PAGE_SIZE_USIZE;
+    let size = n * PAGE_SIZE_USIZE;
     unsafe { core::ptr::write_bytes(ptr, 0, size) };
     ptr as u64
 }

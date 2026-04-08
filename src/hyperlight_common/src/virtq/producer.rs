@@ -19,6 +19,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use bytes::Bytes;
+use smallvec::SmallVec;
 
 use super::*;
 
@@ -391,18 +392,116 @@ where
     ///
     /// # Safety
     ///
-    /// All [`RecvCompletion`]s (and their backing [`Bytes`]) from
-    /// previous `poll()` calls must have been dropped before calling
-    /// this. Outstanding completions hold pool allocations via
-    /// `BufferOwner`; resetting the pool while they exist would cause
-    /// double-free on drop.
+    /// All [`RecvCompletion`]s (and their backing [`Bytes`]) from previous `poll()`
+    /// calls must have been dropped before calling this. Outstanding completions
+    /// hold pool allocations via `BufferOwner`; resetting the pool while they exist
+    /// would cause double-free on drop.
     ///
-    /// TODO(virtq): properly restore state after snapshot instead of just resetting everything
+    /// TODO(virtq): find a way to allow guest to keep completions across resets.
     pub fn reset(&mut self) {
-        self.inner.reset();
         self.pool.reset();
-        self.inflight.fill(None);
+        self.inner.reset();
         self.pending.clear();
+        self.inflight.fill(None);
+    }
+
+    /// Replace the pool and reset ring, inflight, and pending state.
+    ///
+    /// Use this when restoring from a snapshot where the pool has been
+    /// relocated or recreated.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`reset`](Self::reset) - all outstanding completions
+    /// must have been dropped.
+    pub fn reset_with_pool(&mut self, pool: P) {
+        self.pool = pool;
+        self.inner.reset();
+        self.pending.clear();
+        self.inflight.fill(None);
+    }
+}
+
+/// Snapshot restore support for producers backed by [`RecyclePool`].
+impl<M, N> VirtqProducer<M, N, RecyclePool>
+where
+    M: MemOps + Clone,
+    N: Notifier,
+{
+    /// Replace the pool and reconstruct producer state from a prefilled ring.
+    ///
+    /// The host prefills the H2G ring with `min(ring_size, pool_count)`
+    /// descriptors during restore (`restore_h2g_prefill`), writing
+    /// descriptors in forward order: position i gets
+    /// `addr = pool_base + i * slot_size`.
+    ///
+    /// Any descriptors already consumed by the host marked used
+    /// will be discovered naturally by `poll_used()` after restore.
+    pub fn restore_from_ring(&mut self, pool: RecyclePool) -> Result<(), VirtqError> {
+        self.reset_with_pool(pool);
+
+        let ring_size = self.inner.len();
+        let pool_count = self.pool.count();
+        let prefill_count = core::cmp::min(ring_size, pool_count);
+        let slot_size = self.pool.slot_size();
+
+        let mut ids = SmallVec::<[u16; 64]>::new();
+
+        // Scan descriptors to discover in-flight IDs and set up inflight table
+        for pos in 0..prefill_count as u16 {
+            let desc_base = self
+                .inner
+                .desc_table()
+                .desc_addr(pos)
+                .ok_or(VirtqError::RingError(RingError::InvalidState))?;
+
+            let id = self
+                .inner
+                .mem()
+                .read_val::<u16>(desc_base + Descriptor::ID_OFFSET as u64)
+                .map_err(|_| VirtqError::RingError(RingError::MemError))?;
+
+            if (id as usize) >= ring_size {
+                return Err(VirtqError::InvalidState);
+            }
+
+            if self.inflight[id as usize].is_some() {
+                return Err(VirtqError::InvalidState);
+            }
+
+            let addr = self
+                .pool
+                .slot_addr(pos as usize)
+                .ok_or(VirtqError::InvalidState)?;
+
+            self.inflight[id as usize] = Some(Inflight::WriteOnly {
+                completion: Allocation {
+                    addr,
+                    len: slot_size,
+                },
+            });
+
+            ids.push(id);
+        }
+
+        self.inner.reset_prefilled(&ids);
+
+        let addrs: SmallVec<[u64; 64]> = (0..prefill_count)
+            .map(|i| self.pool.slot_addr(i).expect("prefill_count <= pool count"))
+            .collect();
+
+        self.pool
+            .restore_allocated(&addrs)
+            .map_err(|_| VirtqError::InvalidState)?;
+
+        debug_assert!(
+            self.inflight.iter().filter(|s| s.is_some()).count() == prefill_count,
+            "restore_from_ring: expected {} inflight entries, found {}",
+            prefill_count,
+            self.inflight.iter().filter(|s| s.is_some()).count()
+        );
+
+        Ok(())
     }
 }
 
@@ -641,8 +740,27 @@ impl<M: MemOps, P: BufferProvider> Drop for SendEntry<M, P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::virtq::ring::tests::make_ring;
+    use crate::virtq::ring::tests::{OwnedRing, TestMem, make_consumer, make_producer, make_ring};
     use crate::virtq::test_utils::*;
+
+    type RecycleProducer = VirtqProducer<TestMem, TestNotifier, RecyclePool>;
+
+    const SLOT_SIZE: usize = 4096;
+
+    fn make_recycle_producer(ring: &OwnedRing, slot_count: usize) -> RecycleProducer {
+        let layout = ring.layout();
+        let mem = ring.mem();
+        let pool = make_pool(ring, slot_count);
+        let notifier = TestNotifier::new();
+
+        VirtqProducer::new(layout, mem, notifier, pool)
+    }
+
+    fn make_pool(ring: &OwnedRing, slot_count: usize) -> RecyclePool {
+        let mem = ring.mem();
+        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        RecyclePool::new(pool_base, slot_count * SLOT_SIZE, SLOT_SIZE).unwrap()
+    }
 
     #[test]
     fn test_chain_readwrite_build() {
@@ -902,5 +1020,176 @@ mod tests {
 
         assert!(producer.inflight.iter().all(|s| s.is_none()));
         assert_eq!(producer.inner.num_free(), producer.inner.len());
+    }
+
+    #[test]
+    fn test_restore_from_ring_requires_full_prefill() {
+        let ring = make_ring(8);
+        let mut producer = make_recycle_producer(&ring, 8);
+
+        // Ring has no prefilled descriptors - restore should fail
+        // because IDs read from zeroed memory will all be 0 (duplicate)
+        assert!(producer.restore_from_ring(make_pool(&ring, 8)).is_err());
+    }
+
+    #[test]
+    fn test_restore_from_ring_partial_prefill_fails() {
+        let ring = make_ring(8);
+        let producer = make_recycle_producer(&ring, 8);
+        let pool_base = producer.pool.base_addr();
+
+        // Simulate host prefill: write only one descriptor
+        let mut writer = make_producer(&ring);
+        writer
+            .submit_one(pool_base, SLOT_SIZE as u32, true)
+            .unwrap();
+
+        // Restore should fail because only 1 of 8 positions has a
+        // valid unique ID - remaining positions have id=0 (duplicate)
+        let mut restored = make_recycle_producer(&ring, 8);
+        assert!(restored.restore_from_ring(make_pool(&ring, 8)).is_err());
+    }
+
+    #[test]
+    fn test_restore_from_ring_full_prefill() {
+        let depth = 8usize;
+        let ring = make_ring(depth);
+        let producer = make_recycle_producer(&ring, depth);
+        let pool_base = producer.pool.base_addr();
+
+        // Simulate host prefill: write all descriptors
+        let mut writer = make_producer(&ring);
+        for i in 0..depth {
+            let addr = pool_base + (i * SLOT_SIZE) as u64;
+            writer.submit_one(addr, SLOT_SIZE as u32, true).unwrap();
+        }
+
+        let mut restored = make_recycle_producer(&ring, depth);
+        restored.restore_from_ring(make_pool(&ring, depth)).unwrap();
+
+        // All inflight slots should be populated
+        let inflight_count = restored.inflight.iter().filter(|s| s.is_some()).count();
+        assert_eq!(inflight_count, depth);
+
+        // Pool should be fully allocated
+        assert_eq!(restored.pool.num_free(), 0);
+    }
+
+    #[test]
+    fn test_restore_from_ring_forward_order() {
+        let depth = 4usize;
+        let ring = make_ring(depth);
+        let producer = make_recycle_producer(&ring, depth);
+        let pool_base = producer.pool.base_addr();
+
+        // Forward order prefill
+        let mut writer = make_producer(&ring);
+        for i in 0..depth {
+            writer
+                .submit_one(pool_base + (i * SLOT_SIZE) as u64, SLOT_SIZE as u32, true)
+                .unwrap();
+        }
+
+        let mut restored = make_recycle_producer(&ring, depth);
+        restored.restore_from_ring(make_pool(&ring, depth)).unwrap();
+    }
+
+    #[test]
+    fn test_restore_from_ring_reverse_order() {
+        let depth = 4usize;
+        let ring = make_ring(depth);
+        let producer = make_recycle_producer(&ring, depth);
+        let pool_base = producer.pool.base_addr();
+
+        // Reverse order prefill (current host behavior)
+        let mut writer = make_producer(&ring);
+        for i in (0..depth).rev() {
+            writer
+                .submit_one(pool_base + (i * SLOT_SIZE) as u64, SLOT_SIZE as u32, true)
+                .unwrap();
+        }
+
+        let mut restored = make_recycle_producer(&ring, depth);
+        restored.restore_from_ring(make_pool(&ring, depth)).unwrap();
+    }
+
+    #[test]
+    fn test_restore_from_ring_pool_state_correct() {
+        let depth = 8usize;
+        let ring = make_ring(depth);
+        let producer = make_recycle_producer(&ring, depth);
+        let pool_base = producer.pool.base_addr();
+
+        // Full prefill
+        let mut writer = make_producer(&ring);
+        for i in 0..depth {
+            writer
+                .submit_one(pool_base + (i * SLOT_SIZE) as u64, SLOT_SIZE as u32, true)
+                .unwrap();
+        }
+
+        let mut restored = make_recycle_producer(&ring, depth);
+        restored.restore_from_ring(make_pool(&ring, depth)).unwrap();
+        // All slots are allocated after full-prefill restore
+        assert_eq!(restored.pool.num_free(), 0);
+    }
+
+    #[test]
+    fn test_restore_from_ring_idempotent() {
+        let depth = 4usize;
+        let ring = make_ring(depth);
+        let producer = make_recycle_producer(&ring, depth);
+        let pool_base = producer.pool.base_addr();
+
+        let mut writer = make_producer(&ring);
+        for i in 0..depth {
+            writer
+                .submit_one(pool_base + (i * SLOT_SIZE) as u64, SLOT_SIZE as u32, true)
+                .unwrap();
+        }
+
+        let mut restored = make_recycle_producer(&ring, depth);
+        restored.restore_from_ring(make_pool(&ring, depth)).unwrap();
+        restored.restore_from_ring(make_pool(&ring, depth)).unwrap();
+        assert_eq!(restored.pool.num_free(), 0);
+    }
+
+    #[test]
+    fn test_restore_from_ring_then_poll_used() {
+        let depth = 4usize;
+        let ring = make_ring(depth);
+        let producer = make_recycle_producer(&ring, depth);
+        let pool_base = producer.pool.base_addr();
+
+        // Simulate host prefill
+        let mut writer = make_producer(&ring);
+        for i in 0..depth {
+            writer
+                .submit_one(pool_base + (i * SLOT_SIZE) as u64, SLOT_SIZE as u32, true)
+                .unwrap();
+        }
+
+        // Restore producer and use ring-level consumer to complete one entry
+        let mut restored = make_recycle_producer(&ring, depth);
+        restored.restore_from_ring(make_pool(&ring, depth)).unwrap();
+
+        // Ring-level consumer reads available descriptors
+        let mut consumer = make_consumer(&ring);
+        let (id, chain) = consumer.poll_available().unwrap();
+        let writable = chain.writables();
+        assert_eq!(writable.len(), 1);
+
+        // Write some data into the writable buffer
+        let payload = b"test payload";
+        consumer.mem().write(writable[0].addr, payload).unwrap();
+        consumer.submit_used(id, payload.len() as u32).unwrap();
+
+        // Producer polls for the completion
+        let cqe = restored.poll().unwrap().unwrap();
+        assert_eq!(&cqe.data[..payload.len()], payload);
+
+        // Pool slot should be returned after data is dropped
+        drop(cqe);
+        assert_eq!(restored.pool.num_free(), 1);
     }
 }

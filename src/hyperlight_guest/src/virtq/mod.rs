@@ -26,7 +26,6 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use context::GuestContext;
-use hyperlight_common::layout::{SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET, scratch_top_ptr};
 pub use mem::GuestMemOps;
 
 // Init state machine
@@ -34,16 +33,16 @@ const UNINITIALIZED: u8 = 0;
 const INITIALIZED: u8 = 1;
 static INIT_STATE: AtomicU8 = AtomicU8::new(UNINITIALIZED);
 
-/// Check if the global context has been initialized.
-pub fn is_initialized() -> bool {
-    INIT_STATE.load(Ordering::Acquire) == INITIALIZED
-}
-
 // Storage: UnsafeCell guarded by atomic init state.
 struct SyncWrap<T>(T);
 unsafe impl<T> Sync for SyncWrap<T> {}
 
 static GLOBAL_CONTEXT: SyncWrap<UnsafeCell<Option<GuestContext>>> = SyncWrap(UnsafeCell::new(None));
+
+/// Check if the global context has been initialized.
+pub fn is_initialized() -> bool {
+    INIT_STATE.load(Ordering::Acquire) == INITIALIZED
+}
 
 /// Access the global guest context via closure.
 ///
@@ -77,25 +76,4 @@ pub fn set_global_context(ctx: GuestContext) {
         panic!("guest context already initialized");
     }
     unsafe { *GLOBAL_CONTEXT.0.get() = Some(ctx) };
-}
-
-/// Reset the global context if a snapshot restore was detected.
-/// Compares the virtq generation counter in scratch-top metadata.
-pub fn maybe_reset_global_context() {
-    if !is_initialized() {
-        return;
-    }
-
-    let current_gen = unsafe { *scratch_top_ptr::<u16>(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET) };
-
-    with_context(|ctx| {
-        if current_gen != ctx.generation() {
-            ctx.reset(current_gen);
-        }
-    });
-}
-
-/// Read the current snapshot generation from scratch-top metadata.
-fn read_gen() -> u64 {
-    unsafe { *scratch_top_ptr::<u64>(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET) }
 }
