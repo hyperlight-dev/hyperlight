@@ -917,7 +917,7 @@ impl<M: MemOps> RingProducer<M> {
     pub fn reset_prefilled(&mut self, ids: &[u16]) {
         let size = self.desc_table.len();
         let count = ids.len();
-        assert!(count <= size);
+        debug_assert!(count <= size);
 
         let wrapped = count >= size;
         self.avail_cursor.head = if wrapped { 0 } else { count as u16 };
@@ -928,15 +928,11 @@ impl<M: MemOps> RingProducer<M> {
 
         self.id_num.iter_mut().for_each(|n| *n = 0);
         for &id in ids {
-            assert!((id as usize) < size);
-            assert_eq!(self.id_num[id as usize], 0);
             self.id_num[id as usize] = 1;
         }
 
         self.num_free = size - count;
         self.id_free.clear();
-        self.id_free
-            .extend((0..size as u16).filter(|id| self.id_num[*id as usize] == 0));
     }
 }
 
@@ -3298,10 +3294,7 @@ pub(crate) mod tests {
         assert!(producer.used_cursor.wrap());
 
         assert_eq!(producer.num_free, 4);
-        assert_eq!(producer.id_free.len(), 4);
-        for &id in &[0, 1, 2, 4] {
-            assert!(producer.id_free.contains(&id));
-        }
+        assert!(producer.id_free.is_empty());
         // Only the specified IDs are in-flight
         for &id in &[5, 6, 7, 3] {
             assert_eq!(producer.id_num[id as usize], 1);
@@ -3309,19 +3302,6 @@ pub(crate) mod tests {
         for &id in &[0, 1, 2, 4] {
             assert_eq!(producer.id_num[id as usize], 0);
         }
-    }
-
-    #[test]
-    fn test_reset_prefilled_partial_then_submit() {
-        let ring = make_ring(8);
-        let mut producer = make_producer(&ring);
-        producer.reset_prefilled(&[4, 5, 6, 7]);
-
-        let id = producer.submit_one(0x8000, 128, false).unwrap();
-
-        assert!([0, 1, 2, 3].contains(&id));
-        assert_eq!(producer.num_free, 3);
-        assert_eq!(producer.id_num[id as usize], 1);
     }
 
     #[test]

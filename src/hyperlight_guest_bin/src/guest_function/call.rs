@@ -101,8 +101,7 @@ pub(crate) fn internal_dispatch_function() {
 
     // After snapshot restore, the ring memory is zeroed but the
     // producer's cursors are stale. Check once per dispatch entry.
-    virtq::maybe_reset_global_context();
-    virtq::with_context(|ctx| ctx.drain_g2h_completions());
+    crate::virtq::maybe_reset_virtqueues();
 
     let function_call = virtq::with_context(|ctx| {
         ctx.recv_h2g_call()

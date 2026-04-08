@@ -530,9 +530,15 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.snapshot_count = snapshot.snapshot_generation();
 
         self.update_scratch_bookkeeping()?;
+
+        // Place the H2G pool at first_free so the bump allocator starts right after it.
+        // Guest reads this GVA from scratch-top during reset().
+        let h2g_pool_gva = self.place_h2g_pool_at_first_free()?;
+
         self.init_g2h_consumer()?;
         self.init_h2g_consumer()?;
-        self.restore_h2g_prefill()?;
+        self.restore_h2g_prefill(h2g_pool_gva)?;
+
         Ok((gsnapshot, gscratch))
     }
 
@@ -912,22 +918,39 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(())
     }
 
+    /// Place the H2G pool at `first_free` during snapshot restore.
+    ///
+    /// Writes the pool GVA to scratch-top and advances the bump
+    /// allocator past the pool so COW page-fault resolution cannot
+    /// alias pool memory. Returns the computed pool GVA for use by
+    /// [`restore_h2g_prefill`].
+    fn place_h2g_pool_at_first_free(&mut self) -> Result<u64> {
+        use hyperlight_common::layout::*;
+
+        let scratch_size = self.scratch_mem.mem_size();
+        let first_free = self.layout.get_first_free_scratch_gpa();
+        let base_gpa = scratch_base_gpa(scratch_size);
+        let base_gva = scratch_base_gva(scratch_size);
+        let h2g_pool_gva = base_gva + (first_free - base_gpa);
+        let h2g_pages = self.layout.sandbox_memory_config.get_h2g_pool_pages() as u64;
+
+        self.update_scratch_bookkeeping_item(SCRATCH_TOP_H2G_POOL_GVA_OFFSET, h2g_pool_gva)?;
+        let allocator = first_free + h2g_pages * PAGE_SIZE_USIZE as u64;
+        self.update_scratch_bookkeeping_item(SCRATCH_TOP_ALLOCATOR_OFFSET, allocator)?;
+
+        Ok(h2g_pool_gva)
+    }
+
     /// Prefill the H2G ring with writable descriptors after snapshot restore.
     ///
     /// Uses a temporary `RingProducer` to write descriptors into the H2G ring
     /// so the host consumer can poll them. The guest's `restore_from_ring`
     /// will later reconstruct its inflight state from these descriptors.
-    pub(crate) fn restore_h2g_prefill(&mut self) -> Result<()> {
-        let pool_gva = match self.h2g_pool_gva {
-            Some(gva) => gva,
-            None => return Ok(()),
-        };
-
+    fn restore_h2g_prefill(&mut self, pool_gva: u64) -> Result<()> {
         let layout = self.h2g_virtq_layout()?;
         let mem_ops = self.host_mem_ops();
         let h2g_depth = self.layout.sandbox_memory_config.get_h2g_queue_depth();
 
-        // Pool size from config
         let slot_size = PAGE_SIZE_USIZE;
         let pool_size = self.layout.sandbox_memory_config.get_h2g_pool_pages() * PAGE_SIZE_USIZE;
         let slot_count = pool_size / slot_size;
@@ -935,10 +958,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let mut producer = virtq::RingProducer::new(layout, mem_ops);
         let prefill_count = core::cmp::min(slot_count, h2g_depth);
 
-        // Write descriptors in reverse order to match the guest's LIFO
-        // allocation pattern (RecyclePool::alloc pops from the end of
-        // the free list, so the first prefill gets the highest address).
-        for i in (0..prefill_count).rev() {
+        // Write descriptors in forward order. The guest calls
+        // restore_from_ring which reconstructs used-descriptor addresses
+        // as base + position * slot_size, so the iteration order must
+        // match this formula.
+        for i in 0..prefill_count {
             let addr = pool_gva + (i * slot_size) as u64;
             producer
                 .submit_one(addr, slot_size as u32, true)
@@ -1147,6 +1171,91 @@ mod tests {
 
         for (name, config) in test_cases {
             verify_page_tables(name, config);
+        }
+    }
+
+    /// Verify that the H2G pool placed at `first_free` during restore
+    /// does not overlap with the bump allocator range or the
+    /// scratch-top metadata region.
+    ///
+    /// This guards against the COW-pool GPA overlap bug: if the bump
+    /// allocator could return GPAs inside the pool region, a COW
+    /// page-fault would overwrite pool buffer data with stale shared
+    /// memory content, corrupting virtqueue communication.
+    fn verify_pool_allocator_no_collision(name: &str, config: SandboxConfiguration) {
+        let path = simple_guest_as_string().expect("failed to get simple guest path");
+        let snapshot = Snapshot::from_env(GuestBinary::FilePath(path), config)
+            .unwrap_or_else(|e| panic!("{name}: failed to create snapshot: {e}"));
+
+        let layout = snapshot.layout();
+        let scratch_size = layout.get_scratch_size();
+        let first_free = layout.get_first_free_scratch_gpa();
+        let h2g_pages = layout.sandbox_memory_config.get_h2g_pool_pages();
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(scratch_size);
+
+        let pool_start = first_free;
+        let pool_end = first_free + (h2g_pages * PAGE_TABLE_SIZE) as u64;
+        let allocator_start = pool_end;
+
+        // The metadata region lives at the very top of scratch.
+        // SCRATCH_TOP_EXN_STACK_OFFSET (0x50) is the highest offset.
+        // Two pages are reserved at the top for exception stack and metadata.
+        let scratch_end = scratch_base + scratch_size as u64;
+        let metadata_start = scratch_end - 2 * PAGE_TABLE_SIZE as u64;
+
+        assert!(
+            pool_start >= scratch_base,
+            "{name}: pool starts before scratch (pool=0x{pool_start:x}, scratch=0x{scratch_base:x})"
+        );
+
+        assert!(
+            pool_end <= metadata_start,
+            "{name}: pool overlaps metadata (pool_end=0x{pool_end:x}, metadata=0x{metadata_start:x})"
+        );
+
+        assert_eq!(
+            allocator_start, pool_end,
+            "{name}: allocator should start immediately after pool"
+        );
+
+        assert!(
+            allocator_start < metadata_start,
+            "{name}: no room for COW allocations (allocator=0x{allocator_start:x}, metadata=0x{metadata_start:x})"
+        );
+    }
+
+    #[test]
+    fn test_pool_allocator_no_collision() {
+        let test_cases: Vec<(&str, SandboxConfiguration)> = vec![
+            ("default", SandboxConfiguration::default()),
+            ("large pools", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_h2g_pool_pages(16);
+                cfg.set_g2h_pool_pages(16);
+                cfg
+            }),
+            ("minimal scratch", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_scratch_size(0x20000);
+                cfg
+            }),
+            ("large scratch", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_scratch_size(0x100000);
+                cfg
+            }),
+            ("large heap + large pools", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_heap_size(LARGE_HEAP_SIZE);
+                cfg.set_scratch_size(0x100000);
+                cfg.set_h2g_pool_pages(32);
+                cfg.set_g2h_pool_pages(32);
+                cfg
+            }),
+        ];
+
+        for (name, config) in test_cases {
+            verify_pool_allocator_no_collision(name, config);
         }
     }
 }
