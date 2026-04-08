@@ -343,7 +343,6 @@ fn callback_test_parallel() {
 }
 
 #[test]
-#[ignore] // TODO(virtq): C guest host-function error path needs fixing.
 fn host_function_error() {
     with_all_uninit_sandboxes(|mut sandbox| {
         // create host function
