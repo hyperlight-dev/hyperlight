@@ -26,17 +26,16 @@ use mshv_bindings::LapicState;
 #[cfg(gdb)]
 use mshv_bindings::{DebugRegisters, hv_message_type_HVMSG_X64_EXCEPTION_INTERCEPT};
 use mshv_bindings::{
-    FloatingPointUnit, SpecialRegisters, StandardRegisters, XSave, hv_message_type,
-    hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
+    FloatingPointUnit, HV_X64_REGISTER_CLASS_IP, SpecialRegisters, StandardRegisters, XSave,
+    hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
-    hv_partition_synthetic_processor_features, hv_register_assoc,
-    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_create_partition_v2,
-    mshv_user_mem_region,
+    hv_partition_synthetic_processor_features, mshv_create_partition_v2, mshv_user_mem_region,
 };
 #[cfg(feature = "hw-interrupts")]
 use mshv_bindings::{
-    hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED, hv_register_name_HV_X64_REGISTER_RAX,
+    HV_X64_REGISTER_CLASS_GENERAL, hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED,
+    hv_register_assoc, hv_register_value,
 };
 #[cfg(feature = "hw-interrupts")]
 use mshv_ioctls::InterruptRequest;
@@ -219,16 +218,21 @@ impl VirtualMachine for MshvVm {
                             let instruction_length = io_message.header.instruction_length() as u64;
                             let is_write = io_message.header.intercept_access_type != 0;
 
-                            // mshv, unlike kvm, does not automatically increment RIP
-                            self.vcpu_fd
-                                .set_reg(&[hv_register_assoc {
-                                    name: hv_register_name_HV_X64_REGISTER_RIP,
-                                    value: hv_register_value {
-                                        reg64: rip + instruction_length,
-                                    },
-                                    ..Default::default()
-                                }])
-                                .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
+                            // mshv, unlike kvm, does not automatically increment RIP.
+                            {
+                                let page = self
+                                    .vcpu_fd
+                                    .get_vp_reg_page()
+                                    .ok_or(RunVcpuError::NoVpRegisterPage)?;
+                                // SAFETY: The register page is a valid mmap'd page
+                                // from create_vcpu and is always populated after a
+                                // vcpu run returns an intercept message.
+                                unsafe {
+                                    (*page.0).__bindgen_anon_1.__bindgen_anon_1.rip =
+                                        rip + instruction_length;
+                                    (*page.0).dirty |= 1 << HV_X64_REGISTER_CLASS_IP;
+                                }
+                            }
 
                             // VmAction::Halt always means "I'm done", regardless
                             // of whether a timer is active.
@@ -253,13 +257,22 @@ impl VirtualMachine for MshvVm {
                                 } else if let Some(val) =
                                     super::super::x86_64::hw_interrupts::handle_io_in(port_number)
                                 {
-                                    self.vcpu_fd
-                                        .set_reg(&[hv_register_assoc {
-                                            name: hv_register_name_HV_X64_REGISTER_RAX,
-                                            value: hv_register_value { reg64: val },
-                                            ..Default::default()
-                                        }])
-                                        .map_err(|e| RunVcpuError::Unknown(e.into()))?;
+                                    let page = self
+                                        .vcpu_fd
+                                        .get_vp_reg_page()
+                                        .ok_or(RunVcpuError::NoVpRegisterPage)?;
+                                    // SAFETY: The register page is a valid mmap'd page
+                                    // from create_vcpu and is always populated after a
+                                    // vcpu run returns an intercept message.
+                                    unsafe {
+                                        (*page.0)
+                                            .__bindgen_anon_1
+                                            .__bindgen_anon_1
+                                            .__bindgen_anon_1
+                                            .__bindgen_anon_1
+                                            .rax = val;
+                                        (*page.0).dirty |= 1 << HV_X64_REGISTER_CLASS_GENERAL;
+                                    }
                                     continue;
                                 }
                             }
