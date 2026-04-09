@@ -1251,7 +1251,8 @@ fn should_notify(evt: EventSuppression, ring_len: u16, old: RingCursor, new: Rin
 
             ring_need_event(off, new.head(), old.head())
         }
-        _ => unreachable!(),
+        // treat as disabled if invalid
+        _ => false,
     }
 }
 

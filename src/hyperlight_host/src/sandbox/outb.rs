@@ -199,27 +199,40 @@ fn outb_virtq_call(
 
     // Drain entries, processing Log messages, until we find a Request.
     let (entry, completion) = loop {
-        let Some((entry, completion)) = consumer
-            .poll(g2h_pool_size)
-            .map_err(|e| HandleOutbError::ReadHostFunctionCall(format!("G2H poll: {e}")))?
-        else {
+        let Ok(maybe_next) = consumer.poll(g2h_pool_size) else {
+            return Err(HandleOutbError::ReadHostFunctionCall(
+                "G2H poll failed".into(),
+            ));
+        };
+
+        let Some((entry, completion)) = maybe_next else {
             // No G2H entry - backpressure-only notify or prefill notify.
             return Ok(());
         };
 
+        let hdr_size = VirtqMsgHeader::SIZE;
         let entry_data = entry.data();
-        if entry_data.len() < VirtqMsgHeader::SIZE {
+
+        if entry_data.len() < hdr_size {
             return Err(HandleOutbError::ReadHostFunctionCall(
                 "G2H entry too short".into(),
             ));
         }
-        let hdr: VirtqMsgHeader = *bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
+
+        let hdr: VirtqMsgHeader = *bytemuck::from_bytes(&entry_data[..hdr_size]);
 
         match hdr.msg_kind() {
             Ok(MsgKind::Log) => {
-                let payload = &entry_data[VirtqMsgHeader::SIZE..];
+                let available = entry_data.len() - hdr_size;
+                let log_len = (hdr.payload_len as usize).min(available);
+                let payload = &entry_data[hdr_size..hdr_size + log_len];
+
                 emit_guest_log(payload);
-                let _ = consumer.complete(completion);
+
+                consumer.complete(completion).map_err(|e| {
+                    HandleOutbError::ReadHostFunctionCall(format!("G2H complete log: {e}"))
+                })?;
+
                 continue;
             }
             Ok(MsgKind::Request) => break (entry, completion),
@@ -237,8 +250,18 @@ fn outb_virtq_call(
         }
     };
 
+    // Validate completion buffer before calling the host function
+    let virtq::SendCompletion::Writable(mut wc) = completion else {
+        return Err(HandleOutbError::WriteHostFunctionResponse(
+            "G2H: expected writable completion, got ack (ring corruption)".into(),
+        ));
+    };
+
     let entry_data = entry.data();
-    let payload = &entry_data[VirtqMsgHeader::SIZE..];
+    let hdr: VirtqMsgHeader = *bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
+    let available = entry_data.len() - VirtqMsgHeader::SIZE;
+    let payload_len = (hdr.payload_len as usize).min(available);
+    let payload = &entry_data[VirtqMsgHeader::SIZE..VirtqMsgHeader::SIZE + payload_len];
 
     let call = FunctionCall::try_from(payload)
         .map_err(|e| HandleOutbError::ReadHostFunctionCall(e.to_string()))?;
@@ -258,13 +281,6 @@ fn outb_virtq_call(
 
     let resp_header = VirtqMsgHeader::new(MsgKind::Response, 0, result_payload.len() as u32);
     let resp_header_bytes = bytemuck::bytes_of(&resp_header);
-
-    // Write response into the completion buffer
-    let virtq::SendCompletion::Writable(mut wc) = completion else {
-        return Err(HandleOutbError::WriteHostFunctionResponse(
-            "G2H: expected writable completion, got ack (ring corruption)".into(),
-        ));
-    };
 
     wc.write_all(resp_header_bytes)
         .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;

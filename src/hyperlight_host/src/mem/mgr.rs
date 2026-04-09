@@ -1073,8 +1073,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 return Err(new_error!("G2H: result entry too short"));
             }
 
-            let hdr: &VirtqMsgHeader = bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
-            let payload = &entry_data[VirtqMsgHeader::SIZE..];
+            let hdr_size = VirtqMsgHeader::SIZE;
+            let hdr: &VirtqMsgHeader = bytemuck::from_bytes(&entry_data[..hdr_size]);
+            let available = entry_data.len() - hdr_size;
+            let payload_len = (hdr.payload_len as usize).min(available);
+            let payload = &entry_data[hdr_size..hdr_size + payload_len];
 
             match hdr.msg_kind() {
                 Ok(MsgKind::Response) => {
