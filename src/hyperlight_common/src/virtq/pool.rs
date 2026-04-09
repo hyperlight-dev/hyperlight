@@ -150,10 +150,10 @@ impl<const N: usize> Slab<N> {
         }
 
         // Fallback to full search
+        let total = self.used_slots.len();
         self.used_slots.zeroes().find(|&next_free| {
-            self.used_slots
-                .count_zeroes(next_free..next_free + slots_num)
-                == slots_num
+            let end = next_free + slots_num;
+            end <= total && self.used_slots.count_zeroes(next_free..end) == slots_num
         })
     }
 
@@ -415,6 +415,11 @@ impl<const L: usize, const U: usize> BufferPool<L, U> {
         Ok(Self {
             inner: SyncWrap(Rc::new(RefCell::new(inner))),
         })
+    }
+
+    /// Upper slab slot size in bytes.
+    pub const fn upper_slot_size() -> usize {
+        U
     }
 }
 
@@ -819,6 +824,40 @@ mod tests {
         slab.dealloc(alloc).unwrap();
         let result = slab.dealloc(alloc);
         assert!(matches!(result, Err(AllocError::InvalidFree(_, _))));
+    }
+
+    #[test]
+    fn test_slab_multi_slot_alloc_near_end() {
+        let mut slab = make_slab::<256>(1792); // 7 slots
+        let a0 = slab.alloc(256).unwrap();
+        let a1 = slab.alloc(256).unwrap();
+        let _a2 = slab.alloc(256).unwrap();
+        let _a3 = slab.alloc(256).unwrap();
+        let _a4 = slab.alloc(256).unwrap();
+        let _a5 = slab.alloc(256).unwrap();
+        let _a6 = slab.alloc(256).unwrap();
+
+        slab.dealloc(a0).unwrap();
+        slab.dealloc(a1).unwrap();
+
+        // 2-slot run fits at indices 0..2 but the search visits index 6
+        // (a free zero) first if slots 0-1 are not found before it.
+        // Actually slots 0-1 are free, so it should find them.
+        let run = slab.alloc(300).unwrap(); // needs 2 slots
+        assert_eq!(run.len, 512);
+    }
+
+    #[test]
+    fn test_slab_multi_slot_alloc_no_room_at_end() {
+        // Only the last slot is free but a 2-slot run is requested.
+        // find_slots must not panic when checking beyond the bitset.
+        let mut slab = make_slab::<256>(1792); // 7 slots
+        let allocs: Vec<_> = (0..7).map(|_| slab.alloc(256).unwrap()).collect();
+        // Free only the last slot (index 6)
+        slab.dealloc(allocs[6]).unwrap();
+
+        let result = slab.alloc(300); // needs 2 slots, only 1 free
+        assert!(matches!(result, Err(AllocError::NoSpace)));
     }
 
     #[test]

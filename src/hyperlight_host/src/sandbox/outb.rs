@@ -191,6 +191,8 @@ fn outb_virtq_call(
     mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
     host_funcs: &Arc<Mutex<FunctionRegistry>>,
 ) -> Result<(), HandleOutbError> {
+    let g2h_pool_size = mem_mgr.g2h_pool_size();
+
     let consumer = mem_mgr.g2h_consumer.as_mut().ok_or_else(|| {
         HandleOutbError::ReadHostFunctionCall("G2H consumer not initialized".into())
     })?;
@@ -198,7 +200,7 @@ fn outb_virtq_call(
     // Drain entries, processing Log messages, until we find a Request.
     let (entry, completion) = loop {
         let Some((entry, completion)) = consumer
-            .poll(8192)
+            .poll(g2h_pool_size)
             .map_err(|e| HandleOutbError::ReadHostFunctionCall(format!("G2H poll: {e}")))?
         else {
             // No G2H entry - backpressure-only notify or prefill notify.

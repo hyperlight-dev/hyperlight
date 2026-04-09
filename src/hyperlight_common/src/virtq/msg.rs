@@ -20,6 +20,8 @@ limitations under the License.
 //! fixed 8-byte header, enabling message type discrimination and
 //! request/response correlation.
 
+use bitflags::bitflags;
+
 /// Message types for the virtqueue wire protocol.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,24 +56,33 @@ impl TryFrom<u8> for MsgKind {
     }
 }
 
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct MsgFlags: u8 {
+        /// More descriptors follow for this message.
+        const MORE = 1 << 0;
+    }
+}
+
 /// Wire header for all virtqueue messages
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct VirtqMsgHeader {
     /// Discriminates the message type.
     pub kind: u8,
-    /// Per-type flags TODO(ring): add flags type.
+    /// Per-message flags (see [`MsgFlags`]).
     pub flags: u8,
     /// Caller-assigned correlation ID. Responses echo the request's ID.
     pub req_id: u16,
-    /// Byte length of the payload following this header.
+    /// Byte length of the payload following this header in this descriptor.
     pub payload_len: u32,
 }
 
 impl VirtqMsgHeader {
     pub const SIZE: usize = core::mem::size_of::<Self>();
 
-    /// Create a new message header.
+    /// Create a new message header with no flags set.
     pub const fn new(kind: MsgKind, req_id: u16, payload_len: u32) -> Self {
         Self {
             kind: kind as u8,
@@ -82,10 +93,10 @@ impl VirtqMsgHeader {
     }
 
     /// Create a new header with flags.
-    pub const fn with_flags(kind: MsgKind, flags: u8, req_id: u16, payload_len: u32) -> Self {
+    pub const fn with_flags(kind: MsgKind, flags: MsgFlags, req_id: u16, payload_len: u32) -> Self {
         Self {
             kind: kind as u8,
-            flags,
+            flags: flags.bits(),
             req_id,
             payload_len,
         }
@@ -94,5 +105,16 @@ impl VirtqMsgHeader {
     /// Parse the kind field into a [`MsgKind`] enum.
     pub fn msg_kind(&self) -> Result<MsgKind, u8> {
         MsgKind::try_from(self.kind)
+    }
+
+    /// Interpret the raw flags field as [`MsgFlags`].
+    pub fn msg_flags(&self) -> MsgFlags {
+        MsgFlags::from_bits_truncate(self.flags)
+    }
+
+    /// Returns true if [`MsgFlags::MORE`] is set, indicating more
+    /// descriptors follow for this message.
+    pub const fn has_more(&self) -> bool {
+        self.flags & MsgFlags::MORE.bits() != 0
     }
 }

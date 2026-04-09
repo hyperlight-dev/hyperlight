@@ -654,3 +654,79 @@ fn virtq_large_payload_roundtrip() {
         assert!(res.iter().all(|&b| b == 0));
     });
 }
+
+#[test]
+fn virtq_multi_descriptor_h2g_two_slots() {
+    // Payload exceeds a single H2G slot (4096 - header), requiring 2 descriptors.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(4);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        let large_msg: String = "A".repeat(4200);
+        let res: String = sandbox.call("Echo", large_msg.clone()).unwrap();
+        assert_eq!(res, large_msg);
+    });
+}
+
+#[test]
+fn virtq_multi_descriptor_h2g_max_slots() {
+    // Payload spanning all available H2G pool slots.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(4);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        let large_msg: String = "B".repeat(8200);
+        let res: String = sandbox.call("Echo", large_msg.clone()).unwrap();
+        assert_eq!(res, large_msg);
+    });
+}
+
+#[test]
+fn virtq_multi_descriptor_h2g_byte_array() {
+    // Multi-descriptor with byte array arguments to test binary payloads.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(8);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        let large_bytes: Vec<u8> = (0..5000).map(|i| (i % 256) as u8).collect();
+        let res: Vec<u8> = sandbox
+            .call("SetByteArrayToZero", large_bytes.clone())
+            .unwrap();
+        assert_eq!(res.len(), 5000);
+        assert!(res.iter().all(|&b| b == 0));
+    });
+}
+
+#[test]
+fn virtq_multi_descriptor_h2g_boundary() {
+    // Payload exactly at single-slot capacity boundary.
+    // Header is 8 bytes, so a single slot fits exactly 4088 bytes of payload.
+    // The FlatBuffer encoding adds overhead, so we test near the boundary
+    // to verify no off-by-one errors.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(4);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        // This should fit in one descriptor (small overhead)
+        let msg_under: String = "C".repeat(3900);
+        let res: String = sandbox.call("Echo", msg_under.clone()).unwrap();
+        assert_eq!(res, msg_under);
+
+        // This should just barely spill into a second descriptor
+        let msg_over: String = "D".repeat(4100);
+        let res: String = sandbox.call("Echo", msg_over.clone()).unwrap();
+        assert_eq!(res, msg_over);
+    });
+}
+
+#[test]
+fn virtq_multi_descriptor_h2g_repeated_calls() {
+    // Multiple large calls in sequence to verify H2G refill works correctly
+    // after multi-descriptor consumption.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(8);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        for i in 0..5 {
+            let ch = char::from(b'A' + i as u8);
+            let msg: String = std::iter::repeat_n(ch, 4500).collect();
+            let res: String = sandbox.call("Echo", msg.clone()).unwrap();
+            assert_eq!(res, msg, "mismatch on call {i}");
+        }
+    });
+}

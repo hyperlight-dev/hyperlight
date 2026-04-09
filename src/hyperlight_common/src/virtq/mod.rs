@@ -335,11 +335,11 @@ pub enum SuppressionKind {
 
 /// A token representing a sent entry in the virtqueue.
 ///
-/// Tokens uniquely identify in-flight requests and are used to correlate
-/// requests with their responses. The token value corresponds to the
-/// descriptor ID in the underlying ring.
+/// Tokens uniquely identify in-flight requests and are used to correlate requests with their responses.
+/// The first element is a monotonically increasing generation counter. The second element is the
+/// underlying descriptor ID
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Token(pub u16);
+pub struct Token(pub u32, pub u16);
 
 impl From<BufferElement> for Allocation {
     fn from(value: BufferElement) -> Self {
@@ -971,6 +971,54 @@ mod tests {
         let cqe2 = producer.poll().unwrap().unwrap();
         assert_eq!(cqe2.token, tok_rw);
         assert_eq!(&cqe2.data[..], b"reply");
+    }
+
+    /// Regression test: reclaim + submit must not cause token collisions.
+    ///
+    /// Before the monotonic generation counter, Token wrapped the descriptor
+    /// ID which gets recycled. This caused stale pending completions to
+    /// match newly submitted entries with the same recycled descriptor ID.
+    #[test]
+    fn test_reclaim_submit_no_token_collision() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Submit and complete a ReadOnly entry
+        let tok_old = send_readonly(&mut producer, b"log");
+
+        let (_, c) = consumer.poll(1024).unwrap().unwrap();
+        consumer.complete(c).unwrap();
+
+        // Reclaim pushes the completion to pending (token = tok_old)
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 1);
+
+        // Submit a new ReadWrite entry - may reuse the same descriptor ID
+        let tok_new = send_readwrite(&mut producer, b"call", 64);
+
+        // Tokens must differ even if the descriptor ID was recycled
+        assert_ne!(
+            tok_old, tok_new,
+            "tokens must be unique across reclaim/submit cycles"
+        );
+
+        // Complete the ReadWrite entry
+        let (_, c) = consumer.poll(1024).unwrap().unwrap();
+        let SendCompletion::Writable(mut wc) = c else {
+            panic!("expected writable");
+        };
+        wc.write_all(b"result").unwrap();
+        consumer.complete(wc.into()).unwrap();
+
+        // Poll should return the stale ReadOnly completion first (wrong token)
+        let cqe1 = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe1.token, tok_old);
+        assert!(cqe1.data.is_empty());
+
+        // Then the new ReadWrite completion (matching token)
+        let cqe2 = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe2.token, tok_new);
+        assert_eq!(&cqe2.data[..], b"result");
     }
 }
 #[cfg(all(test, loom))]

@@ -125,7 +125,8 @@ pub struct VirtqProducer<M, N, P> {
     inner: RingProducer<M>,
     notifier: N,
     pool: P,
-    inflight: Vec<Option<Inflight>>,
+    next_token: u32,
+    inflight: Vec<Option<(Token, Inflight)>>,
     pending: VecDeque<RecvCompletion>,
 }
 
@@ -152,6 +153,7 @@ where
             pool,
             notifier,
             inflight,
+            next_token: 0,
             pending: VecDeque::new(),
         }
     }
@@ -218,12 +220,19 @@ where
         };
 
         let id = used.id as usize;
-        let inf = self
+        let (token, inf) = self
             .inflight
             .get_mut(id)
             .ok_or(VirtqError::InvalidState)?
             .take()
             .ok_or(VirtqError::InvalidState)?;
+
+        // the token's descriptor ID must match the ring's
+        debug_assert_eq!(
+            token.1, used.id,
+            "ring returned desc_id={} but inflight slot {} has token with desc_id={}",
+            used.id, id, token.1,
+        );
 
         let written = used.len as usize;
 
@@ -250,10 +259,7 @@ where
             None => Bytes::new(),
         };
 
-        Ok(Some(RecvCompletion {
-            token: Token(used.id),
-            data,
-        }))
+        Ok(Some(RecvCompletion { token, data }))
     }
 
     /// Drain all available completions, calling the provided closure for each.
@@ -310,6 +316,9 @@ where
         let chain = inflight.try_into_chain(written)?;
         let id = self.inner.submit_available(&chain)?;
 
+        let token = Token(self.next_token, id);
+        self.next_token = self.next_token.wrapping_add(1);
+
         let slot = self
             .inflight
             .get_mut(id as usize)
@@ -319,7 +328,7 @@ where
             return Err(VirtqError::InvalidState);
         }
 
-        *slot = Some(inflight);
+        *slot = Some((token, inflight));
 
         let should_notify = self.inner.should_notify_since(cursor_before)?;
 
@@ -336,7 +345,7 @@ where
             });
         }
 
-        Ok(Token(id))
+        Ok(token)
     }
 
     /// Signal backpressure to the consumer.
@@ -474,12 +483,18 @@ where
                 .slot_addr(pos as usize)
                 .ok_or(VirtqError::InvalidState)?;
 
-            self.inflight[id as usize] = Some(Inflight::WriteOnly {
-                completion: Allocation {
-                    addr,
-                    len: slot_size,
+            let token = Token(self.next_token, id);
+            self.next_token = self.next_token.wrapping_add(1);
+
+            self.inflight[id as usize] = Some((
+                token,
+                Inflight::WriteOnly {
+                    completion: Allocation {
+                        addr,
+                        len: slot_size,
+                    },
                 },
-            });
+            ));
 
             ids.push(id);
         }
@@ -869,7 +884,7 @@ mod tests {
         // Ring should still be fully usable
         let se = producer.chain().entry(64).completion(128).build().unwrap();
         let tok = producer.submit(se).unwrap();
-        assert!(tok.0 < 16);
+        assert!(tok.1 < 16);
     }
 
     #[test]
@@ -885,7 +900,7 @@ mod tests {
         // Ring should still be fully usable
         let se = producer.chain().entry(64).completion(128).build().unwrap();
         let tok = producer.submit(se).unwrap();
-        assert!(tok.0 < 16);
+        assert!(tok.1 < 16);
     }
 
     #[test]
