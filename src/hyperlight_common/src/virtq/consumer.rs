@@ -329,10 +329,14 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         self.next_token = self.next_token.wrapping_add(1);
 
         // Copy entry data from shared memory
-        let data = entry_elem
-            .map(|elem| self.read_element(&elem))
-            .transpose()?
-            .unwrap_or_default();
+        let data = match entry_elem.map(|elem| self.read_element(&elem)).transpose() {
+            Ok(d) => d.unwrap_or_default(),
+            Err(e) => {
+                // Read failed - clear inflight before propagating
+                self.inflight.set(id_idx, false);
+                return Err(e);
+            }
+        };
 
         let entry = RecvEntry { token, data };
 
