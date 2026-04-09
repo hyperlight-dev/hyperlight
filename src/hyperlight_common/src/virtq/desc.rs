@@ -319,9 +319,12 @@ mod tests {
 
     #[test]
     fn desc_table_get_out_of_bounds() {
-        let mut vec = vec![Descriptor::zeroed(); 4];
-        let ptr = vec.as_mut_ptr();
-        let table = unsafe { DescTable::from_raw_parts(ptr.addr() as u64, 4) };
+        // Allocate with extra space to guarantee 16-byte alignment
+        // (Descriptor requires ALIGN=16 but repr(C) only gives 8).
+        let mut buf = vec![0u8; 4 * Descriptor::SIZE + Descriptor::ALIGN];
+        let base = buf.as_mut_ptr() as usize;
+        let aligned = (base + Descriptor::ALIGN - 1) & !(Descriptor::ALIGN - 1);
+        let table = unsafe { DescTable::from_raw_parts(aligned as u64, 4) };
         assert!(table.desc_addr(3).is_some());
         assert!(table.desc_addr(4).is_none());
     }
