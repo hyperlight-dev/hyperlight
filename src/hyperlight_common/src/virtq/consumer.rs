@@ -255,6 +255,7 @@ pub struct VirtqConsumer<M, N> {
     inner: RingConsumer<M>,
     notifier: N,
     inflight: FixedBitSet,
+    next_token: u32,
 }
 
 impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
@@ -273,6 +274,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
             inner,
             notifier,
             inflight,
+            next_token: 0,
         }
     }
 
@@ -323,7 +325,8 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         }
 
         self.inflight.insert(id_idx);
-        let token = Token(id);
+        let token = Token(self.next_token, id);
+        self.next_token = self.next_token.wrapping_add(1);
 
         // Copy entry data from shared memory
         let data = entry_elem

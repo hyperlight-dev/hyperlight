@@ -19,7 +19,7 @@ use std::num::NonZeroU16;
 
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::mem::PAGE_SIZE_USIZE;
-use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
+use hyperlight_common::virtq::msg::{MsgFlags, MsgKind, VirtqMsgHeader};
 use hyperlight_common::virtq::{self, Layout as VirtqLayout};
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
@@ -876,6 +876,20 @@ impl SandboxMemoryManager<HostSharedMemory> {
         HostMemOps::new(&self.scratch_mem, scratch_base_gva)
     }
 
+    /// Total G2H buffer pool size in bytes.
+    pub(crate) fn g2h_pool_size(&self) -> usize {
+        self.layout.sandbox_memory_config.get_g2h_pool_pages() * PAGE_SIZE_USIZE
+    }
+
+    pub(crate) fn h2g_pool_size(&self) -> usize {
+        self.layout.sandbox_memory_config.get_h2g_pool_pages() * PAGE_SIZE_USIZE
+    }
+
+    /// H2G slot size in bytes. Each prefilled writable descriptor has this capacity.
+    pub(crate) fn h2g_slot_size(&self) -> usize {
+        PAGE_SIZE_USIZE
+    }
+
     /// Initialize the G2H virtqueue consumer.
     /// Must be called after scratch bookkeeping is written.
     pub(crate) fn init_g2h_consumer(&mut self) -> Result<()> {
@@ -951,7 +965,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         let mem_ops = self.host_mem_ops();
         let h2g_depth = self.layout.sandbox_memory_config.get_h2g_queue_depth();
 
-        let slot_size = PAGE_SIZE_USIZE;
+        let slot_size = self.h2g_slot_size();
         let pool_size = self.layout.sandbox_memory_config.get_h2g_pool_pages() * PAGE_SIZE_USIZE;
         let slot_count = pool_size / slot_size;
 
@@ -974,39 +988,60 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
     /// Write a guest function call into the H2G virtqueue.
     ///
-    /// Polls the H2G consumer for a prefilled entry from the guest,
-    /// writes `VirtqMsgHeader::Request` followed by `buffer` into the
-    /// writable completion, and completes the entry.
+    /// Large payloads that exceed a single slot are split across multiple descriptors.
     pub(crate) fn write_guest_function_call_virtq(&mut self, buffer: &[u8]) -> Result<()> {
+        let h2g_pool_size = self.h2g_pool_size();
+
         let consumer = self
             .h2g_consumer
             .as_mut()
             .ok_or_else(|| new_error!("H2G consumer not initialized"))?;
 
-        let (entry, completion) = consumer
-            .poll(8192)
-            .map_err(|e| new_error!("H2G poll: {:?}", e))?
-            .ok_or_else(|| new_error!("H2G: no prefilled entry available"))?;
+        let mut offset = 0usize;
 
-        // Consume the entry data - this should be empty
-        drop(entry);
+        loop {
+            let remaining = buffer.len() - offset;
 
-        let header = VirtqMsgHeader::new(MsgKind::Request, 0, buffer.len() as u32);
+            let (entry, completion) = consumer
+                .poll(h2g_pool_size)
+                .map_err(|e| new_error!("H2G poll: {:?}", e))?
+                .ok_or_else(|| new_error!("H2G: no prefilled descriptor available"))?;
 
-        let virtq::SendCompletion::Writable(mut wc) = completion else {
-            return Err(new_error!(
-                "H2G: expected writable completion, got non-writable (ring corruption)"
-            ));
-        };
+            drop(entry);
 
-        wc.write_all(bytemuck::bytes_of(&header))
-            .map_err(|e| new_error!("H2G write header: {:?}", e))?;
-        wc.write_all(buffer)
-            .map_err(|e| new_error!("H2G write payload: {:?}", e))?;
+            let virtq::SendCompletion::Writable(mut wc) = completion else {
+                return Err(new_error!(
+                    "H2G: expected writable completion (ring corruption)"
+                ));
+            };
 
-        consumer
-            .complete(wc.into())
-            .map_err(|e| new_error!("H2G complete: {:?}", e))?;
+            let data_cap = wc.capacity() - VirtqMsgHeader::SIZE;
+            let chunk_len = remaining.min(data_cap);
+            let has_more = offset + chunk_len < buffer.len();
+
+            let flags = if has_more {
+                MsgFlags::MORE
+            } else {
+                MsgFlags::empty()
+            };
+
+            let hdr = VirtqMsgHeader::with_flags(MsgKind::Request, flags, 0, chunk_len as u32);
+
+            wc.write_all(bytemuck::bytes_of(&hdr))
+                .map_err(|e| new_error!("H2G write header: {:?}", e))?;
+            wc.write_all(&buffer[offset..offset + chunk_len])
+                .map_err(|e| new_error!("H2G write payload: {:?}", e))?;
+
+            consumer
+                .complete(wc.into())
+                .map_err(|e| new_error!("H2G complete: {:?}", e))?;
+
+            offset += chunk_len;
+
+            if !has_more {
+                break;
+            }
+        }
 
         Ok(())
     }
@@ -1015,6 +1050,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
     ///
     /// The guest submitted the Response on G2H with
     pub(crate) fn read_h2g_result_from_g2h(&mut self) -> Result<FunctionCallResult> {
+        let g2h_pool_size = self.g2h_pool_size();
+
         let consumer = self
             .g2h_consumer
             .as_mut()
@@ -1024,7 +1061,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         // find the Response that carries the H2G function call result.
         loop {
             let maybe_next = consumer
-                .poll(8192)
+                .poll(g2h_pool_size)
                 .map_err(|e| new_error!("G2H poll for H2G result: {:?}", e))?;
 
             let Some((entry, completion)) = maybe_next else {

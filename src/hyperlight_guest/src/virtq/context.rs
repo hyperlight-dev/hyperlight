@@ -39,7 +39,6 @@ use crate::bail;
 use crate::error::Result;
 
 static REQUEST_ID: AtomicU16 = AtomicU16::new(0);
-const MAX_RESPONSE_CAP: usize = 4096;
 
 /// Guest-side notifier that triggers a VM exit via outb.
 #[derive(Clone, Copy)]
@@ -69,9 +68,18 @@ pub struct QueueConfig {
 
 /// Virtqueue runtime state for guest-host communication.
 pub struct GuestContext {
+    /// guest-to-host driver
     g2h_producer: G2hProducer,
+    /// host-to-guest driver
     h2g_producer: H2gProducer,
+    /// Max writable bytes the host can write into a G2H completion.
+    /// Derived from the G2H pool upper slab slot size.
+    g2h_response_cap: usize,
+    /// H2G slot size in bytes (each prefilled writable descriptor).
+    h2g_slot_size: usize,
+    /// snapshot generation counter
     generation: u64,
+    /// used by cabi
     last_host_result: Option<Result<ReturnValue>>,
 }
 
@@ -81,30 +89,27 @@ impl GuestContext {
         let size = g2h.pool_pages * PAGE_SIZE_USIZE;
         let g2h_pool =
             BufferPool::new(g2h.pool_gva, size).expect("failed to create G2H buffer pool");
+        let g2h_response_cap = BufferPool::<256, 4096>::upper_slot_size();
         let g2h_producer =
             VirtqProducer::new(g2h.layout, GuestMemOps, GuestNotifier, g2h_pool.clone());
 
-        // Each H2G prefill entry is a single descriptor with one contiguous buffer: one
-        // fixed-size buffer per descriptor, large payloads split across multiple independent
-        // completions.
-        //
-        // TODO(virtq): consider smaller slot_size (e.g. pool_size / desc_count) to maximize
-        // prefilled entries for host-side call batching.
         let size = h2g.pool_pages * PAGE_SIZE_USIZE;
-        let slot = PAGE_SIZE_USIZE;
-        let h2g_pool =
-            RecyclePool::new(h2g.pool_gva, size, slot).expect("failed to create H2G recycle pool");
+        let h2g_slot_size = PAGE_SIZE_USIZE;
+        let h2g_pool = RecyclePool::new(h2g.pool_gva, size, h2g_slot_size)
+            .expect("failed to create H2G recycle pool");
         let h2g_producer =
             VirtqProducer::new(h2g.layout, GuestMemOps, GuestNotifier, h2g_pool.clone());
 
         let mut ctx = Self {
             g2h_producer,
             h2g_producer,
+            g2h_response_cap,
+            h2g_slot_size,
             generation,
             last_host_result: None,
         };
 
-        ctx.prefill_h2g();
+        ctx.prefill_h2g().expect("H2G initial prefill failed");
         ctx
     }
 
@@ -164,8 +169,8 @@ impl GuestContext {
         };
 
         let result_bytes = &completion.data;
-        if result_bytes.len() > MAX_RESPONSE_CAP {
-            bail!("G2H: response is too large");
+        if result_bytes.len() < VirtqMsgHeader::SIZE {
+            bail!("G2H: response too short for header");
         }
 
         let payload_bytes = &result_bytes[VirtqMsgHeader::SIZE..];
@@ -182,12 +187,16 @@ impl GuestContext {
     }
 
     /// Receive a host-to-guest function call from the H2G queue.
+    ///
+    /// Each descriptor carries a [`VirtqMsgHeader`] with `payload_len` for
+    /// that chunk. If [`MsgFlags::MORE`](hyperlight_common::virtq::msg::MsgFlags::MORE)
+    /// is set, more descriptors follow.
     pub fn recv_h2g_call(&mut self) -> Result<FunctionCall> {
-        let Some(completion) = self.h2g_producer.poll()? else {
+        let Some(first) = self.h2g_producer.poll()? else {
             bail!("H2G: no pending call");
         };
 
-        let data = &completion.data;
+        let data = &first.data;
         if data.len() < VirtqMsgHeader::SIZE {
             bail!("H2G: completion too short for header");
         }
@@ -198,39 +207,52 @@ impl GuestContext {
             bail!("H2G: unexpected message kind: 0x{:02x}", hdr.kind);
         }
 
-        let payload_end = VirtqMsgHeader::SIZE + hdr.payload_len as usize;
-        if payload_end > data.len() {
-            bail!("H2G: payload length exceeds completion data");
+        let chunk_len = hdr.payload_len as usize;
+
+        if !hdr.has_more() {
+            // Single-descriptor fast path
+            let payload = &data[VirtqMsgHeader::SIZE..VirtqMsgHeader::SIZE + chunk_len];
+            let fc = FunctionCall::try_from(payload)?;
+            return Ok(fc);
         }
 
-        let payload = &data[VirtqMsgHeader::SIZE..payload_end];
-        let fc = FunctionCall::try_from(payload)?;
+        // Multi-descriptor: accumulate payload until MsgFlags::MORE is cleared
+        let mut assembled = Vec::with_capacity(chunk_len * 2);
+        assembled.extend_from_slice(&data[VirtqMsgHeader::SIZE..VirtqMsgHeader::SIZE + chunk_len]);
+
+        loop {
+            let Some(next) = self.h2g_producer.poll()? else {
+                bail!("H2G: expected continuation descriptor, none available");
+            };
+
+            let next_data = &next.data;
+            if next_data.len() < VirtqMsgHeader::SIZE {
+                bail!("H2G: continuation too short for header");
+            }
+
+            let next_hdr: &VirtqMsgHeader =
+                bytemuck::from_bytes(&next_data[..VirtqMsgHeader::SIZE]);
+
+            let next_chunk = next_hdr.payload_len as usize;
+
+            assembled.extend_from_slice(
+                &next_data[VirtqMsgHeader::SIZE..VirtqMsgHeader::SIZE + next_chunk],
+            );
+
+            if !next_hdr.has_more() {
+                break;
+            }
+        }
+
+        let fc = FunctionCall::try_from(assembled.as_slice())?;
         Ok(fc)
     }
 
     /// Send the result of a host-to-guest call back to the host via the
-    /// G2H queue, then refill one H2G descriptor slot.
+    /// G2H queue, then refill H2G descriptor slots until the ring is full.
     pub fn send_h2g_result(&mut self, payload: &[u8]) -> Result<()> {
         self.send_g2h_oneshot(MsgKind::Response, payload)?;
-
-        // Best-effort refill of one H2G slot. Backpressure is expected
-        // (pool/ring may be full), other errors are propagated.
-        match self
-            .h2g_producer
-            .chain()
-            .completion(PAGE_SIZE_USIZE)
-            .build()
-        {
-            Ok(e) => match self.h2g_producer.submit(e) {
-                Ok(_) => {}
-                Err(virtq::VirtqError::Backpressure) => {}
-                Err(e) => bail!("H2G refill submit: {e}"),
-            },
-            Err(virtq::VirtqError::Backpressure) => {}
-            Err(e) => bail!("H2G refill build: {e}"),
-        }
-
-        Ok(())
+        self.prefill_h2g()
     }
 
     /// Restore the H2G producer after snapshot restore.
@@ -239,7 +261,7 @@ impl GuestContext {
     /// [`restore_from_ring`] to reconstruct inflight state
     /// from the host's prefilled descriptors.
     pub fn restore_h2g(&mut self, pool_gva: u64, pool_size: usize) {
-        let pool = RecyclePool::new(pool_gva, pool_size, PAGE_SIZE_USIZE)
+        let pool = RecyclePool::new(pool_gva, pool_size, self.h2g_slot_size)
             .expect("H2G RecyclePool creation failed");
 
         self.h2g_producer
@@ -300,23 +322,23 @@ impl GuestContext {
 
     /// Pre-fill the H2G queue with completion-only descriptors so the host
     /// can write incoming call payloads into them.
-    fn prefill_h2g(&mut self) {
+    fn prefill_h2g(&mut self) -> Result<()> {
         loop {
             let entry = match self
                 .h2g_producer
                 .chain()
-                .completion(PAGE_SIZE_USIZE)
+                .completion(self.h2g_slot_size)
                 .build()
             {
                 Ok(e) => e,
-                Err(virtq::VirtqError::Backpressure) => break,
-                Err(e) => panic!("H2G prefill build: {e}"),
+                Err(e) if e.is_transient() => return Ok(()),
+                Err(e) => bail!("H2G prefill build: {e}"),
             };
 
             match self.h2g_producer.submit(entry) {
                 Ok(_) => {}
-                Err(virtq::VirtqError::Backpressure) => break,
-                Err(e) => panic!("H2G prefill submit: {e}"),
+                Err(e) if e.is_transient() => return Ok(()),
+                Err(e) => bail!("H2G prefill submit: {e}"),
             }
         }
     }
@@ -375,7 +397,7 @@ impl GuestContext {
             .g2h_producer
             .chain()
             .entry(entry_len)
-            .completion(MAX_RESPONSE_CAP)
+            .completion(self.g2h_response_cap)
             .build()?;
 
         entry.write_all(header)?;
