@@ -350,11 +350,14 @@ impl RingCursor {
         }
     }
 
-    /// Advance by n positions
+    /// Advance by n positions using modular arithmetic.
     #[inline]
     pub(crate) fn advance_by(&mut self, n: u16) {
-        for _ in 0..n {
-            self.advance();
+        let new = self.head + n;
+        let wraps = new / self.size;
+        self.head = new % self.size;
+        if wraps % 2 != 0 {
+            self.wrap = !self.wrap;
         }
     }
 
@@ -371,6 +374,7 @@ impl RingCursor {
     }
 
     /// Reset cursor to initial state.
+    #[inline]
     pub fn reset(&mut self) {
         self.head = 0;
         self.wrap = true;
@@ -962,7 +966,7 @@ impl<M: MemOps> RingConsumer<M> {
             return Err(RingError::WouldBlock);
         }
 
-        // Build chain (head + tails).
+        // Build chain (head + tails), tracking readable/writable split inline.
         let mut elements = SmallVec::<[BufferElement; 16]>::new();
         let mut pos = self.avail_cursor;
         let mut chain_len: u16 = 1;
@@ -972,7 +976,10 @@ impl<M: MemOps> RingConsumer<M> {
 
         let max_steps = self.desc_table.len();
 
-        elements.push(BufferElement::from(&head_desc));
+        let head_elem = BufferElement::from(&head_desc);
+        let mut seen_writable = head_elem.writable;
+        let mut writables: usize = if seen_writable { 1 } else { 0 };
+        elements.push(head_elem);
         pos.advance();
 
         while has_next && steps < max_steps {
@@ -982,8 +989,17 @@ impl<M: MemOps> RingConsumer<M> {
                 .ok_or(RingError::InvalidState)?;
 
             // tail reads does not need ordering because head has been already validated
-            let desc = self.mem.read_val(addr).map_err(|_| RingError::MemError)?;
-            elements.push(BufferElement::from(&desc));
+            let desc: Descriptor = self.mem.read_val(addr).map_err(|_| RingError::MemError)?;
+            let elem = BufferElement::from(&desc);
+
+            if elem.writable {
+                seen_writable = true;
+                writables += 1;
+            } else if seen_writable {
+                return Err(RingError::BadChain);
+            }
+
+            elements.push(elem);
 
             chain_len += 1;
             steps += 1;
@@ -997,8 +1013,7 @@ impl<M: MemOps> RingConsumer<M> {
             return Err(RingError::BadChain);
         }
 
-        // Verify that readable/writable split is correct
-        let readables = chain_readable_count(&elements)?;
+        let readables = elements.len() - writables;
 
         // Since driver wrote the same id everywhere, head_desc.id is valid.
         let id = head_desc.id;
@@ -1261,24 +1276,6 @@ pub fn ring_need_event(event_idx: u16, new: u16, old: u16) -> bool {
     new.wrapping_sub(event_idx).wrapping_sub(1) < new.wrapping_sub(old)
 }
 
-#[inline]
-/// Check that a buffer chain is well-formed: all readable buffers first,
-/// then writable and return the count of readable buffers.
-fn chain_readable_count(elems: &[BufferElement]) -> Result<usize, RingError> {
-    let mut seen_writable = false;
-    let mut writables = 0;
-
-    for e in elems {
-        if e.writable {
-            seen_writable = true;
-            writables += 1;
-        } else if seen_writable {
-            return Err(RingError::BadChain);
-        }
-    }
-
-    Ok(elems.len() - writables)
-}
 
 impl From<&Descriptor> for BufferElement {
     fn from(desc: &Descriptor) -> Self {

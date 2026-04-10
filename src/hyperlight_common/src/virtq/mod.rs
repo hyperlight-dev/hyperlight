@@ -896,14 +896,14 @@ mod tests {
     }
 
     #[test]
-    fn test_reclaim_then_poll_preserves_order() {
+    fn test_reclaim_discards_readonly_completions() {
         let ring = make_ring(8);
         let (mut producer, mut consumer, _) = make_test_producer(&ring);
 
         // Submit 3 entries: RO, RW, RO
-        let tok_ro1 = send_readonly(&mut producer, b"log1");
+        let _tok_ro1 = send_readonly(&mut producer, b"log1");
         let tok_rw = send_readwrite(&mut producer, b"call", 64);
-        let tok_ro2 = send_readonly(&mut producer, b"log2");
+        let _tok_ro2 = send_readonly(&mut producer, b"log2");
 
         // Consumer processes all 3
         let (_, c1) = consumer.poll(1024).unwrap().unwrap();
@@ -919,24 +919,16 @@ mod tests {
         let (_, c3) = consumer.poll(1024).unwrap().unwrap();
         consumer.complete(c3).unwrap(); // ack RO
 
-        // Reclaim all 3
+        // Reclaim all 3 - RO completions are discarded, only RW is buffered
         let count = producer.reclaim().unwrap();
         assert_eq!(count, 3);
 
-        // poll() returns them in order
-        let cqe1 = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe1.token, tok_ro1);
-        assert!(cqe1.data.is_empty());
+        // poll() returns only the RW completion
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, tok_rw);
+        assert_eq!(&cqe.data[..], b"result");
 
-        let cqe2 = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe2.token, tok_rw);
-        assert_eq!(&cqe2.data[..], b"result");
-
-        let cqe3 = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe3.token, tok_ro2);
-        assert!(cqe3.data.is_empty());
-
-        // No more
+        // No more - RO completions were discarded
         assert!(producer.poll().unwrap().is_none());
     }
 
@@ -973,11 +965,7 @@ mod tests {
         assert_eq!(&cqe2.data[..], b"reply");
     }
 
-    /// Regression test: reclaim + submit must not cause token collisions.
-    ///
-    /// Before the monotonic generation counter, Token wrapped the descriptor
-    /// ID which gets recycled. This caused stale pending completions to
-    /// match newly submitted entries with the same recycled descriptor ID.
+    /// reclaim + submit must not cause token collisions.
     #[test]
     fn test_reclaim_submit_no_token_collision() {
         let ring = make_ring(8);
@@ -989,7 +977,6 @@ mod tests {
         let (_, c) = consumer.poll(1024).unwrap().unwrap();
         consumer.complete(c).unwrap();
 
-        // Reclaim pushes the completion to pending (token = tok_old)
         let count = producer.reclaim().unwrap();
         assert_eq!(count, 1);
 
@@ -1010,15 +997,42 @@ mod tests {
         wc.write_all(b"result").unwrap();
         consumer.complete(wc.into()).unwrap();
 
-        // Poll should return the stale ReadOnly completion first (wrong token)
-        let cqe1 = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe1.token, tok_old);
-        assert!(cqe1.data.is_empty());
+        // Poll returns only the RW completion (RO was discarded by reclaim)
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, tok_new);
+        assert_eq!(&cqe.data[..], b"result");
 
-        // Then the new ReadWrite completion (matching token)
-        let cqe2 = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe2.token, tok_new);
-        assert_eq!(&cqe2.data[..], b"result");
+        // No stale RO completion in the queue
+        assert!(producer.poll().unwrap().is_none());
+    }
+
+    /// Verify that repeated oneshot submit/reclaim cycles do not accumulate pending completions.
+    #[test]
+    fn test_reclaim_readonly_does_not_leak_pending() {
+        let ring = make_ring(4);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        for _ in 0..10 {
+            // Fill the ring
+            for _ in 0..4 {
+                send_readonly(&mut producer, b"msg");
+            }
+
+            // Consumer acks all
+            while let Some((_, completion)) = consumer.poll(1024).unwrap() {
+                consumer.complete(completion).unwrap();
+            }
+
+            // Reclaim frees ring slots; empty completions are discarded
+            let count = producer.reclaim().unwrap();
+            assert_eq!(count, 4);
+
+            // No completions should be buffered in pending
+            assert!(
+                producer.poll().unwrap().is_none(),
+                "pending should be empty after reclaiming RO entries"
+            );
+        }
     }
 }
 #[cfg(all(test, loom))]

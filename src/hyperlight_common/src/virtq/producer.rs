@@ -34,6 +34,10 @@ pub struct RecvCompletion {
     pub token: Token,
     /// Completion data from the device.
     pub data: Bytes,
+    /// Whether this entry is oneshot so there is no writable completion buffer.
+    /// Oneshot entries are fire-and-forget: the producer does not
+    /// expect any response data from the device.
+    pub oneshot: bool,
 }
 
 /// Allocation tracking for an in-flight descriptor chain.
@@ -146,7 +150,8 @@ where
     /// * `pool` - Buffer allocator for entry/completion data
     pub fn new(layout: Layout, mem: M, notifier: N, pool: P) -> Self {
         let inner = RingProducer::new(layout, mem);
-        let inflight = vec![None; inner.len()];
+        let ring_len = inner.len();
+        let inflight = vec![None; ring_len];
 
         Self {
             inner,
@@ -154,7 +159,7 @@ where
             notifier,
             inflight,
             next_token: 0,
-            pending: VecDeque::new(),
+            pending: VecDeque::with_capacity(ring_len),
         }
     }
 
@@ -192,6 +197,9 @@ where
     /// buffer allocations immediately, and buffers completion data for
     /// later retrieval via [`poll`](Self::poll).
     ///
+    /// Completions with empty data from read-only/oneshot entries are
+    /// discarded immediately.
+    ///
     /// Use this to free resources under backpressure without losing
     /// completion data. Returns the number of entries reclaimed.
     pub fn reclaim(&mut self) -> Result<usize, VirtqError>
@@ -201,7 +209,11 @@ where
     {
         let mut count = 0;
         while let Some(cqe) = self.poll_ring()? {
-            self.pending.push_back(cqe);
+            if !cqe.oneshot {
+                debug_assert!(self.pending.len() < self.inflight.len());
+                debug_assert!(!cqe.data.is_empty());
+                self.pending.push_back(cqe);
+            }
             count += 1;
         }
         Ok(count)
@@ -242,6 +254,7 @@ where
         }
 
         // Read completion data
+        let has_completion = inf.completion().is_some();
         let data = match inf.completion() {
             Some(buf) => {
                 if written > buf.len {
@@ -259,7 +272,11 @@ where
             None => Bytes::new(),
         };
 
-        Ok(Some(RecvCompletion { token, data }))
+        Ok(Some(RecvCompletion {
+            token,
+            data,
+            oneshot: !has_completion,
+        }))
     }
 
     /// Drain all available completions, calling the provided closure for each.
