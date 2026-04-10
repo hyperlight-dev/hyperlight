@@ -268,11 +268,22 @@ fn outb_virtq_call(
 
     let name = call.function_name.clone();
     let args: Vec<ParameterValue> = call.parameters.unwrap_or(vec![]);
-    let res = host_funcs
+
+    let registry = host_funcs
         .try_lock()
-        .map_err(|e| HandleOutbError::LockFailed(file!(), line!(), e.to_string()))?
+        .map_err(|e| HandleOutbError::LockFailed(file!(), line!(), e.to_string()))?;
+
+    let mut res = registry
         .call_host_function(&name, args)
         .map_err(|e| GuestError::new(ErrorCode::HostFunctionError, e.to_string()));
+
+    // Truncate oversized error messages so the serialized response
+    // fits in the completion buffer the guest pre-allocated.
+    if let Err(err) = &mut res
+        && err.message.len() > wc.capacity()
+    {
+        err.message.truncate(wc.capacity());
+    }
 
     // Serialize response: VirtqMsgHeader + FunctionCallResult
     let func_result = FunctionCallResult::new(res);
