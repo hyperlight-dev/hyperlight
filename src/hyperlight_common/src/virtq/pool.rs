@@ -680,6 +680,20 @@ impl BufferProvider for RecyclePool {
 
     fn dealloc(&self, alloc: Allocation) -> Result<(), AllocError> {
         let mut inner = self.inner.borrow_mut();
+        let end = inner.base_addr + (inner.count * inner.slot_size) as u64;
+
+        if alloc.addr < inner.base_addr || alloc.addr >= end {
+            return Err(AllocError::InvalidFree(alloc.addr, alloc.len));
+        }
+
+        if (alloc.addr - inner.base_addr) % inner.slot_size as u64 != 0 {
+            return Err(AllocError::InvalidFree(alloc.addr, alloc.len));
+        }
+
+        if inner.free.contains(&alloc.addr) {
+            return Err(AllocError::InvalidFree(alloc.addr, alloc.len));
+        }
+
         inner.free.push(alloc.addr);
         Ok(())
     }
@@ -1388,6 +1402,133 @@ mod tests {
         // restore_allocated resets then removes - so 4 - 1 = 3
         pool.restore_allocated(&[0x80000]).unwrap();
         assert_eq!(pool.num_free(), 3);
+    }
+
+    #[test]
+    fn test_recycle_pool_dealloc_out_of_range() {
+        let pool = make_recycle_pool(4, 4096);
+        let _ = pool.alloc(4096).unwrap();
+
+        let bogus = Allocation {
+            addr: 0xDEAD,
+            len: 4096,
+        };
+        assert!(matches!(
+            pool.dealloc(bogus),
+            Err(AllocError::InvalidFree(0xDEAD, 4096))
+        ));
+    }
+
+    #[test]
+    fn test_recycle_pool_dealloc_misaligned() {
+        let pool = make_recycle_pool(4, 4096);
+        let _ = pool.alloc(4096).unwrap();
+
+        let misaligned = Allocation {
+            addr: 0x80001,
+            len: 4096,
+        };
+        assert!(matches!(
+            pool.dealloc(misaligned),
+            Err(AllocError::InvalidFree(0x80001, 4096))
+        ));
+    }
+
+    #[test]
+    fn test_recycle_pool_dealloc_double_free() {
+        let pool = make_recycle_pool(4, 4096);
+        let a = pool.alloc(4096).unwrap();
+        pool.dealloc(a).unwrap();
+
+        // Second dealloc should fail - address is already in the free list
+        assert!(matches!(
+            pool.dealloc(a),
+            Err(AllocError::InvalidFree(_, _))
+        ));
+    }
+
+    #[test]
+    fn test_recycle_pool_random_order_dealloc() {
+        let pool = make_recycle_pool(8, 4096);
+
+        let mut allocs: Vec<Allocation> = (0..8).map(|_| pool.alloc(4096).unwrap()).collect();
+        assert_eq!(pool.num_free(), 0);
+
+        // Dealloc in reverse order
+        allocs.reverse();
+        for a in &allocs {
+            pool.dealloc(*a).unwrap();
+        }
+        assert_eq!(pool.num_free(), 8);
+
+        // All slots should be re-allocatable
+        let reallocs: Vec<Allocation> = (0..8).map(|_| pool.alloc(4096).unwrap()).collect();
+        assert_eq!(pool.num_free(), 0);
+
+        // Verify all addresses are distinct
+        let mut addrs: Vec<u64> = reallocs.iter().map(|a| a.addr).collect();
+        addrs.sort();
+        addrs.dedup();
+        assert_eq!(addrs.len(), 8);
+    }
+
+    #[test]
+    fn test_recycle_pool_interleaved_alloc_dealloc_order() {
+        let pool = make_recycle_pool(4, 4096);
+
+        let a0 = pool.alloc(4096).unwrap();
+        let a1 = pool.alloc(4096).unwrap();
+        let a2 = pool.alloc(4096).unwrap();
+        let a3 = pool.alloc(4096).unwrap();
+        assert_eq!(pool.num_free(), 0);
+
+        // Free middle slots first (out of allocation order)
+        pool.dealloc(a2).unwrap();
+        pool.dealloc(a0).unwrap();
+        assert_eq!(pool.num_free(), 2);
+
+        // Re-alloc gets the out-of-order slots back (LIFO)
+        let b0 = pool.alloc(4096).unwrap();
+        assert_eq!(b0.addr, a0.addr);
+        let b1 = pool.alloc(4096).unwrap();
+        assert_eq!(b1.addr, a2.addr);
+
+        // Free everything in yet another order
+        pool.dealloc(a1).unwrap();
+        pool.dealloc(b0).unwrap();
+        pool.dealloc(b1).unwrap();
+        pool.dealloc(a3).unwrap();
+        assert_eq!(pool.num_free(), 4);
+
+        // All 4 original addresses should be available
+        let mut final_addrs: Vec<u64> = (0..4).map(|_| pool.alloc(4096).unwrap().addr).collect();
+        final_addrs.sort();
+        let expected: Vec<u64> = (0..4).map(|i| 0x80000 + i * 4096).collect();
+        assert_eq!(final_addrs, expected);
+    }
+
+    #[test]
+    fn test_recycle_pool_dealloc_order_independent_of_alloc_order() {
+        let pool = make_recycle_pool(6, 256);
+
+        // Allocate all
+        let allocs: Vec<Allocation> = (0..6).map(|_| pool.alloc(256).unwrap()).collect();
+
+        // Dealloc in scattered order: 4, 1, 5, 0, 3, 2
+        let order = [4, 1, 5, 0, 3, 2];
+        for &i in &order {
+            pool.dealloc(allocs[i]).unwrap();
+        }
+        assert_eq!(pool.num_free(), 6);
+
+        // Re-allocate all and verify we get back the full set
+        let mut realloc_addrs: Vec<u64> = (0..6).map(|_| pool.alloc(256).unwrap().addr).collect();
+        realloc_addrs.sort();
+
+        let mut orig_addrs: Vec<u64> = allocs.iter().map(|a| a.addr).collect();
+        orig_addrs.sort();
+
+        assert_eq!(realloc_addrs, orig_addrs);
     }
 }
 

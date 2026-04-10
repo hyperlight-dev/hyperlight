@@ -103,7 +103,7 @@ impl<T: BufferProvider> BufferProvider for Arc<T> {
 /// zero-copy `Bytes` backed by shared memory.
 ///
 /// When dropped, the allocation is returned to the pool.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BufferOwner<P: BufferProvider, M: MemOps> {
     pub(crate) pool: P,
     pub(crate) mem: M,
@@ -140,9 +140,10 @@ impl<F: FnOnce(Allocation)> AllocGuard<F> {
 
     pub fn release(mut self) -> Allocation {
         // Safety: AllocGuard is always constructed with Some, and release is only called once
-        self.0.take().map(|(alloc, _)| alloc).unwrap_or_else(|| {
-            unreachable!("AllocGuard::release called on dismissed guard")
-        })
+        self.0
+            .take()
+            .map(|(alloc, _)| alloc)
+            .unwrap_or_else(|| unreachable!("AllocGuard::release called on dismissed guard"))
     }
 }
 
@@ -152,9 +153,11 @@ impl<F: FnOnce(Allocation)> core::ops::Deref for AllocGuard<F> {
     fn deref(&self) -> &Allocation {
         // Safety: AllocGuard is always constructed with Some, and the inner value is only
         // taken by release() or Drop.
-        &self.0.as_ref().unwrap_or_else(|| {
-            unreachable!("AllocGuard::deref called on dismissed guard")
-        }).0
+        &self
+            .0
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("AllocGuard::deref called on dismissed guard"))
+            .0
     }
 }
 
