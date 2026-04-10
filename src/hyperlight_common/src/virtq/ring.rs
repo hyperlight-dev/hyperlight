@@ -406,7 +406,7 @@ impl RingCursor {
 
     /// Advance by n positions using modular arithmetic.
     #[inline]
-    fn advance_by(&mut self, n: u16) {
+    pub(crate) fn advance_by(&mut self, n: u16) {
         debug_assert!(self.head.checked_add(n).is_some());
         let new = self.head + n;
         let wraps = new / self.size;

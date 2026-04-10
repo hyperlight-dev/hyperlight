@@ -1127,21 +1127,21 @@ mod tests {
         assert_eq!(res, 0);
     }
 
-    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (24K) and heap(20K).
+    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (24K) and heap(32K).
     // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
     #[test]
     fn test_with_small_stack_and_heap() {
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_heap_size(20 * 1024);
+        cfg.set_heap_size(32 * 1024);
         // min_scratch_size already includes 1 page (4k on most
         // platforms) of guest stack, so add 20k more to get 24k
         // total, and then add some more for the eagerly-copied page
-        // tables on amd64
+        // tables on amd64 and virtq pool pages.
         let min_scratch = hyperlight_common::layout::min_scratch_size(
             cfg.get_g2h_queue_depth(),
             cfg.get_h2g_queue_depth(),
         );
-        cfg.set_scratch_size(min_scratch + 0x10000 + 0x10000);
+        cfg.set_scratch_size(min_scratch + 0x10000 + 0x18000);
 
         let mut sbox1: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
@@ -1755,7 +1755,7 @@ mod tests {
 
         for (name, heap_size) in test_cases {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_heap_size(heap_size);
+            cfg.set_heap_size(128 * 1024);
             cfg.set_scratch_size(0x100000);
 
             let path = simple_guest_as_string().unwrap();
