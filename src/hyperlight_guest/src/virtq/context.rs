@@ -79,6 +79,8 @@ pub struct GuestContext {
     h2g_slot_size: usize,
     /// snapshot generation counter
     generation: u64,
+    /// Number of H2G requests received that still need a G2H response.
+    pending_replies: u32,
     /// used by cabi
     last_host_result: Option<Result<ReturnValue>>,
 }
@@ -106,6 +108,7 @@ impl GuestContext {
             g2h_response_cap,
             h2g_slot_size,
             generation,
+            pending_replies: 0,
             last_host_result: None,
         };
 
@@ -114,6 +117,9 @@ impl GuestContext {
     }
 
     /// Call a host function via the G2H virtqueue.
+    ///
+    /// The reply guard is checked before submitting the readwrite chain
+    /// to ensure G2H capacity is reserved for pending responses.
     pub fn call_host_function<T: TryFrom<ReturnValue>>(
         &mut self,
         function_name: &str,
@@ -138,6 +144,9 @@ impl GuestContext {
         let hdr_bytes = bytemuck::bytes_of(&hdr);
 
         let entry_len = VirtqMsgHeader::SIZE + payload.len();
+
+        // Reply guard: readwrite chains use 2 descriptors, leave room for pending replies.
+        self.ensure_reply_capacity(2)?;
 
         let token = match self.try_send_readwrite(hdr_bytes, payload, entry_len) {
             Ok(tok) => tok,
@@ -191,6 +200,9 @@ impl GuestContext {
     /// Each descriptor carries a [`VirtqMsgHeader`] with `payload_len` for
     /// that chunk. If [`MsgFlags::MORE`](hyperlight_common::virtq::msg::MsgFlags::MORE)
     /// is set, more descriptors follow.
+    ///
+    /// Increments the reply guard counter so that subsequent G2H sends
+    /// reserve capacity for the response.
     pub fn recv_h2g_call(&mut self) -> Result<FunctionCall> {
         let Some(first) = self.h2g_producer.poll()? else {
             bail!("H2G: no pending call");
@@ -208,6 +220,9 @@ impl GuestContext {
         }
 
         let chunk_len = hdr.payload_len as usize;
+
+        // Track that we owe a response on G2H.
+        self.pending_replies = self.pending_replies.saturating_add(1);
 
         if !hdr.has_more() {
             // Single-descriptor fast path
@@ -250,8 +265,11 @@ impl GuestContext {
 
     /// Send the result of a host-to-guest call back to the host via the
     /// G2H queue, then refill H2G descriptor slots until the ring is full.
+    ///
+    /// Decrements the reply guard counter after a successful send.
     pub fn send_h2g_result(&mut self, payload: &[u8]) -> Result<()> {
         self.send_g2h_oneshot(MsgKind::Response, payload)?;
+        self.pending_replies = self.pending_replies.saturating_sub(1);
         self.prefill_h2g()
     }
 
@@ -343,15 +361,41 @@ impl GuestContext {
         }
     }
 
+    /// Ensure the G2H ring has enough free descriptors to accommodate
+    /// both the requested send (`need_descs`) and all pending replies.
+    fn ensure_reply_capacity(&mut self, need_descs: usize) -> Result<()> {
+        let reserved = self.pending_replies as usize;
+        loop {
+            let free = self.g2h_producer.num_free();
+            if free >= need_descs + reserved {
+                return Ok(());
+            }
+
+            self.g2h_producer.notify_backpressure();
+            let reclaimed = self.g2h_producer.reclaim()?;
+            if reclaimed == 0 {
+                // No progress - host hasn't completed any entries yet.
+                // Fall through and let the send path handle backpressure
+                // via its own retry logic.
+                return Ok(());
+            }
+        }
+    }
+
     /// Send a one-way message on the G2H queue ReadOnly and no completion.
     ///
-    /// If the pool or ring is full, triggers backpressure, VM exit so
-    /// the host can drain, then retries once.
+    /// For non-response sends, the reply guard is checked first to
+    /// ensure enough G2H capacity is reserved for pending replies.
     fn send_g2h_oneshot(&mut self, kind: MsgKind, payload: &[u8]) -> Result<()> {
         let reqid = REQUEST_ID.fetch_add(1, Relaxed);
         let hdr = VirtqMsgHeader::new(kind, reqid, payload.len() as u32);
         let hdr_bytes = bytemuck::bytes_of(&hdr);
         let entry_len = VirtqMsgHeader::SIZE + payload.len();
+
+        // Reply guard: non-response sends must leave room for pending replies.
+        if kind != MsgKind::Response {
+            self.ensure_reply_capacity(1)?;
+        }
 
         // First attempt
         match self.try_send_readonly(hdr_bytes, payload, entry_len) {
