@@ -715,10 +715,10 @@ fn log_message() {
     // follows:
     //  - logs from trace level tracing spans created as logs because of the tracing `log` feature
     //    - 4 from evolve call (generic_init + hyperlight_main)
-    //    - 8 from guest call
+    //    - 4 from guest call (call_host_function + read_n_bytes_from_user_memory)
     // and are multiplied because we make 6 calls to `log_test_messages`
     // NOTE: These numbers need to be updated if log messages or spans are added/removed
-    let num_fixed_trace_log = 12 * 6;
+    let num_fixed_trace_log = 8 * 6;
 
     // Calculate fixed info logs
     // - 4 logs per iteration from infrastructure at Info level (internal_dispatch_function)

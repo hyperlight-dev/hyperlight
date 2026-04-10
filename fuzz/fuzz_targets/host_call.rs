@@ -61,6 +61,8 @@ fuzz_target!(
                 HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("The number of arguments to the function is wrong") => {}
                 HyperlightError::ParameterValueConversionFailure(_, _) => {},
                 HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("Failed To Convert Parameter Value") => {}
+                HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("The parameter value type is unexpected") => {}
+                HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("The return value type is unexpected") => {}
 
                 // any other error should be reported
                 _ => panic!("Guest Aborted with Unexpected Error: {:?}", e),
