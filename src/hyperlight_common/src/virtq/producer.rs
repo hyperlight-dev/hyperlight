@@ -384,6 +384,12 @@ where
         self.inner.used_cursor()
     }
 
+    /// Number of free (unsubmitted) descriptors in the ring.
+    #[inline]
+    pub fn num_free(&self) -> usize {
+        self.inner.num_free()
+    }
+
     /// Configure event suppression for used buffer notifications.
     ///
     /// This controls when the device (consumer) signals us about completed buffers:
