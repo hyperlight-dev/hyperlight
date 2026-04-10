@@ -139,7 +139,10 @@ impl<F: FnOnce(Allocation)> AllocGuard<F> {
     }
 
     pub fn release(mut self) -> Allocation {
-        self.0.take().unwrap().0
+        // Safety: AllocGuard is always constructed with Some, and release is only called once
+        self.0.take().map(|(alloc, _)| alloc).unwrap_or_else(|| {
+            unreachable!("AllocGuard::release called on dismissed guard")
+        })
     }
 }
 
@@ -147,7 +150,11 @@ impl<F: FnOnce(Allocation)> core::ops::Deref for AllocGuard<F> {
     type Target = Allocation;
 
     fn deref(&self) -> &Allocation {
-        &self.0.as_ref().unwrap().0
+        // Safety: AllocGuard is always constructed with Some, and the inner value is only
+        // taken by release() or Drop.
+        &self.0.as_ref().unwrap_or_else(|| {
+            unreachable!("AllocGuard::deref called on dismissed guard")
+        }).0
     }
 }
 

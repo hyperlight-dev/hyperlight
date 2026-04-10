@@ -1755,8 +1755,8 @@ mod tests {
 
         for (name, heap_size) in test_cases {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_heap_size(128 * 1024);
-            cfg.set_scratch_size(0x100000);
+            cfg.set_heap_size(heap_size);
+            cfg.set_scratch_size(heap_size as usize + 0x100000);
 
             let path = simple_guest_as_string().unwrap();
             let sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg))
