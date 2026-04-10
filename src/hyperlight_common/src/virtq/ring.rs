@@ -1276,7 +1276,6 @@ pub fn ring_need_event(event_idx: u16, new: u16, old: u16) -> bool {
     new.wrapping_sub(event_idx).wrapping_sub(1) < new.wrapping_sub(old)
 }
 
-
 impl From<&Descriptor> for BufferElement {
     fn from(desc: &Descriptor) -> Self {
         BufferElement {

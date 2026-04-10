@@ -519,8 +519,8 @@ where
         self.inner.reset_prefilled(&ids);
 
         let addrs: SmallVec<[u64; 64]> = (0..prefill_count)
-            .map(|i| self.pool.slot_addr(i).expect("prefill_count <= pool count"))
-            .collect();
+            .map(|i| self.pool.slot_addr(i).ok_or(VirtqError::InvalidState))
+            .collect::<Result<_, _>>()?;
 
         self.pool
             .restore_allocated(&addrs)
