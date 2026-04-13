@@ -28,12 +28,14 @@ use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::virtq;
+use tracing::instrument;
 
 const BUFFER_SIZE: usize = 1000;
 static mut MESSAGE_BUFFER: Vec<u8> = Vec::new();
 
 use crate::GUEST_HANDLE;
 
+#[instrument(skip_all, level = "Info")]
 pub fn call_host_function<T>(
     function_name: &str,
     parameters: Option<Vec<ParameterValue>>,

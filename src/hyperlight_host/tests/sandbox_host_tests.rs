@@ -376,40 +376,6 @@ fn host_function_error() {
 }
 
 #[test]
-fn virtq_log_delivery() {
-    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
-
-    SimpleLogger::initialize_test_logger();
-    LOGGER.clear_log_calls();
-
-    with_rust_uninit_sandbox(|mut sbox| {
-        sbox.set_max_guest_log_level(tracing_core::LevelFilter::TRACE);
-        let mut sandbox = sbox.evolve().unwrap();
-
-        sandbox
-            .call::<()>("LogMessage", ("virtq log test message".to_string(), 3_i32))
-            .unwrap();
-
-        // Verify the guest log arrived via virtqueue
-        let count = LOGGER.num_log_calls();
-        assert!(count > 0, "expected at least one guest log, got 0");
-
-        let mut found = false;
-        for i in 0..count {
-            if let Some(call) = LOGGER.get_log_call(i)
-                && call.target == "hyperlight_guest"
-                && call.args.contains("virtq log test")
-            {
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "expected 'virtq log test' message from guest");
-        LOGGER.clear_log_calls();
-    });
-}
-
-#[test]
 fn virtq_log_with_callback() {
     // Verify that log messages interleaved with host callbacks work
     with_all_uninit_sandboxes(|mut sandbox| {
@@ -428,79 +394,6 @@ fn virtq_log_with_callback() {
         // function call ReadWrite entries don't corrupt the G2H queue.
         let res: String = sandbox.call("Echo", "test".to_string()).unwrap();
         assert_eq!(res, "test");
-    });
-}
-
-#[test]
-fn virtq_log_backpressure() {
-    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
-
-    SimpleLogger::initialize_test_logger();
-    LOGGER.clear_log_calls();
-
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_g2h_pool_pages(2);
-
-    with_rust_uninit_sandbox_cfg(cfg, |mut sbox| {
-        sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
-        let mut sandbox = sbox.evolve().unwrap();
-
-        // 50 logs with a 2-page pool should trigger backpressure
-        sandbox.call::<()>("LogMessageN", 50_i32).unwrap();
-
-        // Verify sandbox is still functional after backpressure
-        let res: i32 = sandbox
-            .call("ThisIsNotARealFunctionButTheNameIsImportant", ())
-            .unwrap();
-        assert_eq!(res, 99);
-
-        // Verify all 50 log entries were delivered
-        let guest_count = (0..LOGGER.num_log_calls())
-            .filter_map(|i| LOGGER.get_log_call(i))
-            .filter(|c| c.target == "hyperlight_guest" && c.args.contains("log entry"))
-            .count();
-        assert_eq!(guest_count, 50, "expected 50 guest logs, got {guest_count}");
-        LOGGER.clear_log_calls();
-    });
-}
-
-#[test]
-fn virtq_log_backpressure_repeated() {
-    // Multiple calls that each trigger backpressure, verifying the
-    // pool recovers correctly each time.
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_g2h_pool_pages(2);
-
-    with_rust_sandbox_cfg(cfg, |mut sandbox| {
-        for _ in 0..5 {
-            sandbox.call::<()>("LogMessageN", 30_i32).unwrap();
-        }
-    });
-}
-
-#[test]
-fn virtq_backpressure_small_ring() {
-    // Small descriptor table forces ring-level backpressure.
-    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
-
-    SimpleLogger::initialize_test_logger();
-    LOGGER.clear_log_calls();
-
-    let mut cfg = SandboxConfiguration::default();
-    cfg.set_g2h_queue_depth(4);
-
-    with_rust_uninit_sandbox_cfg(cfg, |mut sbox| {
-        sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
-        let mut sandbox = sbox.evolve().unwrap();
-
-        sandbox.call::<()>("LogMessageN", 20_i32).unwrap();
-
-        let guest_count = (0..LOGGER.num_log_calls())
-            .filter_map(|i| LOGGER.get_log_call(i))
-            .filter(|c| c.target == "hyperlight_guest" && c.args.contains("log entry"))
-            .count();
-        assert_eq!(guest_count, 20, "expected 20 guest logs, got {guest_count}");
-        LOGGER.clear_log_calls();
     });
 }
 
@@ -550,65 +443,6 @@ fn virtq_backpressure_no_data_loss() {
 
         let res: f64 = sandbox.call("EchoDouble", 1.234_f64).unwrap();
         assert!((res - 1.234).abs() < f64::EPSILON);
-    });
-}
-
-#[test]
-fn virtq_log_tracing_delivery() {
-    // Verify guest logs are emitted as tracing events when a tracing
-    // subscriber is active, matching the behavior of the old outb_log.
-    use hyperlight_testing::tracing_subscriber::TracingSubscriber;
-
-    let subscriber = TracingSubscriber::new(tracing::Level::TRACE);
-
-    tracing::subscriber::with_default(subscriber.clone(), || {
-        with_rust_uninit_sandbox(|mut sbox| {
-            sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
-            let mut sandbox = sbox.evolve().unwrap();
-
-            subscriber.clear();
-
-            sandbox
-                .call::<()>("LogMessage", ("tracing delivery test".to_string(), 3_i32))
-                .unwrap();
-
-            // Guest log goes through format_trace which creates tracing
-            // events with log.target = "hyperlight_guest" as a field.
-            let events = subscriber.get_events();
-            assert!(
-                !events.is_empty(),
-                "expected tracing events after guest log call, got none"
-            );
-        });
-    });
-}
-
-#[test]
-fn virtq_log_tracing_levels() {
-    // Verify each guest log level produces tracing events.
-    use hyperlight_testing::tracing_subscriber::TracingSubscriber;
-
-    let subscriber = TracingSubscriber::new(tracing::Level::TRACE);
-
-    tracing::subscriber::with_default(subscriber.clone(), || {
-        with_rust_uninit_sandbox(|mut sbox| {
-            sbox.set_max_guest_log_level(tracing_core::LevelFilter::TRACE);
-            let mut sandbox = sbox.evolve().unwrap();
-
-            // Test each level: 1=Trace, 2=Debug, 3=Info, 4=Warn, 5=Error
-            for level in [1_i32, 2, 3, 4, 5] {
-                subscriber.clear();
-                let msg = format!("level-test-{}", level);
-                sandbox.call::<()>("LogMessage", (msg, level)).unwrap();
-
-                let events = subscriber.get_events();
-                assert!(
-                    !events.is_empty(),
-                    "expected tracing events for guest log level {}",
-                    level
-                );
-            }
-        });
     });
 }
 

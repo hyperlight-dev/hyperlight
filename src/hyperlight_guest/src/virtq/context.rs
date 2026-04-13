@@ -33,8 +33,6 @@ use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
 use hyperlight_common::virtq::{
     self, BufferPool, Layout, Notifier, QueueStats, RecyclePool, Token, VirtqProducer,
 };
-use tracing::instrument;
-
 use super::GuestMemOps;
 use crate::bail;
 use crate::error::Result;
@@ -121,7 +119,6 @@ impl GuestContext {
     ///
     /// The reply guard is checked before submitting the readwrite chain
     /// to ensure G2H capacity is reserved for pending responses.
-    #[instrument(skip_all, level = "Info")]
     pub fn call_host_function<T: TryFrom<ReturnValue>>(
         &mut self,
         function_name: &str,

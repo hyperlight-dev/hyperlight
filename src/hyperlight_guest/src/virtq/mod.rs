@@ -22,7 +22,7 @@ limitations under the License.
 pub mod context;
 pub mod mem;
 
-use core::cell::UnsafeCell;
+use core::cell::RefCell;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use context::GuestContext;
@@ -31,13 +31,14 @@ pub use mem::GuestMemOps;
 // Init state machine
 const UNINITIALIZED: u8 = 0;
 const INITIALIZED: u8 = 1;
+
 static INIT_STATE: AtomicU8 = AtomicU8::new(UNINITIALIZED);
+static GLOBAL_CONTEXT: SyncWrap<RefCell<Option<GuestContext>>> = SyncWrap(RefCell::new(None));
 
-// Storage: UnsafeCell guarded by atomic init state.
+// Sync wrapper for the global context.
 struct SyncWrap<T>(T);
+/// SAFETY: The guest is single-threaded.
 unsafe impl<T> Sync for SyncWrap<T> {}
-
-static GLOBAL_CONTEXT: SyncWrap<UnsafeCell<Option<GuestContext>>> = SyncWrap(UnsafeCell::new(None));
 
 /// Check if the global context has been initialized.
 pub fn is_initialized() -> bool {
@@ -48,14 +49,14 @@ pub fn is_initialized() -> bool {
 ///
 /// # Panics
 ///
-/// Panics if the context has not been initialized.
+/// Panics if the context has not been initialized or re-entranted.
 pub fn with_context<R>(f: impl FnOnce(&mut GuestContext) -> R) -> R {
     assert!(
         INIT_STATE.load(Ordering::Acquire) == INITIALIZED,
         "guest context not initialized"
     );
-    let ctx = unsafe { &mut *GLOBAL_CONTEXT.0.get() };
-    f(ctx.as_mut().unwrap())
+    let mut borrow = GLOBAL_CONTEXT.0.borrow_mut();
+    f(borrow.as_mut().unwrap())
 }
 
 /// Install the global guest context. Called once during guest init.
@@ -75,5 +76,5 @@ pub fn set_global_context(ctx: GuestContext) {
     {
         panic!("guest context already initialized");
     }
-    unsafe { *GLOBAL_CONTEXT.0.get() = Some(ctx) };
+    unsafe { *GLOBAL_CONTEXT.0.as_ptr() = Some(ctx) };
 }
