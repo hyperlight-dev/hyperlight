@@ -158,7 +158,9 @@ impl MemoryRegionType {
     /// shared memory mapping with guard pages.
     pub fn surrogate_mapping(&self) -> SurrogateMapping {
         match self {
-            MemoryRegionType::MappedFile => SurrogateMapping::ReadOnlyFile,
+            MemoryRegionType::MappedFile | MemoryRegionType::Snapshot => {
+                SurrogateMapping::ReadOnlyFile
+            }
             _ => SurrogateMapping::SandboxMemory,
         }
     }
