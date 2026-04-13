@@ -145,6 +145,142 @@ impl MultiUseSandbox {
         self.pt_root_finder = Some(finder);
     }
 
+    /// Create a `MultiUseSandbox` directly from a [`Snapshot`],
+    /// bypassing [`UninitializedSandbox`](crate::UninitializedSandbox)
+    /// and [`evolve()`](crate::UninitializedSandbox::evolve).
+    ///
+    /// This is useful for fast sandbox creation when a snapshot of
+    /// an already-initialized guest is available, either saved to disk
+    /// or captured in memory from another sandbox.
+    ///
+    /// A default `HostPrint` host function is registered automatically.
+    /// Registering additional host functions is not currently supported
+    /// on this path; use the [`evolve()`](crate::UninitializedSandbox::evolve)
+    /// path if you need custom host functions.
+    ///
+    /// # Examples
+    ///
+    /// From a snapshot taken on another sandbox:
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use hyperlight_host::{MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Create and initialize a sandbox the normal way
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None,
+    /// )?.evolve()?;
+    ///
+    /// // Capture a snapshot of the initialized state
+    /// let snapshot = sandbox.snapshot()?;
+    ///
+    /// // Create a new sandbox directly from the snapshot
+    /// let mut sandbox2 = MultiUseSandbox::from_snapshot(snapshot)?;
+    /// let result: i32 = sandbox2.call("GetValue", ())?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// From a snapshot loaded from disk:
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use hyperlight_host::MultiUseSandbox;
+    /// # use hyperlight_host::sandbox::snapshot::Snapshot;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let snapshot = Arc::new(Snapshot::from_file("guest_snapshot.hls")?);
+    /// let mut sandbox = MultiUseSandbox::from_snapshot(snapshot)?;
+    /// let result: String = sandbox.call("Echo", "hello".to_string())?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    pub fn from_snapshot(snapshot: Arc<Snapshot>) -> Result<Self> {
+        use rand::RngExt;
+
+        use crate::mem::ptr::RawPtr;
+        use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
+
+        let host_funcs = Arc::new(Mutex::new(FunctionRegistry::with_default_host_print()?));
+
+        let stack_top_gva = snapshot.stack_top_gva();
+        let mut config = crate::sandbox::SandboxConfiguration::default();
+        config.set_input_data_size(snapshot.layout().input_data_size);
+        config.set_output_data_size(snapshot.layout().output_data_size);
+        config.set_heap_size(snapshot.layout().heap_size as u64);
+        config.set_scratch_size(snapshot.layout().get_scratch_size());
+        let load_info = snapshot.load_info();
+
+        let mgr = crate::mem::mgr::SandboxMemoryManager::from_snapshot(&snapshot)?;
+        let (mut hshm, gshm) = mgr.build()?;
+
+        let page_size = u32::try_from(page_size::get())? as usize;
+
+        #[cfg(target_os = "linux")]
+        crate::signal_handlers::setup_signal_handlers(&config)?;
+
+        let mut vm = set_up_hypervisor_partition(
+            gshm,
+            &config,
+            stack_top_gva,
+            page_size,
+            #[cfg(any(crashdump, gdb))]
+            Default::default(),
+            load_info,
+        )?;
+
+        let seed = {
+            let mut rng = rand::rng();
+            rng.random::<u64>()
+        };
+        let peb_addr = RawPtr::from(u64::try_from(hshm.layout.peb_address())?);
+
+        #[cfg(gdb)]
+        let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
+
+        vm.initialise(
+            peb_addr,
+            seed,
+            page_size as u32,
+            &mut hshm,
+            &host_funcs,
+            None,
+            #[cfg(gdb)]
+            dbg_mem_access_hdl,
+        )
+        .map_err(crate::hypervisor::hyperlight_vm::HyperlightVmError::Initialize)?;
+
+        // If the snapshot was taken from an already-initialized guest
+        // (NextAction::Call), apply the captured special registers so
+        // the guest resumes in the correct CPU state.
+        #[cfg(not(feature = "nanvix-unstable"))]
+        if matches!(snapshot.entrypoint(), super::snapshot::NextAction::Call(_)) {
+            let sregs = snapshot.sregs().cloned().unwrap_or_else(|| {
+                crate::hypervisor::regs::CommonSpecialRegisters::standard_64bit_defaults(
+                    hshm.layout.get_pt_base_gpa(),
+                )
+            });
+            vm.apply_sregs(hshm.layout.get_pt_base_gpa(), &sregs)
+                .map_err(|e| {
+                    crate::HyperlightError::HyperlightVmError(
+                        crate::hypervisor::hyperlight_vm::HyperlightVmError::Restore(e),
+                    )
+                })?;
+        }
+
+        #[cfg(gdb)]
+        let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
+
+        Ok(MultiUseSandbox::from_uninit(
+            host_funcs,
+            hshm,
+            vm,
+            #[cfg(gdb)]
+            dbg_mem_wrapper,
+        ))
+    }
+
     /// Creates a snapshot of the sandbox's current memory state.
     ///
     /// The snapshot is tied to this specific sandbox instance and can only be

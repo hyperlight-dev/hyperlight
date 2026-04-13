@@ -225,16 +225,16 @@ pub(crate) struct SandboxMemoryLayout {
     /// The size of the guest code section.
     pub(crate) code_size: usize,
     /// The size of the init data section (guest blob).
-    init_data_size: usize,
+    pub(crate) init_data_size: usize,
     /// Permission flags for the init data region.
     #[cfg_attr(feature = "i686-guest", allow(unused))]
-    init_data_permissions: Option<MemoryRegionFlags>,
+    pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
     /// The size of the scratch region in physical memory.
-    scratch_size: usize,
+    pub(crate) scratch_size: usize,
     /// The size of the snapshot region in physical memory.
-    snapshot_size: usize,
+    pub(crate) snapshot_size: usize,
     /// The size of the page tables (None if not yet set).
-    pt_size: Option<usize>,
+    pub(crate) pt_size: Option<usize>,
 }
 
 impl SandboxMemoryLayout {
@@ -389,12 +389,6 @@ impl SandboxMemoryLayout {
     #[cfg(feature = "nanvix-unstable")]
     pub(crate) fn get_file_mappings_size_offset(&self) -> usize {
         self.peb_file_mappings_offset()
-    }
-
-    /// Get the offset in guest memory to the file_mappings pointer field.
-    #[cfg(feature = "nanvix-unstable")]
-    fn get_file_mappings_pointer_offset(&self) -> usize {
-        self.get_file_mappings_size_offset() + size_of::<u64>()
     }
 
     /// Get the offset in snapshot memory where the FileMappingInfo array starts

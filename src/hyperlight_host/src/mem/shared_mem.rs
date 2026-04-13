@@ -2055,6 +2055,223 @@ impl ReadonlySharedMemory {
         self.guest_mapped_size.unwrap_or_else(|| self.mem_size())
     }
 
+    /// Create a `ReadonlySharedMemory` backed by a file on disk.
+    ///
+    /// The memory blob at `[offset..offset+len)` in the file is mapped
+    /// with copy-on-write semantics so that guest writes trigger
+    /// per-page CoW faults without modifying the backing file.
+    ///
+    /// The mapping is surrounded by guard pages, matching the
+    /// `ExclusiveSharedMemory::new` layout, so that `base_ptr()` and
+    /// `mem_size()` return the correct values via the `SharedMemory`
+    /// trait.
+    ///
+    /// - **Linux**: `mmap(MAP_PRIVATE)` for zero-copy file-backed CoW.
+    /// - **Windows**: `CreateFileMappingA(PAGE_WRITECOPY)` +
+    ///   `MapViewOfFile(FILE_MAP_COPY)` for zero-copy file-backed CoW.
+    ///   The returned `HostMapping` carries the file mapping handle so
+    ///   the surrogate process can create its own view via
+    ///   `MapViewOfFileNuma2`.
+    pub(crate) fn from_file(file: &std::fs::File, offset: u64, len: usize) -> Result<Self> {
+        if len == 0 {
+            return Err(new_error!(
+                "Cannot create file-backed shared memory with size 0"
+            ));
+        }
+
+        let total_size = len.checked_add(2 * PAGE_SIZE_USIZE).ok_or_else(|| {
+            new_error!("Memory required for file-backed snapshot exceeded usize::MAX")
+        })?;
+
+        #[cfg(target_os = "linux")]
+        {
+            Self::from_file_linux(file, offset, len, total_size)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // The Windows path maps the entire file from offset 0 and uses
+            // the header page as the leading guard page. This requires the
+            // memory blob to start at exactly PAGE_SIZE.
+            if offset as usize != PAGE_SIZE_USIZE {
+                return Err(new_error!(
+                    "Windows from_file requires offset == PAGE_SIZE, got {}",
+                    offset
+                ));
+            }
+            Self::from_file_windows(file, total_size)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn from_file_linux(
+        file: &std::fs::File,
+        offset: u64,
+        len: usize,
+        total_size: usize,
+    ) -> Result<Self> {
+        use std::ffi::c_void;
+        use std::os::unix::io::AsRawFd;
+
+        use libc::{
+            MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE, PROT_READ,
+            PROT_WRITE, mmap, off_t, size_t,
+        };
+
+        let fd = file.as_raw_fd();
+        let offset: off_t = offset
+            .try_into()
+            .map_err(|_| new_error!("snapshot file offset {} exceeds off_t range", offset))?;
+
+        // Allocate the full region (guard + usable + guard) as anonymous
+        let base = unsafe {
+            mmap(
+                null_mut(),
+                total_size as size_t,
+                PROT_NONE,
+                MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE,
+                -1,
+                0 as off_t,
+            )
+        };
+        if base == MAP_FAILED {
+            return Err(HyperlightError::MmapFailed(
+                std::io::Error::last_os_error().raw_os_error(),
+            ));
+        }
+
+        // Map the file content over the usable portion (between guard pages).
+        // PROT_READ | PROT_WRITE: KVM/MSHV require writable host mappings
+        // to handle copy-on-write page faults from the guest.
+        // MAP_PRIVATE: writes go to private copies, not the file.
+        let usable_ptr = unsafe { (base as *mut u8).add(PAGE_SIZE_USIZE) };
+        let mapped = unsafe {
+            mmap(
+                usable_ptr as *mut c_void,
+                len as size_t,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_FIXED | MAP_NORESERVE,
+                fd,
+                offset,
+            )
+        };
+        if mapped == MAP_FAILED {
+            unsafe { libc::munmap(base, total_size as size_t) };
+            return Err(HyperlightError::MmapFailed(
+                std::io::Error::last_os_error().raw_os_error(),
+            ));
+        }
+
+        // Guard pages at base and base+total_size-PAGE_SIZE are already
+        // PROT_NONE from the anonymous mapping; MAP_FIXED only replaced
+        // the middle portion.
+
+        #[allow(clippy::arc_with_non_send_sync)]
+        Ok(ReadonlySharedMemory {
+            region: Arc::new(HostMapping {
+                ptr: base as *mut u8,
+                size: total_size,
+            }),
+            guest_mapped_size: None,
+        })
+    }
+
+    /// Windows implementation of file-backed read-only shared memory.
+    ///
+    /// The snapshot file layout is:
+    /// `[header (PAGE_SIZE)][memory blob][trailing padding (PAGE_SIZE)]`.
+    /// We create a read-only file mapping covering the entire file and
+    /// map a view of `len + 2*PAGE_SIZE` bytes starting at file offset 0.
+    /// The header becomes the leading guard page and the trailing padding
+    /// becomes the trailing guard page, both via
+    /// `VirtualProtect(PAGE_NOACCESS)`.  This gives the standard
+    /// `HostMapping` layout: `[guard | usable | guard]`.
+    #[cfg(target_os = "windows")]
+    fn from_file_windows(file: &std::fs::File, total_size: usize) -> Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Memory::{
+            CreateFileMappingA, FILE_MAP_READ, MapViewOfFile, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS,
+            PAGE_READONLY, VirtualProtect,
+        };
+        use windows::core::PCSTR;
+
+        let file_handle = HANDLE(file.as_raw_handle());
+
+        // Create a read-only file mapping at the exact file size (pass 0,0).
+        // The file includes trailing PAGE_SIZE padding written by to_file(),
+        // so the file is at least offset + len + PAGE_SIZE = total_size bytes.
+        let handle =
+            unsafe { CreateFileMappingA(file_handle, None, PAGE_READONLY, 0, 0, PCSTR::null())? };
+
+        if handle.is_invalid() {
+            log_then_return!(HyperlightError::MemoryAllocationFailed(
+                Error::last_os_error().raw_os_error()
+            ));
+        }
+
+        // Map exactly total_size (header + blob + trailing padding) bytes.
+        let addr = unsafe { MapViewOfFile(handle, FILE_MAP_READ, 0, 0, total_size) };
+        if addr.Value.is_null() {
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(handle);
+            }
+            log_then_return!(HyperlightError::MemoryAllocationFailed(
+                Error::last_os_error().raw_os_error()
+            ));
+        }
+
+        let cleanup = |ptr: *mut c_void, handle: windows::Win32::Foundation::HANDLE| unsafe {
+            if let Err(e) = windows::Win32::System::Memory::UnmapViewOfFile(
+                windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr },
+            ) {
+                tracing::error!("from_file_windows cleanup: UnmapViewOfFile failed: {:?}", e);
+            }
+            if let Err(e) = windows::Win32::Foundation::CloseHandle(handle) {
+                tracing::error!("from_file_windows cleanup: CloseHandle failed: {:?}", e);
+            }
+        };
+
+        // Set guard pages on both ends.
+        let mut unused_old_prot = PAGE_PROTECTION_FLAGS(0);
+
+        let first_guard = addr.Value;
+        if let Err(e) = unsafe {
+            VirtualProtect(
+                first_guard,
+                PAGE_SIZE_USIZE,
+                PAGE_NOACCESS,
+                &mut unused_old_prot,
+            )
+        } {
+            cleanup(addr.Value, handle);
+            log_then_return!(WindowsAPIError(e.clone()));
+        }
+
+        let last_guard = unsafe { first_guard.add(total_size - PAGE_SIZE_USIZE) };
+        if let Err(e) = unsafe {
+            VirtualProtect(
+                last_guard,
+                PAGE_SIZE_USIZE,
+                PAGE_NOACCESS,
+                &mut unused_old_prot,
+            )
+        } {
+            cleanup(addr.Value, handle);
+            log_then_return!(WindowsAPIError(e.clone()));
+        }
+
+        #[allow(clippy::arc_with_non_send_sync)]
+        Ok(ReadonlySharedMemory {
+            region: Arc::new(HostMapping {
+                ptr: addr.Value as *mut u8,
+                size: total_size,
+                handle,
+            }),
+            guest_mapped_size: None,
+        })
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.base_ptr(), self.mem_size()) }
     }

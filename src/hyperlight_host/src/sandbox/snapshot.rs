@@ -671,6 +671,692 @@ impl PartialEq for Snapshot {
     }
 }
 
+// --- Snapshot file format ---
+//
+// All multi-byte integers are little-endian. The header is zero-padded
+// to 4096 bytes so the memory blob is page-aligned for direct mmap.
+//
+// Preamble (fixed across all format versions):
+//
+//   Offset  Size  Field
+//   ------  ----  -----
+//   0       4     Magic ("HLS\0")
+//   4       4     Format version (u32: 1 = V1)
+//
+// V1 header (starts at offset 8):
+//
+//   Offset  Size  Field
+//   ------  ----  -----
+//   8       4     Architecture tag (u32: 1=x86_64, 2=aarch64)
+//   12      4     ABI version (u32: must match SNAPSHOT_ABI_VERSION)
+//   16      32    Content hash (blake3, over memory blob only)
+//   48      8     stack_top_gva (u64)
+//   56      8     Entrypoint tag (u64: 0=Initialise, 1=Call)
+//   64      8     Entrypoint address (u64)
+//   72      8     input_data_size (u64)
+//   80      8     output_data_size (u64)
+//   88      8     heap_size (u64)
+//   96      8     code_size (u64)
+//   104     8     init_data_size (u64)
+//   112     8     init_data_permissions (u64: 0=None, else MemoryRegionFlags bits)
+//   120     8     scratch_size (u64)
+//   128     8     snapshot_size (u64)
+//   136     8     pt_size (u64: 0=None)
+//   144     8     memory_size (u64, byte length of memory blob)
+//                   Currently derivable from layout fields, but stored
+//                   explicitly for forward compatibility (e.g. compression
+//                   could make the on-disk size differ from the layout size).
+//   152     8     memory_offset (u64, byte offset of memory blob from file start)
+//                   Currently always SNAPSHOT_HEADER_SIZE (4096), but stored
+//                   explicitly so a future format version can relocate the
+//                   blob (e.g. for 2 MB huge page alignment) without a
+//                   breaking change.
+//   160     8     has_sregs (u64: 0=no, 1=yes)
+//   168     8     hypervisor_tag (u64: 1=KVM, 2=MSHV, 3=WHP)
+//
+// Special registers (offset 176, always written; ignored on load if has_sregs=0):
+//
+//   176     832   8 segment registers (cs,ds,es,fs,gs,ss,tr,ldt)
+//                   each: 13 fields x u64 (base, limit, selector, type,
+//                   present, dpl, db, s, l, g, avl, unusable, padding)
+//   1008    32    2 table registers (gdt, idt), each: base(u64) + limit(u64)
+//   1040    56    7 control values: cr0, cr2, cr3, cr4, cr8, efer, apic_base
+//   1096    32    interrupt_bitmap (4 x u64)
+//
+// Padding and memory blob:
+//
+//   1128    2968  Zero padding (to align memory blob to page boundary)
+//   4096    *     Memory blob (snapshot memory contents, mmap target)
+
+const SNAPSHOT_MAGIC: &[u8; 4] = b"HLS\0";
+const SNAPSHOT_HEADER_SIZE: usize = 4096;
+
+/// ABI version for the snapshot memory blob. This must be bumped
+/// whenever a change affects the contents or interpretation of the
+/// memory blob - i.e., the contract between the host runtime and
+/// the guest binary that determines how snapshot memory is produced
+/// and consumed.
+///
+/// Examples of changes that require a bump:
+///
+/// - Memory layout: `SandboxMemoryLayout` offset computation, memory
+///   region definitions, page table format
+/// - Host-guest interface: PEB struct layout, calling convention,
+///   dispatch mechanism, input/output buffer format
+/// - Guest init state: entry point setup, GDT/IDT/TSS initialization,
+///   or any startup code in `hyperlight_guest_bin` whose results are
+///   captured in the snapshot (e.g. sregs)
+///
+/// Unlike `FormatVersion` (which covers the file header byte layout
+/// and may allow conversion between versions), an ABI mismatch means
+/// the memory blob is incompatible and the snapshot must be
+/// regenerated from the guest binary.
+const SNAPSHOT_ABI_VERSION: u32 = 1;
+
+/// Snapshot file format version.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum FormatVersion {
+    V1 = 1,
+}
+
+impl FormatVersion {
+    fn from_u32(v: u32) -> crate::Result<Self> {
+        match v {
+            1 => Ok(Self::V1),
+            _ => Err(crate::new_error!(
+                "unsupported snapshot format version {} (this build supports V1). \
+                 The file header layout may be convertible to the current format",
+                v
+            )),
+        }
+    }
+}
+
+/// Architecture tag for snapshot files.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum ArchTag {
+    X86_64 = 1,
+    Aarch64 = 2,
+}
+
+impl ArchTag {
+    fn current() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            Self::X86_64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            Self::Aarch64
+        }
+    }
+
+    fn from_u32(v: u32) -> crate::Result<Self> {
+        match v {
+            1 => Ok(Self::X86_64),
+            2 => Ok(Self::Aarch64),
+            _ => Err(crate::new_error!("unknown architecture tag: {}", v)),
+        }
+    }
+}
+
+/// Hypervisor tag for snapshot files.
+///
+/// Segment register hidden-cache fields (unusable, type_, granularity,
+/// db) differ between hypervisors for the same architectural state.
+/// Restoring sregs captured on one hypervisor into another may be
+/// rejected or produce subtly wrong behavior.  The tag ensures
+/// snapshots are only loaded on the same hypervisor that created them.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum HypervisorTag {
+    Kvm = 1,
+    Mshv = 2,
+    Whp = 3,
+}
+
+impl HypervisorTag {
+    fn current() -> Option<Self> {
+        #[allow(unused_imports)]
+        use crate::hypervisor::virtual_machine::HypervisorType;
+        use crate::hypervisor::virtual_machine::get_available_hypervisor;
+
+        match get_available_hypervisor() {
+            #[cfg(kvm)]
+            Some(HypervisorType::Kvm) => Some(Self::Kvm),
+            #[cfg(mshv3)]
+            Some(HypervisorType::Mshv) => Some(Self::Mshv),
+            #[cfg(target_os = "windows")]
+            Some(HypervisorType::Whp) => Some(Self::Whp),
+            None => None,
+        }
+    }
+
+    fn from_u64(v: u64) -> crate::Result<Self> {
+        match v {
+            1 => Ok(Self::Kvm),
+            2 => Ok(Self::Mshv),
+            3 => Ok(Self::Whp),
+            _ => Err(crate::new_error!("unknown hypervisor tag: {}", v)),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Kvm => "KVM",
+            Self::Mshv => "MSHV",
+            Self::Whp => "WHP",
+        }
+    }
+}
+
+/// Memory layout fields stored in the snapshot file.
+/// These are the primary inputs needed to reconstruct a `SandboxMemoryLayout`.
+struct LayoutFields {
+    input_data_size: usize,
+    output_data_size: usize,
+    heap_size: usize,
+    code_size: usize,
+    init_data_size: usize,
+    init_data_permissions: Option<crate::mem::memory_region::MemoryRegionFlags>,
+    scratch_size: usize,
+    snapshot_size: usize,
+    pt_size: Option<usize>,
+}
+
+/// Fixed preamble at the start of every snapshot file.
+/// This never changes across format versions so it can always be read
+/// to determine which version-specific header follows.
+struct SnapshotPreamble {
+    magic: [u8; 4],
+    format_version: FormatVersion,
+}
+
+/// Version-specific header content.
+enum SnapshotHeader {
+    V1(SnapshotHeaderV1),
+}
+
+/// V1 snapshot header.
+struct SnapshotHeaderV1 {
+    arch: ArchTag,
+    abi_version: u32,
+    hash: [u8; 32],
+    stack_top_gva: u64,
+    entrypoint: NextAction,
+    layout: LayoutFields,
+    memory_size: usize,
+    memory_offset: u64,
+    has_sregs: bool,
+    hypervisor: HypervisorTag,
+}
+
+// --- Low-level I/O helpers ---
+
+fn write_u32(w: &mut impl std::io::Write, v: u32) -> crate::Result<()> {
+    w.write_all(&v.to_le_bytes())
+        .map_err(|e| crate::new_error!("snapshot write error: {}", e))
+}
+
+fn write_u64(w: &mut impl std::io::Write, v: u64) -> crate::Result<()> {
+    w.write_all(&v.to_le_bytes())
+        .map_err(|e| crate::new_error!("snapshot write error: {}", e))
+}
+
+fn read_u32(r: &mut (impl std::io::Read + ?Sized)) -> crate::Result<u32> {
+    let mut buf = [0u8; 4];
+    r.read_exact(&mut buf)
+        .map_err(|e| crate::new_error!("snapshot read error: {}", e))?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn read_u64(r: &mut (impl std::io::Read + ?Sized)) -> crate::Result<u64> {
+    let mut buf = [0u8; 8];
+    r.read_exact(&mut buf)
+        .map_err(|e| crate::new_error!("snapshot read error: {}", e))?;
+    Ok(u64::from_le_bytes(buf))
+}
+
+fn read_bytes<const N: usize>(r: &mut (impl std::io::Read + ?Sized)) -> crate::Result<[u8; N]> {
+    let mut buf = [0u8; N];
+    r.read_exact(&mut buf)
+        .map_err(|e| crate::new_error!("snapshot file truncated: {}", e))?;
+    Ok(buf)
+}
+
+// --- Preamble serialization ---
+
+impl SnapshotPreamble {
+    fn write_to(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+        w.write_all(&self.magic)
+            .map_err(|e| crate::new_error!("snapshot write error: {}", e))?;
+        write_u32(w, self.format_version as u32)
+    }
+
+    fn read_from(r: &mut (impl std::io::Read + ?Sized)) -> crate::Result<Self> {
+        Ok(Self {
+            magic: read_bytes(r)?,
+            format_version: FormatVersion::from_u32(read_u32(r)?)?,
+        })
+    }
+}
+
+// --- V1 header serialization ---
+
+impl SnapshotHeaderV1 {
+    fn write_to(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+        write_u32(w, self.arch as u32)?;
+        write_u32(w, self.abi_version)?;
+        w.write_all(&self.hash)
+            .map_err(|e| crate::new_error!("snapshot write error: {}", e))?;
+        write_u64(w, self.stack_top_gva)?;
+        let (tag, addr) = match self.entrypoint {
+            NextAction::Initialise(a) => (0u64, a),
+            NextAction::Call(a) => (1u64, a),
+            #[cfg(test)]
+            NextAction::None => (u64::MAX, 0),
+        };
+        write_u64(w, tag)?;
+        write_u64(w, addr)?;
+
+        // Layout fields
+        let l = &self.layout;
+        write_u64(w, l.input_data_size as u64)?;
+        write_u64(w, l.output_data_size as u64)?;
+        write_u64(w, l.heap_size as u64)?;
+        write_u64(w, l.code_size as u64)?;
+        write_u64(w, l.init_data_size as u64)?;
+        write_u64(w, l.init_data_permissions.map_or(0, |f| f.bits() as u64))?;
+        write_u64(w, l.scratch_size as u64)?;
+        write_u64(w, l.snapshot_size as u64)?;
+        write_u64(w, l.pt_size.map_or(0, |v| v as u64))?;
+
+        write_u64(w, self.memory_size as u64)?;
+        write_u64(w, self.memory_offset)?;
+        write_u64(w, if self.has_sregs { 1 } else { 0 })?;
+        write_u64(w, self.hypervisor as u64)?;
+        Ok(())
+    }
+
+    fn read_from(r: &mut (impl std::io::Read + ?Sized)) -> crate::Result<Self> {
+        use crate::mem::memory_region::MemoryRegionFlags;
+
+        let arch = ArchTag::from_u32(read_u32(r)?)?;
+        let abi_version = read_u32(r)?;
+        let hash = read_bytes(r)?;
+        let stack_top_gva = read_u64(r)?;
+        let entrypoint_tag = read_u64(r)?;
+        let entrypoint_addr = read_u64(r)?;
+        let entrypoint = match entrypoint_tag {
+            0 => NextAction::Initialise(entrypoint_addr),
+            1 => NextAction::Call(entrypoint_addr),
+            _ => {
+                return Err(crate::new_error!(
+                    "invalid entrypoint tag in snapshot: {}",
+                    entrypoint_tag
+                ));
+            }
+        };
+
+        let input_data_size = read_u64(r)? as usize;
+        let output_data_size = read_u64(r)? as usize;
+        let heap_size = read_u64(r)? as usize;
+        let code_size = read_u64(r)? as usize;
+        let init_data_size = read_u64(r)? as usize;
+        let perms_raw = read_u64(r)?;
+        let init_data_permissions = if perms_raw == 0 {
+            None
+        } else {
+            Some(
+                MemoryRegionFlags::from_bits(perms_raw as u32).ok_or_else(|| {
+                    crate::new_error!(
+                        "snapshot contains unknown memory region flags: {:#x}",
+                        perms_raw
+                    )
+                })?,
+            )
+        };
+        let scratch_size = read_u64(r)? as usize;
+        let snapshot_size = read_u64(r)? as usize;
+        let pt_raw = read_u64(r)?;
+        let pt_size = if pt_raw == 0 {
+            None
+        } else {
+            Some(pt_raw as usize)
+        };
+
+        let memory_size = read_u64(r)? as usize;
+        let memory_offset = read_u64(r)?;
+        let has_sregs = read_u64(r)? != 0;
+        let hypervisor = HypervisorTag::from_u64(read_u64(r)?)?;
+
+        Ok(Self {
+            arch,
+            abi_version,
+            hash,
+            stack_top_gva,
+            entrypoint,
+            layout: LayoutFields {
+                input_data_size,
+                output_data_size,
+                heap_size,
+                code_size,
+                init_data_size,
+                init_data_permissions,
+                scratch_size,
+                snapshot_size,
+                pt_size,
+            },
+            memory_size,
+            memory_offset,
+            has_sregs,
+            hypervisor,
+        })
+    }
+}
+
+fn write_sregs(w: &mut impl std::io::Write, sregs: &CommonSpecialRegisters) -> crate::Result<()> {
+    // Segment registers: cs, ds, es, fs, gs, ss, tr, ldt (13 fields each)
+    for seg in [
+        &sregs.cs, &sregs.ds, &sregs.es, &sregs.fs, &sregs.gs, &sregs.ss, &sregs.tr, &sregs.ldt,
+    ] {
+        for v in [
+            seg.base,
+            seg.limit as u64,
+            seg.selector as u64,
+            seg.type_ as u64,
+            seg.present as u64,
+            seg.dpl as u64,
+            seg.db as u64,
+            seg.s as u64,
+            seg.l as u64,
+            seg.g as u64,
+            seg.avl as u64,
+            seg.unusable as u64,
+            seg.padding as u64,
+        ] {
+            write_u64(w, v)?;
+        }
+    }
+    // Table registers: gdt, idt (2 fields each)
+    for tab in [&sregs.gdt, &sregs.idt] {
+        write_u64(w, tab.base)?;
+        write_u64(w, tab.limit as u64)?;
+    }
+    // Control registers + bitmap
+    for v in [
+        sregs.cr0,
+        sregs.cr2,
+        sregs.cr3,
+        sregs.cr4,
+        sregs.cr8,
+        sregs.efer,
+        sregs.apic_base,
+    ] {
+        write_u64(w, v)?;
+    }
+    for &v in &sregs.interrupt_bitmap {
+        write_u64(w, v)?;
+    }
+    Ok(())
+}
+
+fn read_sregs(r: &mut impl std::io::Read) -> crate::Result<CommonSpecialRegisters> {
+    use crate::hypervisor::regs::{CommonSegmentRegister, CommonTableRegister};
+
+    let read_seg = |r: &mut dyn std::io::Read| -> crate::Result<CommonSegmentRegister> {
+        Ok(CommonSegmentRegister {
+            base: read_u64(r)?,
+            limit: read_u64(r)? as u32,
+            selector: read_u64(r)? as u16,
+            type_: read_u64(r)? as u8,
+            present: read_u64(r)? as u8,
+            dpl: read_u64(r)? as u8,
+            db: read_u64(r)? as u8,
+            s: read_u64(r)? as u8,
+            l: read_u64(r)? as u8,
+            g: read_u64(r)? as u8,
+            avl: read_u64(r)? as u8,
+            unusable: read_u64(r)? as u8,
+            padding: read_u64(r)? as u8,
+        })
+    };
+    let read_tab = |r: &mut dyn std::io::Read| -> crate::Result<CommonTableRegister> {
+        Ok(CommonTableRegister {
+            base: read_u64(r)?,
+            limit: read_u64(r)? as u16,
+        })
+    };
+    Ok(CommonSpecialRegisters {
+        cs: read_seg(r)?,
+        ds: read_seg(r)?,
+        es: read_seg(r)?,
+        fs: read_seg(r)?,
+        gs: read_seg(r)?,
+        ss: read_seg(r)?,
+        tr: read_seg(r)?,
+        ldt: read_seg(r)?,
+        gdt: read_tab(r)?,
+        idt: read_tab(r)?,
+        cr0: read_u64(r)?,
+        cr2: read_u64(r)?,
+        cr3: read_u64(r)?,
+        cr4: read_u64(r)?,
+        cr8: read_u64(r)?,
+        efer: read_u64(r)?,
+        apic_base: read_u64(r)?,
+        interrupt_bitmap: [read_u64(r)?, read_u64(r)?, read_u64(r)?, read_u64(r)?],
+    })
+}
+
+impl Snapshot {
+    /// Save this snapshot to a file on disk.
+    ///
+    /// The file format uses a page-aligned memory blob that can be
+    /// mmapped directly on load for zero-copy instantiation.
+    ///
+    /// Note: extra memory regions added via
+    /// [`map_region`](crate::MultiUseSandbox::map_region) or
+    /// [`map_file_cow`](crate::MultiUseSandbox::map_file_cow) are
+    /// **not** persisted. Only the primary sandbox memory is saved.
+    /// Regions that were folded into the snapshot memory (by taking
+    /// a snapshot after mapping) are included since they become part
+    /// of the memory blob.
+    pub fn to_file(&self, path: impl AsRef<std::path::Path>) -> crate::Result<()> {
+        use std::io::{BufWriter, Write};
+
+        let file = std::fs::File::create(path.as_ref())
+            .map_err(|e| crate::new_error!("failed to create snapshot file: {}", e))?;
+        let mut w = BufWriter::new(file);
+
+        let layout = &self.layout;
+
+        let preamble = SnapshotPreamble {
+            magic: *SNAPSHOT_MAGIC,
+            format_version: FormatVersion::V1,
+        };
+
+        let v1 = SnapshotHeaderV1 {
+            arch: ArchTag::current(),
+            abi_version: SNAPSHOT_ABI_VERSION,
+            hash: self.hash,
+            stack_top_gva: self.stack_top_gva,
+            entrypoint: self.entrypoint,
+            layout: LayoutFields {
+                input_data_size: layout.input_data_size,
+                output_data_size: layout.output_data_size,
+                heap_size: layout.heap_size,
+                code_size: layout.code_size,
+                init_data_size: layout.init_data_size,
+                init_data_permissions: layout.init_data_permissions,
+                scratch_size: layout.get_scratch_size(),
+                snapshot_size: layout.snapshot_size,
+                pt_size: layout.pt_size,
+            },
+            memory_size: self.memory.mem_size(),
+            memory_offset: SNAPSHOT_HEADER_SIZE as u64,
+            has_sregs: self.sregs.is_some(),
+            hypervisor: HypervisorTag::current()
+                .ok_or_else(|| crate::new_error!("no hypervisor available to tag snapshot"))?,
+        };
+
+        preamble.write_to(&mut w)?;
+        v1.write_to(&mut w)?;
+        write_sregs(&mut w, &self.sregs.unwrap_or_default())?;
+
+        // Pad header to SNAPSHOT_HEADER_SIZE and write memory blob
+        // Use a Cursor to track position instead of manual size calculation
+        let pos = std::io::Seek::stream_position(&mut w)
+            .map_err(|e| crate::new_error!("snapshot seek error: {}", e))?
+            as usize;
+        if pos > SNAPSHOT_HEADER_SIZE {
+            return Err(crate::new_error!(
+                "snapshot header exceeded {} bytes (wrote {})",
+                SNAPSHOT_HEADER_SIZE,
+                pos
+            ));
+        }
+        w.write_all(&vec![0u8; SNAPSHOT_HEADER_SIZE - pos])
+            .map_err(|e| crate::new_error!("snapshot write error: {}", e))?;
+
+        w.write_all(self.memory.as_slice())
+            .map_err(|e| crate::new_error!("snapshot write error: {}", e))?;
+
+        // Trailing PAGE_SIZE padding: Windows read-only file mappings
+        // cannot extend beyond the file's actual size, so the file must
+        // contain backing bytes for the trailing guard page used by
+        // ReadonlySharedMemory::from_file_windows. Linux ignores this
+        // padding (its guard pages come from an anonymous mmap reservation).
+        w.write_all(&[0u8; PAGE_SIZE])
+            .map_err(|e| crate::new_error!("snapshot write error: {}", e))?;
+
+        w.flush()
+            .map_err(|e| crate::new_error!("snapshot write error: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Load a snapshot from a file on disk.
+    ///
+    /// The memory blob is mapped directly from the file for zero-copy
+    /// loading using platform-specific CoW mechanisms.
+    ///
+    /// Note: ELF unwind info (`LoadInfo`) is not persisted in the
+    /// snapshot file, so the `mem_profile` feature will not have
+    /// accurate profiling data for sandboxes created from disk
+    /// snapshots.
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> crate::Result<Self> {
+        Self::from_file_impl(path, true)
+    }
+
+    /// Load a snapshot from a file on disk without verifying the
+    /// content hash. This is faster for large snapshots in trusted
+    /// environments where file integrity is guaranteed by other means.
+    pub fn from_file_unchecked(path: impl AsRef<std::path::Path>) -> crate::Result<Self> {
+        Self::from_file_impl(path, false)
+    }
+
+    fn from_file_impl(path: impl AsRef<std::path::Path>, verify_hash: bool) -> crate::Result<Self> {
+        use std::io::BufReader;
+
+        let file = std::fs::File::open(path.as_ref())
+            .map_err(|e| crate::new_error!("failed to open snapshot file: {}", e))?;
+        let mut r = BufReader::new(&file);
+
+        // Read preamble first to determine version
+        let preamble = SnapshotPreamble::read_from(&mut r)?;
+        if &preamble.magic != SNAPSHOT_MAGIC {
+            return Err(crate::new_error!(
+                "invalid snapshot file: bad magic bytes (expected {:?}, got {:?})",
+                SNAPSHOT_MAGIC,
+                preamble.magic
+            ));
+        }
+
+        // Dispatch to version-specific reader
+        let header = match preamble.format_version {
+            FormatVersion::V1 => SnapshotHeader::V1(SnapshotHeaderV1::read_from(&mut r)?),
+        };
+
+        let SnapshotHeader::V1(hdr) = header;
+
+        // Validate
+        if hdr.arch != ArchTag::current() {
+            return Err(crate::new_error!(
+                "snapshot architecture mismatch: expected {:?}, got {:?}",
+                ArchTag::current(),
+                hdr.arch
+            ));
+        }
+        if hdr.abi_version != SNAPSHOT_ABI_VERSION {
+            return Err(crate::new_error!(
+                "snapshot ABI version mismatch: file has ABI version {}, \
+                 but this build expects {}. The snapshot must be regenerated \
+                 from the guest binary.",
+                hdr.abi_version,
+                SNAPSHOT_ABI_VERSION
+            ));
+        }
+        let current_hv = HypervisorTag::current()
+            .ok_or_else(|| crate::new_error!("no hypervisor available to load snapshot"))?;
+        if hdr.hypervisor != current_hv {
+            return Err(crate::new_error!(
+                "snapshot hypervisor mismatch: file was created on {} but the current hypervisor is {}.",
+                hdr.hypervisor.name(),
+                current_hv.name()
+            ));
+        }
+
+        // Reconstruct layout
+        let l = &hdr.layout;
+        let mut cfg = crate::sandbox::SandboxConfiguration::default();
+        cfg.set_input_data_size(l.input_data_size);
+        cfg.set_output_data_size(l.output_data_size);
+        cfg.set_heap_size(l.heap_size as u64);
+        cfg.set_scratch_size(l.scratch_size);
+        let mut layout =
+            SandboxMemoryLayout::new(cfg, l.code_size, l.init_data_size, l.init_data_permissions)?;
+        layout.set_snapshot_size(l.snapshot_size);
+        if let Some(pt) = l.pt_size {
+            layout.set_pt_size(pt)?;
+        }
+
+        // Read sregs
+        let sregs_data = read_sregs(&mut r)?;
+        let sregs = if hdr.has_sregs {
+            Some(sregs_data)
+        } else {
+            None
+        };
+
+        // Map the memory blob directly from the file (zero-copy CoW)
+        let memory = ReadonlySharedMemory::from_file(&file, hdr.memory_offset, hdr.memory_size)?;
+
+        // Verify hash
+        if verify_hash {
+            let computed: [u8; 32] = blake3::hash(memory.as_slice()).into();
+            if computed != hdr.hash {
+                return Err(crate::new_error!(
+                    "snapshot hash mismatch: file may be corrupted"
+                ));
+            }
+        }
+
+        Ok(Snapshot {
+            sandbox_id: SANDBOX_CONFIGURATION_COUNTER
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            layout,
+            memory,
+            regions: Vec::new(),
+            load_info: crate::mem::exe::LoadInfo::dummy(),
+            hash: hdr.hash,
+            stack_top_gva: hdr.stack_top_gva,
+            sregs,
+            entrypoint: hdr.entrypoint,
+            snapshot_generation: 0,
+        })
+    }
+}
+
 #[cfg(test)]
 #[cfg(not(feature = "i686-guest"))]
 mod tests {
@@ -920,5 +1606,398 @@ mod i686_tests {
         assert_eq!(r2[0].phys_base, 0x5000);
         // Should have allocated: 1 PD (pre-existing) + 1 PT = 2 pages total
         assert_eq!(pt.size(), 2 * PAGE_SIZE);
+    }
+}
+
+#[cfg(test)]
+mod snapshot_file_tests {
+    use std::sync::Arc;
+
+    use hyperlight_testing::simple_guest_as_string;
+
+    use crate::sandbox::snapshot::Snapshot;
+    use crate::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
+
+    fn create_test_sandbox() -> MultiUseSandbox {
+        let path = simple_guest_as_string().unwrap();
+        UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+            .unwrap()
+            .evolve()
+            .unwrap()
+    }
+
+    fn create_snapshot_from_binary() -> Snapshot {
+        let path = simple_guest_as_string().unwrap();
+        Snapshot::from_env(
+            GuestBinary::FilePath(path),
+            crate::sandbox::SandboxConfiguration::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn from_snapshot_already_initialized_in_memory() {
+        // Test from_snapshot with a snapshot taken from an already-initialized
+        // sandbox (NextAction::Call), directly from memory without file I/O
+        let mut sbox = create_test_sandbox();
+        let snapshot = sbox.snapshot().unwrap();
+
+        let new_snap = Snapshot {
+            sandbox_id: super::SANDBOX_CONFIGURATION_COUNTER
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            layout: *snapshot.layout(),
+            memory: snapshot.memory().clone(),
+            regions: snapshot.regions().to_vec(),
+            load_info: snapshot.load_info(),
+            hash: snapshot.hash,
+            stack_top_gva: snapshot.stack_top_gva(),
+            sregs: snapshot.sregs().cloned(),
+            entrypoint: snapshot.entrypoint(),
+        };
+
+        let mut sbox2 = MultiUseSandbox::from_snapshot(Arc::new(new_snap)).unwrap();
+        let result: i32 = sbox2.call("GetStatic", ()).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn from_snapshot_in_memory() {
+        // Test from_snapshot pathway using the existing Snapshot::from_env
+        let path = simple_guest_as_string().unwrap();
+        let snap = Snapshot::from_env(
+            GuestBinary::FilePath(path),
+            crate::sandbox::SandboxConfiguration::default(),
+        )
+        .unwrap();
+
+        let mut sbox = MultiUseSandbox::from_snapshot(Arc::new(snap)).unwrap();
+
+        // from_env creates a snapshot with NextAction::Initialise,
+        // so from_snapshot will run the init code via vm.initialise()
+        let result: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn round_trip_save_load_call() {
+        let mut sbox = create_test_sandbox();
+        let snapshot = sbox.snapshot().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("test.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        let loaded = Snapshot::from_file(&snap_path).unwrap();
+        let mut sbox2 = MultiUseSandbox::from_snapshot(Arc::new(loaded)).unwrap();
+
+        let result: String = sbox2.call("Echo", "hello\n".to_string()).unwrap();
+        assert_eq!(result, "hello\n");
+    }
+
+    #[test]
+    fn hash_verification_detects_corruption() {
+        let snapshot = create_snapshot_from_binary();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("corrupted.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        // Corrupt a byte in the memory blob (after the 4096-byte header)
+        {
+            use std::io::{Read, Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&snap_path)
+                .unwrap();
+            file.seek(SeekFrom::Start(4096 + 100)).unwrap();
+            let mut byte = [0u8; 1];
+            file.read_exact(&mut byte).unwrap();
+            byte[0] ^= 0xFF;
+            file.seek(SeekFrom::Start(4096 + 100)).unwrap();
+            file.write_all(&byte).unwrap();
+        }
+
+        let result = Snapshot::from_file(&snap_path);
+        let err_msg = match result {
+            Err(e) => format!("{}", e),
+            Ok(_) => panic!("expected load to fail with hash mismatch"),
+        };
+        assert!(
+            err_msg.contains("hash mismatch"),
+            "expected hash mismatch error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn arch_mismatch_rejected() {
+        let snapshot = create_snapshot_from_binary();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("wrong_arch.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        // Overwrite the architecture tag (offset 8, 4 bytes)
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&snap_path)
+                .unwrap();
+            file.seek(SeekFrom::Start(8)).unwrap();
+            file.write_all(&99u32.to_le_bytes()).unwrap();
+        }
+
+        let result = Snapshot::from_file(&snap_path);
+        let err_msg = match result {
+            Err(e) => format!("{}", e),
+            Ok(_) => panic!("expected load to fail with arch mismatch"),
+        };
+        assert!(
+            err_msg.contains("architecture"),
+            "expected arch-related error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn format_version_mismatch_rejected() {
+        let snapshot = create_snapshot_from_binary();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("wrong_version.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        // Overwrite the format version (offset 4, 4 bytes)
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&snap_path)
+                .unwrap();
+            file.seek(SeekFrom::Start(4)).unwrap();
+            file.write_all(&999u32.to_le_bytes()).unwrap();
+        }
+
+        let result = Snapshot::from_file(&snap_path);
+        let err_msg = match result {
+            Err(e) => format!("{}", e),
+            Ok(_) => panic!("expected load to fail with version mismatch"),
+        };
+        assert!(
+            err_msg.contains("format version"),
+            "expected version mismatch error, got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("convertible"),
+            "expected hint about convertibility, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn abi_version_mismatch_rejected() {
+        let snapshot = create_snapshot_from_binary();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("wrong_abi.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        // Overwrite the ABI version (offset 12, 4 bytes)
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&snap_path)
+                .unwrap();
+            file.seek(SeekFrom::Start(12)).unwrap();
+            file.write_all(&999u32.to_le_bytes()).unwrap();
+        }
+
+        let result = Snapshot::from_file(&snap_path);
+        let err_msg = match result {
+            Err(e) => format!("{}", e),
+            Ok(_) => panic!("expected load to fail with ABI version mismatch"),
+        };
+        assert!(
+            err_msg.contains("ABI version mismatch"),
+            "expected ABI version mismatch error, got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("regenerated"),
+            "expected hint about regeneration, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn hypervisor_mismatch_rejected() {
+        let snapshot = create_snapshot_from_binary();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("wrong_hv.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        // Overwrite the hypervisor tag (offset 168, 8 bytes) with a
+        // valid but wrong hypervisor tag.
+        use super::HypervisorTag;
+        let current = HypervisorTag::current().unwrap();
+        let wrong_tag = match current {
+            HypervisorTag::Whp => HypervisorTag::Kvm,
+            _ => HypervisorTag::Whp,
+        };
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&snap_path)
+                .unwrap();
+            file.seek(SeekFrom::Start(168)).unwrap();
+            file.write_all(&(wrong_tag as u64).to_le_bytes()).unwrap();
+        }
+
+        let result = Snapshot::from_file(&snap_path);
+        let err_msg = match result {
+            Err(e) => format!("{}", e),
+            Ok(_) => panic!("expected load to fail with hypervisor mismatch"),
+        };
+        assert!(
+            err_msg.contains("hypervisor mismatch"),
+            "expected hypervisor mismatch error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn restore_from_loaded_snapshot() {
+        let mut sbox = create_test_sandbox();
+        let snapshot = sbox.snapshot().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("restore.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        let loaded = Snapshot::from_file(&snap_path).unwrap();
+        let mut sbox = MultiUseSandbox::from_snapshot(Arc::new(loaded)).unwrap();
+
+        // Mutate state
+        sbox.call::<i32>("AddToStatic", 42i32).unwrap();
+        let val: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(val, 42);
+
+        // Take a new snapshot and restore to it
+        let snap2 = sbox.snapshot().unwrap();
+        sbox.call::<i32>("AddToStatic", 10i32).unwrap();
+        let val: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(val, 52);
+
+        sbox.restore(snap2).unwrap();
+        let val: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn multiple_sandboxes_from_same_file() {
+        let mut sbox = create_test_sandbox();
+        let snapshot = sbox.snapshot().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("shared.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        let loaded1 = Snapshot::from_file(&snap_path).unwrap();
+        let loaded2 = Snapshot::from_file(&snap_path).unwrap();
+
+        let mut sbox1 = MultiUseSandbox::from_snapshot(Arc::new(loaded1)).unwrap();
+        let mut sbox2 = MultiUseSandbox::from_snapshot(Arc::new(loaded2)).unwrap();
+
+        // Mutate one, verify the other is unaffected
+        sbox1.call::<i32>("AddToStatic", 100i32).unwrap();
+        let val1: i32 = sbox1.call("GetStatic", ()).unwrap();
+        let val2: i32 = sbox2.call("GetStatic", ()).unwrap();
+        assert_eq!(val1, 100);
+        assert_eq!(val2, 0);
+    }
+
+    #[test]
+    fn snapshot_then_save_round_trip() {
+        let mut sbox = create_test_sandbox();
+        let snapshot = sbox.snapshot().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path1 = dir.path().join("first.hls");
+        snapshot.to_file(&snap_path1).unwrap();
+
+        // Load, create sandbox, mutate, take snapshot, save again
+        let loaded = Snapshot::from_file(&snap_path1).unwrap();
+        let mut sbox2 = MultiUseSandbox::from_snapshot(Arc::new(loaded)).unwrap();
+
+        sbox2.call::<i32>("AddToStatic", 77i32).unwrap();
+        let snap2 = sbox2.snapshot().unwrap();
+
+        let snap_path2 = dir.path().join("second.hls");
+        snap2.to_file(&snap_path2).unwrap();
+
+        // Load the second snapshot and verify mutated state
+        let loaded2 = Snapshot::from_file(&snap_path2).unwrap();
+        let mut sbox3 = MultiUseSandbox::from_snapshot(Arc::new(loaded2)).unwrap();
+
+        let val: i32 = sbox3.call("GetStatic", ()).unwrap();
+        assert_eq!(val, 77);
+    }
+
+    /// `MultiUseSandbox::from_snapshot` should register the default
+    /// `HostPrint` host function, just like the regular codepath.
+    #[test]
+    fn from_snapshot_has_default_host_print() {
+        let mut sbox = create_test_sandbox();
+        let snapshot = sbox.snapshot().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("test.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        let loaded = Snapshot::from_file(&snap_path).unwrap();
+        let mut sbox2 = MultiUseSandbox::from_snapshot(Arc::new(loaded)).unwrap();
+
+        let result = sbox2.call::<i32>("PrintOutput", "hello from snapshot".to_string());
+        assert!(
+            result.is_ok(),
+            "PrintOutput should succeed because HostPrint is registered by from_snapshot: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn from_file_unchecked_skips_hash_verification() {
+        let mut sbox = create_test_sandbox();
+        let snapshot = sbox.snapshot().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let snap_path = dir.path().join("unchecked.hls");
+        snapshot.to_file(&snap_path).unwrap();
+
+        // Corrupt a byte in the memory blob (past the header)
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&snap_path)
+                .unwrap();
+            // Write garbage into the memory blob region
+            file.seek(SeekFrom::Start(4096 + 64)).unwrap();
+            file.write_all(&[0xFF; 16]).unwrap();
+        }
+
+        // from_file (with hash check) should fail
+        let result = Snapshot::from_file(&snap_path);
+        assert!(result.is_err(), "from_file should detect corruption");
+
+        // from_file_unchecked should succeed despite corruption
+        let loaded = Snapshot::from_file_unchecked(&snap_path);
+        assert!(loaded.is_ok(), "from_file_unchecked should skip hash check");
     }
 }

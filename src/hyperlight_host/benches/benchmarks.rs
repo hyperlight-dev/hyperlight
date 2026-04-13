@@ -551,6 +551,93 @@ fn shared_memory_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// Benchmark Category: Snapshot Files
+// ============================================================================
+
+fn snapshot_file_benchmark(c: &mut Criterion) {
+    use hyperlight_host::sandbox::snapshot::Snapshot;
+
+    let mut group = c.benchmark_group("snapshot_files");
+
+    // Pre-create snapshot files for all sizes
+    let dirs: Vec<_> = SandboxSize::all()
+        .iter()
+        .map(|size| {
+            let dir = tempfile::tempdir().unwrap();
+            let snap_path = dir.path().join(format!("{}.hls", size.name()));
+            let snapshot = {
+                let mut sbox = create_multiuse_sandbox_with_size(*size);
+                sbox.snapshot().unwrap()
+            };
+            snapshot.to_file(&snap_path).unwrap();
+            (dir, snapshot)
+        })
+        .collect();
+
+    // Benchmark: save_snapshot
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_dir = tempfile::tempdir().unwrap();
+        let path = snap_dir.path().join("bench.hls");
+        let snapshot = &dirs[i].1;
+        group.bench_function(format!("save_snapshot/{}", size.name()), |b| {
+            b.iter(|| {
+                snapshot.to_file(&path).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: load_snapshot (mmap + header parse + hash verify)
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].0.path().join(format!("{}.hls", size.name()));
+        group.bench_function(format!("load_snapshot/{}", size.name()), |b| {
+            b.iter(|| {
+                let _ = Snapshot::from_file(&snap_path).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: cold_start_via_evolve (new + evolve + call)
+    for size in SandboxSize::all() {
+        group.bench_function(format!("cold_start_via_evolve/{}", size.name()), |b| {
+            b.iter(|| {
+                let mut sbox = create_multiuse_sandbox_with_size(size);
+                sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: cold_start_via_snapshot (load + from_snapshot + call)
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].0.path().join(format!("{}.hls", size.name()));
+        group.bench_function(format!("cold_start_via_snapshot/{}", size.name()), |b| {
+            b.iter(|| {
+                let loaded = Snapshot::from_file(&snap_path).unwrap();
+                let mut sbox = MultiUseSandbox::from_snapshot(std::sync::Arc::new(loaded)).unwrap();
+                sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: cold_start_via_snapshot_unchecked (no hash verify)
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].0.path().join(format!("{}.hls", size.name()));
+        group.bench_function(
+            format!("cold_start_via_snapshot_unchecked/{}", size.name()),
+            |b| {
+                b.iter(|| {
+                    let loaded = Snapshot::from_file_unchecked(&snap_path).unwrap();
+                    let mut sbox =
+                        MultiUseSandbox::from_snapshot(std::sync::Arc::new(loaded)).unwrap();
+                    sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default();
@@ -561,6 +648,7 @@ criterion_group! {
         guest_call_benchmark_large_param,
         function_call_serialization_benchmark,
         sample_workloads_benchmark,
-        shared_memory_benchmark
+        shared_memory_benchmark,
+        snapshot_file_benchmark
 }
 criterion_main!(benches);
