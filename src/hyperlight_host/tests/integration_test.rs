@@ -30,6 +30,7 @@ pub mod common; // pub to disable dead_code warning
 use crate::common::{
     new_rust_sandbox, new_rust_uninit_sandbox, with_all_sandboxes, with_c_sandbox,
     with_c_uninit_sandbox, with_rust_sandbox, with_rust_sandbox_cfg, with_rust_uninit_sandbox,
+    with_rust_uninit_sandbox_cfg,
 };
 
 // A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
@@ -798,6 +799,167 @@ fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
                 .unwrap();
         });
     }
+}
+
+// The following tests depend on a global SimpleLogger or TracingSubscriber and
+// cannot run in parallel with other tests. They are marked #[ignore] and run
+// sequentially via `just test-isolated`.
+
+#[test]
+#[ignore]
+fn virtq_log_delivery() {
+    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
+
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    with_rust_uninit_sandbox(|mut sbox| {
+        sbox.set_max_guest_log_level(tracing_core::LevelFilter::TRACE);
+        let mut sandbox = sbox.evolve().unwrap();
+
+        sandbox
+            .call::<()>("LogMessage", ("virtq log test message".to_string(), 3_i32))
+            .unwrap();
+
+        let count = LOGGER.num_log_calls();
+        let mut found = false;
+        for i in 0..count {
+            if let Some(call) = LOGGER.get_log_call(i)
+                && call.target == "hyperlight_guest"
+                && call.args.contains("virtq log test")
+            {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "expected 'virtq log test' message from guest");
+        LOGGER.clear_log_calls();
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_log_backpressure() {
+    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
+
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sbox| {
+        sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+        let mut sandbox = sbox.evolve().unwrap();
+
+        sandbox.call::<()>("LogMessageN", 50_i32).unwrap();
+
+        let res: i32 = sandbox
+            .call("ThisIsNotARealFunctionButTheNameIsImportant", ())
+            .unwrap();
+        assert_eq!(res, 99);
+
+        let guest_count = (0..LOGGER.num_log_calls())
+            .filter_map(|i| LOGGER.get_log_call(i))
+            .filter(|c| c.target == "hyperlight_guest" && c.args.contains("log entry"))
+            .count();
+        assert_eq!(guest_count, 50, "expected 50 guest logs, got {guest_count}");
+        LOGGER.clear_log_calls();
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_log_backpressure_repeated() {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        for _ in 0..5 {
+            sandbox.call::<()>("LogMessageN", 30_i32).unwrap();
+        }
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_backpressure_small_ring() {
+    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
+
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_queue_depth(4);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sbox| {
+        sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+        let mut sandbox = sbox.evolve().unwrap();
+
+        sandbox.call::<()>("LogMessageN", 20_i32).unwrap();
+
+        let guest_count = (0..LOGGER.num_log_calls())
+            .filter_map(|i| LOGGER.get_log_call(i))
+            .filter(|c| c.target == "hyperlight_guest" && c.args.contains("log entry"))
+            .count();
+        assert_eq!(guest_count, 20, "expected 20 guest logs, got {guest_count}");
+        LOGGER.clear_log_calls();
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_log_tracing_delivery() {
+    use hyperlight_testing::tracing_subscriber::TracingSubscriber;
+
+    let subscriber = TracingSubscriber::new(tracing::Level::TRACE);
+
+    tracing::subscriber::with_default(subscriber.clone(), || {
+        with_rust_uninit_sandbox(|mut sbox| {
+            sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+            let mut sandbox = sbox.evolve().unwrap();
+
+            subscriber.clear();
+
+            sandbox
+                .call::<()>("LogMessage", ("tracing delivery test".to_string(), 3_i32))
+                .unwrap();
+
+            let events = subscriber.get_events();
+            assert!(
+                !events.is_empty(),
+                "expected tracing events after guest log call, got none"
+            );
+        });
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_log_tracing_levels() {
+    use hyperlight_testing::tracing_subscriber::TracingSubscriber;
+
+    let subscriber = TracingSubscriber::new(tracing::Level::TRACE);
+
+    tracing::subscriber::with_default(subscriber.clone(), || {
+        with_rust_uninit_sandbox(|mut sbox| {
+            sbox.set_max_guest_log_level(tracing_core::LevelFilter::TRACE);
+            let mut sandbox = sbox.evolve().unwrap();
+
+            for level in [1_i32, 2, 3, 4, 5] {
+                subscriber.clear();
+                let msg = format!("level-test-{}", level);
+                sandbox.call::<()>("LogMessage", (msg, level)).unwrap();
+
+                let events = subscriber.get_events();
+                assert!(
+                    !events.is_empty(),
+                    "expected tracing events for guest log level {}",
+                    level
+                );
+            }
+        });
+    });
 }
 
 /// Tests whether host is able to return Bool as return type
