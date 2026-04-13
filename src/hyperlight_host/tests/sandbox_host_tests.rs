@@ -26,8 +26,7 @@ use hyperlight_testing::simple_guest_as_string;
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
     with_all_sandboxes, with_all_sandboxes_cfg, with_all_sandboxes_with_writer,
-    with_all_uninit_sandboxes, with_rust_sandbox_cfg, with_rust_uninit_sandbox,
-    with_rust_uninit_sandbox_cfg,
+    with_all_uninit_sandboxes, with_rust_sandbox_cfg, with_rust_uninit_sandbox_cfg,
 };
 
 #[test]
