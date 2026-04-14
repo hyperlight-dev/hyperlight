@@ -88,6 +88,12 @@ impl ExeInfo {
             ExeInfo::Elf(elf) => Offset::from(elf.entrypoint_va()),
         }
     }
+    /// Returns the base virtual address of the loaded binary (lowest PT_LOAD p_vaddr).
+    pub fn base_va(&self) -> u64 {
+        match self {
+            ExeInfo::Elf(elf) => elf.get_base_va(),
+        }
+    }
     pub fn loaded_size(&self) -> usize {
         match self {
             ExeInfo::Elf(elf) => elf.get_va_size(),

@@ -140,7 +140,7 @@ impl<'a> ResolvedGpa<&'a [u8], &'a [u8]> {
     }
 }
 #[cfg(any(gdb, feature = "mem_profile"))]
-#[allow(unused)] // may be unused when nanvix-unstable is also enabled
+#[allow(unused)] // may be unused when i686-guest is also enabled
 pub(crate) trait ReadableSharedMemory {
     fn copy_to_slice(&self, slice: &mut [u8], offset: usize) -> Result<()>;
 }
@@ -178,7 +178,7 @@ impl<T: coherence_hack::SharedMemoryAsRefMarker> ReadableSharedMemory for T {
 }
 #[cfg(any(gdb, feature = "mem_profile"))]
 impl<Sn: ReadableSharedMemory, Sc: ReadableSharedMemory> ResolvedGpa<Sn, Sc> {
-    #[allow(unused)] // may be unused when nanvix-unstable is also enabled
+    #[allow(unused)] // may be unused when i686-guest is also enabled
     pub(crate) fn copy_to_slice(&self, slice: &mut [u8]) -> Result<()> {
         match &self.base {
             BaseGpaRegion::Snapshot(sn) => sn.copy_to_slice(slice, self.offset),
@@ -239,7 +239,7 @@ pub(crate) struct SandboxMemoryLayout {
     code_size: usize,
     // The offset in the sandbox memory where the code starts
     guest_code_offset: usize,
-    #[cfg_attr(feature = "nanvix-unstable", allow(unused))]
+    #[cfg_attr(feature = "i686-guest", allow(unused))]
     pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
 
     // The size of the scratch region in physical memory; note that
@@ -316,10 +316,7 @@ impl SandboxMemoryLayout {
     const MAX_MEMORY_SIZE: usize = (16 * 1024 * 1024 * 1024) - Self::BASE_ADDRESS; // 16 GiB - BASE_ADDRESS
 
     /// The base address of the sandbox's memory.
-    #[cfg(not(feature = "nanvix-unstable"))]
     pub(crate) const BASE_ADDRESS: usize = 0x1000;
-    #[cfg(feature = "nanvix-unstable")]
-    pub(crate) const BASE_ADDRESS: usize = 0x0;
 
     // the offset into a sandbox's input/output buffer where the stack starts
     pub(crate) const STACK_POINTER_SIZE_BYTES: u64 = 8;
@@ -619,7 +616,7 @@ impl SandboxMemoryLayout {
 
     /// Returns the memory regions associated with this memory layout,
     /// suitable for passing to a hypervisor for mapping into memory
-    #[cfg_attr(feature = "nanvix-unstable", allow(unused))]
+    #[cfg_attr(feature = "i686-guest", allow(unused))]
     pub(crate) fn get_memory_regions_<K: MemoryRegionKind>(
         &self,
         host_base: K::HostBaseType,

@@ -31,7 +31,7 @@ use crate::func::{ParameterTuple, SupportedReturnType};
 use crate::log_build_details;
 use crate::mem::memory_region::{DEFAULT_GUEST_BLOB_MEM_FLAGS, MemoryRegionFlags};
 use crate::mem::mgr::SandboxMemoryManager;
-#[cfg(feature = "nanvix-unstable")]
+#[cfg(feature = "guest-counter")]
 use crate::mem::shared_mem::HostSharedMemory;
 use crate::mem::shared_mem::{ExclusiveSharedMemory, SharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -76,26 +76,26 @@ pub(crate) struct SandboxRuntimeConfig {
 ///
 /// Only one `GuestCounter` may be created per sandbox; a second call to
 /// [`UninitializedSandbox::guest_counter()`] returns an error.
-#[cfg(feature = "nanvix-unstable")]
+#[cfg(feature = "guest-counter")]
 pub struct GuestCounter {
     inner: Mutex<GuestCounterInner>,
 }
 
-#[cfg(feature = "nanvix-unstable")]
+#[cfg(feature = "guest-counter")]
 struct GuestCounterInner {
     deferred_hshm: Arc<Mutex<Option<HostSharedMemory>>>,
     offset: usize,
     value: u64,
 }
 
-#[cfg(feature = "nanvix-unstable")]
+#[cfg(feature = "guest-counter")]
 impl core::fmt::Debug for GuestCounter {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GuestCounter").finish_non_exhaustive()
     }
 }
 
-#[cfg(feature = "nanvix-unstable")]
+#[cfg(feature = "guest-counter")]
 impl GuestCounter {
     /// Increments the counter by one and writes it to guest memory.
     pub fn increment(&self) -> Result<()> {
@@ -174,12 +174,12 @@ pub struct UninitializedSandbox {
     /// view of scratch memory. Code that needs host-style volatile access
     /// before `evolve()` (e.g. `GuestCounter`) can clone this `Arc` and
     /// will see `Some` once `evolve()` completes.
-    #[cfg(feature = "nanvix-unstable")]
+    #[cfg(feature = "guest-counter")]
     pub(crate) deferred_hshm: Arc<Mutex<Option<HostSharedMemory>>>,
     /// Set to `true` once a [`GuestCounter`] has been handed out via
     /// [`guest_counter()`](Self::guest_counter). Prevents creating
     /// multiple counters that would have divergent cached values.
-    #[cfg(feature = "nanvix-unstable")]
+    #[cfg(feature = "guest-counter")]
     counter_taken: std::sync::atomic::AtomicBool,
     /// File mappings prepared by [`Self::map_file_cow`] that will be
     /// applied to the VM during [`Self::evolve`].
@@ -287,7 +287,7 @@ impl UninitializedSandbox {
     ///
     /// This method can only be called once; a second call returns an error
     /// because multiple counters would have divergent cached values.
-    #[cfg(feature = "nanvix-unstable")]
+    #[cfg(feature = "guest-counter")]
     pub fn guest_counter(&mut self) -> Result<GuestCounter> {
         use std::sync::atomic::Ordering;
 
@@ -376,9 +376,9 @@ impl UninitializedSandbox {
             rt_cfg,
             load_info: snapshot.load_info(),
             stack_top_gva: snapshot.stack_top_gva(),
-            #[cfg(feature = "nanvix-unstable")]
+            #[cfg(feature = "guest-counter")]
             deferred_hshm: Arc::new(Mutex::new(None)),
-            #[cfg(feature = "nanvix-unstable")]
+            #[cfg(feature = "guest-counter")]
             counter_taken: std::sync::atomic::AtomicBool::new(false),
             pending_file_mappings: Vec::new(),
         };
@@ -552,7 +552,7 @@ impl UninitializedSandbox {
     /// Populate the deferred `HostSharedMemory` slot without running
     /// the full `evolve()` pipeline. Used in tests where guest boot
     /// is not available.
-    #[cfg(all(test, feature = "nanvix-unstable"))]
+    #[cfg(all(test, feature = "guest-counter"))]
     fn simulate_build(&self) {
         let hshm = self.mgr.scratch_mem.as_host_shared_memory();
         #[allow(clippy::unwrap_used)]
@@ -1569,7 +1569,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "nanvix-unstable")]
+    #[cfg(feature = "guest-counter")]
     mod guest_counter_tests {
         use hyperlight_testing::simple_guest_as_string;
 

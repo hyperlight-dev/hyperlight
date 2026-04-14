@@ -16,11 +16,11 @@ limitations under the License.
 
 #[cfg_attr(target_arch = "x86", path = "arch/i686/layout.rs")]
 #[cfg_attr(
-    all(target_arch = "x86_64", not(feature = "nanvix-unstable")),
+    all(target_arch = "x86_64", not(feature = "i686-guest")),
     path = "arch/amd64/layout.rs"
 )]
 #[cfg_attr(
-    all(target_arch = "x86_64", feature = "nanvix-unstable"),
+    all(target_arch = "x86_64", feature = "i686-guest"),
     path = "arch/i686/layout.rs"
 )]
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/layout.rs")]
@@ -28,7 +28,7 @@ mod arch;
 
 pub use arch::{MAX_GPA, MAX_GVA};
 #[cfg(any(
-    all(target_arch = "x86_64", not(feature = "nanvix-unstable")),
+    all(target_arch = "x86_64", not(feature = "i686-guest")),
     target_arch = "aarch64"
 ))]
 pub use arch::{SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN};
@@ -45,7 +45,7 @@ pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x20;
 /// counter falls in scratch page 0xffffe000 instead of the very last page
 /// 0xfffff000, which on i686 guests would require frame 0xfffff — exceeding the
 /// maximum representable frame number.
-#[cfg(feature = "nanvix-unstable")]
+#[cfg(feature = "guest-counter")]
 pub const SCRATCH_TOP_GUEST_COUNTER_OFFSET: u64 = 0x1008;
 
 pub fn scratch_base_gpa(size: usize) -> u64 {

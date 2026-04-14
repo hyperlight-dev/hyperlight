@@ -36,7 +36,7 @@ use crate::hypervisor::regs::{
     CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters, FP_CONTROL_WORD_DEFAULT,
     MXCSR_DEFAULT,
 };
-#[cfg(all(test, not(feature = "nanvix-unstable")))]
+#[cfg(all(test, not(feature = "i686-guest")))]
 use crate::hypervisor::virtual_machine::XSAVE_BUFFER_SIZE;
 #[cfg(feature = "hw-interrupts")]
 use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
@@ -446,7 +446,7 @@ impl VirtualMachine for KvmVm {
     }
 
     #[cfg(test)]
-    #[cfg(not(feature = "nanvix-unstable"))]
+    #[cfg(not(feature = "i686-guest"))]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
         if std::mem::size_of_val(xsave) != XSAVE_BUFFER_SIZE {
             return Err(RegisterError::XsaveSizeMismatch {

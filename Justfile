@@ -268,7 +268,7 @@ test-rust-tracing target=default-target features="":
 check-i686 target=default-target:
     cargo check -p hyperlight-common --target i686-unknown-linux-gnu --profile={{ if target == "debug" { "dev" } else { target } }}
     cargo check -p hyperlight-guest --target i686-unknown-linux-gnu --profile={{ if target == "debug" { "dev" } else { target } }}
-    cargo check -p hyperlight-common --target i686-unknown-linux-gnu --features nanvix-unstable --profile={{ if target == "debug" { "dev" } else { target } }}
+    cargo check -p hyperlight-common --target i686-unknown-linux-gnu --features i686-guest --profile={{ if target == "debug" { "dev" } else { target } }}
     # Verify that trace_guest correctly fails on i686 (compile_error should trigger)
     ! cargo check -p hyperlight-guest --target i686-unknown-linux-gnu --features trace_guest --profile={{ if target == "debug" { "dev" } else { target } }} 2>/dev/null
 
@@ -291,8 +291,8 @@ check:
     {{ cargo-cmd }} check -p hyperlight-host --features print_debug  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features gdb  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features trace_guest,mem_profile  {{ target-triple-flag }}
-    {{ cargo-cmd }} check -p hyperlight-host --features nanvix-unstable  {{ target-triple-flag }}
-    {{ cargo-cmd }} check -p hyperlight-host --features nanvix-unstable,executable_heap  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features i686-guest  {{ target-triple-flag }}
+    {{ cargo-cmd }} check -p hyperlight-host --features i686-guest,executable_heap  {{ target-triple-flag }}
     {{ cargo-cmd }} check -p hyperlight-host --features hw-interrupts  {{ target-triple-flag }}
 
 fmt-check: (ensure-nightly-fmt)

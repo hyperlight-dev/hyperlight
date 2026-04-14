@@ -35,7 +35,7 @@ pub fn snapshot_pt_gpa_base_gva() -> *mut u64 {
 pub use arch::{scratch_base_gpa, scratch_base_gva};
 
 /// Returns a pointer to the guest counter u64 in scratch memory.
-#[cfg(feature = "nanvix-unstable")]
+#[cfg(feature = "guest-counter")]
 pub fn guest_counter_gva() -> *const u64 {
     use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_GUEST_COUNTER_OFFSET};
     (MAX_GVA as u64 - SCRATCH_TOP_GUEST_COUNTER_OFFSET + 1) as *const u64

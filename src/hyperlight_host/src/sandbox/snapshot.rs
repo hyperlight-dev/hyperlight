@@ -257,7 +257,7 @@ fn filtered_mappings<'a>(
             return None;
         }
         // neither does the mapping of the snapshot's own page tables
-        #[cfg(not(feature = "nanvix-unstable"))]
+        #[cfg(not(feature = "i686-guest"))]
         if mapping.virt_base >= hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64
             && mapping.virt_base <= hyperlight_common::layout::SNAPSHOT_PT_GVA_MAX as u64
         {
@@ -342,7 +342,7 @@ impl Snapshot {
         let guest_blob_size = blob.as_ref().map(|b| b.data.len()).unwrap_or(0);
         let guest_blob_mem_flags = blob.as_ref().map(|b| b.permissions);
 
-        #[cfg_attr(feature = "nanvix-unstable", allow(unused_mut))]
+        #[cfg_attr(feature = "i686-guest", allow(unused_mut))]
         let mut layout = crate::mem::layout::SandboxMemoryLayout::new(
             cfg,
             exe_info.loaded_size(),
@@ -351,7 +351,8 @@ impl Snapshot {
         )?;
 
         let load_addr = layout.get_guest_code_address() as u64;
-        let entrypoint_offset: u64 = exe_info.entrypoint().into();
+        let base_va = exe_info.base_va();
+        let entrypoint_va: u64 = exe_info.entrypoint().into();
 
         let mut memory = vec![0; layout.get_memory_size()?];
 
@@ -365,7 +366,7 @@ impl Snapshot {
         blob.map(|x| layout.write_init_data(&mut memory, x.data))
             .transpose()?;
 
-        #[cfg(not(feature = "nanvix-unstable"))]
+        #[cfg(not(feature = "i686-guest"))]
         {
             // Set up page table entries for the snapshot
             let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
@@ -422,7 +423,7 @@ impl Snapshot {
             hash,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
-            entrypoint: NextAction::Initialise(load_addr + entrypoint_offset),
+            entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
         })
     }
 

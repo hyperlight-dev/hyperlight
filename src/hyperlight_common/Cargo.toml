@@ -31,7 +31,8 @@ fuzzing = ["dep:arbitrary"]
 trace_guest = []
 mem_profile = []
 std = ["thiserror/std", "log/std", "tracing/std"]
-nanvix-unstable = []
+i686-guest = []
+guest-counter = []
 
 [lib]
 bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
