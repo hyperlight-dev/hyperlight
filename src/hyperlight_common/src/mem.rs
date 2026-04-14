@@ -72,11 +72,4 @@ pub struct HyperlightPEB {
     pub output_stack: GuestMemoryRegion,
     pub init_data: GuestMemoryRegion,
     pub guest_heap: GuestMemoryRegion,
-    /// File mappings array descriptor.
-    /// **Note:** `size` holds the **entry count** (number of valid
-    /// [`FileMappingInfo`] entries), NOT a byte size. `ptr` holds the
-    /// guest address of the preallocated array (immediately after the
-    /// PEB struct).
-    #[cfg(feature = "nanvix-unstable")]
-    pub file_mappings: GuestMemoryRegion,
 }

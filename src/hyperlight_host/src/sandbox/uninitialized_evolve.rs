@@ -107,15 +107,6 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
         // WhpVm::drop would release the same handle — a double-close.
         // For linux see https://github.com/hyperlight-dev/hyperlight/issues/1290.
         prepared.mark_consumed();
-        // Record the mapping metadata in the PEB. This runs after
-        // mark_consumed() because map_region already transferred
-        // resource ownership to the VM layer. If this write fails,
-        // the VM still holds a valid mapping but the PEB won't list
-        // it — acceptable since we're about to return Err and the
-        // VM will be dropped. The limit was already validated in
-        // UninitializedSandbox::map_file_cow.
-        #[cfg(feature = "nanvix-unstable")]
-        hshm.write_file_mapping_entry(prepared.guest_base, prepared.size as u64, &prepared.label)?;
         hshm.mapped_rgns += 1;
     }
 

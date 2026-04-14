@@ -13,8 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
  */
-#[cfg(feature = "nanvix-unstable")]
-use std::mem::offset_of;
 
 use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{
@@ -339,67 +337,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
 }
 
 impl SandboxMemoryManager<HostSharedMemory> {
-    /// Write a [`FileMappingInfo`] entry into the PEB's preallocated array.
-    ///
-    /// Reads the current entry count from the PEB, validates that the
-    /// array isn't full ([`MAX_FILE_MAPPINGS`]), writes the entry at the
-    /// next available slot, and increments the count.
-    ///
-    /// This is the **only** place that writes to the PEB file mappings
-    /// array — both `MultiUseSandbox::map_file_cow` and the evolve loop
-    /// call through here so the logic is not duplicated.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if [`MAX_FILE_MAPPINGS`] has been reached.
-    ///
-    /// [`FileMappingInfo`]: hyperlight_common::mem::FileMappingInfo
-    /// [`MAX_FILE_MAPPINGS`]: hyperlight_common::mem::MAX_FILE_MAPPINGS
-    #[cfg(feature = "nanvix-unstable")]
-    pub(crate) fn write_file_mapping_entry(
-        &mut self,
-        guest_addr: u64,
-        size: u64,
-        label: &[u8; hyperlight_common::mem::FILE_MAPPING_LABEL_MAX_LEN + 1],
-    ) -> Result<()> {
-        use hyperlight_common::mem::{FileMappingInfo, MAX_FILE_MAPPINGS};
-
-        // Read the current entry count from the PEB. This is the source
-        // of truth — it survives snapshot/restore because the PEB is
-        // part of shared memory that gets snapshotted.
-        let current_count =
-            self.shared_mem
-                .read::<u64>(self.layout.get_file_mappings_size_offset())? as usize;
-
-        if current_count >= MAX_FILE_MAPPINGS {
-            return Err(crate::new_error!(
-                "file mapping limit reached ({} of {})",
-                current_count,
-                MAX_FILE_MAPPINGS,
-            ));
-        }
-
-        // Write the entry into the next available slot.
-        let entry_offset = self.layout.get_file_mappings_array_offset()
-            + current_count * std::mem::size_of::<FileMappingInfo>();
-        let guest_addr_offset = offset_of!(FileMappingInfo, guest_addr);
-        let size_offset = offset_of!(FileMappingInfo, size);
-        let label_offset = offset_of!(FileMappingInfo, label);
-        self.shared_mem
-            .write::<u64>(entry_offset + guest_addr_offset, guest_addr)?;
-        self.shared_mem
-            .write::<u64>(entry_offset + size_offset, size)?;
-        self.shared_mem
-            .copy_from_slice(label, entry_offset + label_offset)?;
-
-        // Increment the entry count.
-        let new_count = (current_count + 1) as u64;
-        self.shared_mem
-            .write::<u64>(self.layout.get_file_mappings_size_offset(), new_count)?;
-
-        Ok(())
-    }
-
     /// Reads a host function call from memory
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {

@@ -58,7 +58,7 @@ pub(crate) struct PreparedFileMapping {
     /// The page-aligned size of the mapping in bytes.
     pub(crate) size: usize,
     /// Null-terminated C-style label for this mapping (max 63 chars + null).
-    #[cfg_attr(not(feature = "nanvix-unstable"), allow(unused))]
+    #[allow(unused)]
     pub(crate) label: [u8; hyperlight_common::mem::FILE_MAPPING_LABEL_MAX_LEN + 1],
     /// Host-side OS resources. `None` after successful consumption
     /// by the apply step (ownership transferred to the VM layer).
