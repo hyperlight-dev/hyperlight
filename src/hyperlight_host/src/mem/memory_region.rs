@@ -276,7 +276,7 @@ impl MemoryRegionKind for HostGuestMemoryRegion {
 
 /// Type for memory regions that only track guest addresses.
 ///
-#[cfg_attr(feature = "nanvix-unstable", allow(dead_code))]
+#[cfg_attr(feature = "i686-guest", allow(dead_code))]
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub(crate) struct GuestMemoryRegion {}
 
@@ -329,7 +329,7 @@ impl MemoryRegionKind for CrashDumpMemoryRegion {
 #[cfg(crashdump)]
 pub(crate) type CrashDumpRegion = MemoryRegion_<CrashDumpMemoryRegion>;
 
-#[cfg(all(crashdump, feature = "nanvix-unstable"))]
+#[cfg(all(crashdump, feature = "i686-guest"))]
 impl HostGuestMemoryRegion {
     /// Extract the raw `usize` host address from the platform-specific
     /// host base type.
@@ -349,7 +349,7 @@ impl HostGuestMemoryRegion {
     }
 }
 
-#[cfg_attr(feature = "nanvix-unstable", allow(unused))]
+#[cfg_attr(feature = "i686-guest", allow(unused))]
 pub(crate) struct MemoryRegionVecBuilder<K: MemoryRegionKind> {
     guest_base_phys_addr: usize,
     host_base_virt_addr: K::HostBaseType,

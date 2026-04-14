@@ -95,7 +95,7 @@ pub use sandbox::UninitializedSandbox;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
 /// The re-export for the `GuestCounter` type
-#[cfg(feature = "nanvix-unstable")]
+#[cfg(feature = "guest-counter")]
 pub use sandbox::uninitialized::GuestCounter;
 
 /// The universal `Result` type used throughout the Hyperlight codebase.

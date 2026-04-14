@@ -41,7 +41,7 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
 
     // Publish the HostSharedMemory for scratch so any pre-existing
     // GuestCounter can begin issuing volatile writes.
-    #[cfg(feature = "nanvix-unstable")]
+    #[cfg(feature = "guest-counter")]
     {
         #[allow(clippy::unwrap_used)]
         // The mutex can only be poisoned if a previous lock holder

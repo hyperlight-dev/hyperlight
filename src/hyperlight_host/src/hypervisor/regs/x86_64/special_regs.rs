@@ -28,7 +28,7 @@ use windows::Win32::System::Hypervisor::*;
 use super::FromWhpRegisterError;
 
 cfg_if::cfg_if! {
-    if #[cfg(not(feature = "nanvix-unstable"))] {
+    if #[cfg(not(feature = "i686-guest"))] {
         pub(crate) const CR4_PAE: u64 = 1 << 5;
         pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
         pub(crate) const CR4_OSXMMEXCPT: u64 = 1 << 10;
@@ -69,7 +69,7 @@ pub(crate) struct CommonSpecialRegisters {
 }
 
 impl CommonSpecialRegisters {
-    #[cfg(not(feature = "nanvix-unstable"))]
+    #[cfg(not(feature = "i686-guest"))]
     pub(crate) fn standard_64bit_defaults(pml4_addr: u64) -> Self {
         CommonSpecialRegisters {
             cs: CommonSegmentRegister {
@@ -104,7 +104,7 @@ impl CommonSpecialRegisters {
         }
     }
 
-    #[cfg(feature = "nanvix-unstable")]
+    #[cfg(feature = "i686-guest")]
     pub(crate) fn standard_real_mode_defaults() -> Self {
         CommonSpecialRegisters {
             cs: CommonSegmentRegister {

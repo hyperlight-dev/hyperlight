@@ -112,7 +112,7 @@ pub(crate) const XSAVE_MIN_SIZE: usize = 576;
 
 /// Standard XSAVE buffer size (4KB) used by KVM and MSHV.
 /// WHP queries the required size dynamically.
-#[cfg(all(any(kvm, mshv3), test, not(feature = "nanvix-unstable")))]
+#[cfg(all(any(kvm, mshv3), test, not(feature = "i686-guest")))]
 pub(crate) const XSAVE_BUFFER_SIZE: usize = 4096;
 
 // Compiler error if no hypervisor type is available (not applicable on aarch64 yet)
@@ -350,7 +350,7 @@ pub(crate) trait VirtualMachine: Debug + Send {
     fn reset_xsave(&self) -> std::result::Result<(), RegisterError>;
     /// Set xsave - only used for tests
     #[cfg(test)]
-    #[cfg(not(feature = "nanvix-unstable"))]
+    #[cfg(not(feature = "i686-guest"))]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError>;
 
     /// Get partition handle

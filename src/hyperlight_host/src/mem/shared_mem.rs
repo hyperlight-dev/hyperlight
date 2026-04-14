@@ -668,7 +668,7 @@ impl ExclusiveSharedMemory {
     /// Create a [`HostSharedMemory`] view of this region without
     /// consuming `self`. Used in tests where the full `build()` /
     /// `evolve()` pipeline is not available.
-    #[cfg(all(test, feature = "nanvix-unstable"))]
+    #[cfg(all(test, feature = "guest-counter"))]
     pub(crate) fn as_host_shared_memory(&self) -> HostSharedMemory {
         let lock = Arc::new(RwLock::new(()));
         HostSharedMemory {

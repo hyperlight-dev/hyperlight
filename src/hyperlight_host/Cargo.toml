@@ -137,7 +137,8 @@ hw-interrupts = []
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]
 build-metadata = ["dep:built"]
-nanvix-unstable = ["hyperlight-common/nanvix-unstable"]
+i686-guest = ["hyperlight-common/i686-guest"]
+guest-counter = ["hyperlight-common/guest-counter"]
 
 [[bench]]
 name = "benchmarks"

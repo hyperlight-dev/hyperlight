@@ -746,7 +746,7 @@ impl VirtualMachine for WhpVm {
     }
 
     #[cfg(test)]
-    #[cfg(not(feature = "nanvix-unstable"))]
+    #[cfg(not(feature = "i686-guest"))]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
         // Get the required buffer size by calling with NULL buffer.
         // If the buffer is not large enough (0 won't be), WHvGetVirtualProcessorXsaveState returns

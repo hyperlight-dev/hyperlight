@@ -21,7 +21,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr};
-#[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
+#[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
 
@@ -36,7 +36,7 @@ use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegion
 use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
 
-#[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
+#[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
     match kind {
         MappingKind::Basic(BasicMapping {
@@ -74,7 +74,7 @@ fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegion
 /// in both guest and host address space and has the same flags.
 ///
 /// Returns `true` if the region was coalesced, `false` if a new region is needed.
-#[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
+#[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 fn try_coalesce_region(
     regions: &mut [CrashDumpRegion],
     virt_base: usize,
@@ -99,7 +99,7 @@ fn try_coalesce_region(
 // fact that the snapshot shared memory is `ReadonlySharedMemory`
 // normally, but there is (temporary) support for writable
 // `GuestSharedMemory` with `#[cfg(feature =
-// "nanvix-unstable")]`. Unfortunately, rustc gets annoyed about an
+// "i686-guest")]`. Unfortunately, rustc gets annoyed about an
 // unused type parameter, unless one goes to a little bit of effort to
 // trick it...
 mod unused_hack {
@@ -516,7 +516,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     ///
     /// By default, walks the guest page tables to discover
     /// GVA→GPA mappings and translates them to host-backed regions.
-    #[cfg(all(feature = "crashdump", not(feature = "nanvix-unstable")))]
+    #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
     pub(crate) fn get_guest_memory_regions(
         &mut self,
         root_pt: u64,
@@ -578,7 +578,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     /// Without paging, GVA == GPA (identity mapped), so we return the
     /// snapshot and scratch regions directly at their known addresses
     /// alongside any dynamic mmap regions.
-    #[cfg(all(feature = "crashdump", feature = "nanvix-unstable"))]
+    #[cfg(all(feature = "crashdump", feature = "i686-guest"))]
     pub(crate) fn get_guest_memory_regions(
         &mut self,
         _root_pt: u64,
@@ -733,7 +733,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 }
 
 #[cfg(test)]
-#[cfg(all(not(feature = "nanvix-unstable"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "i686-guest"), target_arch = "x86_64"))]
 mod tests {
     use hyperlight_common::vmem::{MappingKind, PAGE_TABLE_SIZE};
     use hyperlight_testing::sandbox_sizes::{LARGE_HEAP_SIZE, MEDIUM_HEAP_SIZE, SMALL_HEAP_SIZE};
