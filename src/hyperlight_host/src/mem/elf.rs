@@ -21,10 +21,7 @@ use std::sync::Arc;
 use goblin::elf::reloc::{R_AARCH64_NONE, R_AARCH64_RELATIVE};
 #[cfg(target_arch = "x86_64")]
 use goblin::elf::reloc::{R_X86_64_NONE, R_X86_64_RELATIVE};
-use goblin::elf::{Elf, ProgramHeaders, Reloc};
-#[cfg(feature = "nanvix-unstable")]
-use goblin::elf32::program_header::PT_LOAD;
-#[cfg(not(feature = "nanvix-unstable"))]
+use goblin::elf::{Elf, ProgramHeaders, Reloc, section_header};
 use goblin::elf64::program_header::PT_LOAD;
 
 use super::exe::LoadInfo;
@@ -45,6 +42,8 @@ pub(crate) struct ElfInfo {
     shdrs: Vec<ResolvedSectionHeader>,
     entry: u64,
     relocs: Vec<Reloc>,
+    /// (addr, size) of NOBITS sections that need zero-filling (excludes .tbss).
+    nobits_ranges: Vec<(u64, u64)>,
     /// The hyperlight version string embedded by `hyperlight-guest-bin`, if
     /// present. Used to detect version/ABI mismatches between guest and host.
     guest_bin_version: Option<String>,
@@ -128,6 +127,20 @@ impl ElfInfo {
         // hyperlight-guest-bin.
         let guest_bin_version = Self::read_version_note(&elf, bytes);
 
+        // Collect NOBITS sections (e.g. .bss) that need zero-filling.
+        // Skip .tbss (SHF_TLS) since thread-local BSS is allocated per-thread.
+        let nobits_ranges: Vec<(u64, u64)> = {
+            elf.section_headers
+                .iter()
+                .filter(|sh| {
+                    sh.sh_type == section_header::SHT_NOBITS
+                        && sh.sh_size > 0
+                        && (sh.sh_flags & u64::from(section_header::SHF_TLS)) == 0
+                })
+                .map(|sh| (sh.sh_addr, sh.sh_size))
+                .collect()
+        };
+
         Ok(ElfInfo {
             payload: bytes.to_vec(),
             phdrs: elf.program_headers,
@@ -146,6 +159,7 @@ impl ElfInfo {
                 .collect(),
             entry: elf.entry,
             relocs,
+            nobits_ranges,
             guest_bin_version,
         })
     }
@@ -205,6 +219,21 @@ impl ElfInfo {
             target[start_va..start_va + payload_len]
                 .copy_from_slice(&self.payload[payload_offset..payload_offset + payload_len]);
             target[start_va + payload_len..start_va + phdr.p_memsz as usize].fill(0);
+        }
+        // Zero-fill NOBITS sections (e.g. .bss) that were not already
+        // covered by the filesz < memsz zeroing above.
+        for &(addr, size) in &self.nobits_ranges {
+            let sh_start = (addr - base_va) as usize;
+            let sh_end = sh_start + size as usize;
+            if sh_end <= target.len() {
+                target[sh_start..sh_end].fill(0);
+            } else {
+                tracing::warn!(
+                    "NOBITS section at VA {:#x} (size {:#x}) extends past loaded image, skipping zero-fill",
+                    addr,
+                    size
+                );
+            }
         }
         let get_addend = |name, r: &Reloc| {
             r.r_addend
