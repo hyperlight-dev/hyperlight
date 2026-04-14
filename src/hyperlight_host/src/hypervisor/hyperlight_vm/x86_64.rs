@@ -104,8 +104,10 @@ impl HyperlightVm {
         vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(_pml4_addr))
             .map_err(VmError::Register)?;
         #[cfg(feature = "i686-guest")]
-        vm.set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())
-            .map_err(VmError::Register)?;
+        vm.set_sregs(&CommonSpecialRegisters::standard_32bit_paging_defaults(
+            _pml4_addr,
+        ))
+        .map_err(VmError::Register)?;
 
         #[cfg(any(kvm, mshv3))]
         let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
@@ -248,21 +250,11 @@ impl HyperlightVm {
         Ok(())
     }
 
-    /// Get the current base page table physical address.
-    ///
-    /// By default, reads CR3 from the vCPU special registers.
-    /// With `i686-guest`, returns 0 (identity-mapped, no page tables).
+    /// Get the current base page table physical address from CR3.
     pub(crate) fn get_root_pt(&self) -> Result<u64, AccessPageTableError> {
-        #[cfg(not(feature = "i686-guest"))]
-        {
-            let sregs = self.vm.sregs()?;
-            // Mask off the flags bits
-            Ok(sregs.cr3 & !0xfff_u64)
-        }
-        #[cfg(feature = "i686-guest")]
-        {
-            Ok(0)
-        }
+        let sregs = self.vm.sregs()?;
+        // Mask off the flags bits
+        Ok(sregs.cr3 & !0xfff_u64)
     }
 
     /// Get the special registers that need to be stored in a snapshot.
@@ -352,23 +344,12 @@ impl HyperlightVm {
         self.vm.set_debug_regs(&CommonDebugRegs::default())?;
         self.vm.reset_xsave()?;
 
-        #[cfg(not(feature = "i686-guest"))]
-        {
-            // Restore the full special registers from snapshot, but update CR3
-            // to point to the new (relocated) page tables
-            let mut sregs = *sregs;
-            sregs.cr3 = cr3;
-            self.pending_tlb_flush = true;
-            self.vm.set_sregs(&sregs)?;
-        }
-        #[cfg(feature = "i686-guest")]
-        {
-            let _ = (cr3, sregs); // suppress unused warnings
-            // TODO: This is probably not correct.
-            // Let's deal with it when we clean up the i686-guest feature
-            self.vm
-                .set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())?;
-        }
+        // Restore the full special registers from snapshot, but update CR3
+        // to point to the new (relocated) page tables
+        let mut sregs = *sregs;
+        sregs.cr3 = cr3;
+        self.pending_tlb_flush = true;
+        self.vm.set_sregs(&sregs)?;
 
         Ok(())
     }
