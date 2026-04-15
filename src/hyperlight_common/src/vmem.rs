@@ -22,6 +22,8 @@ mod arch;
 /// This is always the page size that the /guest/ is being compiled
 /// for, which may or may not be the same as the host page size.
 pub use arch::PAGE_SIZE;
+#[cfg(all(feature = "i686-guest", target_arch = "x86_64"))]
+pub use arch::i686_guest;
 pub use arch::{PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
 pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
     PAGE_TABLE_SIZE / core::mem::size_of::<PageTableEntry>();

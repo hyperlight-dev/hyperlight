@@ -596,6 +596,72 @@ pub type PageTableEntry = u64;
 pub type VirtAddr = u64;
 pub type PhysAddr = u64;
 
+/// i686 guest page-table walker and PTE constants for the x86_64 host.
+///
+/// When the host builds with `i686-guest`, it needs to walk 2-level i686
+/// page tables in guest memory. The `arch/i686/vmem.rs` module only compiles
+/// for `target_arch = "x86"` (the guest side), so the host-side walker lives
+/// here, gated behind the feature flag.
+#[cfg(feature = "i686-guest")]
+pub mod i686_guest {
+    use alloc::vec::Vec;
+
+    use crate::vmem::{BasicMapping, CowMapping, Mapping, MappingKind, TableReadOps};
+
+    pub const PAGE_PRESENT: u64 = 1;
+    pub const PAGE_RW: u64 = 1 << 1;
+    pub const PAGE_USER: u64 = 1 << 2;
+    pub const PAGE_ACCESSED: u64 = 1 << 5;
+    pub const PAGE_AVL_COW: u64 = 1 << 9;
+    pub const PTE_ADDR_MASK: u64 = 0xFFFFF000;
+
+    /// Walk an i686 2-level page table and return all present mappings.
+    ///
+    /// # Safety
+    /// The caller must ensure that `op` provides valid page table memory.
+    pub unsafe fn virt_to_phys_all<Op: TableReadOps>(op: &Op) -> Vec<Mapping> {
+        let root = op.root_table();
+        let mut mappings = Vec::new();
+        for pdi in 0..1024u64 {
+            let pde_ptr = Op::entry_addr(root, pdi * 4);
+            let pde: u64 = unsafe { op.read_entry(pde_ptr) };
+            if (pde & PAGE_PRESENT) == 0 {
+                continue;
+            }
+            let pt_phys = pde & PTE_ADDR_MASK;
+            let pt_base = Op::from_phys(pt_phys as crate::vmem::PhysAddr);
+            for pti in 0..1024u64 {
+                let pte_ptr = Op::entry_addr(pt_base, pti * 4);
+                let pte: u64 = unsafe { op.read_entry(pte_ptr) };
+                if (pte & PAGE_PRESENT) == 0 {
+                    continue;
+                }
+                let phys_base = pte & PTE_ADDR_MASK;
+                let virt_base = (pdi << 22) | (pti << 12);
+                let kind = if (pte & PAGE_AVL_COW) != 0 {
+                    MappingKind::Cow(CowMapping {
+                        readable: true,
+                        executable: true,
+                    })
+                } else {
+                    MappingKind::Basic(BasicMapping {
+                        readable: true,
+                        writable: (pte & PAGE_RW) != 0,
+                        executable: true,
+                    })
+                };
+                mappings.push(Mapping {
+                    phys_base,
+                    virt_base,
+                    len: super::PAGE_SIZE as u64,
+                    kind,
+                });
+            }
+        }
+        mappings
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;

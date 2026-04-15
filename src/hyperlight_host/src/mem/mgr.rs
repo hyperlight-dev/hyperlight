@@ -20,6 +20,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 };
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+#[cfg(not(feature = "i686-guest"))]
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr};
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
@@ -148,11 +149,13 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) abort_buffer: Vec<u8>,
 }
 
+#[cfg(not(feature = "i686-guest"))]
 pub(crate) struct GuestPageTableBuffer {
     buffer: std::cell::RefCell<Vec<u8>>,
     phys_base: usize,
 }
 
+#[cfg(not(feature = "i686-guest"))]
 impl vmem::TableReadOps for GuestPageTableBuffer {
     type TableAddr = (usize, usize); // (table_index, entry_index)
 
@@ -187,6 +190,7 @@ impl vmem::TableReadOps for GuestPageTableBuffer {
         (self.phys_base / PAGE_TABLE_SIZE, 0)
     }
 }
+#[cfg(not(feature = "i686-guest"))]
 impl vmem::TableOps for GuestPageTableBuffer {
     type TableMovability = vmem::MayNotMoveTable;
 
@@ -217,6 +221,7 @@ impl vmem::TableOps for GuestPageTableBuffer {
     }
 }
 
+#[cfg(not(feature = "i686-guest"))]
 impl GuestPageTableBuffer {
     pub(crate) fn new(phys_base: usize) -> Self {
         GuestPageTableBuffer {
@@ -268,7 +273,7 @@ where
         &mut self,
         sandbox_id: u64,
         mapped_regions: Vec<MemoryRegion>,
-        root_pt_gpa: u64,
+        root_pt_gpas: &[u64],
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
@@ -280,7 +285,7 @@ where
             self.layout,
             crate::mem::exe::LoadInfo::dummy(),
             mapped_regions,
-            root_pt_gpa,
+            root_pt_gpas,
             rsp_gva,
             sregs,
             entrypoint,
@@ -332,6 +337,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
         };
         host_mgr.update_scratch_bookkeeping()?;
+        host_mgr.copy_pt_to_scratch()?;
         Ok((host_mgr, guest_mgr))
     }
 }
@@ -461,6 +467,18 @@ impl SandboxMemoryManager<HostSharedMemory> {
         };
         self.layout = *snapshot.layout();
         self.update_scratch_bookkeeping()?;
+        // i686 snapshots store PT bytes separately (not appended to shared_mem)
+        // to avoid overlapping with map_file_cow regions.
+        // x86_64 snapshots have PTs appended to shared_mem.
+        #[cfg(feature = "i686-guest")]
+        {
+            let sep_pt = snapshot.separate_pt_bytes();
+            self.scratch_mem.with_exclusivity(|scratch| {
+                scratch.copy_from_slice(sep_pt, self.layout.get_pt_base_scratch_offset())
+            })??;
+        }
+        #[cfg(not(feature = "i686-guest"))]
+        self.copy_pt_to_scratch()?;
         Ok((gsnapshot, gscratch))
     }
 
@@ -479,6 +497,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
             SCRATCH_TOP_ALLOCATOR_OFFSET,
             self.layout.get_first_free_scratch_gpa(),
         )?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET,
+            self.layout.get_pt_base_gpa(),
+        )?;
 
         // Initialise the guest input and output data buffers in
         // scratch memory. TODO: remove the need for this.
@@ -491,7 +513,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
             SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
         )?;
 
-        // Copy the page tables into the scratch region
+        Ok(())
+    }
+
+    /// Copy page tables from shared_mem into the scratch region.
+    fn copy_pt_to_scratch(&mut self) -> Result<()> {
         let snapshot_pt_end = self.shared_mem.mem_size();
         let snapshot_pt_size = self.layout.get_pt_size();
         let snapshot_pt_start = snapshot_pt_end - snapshot_pt_size;
@@ -508,7 +534,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
             #[allow(clippy::needless_borrow)]
             scratch.copy_from_slice(&bytes, self.layout.get_pt_base_scratch_offset())
         })??;
-
         Ok(())
     }
 

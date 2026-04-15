@@ -14,12 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-// This file is just dummy definitions at the moment, in order to
-// allow compiling the guest for real mode boot scenarios.
+// i686 layout constants for 32-bit protected mode with paging.
 
 pub const MAX_GVA: usize = 0xffff_ffff;
 pub const MAX_GPA: usize = 0xffff_ffff;
 
-pub fn min_scratch_size(_input_data_size: usize, _output_data_size: usize) -> usize {
-    crate::vmem::PAGE_SIZE
+/// Minimum scratch region size: IO buffers (page-aligned) plus 12 pages
+/// for bookkeeping and the exception stack. Page table space is validated
+/// separately by `set_pt_size()`.
+pub fn min_scratch_size(input_data_size: usize, output_data_size: usize) -> usize {
+    (input_data_size + output_data_size).next_multiple_of(crate::vmem::PAGE_SIZE)
+        + 12 * crate::vmem::PAGE_SIZE
 }
