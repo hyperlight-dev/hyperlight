@@ -160,10 +160,16 @@ impl MultiUseSandbox {
         }
         let mapped_regions_iter = self.vm.get_mapped_regions();
         let mapped_regions_vec: Vec<MemoryRegion> = mapped_regions_iter.cloned().collect();
-        let root_pt_gpa = self
+        // Discover page table roots. For i686 guests, read the PD roots
+        // table from scratch bookkeeping. For x86_64, just use CR3.
+        #[cfg(feature = "i686-guest")]
+        let root_pt_gpas = self.read_pd_roots_from_scratch()?;
+        #[cfg(not(feature = "i686-guest"))]
+        let root_pt_gpas = [self
             .vm
             .get_root_pt()
-            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+            .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?];
+
         let stack_top_gpa = self.vm.get_stack_top();
         let sregs = self
             .vm
@@ -173,7 +179,7 @@ impl MultiUseSandbox {
         let memory_snapshot = self.mem_mgr.snapshot(
             self.id,
             mapped_regions_vec,
-            root_pt_gpa,
+            &root_pt_gpas,
             stack_top_gpa,
             sregs,
             entrypoint,
@@ -181,6 +187,54 @@ impl MultiUseSandbox {
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
+    }
+
+    /// Reads the PD roots table from the scratch bookkeeping area.
+    /// Returns an error if the guest did not write valid PD roots
+    /// before signaling boot-complete.
+    #[cfg(feature = "i686-guest")]
+    fn read_pd_roots_from_scratch(&mut self) -> Result<Vec<u64>> {
+        use hyperlight_common::layout::{
+            MAX_PD_ROOTS, SCRATCH_TOP_PD_ROOTS_ARRAY_OFFSET, SCRATCH_TOP_PD_ROOTS_COUNT_OFFSET,
+        };
+
+        let scratch_size = self.mem_mgr.layout.get_scratch_size();
+        let count_off = scratch_size - SCRATCH_TOP_PD_ROOTS_COUNT_OFFSET as usize;
+        let array_off = scratch_size - SCRATCH_TOP_PD_ROOTS_ARRAY_OFFSET as usize;
+
+        self.mem_mgr.scratch_mem.with_contents(|scratch| {
+            let count = scratch
+                .get(count_off..count_off + 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .unwrap_or(0) as usize;
+
+            if count == 0 {
+                return Err(crate::new_error!(
+                    "i686 guest did not write PD roots to scratch bookkeeping (count=0)"
+                ));
+            }
+            if count > MAX_PD_ROOTS {
+                return Err(crate::new_error!(
+                    "i686 guest wrote invalid PD roots count: {} (max {})",
+                    count,
+                    MAX_PD_ROOTS
+                ));
+            }
+
+            let mut roots = Vec::with_capacity(count);
+            for i in 0..count {
+                let off = array_off + i * 4;
+                let b = scratch.get(off..off + 4).ok_or_else(|| {
+                    crate::new_error!("PD root {} at offset {} is out of scratch bounds", i, off)
+                })?;
+                let gpa = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                if gpa == 0 {
+                    return Err(crate::new_error!("PD root {} has GPA 0", i));
+                }
+                roots.push(gpa as u64);
+            }
+            Ok(roots)
+        })?
     }
 
     /// Restores the sandbox's memory to a previously captured snapshot state.
