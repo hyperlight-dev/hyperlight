@@ -84,6 +84,16 @@ pub struct Snapshot {
     /// outside the main snapshot memory to avoid overlap with map_file_cow.
     #[cfg(feature = "i686-guest")]
     separate_pt_bytes: Vec<u8>,
+    /// Number of per-process page-directory roots captured in this
+    /// snapshot. After restore the PD-root count and the compacted
+    /// root GPAs are re-populated in the scratch bookkeeping area
+    /// (`SCRATCH_TOP_PD_ROOTS_{COUNT,ARRAY}_OFFSET`) so a subsequent
+    /// `snapshot()` call observes a non-zero count. Root GPAs are
+    /// deterministic: root `i` lands at
+    /// `layout.get_pt_base_gpa() + i * PAGE_SIZE` (see
+    /// `compact_i686_snapshot`).
+    #[cfg(feature = "i686-guest")]
+    n_pd_roots: usize,
     /// Extra debug information about the binary in this snapshot,
     /// from when the binary was first loaded into the snapshot.
     ///
@@ -259,7 +269,9 @@ impl<'a> hyperlight_common::vmem::TableReadOps for SharedMemoryPageTableBuffer<'
             };
             #[allow(clippy::unwrap_used)]
             let n: [u8; 4] = pte_bytes.try_into().unwrap();
-            u32::from_ne_bytes(n) as u64
+            // Page-table entries are little-endian by arch spec;
+            // use `from_le_bytes` so host endianness doesn't leak in.
+            u32::from_le_bytes(n) as u64
         }
         #[cfg(not(feature = "i686-guest"))]
         {
@@ -874,6 +886,8 @@ impl Snapshot {
             sregs: None,
             #[cfg(feature = "i686-guest")]
             separate_pt_bytes: Vec::new(),
+            #[cfg(feature = "i686-guest")]
+            n_pd_roots: 0,
             entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
         })
     }
@@ -1007,6 +1021,8 @@ impl Snapshot {
             sregs: Some(sregs),
             #[cfg(feature = "i686-guest")]
             separate_pt_bytes,
+            #[cfg(feature = "i686-guest")]
+            n_pd_roots: root_pt_gpas.len(),
             entrypoint,
         })
     }
@@ -1056,6 +1072,15 @@ impl Snapshot {
     #[cfg(feature = "i686-guest")]
     pub(crate) fn separate_pt_bytes(&self) -> &[u8] {
         &self.separate_pt_bytes
+    }
+
+    /// Number of per-process page-directory roots captured in this
+    /// snapshot. Used by `restore_snapshot` to rewrite the scratch
+    /// PD-roots bookkeeping so a later `snapshot()` call doesn't
+    /// observe a stale zero count.
+    #[cfg(feature = "i686-guest")]
+    pub(crate) fn n_pd_roots(&self) -> usize {
+        self.n_pd_roots
     }
 
     pub(crate) fn entrypoint(&self) -> NextAction {

@@ -539,10 +539,46 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.scratch_mem.with_exclusivity(|scratch| {
                 scratch.copy_from_slice(sep_pt, self.layout.get_pt_base_scratch_offset())
             })??;
+            // Rewrite the PD-roots bookkeeping. `restore_snapshot`
+            // clears scratch above, so without this step a later
+            // `snapshot()` would read count=0 and fail. Root `i`
+            // lands at `pt_base_gpa + i * PAGE_SIZE` — the same
+            // layout `compact_i686_snapshot` used when building the
+            // rebuilt PDs.
+            self.update_pd_roots_bookkeeping(snapshot.n_pd_roots())?;
         }
         #[cfg(not(feature = "i686-guest"))]
         self.copy_pt_to_scratch()?;
         Ok((gsnapshot, gscratch))
+    }
+
+    /// Write the PD-roots count and compacted root GPAs into the
+    /// scratch bookkeeping area. Called from `restore_snapshot` on
+    /// the i686-guest path so the scratch state mirrors what it
+    /// looked like right after the snapshot was taken.
+    #[cfg(feature = "i686-guest")]
+    fn update_pd_roots_bookkeeping(&mut self, n_roots: usize) -> Result<()> {
+        use hyperlight_common::layout::{
+            MAX_PD_ROOTS, SCRATCH_TOP_PD_ROOTS_ARRAY_OFFSET, SCRATCH_TOP_PD_ROOTS_COUNT_OFFSET,
+        };
+        if n_roots > MAX_PD_ROOTS {
+            return Err(crate::new_error!(
+                "snapshot has {} PD roots, more than MAX_PD_ROOTS={}",
+                n_roots,
+                MAX_PD_ROOTS
+            ));
+        }
+        let scratch_size = self.scratch_mem.mem_size();
+        let count_off = scratch_size - SCRATCH_TOP_PD_ROOTS_COUNT_OFFSET as usize;
+        let array_off = scratch_size - SCRATCH_TOP_PD_ROOTS_ARRAY_OFFSET as usize;
+        self.scratch_mem.write::<u32>(count_off, n_roots as u32)?;
+        let pt_base = self.layout.get_pt_base_gpa();
+        for i in 0..n_roots {
+            let gpa = pt_base + (i as u64) * 4096;
+            self.scratch_mem
+                .write::<u32>(array_off + i * 4, gpa as u32)?;
+        }
+        Ok(())
     }
 
     #[inline]

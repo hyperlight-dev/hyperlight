@@ -19,6 +19,21 @@ limitations under the License.
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/vmem.rs")]
 mod arch;
 
+// The `i686-guest` feature is consumed two ways: the guest itself
+// compiles for `target_arch = "x86"`, and the x86_64 host compiles
+// it to pick up the PT walker under `vmem::i686_guest`. Enabling
+// the feature on any other host (e.g. aarch64) would leave the
+// re-export missing and produce confusing errors in downstream
+// crates — surface it up front.
+#[cfg(all(
+    feature = "i686-guest",
+    not(any(target_arch = "x86", target_arch = "x86_64"))
+))]
+compile_error!(
+    "the `i686-guest` feature is only supported on `target_arch = \"x86\"` (guest) or \
+     `target_arch = \"x86_64\"` (host) targets"
+);
+
 /// This is always the page size that the /guest/ is being compiled
 /// for, which may or may not be the same as the host page size.
 pub use arch::PAGE_SIZE;
