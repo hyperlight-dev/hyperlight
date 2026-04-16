@@ -1,5 +1,5 @@
 /*
-Copyright 2025  The Hyperlight Authors.
+Copyright 2026  The Hyperlight Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,21 +14,5 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#![no_std]
-#[cfg(all(feature = "trace_guest", not(target_arch = "x86_64")))]
-compile_error!("trace_guest feature is only supported on x86_64 architecture");
-
-extern crate alloc;
-
-// Modules
-pub mod error;
-pub mod exit;
-pub mod layout;
-pub mod prim_alloc;
-pub mod types;
-
-pub mod guest_handle {
-    pub mod handle;
-    pub mod host_comm;
-    pub mod io;
-}
+pub use hyperlight_guest::error::*;
+pub use hyperlight_guest::{bail, ensure};

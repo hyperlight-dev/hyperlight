@@ -17,7 +17,7 @@ limitations under the License.
 use alloc::format;
 use alloc::string::{String, ToString as _};
 
-use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+pub use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::func::Error as FuncError;
 use {anyhow, serde_json};
 

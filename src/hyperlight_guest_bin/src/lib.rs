@@ -47,6 +47,7 @@ pub mod guest_function {
     pub mod register;
 }
 
+pub mod error;
 pub mod guest_logger;
 pub mod host_comm;
 pub mod memory;
