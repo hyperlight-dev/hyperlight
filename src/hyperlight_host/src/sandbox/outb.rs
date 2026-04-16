@@ -273,29 +273,31 @@ fn outb_virtq_call(
         .try_lock()
         .map_err(|e| HandleOutbError::LockFailed(file!(), line!(), e.to_string()))?;
 
-    let mut res = registry
+    let res = registry
         .call_host_function(&name, args)
         .map_err(|e| GuestError::new(ErrorCode::HostFunctionError, e.to_string()));
 
-    // Truncate oversized error messages so the serialized response
-    // fits in the completion buffer the guest pre-allocated.
-    if let Err(err) = &mut res
-        && err.message.len() > wc.capacity()
-    {
-        err.message.truncate(wc.capacity());
-    }
-
-    // Serialize response: VirtqMsgHeader + FunctionCallResult
     let func_result = FunctionCallResult::new(res);
     let mut builder = flatbuffers::FlatBufferBuilder::new();
-    let result_payload = func_result.encode(&mut builder);
+    let mut result_payload = func_result.encode(&mut builder).to_vec();
+
+    let total = VirtqMsgHeader::SIZE + result_payload.len();
+    if total > wc.capacity() {
+        let too_large = GuestError::new(
+            ErrorCode::HostFunctionError,
+            "response too large for completion buffer".into(),
+        );
+        let fallback = FunctionCallResult::new(Err(too_large));
+        let mut fb = flatbuffers::FlatBufferBuilder::new();
+        result_payload = fallback.encode(&mut fb).to_vec();
+    }
 
     let resp_header = VirtqMsgHeader::new(MsgKind::Response, 0, result_payload.len() as u32);
     let resp_header_bytes = bytemuck::bytes_of(&resp_header);
 
     wc.write_all(resp_header_bytes)
         .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
-    wc.write_all(result_payload)
+    wc.write_all(&result_payload)
         .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
     consumer
         .complete(wc.into())
