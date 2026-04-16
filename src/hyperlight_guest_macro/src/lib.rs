@@ -156,6 +156,103 @@ pub fn guest_function(attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
+/// Attribute macro to mark a function as the main entry point for the guest.
+/// This will generate a function that is called by the host at program initialization.
+///
+/// # Example
+/// ```ignore
+/// use hyperlight_guest_bin::main;
+/// #[main]
+/// fn main() {
+///     // do some initialization work here, e.g., initialize global state, etc.
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse the function definition that we will be working with, and
+    // early return if parsing as `ItemFn` fails.
+    let fn_declaration = parse_macro_input!(item as ItemFn);
+
+    // Obtain the name of the function being decorated.
+    let ident = fn_declaration.sig.ident.clone();
+
+    // The generated code will replace the decorated code, so we need to
+    // include the original function declaration in the output.
+    let output = quote! {
+        #fn_declaration
+
+        const _: () = {
+            mod wrapper {
+                #[unsafe(no_mangle)]
+                pub extern "C" fn hyperlight_main() {
+                    super::#ident()
+                }
+            }
+        };
+    };
+
+    output.into()
+}
+
+/// Attribute macro to mark a function as the dispatch function for the guest.
+/// This is the function that will be called by the host when a function call is made
+/// to a function that is not registered with the host.
+///
+/// # Example
+/// ```ignore
+/// use hyperlight_guest_bin::dispatch;
+/// use hyperlight_guest::error::Result;
+/// use hyperlight_guest::bail;
+/// use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+/// use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
+/// #[dispatch]
+/// fn dispatch(fc: FunctionCall) -> Result<Vec<u8>> {
+///     let name = &fc.function_name;
+///     if name == "greet" {
+///         return Ok(get_flatbuffer_result("Hello, world!"));
+///     }
+///     bail!("Unknown function: {name}");
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Obtain the crate name for hyperlight-guest-bin
+    let crate_name =
+        crate_name("hyperlight-guest-bin").expect("hyperlight-guest-bin must be a dependency");
+    let crate_name = match crate_name {
+        FoundCrate::Itself => quote! {crate},
+        FoundCrate::Name(name) => {
+            let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+            quote! {::#ident}
+        }
+    };
+
+    // Parse the function definition that we will be working with, and
+    // early return if parsing as `ItemFn` fails.
+    let fn_declaration = parse_macro_input!(item as ItemFn);
+
+    // Obtain the name of the function being decorated.
+    let ident = fn_declaration.sig.ident.clone();
+
+    // The generated code will replace the decorated code, so we need to
+    // include the original function declaration in the output.
+    let output = quote! {
+        #fn_declaration
+
+        const _: () = {
+            mod wrapper {
+                use #crate_name::__private::{FunctionCall, HyperlightGuestError, Vec};
+                #[unsafe(no_mangle)]
+                pub fn guest_dispatch_function(function_call: FunctionCall) -> ::core::result::Result<Vec<u8>, HyperlightGuestError> {
+                    super::#ident(function_call)
+                }
+            }
+        };
+    };
+
+    output.into()
+}
+
 /// Attribute macro to mark a function as a host function.
 /// This will generate a function that calls the host function with the same name.
 ///

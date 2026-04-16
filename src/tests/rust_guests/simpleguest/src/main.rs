@@ -855,9 +855,9 @@ fn call_host_expect_error(hostfuncname: String) -> Result<()> {
     Ok(())
 }
 
-#[no_mangle]
+#[hyperlight_guest_bin::main]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub extern "C" fn hyperlight_main() {
+fn main() {
     let print_output_def = GuestFunctionDefinition::<GuestFunc>::new(
         "PrintOutputWithHostPrint".to_string(),
         Vec::from(&[ParameterType::String]),
@@ -1067,9 +1067,9 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
     }
 }
 
-#[no_mangle]
+#[hyperlight_guest_bin::dispatch]
 #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-pub fn guest_dispatch_function(function_call: FunctionCall) -> Result<Vec<u8>> {
+fn dispatch(function_call: FunctionCall) -> Result<Vec<u8>> {
     // This test checks the stack behavior of the input/output buffer
     // by calling the host before serializing the function call.
     // If the stack is not working correctly, the input or output buffer will be
