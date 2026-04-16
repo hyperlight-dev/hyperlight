@@ -72,9 +72,6 @@ pub struct GuestContext {
     g2h_producer: G2hProducer,
     /// host-to-guest driver
     h2g_producer: H2gProducer,
-    /// Max writable bytes the host can write into a G2H completion.
-    /// Derived from the G2H pool upper slab slot size.
-    g2h_response_cap: usize,
     /// H2G slot size in bytes (each prefilled writable descriptor).
     h2g_slot_size: usize,
     /// snapshot generation counter
@@ -91,7 +88,6 @@ impl GuestContext {
         let size = g2h.pool_pages * PAGE_SIZE_USIZE;
         let g2h_pool =
             BufferPool::new(g2h.pool_gva, size).expect("failed to create G2H buffer pool");
-        let g2h_response_cap = BufferPool::<256, 4096>::upper_slot_size();
         let g2h_producer =
             VirtqProducer::new(g2h.layout, GuestMemOps, GuestNotifier, g2h_pool.clone());
 
@@ -105,7 +101,6 @@ impl GuestContext {
         let mut ctx = Self {
             g2h_producer,
             h2g_producer,
-            g2h_response_cap,
             h2g_slot_size,
             generation,
             pending_replies: 0,
@@ -118,8 +113,7 @@ impl GuestContext {
 
     /// Call a host function via the G2H virtqueue.
     ///
-    /// Uses the default completion capacity (4096 bytes) for the response
-    /// buffer. For host functions known to return large payloads, use
+    /// For host functions known to return payloads larger than 4096 bytes, use
     /// [`call_host_function_with_hint`](Self::call_host_function_with_hint).
     pub fn call_host_function<T: TryFrom<ReturnValue>>(
         &mut self,
@@ -127,12 +121,12 @@ impl GuestContext {
         parameters: Option<Vec<ParameterValue>>,
         return_type: ReturnType,
     ) -> Result<T> {
-        self.call_host_function_with_hint(
-            function_name,
-            parameters,
-            return_type,
-            self.g2h_response_cap,
-        )
+        let hint = if matches!(return_type, ReturnType::String | ReturnType::VecBytes) {
+            BufferPool::upper_slot_size()
+        } else {
+            BufferPool::lower_slot_size()
+        };
+        self.call_host_function_with_hint(function_name, parameters, return_type, hint)
     }
 
     /// Call a host function with an explicit response capacity hint.
