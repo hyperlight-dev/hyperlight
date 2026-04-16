@@ -416,10 +416,17 @@ impl<const L: usize, const U: usize> BufferPool<L, U> {
             inner: SyncWrap(Rc::new(RefCell::new(inner))),
         })
     }
+}
 
+impl BufferPool {
     /// Upper slab slot size in bytes.
     pub const fn upper_slot_size() -> usize {
-        U
+        4096
+    }
+
+    /// Lower slab slot size in bytes.
+    pub const fn lower_slot_size() -> usize {
+        256
     }
 }
 
