@@ -21,10 +21,23 @@ use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
+use hyperlight_guest::bail;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use tracing::instrument;
 
 use crate::{GUEST_HANDLE, REGISTERED_GUEST_FUNCTIONS};
+
+core::arch::global_asm!(
+    ".weak guest_dispatch_function",
+    ".set guest_dispatch_function, {}",
+    sym guest_dispatch_function_default,
+);
+
+#[tracing::instrument(skip_all, parent = tracing::Span::current(), level= "Trace")]
+fn guest_dispatch_function_default(function_call: FunctionCall) -> Result<Vec<u8>> {
+    let name = &function_call.function_name;
+    bail!(ErrorCode::GuestFunctionNotFound => "No handler found for function call: {name:#?}");
+}
 
 #[instrument(skip_all, level = "Info")]
 pub(crate) fn call_guest_function(function_call: FunctionCall) -> Result<Vec<u8>> {

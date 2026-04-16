@@ -197,6 +197,17 @@ unsafe extern "C" {
     fn srand(seed: u32);
 }
 
+#[tracing::instrument(skip_all, parent = tracing::Span::current(), level= "Trace")]
+extern "C" fn hyperlight_main_default() {
+    // no-op
+}
+
+core::arch::global_asm!(
+    ".weak hyperlight_main",
+    ".set hyperlight_main, {}",
+    sym hyperlight_main_default,
+);
+
 /// Architecture-nonspecific initialisation: set up the heap,
 /// coordinate some addresses and configuration with the host, and run
 /// user initialisation
@@ -286,6 +297,9 @@ pub(crate) extern "C" fn generic_init(
 #[cfg(feature = "macros")]
 #[doc(hidden)]
 pub mod __private {
+    pub use alloc::vec::Vec;
+
+    pub use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
     pub use hyperlight_common::func::ResultType;
     pub use hyperlight_guest::error::HyperlightGuestError;
     pub use linkme;
@@ -299,7 +313,6 @@ pub mod __private {
     }
 
     use alloc::string::String;
-    use alloc::vec::Vec;
 
     use hyperlight_common::for_each_return_type;
 
@@ -327,6 +340,6 @@ pub mod __private {
 }
 
 #[cfg(feature = "macros")]
-pub use hyperlight_guest_macro::{guest_function, host_function};
+pub use hyperlight_guest_macro::{dispatch, guest_function, host_function, main};
 
 pub use crate::guest_function::definition::GuestFunc;
