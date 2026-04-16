@@ -47,6 +47,24 @@ where
     virtq::with_context(|ctx| ctx.call_host_function(function_name, parameters, return_type))
 }
 
+/// Call a host function with an explicit response capacity hint.
+///
+/// `response_hint` is the total completion buffer size in bytes including wire overhead.
+/// Use this when you know the host function returns a large payload (e.g., >4096 bytes).
+pub fn call_host_function_with_hint<T>(
+    function_name: &str,
+    parameters: Option<Vec<ParameterValue>>,
+    return_type: ReturnType,
+    response_hint: usize,
+) -> Result<T>
+where
+    T: TryFrom<ReturnValue>,
+{
+    virtq::with_context(|ctx| {
+        ctx.call_host_function_with_hint(function_name, parameters, return_type, response_hint)
+    })
+}
+
 pub fn call_host<T>(function_name: impl AsRef<str>, args: impl ParameterTuple) -> Result<T>
 where
     T: SupportedReturnType + TryFrom<ReturnValue>,

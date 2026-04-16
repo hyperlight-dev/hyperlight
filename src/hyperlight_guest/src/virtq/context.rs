@@ -118,13 +118,35 @@ impl GuestContext {
 
     /// Call a host function via the G2H virtqueue.
     ///
-    /// The reply guard is checked before submitting the readwrite chain
-    /// to ensure G2H capacity is reserved for pending responses.
+    /// Uses the default completion capacity (4096 bytes) for the response
+    /// buffer. For host functions known to return large payloads, use
+    /// [`call_host_function_with_hint`](Self::call_host_function_with_hint).
     pub fn call_host_function<T: TryFrom<ReturnValue>>(
         &mut self,
         function_name: &str,
         parameters: Option<Vec<ParameterValue>>,
         return_type: ReturnType,
+    ) -> Result<T> {
+        self.call_host_function_with_hint(
+            function_name,
+            parameters,
+            return_type,
+            self.g2h_response_cap,
+        )
+    }
+
+    /// Call a host function with an explicit response capacity hint.
+    ///
+    /// `resp_hint` is the total completion buffer size in bytes
+    /// (including wire overhead: VirtqMsgHeader + FlatBuffer framing).
+    /// The BufferPool allocates multiple adjacent slots when the hint
+    /// exceeds a single slot size, so this is zero-copy for the host.
+    pub fn call_host_function_with_hint<T: TryFrom<ReturnValue>>(
+        &mut self,
+        function_name: &str,
+        parameters: Option<Vec<ParameterValue>>,
+        return_type: ReturnType,
+        resp_hint: usize,
     ) -> Result<T> {
         let params = parameters.as_deref().unwrap_or_default();
         let estimated_capacity = estimate_flatbuffer_capacity(function_name, params);
@@ -140,15 +162,15 @@ impl GuestContext {
         let payload = fc.encode(&mut builder);
 
         let reqid = REQUEST_ID.fetch_add(1, Relaxed);
-        let hdr = VirtqMsgHeader::new(MsgKind::Request, reqid, payload.len() as u32);
-        let hdr_bytes = bytemuck::bytes_of(&hdr);
+        let msg = VirtqMsgHeader::new(MsgKind::Request, reqid, payload.len() as u32);
+        let hdr = bytemuck::bytes_of(&msg);
 
         let entry_len = VirtqMsgHeader::SIZE + payload.len();
 
         // Reply guard: readwrite chains use 2 descriptors, leave room for pending replies.
         self.ensure_reply_capacity(2)?;
 
-        let token = match self.try_send_readwrite(hdr_bytes, payload, entry_len) {
+        let token = match self.try_send_readwrite(hdr, payload, entry_len, resp_hint) {
             Ok(tok) => tok,
             Err(e) if e.is_transient() => {
                 self.g2h_producer.notify_backpressure();
@@ -157,7 +179,7 @@ impl GuestContext {
                     bail!("G2H reclaim: {err}");
                 }
 
-                let Ok(tok) = self.try_send_readwrite(hdr_bytes, payload, entry_len) else {
+                let Ok(tok) = self.try_send_readwrite(hdr, payload, entry_len, resp_hint) else {
                     bail!("G2H call retry");
                 };
 
@@ -436,12 +458,13 @@ impl GuestContext {
         header: &[u8],
         payload: &[u8],
         entry_len: usize,
+        completion_cap: usize,
     ) -> result::Result<Token, virtq::VirtqError> {
         let mut entry = self
             .g2h_producer
             .chain()
             .entry(entry_len)
-            .completion(self.g2h_response_cap)
+            .completion(completion_cap)
             .build()?;
 
         entry.write_all(header)?;

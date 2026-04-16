@@ -49,7 +49,8 @@ use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
-    call_host_function, print_output_with_host_print, read_n_bytes_from_user_memory,
+    call_host_function, call_host_function_with_hint, print_output_with_host_print,
+    read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
 use hyperlight_guest_bin::{guest_function, guest_logger, host_function};
@@ -377,6 +378,49 @@ fn malloc_and_free(size: i32) -> i32 {
 #[guest_function("Echo")]
 fn echo(value: String) -> String {
     value
+}
+
+/// Calls a host function "GetLargeResponse" with an explicit response
+/// capacity hint. The `hint` parameter is the total completion buffer
+/// size in bytes.
+#[guest_function("CallGetLargeResponseWithHint")]
+fn call_get_large_response_with_hint(size: i32, hint: i32) -> Vec<u8> {
+    call_host_function_with_hint::<Vec<u8>>(
+        "GetLargeResponse",
+        Some(vec![ParameterValue::Int(size)]),
+        ReturnType::VecBytes,
+        hint as usize,
+    )
+    .expect("GetLargeResponse call failed")
+}
+
+/// Calls a host function "GetLargeResponse" WITHOUT a hint, using the
+/// default 4096-byte completion buffer.
+#[guest_function("CallGetLargeResponseDefault")]
+fn call_get_large_response_default(size: i32) -> Vec<u8> {
+    call_host_function::<Vec<u8>>(
+        "GetLargeResponse",
+        Some(vec![ParameterValue::Int(size)]),
+        ReturnType::VecBytes,
+    )
+    .expect("GetLargeResponse call failed")
+}
+
+/// Emits `log_count` log entries to fill the G2H queue, then calls
+/// "GetLargeResponse" with a sized hint. Tests that backpressure
+/// draining of logs frees pool slots for the large completion.
+#[guest_function("LogThenLargeResponse")]
+fn log_then_large_response(log_count: i32, size: i32, hint: i32) -> Vec<u8> {
+    for i in 0..log_count {
+        log::info!("backpressure log {}", i);
+    }
+    call_host_function_with_hint::<Vec<u8>>(
+        "GetLargeResponse",
+        Some(vec![ParameterValue::Int(size)]),
+        ReturnType::VecBytes,
+        hint as usize,
+    )
+    .expect("GetLargeResponse after logs failed")
 }
 
 #[guest_function("GetSizePrefixedBuffer")]

@@ -563,3 +563,88 @@ fn virtq_multi_descriptor_h2g_repeated_calls() {
         }
     });
 }
+
+/// Helper to create a sandbox with a "GetLargeResponse" host function
+/// that returns `size` bytes filled with 0xAB.
+fn sandbox_with_large_response(cfg: SandboxConfiguration) -> MultiUseSandbox {
+    let mut sandbox = UninitializedSandbox::new(
+        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+        Some(cfg),
+    )
+    .unwrap();
+    sandbox
+        .register("GetLargeResponse", |size: i32| -> Result<Vec<u8>> {
+            Ok(vec![0xABu8; size as usize])
+        })
+        .unwrap();
+    sandbox.evolve().unwrap()
+}
+
+#[test]
+fn virtq_large_g2h_response_with_hint() {
+    // Host function returns >4096 bytes. Guest uses a sized completion
+    // hint so the pool allocates multiple adjacent slots.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(16);
+    let mut sandbox = sandbox_with_large_response(cfg);
+
+    // 8000 bytes of response payload. With FlatBuffer + header overhead,
+    // the wire size is ~8100 bytes. A hint of 3*4096 = 12288 is enough.
+    let hint = 3 * 4096i32;
+    let res: Vec<u8> = sandbox
+        .call("CallGetLargeResponseWithHint", (8000i32, hint))
+        .unwrap();
+    assert_eq!(res.len(), 8000);
+    assert!(res.iter().all(|&b| b == 0xAB));
+}
+
+#[test]
+fn virtq_large_g2h_response_too_large_without_hint() {
+    // Without a hint, the default 4096-byte completion buffer is used.
+    // A response >4096 bytes should trigger the host's "response too
+    // large" fallback error instead of a transport crash.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(16);
+    let mut sandbox = sandbox_with_large_response(cfg);
+
+    let res = sandbox.call::<Vec<u8>>("CallGetLargeResponseDefault", 8000i32);
+    assert!(
+        res.is_err(),
+        "expected error for oversized response without hint"
+    );
+}
+
+#[test]
+fn virtq_large_g2h_response_boundary() {
+    // Response that fits exactly in one page (with overhead) should work
+    // without needing a hint.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(16);
+    let mut sandbox = sandbox_with_large_response(cfg);
+
+    // Small response that fits in default 4096 buffer
+    let res: Vec<u8> = sandbox
+        .call("CallGetLargeResponseDefault", 1000i32)
+        .unwrap();
+    assert_eq!(res.len(), 1000);
+    assert!(res.iter().all(|&b| b == 0xAB));
+}
+
+#[test]
+fn virtq_large_g2h_response_after_log_backpressure() {
+    // Logs fill the G2H pool, then a large host response (with hint)
+    // needs multi-slot allocation. The backpressure path must drain
+    // completed log entries to free pool slots for the large completion.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(16);
+    let mut sandbox = sandbox_with_large_response(cfg);
+
+    // Emit 20 log entries to consume pool slots, then request 8KB
+    // response with a 12KB hint (3 upper-slab slots).
+    let hint = 3 * 4096i32;
+    let res: Vec<u8> = sandbox
+        .call("LogThenLargeResponse", (20i32, 8000i32, hint))
+        .unwrap();
+    assert_eq!(res.len(), 8000);
+    assert!(res.iter().all(|&b| b == 0xAB));
+}
