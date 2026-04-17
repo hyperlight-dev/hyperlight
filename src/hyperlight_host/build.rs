@@ -106,7 +106,7 @@ fn main() -> Result<()> {
         // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.
         print_debug: { all(feature = "print_debug", debug_assertions) },
         // gdb needs writable snapshot memory for debug access.
-        unshared_snapshot_mem: { feature = "gdb" },
+        unshared_snapshot_mem: { any(feature = "gdb", feature = "nanvix-unstable") },
     }
 
     #[cfg(feature = "build-metadata")]

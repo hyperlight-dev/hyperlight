@@ -997,7 +997,10 @@ impl Snapshot {
                 Ok::<(Vec<u8>, Vec<u8>), crate::HyperlightError>((snapshot_memory, pt_bytes))
             })
         })???;
+        #[cfg(feature = "i686-guest")]
         let (memory, separate_pt_bytes) = memory;
+        #[cfg(not(feature = "i686-guest"))]
+        let (memory, _) = memory;
         layout.set_snapshot_size(memory.len());
 
         // For i686, keep the regions so the RAMFS and other map_file_cow

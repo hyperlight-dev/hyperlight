@@ -138,6 +138,7 @@ gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]
 build-metadata = ["dep:built"]
 i686-guest = ["hyperlight-common/i686-guest"]
+nanvix-unstable = ["i686-guest", "hyperlight-common/nanvix-unstable"]
 guest-counter = ["hyperlight-common/guest-counter"]
 
 [[bench]]
