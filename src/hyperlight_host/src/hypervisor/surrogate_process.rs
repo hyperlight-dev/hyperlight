@@ -103,13 +103,28 @@ impl SurrogateProcess {
                 // Use MapViewOfFile2 to map memory into the surrogate process, the MapViewOfFile2 API is implemented in as an inline function in a windows header file
                 // (see https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile2#remarks) so we use the same API it uses in the header file here instead of
                 // MapViewOfFile2 which does not exist in the rust crate (see https://github.com/microsoft/windows-rs/issues/2595)
+                //
+                // For ReadOnlyFile mappings backed by a file-sized section
+                // (max_size == file_size, potentially not page-aligned),
+                // passing the caller's page-aligned `host_size` would exceed
+                // the section size and fail with ERROR_ACCESS_DENIED. Pass 0
+                // instead to request "map to end of section": Windows returns
+                // a page-aligned view and zero-fills the tail of the final
+                // page, matching POSIX mmap semantics. For SandboxMemory
+                // sections the section size is already page-aligned and set
+                // by the caller, so pass host_size explicitly (guard-page
+                // bookkeeping below depends on knowing the exact extent).
+                let bytes_to_map = match mapping {
+                    SurrogateMapping::SandboxMemory => host_size,
+                    SurrogateMapping::ReadOnlyFile => 0,
+                };
                 let surrogate_base = unsafe {
                     MapViewOfFileNuma2(
                         handle.into(),
                         self.process_handle.into(),
                         0,
                         None,
-                        host_size,
+                        bytes_to_map,
                         0,
                         page_protection.0,
                         NUMA_NO_PREFERRED_NODE,
