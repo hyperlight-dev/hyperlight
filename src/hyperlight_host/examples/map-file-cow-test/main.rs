@@ -1,5 +1,3 @@
-<<<<<<< Updated upstream
-=======
 /*
 Copyright 2025  The Hyperlight Authors.
 
@@ -15,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
->>>>>>> Stashed changes
 // Test that map_file_cow works end-to-end: UninitializedSandbox::new →
 // map_file_cow → evolve → guest function call. Exercises the cross-process
 // section mapping via MapViewOfFileNuma2 on Windows (the surrogate process
