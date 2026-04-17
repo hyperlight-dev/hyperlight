@@ -314,12 +314,12 @@ fn build_cow_map(
     scratch: &[u8],
     layout: SandboxMemoryLayout,
     kernel_root: u64,
-) -> std::collections::HashMap<u64, u64> {
+) -> crate::Result<std::collections::HashMap<u64, u64>> {
     use hyperlight_common::layout::scratch_base_gpa;
     let mut cow_map = std::collections::HashMap::new();
     let scratch_base = scratch_base_gpa(layout.get_scratch_size());
     let scratch_end = scratch_base + layout.get_scratch_size() as u64;
-    let mem_size = layout.get_memory_size().unwrap_or(0) as u64;
+    let mem_size = layout.get_memory_size()? as u64;
 
     for pdi in 0..1024u64 {
         let pde_addr = kernel_root + pdi * 4;
@@ -347,7 +347,7 @@ fn build_cow_map(
             }
         }
     }
-    cow_map
+    Ok(cow_map)
 }
 
 /// Helper for building i686 2-level page tables as a flat byte buffer.
@@ -925,7 +925,7 @@ impl Snapshot {
                     let kernel_root = root_pt_gpas.first().copied().ok_or_else(|| {
                         crate::new_error!("snapshot requires at least one page directory root")
                     })?;
-                    build_cow_map(snap_c, scratch_c, layout, kernel_root)
+                    build_cow_map(snap_c, scratch_c, layout, kernel_root)?
                 };
 
                 // Pass 1: collect live pages
@@ -1201,5 +1201,343 @@ mod tests {
         mgr.shared_mem
             .with_contents(|contents| assert_eq!(&contents[0..pattern_b.len()], &pattern_b[..]))
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "i686-guest")]
+mod tests {
+    use std::collections::HashMap;
+
+    use hyperlight_common::vmem::i686_guest::{PAGE_ACCESSED, PAGE_PRESENT, PAGE_RW};
+    use hyperlight_common::vmem::{BasicMapping, Mapping, MappingKind};
+
+    use super::i686_pt::{self, ADDR_MASK, PTE_COW, RW_FLAGS};
+    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegionFlags};
+    use crate::sandbox::SandboxConfiguration;
+
+    const PAGE_SIZE: usize = 4096;
+
+    struct TestEnv {
+        layout: SandboxMemoryLayout,
+        snap: Vec<u8>,
+        scratch: Vec<u8>,
+        pt_base: u64,
+    }
+
+    fn make_env(pt_bytes: &[u8]) -> TestEnv {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_heap_size(PAGE_SIZE as u64);
+        let layout = SandboxMemoryLayout::new(cfg, PAGE_SIZE, PAGE_SIZE, None).unwrap();
+        let scratch_size = layout.get_scratch_size();
+        let snapshot_size = layout.get_memory_size().unwrap();
+        let snap = vec![0u8; snapshot_size];
+        let mut scratch = vec![0u8; scratch_size];
+
+        let pt_scratch_offset = layout.get_pt_base_scratch_offset();
+        assert!(pt_scratch_offset + pt_bytes.len() <= scratch.len(),);
+
+        scratch[pt_scratch_offset..pt_scratch_offset + pt_bytes.len()].copy_from_slice(pt_bytes);
+
+        TestEnv {
+            snap,
+            scratch,
+            layout,
+            pt_base: layout.get_pt_base_gpa(),
+        }
+    }
+
+    /// Decode a PTE from raw page table bytes at the given VA.
+    fn read_pte(pt_bytes: &[u8], pt_base_gpa: usize, va: u64) -> u32 {
+        let pdi = ((va >> 22) & 0x3FF) as usize;
+        let pti = ((va >> 12) & 0x3FF) as usize;
+        let pde = u32::from_le_bytes(pt_bytes[pdi * 4..pdi * 4 + 4].try_into().unwrap());
+        assert_ne!(
+            pde & PAGE_PRESENT as u32,
+            0,
+            "PDE for VA {va:#x} not present"
+        );
+        let pt_offset = (pde & ADDR_MASK) as usize - pt_base_gpa;
+        u32::from_le_bytes(
+            pt_bytes[pt_offset + pti * 4..pt_offset + pti * 4 + 4]
+                .try_into()
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn builder_map_page_writes_pde_and_pte() {
+        let pd_base = 0x10_0000;
+        let mut b = i686_pt::Builder::new(pd_base);
+        let va = 0x0040_0000u64; // PD index 1, PT index 0
+        let pa = 0x0020_0000u64;
+        b.map_page(0, va, pa, RW_FLAGS);
+
+        let pde = b.read_u32(4);
+        assert_ne!(pde & PAGE_PRESENT as u32, 0, "PDE should be present");
+        assert_eq!((pde & ADDR_MASK) as usize, pd_base + PAGE_SIZE);
+
+        let pte = b.read_u32(PAGE_SIZE); // PT index 0
+        assert_eq!(pte & ADDR_MASK, pa as u32);
+        assert_eq!(pte & 0xFFF, RW_FLAGS);
+
+        // Map a second page in the same 4MB region - PT must be reused
+        b.map_page(0, 0x0040_1000, 0x20_1000, RW_FLAGS);
+        assert_eq!(b.bytes.len(), 2 * PAGE_SIZE, "PT should be reused");
+        let pte1 = b.read_u32(PAGE_SIZE + 4);
+        assert_eq!(pte1 & ADDR_MASK, 0x20_1000);
+    }
+
+    #[test]
+    fn builder_map_range_crosses_pde_boundary() {
+        let pd_base = 0x10_0000;
+        let mut b = i686_pt::Builder::new(pd_base);
+        // Last page of PD[0] to first page of PD[1]
+        let va_start = 0x003F_F000u64;
+        let pa_start = 0x5_0000u64;
+        b.map_range(0, va_start, pa_start, 2 * PAGE_SIZE as u64, RW_FLAGS);
+
+        assert_eq!(b.bytes.len(), 3 * PAGE_SIZE, "should allocate 2 PTs");
+
+        // Verify PTE contents across the boundary
+        let pt0_offset = (b.read_u32(0) & ADDR_MASK) as usize - pd_base;
+        let pte_last = b.read_u32(pt0_offset + 0x3FF * 4); // last entry in PT[0]
+        assert_eq!(pte_last & ADDR_MASK, pa_start as u32);
+
+        let pt1_offset = (b.read_u32(4) & ADDR_MASK) as usize - pd_base;
+        let pte_first = b.read_u32(pt1_offset); // first entry in PT[1]
+        assert_eq!(pte_first & ADDR_MASK, (pa_start + PAGE_SIZE as u64) as u32);
+    }
+
+    #[test]
+    fn builder_cow_flags_preserved_pde_stays_rw() {
+        let pd_base = 0x10_0000;
+        let mut b = i686_pt::Builder::new(pd_base);
+        let cow_flags = PAGE_PRESENT as u32 | PAGE_ACCESSED as u32 | PTE_COW;
+        b.map_page(0, 0x1000, 0x2000, cow_flags);
+
+        let pti = ((0x1000u64 >> 12) & 0x3FF) as usize;
+        let pte = b.read_u32(PAGE_SIZE + pti * 4);
+        assert_ne!(pte & PTE_COW, 0, "CoW bit should be set on PTE");
+        assert_eq!(pte & PAGE_RW as u32, 0, "RW should be clear for CoW PTE");
+
+        // PDE must remain RW so the CPU can walk the PT
+        let pde = b.read_u32(0);
+        assert_ne!(
+            pde & PAGE_RW as u32,
+            0,
+            "PDE must stay RW even for CoW PTEs"
+        );
+    }
+
+    #[test]
+    fn builder_multiple_pds_independent() {
+        let pd_base = 0x10_0000;
+        let mut b = i686_pt::Builder::with_pds(pd_base, 2);
+        b.map_page(0, 0x1000, 0xA000, RW_FLAGS);
+        b.map_page(PAGE_SIZE, 0x1000, 0xB000, RW_FLAGS);
+
+        // PTs start after the 2 PD pages
+        let pde0 = b.read_u32(0);
+        let pde1 = b.read_u32(PAGE_SIZE);
+        assert_eq!(
+            (pde0 & ADDR_MASK) as usize,
+            pd_base + 2 * PAGE_SIZE,
+            "PD[0] PT should be at first slot after PDs"
+        );
+        assert_eq!(
+            (pde1 & ADDR_MASK) as usize,
+            pd_base + 3 * PAGE_SIZE,
+            "PD[1] PT should be at second slot after PDs"
+        );
+
+        // Verify the PTEs point to the correct PAs
+        let pti = ((0x1000u64 >> 12) & 0x3FF) as usize;
+        let pte0 = b.read_u32(2 * PAGE_SIZE + pti * 4);
+        let pte1 = b.read_u32(3 * PAGE_SIZE + pti * 4);
+        assert_eq!(pte0 & ADDR_MASK, 0xA000);
+        assert_eq!(pte1 & ADDR_MASK, 0xB000);
+    }
+
+    #[test]
+    fn cow_map_finds_scratch_backed_pages() {
+        let cfg = SandboxConfiguration::default();
+        let scratch_size = cfg.get_scratch_size();
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(scratch_size);
+        let layout = SandboxMemoryLayout::new(cfg, PAGE_SIZE, PAGE_SIZE, None).unwrap();
+        let pt_base = layout.get_pt_base_gpa() as usize;
+
+        let mut b = i686_pt::Builder::new(pt_base);
+        let cow_frame = scratch_base + 0x5000;
+        let cow_va = 0x1000u64;
+        b.map_page(0, cow_va, cow_frame, RW_FLAGS);
+
+        let TestEnv {
+            snap,
+            scratch,
+            layout,
+            pt_base,
+        } = make_env(&b.into_bytes());
+        let cow_map = super::build_cow_map(&snap, &scratch, layout, pt_base).unwrap();
+
+        assert_eq!(cow_map.len(), 1);
+        assert_eq!(cow_map[&cow_va], cow_frame);
+    }
+
+    #[test]
+    fn cow_map_filtering() {
+        let cfg = SandboxConfiguration::default();
+        let scratch_size = cfg.get_scratch_size();
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(scratch_size);
+        let layout = SandboxMemoryLayout::new(cfg, PAGE_SIZE, PAGE_SIZE, None).unwrap();
+        let pt_base = layout.get_pt_base_gpa() as usize;
+        let mem_size = layout.get_memory_size().unwrap();
+
+        let mut b = i686_pt::Builder::new(pt_base);
+        b.map_page(
+            0,
+            0x1000,
+            SandboxMemoryLayout::BASE_ADDRESS as u64,
+            RW_FLAGS,
+        );
+        let far_va = (mem_size as u64).next_multiple_of(0x0040_0000);
+        b.map_page(0, far_va, scratch_base + 0x1000, RW_FLAGS);
+
+        let TestEnv {
+            snap,
+            scratch,
+            layout,
+            pt_base,
+        } = make_env(&b.into_bytes());
+        let cow_map = super::build_cow_map(&snap, &scratch, layout, pt_base).unwrap();
+
+        assert!(
+            cow_map.is_empty(),
+            "neither non-scratch nor beyond-mem-size VAs should appear"
+        );
+    }
+
+    #[test]
+    fn cow_map_empty_pd() {
+        let cfg = SandboxConfiguration::default();
+        let layout = SandboxMemoryLayout::new(cfg, PAGE_SIZE, PAGE_SIZE, None).unwrap();
+        let pt_base = layout.get_pt_base_gpa() as usize;
+        let b = i686_pt::Builder::new(pt_base);
+
+        let TestEnv {
+            snap,
+            scratch,
+            layout,
+            pt_base,
+        } = make_env(&b.into_bytes());
+        let cow_map = super::build_cow_map(&snap, &scratch, layout, pt_base).unwrap();
+
+        assert!(cow_map.is_empty());
+    }
+
+    #[test]
+    fn initial_pt_scratch_rw_and_region_flags() {
+        let cfg = SandboxConfiguration::default();
+        let layout = SandboxMemoryLayout::new(cfg, PAGE_SIZE, PAGE_SIZE, None).unwrap();
+
+        let pt_bytes = super::build_initial_i686_page_tables(&layout).unwrap();
+        let pt_base = layout.get_pt_base_gpa() as usize;
+
+        // Scratch must be mapped as RW without CoW
+        let scratch_size = layout.get_scratch_size();
+        let scratch_gva = hyperlight_common::layout::scratch_base_gva(scratch_size);
+        let scratch_pte = read_pte(&pt_bytes, pt_base, scratch_gva);
+        assert_ne!(scratch_pte & PAGE_PRESENT as u32, 0);
+        assert_ne!(scratch_pte & PAGE_RW as u32, 0, "scratch must be writable");
+        assert_eq!(scratch_pte & PTE_COW, 0, "scratch must not be CoW");
+
+        // Verify region permissions: writable -> CoW, read-only -> no CoW
+        let regions = layout.get_memory_regions_::<GuestMemoryRegion>(()).unwrap();
+
+        for rgn in &regions {
+            let is_writable = rgn.flags.contains(MemoryRegionFlags::WRITE);
+            let va = rgn.guest_region.start as u64;
+            let pte = read_pte(&pt_bytes, pt_base, va);
+            assert_ne!(pte & PAGE_PRESENT as u32, 0);
+            if is_writable {
+                assert_ne!(pte & PTE_COW, 0, "writable region at {va:#x} should be CoW");
+                assert_eq!(pte & PAGE_RW as u32, 0, "CoW at {va:#x} must clear RW");
+            } else {
+                assert_eq!(pte & PTE_COW, 0, "RO region at {va:#x} must not be CoW");
+            }
+        }
+    }
+
+    #[test]
+    fn compact_deduplicates_shared_physical_pages() {
+        let shared_phys = 0x2000u64;
+        let page_data = vec![0xAAu8; PAGE_SIZE];
+
+        let make_mapping = |virt_base: u64| Mapping {
+            phys_base: shared_phys,
+            virt_base,
+            len: PAGE_SIZE as u64,
+            kind: MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: true,
+                executable: false,
+            }),
+        };
+
+        let TestEnv {
+            snap,
+            scratch,
+            layout,
+            pt_base,
+        } = make_env(&[0u8; PAGE_SIZE]);
+
+        let cow_map = HashMap::new();
+        let mut phys_seen = HashMap::new();
+
+        let live_pages: Vec<(Mapping, &[u8])> = vec![
+            (make_mapping(0x1000), &page_data),
+            (make_mapping(0x5000), &page_data),
+        ];
+
+        let (snapshot_mem, _pt_bytes) = super::compact_i686_snapshot(
+            &snap,
+            &scratch,
+            layout,
+            live_pages,
+            &[pt_base],
+            &cow_map,
+            &mut phys_seen,
+        )
+        .unwrap();
+
+        assert_eq!(
+            snapshot_mem.len(),
+            PAGE_SIZE,
+            "shared physical page should be deduplicated"
+        );
+    }
+
+    #[test]
+    fn compact_empty_roots_returns_error() {
+        let TestEnv {
+            snap,
+            scratch,
+            layout,
+            ..
+        } = make_env(&[0u8; PAGE_SIZE]);
+        let cow_map = HashMap::new();
+        let mut phys_seen = HashMap::new();
+
+        let result = super::compact_i686_snapshot(
+            &snap,
+            &scratch,
+            layout,
+            Vec::new(),
+            &[],
+            &cow_map,
+            &mut phys_seen,
+        );
+        assert!(result.is_err(), "empty root_pt_gpas should return an error");
     }
 }
