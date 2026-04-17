@@ -311,14 +311,17 @@ impl VirtualMachine for WhpVm {
                     let rip = exit_context.VpContext.Rip + instruction_length as u64;
                     let port = exit_context.Anonymous.IoPortAccess.PortNumber;
                     let rax = exit_context.Anonymous.IoPortAccess.Rax;
-                    let is_write = exit_context
+                    let access_info_bits = exit_context
                         .Anonymous
                         .IoPortAccess
                         .AccessInfo
                         .Anonymous
-                        ._bitfield
-                        & 1
-                        != 0;
+                        ._bitfield;
+                    let is_write = access_info_bits & 1 != 0;
+                    // Bits 1..3 of AccessInfo encode the operand width in
+                    // bytes (1 for outb, 2 for outw, 4 for outl). Clamp to
+                    // 1..=8 to avoid a zero-length slice.
+                    let access_size = (((access_info_bits >> 1) & 0x7) as usize).clamp(1, 8);
 
                     self.set_registers(&[(
                         WHvX64RegisterRip,
@@ -357,7 +360,12 @@ impl VirtualMachine for WhpVm {
                     // Suppress unused variable warnings when hw-interrupts is disabled
                     let _ = is_write;
 
-                    return Ok(VmExit::IoOut(port, rax.to_le_bytes().to_vec()));
+                    // Only return the bytes that the guest actually wrote
+                    // (1 for outb, 2 for outw, 4 for outl). Previously all
+                    // 8 RAX bytes were returned, producing garbled output
+                    // for single-byte console writes.
+                    let data = rax.to_le_bytes();
+                    return Ok(VmExit::IoOut(port, data[..access_size].to_vec()));
                 },
                 WHvRunVpExitReasonX64Halt => {
                     // With software timer active, re-enter the guest.
