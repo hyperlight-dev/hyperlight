@@ -295,6 +295,7 @@ pub(crate) fn prepare_file_cow(
         use std::os::windows::io::AsRawHandle;
 
         use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
         use windows::Win32::System::Memory::{
             CreateFileMappingW, FILE_MAP_READ, MapViewOfFile, PAGE_READONLY,
         };
@@ -313,12 +314,36 @@ pub(crate) fn prepare_file_cow(
 
         let file_handle = HANDLE(file.as_raw_handle());
 
+        // Build a security descriptor with a NULL DACL (unrestricted
+        // access) so the surrogate process can map the section via
+        // MapViewOfFileNuma2. File-backed sections created with the
+        // default DACL fail with ERROR_ACCESS_DENIED when mapped
+        // cross-process on modern Windows.
+        let mut sd_bytes = [0u8; 40]; // SECURITY_DESCRIPTOR_MIN_LENGTH
+        unsafe {
+            let psd = PSECURITY_DESCRIPTOR(sd_bytes.as_mut_ptr() as *mut _);
+            windows::Win32::Security::InitializeSecurityDescriptor(
+                psd, 1, // SECURITY_DESCRIPTOR_REVISION
+            )
+            .map_err(|e| {
+                HyperlightError::Error(format!("InitializeSecurityDescriptor failed: {e}"))
+            })?;
+            windows::Win32::Security::SetSecurityDescriptorDacl(psd, true, None, false).map_err(
+                |e| HyperlightError::Error(format!("SetSecurityDescriptorDacl failed: {e}")),
+            )?;
+        }
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd_bytes.as_mut_ptr() as *mut _,
+            bInheritHandle: false.into(),
+        };
+
         // Create a read-only file mapping object backed by the actual file.
         // Pass 0,0 for size to use the file's actual size — Windows will
         // NOT extend a read-only file, so requesting page-aligned size
         // would fail for files smaller than one page.
         let mapping_handle =
-            unsafe { CreateFileMappingW(file_handle, None, PAGE_READONLY, 0, 0, None) }
+            unsafe { CreateFileMappingW(file_handle, Some(&sa), PAGE_READONLY, 0, 0, None) }
                 .map_err(|e| HyperlightError::Error(format!("CreateFileMappingW failed: {e}")))?;
 
         // Map a read-only view into the host process.
