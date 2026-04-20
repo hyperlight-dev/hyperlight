@@ -272,13 +272,24 @@ impl MultiUseSandbox {
         #[cfg(gdb)]
         let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
 
-        Ok(MultiUseSandbox::from_uninit(
+        // Inherit the snapshot's sandbox id, and treat the loaded
+        // snapshot as this sandbox's active snapshot. Without this,
+        // a caller who does `from_snapshot(s)` and then immediately
+        // `restore(s)` hits `SnapshotSandboxMismatch`: the new
+        // sandbox would get a fresh id from `from_uninit` while the
+        // snapshot still carries the originating sandbox's id.
+        // Conceptually the snapshot IS this sandbox's identity when
+        // loaded from disk, so the ids should agree from the start.
+        let mut sbox = MultiUseSandbox::from_uninit(
             host_funcs,
             hshm,
             vm,
             #[cfg(gdb)]
             dbg_mem_wrapper,
-        ))
+        );
+        sbox.id = snapshot.sandbox_id();
+        sbox.snapshot = Some(snapshot.clone());
+        Ok(sbox)
     }
 
     /// Creates a snapshot of the sandbox's current memory state.
