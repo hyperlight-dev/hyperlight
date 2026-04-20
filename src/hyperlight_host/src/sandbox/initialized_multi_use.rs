@@ -86,7 +86,7 @@ pub struct MultiUseSandbox {
     id: u64,
     /// Whether this sandbox is poisoned
     poisoned: bool,
-    pub(super) host_funcs: Arc<Mutex<FunctionRegistry>>,
+    pub(crate) host_funcs: Arc<Mutex<FunctionRegistry>>,
     pub(crate) mem_mgr: SandboxMemoryManager<HostSharedMemory>,
     vm: HyperlightVm,
     #[cfg(gdb)]
