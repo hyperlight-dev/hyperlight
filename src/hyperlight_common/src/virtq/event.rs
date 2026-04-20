@@ -42,10 +42,10 @@ bitflags! {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq, Eq, Hash)]
 pub struct EventSuppression {
-    // bits 0-14: offset, bit 15: wrap
-    pub off_wrap: u16,
-    // bits 0-1: flags, bits 2-15: reserved
-    pub flags: u16,
+    /// bits 0-14: offset, bit 15: wrap
+    off_wrap: u16,
+    /// bits 0-1: flags, bits 2-15: reserved
+    flags: u16,
 }
 
 const _: () = assert!(core::mem::size_of::<EventSuppression>() == 4);

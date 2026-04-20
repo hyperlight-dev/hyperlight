@@ -174,7 +174,7 @@ impl Descriptor {
     ///
     /// # Invariant
     ///
-    /// The caller must ensure that `base` is valid for writes of Descriptor
+    /// The caller must ensure that `addr` is valid for writes of Descriptor
     pub fn write_release<M: MemOps>(&self, mem: &M, addr: u64) -> Result<(), M::Error> {
         mem.write_val(addr + Self::ADDR_OFFSET as u64, self.addr)?;
         mem.write_val(addr + Self::LEN_OFFSET as u64, self.len)?;
@@ -189,7 +189,7 @@ impl Descriptor {
 #[derive(Debug, Clone, Copy)]
 pub struct DescTable {
     base_addr: u64,
-    size: usize,
+    len: usize,
 }
 
 impl DescTable {
@@ -199,20 +199,20 @@ impl DescTable {
     ///
     /// # Safety
     ///
-    /// - `base` must be valid for reads and writes of `size` descriptors
-    /// - `base` must be properly aligned for `Descriptor`
-    /// - `size` must not exceed `u16::MAX`
+    /// - `base_addr` must be valid for reads and writes of `len` descriptors
+    /// - `base_addr` must be properly aligned for `Descriptor`
+    /// - `len` must not exceed `u16::MAX`
     /// - memory must remain valid for the lifetime of this table
-    pub unsafe fn from_raw_parts(base_addr: u64, size: usize) -> Self {
+    pub unsafe fn from_raw_parts(base_addr: u64, len: usize) -> Self {
         assert!(base_addr.is_multiple_of(Descriptor::ALIGN as u64));
-        assert!(size <= u16::MAX as usize);
+        assert!(len <= u16::MAX as usize);
 
-        Self { base_addr, size }
+        Self { base_addr, len }
     }
 
     /// Get view into descriptor at index or None if idx is out of bounds
     pub fn desc_addr(&self, idx: u16) -> Option<u64> {
-        if idx >= self.size as u16 {
+        if idx >= self.len as u16 {
             return None;
         }
 
@@ -221,12 +221,12 @@ impl DescTable {
 
     /// Get number of descriptors in table
     pub fn len(&self) -> usize {
-        self.size
+        self.len
     }
 
     /// Is the descriptor table empty?
     pub fn is_empty(&self) -> bool {
-        self.size == 0
+        self.len == 0
     }
 
     pub const fn default_len() -> usize {

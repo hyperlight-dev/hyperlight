@@ -53,7 +53,7 @@ pub trait MemOps {
     ///
     /// # Safety
     ///
-    /// The caller must ensure `paddr` is valid and points to at least `dst.len()` bytes.
+    /// The caller must ensure `addr` is valid and points to at least `dst.len()` bytes.
     fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error>;
 
     /// Write bytes to physical memory.
@@ -69,7 +69,7 @@ pub trait MemOps {
     ///
     /// # Safety
     ///
-    /// The caller must ensure `paddr` is valid and points to at least `src.len()` bytes.
+    /// The caller must ensure `addr` is valid and points to at least `src.len()` bytes.
     fn write(&self, addr: u64, src: &[u8]) -> Result<usize, Self::Error>;
 
     /// Load a u16 with acquire semantics.
