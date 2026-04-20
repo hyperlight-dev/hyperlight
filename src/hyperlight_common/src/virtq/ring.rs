@@ -342,7 +342,7 @@ impl RingCursor {
 
     /// Advance to next position, wrapping around and toggling wrap counter if needed
     #[inline]
-    pub(crate) fn advance(&mut self) {
+    fn advance(&mut self) {
         self.head += 1;
         if self.head >= self.size {
             self.head = 0;
@@ -352,7 +352,7 @@ impl RingCursor {
 
     /// Advance by n positions using modular arithmetic.
     #[inline]
-    pub(crate) fn advance_by(&mut self, n: u16) {
+    fn advance_by(&mut self, n: u16) {
         let new = self.head + n;
         let wraps = new / self.size;
         self.head = new % self.size;
