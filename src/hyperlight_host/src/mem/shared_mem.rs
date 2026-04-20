@@ -2148,34 +2148,43 @@ impl ReadonlySharedMemory {
         })
     }
 
-    /// Windows implementation of file-backed read-only shared memory.
+    /// Windows implementation of file-backed shared memory for snapshots.
     ///
     /// The snapshot file layout is:
     /// `[header (PAGE_SIZE)][memory blob][trailing padding (PAGE_SIZE)]`.
-    /// We create a read-only file mapping covering the entire file and
-    /// map a view of `len + 2*PAGE_SIZE` bytes starting at file offset 0.
-    /// The header becomes the leading guard page and the trailing padding
-    /// becomes the trailing guard page, both via
-    /// `VirtualProtect(PAGE_NOACCESS)`.  This gives the standard
+    /// We create a copy-on-write file mapping covering the entire file
+    /// and map a view of `len + 2*PAGE_SIZE` bytes starting at file
+    /// offset 0. The header becomes the leading guard page and the
+    /// trailing padding becomes the trailing guard page, both via
+    /// `VirtualProtect(PAGE_NOACCESS)`. This gives the standard
     /// `HostMapping` layout: `[guard | usable | guard]`.
+    ///
+    /// The mapping is created with `PAGE_WRITECOPY` and the view with
+    /// `FILE_MAP_COPY`, matching Linux's `MAP_PRIVATE` semantics: guest
+    /// writes through this mapping allocate private copy-on-write
+    /// pages rather than modifying the backing file. A read-only
+    /// mapping (`PAGE_READONLY` + `FILE_MAP_READ`) would fail with an
+    /// access violation on the first guest write — CoW faults from
+    /// both WHP and MSHV require the host-side view to be writable.
     #[cfg(target_os = "windows")]
     fn from_file_windows(file: &std::fs::File, total_size: usize) -> Result<Self> {
         use std::os::windows::io::AsRawHandle;
 
         use windows::Win32::Foundation::HANDLE;
         use windows::Win32::System::Memory::{
-            CreateFileMappingA, FILE_MAP_READ, MapViewOfFile, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS,
-            PAGE_READONLY, VirtualProtect,
+            CreateFileMappingA, FILE_MAP_COPY, MapViewOfFile, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS,
+            PAGE_WRITECOPY, VirtualProtect,
         };
         use windows::core::PCSTR;
 
         let file_handle = HANDLE(file.as_raw_handle());
 
-        // Create a read-only file mapping at the exact file size (pass 0,0).
-        // The file includes trailing PAGE_SIZE padding written by to_file(),
-        // so the file is at least offset + len + PAGE_SIZE = total_size bytes.
+        // Create a copy-on-write file mapping at the exact file size
+        // (pass 0,0). The file includes trailing PAGE_SIZE padding
+        // written by to_file(), so it's at least offset + len +
+        // PAGE_SIZE = total_size bytes.
         let handle =
-            unsafe { CreateFileMappingA(file_handle, None, PAGE_READONLY, 0, 0, PCSTR::null())? };
+            unsafe { CreateFileMappingA(file_handle, None, PAGE_WRITECOPY, 0, 0, PCSTR::null())? };
 
         if handle.is_invalid() {
             log_then_return!(HyperlightError::MemoryAllocationFailed(
@@ -2183,8 +2192,10 @@ impl ReadonlySharedMemory {
             ));
         }
 
-        // Map exactly total_size (header + blob + trailing padding) bytes.
-        let addr = unsafe { MapViewOfFile(handle, FILE_MAP_READ, 0, 0, total_size) };
+        // Map exactly total_size (header + blob + trailing padding)
+        // bytes with FILE_MAP_COPY — reads come from the file; writes
+        // allocate private pages transparently on first fault.
+        let addr = unsafe { MapViewOfFile(handle, FILE_MAP_COPY, 0, 0, total_size) };
         if addr.Value.is_null() {
             unsafe {
                 let _ = windows::Win32::Foundation::CloseHandle(handle);
