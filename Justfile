@@ -44,10 +44,10 @@ build target=default-target:
 guests: build-and-move-rust-guests build-and-move-c-guests
 
 ensure-cargo-hyperlight:
-    {{ if os() == "windows" { "if (-not (Get-Command cargo-hyperlight -ErrorAction SilentlyContinue)) { cargo install --locked cargo-hyperlight }" } else { "command -v cargo-hyperlight >/dev/null 2>&1 || cargo install --locked cargo-hyperlight" } }}
+    cargo install --locked cargo-hyperlight
 
 witguest-wit:
-    {{ if os() == "windows" { "if (-not (Get-Command wasm-tools -ErrorAction SilentlyContinue)) { cargo install --locked wasm-tools }" } else { "command -v wasm-tools >/dev/null 2>&1 || cargo install --locked wasm-tools" } }}
+    cargo install --locked wasm-tools
     cd src/tests/rust_guests/witguest && wasm-tools component wit guest.wit -w -o interface.wasm
     cd src/tests/rust_guests/witguest && wasm-tools component wit two_worlds.wit -w -o twoworlds.wasm
 

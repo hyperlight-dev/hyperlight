@@ -14,10 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::ffi::{CStr, c_char};
-use core::mem;
 
 use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{
@@ -27,9 +25,6 @@ use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
 use hyperlight_common::flatbuffer_wrappers::util::get_flatbuffer_result;
 use hyperlight_common::func::{ParameterTuple, SupportedReturnType};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-
-const BUFFER_SIZE: usize = 1000;
-static mut MESSAGE_BUFFER: Vec<u8> = Vec::new();
 
 use crate::GUEST_HANDLE;
 
@@ -95,49 +90,5 @@ pub fn print_output_with_host_print(function_call: FunctionCall) -> Result<Vec<u
             ErrorCode::GuestError,
             "Wrong Parameters passed to print_output_with_host_print".to_string(),
         ))
-    }
-}
-
-/// Exposes a C API to allow the guest to print a string
-///
-/// # Safety
-/// This function is not thread safe
-#[unsafe(no_mangle)]
-#[allow(static_mut_refs)]
-pub unsafe extern "C" fn _putchar(c: c_char) {
-    let handle = unsafe { GUEST_HANDLE };
-    let char = c as u8;
-    let message_buffer = unsafe { &mut MESSAGE_BUFFER };
-
-    // Extend buffer capacity if it's empty (like `with_capacity` in lazy_static).
-    // TODO: replace above Vec::new() with Vec::with_capacity once it's stable in const contexts.
-    if message_buffer.capacity() == 0 {
-        message_buffer.reserve(BUFFER_SIZE);
-    }
-
-    message_buffer.push(char);
-
-    if message_buffer.len() == BUFFER_SIZE || char == b'\0' {
-        let str = if char == b'\0' {
-            CStr::from_bytes_until_nul(message_buffer)
-                .expect("No null byte in buffer")
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            String::from_utf8(mem::take(message_buffer))
-                .expect("Failed to convert buffer to string")
-        };
-
-        // HostPrint returns an i32, but we don't care about the return value
-        let _ = handle
-            .call_host_function::<i32>(
-                "HostPrint",
-                Some(Vec::from(&[ParameterValue::String(str)])),
-                ReturnType::Int,
-            )
-            .expect("Failed to call HostPrint");
-
-        // Clear the buffer after sending
-        message_buffer.clear();
     }
 }

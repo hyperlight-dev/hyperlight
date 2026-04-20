@@ -101,6 +101,7 @@ dependencies = [
 name = "hyperlight-guest-bin"
 version = "0.14.0"
 dependencies = [
+ "anyhow",
  "buddy_system_allocator",
  "cc",
  "cfg-if",

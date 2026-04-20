@@ -54,6 +54,10 @@ pub mod memory;
 #[cfg(target_arch = "x86_64")]
 pub mod paging;
 
+/// Bridge between picolibc's POSIX expectations and the Hyperlight host.
+#[cfg(feature = "libc")]
+mod libc;
+
 // Globals
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]
 struct ProfiledLockedHeap<const ORDER: usize>(LockedHeap<ORDER>);
