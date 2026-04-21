@@ -681,14 +681,16 @@ impl ExclusiveSharedMemory {
 fn mapping_at(
     s: &impl SharedMemory,
     gpa: u64,
+    size: usize,
     region_type: MemoryRegionType,
     flags: MemoryRegionFlags,
 ) -> MemoryRegion {
     let guest_base = gpa as usize;
 
     MemoryRegion {
-        guest_region: guest_base..(guest_base + s.mem_size()),
-        host_region: s.host_region_base()..s.host_region_end(),
+        guest_region: guest_base..(guest_base + size),
+        host_region: s.host_region_base()
+            ..<HostGuestMemoryRegion as MemoryRegionKind>::add(s.host_region_base(), size),
         region_type,
         flags,
     }
@@ -723,7 +725,7 @@ impl GuestSharedMemory {
                 "GuestSharedMemory::mapping_at should only be used for Scratch or Snapshot regions"
             ),
         };
-        mapping_at(self, guest_base, region_type, flags)
+        mapping_at(self, guest_base, self.mem_size(), region_type, flags)
     }
 }
 
@@ -2006,6 +2008,10 @@ mod tests {
 #[derive(Clone, Debug)]
 pub struct ReadonlySharedMemory {
     region: Arc<HostMapping>,
+    /// If `Some`, only this many bytes are mapped into guest PA space
+    /// by `mapping_at`. If `None`, the full `mem_size()` is mapped.
+    #[cfg_attr(unshared_snapshot_mem, allow(dead_code))]
+    guest_mapped_size: Option<usize>,
 }
 // Safety: HostMapping is only non-Send/Sync (causing
 // ReadonlySharedMemory to not be automatically Send/Sync) because raw
@@ -2026,7 +2032,27 @@ impl ReadonlySharedMemory {
         anon.copy_from_slice(contents, 0)?;
         Ok(ReadonlySharedMemory {
             region: anon.region,
+            guest_mapped_size: None,
         })
+    }
+
+    pub(crate) fn from_bytes_with_mapped_size(
+        contents: &[u8],
+        guest_mapped_size: usize,
+    ) -> Result<Self> {
+        let mut anon = ExclusiveSharedMemory::new(contents.len())?;
+        anon.copy_from_slice(contents, 0)?;
+        Ok(ReadonlySharedMemory {
+            region: anon.region,
+            guest_mapped_size: Some(guest_mapped_size),
+        })
+    }
+
+    /// The number of bytes that should be mapped into guest PA space.
+    /// Returns `guest_mapped_size` if set, otherwise `mem_size()`.
+    #[cfg(not(unshared_snapshot_mem))]
+    pub(crate) fn guest_mapped_size(&self) -> usize {
+        self.guest_mapped_size.unwrap_or_else(|| self.mem_size())
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {
@@ -2061,6 +2087,7 @@ impl ReadonlySharedMemory {
         mapping_at(
             self,
             guest_base,
+            self.guest_mapped_size(),
             region_type,
             MemoryRegionFlags::READ | MemoryRegionFlags::EXECUTE,
         )

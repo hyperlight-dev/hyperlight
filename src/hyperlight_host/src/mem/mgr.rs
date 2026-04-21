@@ -647,22 +647,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
         };
         self.layout = *snapshot.layout();
         self.update_scratch_bookkeeping()?;
-        // On x86_64, PTs are appended to the snapshot shared_mem and
-        // copy_pt_to_scratch reads them from the tail.
-        //
-        // On i686, PTs are stored separately because appending them
-        // to shared_mem would grow the snapshot region's GPA range,
-        // potentially overlapping with map_file_cow regions (e.g.
-        // RAMFS) that were placed at GPAs just above the original
-        // snapshot end. The KVM memory slots would conflict.
-        #[cfg(feature = "i686-guest")]
-        {
-            let sep_pt = snapshot.separate_pt_bytes();
-            self.scratch_mem.with_exclusivity(|scratch| {
-                scratch.copy_from_slice(sep_pt, self.layout.get_pt_base_scratch_offset())
-            })??;
-        }
-        #[cfg(not(feature = "i686-guest"))]
         self.copy_pt_to_scratch()?;
         Ok((gsnapshot, gscratch))
     }

@@ -78,15 +78,6 @@ pub struct Snapshot {
     /// The memory regions that were mapped when this snapshot was
     /// taken (excluding initial sandbox regions)
     regions: Vec<MemoryRegion>,
-    /// Separate PT storage for i686 snapshots. On x86_64, PTs are
-    /// appended to `memory` and the snapshot region's GPA range grows
-    /// to include them. On i686, that would cause the snapshot KVM
-    /// memory slot to overlap with map_file_cow regions (e.g. RAMFS)
-    /// placed at GPAs just above the original snapshot end. Storing
-    /// PTs separately avoids the conflict; they are copied directly
-    /// to scratch during restore.
-    #[cfg(feature = "i686-guest")]
-    separate_pt_bytes: Vec<u8>,
     /// Extra debug information about the binary in this snapshot,
     /// from when the binary was first loaded into the snapshot.
     ///
@@ -595,8 +586,6 @@ impl Snapshot {
             hash,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
-            #[cfg(feature = "i686-guest")]
-            separate_pt_bytes: Vec::new(),
             entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
         })
     }
@@ -748,37 +737,32 @@ impl Snapshot {
                 // Phase 5: finalize PT bytes.
                 let pt_data = pt_buf.into_bytes();
                 layout.set_pt_size(pt_data.len())?;
-
-                #[cfg(feature = "i686-guest")]
-                {
-                    Ok::<_, crate::HyperlightError>((snapshot_memory, pt_data.into_vec()))
-                }
-                #[cfg(not(feature = "i686-guest"))]
-                {
-                    snapshot_memory.extend(&pt_data);
-                    Ok::<_, crate::HyperlightError>(snapshot_memory)
-                }
+                snapshot_memory.extend(&pt_data);
+                Ok::<_, crate::HyperlightError>(snapshot_memory)
             })
         })???;
-        #[cfg(feature = "i686-guest")]
-        let (memory, separate_pt_bytes) = memory;
-        layout.set_snapshot_size(memory.len());
+        // Only map the data portion into guest PA space. The PT tail
+        // must stay out of the KVM slot to avoid overlapping with
+        // map_file_cow regions that sit right after the snapshot.
+        let guest_visible_size = memory.len() - layout.get_pt_size();
+        debug_assert!(guest_visible_size.is_multiple_of(PAGE_SIZE));
+        layout.set_snapshot_size(guest_visible_size);
 
         #[cfg(not(feature = "i686-guest"))]
         let regions = Vec::new();
 
         let hash = hash(&memory, &regions)?;
+        let rom =
+            ReadonlySharedMemory::from_bytes_with_mapped_size(&memory, guest_visible_size)?;
         Ok(Self {
             sandbox_id,
             layout,
-            memory: ReadonlySharedMemory::from_bytes(&memory)?,
+            memory: rom,
             regions,
             load_info,
             hash,
             stack_top_gva,
             sregs: Some(sregs),
-            #[cfg(feature = "i686-guest")]
-            separate_pt_bytes,
             entrypoint,
         })
     }
@@ -823,11 +807,6 @@ impl Snapshot {
     /// use `root_pt_gpa()` instead since page tables are relocated during snapshot.
     pub(crate) fn sregs(&self) -> Option<&CommonSpecialRegisters> {
         self.sregs.as_ref()
-    }
-
-    #[cfg(feature = "i686-guest")]
-    pub(crate) fn separate_pt_bytes(&self) -> &[u8] {
-        &self.separate_pt_bytes
     }
 
     pub(crate) fn entrypoint(&self) -> NextAction {

@@ -245,8 +245,10 @@ pub(crate) struct SandboxMemoryLayout {
     // The size of the scratch region in physical memory; note that
     // this will appear under the top of physical memory.
     scratch_size: usize,
-    // The size of the snapshot region in physical memory; note that
-    // this will appear somewhere near the base of physical memory.
+    // The guest-visible size of the snapshot region in physical
+    // memory. After compaction this may be smaller than the full
+    // snapshot blob (which also contains a PT tail that is only
+    // host-accessible).
     snapshot_size: usize,
 }
 
