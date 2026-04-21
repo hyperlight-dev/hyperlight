@@ -136,7 +136,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Support mapping host memory into the guest by @syntactically in https://github.com/hyperlight-dev/hyperlight/pull/696
   - Make MultiUseSandbox::map_file_cow public by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/725
   - Add memory mapping support with KVM by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/709
-  - Make sure mmapped memory is not mapped writeable into sandbox in kvm by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/740
+  - Make sure mmapped memory is not mapped writable into sandbox in kvm by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/740
   - Make snapshots region aware by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/742
   - Restrict restoring sandboxes to snapshot taken on self by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/746
 - Enable guest tracing  by @dblnz in https://github.com/hyperlight-dev/hyperlight/pull/695
