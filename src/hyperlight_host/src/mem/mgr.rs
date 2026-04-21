@@ -22,8 +22,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 };
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
-#[cfg(not(feature = "i686-guest"))]
-use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr};
+use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use tracing::{Span, instrument};
@@ -151,69 +150,79 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) abort_buffer: Vec<u8>,
 }
 
-#[cfg(not(feature = "i686-guest"))]
-pub(crate) struct GuestPageTableBuffer {
+/// Buffer for building guest page tables during snapshot creation.
+/// `PTE_BYTES` is the guest PTE size (8 for amd64, 4 for i686).
+/// `TableAddr` is a byte offset (GPA) so the same address space
+/// is used regardless of entry size.
+pub(crate) struct GuestPageTableBuffer<const PTE_BYTES: usize> {
     buffer: std::cell::RefCell<Vec<u8>>,
     phys_base: usize,
+    /// Byte offset from phys_base to the active PD root.
+    /// Used on i686 to target different per-process PDs.
+    #[cfg(feature = "i686-guest")]
+    root_offset: std::cell::Cell<usize>,
 }
 
-#[cfg(not(feature = "i686-guest"))]
-impl vmem::TableReadOps for GuestPageTableBuffer {
-    type TableAddr = (usize, usize); // (table_index, entry_index)
+impl<const PTE_BYTES: usize> vmem::TableReadOps for GuestPageTableBuffer<PTE_BYTES> {
+    type TableAddr = u64;
 
-    fn entry_addr(addr: (usize, usize), offset: u64) -> (usize, usize) {
-        // Convert to physical address, add offset, convert back
-        let phys = Self::to_phys(addr) + offset;
-        Self::from_phys(phys)
+    fn entry_addr(addr: u64, offset: u64) -> u64 {
+        addr + offset
     }
 
-    unsafe fn read_entry(&self, addr: (usize, usize)) -> PageTableEntry {
-        let b = self.buffer.borrow();
-        let byte_offset =
-            (addr.0 - self.phys_base / PAGE_TABLE_SIZE) * PAGE_TABLE_SIZE + addr.1 * 8;
-        b.get(byte_offset..byte_offset + 8)
-            .and_then(|s| <[u8; 8]>::try_from(s).ok())
-            .map(u64::from_ne_bytes)
-            .unwrap_or(0)
+    unsafe fn read_entry(&self, addr: u64) -> vmem::PageTableEntry {
+        let buffer = self.buffer.borrow();
+        let byte_offset = addr as usize - self.phys_base;
+        let Some(bytes) = buffer.get(byte_offset..byte_offset + PTE_BYTES) else {
+            return 0;
+        };
+        // The slice is exactly PTE_BYTES long, so try_into always succeeds.
+        #[allow(clippy::unwrap_used)]
+        if PTE_BYTES == 4 {
+            u32::from_le_bytes(bytes.try_into().unwrap()) as u64
+        } else {
+            u64::from_le_bytes(bytes.try_into().unwrap())
+        }
     }
 
-    fn to_phys(addr: (usize, usize)) -> PhysAddr {
-        (addr.0 as u64 * PAGE_TABLE_SIZE as u64) + (addr.1 as u64 * 8)
+    fn to_phys(addr: u64) -> vmem::PhysAddr {
+        addr as vmem::PhysAddr
     }
 
-    fn from_phys(addr: PhysAddr) -> (usize, usize) {
-        (
-            addr as usize / PAGE_TABLE_SIZE,
-            (addr as usize % PAGE_TABLE_SIZE) / 8,
-        )
+    fn from_phys(addr: vmem::PhysAddr) -> u64 {
+        #[allow(clippy::unnecessary_cast)]
+        {
+            addr as u64
+        }
     }
 
-    fn root_table(&self) -> (usize, usize) {
-        (self.phys_base / PAGE_TABLE_SIZE, 0)
+    fn root_table(&self) -> u64 {
+        #[cfg(feature = "i686-guest")]
+        {
+            (self.phys_base + self.root_offset.get()) as u64
+        }
+        #[cfg(not(feature = "i686-guest"))]
+        {
+            self.phys_base as u64
+        }
     }
 }
-#[cfg(not(feature = "i686-guest"))]
-impl vmem::TableOps for GuestPageTableBuffer {
+
+impl<const PTE_BYTES: usize> vmem::TableOps for GuestPageTableBuffer<PTE_BYTES> {
     type TableMovability = vmem::MayNotMoveTable;
 
-    unsafe fn alloc_table(&self) -> (usize, usize) {
+    unsafe fn alloc_table(&self) -> u64 {
         let mut b = self.buffer.borrow_mut();
-        let table_index = b.len() / PAGE_TABLE_SIZE;
-        let new_len = b.len() + PAGE_TABLE_SIZE;
-        b.resize(new_len, 0);
-        (self.phys_base / PAGE_TABLE_SIZE + table_index, 0)
+        let offset = b.len();
+        b.resize(offset + PAGE_TABLE_SIZE, 0);
+        (self.phys_base + offset) as u64
     }
 
-    unsafe fn write_entry(
-        &self,
-        addr: (usize, usize),
-        entry: PageTableEntry,
-    ) -> Option<vmem::Void> {
+    unsafe fn write_entry(&self, addr: u64, entry: vmem::PageTableEntry) -> Option<vmem::Void> {
         let mut b = self.buffer.borrow_mut();
-        let byte_offset =
-            (addr.0 - self.phys_base / PAGE_TABLE_SIZE) * PAGE_TABLE_SIZE + addr.1 * 8;
-        if let Some(slice) = b.get_mut(byte_offset..byte_offset + 8) {
-            slice.copy_from_slice(&entry.to_ne_bytes());
+        let byte_offset = addr as usize - self.phys_base;
+        if let Some(slice) = b.get_mut(byte_offset..byte_offset + PTE_BYTES) {
+            slice.copy_from_slice(&entry.to_le_bytes()[..PTE_BYTES]);
         }
         None
     }
@@ -223,15 +232,123 @@ impl vmem::TableOps for GuestPageTableBuffer {
     }
 }
 
-#[cfg(not(feature = "i686-guest"))]
-impl GuestPageTableBuffer {
+impl<const PTE_BYTES: usize> core::convert::AsRef<GuestPageTableBuffer<PTE_BYTES>>
+    for GuestPageTableBuffer<PTE_BYTES>
+{
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
+impl<const PTE_BYTES: usize> GuestPageTableBuffer<PTE_BYTES> {
     pub(crate) fn new(phys_base: usize) -> Self {
         GuestPageTableBuffer {
             buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
             phys_base,
+            #[cfg(feature = "i686-guest")]
+            root_offset: std::cell::Cell::new(0),
         }
     }
 
+    /// Set the root offset to target a specific PD root.
+    /// Root i's PD starts at byte offset `i * PAGE_TABLE_SIZE` in the buffer.
+    #[cfg(feature = "i686-guest")]
+    pub(crate) fn set_root_offset(&self, offset: usize) {
+        self.root_offset.set(offset);
+    }
+
+    /// Copy a range of bytes within the buffer.
+    #[cfg(feature = "i686-guest")]
+    pub(crate) fn copy_within(&self, src: std::ops::Range<usize>, dst: usize) {
+        let mut buf = self.buffer.borrow_mut();
+        buf.copy_within(src, dst);
+    }
+
+    /// Set a flag on a range of 4-byte PDE entries within a PD.
+    /// `pd_offset` is the byte offset to the PD page in the buffer.
+    /// `pde_range` is the range of PDE indices to modify.
+    #[cfg(feature = "i686-guest")]
+    pub(crate) fn set_pde_flag(
+        &self,
+        pd_offset: usize,
+        pde_range: std::ops::Range<usize>,
+        flag: u32,
+    ) {
+        let mut buf = self.buffer.borrow_mut();
+        for pdi in pde_range {
+            let off = pd_offset + pdi * 4;
+            if let Some(bytes) = buf.get(off..off + 4) {
+                let pde = u32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]));
+                if pde != 0 {
+                    let updated = pde | flag;
+                    buf[off..off + 4].copy_from_slice(&updated.to_le_bytes());
+                }
+            }
+        }
+    }
+
+    /// Finalize multi-root i686 page directories after all per-root
+    /// mappings have been written into root 0 (kernel) and per-root
+    /// PDs (user).
+    ///
+    /// This performs three steps:
+    /// 1. Copy kernel PDEs (0..`user_pde_start`) from root 0 to all
+    ///    other roots so every PD shares the same kernel page tables.
+    /// 2. Map the scratch region into every additional root.
+    /// 3. Set `PAGE_USER` on user-space PDEs (`user_pde_start`..scratch)
+    ///    in all roots so user-mode code can access its pages.
+    ///
+    /// # Safety
+    /// Caller must ensure the scratch parameters describe a valid region.
+    #[cfg(feature = "i686-guest")]
+    pub(crate) unsafe fn finalize_multi_root(
+        &self,
+        n_roots: usize,
+        user_pde_start: usize,
+        scratch_gpa: u64,
+        scratch_gva: u64,
+        scratch_len: u64,
+    ) {
+        use hyperlight_common::vmem::i686_guest::PAGE_USER;
+        use hyperlight_common::vmem::{BasicMapping, MappingKind};
+
+        // Step 1: copy kernel PDEs from root 0 to all other roots.
+        let kernel_pde_bytes = user_pde_start * 4;
+        for i in 1..n_roots {
+            self.copy_within(0..kernel_pde_bytes, i * PAGE_TABLE_SIZE);
+        }
+
+        // Step 2: map scratch into all other roots.
+        for i in 1..n_roots {
+            self.set_root_offset(i * PAGE_TABLE_SIZE);
+            unsafe {
+                hyperlight_common::vmem::i686_guest::map(
+                    self,
+                    vmem::Mapping {
+                        phys_base: scratch_gpa,
+                        virt_base: scratch_gva,
+                        len: scratch_len,
+                        kind: MappingKind::Basic(BasicMapping {
+                            readable: true,
+                            writable: true,
+                            executable: false,
+                        }),
+                    },
+                );
+            }
+        }
+
+        // Step 3: set PAGE_USER on user-space PDEs.
+        let scratch_pdi = (scratch_gva >> 22) as usize;
+        let page_user = PAGE_USER as u32;
+        for root_idx in 0..n_roots {
+            self.set_pde_flag(
+                root_idx * PAGE_TABLE_SIZE,
+                user_pde_start..scratch_pdi,
+                page_user,
+            );
+        }
+    }
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn size(&self) -> usize {
@@ -530,55 +647,24 @@ impl SandboxMemoryManager<HostSharedMemory> {
         };
         self.layout = *snapshot.layout();
         self.update_scratch_bookkeeping()?;
-        // i686 snapshots store PT bytes separately (not appended to shared_mem)
-        // to avoid overlapping with map_file_cow regions.
-        // x86_64 snapshots have PTs appended to shared_mem.
+        // On x86_64, PTs are appended to the snapshot shared_mem and
+        // copy_pt_to_scratch reads them from the tail.
+        //
+        // On i686, PTs are stored separately because appending them
+        // to shared_mem would grow the snapshot region's GPA range,
+        // potentially overlapping with map_file_cow regions (e.g.
+        // RAMFS) that were placed at GPAs just above the original
+        // snapshot end. The KVM memory slots would conflict.
         #[cfg(feature = "i686-guest")]
         {
             let sep_pt = snapshot.separate_pt_bytes();
             self.scratch_mem.with_exclusivity(|scratch| {
                 scratch.copy_from_slice(sep_pt, self.layout.get_pt_base_scratch_offset())
             })??;
-            // Rewrite the PD-roots bookkeeping. `restore_snapshot`
-            // clears scratch above, so without this step a later
-            // `snapshot()` would read count=0 and fail. Root `i`
-            // lands at `pt_base_gpa + i * PAGE_SIZE` — the same
-            // layout `compact_i686_snapshot` used when building the
-            // rebuilt PDs.
-            self.update_pd_roots_bookkeeping(snapshot.n_pd_roots())?;
         }
         #[cfg(not(feature = "i686-guest"))]
         self.copy_pt_to_scratch()?;
         Ok((gsnapshot, gscratch))
-    }
-
-    /// Write the PD-roots count and compacted root GPAs into the
-    /// scratch bookkeeping area. Called from `restore_snapshot` on
-    /// the i686-guest path so the scratch state mirrors what it
-    /// looked like right after the snapshot was taken.
-    #[cfg(feature = "i686-guest")]
-    fn update_pd_roots_bookkeeping(&mut self, n_roots: usize) -> Result<()> {
-        use hyperlight_common::layout::{
-            MAX_PD_ROOTS, SCRATCH_TOP_PD_ROOTS_ARRAY_OFFSET, SCRATCH_TOP_PD_ROOTS_COUNT_OFFSET,
-        };
-        if n_roots > MAX_PD_ROOTS {
-            return Err(crate::new_error!(
-                "snapshot has {} PD roots, more than MAX_PD_ROOTS={}",
-                n_roots,
-                MAX_PD_ROOTS
-            ));
-        }
-        let scratch_size = self.scratch_mem.mem_size();
-        let count_off = scratch_size - SCRATCH_TOP_PD_ROOTS_COUNT_OFFSET as usize;
-        let array_off = scratch_size - SCRATCH_TOP_PD_ROOTS_ARRAY_OFFSET as usize;
-        self.scratch_mem.write::<u32>(count_off, n_roots as u32)?;
-        let pt_base = self.layout.get_pt_base_gpa();
-        for i in 0..n_roots {
-            let gpa = pt_base + (i as u64) * 4096;
-            self.scratch_mem
-                .write::<u32>(array_off + i * 4, gpa as u32)?;
-        }
-        Ok(())
     }
 
     #[inline]

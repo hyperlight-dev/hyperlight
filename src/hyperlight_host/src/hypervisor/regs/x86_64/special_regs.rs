@@ -27,24 +27,27 @@ use windows::Win32::System::Hypervisor::*;
 #[cfg(target_os = "windows")]
 use super::FromWhpRegisterError;
 
-cfg_if::cfg_if! {
-    if #[cfg(not(feature = "i686-guest"))] {
-        pub(crate) const CR4_PAE: u64 = 1 << 5;
-        pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
-        pub(crate) const CR4_OSXMMEXCPT: u64 = 1 << 10;
-        pub(crate) const CR0_PE: u64 = 1;
-        pub(crate) const CR0_MP: u64 = 1 << 1;
-        pub(crate) const CR0_ET: u64 = 1 << 4;
-        pub(crate) const CR0_NE: u64 = 1 << 5;
-        pub(crate) const CR0_WP: u64 = 1 << 16;
-        pub(crate) const CR0_AM: u64 = 1 << 18;
-        pub(crate) const CR0_PG: u64 = 1 << 31;
-        pub(crate) const EFER_LME: u64 = 1 << 8;
-        pub(crate) const EFER_LMA: u64 = 1 << 10;
-        pub(crate) const EFER_SCE: u64 = 1;
-        pub(crate) const EFER_NX: u64 = 1 << 11;
-    }
+// CR0 bits used by both 32-bit and 64-bit guest
+const CR0_PE: u64 = 1;
+const CR0_ET: u64 = 1 << 4;
+const CR0_WP: u64 = 1 << 16;
+const CR0_PG: u64 = 1 << 31;
+
+#[cfg(not(feature = "i686-guest"))]
+mod amd64_consts {
+    pub(crate) const CR4_PAE: u64 = 1 << 5;
+    pub(crate) const CR4_OSFXSR: u64 = 1 << 9;
+    pub(crate) const CR4_OSXMMEXCPT: u64 = 1 << 10;
+    pub(crate) const CR0_MP: u64 = 1 << 1;
+    pub(crate) const CR0_NE: u64 = 1 << 5;
+    pub(crate) const CR0_AM: u64 = 1 << 18;
+    pub(crate) const EFER_LME: u64 = 1 << 8;
+    pub(crate) const EFER_LMA: u64 = 1 << 10;
+    pub(crate) const EFER_SCE: u64 = 1;
+    pub(crate) const EFER_NX: u64 = 1 << 11;
 }
+#[cfg(not(feature = "i686-guest"))]
+use amd64_consts::*;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub(crate) struct CommonSpecialRegisters {
@@ -149,7 +152,7 @@ impl CommonSpecialRegisters {
             fs: data_seg,
             gs: data_seg,
             tr: tr_seg,
-            cr0: 0x80010011, // PE + ET + WP (write-protect for CoW) + PG
+            cr0: CR0_PE | CR0_ET | CR0_WP | CR0_PG,
             cr3: pd_addr,
             cr4: 0, // No PAE, no PSE
             ..Default::default()

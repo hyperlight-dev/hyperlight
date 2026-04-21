@@ -14,10 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-// This file is just dummy definitions at the moment, in order to
-// allow compiling the guest for real mode boot scenarios.
+//! i686 2-level page table manipulation code.
+//!
+//! - PD (Page Directory) - bits 31:22 - 1024 entries, each covering 4MB
+//! - PT (Page Table) - bits 20:12 - 1024 entries, each covering 4KB pages
+//!
+//! Entries are 4 bytes wide. There is no NX bit; all pages are executable.
 
-use crate::vmem::{Mapping, TableOps, TableReadOps, Void};
+use crate::vmem::{
+    BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovability as _,
+    TableMovabilityBase, TableOps, TableReadOps, UpdateParent, UpdateParentNone, modify_ptes,
+    read_pte_if_present, require_pte_exist, write_entry_updating,
+};
 
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_TABLE_SIZE: usize = 4096;
@@ -25,25 +33,171 @@ pub type PageTableEntry = u32;
 pub type VirtAddr = u32;
 pub type PhysAddr = u32;
 
-#[allow(clippy::missing_safety_doc)]
-pub unsafe fn map<Op: TableOps>(_op: &Op, _mapping: Mapping) {
-    panic!("vmem::map: i686 guests do not support booting the full hyperlight guest kernel");
+// i686 PTE flags
+const PAGE_PRESENT: u64 = 1;
+const PAGE_RW: u64 = 1 << 1;
+pub const PAGE_USER: u64 = 1 << 2;
+const PAGE_ACCESSED: u64 = 1 << 5;
+const PTE_ADDR_MASK: u64 = 0xFFFFF000;
+const PTE_AVL_MASK: u64 = 0x0E00;
+const PAGE_AVL_COW: u64 = 1 << 9;
+
+const VA_BITS: usize = 32;
+/// log2(4) for 4-byte entries
+const PTE_SHIFT: u8 = 2;
+
+#[inline(always)]
+const fn page_rw_flag(writable: bool) -> u64 {
+    if writable { PAGE_RW } else { 0 }
 }
 
-#[allow(clippy::missing_safety_doc)]
-pub unsafe fn virt_to_phys<Op: TableOps>(_op: &Op, _address: u64) -> impl Iterator<Item = Mapping> {
-    panic!(
-        "vmem::virt_to_phys: i686 guests do not support booting the full hyperlight guest kernel"
-    );
-    // necessary to provide a concrete type that impls Iterator as the
-    // return type, even though this will never be executed
-    #[allow(unreachable_code)]
-    core::iter::empty()
+/// Generate a PDE pointing to a page table.
+/// Does not set PAGE_USER; the caller controls user-accessibility
+/// per VA region (kernel PDEs stay supervisor-only, user PDEs get
+/// PAGE_USER added after mapping).
+fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
+    #[allow(clippy::unnecessary_cast)]
+    let phys = Op::to_phys(table_addr) as u64;
+    phys | PAGE_RW | PAGE_ACCESSED | PAGE_PRESENT
 }
 
-pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {}
-impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<Op, Op::TableAddr>
-    for crate::vmem::MayMoveTable
+// ---- Page table manipulation ----
+
+/// # Safety
+/// Must not be called concurrently with other page table modifications.
+unsafe fn alloc_pte_if_needed<
+    Op: TableOps,
+    P: UpdateParent<
+            Op,
+            TableMoveInfo = <Op::TableMovability as TableMovabilityBase<Op>>::TableMoveInfo,
+        >,
+>(
+    op: &Op,
+    x: MapResponse<Op, P>,
+) -> MapRequest<Op, P::ChildType>
+where
+    P::ChildType: UpdateParent<Op>,
 {
+    let new_update_parent = x.update_parent.for_child_at_entry(x.entry_ptr);
+    if let Some(pte) = unsafe { read_pte_if_present(op, x.entry_ptr) } {
+        #[allow(clippy::unnecessary_cast)]
+        return MapRequest {
+            table_base: Op::from_phys((pte & PTE_ADDR_MASK) as super::PhysAddr),
+            vmin: x.vmin,
+            len: x.len,
+            update_parent: new_update_parent,
+        };
+    }
+
+    let page_addr = unsafe { op.alloc_table() };
+    let pte = pte_for_table::<Op>(page_addr);
+    unsafe {
+        write_entry_updating(op, x.update_parent, x.entry_ptr, pte);
+    };
+    MapRequest {
+        table_base: page_addr,
+        vmin: x.vmin,
+        len: x.len,
+        update_parent: new_update_parent,
+    }
 }
-impl<Op: TableReadOps> TableMovability<Op, Void> for crate::vmem::MayNotMoveTable {}
+
+/// Write a leaf PTE. i686 has no NX bit so all pages are executable.
+///
+/// # Safety
+/// Must not be called concurrently with other page table modifications.
+unsafe fn map_page<
+    Op: TableOps,
+    P: UpdateParent<
+            Op,
+            TableMoveInfo = <Op::TableMovability as TableMovabilityBase<Op>>::TableMoveInfo,
+        >,
+>(
+    op: &Op,
+    mapping: &Mapping,
+    r: MapResponse<Op, P>,
+) {
+    let pte = match &mapping.kind {
+        MappingKind::Basic(bm) => {
+            (mapping.phys_base + (r.vmin - mapping.virt_base))
+                | PAGE_USER
+                | PAGE_ACCESSED
+                | page_rw_flag(bm.writable)
+                | PAGE_PRESENT
+        }
+        MappingKind::Cow(_cm) => {
+            (mapping.phys_base + (r.vmin - mapping.virt_base))
+                | PAGE_USER
+                | PAGE_AVL_COW
+                | PAGE_ACCESSED
+                | PAGE_PRESENT
+        }
+        MappingKind::Unmapped => 0,
+    };
+    unsafe {
+        write_entry_updating(op, r.update_parent, r.entry_ptr, pte);
+    }
+}
+
+/// Map a contiguous virtual address range using 2-level paging (PD -> PT).
+///
+/// # Safety
+/// See [`crate::vmem::map`].
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
+    modify_ptes::<31, 22, PTE_SHIFT, Op, _>(MapRequest {
+        table_base: op.root_table(),
+        vmin: mapping.virt_base,
+        len: mapping.len,
+        update_parent: Op::TableMovability::root_update_parent(),
+    })
+    .map(|r| unsafe { alloc_pte_if_needed(op, r) })
+    .flat_map(modify_ptes::<21, 12, PTE_SHIFT, Op, _>)
+    .map(|r| unsafe { map_page(op, &mapping, r) })
+    .for_each(drop);
+}
+
+/// Translate a virtual address range to its backing physical pages.
+///
+/// # Safety
+/// See [`crate::vmem::virt_to_phys`].
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
+    op: impl core::convert::AsRef<Op> + Copy + 'a,
+    address: u64,
+    len: u64,
+) -> impl Iterator<Item = Mapping> + 'a {
+    let vmin = address & !(PAGE_SIZE as u64 - 1);
+    let vmax = core::cmp::min(address + len, 1u64 << VA_BITS);
+    modify_ptes::<31, 22, PTE_SHIFT, Op, _>(MapRequest {
+        table_base: op.as_ref().root_table(),
+        vmin,
+        len: vmax.saturating_sub(vmin),
+        update_parent: UpdateParentNone {},
+    })
+    .filter_map(move |r| unsafe { require_pte_exist::<PTE_ADDR_MASK, _, _>(op.as_ref(), r) })
+    .flat_map(modify_ptes::<21, 12, PTE_SHIFT, Op, _>)
+    .filter_map(move |r| {
+        let pte = unsafe { read_pte_if_present(op.as_ref(), r.entry_ptr) }?;
+        let phys_addr = pte & PTE_ADDR_MASK;
+        let avl = pte & PTE_AVL_MASK;
+        let kind = if avl == PAGE_AVL_COW {
+            MappingKind::Cow(CowMapping {
+                readable: true,
+                executable: true,
+            })
+        } else {
+            MappingKind::Basic(BasicMapping {
+                readable: true,
+                writable: (pte & PAGE_RW) != 0,
+                executable: true,
+            })
+        };
+        Some(Mapping {
+            phys_base: phys_addr,
+            virt_base: r.vmin,
+            len: PAGE_SIZE as u64,
+            kind,
+        })
+    })
+}

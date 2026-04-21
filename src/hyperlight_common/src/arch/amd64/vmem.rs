@@ -26,8 +26,9 @@ limitations under the License.
 //! allocating intermediate tables as needed and setting appropriate flags on leaf PTEs
 
 use crate::vmem::{
-    BasicMapping, CowMapping, Mapping, MappingKind, TableMovabilityBase, TableOps, TableReadOps,
-    Void,
+    BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovability as _,
+    TableMovabilityBase, TableOps, TableReadOps, UpdateParent, UpdateParentNone, UpdateParentRoot,
+    UpdateParentTable, modify_ptes, read_pte_if_present, require_pte_exist, write_entry_updating,
 };
 
 // Paging Flags
@@ -82,26 +83,6 @@ const fn page_nx_flag(executable: bool) -> u64 {
     if executable { 0 } else { PAGE_NX }
 }
 
-/// Read a page table entry and return it if the present bit is set
-/// # Safety
-/// The caller must ensure that `entry_ptr` points to a valid page table entry.
-#[inline(always)]
-unsafe fn read_pte_if_present<Op: TableReadOps>(op: &Op, entry_ptr: Op::TableAddr) -> Option<u64> {
-    let pte = unsafe { op.read_entry(entry_ptr) };
-    if (pte & PAGE_PRESENT) != 0 {
-        Some(pte)
-    } else {
-        None
-    }
-}
-
-/// Utility function to extract an (inclusive on both ends) bit range
-/// from a quadword.
-#[inline(always)]
-fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
-    (x & ((1 << (HIGH_BIT + 1)) - 1)) >> LOW_BIT
-}
-
 /// Helper function to generate a page table entry that points to another table
 #[allow(clippy::identity_op)]
 #[allow(clippy::precedence)]
@@ -115,14 +96,9 @@ fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
         PAGE_PRESENT // P   - this entry is present
 }
 
-/// This trait is used to select appropriate implementations of
-/// [`UpdateParent`] to be used, depending on whether a particular
-/// implementation needs the ability to move tables.
-pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {
-    type RootUpdateParent: UpdateParent<Op, TableMoveInfo = TableMoveInfo>;
-    fn root_update_parent() -> Self::RootUpdateParent;
-}
-impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<Op, Op::TableAddr>
+// ---- TableMovability + UpdateParent impls ----
+
+impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> crate::vmem::TableMovability<Op>
     for crate::vmem::MayMoveTable
 {
     type RootUpdateParent = UpdateParentRoot;
@@ -130,78 +106,17 @@ impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<
         UpdateParentRoot {}
     }
 }
-impl<Op: TableReadOps> TableMovability<Op, Void> for crate::vmem::MayNotMoveTable {
+impl<Op: TableReadOps> crate::vmem::TableMovability<Op> for crate::vmem::MayNotMoveTable {
     type RootUpdateParent = UpdateParentNone;
     fn root_update_parent() -> Self::RootUpdateParent {
         UpdateParentNone {}
     }
 }
 
-/// Helper function to write a page table entry, updating the whole
-/// chain of tables back to the root if necessary
-unsafe fn write_entry_updating<
-    Op: TableOps,
-    P: UpdateParent<
-            Op,
-            TableMoveInfo = <Op::TableMovability as TableMovabilityBase<Op>>::TableMoveInfo,
-        >,
->(
-    op: &Op,
-    parent: P,
-    addr: Op::TableAddr,
-    entry: u64,
-) {
-    if let Some(again) = unsafe { op.write_entry(addr, entry) } {
-        parent.update_parent(op, again);
-    }
-}
-
-/// A helper trait that allows us to move a page table (e.g. from the
-/// snapshot to the scratch region), keeping track of the context that
-/// needs to be updated when that is moved (and potentially
-/// recursively updating, if necessary)
-///
-/// This is done via a trait so that the selected impl knows the exact
-/// nesting depth of tables, in order to assist
-/// inlining/specialisation in generating efficient code.
-///
-/// The trait definition only bounds its parameter by
-/// [`TableReadOps`], since [`UpdateParentNone`] does not need to be
-/// able to actually write to the tables.
-pub trait UpdateParent<Op: TableReadOps + ?Sized>: Copy {
-    /// The type of the information about a moved table which is
-    /// needed in order to update its parent.
-    type TableMoveInfo;
-    /// The [`UpdateParent`] type that should be used when going down
-    /// another level in the table, in order to add the current level
-    /// to the chain of ancestors to be updated.
-    type ChildType: UpdateParent<Op, TableMoveInfo = Self::TableMoveInfo>;
-    fn update_parent(self, op: &Op, new_ptr: Self::TableMoveInfo);
-    fn for_child_at_entry(self, entry_ptr: Op::TableAddr) -> Self::ChildType;
-}
-
-/// A struct implementing [`UpdateParent`] that keeps track of the
-/// fact that the parent table is itself another table, whose own
-/// ancestors may need to be recursively updated
-pub struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
-    parent: P,
-    entry_ptr: Op::TableAddr,
-}
-impl<Op: TableOps, P: UpdateParent<Op>> Clone for UpdateParentTable<Op, P> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<Op: TableOps, P: UpdateParent<Op>> Copy for UpdateParentTable<Op, P> {}
-impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
-    fn new(parent: P, entry_ptr: Op::TableAddr) -> Self {
-        UpdateParentTable { parent, entry_ptr }
-    }
-}
 impl<
     Op: TableOps<TableMovability = crate::vmem::MayMoveTable>,
-    P: UpdateParent<Op, TableMoveInfo = Op::TableAddr>,
-> UpdateParent<Op> for UpdateParentTable<Op, P>
+    P: crate::vmem::UpdateParent<Op, TableMoveInfo = Op::TableAddr>,
+> crate::vmem::UpdateParent<Op> for UpdateParentTable<Op, P>
 {
     type TableMoveInfo = Op::TableAddr;
     type ChildType = UpdateParentTable<Op, Self>;
@@ -216,12 +131,7 @@ impl<
     }
 }
 
-/// A struct implementing [`UpdateParent`] that keeps track of the
-/// fact that the parent "table" is actually the root (e.g. the value
-/// of CR3 in the guest)
-#[derive(Copy, Clone)]
-pub struct UpdateParentRoot {}
-impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> UpdateParent<Op>
+impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> crate::vmem::UpdateParent<Op>
     for UpdateParentRoot
 {
     type TableMoveInfo = Op::TableAddr;
@@ -236,133 +146,8 @@ impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> UpdateParent<Op>
     }
 }
 
-/// A struct implementing [`UpdateParent`] that is impossible to use
-/// (since its [`update_parent`] method takes `Void`), used when it is
-/// statically known that a table operation cannot result in a need to
-/// update ancestors.
-#[derive(Copy, Clone)]
-pub struct UpdateParentNone {}
-impl<Op: TableReadOps> UpdateParent<Op> for UpdateParentNone {
-    type TableMoveInfo = Void;
-    type ChildType = Self;
-    fn update_parent(self, _op: &Op, impossible: Void) {
-        match impossible {}
-    }
-    fn for_child_at_entry(self, _entry_ptr: Op::TableAddr) -> Self {
-        self
-    }
-}
-
-/// A helper structure indicating a mapping operation that needs to be
-/// performed
-struct MapRequest<Op: TableReadOps, P: UpdateParent<Op>> {
-    table_base: Op::TableAddr,
-    vmin: VirtAddr,
-    len: u64,
-    update_parent: P,
-}
-
-/// A helper structure indicating that a particular PTE needs to be
-/// modified
-struct MapResponse<Op: TableReadOps, P: UpdateParent<Op>> {
-    entry_ptr: Op::TableAddr,
-    vmin: VirtAddr,
-    len: u64,
-    update_parent: P,
-}
-
-/// Iterator that walks through page table entries at a specific level.
-///
-/// Given a virtual address range and a table base, this iterator yields
-/// `MapResponse` items for each page table entry that needs to be modified.
-/// The const generics `HIGH_BIT` and `LOW_BIT` specify which bits of the
-/// virtual address are used to index into this level's table.
-///
-/// For example:
-/// - PML4: HIGH_BIT=47, LOW_BIT=39 (9 bits = 512 entries, each covering 512GB)
-/// - PDPT: HIGH_BIT=38, LOW_BIT=30 (9 bits = 512 entries, each covering 1GB)
-/// - PD:   HIGH_BIT=29, LOW_BIT=21 (9 bits = 512 entries, each covering 2MB)
-/// - PT:   HIGH_BIT=20, LOW_BIT=12 (9 bits = 512 entries, each covering 4KB)
-struct ModifyPteIterator<
-    const HIGH_BIT: u8,
-    const LOW_BIT: u8,
-    Op: TableReadOps,
-    P: UpdateParent<Op>,
-> {
-    request: MapRequest<Op, P>,
-    n: u64,
-}
-impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableReadOps, P: UpdateParent<Op>> Iterator
-    for ModifyPteIterator<HIGH_BIT, LOW_BIT, Op, P>
-{
-    type Item = MapResponse<Op, P>;
-    fn next(&mut self) -> Option<Self::Item> {
-        // Each page table entry at this level covers a region of size (1 << LOW_BIT) bytes.
-        // For example, at the PT level (LOW_BIT=12), each entry covers 4KB (0x1000 bytes).
-        // At the PD level (LOW_BIT=21), each entry covers 2MB (0x200000 bytes).
-        //
-        // This mask isolates the bits below this level's index bits, used for alignment.
-        let lower_bits_mask = (1 << LOW_BIT) - 1;
-
-        // Calculate the virtual address for this iteration.
-        // On the first iteration (n=0), start at the requested vmin.
-        // On subsequent iterations, advance to the next aligned boundary.
-        // This handles the case where vmin isn't aligned to this level's entry size.
-        let next_vmin = if self.n == 0 {
-            self.request.vmin
-        } else {
-            // Align to the next boundary by adding one entry's worth
-            // and masking off lower bits. Masking off before adding
-            // is safe, since n << LOW_BIT must always have zeros in
-            // these positions.
-            let aligned_min = self.request.vmin & !lower_bits_mask;
-            // Use checked_add here because going past the end of the
-            // address space counts as "the next one would be out of
-            // range"
-            aligned_min.checked_add(self.n << LOW_BIT)?
-        };
-
-        // Check if we've processed the entire requested range
-        if next_vmin >= self.request.vmin + self.request.len {
-            return None;
-        }
-
-        // Calculate the pointer to this level's page table entry.
-        // bits::<HIGH_BIT, LOW_BIT> extracts the relevant index bits from the virtual address.
-        // Shift left by 3 (multiply by 8) because each entry is 8 bytes (u64).
-        let entry_ptr = Op::entry_addr(
-            self.request.table_base,
-            bits::<HIGH_BIT, LOW_BIT>(next_vmin) << 3,
-        );
-
-        // Calculate how many bytes remain to be mapped from this point
-        let len_from_here = self.request.len - (next_vmin - self.request.vmin);
-
-        // Calculate the maximum bytes this single entry can cover.
-        // If next_vmin is aligned, this is the full entry size (1 << LOW_BIT).
-        // If not aligned (only possible on first iteration), it's the remaining
-        // space until the next boundary.
-        let max_len = (1 << LOW_BIT) - (next_vmin & lower_bits_mask);
-
-        // The actual length for this entry is the smaller of what's needed vs what fits
-        let next_len = core::cmp::min(len_from_here, max_len);
-
-        // Advance iteration counter for next call
-        self.n += 1;
-
-        Some(MapResponse {
-            entry_ptr,
-            vmin: next_vmin,
-            len: next_len,
-            update_parent: self.request.update_parent,
-        })
-    }
-}
-fn modify_ptes<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableReadOps, P: UpdateParent<Op>>(
-    r: MapRequest<Op, P>,
-) -> ModifyPteIterator<HIGH_BIT, LOW_BIT, Op, P> {
-    ModifyPteIterator { request: r, n: 0 }
-}
+/// amd64 PTE shift: log2(8) = 3 for 8-byte entries
+const PTE_SHIFT: u8 = 3;
 
 /// Page-mapping callback to allocate a next-level page table if necessary.
 /// # Safety
@@ -480,39 +265,20 @@ unsafe fn map_page<
 /// 4. PT (20:12) - write final PTE with physical address and flags
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
-    modify_ptes::<47, 39, Op, _>(MapRequest {
+    modify_ptes::<47, 39, PTE_SHIFT, Op, _>(MapRequest {
         table_base: op.root_table(),
         vmin: mapping.virt_base,
         len: mapping.len,
         update_parent: Op::TableMovability::root_update_parent(),
     })
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<38, 30, Op, _>)
+    .flat_map(modify_ptes::<38, 30, PTE_SHIFT, Op, _>)
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<29, 21, Op, _>)
+    .flat_map(modify_ptes::<29, 21, PTE_SHIFT, Op, _>)
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<20, 12, Op, _>)
+    .flat_map(modify_ptes::<20, 12, PTE_SHIFT, Op, _>)
     .map(|r| unsafe { map_page(op, &mapping, r) })
     .for_each(drop);
-}
-
-/// # Safety
-/// This function traverses page table data structures, and should not
-/// be called concurrently with any other operations that modify the
-/// page table.
-unsafe fn require_pte_exist<Op: TableReadOps, P: UpdateParent<Op>>(
-    op: &Op,
-    x: MapResponse<Op, P>,
-) -> Option<MapRequest<Op, P::ChildType>>
-where
-    P::ChildType: UpdateParent<Op>,
-{
-    unsafe { read_pte_if_present(op, x.entry_ptr) }.map(|pte| MapRequest {
-        table_base: Op::from_phys(pte & PTE_ADDR_MASK),
-        vmin: x.vmin,
-        len: x.len,
-        update_parent: x.update_parent.for_child_at_entry(x.entry_ptr),
-    })
 }
 
 // There are no notable architecture-specific safety considerations
@@ -545,18 +311,18 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
     // Calculate the maximum virtual address we need to look at based on the starting
     // address and length ensuring we don't go past the end of the address space
     let vmax = core::cmp::min(addr + len, 1u64 << VA_BITS);
-    modify_ptes::<47, 39, Op, _>(MapRequest {
+    modify_ptes::<47, 39, PTE_SHIFT, Op, _>(MapRequest {
         table_base: op.as_ref().root_table(),
         vmin,
         len: vmax - vmin,
         update_parent: UpdateParentNone {},
     })
-    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
-    .flat_map(modify_ptes::<38, 30, Op, _>)
-    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
-    .flat_map(modify_ptes::<29, 21, Op, _>)
-    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
-    .flat_map(modify_ptes::<20, 12, Op, _>)
+    .filter_map(move |r| unsafe { require_pte_exist::<PTE_ADDR_MASK, _, _>(op.as_ref(), r) })
+    .flat_map(modify_ptes::<38, 30, PTE_SHIFT, Op, _>)
+    .filter_map(move |r| unsafe { require_pte_exist::<PTE_ADDR_MASK, _, _>(op.as_ref(), r) })
+    .flat_map(modify_ptes::<29, 21, PTE_SHIFT, Op, _>)
+    .filter_map(move |r| unsafe { require_pte_exist::<PTE_ADDR_MASK, _, _>(op.as_ref(), r) })
+    .flat_map(modify_ptes::<20, 12, PTE_SHIFT, Op, _>)
     .filter_map(move |r| {
         let pte = unsafe { read_pte_if_present(op.as_ref(), r.entry_ptr) }?;
         let phys_addr = pte & PTE_ADDR_MASK;
@@ -596,72 +362,6 @@ pub type PageTableEntry = u64;
 pub type VirtAddr = u64;
 pub type PhysAddr = u64;
 
-/// i686 guest page-table walker and PTE constants for the x86_64 host.
-///
-/// When the host builds with `i686-guest`, it needs to walk 2-level i686
-/// page tables in guest memory. The `arch/i686/vmem.rs` module only compiles
-/// for `target_arch = "x86"` (the guest side), so the host-side walker lives
-/// here, gated behind the feature flag.
-#[cfg(feature = "i686-guest")]
-pub mod i686_guest {
-    use alloc::vec::Vec;
-
-    use crate::vmem::{BasicMapping, CowMapping, Mapping, MappingKind, TableReadOps};
-
-    pub const PAGE_PRESENT: u64 = 1;
-    pub const PAGE_RW: u64 = 1 << 1;
-    pub const PAGE_USER: u64 = 1 << 2;
-    pub const PAGE_ACCESSED: u64 = 1 << 5;
-    pub const PAGE_AVL_COW: u64 = 1 << 9;
-    pub const PTE_ADDR_MASK: u64 = 0xFFFFF000;
-
-    /// Walk an i686 2-level page table and return all present mappings.
-    ///
-    /// # Safety
-    /// The caller must ensure that `op` provides valid page table memory.
-    pub unsafe fn virt_to_phys_all<Op: TableReadOps>(op: &Op) -> Vec<Mapping> {
-        let root = op.root_table();
-        let mut mappings = Vec::new();
-        for pdi in 0..1024u64 {
-            let pde_ptr = Op::entry_addr(root, pdi * 4);
-            let pde: u64 = unsafe { op.read_entry(pde_ptr) };
-            if (pde & PAGE_PRESENT) == 0 {
-                continue;
-            }
-            let pt_phys = pde & PTE_ADDR_MASK;
-            let pt_base = Op::from_phys(pt_phys as crate::vmem::PhysAddr);
-            for pti in 0..1024u64 {
-                let pte_ptr = Op::entry_addr(pt_base, pti * 4);
-                let pte: u64 = unsafe { op.read_entry(pte_ptr) };
-                if (pte & PAGE_PRESENT) == 0 {
-                    continue;
-                }
-                let phys_base = pte & PTE_ADDR_MASK;
-                let virt_base = (pdi << 22) | (pti << 12);
-                let kind = if (pte & PAGE_AVL_COW) != 0 {
-                    MappingKind::Cow(CowMapping {
-                        readable: true,
-                        executable: true,
-                    })
-                } else {
-                    MappingKind::Basic(BasicMapping {
-                        readable: true,
-                        writable: (pte & PAGE_RW) != 0,
-                        executable: true,
-                    })
-                };
-                mappings.push(Mapping {
-                    phys_base,
-                    virt_base,
-                    len: super::PAGE_SIZE as u64,
-                    kind,
-                });
-            }
-        }
-        mappings
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -671,7 +371,7 @@ mod tests {
     use super::*;
     use crate::vmem::{
         BasicMapping, Mapping, MappingKind, MayNotMoveTable, PAGE_TABLE_ENTRIES_PER_TABLE,
-        TableOps, TableReadOps, Void,
+        TableOps, TableReadOps, Void, bits,
     };
 
     /// A mock TableOps implementation for testing that stores page tables in memory
@@ -1127,7 +827,8 @@ mod tests {
             update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
+        let responses: Vec<_> =
+            modify_ptes::<20, 12, PTE_SHIFT, MockTableOps, _>(request).collect();
         assert_eq!(responses.len(), 1, "Single page should yield one response");
         assert_eq!(responses[0].vmin, 0x1000);
         assert_eq!(responses[0].len, PAGE_SIZE as u64);
@@ -1143,7 +844,8 @@ mod tests {
             update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
+        let responses: Vec<_> =
+            modify_ptes::<20, 12, PTE_SHIFT, MockTableOps, _>(request).collect();
         assert_eq!(responses.len(), 3, "3 pages should yield 3 responses");
     }
 
@@ -1157,7 +859,8 @@ mod tests {
             update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
+        let responses: Vec<_> =
+            modify_ptes::<20, 12, PTE_SHIFT, MockTableOps, _>(request).collect();
         assert_eq!(responses.len(), 0, "Zero length should yield no responses");
     }
 
@@ -1173,7 +876,8 @@ mod tests {
             update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
+        let responses: Vec<_> =
+            modify_ptes::<20, 12, PTE_SHIFT, MockTableOps, _>(request).collect();
         assert_eq!(
             responses.len(),
             2,

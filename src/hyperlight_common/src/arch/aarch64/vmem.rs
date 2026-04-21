@@ -44,9 +44,17 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
     core::iter::empty()
 }
 
-pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {}
-impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<Op, Op::TableAddr>
+impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> crate::vmem::TableMovability<Op>
     for crate::vmem::MayMoveTable
 {
+    type RootUpdateParent = crate::vmem::UpdateParentRoot;
+    fn root_update_parent() -> Self::RootUpdateParent {
+        crate::vmem::UpdateParentRoot {}
+    }
 }
-impl<Op: TableReadOps> TableMovability<Op, Void> for crate::vmem::MayNotMoveTable {}
+impl<Op: TableReadOps> crate::vmem::TableMovability<Op> for crate::vmem::MayNotMoveTable {
+    type RootUpdateParent = crate::vmem::UpdateParentNone;
+    fn root_update_parent() -> Self::RootUpdateParent {
+        crate::vmem::UpdateParentNone {}
+    }
+}

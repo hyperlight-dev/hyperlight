@@ -1424,7 +1424,7 @@ mod tests {
         let mut layout = SandboxMemoryLayout::new(config, code.len(), 4096, None).unwrap();
 
         let pt_base_gpa = layout.get_pt_base_gpa();
-        let pt_buf = GuestPageTableBuffer::new(pt_base_gpa as usize);
+        let pt_buf = GuestPageTableBuffer::<8>::new(pt_base_gpa as usize);
 
         for rgn in layout
             .get_memory_regions_::<GuestMemoryRegion>(())
