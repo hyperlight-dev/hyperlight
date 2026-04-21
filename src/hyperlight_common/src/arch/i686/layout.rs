@@ -18,7 +18,9 @@ limitations under the License.
 // allow compiling the guest for real mode boot scenarios.
 
 pub const MAX_GVA: usize = 0xffff_ffff;
-pub const MAX_GPA: usize = 0xffff_ffff;
+/// Set below the KVM APIC access page at 0xFEE00000 to avoid EEXIST when scratch
+/// regions are large enough to reach that address.
+pub const MAX_GPA: usize = 0xFEDF_FFFF;
 
 pub fn min_scratch_size(_input_data_size: usize, _output_data_size: usize) -> usize {
     crate::vmem::PAGE_SIZE
