@@ -189,10 +189,6 @@ pub(crate) struct SharedMemoryPageTableBuffer<'a> {
     scratch: &'a [u8],
     layout: SandboxMemoryLayout,
     root: u64,
-    /// CoW resolution map: maps snapshot GPAs to their CoW'd scratch GPAs.
-    /// Built by walking the kernel PD to find pages that were CoW'd during boot.
-    #[cfg(feature = "i686-guest")]
-    cow_map: Option<&'a std::collections::HashMap<u64, u64>>,
 }
 
 impl<'a> SharedMemoryPageTableBuffer<'a> {
@@ -207,15 +203,7 @@ impl<'a> SharedMemoryPageTableBuffer<'a> {
             scratch,
             layout,
             root,
-            #[cfg(feature = "i686-guest")]
-            cow_map: None,
         }
-    }
-
-    #[cfg(feature = "i686-guest")]
-    fn with_cow_map(mut self, cow_map: &'a std::collections::HashMap<u64, u64>) -> Self {
-        self.cow_map = Some(cow_map);
-        self
     }
 }
 impl<'a> hyperlight_common::vmem::TableReadOps for SharedMemoryPageTableBuffer<'a> {
@@ -224,20 +212,6 @@ impl<'a> hyperlight_common::vmem::TableReadOps for SharedMemoryPageTableBuffer<'
         addr + offset
     }
     unsafe fn read_entry(&self, addr: u64) -> vmem::PageTableEntry {
-        // For i686: if the GPA was CoW'd, read from the scratch copy instead.
-        #[cfg(feature = "i686-guest")]
-        let addr = {
-            let page_gpa = addr & 0xFFFFF000;
-            if let Some(map) = self.cow_map {
-                if let Some(&scratch_gpa) = map.get(&page_gpa) {
-                    scratch_gpa + (addr & 0xFFF)
-                } else {
-                    addr
-                }
-            } else {
-                addr
-            }
-        };
         let memoff = access_gpa(self.snap, self.scratch, self.layout, addr);
         let pte_size = core::mem::size_of::<vmem::PageTableEntry>();
         let Some(pte_bytes) = memoff.and_then(|(mem, off)| mem.get(off..off + pte_size)) else {
@@ -263,32 +237,6 @@ impl<'a> core::convert::AsRef<SharedMemoryPageTableBuffer<'a>> for SharedMemoryP
     fn as_ref(&self) -> &Self {
         self
     }
-}
-
-/// Build a CoW resolution map by walking a kernel PD.
-/// For each PTE that maps a VA in [0, MEMORY_SIZE) to a PA in scratch,
-/// record: original_gpa -> scratch_gpa.
-#[cfg(feature = "i686-guest")]
-fn build_cow_map(
-    snap: &[u8],
-    scratch: &[u8],
-    layout: SandboxMemoryLayout,
-    kernel_root: u64,
-) -> crate::Result<std::collections::HashMap<u64, u64>> {
-    use hyperlight_common::layout::scratch_base_gpa;
-    let mut cow_map = std::collections::HashMap::new();
-    let scratch_base = scratch_base_gpa(layout.get_scratch_size());
-    let scratch_end = scratch_base + layout.get_scratch_size() as u64;
-    let mem_size = layout.get_memory_size()? as u64;
-
-    let op = SharedMemoryPageTableBuffer::new(snap, scratch, layout, kernel_root);
-    let mappings = unsafe { vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64) };
-    for m in mappings {
-        if m.virt_base < mem_size && m.phys_base >= scratch_base && m.phys_base < scratch_end {
-            cow_map.insert(m.virt_base, m.phys_base);
-        }
-    }
-    Ok(cow_map)
 }
 
 /// On i686, PDE index where user-space begins. Kernel occupies PDEs
@@ -324,7 +272,6 @@ fn filtered_mappings<'a>(
     regions: &[MemoryRegion],
     layout: SandboxMemoryLayout,
     root_pts: &[u64],
-    #[cfg(feature = "i686-guest")] cow_map: &std::collections::HashMap<u64, u64>,
 ) -> Vec<(usize, Mapping, &'a [u8])> {
     use std::collections::HashSet;
     let mut all_mappings = Vec::new();
@@ -333,10 +280,6 @@ fn filtered_mappings<'a>(
 
     #[cfg_attr(not(feature = "i686-guest"), allow(unused_variables))]
     for (root_idx, &root_pt) in root_pts.iter().enumerate() {
-        #[cfg(feature = "i686-guest")]
-        let op =
-            SharedMemoryPageTableBuffer::new(snap, scratch, layout, root_pt).with_cow_map(cow_map);
-        #[cfg(not(feature = "i686-guest"))]
         let op = SharedMemoryPageTableBuffer::new(snap, scratch, layout, root_pt);
 
         let iter = unsafe { vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64) };
@@ -564,29 +507,11 @@ impl Snapshot {
         let mut phys_seen = HashMap::<u64, usize>::new();
         let memory = shared_mem.with_contents(|snap_c| {
             scratch_mem.with_contents(|scratch_c| {
-                // Phase 0 (i686 only): build a CoW resolution map so the
-                // PT walker reads CoW'd pages from scratch, not stale
-                // snapshot copies.
-                #[cfg(feature = "i686-guest")]
-                let cow_map = {
-                    let kernel_root = root_pt_gpas.first().copied().ok_or_else(|| {
-                        crate::new_error!("snapshot requires at least one page directory root")
-                    })?;
-                    build_cow_map(snap_c, scratch_c, layout, kernel_root)?
-                };
-
                 // Phase 1: walk every PT root and collect live pages,
                 // tagged with which root they belong to (for per-process
                 // PD isolation on i686).
-                let live_pages = filtered_mappings(
-                    snap_c,
-                    scratch_c,
-                    &regions,
-                    layout,
-                    root_pt_gpas,
-                    #[cfg(feature = "i686-guest")]
-                    &cow_map,
-                );
+                let live_pages =
+                    filtered_mappings(snap_c, scratch_c, &regions, layout, root_pt_gpas);
 
                 // Phase 2: compact live pages into a dense snapshot blob
                 // and build new page tables with compacted GPAs.
