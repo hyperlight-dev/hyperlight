@@ -21,6 +21,7 @@ use crate::vmem::{Mapping, TableOps, TableReadOps, Void};
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_TABLE_SIZE: usize = 4096;
 pub const PAGE_PRESENT: u64 = 1; // AArch64: bit 0 is the "valid" bit
+pub const PTE_ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000; // bits [47:12]
 pub type PageTableEntry = u64;
 pub type VirtAddr = u64;
 pub type PhysAddr = u64;
@@ -45,17 +46,9 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
     core::iter::empty()
 }
 
-impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> crate::vmem::TableMovability<Op>
+pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {}
+impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<Op, Op::TableAddr>
     for crate::vmem::MayMoveTable
 {
-    type RootUpdateParent = crate::vmem::UpdateParentRoot;
-    fn root_update_parent() -> Self::RootUpdateParent {
-        crate::vmem::UpdateParentRoot {}
-    }
 }
-impl<Op: TableReadOps> crate::vmem::TableMovability<Op> for crate::vmem::MayNotMoveTable {
-    type RootUpdateParent = crate::vmem::UpdateParentNone;
-    fn root_update_parent() -> Self::RootUpdateParent {
-        crate::vmem::UpdateParentNone {}
-    }
-}
+impl<Op: TableReadOps> TableMovability<Op, Void> for crate::vmem::MayNotMoveTable {}

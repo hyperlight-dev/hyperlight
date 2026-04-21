@@ -22,9 +22,9 @@ limitations under the License.
 //! Entries are 4 bytes wide. There is no NX bit; all pages are executable.
 
 use crate::vmem::{
-    BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovability as _,
-    TableMovabilityBase, TableOps, TableReadOps, UpdateParent, UpdateParentNone, modify_ptes,
-    read_pte_if_present, require_pte_exist, write_entry_updating,
+    BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovabilityBase,
+    TableOps, TableReadOps, UpdateParent, UpdateParentNone, modify_ptes, read_pte_if_present,
+    require_pte_exist, write_entry_updating,
 };
 
 pub const PAGE_SIZE: usize = 4096;
@@ -38,15 +38,18 @@ pub const PAGE_PRESENT: u64 = 1;
 const PAGE_RW: u64 = 1 << 1;
 pub const PAGE_USER: u64 = 1 << 2;
 const PAGE_ACCESSED: u64 = 1 << 5;
-const PTE_ADDR_MASK: u64 = 0xFFFFF000;
+pub const PTE_ADDR_MASK: u64 = 0xFFFFF000;
 const PTE_AVL_MASK: u64 = 0x0E00;
 const PAGE_AVL_COW: u64 = 1 << 9;
 
 const VA_BITS: usize = 32;
-/// log2(4) for 4-byte entries
-const PTE_SHIFT: u8 = 2;
 
-impl<Op: TableReadOps> crate::vmem::TableMovability<Op> for crate::vmem::MayNotMoveTable {
+pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {
+    type RootUpdateParent: UpdateParent<Op, TableMoveInfo = TableMoveInfo>;
+    fn root_update_parent() -> Self::RootUpdateParent;
+}
+
+impl<Op: TableReadOps> TableMovability<Op, crate::vmem::Void> for crate::vmem::MayNotMoveTable {
     type RootUpdateParent = UpdateParentNone;
     fn root_update_parent() -> Self::RootUpdateParent {
         UpdateParentNone {}
@@ -156,14 +159,14 @@ unsafe fn map_page<
 /// See [`crate::vmem::map`].
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
-    modify_ptes::<31, 22, PTE_SHIFT, Op, _>(MapRequest {
+    modify_ptes::<31, 22, Op, _>(MapRequest {
         table_base: op.root_table(),
         vmin: mapping.virt_base,
         len: mapping.len,
         update_parent: Op::TableMovability::root_update_parent(),
     })
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<21, 12, PTE_SHIFT, Op, _>)
+    .flat_map(modify_ptes::<21, 12, Op, _>)
     .map(|r| unsafe { map_page(op, &mapping, r) })
     .for_each(drop);
 }
@@ -180,14 +183,14 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
 ) -> impl Iterator<Item = Mapping> + 'a {
     let vmin = address & !(PAGE_SIZE as u64 - 1);
     let vmax = core::cmp::min(address + len, 1u64 << VA_BITS);
-    modify_ptes::<31, 22, PTE_SHIFT, Op, _>(MapRequest {
+    modify_ptes::<31, 22, Op, _>(MapRequest {
         table_base: op.as_ref().root_table(),
         vmin,
         len: vmax.saturating_sub(vmin),
         update_parent: UpdateParentNone {},
     })
-    .filter_map(move |r| unsafe { require_pte_exist::<PTE_ADDR_MASK, _, _>(op.as_ref(), r) })
-    .flat_map(modify_ptes::<21, 12, PTE_SHIFT, Op, _>)
+    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
+    .flat_map(modify_ptes::<21, 12, Op, _>)
     .filter_map(move |r| {
         let pte = unsafe { read_pte_if_present(op.as_ref(), r.entry_ptr) }?;
         let phys_addr = pte & PTE_ADDR_MASK;

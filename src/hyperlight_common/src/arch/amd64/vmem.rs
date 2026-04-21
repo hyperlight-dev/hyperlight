@@ -26,9 +26,9 @@ limitations under the License.
 //! allocating intermediate tables as needed and setting appropriate flags on leaf PTEs
 
 use crate::vmem::{
-    BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovability as _,
-    TableMovabilityBase, TableOps, TableReadOps, UpdateParent, UpdateParentNone, UpdateParentRoot,
-    UpdateParentTable, modify_ptes, read_pte_if_present, require_pte_exist, write_entry_updating,
+    BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovabilityBase,
+    TableOps, TableReadOps, UpdateParent, UpdateParentNone, UpdateParentRoot, UpdateParentTable,
+    modify_ptes, read_pte_if_present, require_pte_exist, write_entry_updating,
 };
 
 // Paging Flags
@@ -58,7 +58,7 @@ const PAGE_RW: u64 = 1 << 1;
 const PAGE_NX: u64 = 1 << 63;
 /// Mask to extract the physical address from a PTE (bits 51:12)
 /// This masks out the lower 12 flag bits AND the upper bits including NX (bit 63)
-const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+pub const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 const PAGE_USER_ACCESS_DISABLED: u64 = 0 << 2; // U/S bit not set - supervisor mode only (no code runs in user mode for now)
 const PAGE_DIRTY_SET: u64 = 1 << 6; // D - dirty bit
 const PAGE_ACCESSED_SET: u64 = 1 << 5; // A - accessed bit
@@ -96,9 +96,14 @@ fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
         PAGE_PRESENT // P   - this entry is present
 }
 
-// ---- TableMovability + UpdateParent impls ----
-
-impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> crate::vmem::TableMovability<Op>
+/// This trait is used to select appropriate implementations of
+/// [`UpdateParent`] to be used, depending on whether a particular
+/// implementation needs the ability to move tables.
+pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {
+    type RootUpdateParent: UpdateParent<Op, TableMoveInfo = TableMoveInfo>;
+    fn root_update_parent() -> Self::RootUpdateParent;
+}
+impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<Op, Op::TableAddr>
     for crate::vmem::MayMoveTable
 {
     type RootUpdateParent = UpdateParentRoot;
@@ -106,7 +111,7 @@ impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> crate::vmem::Tab
         UpdateParentRoot {}
     }
 }
-impl<Op: TableReadOps> crate::vmem::TableMovability<Op> for crate::vmem::MayNotMoveTable {
+impl<Op: TableReadOps> TableMovability<Op, crate::vmem::Void> for crate::vmem::MayNotMoveTable {
     type RootUpdateParent = UpdateParentNone;
     fn root_update_parent() -> Self::RootUpdateParent {
         UpdateParentNone {}
@@ -145,9 +150,6 @@ impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> crate::vmem::Upd
         Self::ChildType::new(self, entry_ptr)
     }
 }
-
-/// amd64 PTE shift: log2(8) = 3 for 8-byte entries
-const PTE_SHIFT: u8 = 3;
 
 /// Page-mapping callback to allocate a next-level page table if necessary.
 /// # Safety
@@ -265,18 +267,18 @@ unsafe fn map_page<
 /// 4. PT (20:12) - write final PTE with physical address and flags
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
-    modify_ptes::<47, 39, PTE_SHIFT, Op, _>(MapRequest {
+    modify_ptes::<47, 39, Op, _>(MapRequest {
         table_base: op.root_table(),
         vmin: mapping.virt_base,
         len: mapping.len,
         update_parent: Op::TableMovability::root_update_parent(),
     })
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<38, 30, PTE_SHIFT, Op, _>)
+    .flat_map(modify_ptes::<38, 30, Op, _>)
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<29, 21, PTE_SHIFT, Op, _>)
+    .flat_map(modify_ptes::<29, 21, Op, _>)
     .map(|r| unsafe { alloc_pte_if_needed(op, r) })
-    .flat_map(modify_ptes::<20, 12, PTE_SHIFT, Op, _>)
+    .flat_map(modify_ptes::<20, 12, Op, _>)
     .map(|r| unsafe { map_page(op, &mapping, r) })
     .for_each(drop);
 }
@@ -311,18 +313,18 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
     // Calculate the maximum virtual address we need to look at based on the starting
     // address and length ensuring we don't go past the end of the address space
     let vmax = core::cmp::min(addr + len, 1u64 << VA_BITS);
-    modify_ptes::<47, 39, PTE_SHIFT, Op, _>(MapRequest {
+    modify_ptes::<47, 39, Op, _>(MapRequest {
         table_base: op.as_ref().root_table(),
         vmin,
         len: vmax - vmin,
         update_parent: UpdateParentNone {},
     })
-    .filter_map(move |r| unsafe { require_pte_exist::<PTE_ADDR_MASK, _, _>(op.as_ref(), r) })
-    .flat_map(modify_ptes::<38, 30, PTE_SHIFT, Op, _>)
-    .filter_map(move |r| unsafe { require_pte_exist::<PTE_ADDR_MASK, _, _>(op.as_ref(), r) })
-    .flat_map(modify_ptes::<29, 21, PTE_SHIFT, Op, _>)
-    .filter_map(move |r| unsafe { require_pte_exist::<PTE_ADDR_MASK, _, _>(op.as_ref(), r) })
-    .flat_map(modify_ptes::<20, 12, PTE_SHIFT, Op, _>)
+    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
+    .flat_map(modify_ptes::<38, 30, Op, _>)
+    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
+    .flat_map(modify_ptes::<29, 21, Op, _>)
+    .filter_map(move |r| unsafe { require_pte_exist(op.as_ref(), r) })
+    .flat_map(modify_ptes::<20, 12, Op, _>)
     .filter_map(move |r| {
         let pte = unsafe { read_pte_if_present(op.as_ref(), r.entry_ptr) }?;
         let phys_addr = pte & PTE_ADDR_MASK;
@@ -839,8 +841,7 @@ mod tests {
             update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> =
-            modify_ptes::<20, 12, PTE_SHIFT, MockTableOps, _>(request).collect();
+        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
         assert_eq!(responses.len(), 1, "Single page should yield one response");
         assert_eq!(responses[0].vmin, 0x1000);
         assert_eq!(responses[0].len, PAGE_SIZE as u64);
@@ -856,8 +857,7 @@ mod tests {
             update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> =
-            modify_ptes::<20, 12, PTE_SHIFT, MockTableOps, _>(request).collect();
+        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
         assert_eq!(responses.len(), 3, "3 pages should yield 3 responses");
     }
 
@@ -871,8 +871,7 @@ mod tests {
             update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> =
-            modify_ptes::<20, 12, PTE_SHIFT, MockTableOps, _>(request).collect();
+        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
         assert_eq!(responses.len(), 0, "Zero length should yield no responses");
     }
 
@@ -888,8 +887,7 @@ mod tests {
             update_parent: UpdateParentNone {},
         };
 
-        let responses: Vec<_> =
-            modify_ptes::<20, 12, PTE_SHIFT, MockTableOps, _>(request).collect();
+        let responses: Vec<_> = modify_ptes::<20, 12, MockTableOps, _>(request).collect();
         assert_eq!(
             responses.len(),
             2,

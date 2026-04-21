@@ -120,6 +120,10 @@ impl hyperlight_common::vmem::TableReadOps for Snapshot {
         let addr = addr as usize;
         let pte_size = core::mem::size_of::<vmem::PageTableEntry>();
         let Some(pte_bytes) = self.memory.as_slice().get(addr..addr + pte_size) else {
+            // Attacker-controlled data pointed out-of-bounds. We'll
+            // default to returning 0 in this case, which, for most
+            // architectures (including x86-64 and arm64, the ones we
+            // care about presently) will be a not-present entry.
             return 0;
         };
         let mut buf = [0u8; 8];
@@ -190,7 +194,6 @@ pub(crate) struct SharedMemoryPageTableBuffer<'a> {
     layout: SandboxMemoryLayout,
     root: u64,
 }
-
 impl<'a> SharedMemoryPageTableBuffer<'a> {
     pub(crate) fn new(
         snap: &'a [u8],
@@ -215,6 +218,10 @@ impl<'a> hyperlight_common::vmem::TableReadOps for SharedMemoryPageTableBuffer<'
         let memoff = access_gpa(self.snap, self.scratch, self.layout, addr);
         let pte_size = core::mem::size_of::<vmem::PageTableEntry>();
         let Some(pte_bytes) = memoff.and_then(|(mem, off)| mem.get(off..off + pte_size)) else {
+            // Attacker-controlled data pointed out-of-bounds. We'll
+            // default to returning 0 in this case, which, for most
+            // architectures (including x86-64 and arm64, the ones we
+            // care about presently) will be a not-present entry.
             return 0;
         };
         let mut buf = [0u8; 8];
@@ -285,9 +292,11 @@ fn filtered_mappings<'a>(
         let iter = unsafe { vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64) };
 
         for m in iter {
+            // the scratch map doesn't count
             if m.virt_base >= scratch_gva {
                 continue;
             }
+            // neither does the mapping of the snapshot's own page tables
             #[cfg(not(feature = "i686-guest"))]
             if m.virt_base >= hyperlight_common::layout::SNAPSHOT_PT_GVA_MIN as u64
                 && m.virt_base <= hyperlight_common::layout::SNAPSHOT_PT_GVA_MAX as u64

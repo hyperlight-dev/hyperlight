@@ -38,22 +38,23 @@ compile_error!(
 /// This is always the page size that the /guest/ is being compiled
 /// for, which may or may not be the same as the host page size.
 pub use arch::PAGE_SIZE;
-pub use arch::{PAGE_PRESENT, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
+pub use arch::{PAGE_PRESENT, PAGE_TABLE_SIZE, PTE_ADDR_MASK, PageTableEntry, PhysAddr, VirtAddr};
 pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
     PAGE_TABLE_SIZE / core::mem::size_of::<PageTableEntry>();
 
 // Shared page table iterator infrastructure used by each arch module.
 
-/// Extract bits `[HIGH_BIT:LOW_BIT]` (inclusive) from a u64.
+/// Utility function to extract an (inclusive on both ends) bit range
+/// from a quadword.
 #[inline(always)]
 pub(crate) fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
     (x & ((1 << (HIGH_BIT + 1)) - 1)) >> LOW_BIT
 }
 
-/// Read a PTE and return it (widened to u64) if the present bit is set.
+/// Read a page table entry and return it if the present bit is set.
 ///
 /// # Safety
-/// `entry_ptr` must point to a valid page table entry.
+/// The caller must ensure that `entry_ptr` points to a valid page table entry.
 #[inline(always)]
 #[allow(clippy::useless_conversion)]
 pub(crate) unsafe fn read_pte_if_present<Op: TableReadOps>(
@@ -68,7 +69,8 @@ pub(crate) unsafe fn read_pte_if_present<Op: TableReadOps>(
     }
 }
 
-/// Write a PTE, recursively updating parent entries if the table was moved.
+/// Helper function to write a page table entry, updating the whole
+/// chain of tables back to the root if necessary.
 ///
 /// # Safety
 /// Same requirements as [`TableOps::write_entry`].
@@ -90,9 +92,18 @@ pub(crate) unsafe fn write_entry_updating<
     }
 }
 
-/// Tracks the chain of ancestor page table entries that need updating
-/// when a table is relocated. Implemented as a trait so that the
-/// compiler can specialise per nesting depth for inlining.
+/// A helper trait that allows us to move a page table (e.g. from the
+/// snapshot to the scratch region), keeping track of the context that
+/// needs to be updated when that is moved (and potentially
+/// recursively updating, if necessary).
+///
+/// This is done via a trait so that the selected impl knows the exact
+/// nesting depth of tables, in order to assist
+/// inlining/specialisation in generating efficient code.
+///
+/// The trait definition only bounds its parameter by
+/// [`TableReadOps`], since [`UpdateParentNone`] does not need to be
+/// able to actually write to the tables.
 pub trait UpdateParent<Op: TableReadOps + ?Sized>: Copy {
     /// The type of the information about a moved table which is
     /// needed in order to update its parent.
@@ -105,7 +116,9 @@ pub trait UpdateParent<Op: TableReadOps + ?Sized>: Copy {
     fn for_child_at_entry(self, entry_ptr: Op::TableAddr) -> Self::ChildType;
 }
 
-/// Parent is another page table whose ancestors may also need updating.
+/// A struct implementing [`UpdateParent`] that keeps track of the
+/// fact that the parent table is itself another table, whose own
+/// ancestors may need to be recursively updated.
 /// The `MayMoveTable` impl lives in each arch module (needs `pte_for_table`).
 #[allow(dead_code)] // used only by archs that support MayMoveTable
 pub struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
@@ -125,11 +138,17 @@ impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
     }
 }
 
-/// Parent is the root (e.g. CR3). `MayMoveTable` impl lives in each arch module.
+/// A struct implementing [`UpdateParent`] that keeps track of the
+/// fact that the parent "table" is actually the root (e.g. the value
+/// of CR3 in the guest).
+/// `MayMoveTable` impl lives in each arch module.
 #[derive(Copy, Clone)]
 pub struct UpdateParentRoot {}
 
-/// No-op parent tracker (tables are never relocated).
+/// A struct implementing [`UpdateParent`] that is impossible to use
+/// (since its [`UpdateParent::update_parent`] method takes [`Void`]),
+/// used when it is statically known that a table operation cannot
+/// result in a need to update ancestors.
 #[derive(Copy, Clone)]
 pub struct UpdateParentNone {}
 impl<Op: TableReadOps> UpdateParent<Op> for UpdateParentNone {
@@ -143,7 +162,8 @@ impl<Op: TableReadOps> UpdateParent<Op> for UpdateParentNone {
     }
 }
 
-/// A request to map/walk a VA range within a specific page table.
+/// A helper structure indicating a mapping operation that needs to be
+/// performed.
 pub(crate) struct MapRequest<Op: TableReadOps, P: UpdateParent<Op>> {
     pub table_base: Op::TableAddr,
     pub vmin: u64,
@@ -151,7 +171,8 @@ pub(crate) struct MapRequest<Op: TableReadOps, P: UpdateParent<Op>> {
     pub update_parent: P,
 }
 
-/// A single PTE that needs to be examined or modified.
+/// A helper structure indicating that a particular PTE needs to be
+/// modified.
 pub(crate) struct MapResponse<Op: TableReadOps, P: UpdateParent<Op>> {
     pub entry_ptr: Op::TableAddr,
     pub vmin: u64,
@@ -159,58 +180,92 @@ pub(crate) struct MapResponse<Op: TableReadOps, P: UpdateParent<Op>> {
     pub update_parent: P,
 }
 
-/// Iterates over PTEs at one level of the page table hierarchy.
+/// Iterator that walks through page table entries at a specific level.
 ///
-/// `HIGH_BIT`/`LOW_BIT` select which VA bits index this level.
-/// `PTE_SHIFT` is log2(PTE byte size) (3 for 8-byte, 2 for 4-byte).
+/// Given a virtual address range and a table base, this iterator yields
+/// `MapResponse` items for each page table entry that needs to be modified.
+/// The const generics `HIGH_BIT` and `LOW_BIT` specify which bits of the
+/// virtual address are used to index into this level's table.
+///
+/// For example on amd64:
+/// - PML4: HIGH_BIT=47, LOW_BIT=39 (9 bits = 512 entries, each covering 512GB)
+/// - PDPT: HIGH_BIT=38, LOW_BIT=30 (9 bits = 512 entries, each covering 1GB)
+/// - PD:   HIGH_BIT=29, LOW_BIT=21 (9 bits = 512 entries, each covering 2MB)
+/// - PT:   HIGH_BIT=20, LOW_BIT=12 (9 bits = 512 entries, each covering 4KB)
+///
+/// On i686:
+/// - PD:   HIGH_BIT=31, LOW_BIT=22 (10 bits = 1024 entries, each covering 4MB)
+/// - PT:   HIGH_BIT=21, LOW_BIT=12 (10 bits = 1024 entries, each covering 4KB)
 pub(crate) struct ModifyPteIterator<
     const HIGH_BIT: u8,
     const LOW_BIT: u8,
-    const PTE_SHIFT: u8,
     Op: TableReadOps,
     P: UpdateParent<Op>,
 > {
     request: MapRequest<Op, P>,
     n: u64,
 }
-impl<
-    const HIGH_BIT: u8,
-    const LOW_BIT: u8,
-    const PTE_SHIFT: u8,
-    Op: TableReadOps,
-    P: UpdateParent<Op>,
-> Iterator for ModifyPteIterator<HIGH_BIT, LOW_BIT, PTE_SHIFT, Op, P>
+impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableReadOps, P: UpdateParent<Op>> Iterator
+    for ModifyPteIterator<HIGH_BIT, LOW_BIT, Op, P>
 {
     type Item = MapResponse<Op, P>;
     fn next(&mut self) -> Option<Self::Item> {
+        // Each page table entry at this level covers a region of size
+        // (1 << LOW_BIT) bytes. For example, at the PT level
+        // (LOW_BIT=12), each entry covers 4KB (0x1000 bytes). At the
+        // PD level (LOW_BIT=21), each entry covers 2MB (0x200000
+        // bytes).
+        //
+        // This mask isolates the bits below this level's index bits,
+        // used for alignment.
         let lower_bits_mask = (1u64 << LOW_BIT) - 1;
 
-        // First iteration starts at vmin; subsequent ones advance to
-        // the next aligned boundary. checked_add handles overflow at
-        // the end of the address space.
+        // Calculate the virtual address for this iteration.
+        // On the first iteration (n=0), start at the requested vmin.
+        // On subsequent iterations, advance to the next aligned boundary.
+        // This handles the case where vmin isn't aligned to this level's
+        // entry size.
         let next_vmin = if self.n == 0 {
             self.request.vmin
         } else {
+            // Align to the next boundary by adding one entry's worth
+            // and masking off lower bits. Masking off before adding
+            // is safe, since n << LOW_BIT must always have zeros in
+            // these positions.
             let aligned_min = self.request.vmin & !lower_bits_mask;
+            // Use checked_add because going past the end of the
+            // address space counts as "the next one would be out of
+            // range"
             aligned_min.checked_add(self.n << LOW_BIT)?
         };
 
+        // Check if we've processed the entire requested range
         if next_vmin >= self.request.vmin + self.request.len {
             return None;
         }
 
-        // Compute the byte offset of the PTE within the table.
+        // Calculate the pointer to this level's page table entry.
+        // bits::<HIGH_BIT, LOW_BIT> extracts the relevant index bits
+        // from the virtual address. Multiply by the PTE size to get
+        // the byte offset.
+        let pte_index = bits::<HIGH_BIT, LOW_BIT>(next_vmin);
         let entry_ptr = Op::entry_addr(
             self.request.table_base,
-            bits::<HIGH_BIT, LOW_BIT>(next_vmin) << PTE_SHIFT,
+            pte_index * core::mem::size_of::<PageTableEntry>() as u64,
         );
 
-        // Length this single entry covers (may be less than a full
-        // entry if vmin is unaligned on the first iteration).
+        // Calculate how many bytes remain to be mapped from this point.
         let len_from_here = self.request.len - (next_vmin - self.request.vmin);
+        // Calculate the maximum bytes this single entry can cover.
+        // If next_vmin is aligned, this is the full entry size (1 << LOW_BIT).
+        // If not aligned (only possible on first iteration), it's the
+        // remaining space until the next boundary.
         let max_len = (1u64 << LOW_BIT) - (next_vmin & lower_bits_mask);
+        // The actual length for this entry is the smaller of what's
+        // needed vs what fits.
         let next_len = core::cmp::min(len_from_here, max_len);
 
+        // Advance iteration counter for next call
         self.n += 1;
 
         Some(MapResponse {
@@ -225,25 +280,19 @@ impl<
 pub(crate) fn modify_ptes<
     const HIGH_BIT: u8,
     const LOW_BIT: u8,
-    const PTE_SHIFT: u8,
     Op: TableReadOps,
     P: UpdateParent<Op>,
 >(
     r: MapRequest<Op, P>,
-) -> ModifyPteIterator<HIGH_BIT, LOW_BIT, PTE_SHIFT, Op, P> {
+) -> ModifyPteIterator<HIGH_BIT, LOW_BIT, Op, P> {
     ModifyPteIterator { request: r, n: 0 }
 }
 
 /// Require that a PTE is present and descend to the next-level table.
-/// `PTE_ADDR_MASK` is arch-specific (must mask out flag bits including NX).
 ///
 /// # Safety
 /// `op` must provide valid page table memory.
-pub(crate) unsafe fn require_pte_exist<
-    const PTE_ADDR_MASK: u64,
-    Op: TableReadOps,
-    P: UpdateParent<Op>,
->(
+pub(crate) unsafe fn require_pte_exist<Op: TableReadOps, P: UpdateParent<Op>>(
     op: &Op,
     x: MapResponse<Op, P>,
 ) -> Option<MapRequest<Op, P::ChildType>>
@@ -336,12 +385,20 @@ mod sealed {
 }
 use sealed::*;
 
-/// Collects information about [`MayMoveTable`] / [`MayNotMoveTable`],
-/// including which [`UpdateParent`] type to use at the root level.
+/// A sealed trait used to collect some information about the marker
+/// structures [`MayMoveTable`] and [`MayNotMoveTable`].
 /// Implemented in each arch module.
-pub trait TableMovability<Op: TableReadOps + ?Sized>: TableMovabilityBase<Op> {
-    type RootUpdateParent: UpdateParent<Op, TableMoveInfo = <Self as TableMovabilityBase<Op>>::TableMoveInfo>;
-    fn root_update_parent() -> Self::RootUpdateParent;
+pub trait TableMovability<Op: TableReadOps + ?Sized>:
+    TableMovabilityBase<Op>
+    + arch::TableMovability<Op, <Self as TableMovabilityBase<Op>>::TableMoveInfo>
+{
+}
+impl<
+    Op: TableReadOps,
+    T: TableMovabilityBase<Op>
+        + arch::TableMovability<Op, <Self as TableMovabilityBase<Op>>::TableMoveInfo>,
+> TableMovability<Op> for T
+{
 }
 
 /// The operations used to actually access the page table structures
