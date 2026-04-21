@@ -20,6 +20,7 @@ use crate::vmem::{Mapping, TableOps, TableReadOps, Void};
 
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_TABLE_SIZE: usize = 4096;
+pub const PAGE_PRESENT: u64 = 1; // AArch64: bit 0 is the "valid" bit
 pub type PageTableEntry = u64;
 pub type VirtAddr = u64;
 pub type PhysAddr = u64;

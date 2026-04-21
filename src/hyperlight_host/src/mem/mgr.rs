@@ -154,7 +154,7 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
 /// `PTE_BYTES` is the guest PTE size (8 for amd64, 4 for i686).
 /// `TableAddr` is a byte offset (GPA) so the same address space
 /// is used regardless of entry size.
-pub(crate) struct GuestPageTableBuffer<const PTE_BYTES: usize> {
+pub(crate) struct GuestPageTableBuffer {
     buffer: std::cell::RefCell<Vec<u8>>,
     phys_base: usize,
     /// Byte offset from phys_base to the active PD root.
@@ -163,7 +163,7 @@ pub(crate) struct GuestPageTableBuffer<const PTE_BYTES: usize> {
     root_offset: std::cell::Cell<usize>,
 }
 
-impl<const PTE_BYTES: usize> vmem::TableReadOps for GuestPageTableBuffer<PTE_BYTES> {
+impl vmem::TableReadOps for GuestPageTableBuffer {
     type TableAddr = u64;
 
     fn entry_addr(addr: u64, offset: u64) -> u64 {
@@ -173,16 +173,13 @@ impl<const PTE_BYTES: usize> vmem::TableReadOps for GuestPageTableBuffer<PTE_BYT
     unsafe fn read_entry(&self, addr: u64) -> vmem::PageTableEntry {
         let buffer = self.buffer.borrow();
         let byte_offset = addr as usize - self.phys_base;
-        let Some(bytes) = buffer.get(byte_offset..byte_offset + PTE_BYTES) else {
+        let pte_size = core::mem::size_of::<vmem::PageTableEntry>();
+        let Some(bytes) = buffer.get(byte_offset..byte_offset + pte_size) else {
             return 0;
         };
-        // The slice is exactly PTE_BYTES long, so try_into always succeeds.
-        #[allow(clippy::unwrap_used)]
-        if PTE_BYTES == 4 {
-            u32::from_le_bytes(bytes.try_into().unwrap()) as u64
-        } else {
-            u64::from_le_bytes(bytes.try_into().unwrap())
-        }
+        let mut buf = [0u8; 8];
+        buf[..pte_size].copy_from_slice(bytes);
+        vmem::PageTableEntry::from_le_bytes(buf[..pte_size].try_into().unwrap_or_default())
     }
 
     fn to_phys(addr: u64) -> vmem::PhysAddr {
@@ -208,7 +205,7 @@ impl<const PTE_BYTES: usize> vmem::TableReadOps for GuestPageTableBuffer<PTE_BYT
     }
 }
 
-impl<const PTE_BYTES: usize> vmem::TableOps for GuestPageTableBuffer<PTE_BYTES> {
+impl vmem::TableOps for GuestPageTableBuffer {
     type TableMovability = vmem::MayNotMoveTable;
 
     unsafe fn alloc_table(&self) -> u64 {
@@ -221,8 +218,9 @@ impl<const PTE_BYTES: usize> vmem::TableOps for GuestPageTableBuffer<PTE_BYTES> 
     unsafe fn write_entry(&self, addr: u64, entry: vmem::PageTableEntry) -> Option<vmem::Void> {
         let mut b = self.buffer.borrow_mut();
         let byte_offset = addr as usize - self.phys_base;
-        if let Some(slice) = b.get_mut(byte_offset..byte_offset + PTE_BYTES) {
-            slice.copy_from_slice(&entry.to_le_bytes()[..PTE_BYTES]);
+        let pte_size = core::mem::size_of::<vmem::PageTableEntry>();
+        if let Some(slice) = b.get_mut(byte_offset..byte_offset + pte_size) {
+            slice.copy_from_slice(&entry.to_le_bytes()[..pte_size]);
         }
         None
     }
@@ -232,15 +230,13 @@ impl<const PTE_BYTES: usize> vmem::TableOps for GuestPageTableBuffer<PTE_BYTES> 
     }
 }
 
-impl<const PTE_BYTES: usize> core::convert::AsRef<GuestPageTableBuffer<PTE_BYTES>>
-    for GuestPageTableBuffer<PTE_BYTES>
-{
+impl core::convert::AsRef<GuestPageTableBuffer> for GuestPageTableBuffer {
     fn as_ref(&self) -> &Self {
         self
     }
 }
 
-impl<const PTE_BYTES: usize> GuestPageTableBuffer<PTE_BYTES> {
+impl GuestPageTableBuffer {
     pub(crate) fn new(phys_base: usize) -> Self {
         GuestPageTableBuffer {
             buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
@@ -262,29 +258,6 @@ impl<const PTE_BYTES: usize> GuestPageTableBuffer<PTE_BYTES> {
     pub(crate) fn copy_within(&self, src: std::ops::Range<usize>, dst: usize) {
         let mut buf = self.buffer.borrow_mut();
         buf.copy_within(src, dst);
-    }
-
-    /// Set a flag on a range of 4-byte PDE entries within a PD.
-    /// `pd_offset` is the byte offset to the PD page in the buffer.
-    /// `pde_range` is the range of PDE indices to modify.
-    #[cfg(feature = "i686-guest")]
-    pub(crate) fn set_pde_flag(
-        &self,
-        pd_offset: usize,
-        pde_range: std::ops::Range<usize>,
-        flag: u32,
-    ) {
-        let mut buf = self.buffer.borrow_mut();
-        for pdi in pde_range {
-            let off = pd_offset + pdi * 4;
-            if let Some(bytes) = buf.get(off..off + 4) {
-                let pde = u32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]));
-                if pde != 0 {
-                    let updated = pde | flag;
-                    buf[off..off + 4].copy_from_slice(&updated.to_le_bytes());
-                }
-            }
-        }
     }
 
     /// Finalize multi-root i686 page directories after all per-root
@@ -309,7 +282,6 @@ impl<const PTE_BYTES: usize> GuestPageTableBuffer<PTE_BYTES> {
         scratch_gva: u64,
         scratch_len: u64,
     ) {
-        use hyperlight_common::vmem::i686_guest::PAGE_USER;
         use hyperlight_common::vmem::{BasicMapping, MappingKind};
 
         // Step 1: copy kernel PDEs from root 0 to all other roots.
@@ -322,7 +294,7 @@ impl<const PTE_BYTES: usize> GuestPageTableBuffer<PTE_BYTES> {
         for i in 1..n_roots {
             self.set_root_offset(i * PAGE_TABLE_SIZE);
             unsafe {
-                hyperlight_common::vmem::i686_guest::map(
+                vmem::map(
                     self,
                     vmem::Mapping {
                         phys_base: scratch_gpa,
@@ -333,20 +305,10 @@ impl<const PTE_BYTES: usize> GuestPageTableBuffer<PTE_BYTES> {
                             writable: true,
                             executable: false,
                         }),
+                        user_accessible: false,
                     },
                 );
             }
-        }
-
-        // Step 3: set PAGE_USER on user-space PDEs.
-        let scratch_pdi = (scratch_gva >> 22) as usize;
-        let page_user = PAGE_USER as u32;
-        for root_idx in 0..n_roots {
-            self.set_pde_flag(
-                root_idx * PAGE_TABLE_SIZE,
-                user_pde_start..scratch_pdi,
-                page_user,
-            );
         }
     }
     #[cfg(test)]

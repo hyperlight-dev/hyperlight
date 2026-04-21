@@ -105,10 +105,10 @@ pub struct MultiUseSandbox {
 /// Called during [`MultiUseSandbox::snapshot`] with:
 /// - `snapshot_mem` - the sandbox's snapshot (shared) memory as a byte slice
 /// - `scratch_mem` - the sandbox's scratch memory as a byte slice
-/// - `cr3` - the vCPU's CR3 register value (root page table GPA)
+/// - `root_pt_gpa` - the root page table GPA (from the vCPU's CR3)
 ///
 /// Returns a list of root page table GPAs to walk. If the list is
-/// empty, only `cr3` is used.
+/// empty, only `root_pt_gpa` is used.
 pub type PtRootFinder = Box<dyn Fn(&[u8], &[u8], u64) -> Vec<u64> + Send>;
 
 impl MultiUseSandbox {

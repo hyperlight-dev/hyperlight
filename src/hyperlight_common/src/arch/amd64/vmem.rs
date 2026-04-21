@@ -51,7 +51,7 @@ use crate::vmem::{
 //
 
 /// Page is Present
-const PAGE_PRESENT: u64 = 1;
+pub const PAGE_PRESENT: u64 = 1;
 /// Page is Read/Write (if not set page is read only so long as the WP bit in CR0 is set to 1 - which it is in Hyperlight)
 const PAGE_RW: u64 = 1 << 1;
 /// Execute Disable (if this bit is set then data in the page cannot be executed)`
@@ -350,6 +350,7 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
             virt_base: virt_addr,
             len: PAGE_SIZE as u64,
             kind,
+            user_accessible: false,
         })
     })
 }
@@ -531,6 +532,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -564,6 +566,7 @@ mod tests {
                 writable: false,
                 executable: true,
             }),
+            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -587,6 +590,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -620,6 +624,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
         unsafe { map(&ops, mapping1) };
         let tables_after_first = ops.table_count();
@@ -634,6 +639,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
         unsafe { map(&ops, mapping2) };
 
@@ -659,6 +665,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -681,6 +688,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -703,6 +711,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -725,6 +734,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };
@@ -746,6 +756,7 @@ mod tests {
                 virt_base: 0x1000,
                 len: PAGE_SIZE as u64,
                 kind,
+                user_accessible: false,
             };
             unsafe { map(&ops, mapping) };
             let result = unsafe { virt_to_phys(&ops, 0x1000, 1).next() };
@@ -803,6 +814,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
 
         unsafe { map(&ops, mapping) };

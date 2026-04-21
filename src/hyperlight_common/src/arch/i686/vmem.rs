@@ -34,7 +34,7 @@ pub type VirtAddr = u32;
 pub type PhysAddr = u32;
 
 // i686 PTE flags
-const PAGE_PRESENT: u64 = 1;
+pub const PAGE_PRESENT: u64 = 1;
 const PAGE_RW: u64 = 1 << 1;
 pub const PAGE_USER: u64 = 1 << 2;
 const PAGE_ACCESSED: u64 = 1 << 5;
@@ -46,19 +46,25 @@ const VA_BITS: usize = 32;
 /// log2(4) for 4-byte entries
 const PTE_SHIFT: u8 = 2;
 
+impl<Op: TableReadOps> crate::vmem::TableMovability<Op> for crate::vmem::MayNotMoveTable {
+    type RootUpdateParent = UpdateParentNone;
+    fn root_update_parent() -> Self::RootUpdateParent {
+        UpdateParentNone {}
+    }
+}
+
 #[inline(always)]
 const fn page_rw_flag(writable: bool) -> u64 {
     if writable { PAGE_RW } else { 0 }
 }
 
 /// Generate a PDE pointing to a page table.
-/// Does not set PAGE_USER; the caller controls user-accessibility
-/// per VA region (kernel PDEs stay supervisor-only, user PDEs get
-/// PAGE_USER added after mapping).
+/// Sets PAGE_USER unconditionally so that user-mode leaf PTEs
+/// beneath it can function. The leaf PTE controls actual access.
 fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
     #[allow(clippy::unnecessary_cast)]
     let phys = Op::to_phys(table_addr) as u64;
-    phys | PAGE_RW | PAGE_ACCESSED | PAGE_PRESENT
+    phys | PAGE_USER | PAGE_RW | PAGE_ACCESSED | PAGE_PRESENT
 }
 
 // ---- Page table manipulation ----
@@ -117,17 +123,22 @@ unsafe fn map_page<
     mapping: &Mapping,
     r: MapResponse<Op, P>,
 ) {
+    let user_flag = if mapping.user_accessible {
+        PAGE_USER
+    } else {
+        0
+    };
     let pte = match &mapping.kind {
         MappingKind::Basic(bm) => {
             (mapping.phys_base + (r.vmin - mapping.virt_base))
-                | PAGE_USER
+                | user_flag
                 | PAGE_ACCESSED
                 | page_rw_flag(bm.writable)
                 | PAGE_PRESENT
         }
         MappingKind::Cow(_cm) => {
             (mapping.phys_base + (r.vmin - mapping.virt_base))
-                | PAGE_USER
+                | user_flag
                 | PAGE_AVL_COW
                 | PAGE_ACCESSED
                 | PAGE_PRESENT
@@ -198,6 +209,7 @@ pub unsafe fn virt_to_phys<'a, Op: TableReadOps + 'a>(
             virt_base: r.vmin,
             len: PAGE_SIZE as u64,
             kind,
+            user_accessible: (pte & PAGE_USER) != 0,
         })
     })
 }

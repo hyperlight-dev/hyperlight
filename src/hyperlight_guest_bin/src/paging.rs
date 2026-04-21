@@ -132,6 +132,7 @@ pub unsafe fn map_region(phys_base: u64, virt_base: *mut u8, len: u64, kind: vme
                 virt_base: virt_base as u64,
                 len,
                 kind,
+                user_accessible: false,
             },
         );
     }

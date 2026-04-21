@@ -14,17 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-#[cfg_attr(target_arch = "x86_64", path = "arch/amd64/vmem.rs")]
 #[cfg_attr(target_arch = "x86", path = "arch/i686/vmem.rs")]
+#[cfg_attr(
+    all(target_arch = "x86_64", not(feature = "i686-guest")),
+    path = "arch/amd64/vmem.rs"
+)]
+#[cfg_attr(
+    all(target_arch = "x86_64", feature = "i686-guest"),
+    path = "arch/i686/vmem.rs"
+)]
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/vmem.rs")]
 mod arch;
 
-// The `i686-guest` feature is consumed two ways: the guest itself
-// compiles for `target_arch = "x86"`, and the x86_64 host compiles
-// it to pick up the PT walker under `vmem::i686_guest`. Enabling
-// the feature on any other host (e.g. aarch64) would leave the
-// re-export missing and produce confusing errors in downstream
-// crates — surface it up front.
 #[cfg(all(
     feature = "i686-guest",
     not(any(target_arch = "x86", target_arch = "x86_64"))
@@ -37,10 +38,7 @@ compile_error!(
 /// This is always the page size that the /guest/ is being compiled
 /// for, which may or may not be the same as the host page size.
 pub use arch::PAGE_SIZE;
-#[cfg(all(feature = "i686-guest", target_arch = "x86_64"))]
-#[path = "arch/i686/vmem.rs"]
-pub mod i686_guest;
-pub use arch::{PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
+pub use arch::{PAGE_PRESENT, PAGE_TABLE_SIZE, PageTableEntry, PhysAddr, VirtAddr};
 pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
     PAGE_TABLE_SIZE / core::mem::size_of::<PageTableEntry>();
 
@@ -63,7 +61,11 @@ pub(crate) unsafe fn read_pte_if_present<Op: TableReadOps>(
     entry_ptr: Op::TableAddr,
 ) -> Option<u64> {
     let pte: u64 = unsafe { op.read_entry(entry_ptr) }.into();
-    if (pte & 1) != 0 { Some(pte) } else { None }
+    if (pte & PAGE_PRESENT) != 0 {
+        Some(pte)
+    } else {
+        None
+    }
 }
 
 /// Write a PTE, recursively updating parent entries if the table was moved.
@@ -105,6 +107,7 @@ pub trait UpdateParent<Op: TableReadOps + ?Sized>: Copy {
 
 /// Parent is another page table whose ancestors may also need updating.
 /// The `MayMoveTable` impl lives in each arch module (needs `pte_for_table`).
+#[allow(dead_code)] // used only by archs that support MayMoveTable
 pub struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
     pub(crate) parent: P,
     pub(crate) entry_ptr: Op::TableAddr,
@@ -116,6 +119,7 @@ impl<Op: TableOps, P: UpdateParent<Op>> Clone for UpdateParentTable<Op, P> {
 }
 impl<Op: TableOps, P: UpdateParent<Op>> Copy for UpdateParentTable<Op, P> {}
 impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
+    #[allow(dead_code)]
     pub(crate) fn new(parent: P, entry_ptr: Op::TableAddr) -> Self {
         UpdateParentTable { parent, entry_ptr }
     }
@@ -432,6 +436,10 @@ pub struct Mapping {
     pub virt_base: u64,
     pub len: u64,
     pub kind: MappingKind,
+    /// Whether ring-3 (user mode) code can access these pages.
+    /// On i686, controls the PAGE_USER bit on PDEs and leaf PTEs.
+    /// On amd64/aarch64, currently unused.
+    pub user_accessible: bool,
 }
 
 /// Assumption: all are page-aligned

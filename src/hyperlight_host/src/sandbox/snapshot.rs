@@ -17,7 +17,6 @@ limitations under the License.
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::layout::scratch_base_gva;
-#[cfg(not(feature = "i686-guest"))]
 use hyperlight_common::vmem;
 #[cfg(feature = "i686-guest")]
 use hyperlight_common::vmem::TableOps;
@@ -117,26 +116,23 @@ impl hyperlight_common::vmem::TableReadOps for Snapshot {
     fn entry_addr(addr: u64, offset: u64) -> u64 {
         addr + offset
     }
-    unsafe fn read_entry(&self, addr: u64) -> u64 {
+    unsafe fn read_entry(&self, addr: u64) -> vmem::PageTableEntry {
         let addr = addr as usize;
-        let Some(pte_bytes) = self.memory.as_slice().get(addr..addr + 8) else {
-            // Attacker-controlled data pointed out-of-bounds. We'll
-            // default to returning 0 in this case, which, for most
-            // architectures (including x86-64 and arm64, the ones we
-            // care about presently) will be a not-present entry.
+        let pte_size = core::mem::size_of::<vmem::PageTableEntry>();
+        let Some(pte_bytes) = self.memory.as_slice().get(addr..addr + pte_size) else {
             return 0;
         };
-        // this is statically the correct size, so using unwrap() here
-        // doesn't make this any more panic-y.
-        #[allow(clippy::unwrap_used)]
-        let n: [u8; 8] = pte_bytes.try_into().unwrap();
-        u64::from_ne_bytes(n)
+        let mut buf = [0u8; 8];
+        buf[..pte_size].copy_from_slice(pte_bytes);
+        vmem::PageTableEntry::from_le_bytes(buf[..pte_size].try_into().unwrap_or_default())
     }
-    fn to_phys(addr: u64) -> u64 {
-        addr
+    #[allow(clippy::unnecessary_cast)]
+    fn to_phys(addr: u64) -> vmem::PhysAddr {
+        addr as vmem::PhysAddr
     }
-    fn from_phys(addr: u64) -> u64 {
-        addr
+    #[allow(clippy::unnecessary_cast)]
+    fn from_phys(addr: vmem::PhysAddr) -> u64 {
+        addr as u64
     }
     fn root_table(&self) -> u64 {
         self.root_pt_gpa()
@@ -227,7 +223,7 @@ impl<'a> hyperlight_common::vmem::TableReadOps for SharedMemoryPageTableBuffer<'
     fn entry_addr(addr: u64, offset: u64) -> u64 {
         addr + offset
     }
-    unsafe fn read_entry(&self, addr: u64) -> u64 {
+    unsafe fn read_entry(&self, addr: u64) -> vmem::PageTableEntry {
         // For i686: if the GPA was CoW'd, read from the scratch copy instead.
         #[cfg(feature = "i686-guest")]
         let addr = {
@@ -243,41 +239,21 @@ impl<'a> hyperlight_common::vmem::TableReadOps for SharedMemoryPageTableBuffer<'
             }
         };
         let memoff = access_gpa(self.snap, self.scratch, self.layout, addr);
-        // For i686 guests, page table entries are 4 bytes; for x86_64 they
-        // are 8 bytes. Read the correct size based on the feature flag.
-        #[cfg(feature = "i686-guest")]
-        {
-            let Some(pte_bytes) = memoff.and_then(|(mem, off)| mem.get(off..off + 4)) else {
-                // Out-of-bounds: return 0, which is a not-present entry.
-                return 0;
-            };
-            #[allow(clippy::unwrap_used)]
-            let n: [u8; 4] = pte_bytes.try_into().unwrap();
-            // Page-table entries are little-endian by arch spec;
-            // use `from_le_bytes` so host endianness doesn't leak in.
-            u32::from_le_bytes(n) as u64
-        }
-        #[cfg(not(feature = "i686-guest"))]
-        {
-            let Some(pte_bytes) = memoff.and_then(|(mem, off)| mem.get(off..off + 8)) else {
-                // Attacker-controlled data pointed out-of-bounds. We'll
-                // default to returning 0 in this case, which, for most
-                // architectures (including x86-64 and arm64, the ones we
-                // care about presently) will be a not-present entry.
-                return 0;
-            };
-            // this is statically the correct size, so using unwrap() here
-            // doesn't make this any more panic-y.
-            #[allow(clippy::unwrap_used)]
-            let n: [u8; 8] = pte_bytes.try_into().unwrap();
-            u64::from_ne_bytes(n)
-        }
+        let pte_size = core::mem::size_of::<vmem::PageTableEntry>();
+        let Some(pte_bytes) = memoff.and_then(|(mem, off)| mem.get(off..off + pte_size)) else {
+            return 0;
+        };
+        let mut buf = [0u8; 8];
+        buf[..pte_size].copy_from_slice(pte_bytes);
+        vmem::PageTableEntry::from_le_bytes(buf[..pte_size].try_into().unwrap_or_default())
     }
-    fn to_phys(addr: u64) -> u64 {
-        addr
+    #[allow(clippy::unnecessary_cast)]
+    fn to_phys(addr: u64) -> vmem::PhysAddr {
+        addr as vmem::PhysAddr
     }
-    fn from_phys(addr: u64) -> u64 {
-        addr
+    #[allow(clippy::unnecessary_cast)]
+    fn from_phys(addr: vmem::PhysAddr) -> u64 {
+        addr as u64
     }
     fn root_table(&self) -> u64 {
         self.root
@@ -306,13 +282,7 @@ fn build_cow_map(
     let mem_size = layout.get_memory_size()? as u64;
 
     let op = SharedMemoryPageTableBuffer::new(snap, scratch, layout, kernel_root);
-    let mappings = unsafe {
-        hyperlight_common::vmem::i686_guest::virt_to_phys(
-            &op,
-            0,
-            hyperlight_common::layout::MAX_GVA as u64,
-        )
-    };
+    let mappings = unsafe { vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64) };
     for m in mappings {
         if m.virt_base < mem_size && m.phys_base >= scratch_base && m.phys_base < scratch_end {
             cow_map.insert(m.virt_base, m.phys_base);
@@ -369,18 +339,7 @@ fn filtered_mappings<'a>(
         #[cfg(not(feature = "i686-guest"))]
         let op = SharedMemoryPageTableBuffer::new(snap, scratch, layout, root_pt);
 
-        #[cfg(not(feature = "i686-guest"))]
-        let iter = unsafe {
-            hyperlight_common::vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64)
-        };
-        #[cfg(feature = "i686-guest")]
-        let iter = unsafe {
-            hyperlight_common::vmem::i686_guest::virt_to_phys(
-                &op,
-                0,
-                hyperlight_common::layout::MAX_GVA as u64,
-            )
-        };
+        let iter = unsafe { vmem::virt_to_phys(&op, 0, hyperlight_common::layout::MAX_GVA as u64) };
 
         for m in iter {
             if m.virt_base >= scratch_gva {
@@ -502,19 +461,13 @@ impl Snapshot {
         blob.map(|x| layout.write_init_data(&mut memory, x.data))
             .transpose()?;
 
-        #[cfg(not(feature = "i686-guest"))]
-        use hyperlight_common::vmem;
-
         {
             use hyperlight_common::layout::scratch_base_gpa;
 
             use crate::mem::memory_region::{GuestMemoryRegion, MemoryRegionFlags};
             use crate::mem::mgr::GuestPageTableBuffer;
 
-            #[cfg(not(feature = "i686-guest"))]
-            let pt_buf = GuestPageTableBuffer::<8>::new(layout.get_pt_base_gpa() as usize);
-            #[cfg(feature = "i686-guest")]
-            let pt_buf = GuestPageTableBuffer::<4>::new(layout.get_pt_base_gpa() as usize);
+            let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
 
             // Map snapshot memory regions (writable -> CoW, read-only -> Basic)
             for rgn in layout.get_memory_regions_::<GuestMemoryRegion>(())?.iter() {
@@ -538,12 +491,10 @@ impl Snapshot {
                     virt_base: rgn.guest_region.start as u64,
                     len: rgn.guest_region.len() as u64,
                     kind,
+                    user_accessible: false,
                 };
                 unsafe {
-                    #[cfg(not(feature = "i686-guest"))]
                     vmem::map(&pt_buf, mapping);
-                    #[cfg(feature = "i686-guest")]
-                    hyperlight_common::vmem::i686_guest::map(&pt_buf, mapping);
                 }
             }
 
@@ -557,12 +508,10 @@ impl Snapshot {
                     writable: true,
                     executable: false,
                 }),
+                user_accessible: false,
             };
             unsafe {
-                #[cfg(not(feature = "i686-guest"))]
                 vmem::map(&pt_buf, scratch_mapping);
-                #[cfg(feature = "i686-guest")]
-                hyperlight_common::vmem::i686_guest::map(&pt_buf, scratch_mapping);
             }
 
             let pt_bytes = pt_buf.into_bytes();
@@ -643,16 +592,11 @@ impl Snapshot {
                 // and build new page tables with compacted GPAs.
                 // TODO: Look for opportunities to hugepage map
                 let mut snapshot_memory: Vec<u8> = Vec::new();
-                #[cfg(not(feature = "i686-guest"))]
-                let pt_buf = GuestPageTableBuffer::<8>::new(layout.get_pt_base_gpa() as usize);
+                let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
                 #[cfg(feature = "i686-guest")]
-                let pt_buf = {
-                    let buf = GuestPageTableBuffer::<4>::new(layout.get_pt_base_gpa() as usize);
-                    for _ in 1..root_pt_gpas.len() {
-                        unsafe { buf.alloc_table() };
-                    }
-                    buf
-                };
+                for _ in 1..root_pt_gpas.len() {
+                    unsafe { pt_buf.alloc_table() };
+                }
 
                 for (_root_idx, mapping, contents) in live_pages {
                     let kind = compaction_kind(&mapping.kind);
@@ -673,12 +617,10 @@ impl Snapshot {
                         virt_base: mapping.virt_base,
                         len: PAGE_SIZE as u64,
                         kind,
+                        user_accessible: mapping.user_accessible,
                     };
                     unsafe {
-                        #[cfg(not(feature = "i686-guest"))]
                         vmem::map(&pt_buf, new_mapping);
-                        #[cfg(feature = "i686-guest")]
-                        hyperlight_common::vmem::i686_guest::map(&pt_buf, new_mapping);
                     }
                 }
                 #[cfg(feature = "i686-guest")]
@@ -690,7 +632,6 @@ impl Snapshot {
                 let scratch_gva = scratch_base_gva(layout.get_scratch_size());
                 let scratch_len = layout.get_scratch_size() as u64;
                 unsafe {
-                    #[cfg(not(feature = "i686-guest"))]
                     vmem::map(
                         &pt_buf,
                         Mapping {
@@ -702,20 +643,7 @@ impl Snapshot {
                                 writable: true,
                                 executable: false,
                             }),
-                        },
-                    );
-                    #[cfg(feature = "i686-guest")]
-                    hyperlight_common::vmem::i686_guest::map(
-                        &pt_buf,
-                        Mapping {
-                            phys_base: scratch_gpa,
-                            virt_base: scratch_gva,
-                            len: scratch_len,
-                            kind: MappingKind::Basic(BasicMapping {
-                                readable: true,
-                                writable: true,
-                                executable: false,
-                            }),
+                            user_accessible: false,
                         },
                     );
                 }
@@ -752,8 +680,7 @@ impl Snapshot {
         let regions = Vec::new();
 
         let hash = hash(&memory, &regions)?;
-        let rom =
-            ReadonlySharedMemory::from_bytes_with_mapped_size(&memory, guest_visible_size)?;
+        let rom = ReadonlySharedMemory::from_bytes_with_mapped_size(&memory, guest_visible_size)?;
         Ok(Self {
             sandbox_id,
             layout,
@@ -840,7 +767,7 @@ mod tests {
     const SIMPLE_PT_BASE: usize = PAGE_SIZE + SandboxMemoryLayout::BASE_ADDRESS;
 
     fn make_simple_pt_mem(contents: &[u8]) -> SnapshotSharedMemory<ExclusiveSharedMemory> {
-        let pt_buf = GuestPageTableBuffer::<8>::new(SIMPLE_PT_BASE);
+        let pt_buf = GuestPageTableBuffer::new(SIMPLE_PT_BASE);
         let mapping = Mapping {
             phys_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
             virt_base: SandboxMemoryLayout::BASE_ADDRESS as u64,
@@ -850,6 +777,7 @@ mod tests {
                 writable: true,
                 executable: true,
             }),
+            user_accessible: false,
         };
         unsafe { vmem::map(&pt_buf, mapping) };
         // Map the scratch region
@@ -862,6 +790,7 @@ mod tests {
                 writable: true,
                 executable: false,
             }),
+            user_accessible: false,
         };
         unsafe { vmem::map(&pt_buf, scratch_mapping) };
         let pt_bytes = pt_buf.into_bytes();
@@ -942,7 +871,7 @@ mod tests {
 #[cfg(feature = "i686-guest")]
 mod i686_tests {
     use hyperlight_common::vmem::{
-        BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE, i686_guest,
+        self, BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE,
     };
 
     use crate::mem::mgr::GuestPageTableBuffer;
@@ -951,7 +880,7 @@ mod i686_tests {
 
     #[test]
     fn map_single_page() {
-        let pt = GuestPageTableBuffer::<4>::new(PT_BASE);
+        let pt = GuestPageTableBuffer::new(PT_BASE);
         let mapping = Mapping {
             phys_base: 0x2000,
             virt_base: 0x1000,
@@ -961,11 +890,12 @@ mod i686_tests {
                 writable: true,
                 executable: true,
             }),
+            user_accessible: false,
         };
-        unsafe { i686_guest::map(&pt, mapping) };
+        unsafe { vmem::map(&pt, mapping) };
 
         let results: Vec<_> =
-            unsafe { i686_guest::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
+            unsafe { vmem::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].phys_base, 0x2000);
         assert_eq!(results[0].virt_base, 0x1000);
@@ -977,7 +907,7 @@ mod i686_tests {
 
     #[test]
     fn map_cow_page() {
-        let pt = GuestPageTableBuffer::<4>::new(PT_BASE);
+        let pt = GuestPageTableBuffer::new(PT_BASE);
         let mapping = Mapping {
             phys_base: 0x3000,
             virt_base: 0x2000,
@@ -986,11 +916,12 @@ mod i686_tests {
                 readable: true,
                 executable: true,
             }),
+            user_accessible: false,
         };
-        unsafe { i686_guest::map(&pt, mapping) };
+        unsafe { vmem::map(&pt, mapping) };
 
         let results: Vec<_> =
-            unsafe { i686_guest::virt_to_phys(&pt, 0x2000, PAGE_SIZE as u64) }.collect();
+            unsafe { vmem::virt_to_phys(&pt, 0x2000, PAGE_SIZE as u64) }.collect();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].phys_base, 0x3000);
         assert!(matches!(results[0].kind, MappingKind::Cow(_)));
@@ -998,7 +929,7 @@ mod i686_tests {
 
     #[test]
     fn map_multiple_pages_across_pd_boundary() {
-        let pt = GuestPageTableBuffer::<4>::new(PT_BASE);
+        let pt = GuestPageTableBuffer::new(PT_BASE);
         // Map pages spanning a 4MB PD boundary (PD[0] -> PD[1])
         let va_start = 0x003F_F000u64; // last page of PD[0]
         let pa_start = 0x5000u64;
@@ -1011,11 +942,12 @@ mod i686_tests {
                 writable: false,
                 executable: true,
             }),
+            user_accessible: false,
         };
-        unsafe { i686_guest::map(&pt, mapping) };
+        unsafe { vmem::map(&pt, mapping) };
 
         let results: Vec<_> =
-            unsafe { i686_guest::virt_to_phys(&pt, va_start, 2 * PAGE_SIZE as u64) }.collect();
+            unsafe { vmem::virt_to_phys(&pt, va_start, 2 * PAGE_SIZE as u64) }.collect();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].phys_base, pa_start);
         assert_eq!(results[0].virt_base, va_start);
@@ -1025,18 +957,18 @@ mod i686_tests {
 
     #[test]
     fn virt_to_phys_unmapped_returns_empty() {
-        let pt = GuestPageTableBuffer::<4>::new(PT_BASE);
+        let pt = GuestPageTableBuffer::new(PT_BASE);
         let results: Vec<_> =
-            unsafe { i686_guest::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
+            unsafe { vmem::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
         assert!(results.is_empty());
     }
 
     #[test]
     fn map_reuses_existing_page_table() {
-        let pt = GuestPageTableBuffer::<4>::new(PT_BASE);
+        let pt = GuestPageTableBuffer::new(PT_BASE);
         // Map two pages in the same 4MB region (same PD entry)
         unsafe {
-            i686_guest::map(
+            vmem::map(
                 &pt,
                 Mapping {
                     phys_base: 0x1000,
@@ -1047,9 +979,10 @@ mod i686_tests {
                         writable: true,
                         executable: true,
                     }),
+                    user_accessible: false,
                 },
             );
-            i686_guest::map(
+            vmem::map(
                 &pt,
                 Mapping {
                     phys_base: 0x5000,
@@ -1060,14 +993,13 @@ mod i686_tests {
                         writable: true,
                         executable: true,
                     }),
+                    user_accessible: false,
                 },
             );
         }
         // Both should be visible
-        let r1: Vec<_> =
-            unsafe { i686_guest::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
-        let r2: Vec<_> =
-            unsafe { i686_guest::virt_to_phys(&pt, 0x5000, PAGE_SIZE as u64) }.collect();
+        let r1: Vec<_> = unsafe { vmem::virt_to_phys(&pt, 0x1000, PAGE_SIZE as u64) }.collect();
+        let r2: Vec<_> = unsafe { vmem::virt_to_phys(&pt, 0x5000, PAGE_SIZE as u64) }.collect();
         assert_eq!(r1.len(), 1);
         assert_eq!(r2.len(), 1);
         assert_eq!(r1[0].phys_base, 0x1000);
