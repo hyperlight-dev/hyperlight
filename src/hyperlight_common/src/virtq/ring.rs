@@ -1028,7 +1028,7 @@ impl<M: MemOps> RingConsumer<M> {
         // Update inflight count
         self.num_inflight += chain_len as usize;
 
-        assert!(self.num_inflight <= self.desc_table.len());
+        debug_assert!(self.num_inflight <= self.desc_table.len());
 
         Ok((
             id,
@@ -1084,7 +1084,7 @@ impl<M: MemOps> RingConsumer<M> {
         self.id_num[id as usize] = 0;
 
         self.num_inflight -= chain_len as usize;
-        assert!(self.num_inflight <= self.desc_table.len());
+        debug_assert!(self.num_inflight <= self.desc_table.len());
 
         Ok(())
     }

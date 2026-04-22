@@ -204,8 +204,8 @@ impl DescTable {
     /// - `len` must not exceed `u16::MAX`
     /// - memory must remain valid for the lifetime of this table
     pub unsafe fn from_raw_parts(base_addr: u64, len: usize) -> Self {
-        assert!(base_addr.is_multiple_of(Descriptor::ALIGN as u64));
-        assert!(len <= u16::MAX as usize);
+        debug_assert!(base_addr.is_multiple_of(Descriptor::ALIGN as u64));
+        debug_assert!(len <= u16::MAX as usize);
 
         Self { base_addr, len }
     }
