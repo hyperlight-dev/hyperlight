@@ -1040,7 +1040,7 @@ impl<M: MemOps> RingConsumer<M> {
     }
 
     /// Publish a single used descriptor for the chain identified by id.
-    /// written_len is the total bytes produced by the device (for writeable part).
+    /// written_len is the total bytes produced by the device (for writable part).
     ///
     /// # Arguments
     ///
@@ -1281,7 +1281,7 @@ impl From<&Descriptor> for BufferElement {
         BufferElement {
             addr: desc.addr,
             len: desc.len,
-            writable: desc.is_writeable(),
+            writable: desc.is_writable(),
         }
     }
 }
@@ -3236,7 +3236,7 @@ pub(crate) mod tests {
         let desc = Descriptor::read_acquire(reader.mem(), addr).unwrap();
         assert_eq!(desc.addr, 0x1000);
         assert_eq!(desc.len, 4096);
-        assert!(desc.is_writeable());
+        assert!(desc.is_writable());
         assert!(desc.is_avail(true));
         assert!(!desc.is_used(true));
     }

@@ -108,9 +108,9 @@ impl Descriptor {
         avail == wrap && used == wrap
     }
 
-    /// Is this descriptor writeable by the device?
+    /// Is this descriptor writable by the device?
     #[inline]
-    pub fn is_writeable(&self) -> bool {
+    pub fn is_writable(&self) -> bool {
         self.flags().contains(DescFlags::WRITE)
     }
 
@@ -295,13 +295,13 @@ mod tests {
     }
 
     #[test]
-    fn writeable_and_next_helpers() {
+    fn writable_and_next_helpers() {
         let mut d = Descriptor::zeroed();
         d.flags = (DescFlags::WRITE | DescFlags::NEXT).bits();
-        assert!(d.is_writeable());
+        assert!(d.is_writable());
         assert!(d.is_next());
         d.flags = 0;
-        assert!(!d.is_writeable());
+        assert!(!d.is_writable());
         assert!(!d.is_next());
     }
 
