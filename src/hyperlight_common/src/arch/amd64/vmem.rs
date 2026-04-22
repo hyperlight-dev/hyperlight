@@ -28,7 +28,7 @@ limitations under the License.
 use crate::vmem::{
     BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovabilityBase,
     TableOps, TableReadOps, UpdateParent, UpdateParentNone, UpdateParentRoot, UpdateParentTable,
-    modify_ptes, read_pte_if_present, require_pte_exist, write_entry_updating,
+    Void, modify_ptes, read_pte_if_present, require_pte_exist, write_entry_updating,
 };
 
 // Paging Flags
@@ -111,7 +111,7 @@ impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> TableMovability<
         UpdateParentRoot {}
     }
 }
-impl<Op: TableReadOps> TableMovability<Op, crate::vmem::Void> for crate::vmem::MayNotMoveTable {
+impl<Op: TableReadOps> TableMovability<Op, Void> for crate::vmem::MayNotMoveTable {
     type RootUpdateParent = UpdateParentNone;
     fn root_update_parent() -> Self::RootUpdateParent {
         UpdateParentNone {}
@@ -120,8 +120,8 @@ impl<Op: TableReadOps> TableMovability<Op, crate::vmem::Void> for crate::vmem::M
 
 impl<
     Op: TableOps<TableMovability = crate::vmem::MayMoveTable>,
-    P: crate::vmem::UpdateParent<Op, TableMoveInfo = Op::TableAddr>,
-> crate::vmem::UpdateParent<Op> for UpdateParentTable<Op, P>
+    P: UpdateParent<Op, TableMoveInfo = Op::TableAddr>,
+> UpdateParent<Op> for UpdateParentTable<Op, P>
 {
     type TableMoveInfo = Op::TableAddr;
     type ChildType = UpdateParentTable<Op, Self>;
@@ -136,7 +136,7 @@ impl<
     }
 }
 
-impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> crate::vmem::UpdateParent<Op>
+impl<Op: TableOps<TableMovability = crate::vmem::MayMoveTable>> UpdateParent<Op>
     for UpdateParentRoot
 {
     type TableMoveInfo = Op::TableAddr;

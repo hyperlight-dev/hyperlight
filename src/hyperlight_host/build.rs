@@ -105,8 +105,10 @@ fn main() -> Result<()> {
         crashdump: { all(feature = "crashdump", target_arch = "x86_64") },
         // print_debug feature is aliased with debug_assertions to make it only available in debug-builds.
         print_debug: { all(feature = "print_debug", debug_assertions) },
-        // gdb needs writable snapshot memory for debug access.
-        unshared_snapshot_mem: { any(feature = "gdb", feature = "nanvix-unstable") },
+        // the nanvix-unstable and gdb features both (only
+        // temporarily!) need to use writable/un-shared snapshot
+        // memories, and so can't share
+        unshared_snapshot_mem: { any(feature = "nanvix-unstable", feature = "gdb") },
     }
 
     #[cfg(feature = "build-metadata")]

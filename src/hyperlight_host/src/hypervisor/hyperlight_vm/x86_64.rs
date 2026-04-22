@@ -251,7 +251,6 @@ impl HyperlightVm {
     }
 
     /// Get the current base page table physical address from CR3.
-    #[allow(dead_code)]
     pub(crate) fn get_root_pt(&self) -> Result<u64, AccessPageTableError> {
         let sregs = self.vm.sregs()?;
         // Mask off the flags bits

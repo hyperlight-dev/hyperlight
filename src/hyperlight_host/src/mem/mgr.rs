@@ -157,9 +157,9 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
 pub(crate) struct GuestPageTableBuffer {
     buffer: std::cell::RefCell<Vec<u8>>,
     phys_base: usize,
-    /// Byte offset from phys_base to the active PD root.
-    /// Used on i686 to target different per-process PDs.
-    #[cfg(feature = "i686-guest")]
+    /// Byte offset from phys_base to the active root page table.
+    /// For multi-root guests, each root's PD starts at a different
+    /// offset in the buffer.
     root_offset: std::cell::Cell<usize>,
 }
 
@@ -194,14 +194,7 @@ impl vmem::TableReadOps for GuestPageTableBuffer {
     }
 
     fn root_table(&self) -> u64 {
-        #[cfg(feature = "i686-guest")]
-        {
-            (self.phys_base + self.root_offset.get()) as u64
-        }
-        #[cfg(not(feature = "i686-guest"))]
-        {
-            self.phys_base as u64
-        }
+        (self.phys_base + self.root_offset.get()) as u64
     }
 }
 
@@ -241,76 +234,16 @@ impl GuestPageTableBuffer {
         GuestPageTableBuffer {
             buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
             phys_base,
-            #[cfg(feature = "i686-guest")]
             root_offset: std::cell::Cell::new(0),
         }
     }
 
-    /// Set the root offset to target a specific PD root.
-    /// Root i's PD starts at byte offset `i * PAGE_TABLE_SIZE` in the buffer.
-    #[cfg(feature = "i686-guest")]
+    /// Set the root offset to target a specific root page table.
+    /// Root i starts at byte offset `i * PAGE_TABLE_SIZE` in the buffer.
     pub(crate) fn set_root_offset(&self, offset: usize) {
         self.root_offset.set(offset);
     }
 
-    /// Copy a range of bytes within the buffer.
-    #[cfg(feature = "i686-guest")]
-    pub(crate) fn copy_within(&self, src: std::ops::Range<usize>, dst: usize) {
-        let mut buf = self.buffer.borrow_mut();
-        buf.copy_within(src, dst);
-    }
-
-    /// Finalize multi-root i686 page directories after all per-root
-    /// mappings have been written into root 0 (kernel) and per-root
-    /// PDs (user).
-    ///
-    /// This performs three steps:
-    /// 1. Copy kernel PDEs (0..`user_pde_start`) from root 0 to all
-    ///    other roots so every PD shares the same kernel page tables.
-    /// 2. Map the scratch region into every additional root.
-    /// 3. Set `PAGE_USER` on user-space PDEs (`user_pde_start`..scratch)
-    ///    in all roots so user-mode code can access its pages.
-    ///
-    /// # Safety
-    /// Caller must ensure the scratch parameters describe a valid region.
-    #[cfg(feature = "i686-guest")]
-    pub(crate) unsafe fn finalize_multi_root(
-        &self,
-        n_roots: usize,
-        user_pde_start: usize,
-        scratch_gpa: u64,
-        scratch_gva: u64,
-        scratch_len: u64,
-    ) {
-        use hyperlight_common::vmem::{BasicMapping, MappingKind};
-
-        // Step 1: copy kernel PDEs from root 0 to all other roots.
-        let kernel_pde_bytes = user_pde_start * 4;
-        for i in 1..n_roots {
-            self.copy_within(0..kernel_pde_bytes, i * PAGE_TABLE_SIZE);
-        }
-
-        // Step 2: map scratch into all other roots.
-        for i in 1..n_roots {
-            self.set_root_offset(i * PAGE_TABLE_SIZE);
-            unsafe {
-                vmem::map(
-                    self,
-                    vmem::Mapping {
-                        phys_base: scratch_gpa,
-                        virt_base: scratch_gva,
-                        len: scratch_len,
-                        kind: MappingKind::Basic(BasicMapping {
-                            readable: true,
-                            writable: true,
-                            executable: false,
-                        }),
-                        user_accessible: false,
-                    },
-                );
-            }
-        }
-    }
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn size(&self) -> usize {

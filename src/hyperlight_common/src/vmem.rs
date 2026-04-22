@@ -385,9 +385,7 @@ mod sealed {
 }
 use sealed::*;
 
-/// A sealed trait used to collect some information about the marker
-/// structures [`MayMoveTable`] and [`MayNotMoveTable`].
-/// Implemented in each arch module.
+/// A sealed trait used to collect some information about the marker structures [`MayMoveTable`] and [`MayNotMoveTable`]
 pub trait TableMovability<Op: TableReadOps + ?Sized>:
     TableMovabilityBase<Op>
     + arch::TableMovability<Op, <Self as TableMovabilityBase<Op>>::TableMoveInfo>

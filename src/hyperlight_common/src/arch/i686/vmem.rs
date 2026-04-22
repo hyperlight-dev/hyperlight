@@ -70,8 +70,6 @@ fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
     phys | PAGE_USER | PAGE_RW | PAGE_ACCESSED | PAGE_PRESENT
 }
 
-// ---- Page table manipulation ----
-
 /// # Safety
 /// Must not be called concurrently with other page table modifications.
 unsafe fn alloc_pte_if_needed<
