@@ -32,9 +32,8 @@ use windows_result::HRESULT;
 use crate::hypervisor::gdb::{DebugError, DebuggableVm};
 use crate::hypervisor::regs::{
     Align16, CommonDebugRegs, CommonFpu, CommonRegisters, CommonSpecialRegisters,
-    FP_CONTROL_WORD_DEFAULT, MXCSR_DEFAULT, WHP_DEBUG_REGS_NAMES, WHP_DEBUG_REGS_NAMES_LEN,
-    WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES,
-    WHP_SREGS_NAMES_LEN,
+    WHP_DEBUG_REGS_NAMES, WHP_DEBUG_REGS_NAMES_LEN, WHP_FPU_NAMES, WHP_FPU_NAMES_LEN,
+    WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES, WHP_SREGS_NAMES_LEN,
 };
 use crate::hypervisor::surrogate_process::SurrogateProcess;
 use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
@@ -42,7 +41,7 @@ use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
 use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
 use crate::hypervisor::virtual_machine::{
     CreateVmError, HypervisorError, MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError,
-    VirtualMachine, VmExit, XSAVE_MIN_SIZE,
+    VirtualMachine, VmExit,
 };
 use crate::hypervisor::wrappers::HandleWrapper;
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -87,6 +86,145 @@ fn release_file_mapping(view_base: *mut c_void, mapping_handle: HandleWrapper) {
     }
 }
 
+/// Workaround for a Hyper-V bug on AMD SVM where the `ObScrubPartition`
+/// path (invoked by `WHvResetPartition`) does not flush the Nested Page
+/// Table (NPT) TLB. After reset, stale GPA-to-HPA translations from
+/// the previous guest execution persist, causing the guest to read
+/// wrong physical memory. Intel is unaffected.
+///
+/// This bug most commonly surfaces as the `interrupt_same_thread_no_barrier`
+/// integration test failing on AMD Windows hosts. @ludfjig has verified
+/// the fix works on Windows Insider builds; this workaround can be
+/// removed once that fix ships in a released version of Windows.
+///
+/// The workaround unmaps and remaps a dummy page after each
+/// `WHvResetPartition`, which forces the hypervisor to invalidate
+/// NPT entries.
+mod npt_flush {
+    use std::os::raw::c_void;
+
+    use hyperlight_common::mem::PAGE_SIZE_USIZE;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows::Win32::System::Hypervisor::*;
+    use windows::Win32::System::Memory::{CreateFileMappingA, PAGE_READWRITE};
+    use windows::core::PCSTR;
+
+    use super::WHvMapGpaRange2Func;
+    use crate::hypervisor::surrogate_process::SurrogateProcess;
+    use crate::hypervisor::virtual_machine::{CreateVmError, RegisterError};
+    use crate::mem::layout::SandboxMemoryLayout;
+    use crate::mem::memory_region::SurrogateMapping;
+
+    /// GPA for the dummy page. Placed just past the maximum snapshot
+    /// region so it can never collide with guest memory.
+    const GPA: u64 =
+        (SandboxMemoryLayout::BASE_ADDRESS + SandboxMemoryLayout::MAX_MEMORY_SIZE) as u64;
+
+    #[derive(Debug)]
+    pub(super) struct NptInvalidator {
+        handle: HANDLE,
+        surrogate_addr: *mut c_void,
+        map_gpa_range2: WHvMapGpaRange2Func,
+    }
+
+    impl NptInvalidator {
+        const FLAGS: WHV_MAP_GPA_RANGE_FLAGS = WHvMapGpaRangeFlagRead;
+
+        /// Allocate a dummy page, map it into the surrogate process, and
+        /// create the initial GPA mapping.
+        pub(super) fn new(
+            partition: WHV_PARTITION_HANDLE,
+            surrogate_process: &mut SurrogateProcess,
+        ) -> Result<Self, CreateVmError> {
+            let handle = unsafe {
+                CreateFileMappingA(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    0,
+                    PAGE_SIZE_USIZE as u32,
+                    PCSTR::null(),
+                )
+                .map_err(|e| CreateVmError::InitializeVm(e.into()))?
+            };
+
+            let surrogate_addr = surrogate_process
+                .map(
+                    handle.into(),
+                    0, // sentinel key; MapViewOfFile never returns 0
+                    PAGE_SIZE_USIZE,
+                    &SurrogateMapping::SandboxMemory,
+                )
+                .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+
+            let map_gpa_range2 = unsafe {
+                super::try_load_whv_map_gpa_range2()
+                    .map_err(|e| CreateVmError::InitializeVm(e.into()))?
+            };
+
+            let res = unsafe {
+                map_gpa_range2(
+                    partition,
+                    surrogate_process.process_handle.into(),
+                    surrogate_addr,
+                    GPA,
+                    PAGE_SIZE_USIZE as u64,
+                    Self::FLAGS,
+                )
+            };
+            if res.is_err() {
+                return Err(CreateVmError::InitializeVm(
+                    windows_result::Error::from_hresult(res).into(),
+                ));
+            }
+
+            Ok(Self {
+                handle,
+                surrogate_addr,
+                map_gpa_range2,
+            })
+        }
+
+        /// Force an NPT TLB flush by unmapping and remapping the dummy page.
+        pub(super) fn flush(
+            &mut self,
+            partition: WHV_PARTITION_HANDLE,
+            surrogate_process: &SurrogateProcess,
+        ) -> std::result::Result<(), RegisterError> {
+            unsafe {
+                WHvUnmapGpaRange(partition, GPA, PAGE_SIZE_USIZE as u64)
+                    .map_err(|e| RegisterError::ResetPartition(e.into()))?;
+            }
+            let res = unsafe {
+                (self.map_gpa_range2)(
+                    partition,
+                    surrogate_process.process_handle.into(),
+                    self.surrogate_addr,
+                    GPA,
+                    PAGE_SIZE_USIZE as u64,
+                    Self::FLAGS,
+                )
+            };
+            if res.is_err() {
+                return Err(RegisterError::ResetPartition(
+                    windows_result::Error::from_hresult(res).into(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for NptInvalidator {
+        fn drop(&mut self) {
+            // The surrogate mapping is freed when SurrogateProcess drops;
+            // we only need to close the file-mapping handle.
+            if let Err(e) = unsafe { CloseHandle(self.handle) } {
+                tracing::error!("Failed to close NptInvalidator handle: {:?}", e);
+            }
+        }
+    }
+}
+
 /// A Windows Hypervisor Platform implementation of a single-vcpu VM
 #[derive(Debug)]
 pub(crate) struct WhpVm {
@@ -99,6 +237,10 @@ pub(crate) struct WhpVm {
     /// Handle to the background timer (if started).
     #[cfg(feature = "hw-interrupts")]
     timer: Option<TimerThread>,
+    /// Dummy page that is unmapped and remapped to force NPT TLB
+    /// flushes after `WHvResetPartition` on AMD SVM hosts.
+    /// See the [`npt_flush`] module for details.
+    npt_flush: npt_flush::NptInvalidator,
 }
 
 // Safety: `WhpVm` is !Send because it holds `SurrogateProcess` which contains a raw pointer
@@ -106,8 +248,8 @@ pub(crate) struct WhpVm {
 // in the surrogate process. It is never dereferenced, only used for address arithmetic and
 // resource management (unmapping). This is a system resource that is not bound to the creating
 // thread and can be safely transferred between threads.
-// `file_mappings` contains raw pointers that are also kernel resource handles,
-// safe to use from any thread.
+// `file_mappings` and `NptInvalidator` contain raw pointers that are also kernel
+// resource handles, safe to use from any thread.
 unsafe impl Send for WhpVm {}
 
 impl WhpVm {
@@ -145,9 +287,11 @@ impl WhpVm {
 
         let mgr = get_surrogate_process_manager()
             .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
-        let surrogate_process = mgr
+        let mut surrogate_process = mgr
             .get_surrogate_process()
             .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+
+        let npt_flush = npt_flush::NptInvalidator::new(partition, &mut surrogate_process)?;
 
         Ok(WhpVm {
             partition,
@@ -155,6 +299,7 @@ impl WhpVm {
             file_mappings: Vec::new(),
             #[cfg(feature = "hw-interrupts")]
             timer: None,
+            npt_flush,
         })
     }
 
@@ -615,6 +760,7 @@ impl VirtualMachine for WhpVm {
         })
     }
 
+    #[allow(dead_code)]
     fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError> {
         let whp_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_DEBUG_REGS_NAMES_LEN] =
             drs.into();
@@ -674,85 +820,6 @@ impl VirtualMachine for WhpVm {
         Ok(xsave_buffer)
     }
 
-    fn reset_xsave(&self) -> std::result::Result<(), RegisterError> {
-        // WHP uses compacted XSAVE format (bit 63 of XCOMP_BV set).
-        // We cannot just zero out the xsave area, we need to preserve the XCOMP_BV.
-
-        // Get the required buffer size by calling with NULL buffer.
-        let mut buffer_size_needed: u32 = 0;
-
-        let result = unsafe {
-            WHvGetVirtualProcessorXsaveState(
-                self.partition,
-                0,
-                std::ptr::null_mut(),
-                0,
-                &mut buffer_size_needed,
-            )
-        };
-
-        // Expect insufficient buffer error; any other error is unexpected
-        if let Err(e) = result
-            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
-        {
-            return Err(RegisterError::GetXsaveSize(e.into()));
-        }
-
-        if buffer_size_needed < XSAVE_MIN_SIZE as u32 {
-            return Err(RegisterError::XsaveSizeMismatch {
-                expected: XSAVE_MIN_SIZE as u32,
-                actual: buffer_size_needed,
-            });
-        }
-
-        // Create a buffer to hold the current state (to get the correct XCOMP_BV)
-        let mut current_state = vec![0u8; buffer_size_needed as usize];
-        let mut written_bytes = 0;
-        unsafe {
-            WHvGetVirtualProcessorXsaveState(
-                self.partition,
-                0,
-                current_state.as_mut_ptr() as *mut std::ffi::c_void,
-                buffer_size_needed,
-                &mut written_bytes,
-            )
-            .map_err(|e| RegisterError::GetXsave(e.into()))?;
-        };
-
-        // Zero out most of the buffer, preserving only XCOMP_BV (520-528).
-        // Extended components with XSTATE_BV bit=0 will use their init values.
-        //
-        // - Legacy region (0-512): x87 FPU + SSE state
-        // - XSTATE_BV (512-520): Feature bitmap
-        // - XCOMP_BV (520-528): Compaction bitmap + format bit (KEEP)
-        // - Reserved (528-576): Header padding
-        // - Extended (576+): AVX, AVX-512, MPX, PKRU, AMX, etc.
-        current_state[0..520].fill(0);
-        current_state[528..].fill(0);
-
-        // XSAVE area layout from Intel SDM Vol. 1 Section 13.4.1:
-        // - Bytes 0-1: FCW (x87 FPU Control Word)
-        // - Bytes 24-27: MXCSR
-        // - Bytes 512-519: XSTATE_BV (bitmap of valid state components)
-        current_state[0..2].copy_from_slice(&FP_CONTROL_WORD_DEFAULT.to_le_bytes());
-        current_state[24..28].copy_from_slice(&MXCSR_DEFAULT.to_le_bytes());
-        // XSTATE_BV = 0x3: bits 0,1 = x87 + SSE valid. Explicitly tell hypervisor
-        // to apply the legacy region from this buffer for consistent behavior.
-        current_state[512..520].copy_from_slice(&0x3u64.to_le_bytes());
-
-        unsafe {
-            WHvSetVirtualProcessorXsaveState(
-                self.partition,
-                0,
-                current_state.as_ptr() as *const std::ffi::c_void,
-                buffer_size_needed,
-            )
-            .map_err(|e| RegisterError::SetXsave(e.into()))?;
-        }
-
-        Ok(())
-    }
-
     #[cfg(test)]
     #[cfg(not(feature = "nanvix-unstable"))]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError> {
@@ -796,6 +863,40 @@ impl VirtualMachine for WhpVm {
             .map_err(|e| RegisterError::SetXsave(e.into()))?;
         }
 
+        Ok(())
+    }
+
+    fn reset_partition(&mut self) -> std::result::Result<(), RegisterError> {
+        unsafe {
+            WHvResetPartition(self.partition)
+                .map_err(|e| RegisterError::ResetPartition(e.into()))?;
+
+            // Flush NPT TLB (AMD SVM workaround, see npt_flush module).
+            self.npt_flush
+                .flush(self.partition, &self.surrogate_process)?;
+
+            // WHvResetPartition resets LAPIC to power-on defaults.
+            // Re-initialize it when LAPIC emulation is active.
+            //
+            // set_sregs filters out APIC_BASE (the snapshot sregs
+            // default it to 0, which would disable the LAPIC). This
+            // means APIC_BASE is never written after the VMCB rebuild,
+            // so the AVIC clean bit stays set and the CPU may use stale
+            // cached AVIC state. Re-writing the post-reset value forces
+            // the hypervisor to dirty SVM_CLEAN_FIELD_AVIC.
+            #[cfg(feature = "hw-interrupts")]
+            {
+                Self::init_lapic_bulk(self.partition)
+                    .map_err(|e| RegisterError::ResetPartition(e.into()))?;
+
+                let apic_base = self.sregs()?.apic_base;
+                self.set_registers(&[(
+                    WHvX64RegisterApicBase,
+                    Align16(WHV_REGISTER_VALUE { Reg64: apic_base }),
+                )])
+                .map_err(|e| RegisterError::ResetPartition(e.into()))?;
+            }
+        }
         Ok(())
     }
 
