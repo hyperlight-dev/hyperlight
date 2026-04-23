@@ -805,7 +805,10 @@ impl VirtualMachine for WhpVm {
     }
 
     #[cfg(feature = "enable_guest_clock")]
-    fn setup_pvclock(&mut self, clock_page_gpa: u64) -> crate::Result<()> {
+    fn setup_pvclock(
+        &mut self,
+        clock_page_gpa: u64,
+    ) -> crate::Result<hyperlight_common::time::ClockType> {
         // Hyper-V Reference TSC page via WHP: write `WHvRegisterReferenceTsc`
         // with `gpa | 1`. Bit 0 is the "enable" flag.
         //
@@ -823,7 +826,7 @@ impl VirtualMachine for WhpVm {
             clock_page_gpa,
             "WHP Reference TSC armed"
         );
-        Ok(())
+        Ok(hyperlight_common::time::ClockType::HyperVReferenceTsc)
     }
 
     #[cfg(feature = "enable_guest_clock")]

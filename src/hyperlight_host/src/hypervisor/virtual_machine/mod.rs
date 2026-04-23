@@ -359,11 +359,10 @@ pub(crate) trait VirtualMachine: Debug + Send {
     /// Must be called before the first `run_vcpu`, and again on snapshot
     /// restore since the register lives in vCPU state.
     #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
-    #[allow(dead_code)] // wired up in a follow-on commit
     fn setup_pvclock(
         &mut self,
         clock_page_gpa: u64,
-    ) -> std::result::Result<(), crate::HyperlightError>;
+    ) -> std::result::Result<hyperlight_common::time::ClockType, crate::HyperlightError>;
 
     /// Read the host's monotonic clock for the time base that backs the
     /// guest's paravirtualized clock page, in nanoseconds.

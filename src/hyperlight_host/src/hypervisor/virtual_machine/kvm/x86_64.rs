@@ -470,7 +470,10 @@ impl VirtualMachine for KvmVm {
     }
 
     #[cfg(feature = "enable_guest_clock")]
-    fn setup_pvclock(&mut self, clock_page_gpa: u64) -> crate::Result<()> {
+    fn setup_pvclock(
+        &mut self,
+        clock_page_gpa: u64,
+    ) -> crate::Result<hyperlight_common::time::ClockType> {
         // KVM pvclock: write `MSR_KVM_SYSTEM_TIME_NEW` with `gpa | 1`.
         // Bit 0 is the "enable" flag; clearing it disables pvclock for this
         // vCPU.
@@ -498,7 +501,7 @@ impl VirtualMachine for KvmVm {
             clock_page_gpa,
             "KVM pvclock armed"
         );
-        Ok(())
+        Ok(hyperlight_common::time::ClockType::KvmPvclock)
     }
 
     #[cfg(feature = "enable_guest_clock")]
