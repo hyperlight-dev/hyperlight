@@ -148,6 +148,9 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     pub(crate) mapped_rgns: u64,
     /// Buffer for accumulating guest abort messages
     pub(crate) abort_buffer: Vec<u8>,
+    /// Snapshot restore generation counter. 0 means no restore
+    /// and is incremented on each `restore_snapshot` call.
+    pub(crate) restore_count: u64,
 }
 
 /// Buffer for building guest page tables during snapshot creation.
@@ -274,6 +277,7 @@ where
             entrypoint,
             mapped_rgns: 0,
             abort_buffer: Vec::new(),
+            restore_count: 0,
         }
     }
 
@@ -341,6 +345,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             entrypoint: self.entrypoint,
             mapped_rgns: self.mapped_rgns,
             abort_buffer: self.abort_buffer,
+            restore_count: self.restore_count,
         };
         let guest_mgr = SandboxMemoryManager {
             shared_mem: gshm,
@@ -349,6 +354,7 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             entrypoint: self.entrypoint,
             mapped_rgns: self.mapped_rgns,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
+            restore_count: self.restore_count,
         };
         host_mgr.update_scratch_bookkeeping()?;
         host_mgr.copy_pt_to_scratch()?;
@@ -541,6 +547,8 @@ impl SandboxMemoryManager<HostSharedMemory> {
             Some(gscratch)
         };
         self.layout = *snapshot.layout();
+        self.restore_count += 1;
+
         self.update_scratch_bookkeeping()?;
         self.copy_pt_to_scratch()?;
         Ok((gsnapshot, gscratch))
@@ -564,6 +572,10 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.update_scratch_bookkeeping_item(
             SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET,
             self.layout.get_pt_base_gpa(),
+        )?;
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET,
+            self.restore_count,
         )?;
 
         // Initialise the guest input and output data buffers in

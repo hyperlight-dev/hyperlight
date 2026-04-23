@@ -37,7 +37,8 @@ pub use arch::{SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN};
 pub const SCRATCH_TOP_SIZE_OFFSET: u64 = 0x08;
 pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 = 0x10;
 pub const SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET: u64 = 0x18;
-pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x20;
+pub const SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET: u64 = 0x20;
+pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x30;
 
 /// Offset from the top of scratch memory for a shared host-guest u64 counter.
 ///
