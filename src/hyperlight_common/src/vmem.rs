@@ -491,9 +491,10 @@ pub struct Mapping {
     pub virt_base: u64,
     pub len: u64,
     pub kind: MappingKind,
-    /// Whether ring-3 (user mode) code can access these pages.
-    /// On i686, controls the PAGE_USER bit on PDEs and leaf PTEs.
-    /// On amd64/aarch64, currently unused.
+    /// On architectures that support multiple privilege levels inside
+    /// the guest, whether the mapping is accessible to the
+    /// lower-privileged level (with the same permissions/behaviour as
+    /// the upper-privileged level, for now).
     pub user_accessible: bool,
 }
 
@@ -581,11 +582,8 @@ pub enum SpaceAwareMapping {
 /// that points at whatever intermediate table the owning space ended
 /// up with at `ref_map.their_va` (in `built_roots[ref_map.space]`).
 ///
-/// Callers must process [`SpaceAwareMapping`]s in the order returned
-/// by `walk_va_spaces`, populating `built_roots` with each space's
-/// rebuilt root PA before moving on to the next space — that way, by
-/// the time we see an `AnotherSpace` entry, the owning space's
-/// rebuilt root is guaranteed to be in `built_roots`.
+/// Callers must ensure that `built_roots` contains populated page
+/// tables for any other space referenced by the mapping.
 ///
 /// # Safety
 /// Same invariants as [`map`]: the caller owns the concurrency story
@@ -599,15 +597,14 @@ pub use arch::space_aware_map;
 /// The caller passes `roots` in their preferred order of primacy. The
 /// first root to visit a particular intermediate PA becomes the
 /// "owner" of that sub-table — subsequent roots that alias it receive
-/// `AnotherSpace` entries pointing back at the owner. Concretely for
-/// Nanvix: pass the kernel PD first so user PDs inherit kernel PTs by
-/// reference.
+/// `AnotherSpace` entries referencing the owner.
 ///
 /// The returned `Vec` is ordered the same way `roots` was passed — so
 /// by construction the result is topologically sorted: every
 /// `AnotherSpace` reference points to a space that appears earlier in
 /// the list. This lets a rebuilder process roots in iteration order
-/// without a separate sort pass.
+/// without a separate sort pass, and guarantees that the
+/// [`space_aware_map`] invariant is met.
 ///
 /// # Safety
 /// Same invariants as [`virt_to_phys`]. Callers must ensure the page

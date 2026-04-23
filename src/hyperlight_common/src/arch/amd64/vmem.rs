@@ -268,9 +268,12 @@ unsafe fn map_page<
 ///
 /// Multi-space page-table walking on amd64: walks each root
 /// independently and emits all leaves as `ThisSpace`. Aliased
-/// intermediate-table detection is not implemented — no current
-/// embedder exercises that pattern on amd64 (it is an i686/Nanvix-
-/// specific concern).
+/// intermediate-table detection is not implemented here because no
+/// current embedder exercises that pattern on amd64.
+///
+/// TODO: align with the i686 implementation and detect aliased
+/// intermediate tables to avoid semantic divergence across arches.
+/// Tracking: follow-up issue.
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn walk_va_spaces<Op: TableReadOps>(
     op: &Op,

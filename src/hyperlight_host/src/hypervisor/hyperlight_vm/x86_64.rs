@@ -76,7 +76,7 @@ impl HyperlightVm {
     pub(crate) fn new(
         snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
         scratch_mem: GuestSharedMemory,
-        _pml4_addr: u64,
+        _root_pt_addr: u64,
         entrypoint: NextAction,
         rsp_gva: u64,
         page_size: usize,
@@ -101,11 +101,11 @@ impl HyperlightVm {
         };
 
         #[cfg(not(feature = "i686-guest"))]
-        vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(_pml4_addr))
+        vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(_root_pt_addr))
             .map_err(VmError::Register)?;
         #[cfg(feature = "i686-guest")]
         vm.set_sregs(&CommonSpecialRegisters::standard_32bit_paging_defaults(
-            _pml4_addr,
+            _root_pt_addr,
         ))
         .map_err(VmError::Register)?;
 
@@ -934,7 +934,7 @@ mod tests {
 
     /// Build dirty special registers for testing reset_vcpu.
     /// Must be consistent for 64-bit long mode (CR0/CR4/EFER).
-    fn dirty_sregs(_pml4_addr: u64) -> CommonSpecialRegisters {
+    fn dirty_sregs(_root_pt_addr: u64) -> CommonSpecialRegisters {
         let segment = CommonSegmentRegister {
             base: 0x1000,
             limit: 0xFFFF,
@@ -987,10 +987,10 @@ mod tests {
             idt: table,
             cr0: 0x80000011, // PE + ET + PG
             cr2: 0xBADC0DE,
-            // MSHV validates cr3 and rejects bogus values; use valid _pml4_addr for MSHV
+            // MSHV validates cr3 and rejects bogus values; use valid _root_pt_addr for MSHV
             cr3: match get_available_hypervisor() {
                 #[cfg(mshv3)]
-                Some(HypervisorType::Mshv) => _pml4_addr,
+                Some(HypervisorType::Mshv) => _root_pt_addr,
                 _ => 0x12345000,
             },
             cr4: 0x20, // PAE
@@ -1211,8 +1211,8 @@ mod tests {
 
     /// Assert that special registers are in reset state.
     /// Handles hypervisor-specific differences in hidden descriptor cache fields.
-    fn assert_sregs_reset(vm: &dyn VirtualMachine, pml4_addr: u64) {
-        let defaults = CommonSpecialRegisters::standard_64bit_defaults(pml4_addr);
+    fn assert_sregs_reset(vm: &dyn VirtualMachine, root_pt_addr: u64) {
+        let defaults = CommonSpecialRegisters::standard_64bit_defaults(root_pt_addr);
         let sregs = vm.sregs().unwrap();
         let mut expected_sregs = defaults;
         // Normalize hypervisor implementation-specific fields.

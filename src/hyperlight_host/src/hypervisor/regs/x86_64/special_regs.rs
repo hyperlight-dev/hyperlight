@@ -73,7 +73,7 @@ pub(crate) struct CommonSpecialRegisters {
 
 impl CommonSpecialRegisters {
     #[cfg(not(feature = "i686-guest"))]
-    pub(crate) fn standard_64bit_defaults(pml4_addr: u64) -> Self {
+    pub(crate) fn standard_64bit_defaults(root_pt_addr: u64) -> Self {
         CommonSpecialRegisters {
             cs: CommonSegmentRegister {
                 l: 1,          // 64-bit
@@ -100,7 +100,7 @@ impl CommonSpecialRegisters {
             cr0: CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_AM | CR0_WP | CR0_PG,
             cr2: 0,
             cr4: CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT,
-            cr3: pml4_addr,
+            cr3: root_pt_addr,
             cr8: 0,
             apic_base: 0,
             interrupt_bitmap: [0; 4],
@@ -110,7 +110,7 @@ impl CommonSpecialRegisters {
     /// Returns special registers for 32-bit protected mode with paging enabled.
     /// Used for i686 guests that need CoW page tables from boot.
     #[cfg(feature = "i686-guest")]
-    pub(crate) fn standard_32bit_paging_defaults(pd_addr: u64) -> Self {
+    pub(crate) fn standard_32bit_paging_defaults(root_pt_addr: u64) -> Self {
         // Flat 32-bit code segment: base=0, limit=4GB, 32-bit, executable
         let code_seg = CommonSegmentRegister {
             base: 0,
@@ -153,7 +153,7 @@ impl CommonSpecialRegisters {
             gs: data_seg,
             tr: tr_seg,
             cr0: CR0_PE | CR0_ET | CR0_WP | CR0_PG,
-            cr3: pd_addr,
+            cr3: root_pt_addr,
             cr4: 0, // No PAE, no PSE
             ..Default::default()
         }

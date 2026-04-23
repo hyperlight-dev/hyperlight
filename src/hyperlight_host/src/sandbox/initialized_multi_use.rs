@@ -105,7 +105,8 @@ pub struct MultiUseSandbox {
 /// Called during [`MultiUseSandbox::snapshot`] with:
 /// - `snapshot_mem` - the sandbox's snapshot (shared) memory as a byte slice
 /// - `scratch_mem` - the sandbox's scratch memory as a byte slice
-/// - `root_pt_gpa` - the root page table GPA (from the vCPU's CR3)
+/// - `root_pt_gpa` - the root page table GPA of the currently-executing
+///   address space
 ///
 /// Returns a list of root page table GPAs to walk. If the list is
 /// empty, only `root_pt_gpa` is used.

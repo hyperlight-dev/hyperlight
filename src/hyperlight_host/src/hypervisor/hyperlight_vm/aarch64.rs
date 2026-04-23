@@ -41,7 +41,7 @@ impl HyperlightVm {
     pub(crate) fn new(
         _snapshot_mem: GuestSharedMemory,
         _scratch_mem: GuestSharedMemory,
-        _pml4_addr: u64,
+        _root_pt_addr: u64,
         _entrypoint: NextAction,
         _rsp_gva: u64,
         _config: &SandboxConfiguration,
