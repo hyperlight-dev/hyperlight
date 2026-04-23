@@ -217,6 +217,13 @@ impl HyperlightVm {
             return Ok(());
         };
 
+        // Set up the pvclock MSR so monotonic time works during init.
+        // boot_time_ns (wall clock) is deferred until after the first
+        // vCPU run — see arm_clock below.
+        #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+        self.setup_clock(&mem_mgr.scratch_mem)
+            .map_err(|e| InitializeError::ArmClock(Box::new(e)))?;
+
         let regs = CommonRegisters {
             rip: initialise,
             // We usually keep the top of the stack 16-byte
@@ -245,6 +252,18 @@ impl HyperlightVm {
             dbg_mem_access_fn,
         )
         .map_err(InitializeError::Run)?;
+
+        // Arm the paravirtualized clock after the first vCPU run.
+        // On some backends the monotonic clock source is unreliable
+        // until after the first vCPU entry, so wall-clock calibration
+        // is deferred to here. Wall clock is not available to the
+        // guest during hyperlight_main (init), but monotonic time
+        // works fine since the pvclock page is populated before the
+        // first vCPU entry. Wall clock becomes available on
+        // subsequent dispatch calls.
+        #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+        self.arm_clock(&mem_mgr.scratch_mem)
+            .map_err(|e| InitializeError::ArmClock(Box::new(e)))?;
 
         let regs = self.vm.regs()?;
         // todo(portability): this is architecture-specific
