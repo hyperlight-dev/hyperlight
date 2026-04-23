@@ -38,7 +38,31 @@ pub const SCRATCH_TOP_SIZE_OFFSET: u64 = 0x08;
 pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 = 0x10;
 pub const SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET: u64 = 0x18;
 pub const SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET: u64 = 0x20;
-pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x30;
+
+/// Offset from the top of scratch for the `clock_type` field (u64).
+///
+/// Identifies which paravirtualized clock the host configured
+/// ([`crate::time::ClockType`]). Lives in the bookkeeping page at the
+/// top of scratch — NOT in the clock page itself — so the hypervisor
+/// cannot clobber it if it extends the TLFS-reserved region.
+pub const SCRATCH_TOP_CLOCK_TYPE_OFFSET: u64 = 0x28;
+
+/// Offset from the top of scratch for the `boot_time_ns` field (u64).
+///
+/// The Unix-epoch origin of the monotonic clock, computed by the host
+/// as `SystemTime::now() - current_monotonic_ns()` and written in
+/// `arm_clock`. The guest recovers wall time as
+/// `boot_time_ns + monotonic_time_ns()`.
+///
+/// Hyper-V has no equivalent to KVM's `MSR_KVM_WALL_CLOCK_NEW`, so
+/// we use this uniform host-computed approach on all backends.
+pub const SCRATCH_TOP_BOOT_TIME_NS_OFFSET: u64 = 0x30;
+
+// ---- Next free offset in the bookkeeping page: 0x38 ----
+// When adding new host→guest shared fields, use the next multiple of
+// 8 after the last offset above. All fields in this page are u64,
+// little-endian, host-written and guest-read, and are excluded from
+// snapshots because they live in scratch memory.
 
 /// Offset from the top of scratch memory for a shared host-guest u64 counter.
 ///
@@ -48,6 +72,30 @@ pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x30;
 /// maximum representable frame number.
 #[cfg(feature = "guest-counter")]
 pub const SCRATCH_TOP_GUEST_COUNTER_OFFSET: u64 = 0x1008;
+
+/// Offset from the top of scratch memory for the start of the paravirtualized
+/// clock page.
+///
+/// The clock page is a single 4 KiB page occupying the scratch offsets
+/// `[0x3000, 0x2000)` from the top — i.e. one page lower than the
+/// guest-counter page, to avoid the i686 frame-number issue that forces the
+/// counter off the very last page (see [`SCRATCH_TOP_GUEST_COUNTER_OFFSET`]).
+///
+/// The constant is the *high* (exclusive) offset; the page base is one page
+/// below, at `top - SCRATCH_TOP_CLOCK_PAGE_OFFSET` + 1 byte — in other words,
+/// subtract this value from `MAX_GPA`/`MAX_GVA` + 1 to get the page base.
+///
+/// The page is only present when the host is built with the
+/// `enable_guest_clock` feature.
+pub const SCRATCH_TOP_CLOCK_PAGE_OFFSET: u64 = 0x3000;
+
+/// Size of the paravirtualized clock page in bytes (one 4 KiB page).
+/// The entire page is owned by the hypervisor (KVM pvclock or Hyper-V
+/// Reference TSC). Hyperlight's own metadata (`clock_type`,
+/// `boot_time_ns`) lives in the bookkeeping page at offsets
+/// `SCRATCH_TOP_CLOCK_TYPE_OFFSET` / `SCRATCH_TOP_BOOT_TIME_NS_OFFSET`,
+/// NOT in the clock page, so a future TLFS extension cannot clobber it.
+pub const CLOCK_PAGE_SIZE: u64 = 0x1000;
 
 pub fn scratch_base_gpa(size: usize) -> u64 {
     (MAX_GPA - size + 1) as u64
