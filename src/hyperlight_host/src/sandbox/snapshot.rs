@@ -128,6 +128,8 @@ impl hyperlight_common::vmem::TableReadOps for Snapshot {
             // care about presently) will be a not-present entry.
             return 0;
         };
+        // The `get()` above ensures exactly PTE_SIZE bytes.
+        #[allow(clippy::unwrap_used)]
         vmem::PageTableEntry::from_le_bytes(pte_bytes.try_into().unwrap())
     }
     #[allow(clippy::unnecessary_cast)]
@@ -223,6 +225,8 @@ impl<'a> hyperlight_common::vmem::TableReadOps for SharedMemoryPageTableBuffer<'
             // care about presently) will be a not-present entry.
             return 0;
         };
+        // The `get()` above ensures exactly PTE_SIZE bytes.
+        #[allow(clippy::unwrap_used)]
         vmem::PageTableEntry::from_le_bytes(pte_bytes.try_into().unwrap())
     }
     #[allow(clippy::unnecessary_cast)]

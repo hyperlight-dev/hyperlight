@@ -265,6 +265,7 @@ unsafe fn map_page<
 /// 2. PDPT (38:30) - allocate PD if needed
 /// 3. PD (29:21) - allocate PT if needed
 /// 4. PT (20:12) - write final PTE with physical address and flags
+///
 /// Multi-space page-table walking on amd64: walks each root
 /// independently and emits all leaves as `ThisSpace`. Aliased
 /// intermediate-table detection is not implemented — no current
