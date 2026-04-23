@@ -19,6 +19,7 @@ use alloc::vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
+use hyperlight_guest::time;
 
 use crate::host_comm::call_host_function;
 use crate::libc::{
@@ -34,11 +35,44 @@ fn set_errno(val: u32) {
 
 static CURRENT_TIME: AtomicU64 = AtomicU64::new(0);
 
-/// Returns a synthetic monotonically-increasing time starting at Unix epoch
-/// increasing 1s each call.
-fn current_time() -> (u64, u64) {
+/// Matches picolibc `struct timespec` layout for x86_64 and aarch64.
+#[repr(C)]
+pub(crate) struct Timespec {
+    tv_sec: c_long,
+    tv_nsec: c_long,
+}
+
+/// Matches picolibc `struct timeval` layout for x86_64 and aarch64.
+#[repr(C)]
+pub(crate) struct Timeval {
+    tv_sec: c_long,
+    tv_usec: c_long,
+}
+
+/// Fallback clock used when the host has not armed a paravirtualized
+/// clock. Returns a synthetic `(secs, nsecs)` pair that advances by one
+/// second per call, preserving long-standing guest behaviour for hosts
+/// built without the `enable_guest_clock` feature.
+fn fallback_time() -> (u64, u64) {
     let call_count = CURRENT_TIME.fetch_add(1, Ordering::Relaxed) + 1;
     (call_count, 0)
+}
+
+/// Returns `(secs, nsecs)` for `CLOCK_REALTIME` (wall-clock).
+fn realtime() -> (u64, u64) {
+    match time::wall_clock_time() {
+        Some((secs, nsecs)) => (secs, nsecs as u64),
+        None => fallback_time(),
+    }
+}
+
+/// Returns `(secs, nsecs)` for `CLOCK_MONOTONIC` (time since sandbox
+/// creation).
+fn monotonic() -> (u64, u64) {
+    match time::monotonic_time_ns() {
+        Some(ns) => (ns / 1_000_000_000, ns % 1_000_000_000),
+        None => fallback_time(),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -96,8 +130,16 @@ extern "C" fn clock_gettime(clk_id: clockid_t, tp: *mut timespec) -> c_int {
     }
 
     match clk_id {
-        CLOCK_ID_REALTIME | CLOCK_ID_MONOTONIC => {
-            let (secs, nanos) = current_time();
+        CLOCK_REALTIME => {
+            let (secs, nanos) = realtime();
+            unsafe {
+                (*tp).tv_sec = secs as c_long;
+                (*tp).tv_nsec = nanos as c_long;
+            }
+            0
+        }
+        CLOCK_MONOTONIC => {
+            let (secs, nanos) = monotonic();
             unsafe {
                 (*tp).tv_sec = secs as c_long;
                 (*tp).tv_nsec = nanos as c_long;
@@ -112,7 +154,22 @@ extern "C" fn clock_gettime(clk_id: clockid_t, tp: *mut timespec) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn _exit(ec: c_int) -> ! {
+pub extern "C" fn gettimeofday(tv: *mut Timeval, _tz: *mut c_void) -> c_int {
+    if tv.is_null() {
+        set_errno(EINVAL);
+        return -1;
+    }
+
+    let (secs, nanos) = realtime();
+    unsafe {
+        (*tv).tv_sec = secs as c_long;
+        (*tv).tv_usec = (nanos / 1000) as c_long;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _exit(ec: c_int) -> ! {
     hyperlight_guest::exit::abort_with_code(&[ec as u8]);
 }
 
