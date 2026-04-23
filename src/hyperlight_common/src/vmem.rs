@@ -47,7 +47,7 @@ pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
 /// Utility function to extract an (inclusive on both ends) bit range
 /// from a quadword.
 #[inline(always)]
-pub(crate) fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
+pub(in crate::vmem) fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
     (x & ((1 << (HIGH_BIT + 1)) - 1)) >> LOW_BIT
 }
 
@@ -56,7 +56,7 @@ pub(crate) fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
 ///
 /// # Safety
 /// Same requirements as [`TableOps::write_entry`].
-pub(crate) unsafe fn write_entry_updating<
+pub(in crate::vmem) unsafe fn write_entry_updating<
     Op: TableOps,
     P: UpdateParent<
             Op,
@@ -117,7 +117,7 @@ impl<Op: TableReadOps> UpdateParent<Op> for UpdateParentNone {
 
 /// A helper structure indicating a mapping operation that needs to be
 /// performed.
-pub(crate) struct MapRequest<Op: TableReadOps, P: UpdateParent<Op>> {
+pub(in crate::vmem) struct MapRequest<Op: TableReadOps, P: UpdateParent<Op>> {
     pub table_base: Op::TableAddr,
     pub vmin: u64,
     pub len: u64,
@@ -126,7 +126,7 @@ pub(crate) struct MapRequest<Op: TableReadOps, P: UpdateParent<Op>> {
 
 /// A helper structure indicating that a particular PTE needs to be
 /// modified.
-pub(crate) struct MapResponse<Op: TableReadOps, P: UpdateParent<Op>> {
+pub(in crate::vmem) struct MapResponse<Op: TableReadOps, P: UpdateParent<Op>> {
     pub entry_ptr: Op::TableAddr,
     pub vmin: u64,
     pub len: u64,
@@ -149,7 +149,7 @@ pub(crate) struct MapResponse<Op: TableReadOps, P: UpdateParent<Op>> {
 /// On i686:
 /// - PD:   HIGH_BIT=31, LOW_BIT=22 (10 bits = 1024 entries, each covering 4MB)
 /// - PT:   HIGH_BIT=21, LOW_BIT=12 (10 bits = 1024 entries, each covering 4KB)
-pub(crate) struct ModifyPteIterator<
+pub(in crate::vmem) struct ModifyPteIterator<
     const HIGH_BIT: u8,
     const LOW_BIT: u8,
     Op: TableReadOps,
@@ -230,7 +230,7 @@ impl<const HIGH_BIT: u8, const LOW_BIT: u8, Op: TableReadOps, P: UpdateParent<Op
     }
 }
 
-pub(crate) fn modify_ptes<
+pub(in crate::vmem) fn modify_ptes<
     const HIGH_BIT: u8,
     const LOW_BIT: u8,
     Op: TableReadOps,
