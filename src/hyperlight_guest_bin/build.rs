@@ -212,7 +212,8 @@ fn cargo_main() -> Result<()> {
         }
 
         build.compile("hyperlight_guest_bin");
-        copy_includes(&include_dir, "third_party/picolibc/libc/include")?;
+        copy_includes(&include_dir, picolibc_dir.join("libc/include"))?;
+        copy_includes(&include_dir, manifest_dir.join("include"))?;
     }
 
     let include_str = include_dir
