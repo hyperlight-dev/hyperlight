@@ -362,7 +362,6 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             snapshot_count: self.snapshot_count,
         };
         host_mgr.update_scratch_bookkeeping()?;
-        host_mgr.copy_pt_to_scratch()?;
         Ok((host_mgr, guest_mgr))
     }
 }
@@ -559,7 +558,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.snapshot_count = snapshot.snapshot_generation();
 
         self.update_scratch_bookkeeping()?;
-        self.copy_pt_to_scratch()?;
         Ok((gsnapshot, gscratch))
     }
 
@@ -579,10 +577,11 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.layout.get_first_free_scratch_gpa(),
         )?;
         // Record the GPA of the snapshot's copy of the page tables.
-        // The copy lives at the tail of the snapshot blob (see
-        // `copy_pt_to_scratch` below). The guest reads this GPA
-        // during CoW fault-in to follow the original PTs on the first
-        // write — until the HV can execute directly out of the
+        // The copy lives at the tail of the snapshot blob; we copy it
+        // into scratch below so the guest walker can run against
+        // mutable, TLB-fresh tables. The guest reads this GPA during
+        // CoW fault-in to follow the original PTs on the first write
+        // — until the HV can execute directly out of the
         // snapshot-resident PTs, at which point the whole split goes
         // away.
         self.update_scratch_bookkeeping_item(
@@ -605,21 +604,12 @@ impl SandboxMemoryManager<HostSharedMemory> {
             SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
         )?;
 
-        Ok(())
-    }
-
-    /// Copy page tables from `shared_mem` into the scratch region.
-    ///
-    /// PT bytes are appended to the snapshot blob at build time and
-    /// live just past the end of the guest-visible KVM slot (see
-    /// `Snapshot::new`). Keeping them outside the KVM slot avoids
-    /// overlapping with `map_file_cow` regions that the embedder
-    /// installs immediately after the snapshot in the guest PA space
-    /// — if we left the PT tail inside the slot, the first
-    /// `map_file_cow` page would sit on top of the last PT page. On
-    /// restore we copy the PT tail into scratch so the guest walker
-    /// can run against mutable, TLB-fresh tables.
-    fn copy_pt_to_scratch(&mut self) -> Result<()> {
+        // Copy page tables from `shared_mem` into scratch. PT bytes
+        // are appended to the snapshot blob at build time and live
+        // just past the end of the guest-visible KVM slot (see
+        // `Snapshot::new`). Keeping them outside the KVM slot avoids
+        // overlapping with `map_file_cow` regions installed
+        // immediately after the snapshot in the guest PA space.
         let snapshot_pt_end = self.shared_mem.mem_size();
         let snapshot_pt_size = self.layout.get_pt_size();
         let snapshot_pt_start = snapshot_pt_end - snapshot_pt_size;
@@ -636,6 +626,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
             #[allow(clippy::needless_borrow)]
             scratch.copy_from_slice(&bytes, self.layout.get_pt_base_scratch_offset())
         })??;
+
         Ok(())
     }
 
