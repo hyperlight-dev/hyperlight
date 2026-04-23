@@ -353,6 +353,33 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[cfg(not(feature = "i686-guest"))]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError>;
 
+    /// Arm the hypervisor's paravirtualized clock for this vCPU, pointing it
+    /// at the guest physical address of the sandbox's clock page.
+    ///
+    /// Must be called before the first `run_vcpu`, and again on snapshot
+    /// restore since the register lives in vCPU state.
+    #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+    #[allow(dead_code)] // wired up in a follow-on commit
+    fn setup_pvclock(
+        &mut self,
+        clock_page_gpa: u64,
+    ) -> std::result::Result<(), crate::HyperlightError>;
+
+    /// Read the host's monotonic clock for the time base that backs the
+    /// guest's paravirtualized clock page, in nanoseconds.
+    ///
+    /// Each hypervisor has its own monotonic epoch that may differ from
+    /// `CLOCK_MONOTONIC`, so we cannot use a single host clock. This
+    /// value is used to derive `boot_time_ns = wall_now - monotonic_now`,
+    /// giving guests a uniform wall-clock origin across all backends.
+    ///
+    /// KVM does offer `MSR_KVM_WALL_CLOCK_NEW` for this, but Hyper-V's
+    /// TLFS explicitly states its reference time is "not intended to be
+    /// used as a source of wall clock time". Rather than diverge per
+    /// backend, we use the same host-computed approach everywhere.
+    #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+    fn current_monotonic_ns(&self) -> std::result::Result<u64, crate::HyperlightError>;
+
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;

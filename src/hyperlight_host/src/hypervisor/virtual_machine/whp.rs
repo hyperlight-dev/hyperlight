@@ -803,6 +803,53 @@ impl VirtualMachine for WhpVm {
     fn partition_handle(&self) -> WHV_PARTITION_HANDLE {
         self.partition
     }
+
+    #[cfg(feature = "enable_guest_clock")]
+    fn setup_pvclock(&mut self, clock_page_gpa: u64) -> crate::Result<()> {
+        // Hyper-V Reference TSC page via WHP: write `WHvRegisterReferenceTsc`
+        // with `gpa | 1`. Bit 0 is the "enable" flag.
+        //
+        // Reference: Hyper-V TLFS section 12.7 (Reference TSC Page).
+        const REFERENCE_TSC_ENABLE_BIT: u64 = 1;
+
+        let reg_value = WHV_REGISTER_VALUE {
+            Reg64: clock_page_gpa | REFERENCE_TSC_ENABLE_BIT,
+        };
+        self.set_registers(&[(WHvRegisterReferenceTsc, Align16(reg_value))])
+            .map_err(|e| crate::new_error!("Failed to set WHvRegisterReferenceTsc: {}", e))?;
+
+        tracing::debug!(
+            target: "hyperlight::pvclock",
+            clock_page_gpa,
+            "WHP Reference TSC armed"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "enable_guest_clock")]
+    fn current_monotonic_ns(&self) -> crate::Result<u64> {
+        // WHP exposes the partition reference time (same time base as the
+        // Reference TSC page) via a partition property, NOT a vCPU register.
+        // The value is in 100 ns units.
+        //
+        // Note: WHP does not expose `WHvRegisterTimeRefCount` — that is a
+        // Hyper-V/MSHV register name. The WHP equivalent is
+        // `WHvPartitionPropertyCodeReferenceTime`.
+        let mut property: WHV_PARTITION_PROPERTY = unsafe { std::mem::zeroed() };
+        let mut written_size = 0u32;
+        unsafe {
+            WHvGetPartitionProperty(
+                self.partition,
+                WHvPartitionPropertyCodeReferenceTime,
+                &mut property as *mut WHV_PARTITION_PROPERTY as *mut c_void,
+                std::mem::size_of::<WHV_PARTITION_PROPERTY>() as u32,
+                Some(&mut written_size),
+            )
+            .map_err(|e| crate::new_error!("Failed to read WHP ReferenceTime: {}", e))?;
+        }
+        let ticks_100ns = unsafe { property.ReferenceTime };
+        Ok(ticks_100ns.wrapping_mul(100))
+    }
 }
 
 #[cfg(gdb)]

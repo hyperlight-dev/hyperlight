@@ -468,6 +468,52 @@ impl VirtualMachine for KvmVm {
 
         Ok(())
     }
+
+    #[cfg(feature = "enable_guest_clock")]
+    fn setup_pvclock(&mut self, clock_page_gpa: u64) -> crate::Result<()> {
+        // KVM pvclock: write `MSR_KVM_SYSTEM_TIME_NEW` with `gpa | 1`.
+        // Bit 0 is the "enable" flag; clearing it disables pvclock for this
+        // vCPU.
+        //
+        // Reference: https://docs.kernel.org/virt/kvm/x86/msr.html#pvclock
+        use kvm_bindings::{Msrs, kvm_msr_entry};
+
+        const MSR_KVM_SYSTEM_TIME_NEW: u32 = 0x4b564d01;
+        const PVCLOCK_ENABLE_BIT: u64 = 1;
+
+        let mut msrs = Msrs::new(1)
+            .map_err(|e| crate::new_error!("Failed to allocate MSR list for pvclock: {}", e))?;
+        msrs.as_mut_slice()[0] = kvm_msr_entry {
+            index: MSR_KVM_SYSTEM_TIME_NEW,
+            data: clock_page_gpa | PVCLOCK_ENABLE_BIT,
+            ..Default::default()
+        };
+
+        self.vcpu_fd
+            .set_msrs(&msrs)
+            .map_err(|e| crate::new_error!("Failed to set pvclock MSR: {}", e))?;
+
+        tracing::debug!(
+            target: "hyperlight::pvclock",
+            clock_page_gpa,
+            "KVM pvclock armed"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "enable_guest_clock")]
+    fn current_monotonic_ns(&self) -> crate::Result<u64> {
+        // KVM_GET_CLOCK returns kvmclock nanoseconds — the same time base
+        // the guest reads through the pvclock page. We cannot use
+        // clock_gettime(CLOCK_MONOTONIC) here because kvmclock has its
+        // own epoch (which can be shifted via KVM_SET_CLOCK) and does not
+        // necessarily match host CLOCK_MONOTONIC.
+        let clock = self
+            .vm_fd
+            .get_clock()
+            .map_err(|e| crate::new_error!("KVM_GET_CLOCK failed: {}", e))?;
+        Ok(clock.clock)
+    }
 }
 
 #[cfg(gdb)]
