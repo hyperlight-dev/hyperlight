@@ -265,6 +265,99 @@ unsafe fn map_page<
 /// 2. PDPT (38:30) - allocate PD if needed
 /// 3. PD (29:21) - allocate PT if needed
 /// 4. PT (20:12) - write final PTE with physical address and flags
+/// Multi-space page-table walking on amd64: walks each root
+/// independently and emits all leaves as `ThisSpace`. Aliased
+/// intermediate-table detection is not implemented — no current
+/// embedder exercises that pattern on amd64 (it is an i686/Nanvix-
+/// specific concern).
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn walk_va_spaces<Op: TableReadOps>(
+    op: &Op,
+    roots: &[Op::TableAddr],
+    address: u64,
+    len: u64,
+) -> ::alloc::vec::Vec<(
+    crate::vmem::SpaceId,
+    ::alloc::vec::Vec<crate::vmem::SpaceAwareMapping>,
+)> {
+    use ::alloc::vec::Vec;
+
+    let mut out: Vec<(
+        crate::vmem::SpaceId,
+        Vec<crate::vmem::SpaceAwareMapping>,
+    )> = Vec::with_capacity(roots.len());
+
+    let addr = address & ((1u64 << VA_BITS) - 1);
+    let vmin = addr & !(PAGE_SIZE as u64 - 1);
+    let vmax = core::cmp::min(addr + len, 1u64 << VA_BITS);
+
+    for &root in roots {
+        #[allow(clippy::unnecessary_cast)]
+        let root_id: crate::vmem::SpaceId = Op::to_phys(root) as u64;
+        let mut mappings: Vec<crate::vmem::SpaceAwareMapping> = Vec::new();
+
+        let iter = modify_ptes::<47, 39, Op, _>(MapRequest {
+            table_base: root,
+            vmin,
+            len: vmax.saturating_sub(vmin),
+            update_parent: UpdateParentNone {},
+        })
+        .filter_map(|r| unsafe { require_pte_exist(op, r) })
+        .flat_map(modify_ptes::<38, 30, Op, _>)
+        .filter_map(|r| unsafe { require_pte_exist(op, r) })
+        .flat_map(modify_ptes::<29, 21, Op, _>)
+        .filter_map(|r| unsafe { require_pte_exist(op, r) })
+        .flat_map(modify_ptes::<20, 12, Op, _>);
+
+        for r in iter {
+            let Some(pte) = (unsafe { read_pte_if_present(op, r.entry_ptr) }) else {
+                continue;
+            };
+            let phys_addr = pte & PTE_ADDR_MASK;
+            let sgn_bit = r.vmin >> (VA_BITS - 1);
+            let sgn_bits = 0u64.wrapping_sub(sgn_bit) << VA_BITS;
+            let virt_addr = sgn_bits | r.vmin;
+
+            let executable = (pte & PAGE_NX) == 0;
+            let avl = pte & PTE_AVL_MASK;
+            let kind = if avl == PAGE_AVL_COW {
+                MappingKind::Cow(CowMapping {
+                    readable: true,
+                    executable,
+                })
+            } else {
+                MappingKind::Basic(BasicMapping {
+                    readable: true,
+                    writable: (pte & PAGE_RW) != 0,
+                    executable,
+                })
+            };
+            mappings.push(crate::vmem::SpaceAwareMapping::ThisSpace(Mapping {
+                phys_base: phys_addr,
+                virt_base: virt_addr,
+                len: PAGE_SIZE as u64,
+                kind,
+                user_accessible: false,
+            }));
+        }
+
+        out.push((root_id, mappings));
+    }
+
+    out
+}
+
+/// See [`walk_va_spaces`]: amd64 never emits `AnotherSpace`, so this
+/// is unreachable in practice. It silently no-ops (rather than
+/// panicking) to keep the architecture-independent re-export usable.
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn space_aware_map<Op: TableOps>(
+    _op: &Op,
+    _ref_map: crate::vmem::SpaceReferenceMapping,
+    _built_roots: &::alloc::collections::BTreeMap<crate::vmem::SpaceId, Op::TableAddr>,
+) {
+}
+
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
     modify_ptes::<47, 39, Op, _>(MapRequest {
