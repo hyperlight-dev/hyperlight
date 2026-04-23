@@ -346,7 +346,12 @@ pub unsafe fn space_aware_map<Op: TableOps>(
 
     let new_pde: u64 = their_pt_pa | (their_pde & !PTE_ADDR_MASK) | PAGE_PRESENT;
     unsafe {
-        write_entry_updating(op, Op::TableMovability::root_update_parent(), our_pde_ptr, new_pde);
+        write_entry_updating(
+            op,
+            Op::TableMovability::root_update_parent(),
+            our_pde_ptr,
+            new_pde,
+        );
     }
 }
 

@@ -20,8 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use hyperlight_common::layout::{scratch_base_gpa, scratch_base_gva};
 use hyperlight_common::vmem;
 use hyperlight_common::vmem::{
-    BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE, SpaceAwareMapping, SpaceId,
-    TableOps,
+    BasicMapping, CowMapping, Mapping, MappingKind, PAGE_SIZE, SpaceAwareMapping, SpaceId, TableOps,
 };
 use tracing::{Span, instrument};
 
@@ -495,7 +494,13 @@ impl Snapshot {
                                     continue;
                                 }
                                 let Some(contents) = (unsafe {
-                                    guest_page(snap_c, scratch_c, &regions, layout, mapping.phys_base)
+                                    guest_page(
+                                        snap_c,
+                                        scratch_c,
+                                        &regions,
+                                        layout,
+                                        mapping.phys_base,
+                                    )
                                 }) else {
                                     continue;
                                 };

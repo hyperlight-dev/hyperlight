@@ -576,6 +576,22 @@ pub enum SpaceAwareMapping {
     AnotherSpace(SpaceReferenceMapping),
 }
 
+/// Counterpart of [`walk_va_spaces`]'s `AnotherSpace` entries on the
+/// write side: installs a link in `op`'s root PT tree at `ref_map.our_va`
+/// that points at whatever intermediate table the owning space ended
+/// up with at `ref_map.their_va` (in `built_roots[ref_map.space]`).
+///
+/// Callers must process [`SpaceAwareMapping`]s in the order returned
+/// by `walk_va_spaces`, populating `built_roots` with each space's
+/// rebuilt root PA before moving on to the next space — that way, by
+/// the time we see an `AnotherSpace` entry, the owning space's
+/// rebuilt root is guaranteed to be in `built_roots`.
+///
+/// # Safety
+/// Same invariants as [`map`]: the caller owns the concurrency story
+/// around the page tables being written, and must invalidate TLBs
+/// afterwards if they were live.
+pub use arch::space_aware_map;
 /// Walk multiple page-table roots together, emitting either a normal
 /// leaf mapping (`ThisSpace`) or a reference to an alias that was
 /// already seen via an earlier root (`AnotherSpace`).
@@ -597,20 +613,3 @@ pub enum SpaceAwareMapping {
 /// Same invariants as [`virt_to_phys`]. Callers must ensure the page
 /// tables are not being mutated concurrently.
 pub use arch::walk_va_spaces;
-
-/// Counterpart of [`walk_va_spaces`]'s `AnotherSpace` entries on the
-/// write side: installs a link in `op`'s root PT tree at `ref_map.our_va`
-/// that points at whatever intermediate table the owning space ended
-/// up with at `ref_map.their_va` (in `built_roots[ref_map.space]`).
-///
-/// Callers must process [`SpaceAwareMapping`]s in the order returned
-/// by `walk_va_spaces`, populating `built_roots` with each space's
-/// rebuilt root PA before moving on to the next space — that way, by
-/// the time we see an `AnotherSpace` entry, the owning space's
-/// rebuilt root is guaranteed to be in `built_roots`.
-///
-/// # Safety
-/// Same invariants as [`map`]: the caller owns the concurrency story
-/// around the page tables being written, and must invalidate TLBs
-/// afterwards if they were live.
-pub use arch::space_aware_map;

@@ -282,10 +282,8 @@ pub unsafe fn walk_va_spaces<Op: TableReadOps>(
 )> {
     use ::alloc::vec::Vec;
 
-    let mut out: Vec<(
-        crate::vmem::SpaceId,
-        Vec<crate::vmem::SpaceAwareMapping>,
-    )> = Vec::with_capacity(roots.len());
+    let mut out: Vec<(crate::vmem::SpaceId, Vec<crate::vmem::SpaceAwareMapping>)> =
+        Vec::with_capacity(roots.len());
 
     let addr = address & ((1u64 << VA_BITS) - 1);
     let vmin = addr & !(PAGE_SIZE as u64 - 1);
