@@ -51,24 +51,6 @@ pub(crate) fn bits<const HIGH_BIT: u8, const LOW_BIT: u8>(x: u64) -> u64 {
     (x & ((1 << (HIGH_BIT + 1)) - 1)) >> LOW_BIT
 }
 
-/// Read a page table entry and return it if the present bit is set.
-///
-/// # Safety
-/// The caller must ensure that `entry_ptr` points to a valid page table entry.
-#[inline(always)]
-#[allow(clippy::useless_conversion)]
-pub(crate) unsafe fn read_pte_if_present<Op: TableReadOps>(
-    op: &Op,
-    entry_ptr: Op::TableAddr,
-) -> Option<u64> {
-    let pte: u64 = unsafe { op.read_entry(entry_ptr) }.into();
-    if (pte & PAGE_PRESENT) != 0 {
-        Some(pte)
-    } else {
-        None
-    }
-}
-
 /// Helper function to write a page table entry, updating the whole
 /// chain of tables back to the root if necessary.
 ///
@@ -286,26 +268,6 @@ pub(crate) fn modify_ptes<
     r: MapRequest<Op, P>,
 ) -> ModifyPteIterator<HIGH_BIT, LOW_BIT, Op, P> {
     ModifyPteIterator { request: r, n: 0 }
-}
-
-/// Require that a PTE is present and descend to the next-level table.
-///
-/// # Safety
-/// `op` must provide valid page table memory.
-pub(crate) unsafe fn require_pte_exist<Op: TableReadOps, P: UpdateParent<Op>>(
-    op: &Op,
-    x: MapResponse<Op, P>,
-) -> Option<MapRequest<Op, P::ChildType>>
-where
-    P::ChildType: UpdateParent<Op>,
-{
-    unsafe { read_pte_if_present(op, x.entry_ptr) }.map(|pte| MapRequest {
-        #[allow(clippy::unnecessary_cast)]
-        table_base: Op::from_phys((pte & PTE_ADDR_MASK) as PhysAddr),
-        vmin: x.vmin,
-        len: x.len,
-        update_parent: x.update_parent.for_child_at_entry(x.entry_ptr),
-    })
 }
 
 /// The read-only operations used to actually access the page table

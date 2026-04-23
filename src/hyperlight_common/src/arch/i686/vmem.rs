@@ -24,7 +24,7 @@ limitations under the License.
 use crate::vmem::{
     BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, SpaceAwareMapping,
     SpaceId, SpaceReferenceMapping, TableMovabilityBase, TableOps, TableReadOps, UpdateParent,
-    UpdateParentNone, modify_ptes, read_pte_if_present, require_pte_exist, write_entry_updating,
+    UpdateParentNone, modify_ptes, write_entry_updating,
 };
 
 pub const PAGE_SIZE: usize = 4096;
@@ -59,6 +59,46 @@ impl<Op: TableReadOps> TableMovability<Op, crate::vmem::Void> for crate::vmem::M
 #[inline(always)]
 const fn page_rw_flag(writable: bool) -> u64 {
     if writable { PAGE_RW } else { 0 }
+}
+
+/// Read a PTE and return it (widened to u64) if the present bit is
+/// set. On i686 "present" is a single bit; archs that need richer
+/// checks define their own variant.
+///
+/// # Safety
+/// `entry_ptr` must point to a valid page table entry.
+#[inline(always)]
+#[allow(clippy::useless_conversion)]
+pub(super) unsafe fn read_pte_if_present<Op: TableReadOps>(
+    op: &Op,
+    entry_ptr: Op::TableAddr,
+) -> Option<u64> {
+    let pte: u64 = unsafe { op.read_entry(entry_ptr) }.into();
+    if (pte & PAGE_PRESENT) != 0 {
+        Some(pte)
+    } else {
+        None
+    }
+}
+
+/// Require that a PTE is present and descend to the next-level table.
+///
+/// # Safety
+/// `op` must provide valid page table memory.
+pub(super) unsafe fn require_pte_exist<Op: TableReadOps, P: UpdateParent<Op>>(
+    op: &Op,
+    x: MapResponse<Op, P>,
+) -> Option<MapRequest<Op, P::ChildType>>
+where
+    P::ChildType: UpdateParent<Op>,
+{
+    unsafe { read_pte_if_present(op, x.entry_ptr) }.map(|pte| MapRequest {
+        #[allow(clippy::unnecessary_cast)]
+        table_base: Op::from_phys((pte & PTE_ADDR_MASK) as PhysAddr),
+        vmin: x.vmin,
+        len: x.len,
+        update_parent: x.update_parent.for_child_at_entry(x.entry_ptr),
+    })
 }
 
 /// Generate a PDE pointing to a page table.

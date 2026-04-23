@@ -28,8 +28,49 @@ limitations under the License.
 use crate::vmem::{
     BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovabilityBase,
     TableOps, TableReadOps, UpdateParent, UpdateParentNone, UpdateParentRoot, UpdateParentTable,
-    Void, modify_ptes, read_pte_if_present, require_pte_exist, write_entry_updating,
+    Void, modify_ptes, write_entry_updating,
 };
+
+/// Read a PTE and return it (widened to u64) if the present bit is
+/// set. The amd64 "present" encoding is a single bit (bit 0); other
+/// architectures may need richer semantics, which is why this lives
+/// per-arch rather than in the common module.
+///
+/// # Safety
+/// `entry_ptr` must point to a valid page table entry.
+#[inline(always)]
+#[allow(clippy::useless_conversion)]
+pub(super) unsafe fn read_pte_if_present<Op: TableReadOps>(
+    op: &Op,
+    entry_ptr: Op::TableAddr,
+) -> Option<u64> {
+    let pte: u64 = unsafe { op.read_entry(entry_ptr) }.into();
+    if (pte & PAGE_PRESENT) != 0 {
+        Some(pte)
+    } else {
+        None
+    }
+}
+
+/// Require that a PTE is present and descend to the next-level table.
+///
+/// # Safety
+/// `op` must provide valid page table memory.
+pub(super) unsafe fn require_pte_exist<Op: TableReadOps, P: UpdateParent<Op>>(
+    op: &Op,
+    x: MapResponse<Op, P>,
+) -> Option<MapRequest<Op, P::ChildType>>
+where
+    P::ChildType: UpdateParent<Op>,
+{
+    unsafe { read_pte_if_present(op, x.entry_ptr) }.map(|pte| MapRequest {
+        #[allow(clippy::unnecessary_cast)]
+        table_base: Op::from_phys((pte & PTE_ADDR_MASK) as PhysAddr),
+        vmin: x.vmin,
+        len: x.len,
+        update_parent: x.update_parent.for_child_at_entry(x.entry_ptr),
+    })
+}
 
 // Paging Flags
 //
