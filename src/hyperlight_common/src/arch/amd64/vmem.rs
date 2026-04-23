@@ -27,7 +27,8 @@ limitations under the License.
 
 use crate::vmem::{
     BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovabilityBase,
-    TableOps, TableReadOps, UpdateParent, UpdateParentNone, Void, modify_ptes, write_entry_updating,
+    TableOps, TableReadOps, UpdateParent, UpdateParentNone, Void, modify_ptes,
+    write_entry_updating,
 };
 
 /// Parent is another page table whose ancestors may also need

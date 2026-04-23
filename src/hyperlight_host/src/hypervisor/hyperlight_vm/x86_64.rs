@@ -101,8 +101,10 @@ impl HyperlightVm {
         };
 
         #[cfg(not(feature = "i686-guest"))]
-        vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(_root_pt_addr))
-            .map_err(VmError::Register)?;
+        vm.set_sregs(&CommonSpecialRegisters::standard_64bit_defaults(
+            _root_pt_addr,
+        ))
+        .map_err(VmError::Register)?;
         #[cfg(feature = "i686-guest")]
         vm.set_sregs(&CommonSpecialRegisters::standard_32bit_paging_defaults(
             _root_pt_addr,
