@@ -137,7 +137,7 @@ limitations under the License.
 #if picolibc_has_builtin(__builtin_mul_overflow)
 #define __HAVE_BUILTIN_MUL_OVERFLOW 1
 #endif
-#if picolibc_has_builtin(_Complex)
+#if !defined(__STDC_NO_COMPLEX__)
 #define __HAVE_COMPLEX 1
 #endif
 
