@@ -98,35 +98,6 @@ pub trait UpdateParent<Op: TableReadOps + ?Sized>: Copy {
     fn for_child_at_entry(self, entry_ptr: Op::TableAddr) -> Self::ChildType;
 }
 
-/// A struct implementing [`UpdateParent`] that keeps track of the
-/// fact that the parent table is itself another table, whose own
-/// ancestors may need to be recursively updated.
-/// The `MayMoveTable` impl lives in each arch module (needs `pte_for_table`).
-#[allow(dead_code)] // used only by archs that support MayMoveTable
-pub struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
-    pub(crate) parent: P,
-    pub(crate) entry_ptr: Op::TableAddr,
-}
-impl<Op: TableOps, P: UpdateParent<Op>> Clone for UpdateParentTable<Op, P> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<Op: TableOps, P: UpdateParent<Op>> Copy for UpdateParentTable<Op, P> {}
-impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
-    #[allow(dead_code)]
-    pub(crate) fn new(parent: P, entry_ptr: Op::TableAddr) -> Self {
-        UpdateParentTable { parent, entry_ptr }
-    }
-}
-
-/// A struct implementing [`UpdateParent`] that keeps track of the
-/// fact that the parent "table" is actually the root (e.g. the value
-/// of CR3 in the guest).
-/// `MayMoveTable` impl lives in each arch module.
-#[derive(Copy, Clone)]
-pub struct UpdateParentRoot {}
-
 /// A struct implementing [`UpdateParent`] that is impossible to use
 /// (since its [`UpdateParent::update_parent`] method takes [`Void`]),
 /// used when it is statically known that a table operation cannot

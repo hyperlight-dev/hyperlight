@@ -27,9 +27,30 @@ limitations under the License.
 
 use crate::vmem::{
     BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovabilityBase,
-    TableOps, TableReadOps, UpdateParent, UpdateParentNone, UpdateParentRoot, UpdateParentTable,
-    Void, modify_ptes, write_entry_updating,
+    TableOps, TableReadOps, UpdateParent, UpdateParentNone, Void, modify_ptes, write_entry_updating,
 };
+
+/// Parent is another page table whose ancestors may also need
+/// updating when it relocates.
+pub struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
+    pub(crate) parent: P,
+    pub(crate) entry_ptr: Op::TableAddr,
+}
+impl<Op: TableOps, P: UpdateParent<Op>> Clone for UpdateParentTable<Op, P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<Op: TableOps, P: UpdateParent<Op>> Copy for UpdateParentTable<Op, P> {}
+impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
+    pub(crate) fn new(parent: P, entry_ptr: Op::TableAddr) -> Self {
+        UpdateParentTable { parent, entry_ptr }
+    }
+}
+
+/// Parent is the root (e.g. CR3).
+#[derive(Copy, Clone)]
+pub struct UpdateParentRoot {}
 
 /// Read a PTE and return it (widened to u64) if the present bit is
 /// set. The amd64 "present" encoding is a single bit (bit 0); other
