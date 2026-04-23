@@ -85,8 +85,11 @@ pub const SCRATCH_TOP_GUEST_COUNTER_OFFSET: u64 = 0x1008;
 /// below, at `top - SCRATCH_TOP_CLOCK_PAGE_OFFSET` + 1 byte — in other words,
 /// subtract this value from `MAX_GPA`/`MAX_GVA` + 1 to get the page base.
 ///
-/// The page is only present when the host is built with the
-/// `enable_guest_clock` feature.
+/// The page is always reserved regardless of the `enable_guest_clock`
+/// feature so that the memory layout (and therefore stack positions)
+/// is stable across feature-flag builds. The host only populates it
+/// when the feature is enabled; otherwise it stays zero-filled and
+/// the guest sees `ClockType::None`.
 pub const SCRATCH_TOP_CLOCK_PAGE_OFFSET: u64 = 0x3000;
 
 /// Size of the paravirtualized clock page in bytes (one 4 KiB page).
