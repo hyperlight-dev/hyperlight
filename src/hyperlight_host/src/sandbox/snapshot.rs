@@ -589,15 +589,14 @@ impl Snapshot {
         debug_assert!(guest_visible_size.is_multiple_of(PAGE_SIZE));
         layout.set_snapshot_size(guest_visible_size);
 
-        // On amd64 we currently don't persist the embedder-provided
-        // regions (`map_file_cow` etc.) into the snapshot — the
-        // existing behaviour predates this PR and mirrors what the old
-        // non-relocated path did. On i686 we do keep them: Nanvix uses
-        // `map_file_cow` regions for its ramfs image, which must
-        // survive into the snapshot identity so that restore produces
-        // the same guest state.
-        #[cfg(not(feature = "i686-guest"))]
-        let regions = Vec::new();
+        // Drop the embedder-provided regions: post-compaction every
+        // VA that used to map into a `map_file_cow` region has been
+        // rewritten to point at the new copy inside the snapshot blob
+        // (see the `guest_page` walk above). Re-mapping the originals
+        // on restore is unnecessary for the translation to work and
+        // actively risks corrupting the snapshot if the new snapshot
+        // PAs overlap the old region PAs.
+        let regions: Vec<MemoryRegion> = Vec::new();
 
         let hash = hash(&memory, &regions)?;
         Ok(Self {
