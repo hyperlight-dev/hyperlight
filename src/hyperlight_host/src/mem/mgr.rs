@@ -157,16 +157,16 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
 }
 
 /// Buffer for building guest page tables during snapshot creation.
-/// `PTE_BYTES` is the guest PTE size (8 for amd64, 4 for i686).
-/// `TableAddr` is a byte offset (GPA) so the same address space
-/// is used regardless of entry size.
+/// `TableAddr` is an absolute GPA (u64) so the same address space is
+/// used regardless of entry size.
 pub(crate) struct GuestPageTableBuffer {
     buffer: std::cell::RefCell<Vec<u8>>,
     phys_base: usize,
-    /// Byte offset from phys_base to the active root page table.
-    /// For multi-root guests, each root's PD starts at a different
-    /// offset in the buffer.
-    root_offset: std::cell::Cell<usize>,
+    /// Absolute GPA of the currently-active root table. For
+    /// multi-root guests, `set_root` switches which root subsequent
+    /// `vmem::map` / `vmem::space_aware_map` calls target — typically
+    /// to an address previously returned by `alloc_table`.
+    root: std::cell::Cell<u64>,
 }
 
 impl vmem::TableReadOps for GuestPageTableBuffer {
@@ -200,7 +200,7 @@ impl vmem::TableReadOps for GuestPageTableBuffer {
     }
 
     fn root_table(&self) -> u64 {
-        (self.phys_base + self.root_offset.get()) as u64
+        self.root.get()
     }
 }
 
@@ -236,18 +236,26 @@ impl core::convert::AsRef<GuestPageTableBuffer> for GuestPageTableBuffer {
 }
 
 impl GuestPageTableBuffer {
+    /// Create a new buffer with an initial zeroed root table at
+    /// `phys_base`. The returned buffer's current root is `phys_base`;
+    /// additional roots can be obtained by calling `alloc_table`.
     pub(crate) fn new(phys_base: usize) -> Self {
         GuestPageTableBuffer {
             buffer: std::cell::RefCell::new(vec![0u8; PAGE_TABLE_SIZE]),
             phys_base,
-            root_offset: std::cell::Cell::new(0),
+            root: std::cell::Cell::new(phys_base as u64),
         }
     }
 
-    /// Set the root offset to target a specific root page table.
-    /// Root i starts at byte offset `i * PAGE_TABLE_SIZE` in the buffer.
-    pub(crate) fn set_root_offset(&self, offset: usize) {
-        self.root_offset.set(offset);
+    /// Switch the active root. `addr` must have been obtained either
+    /// as the initial root GPA (`phys_base`) or via `alloc_table`.
+    pub(crate) fn set_root(&self, addr: u64) {
+        self.root.set(addr);
+    }
+
+    /// GPA of the initial root allocated by `new`.
+    pub(crate) fn initial_root(&self) -> u64 {
+        self.phys_base as u64
     }
 
     #[cfg(test)]

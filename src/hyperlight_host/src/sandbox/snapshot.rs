@@ -484,17 +484,19 @@ impl Snapshot {
                 // TODO: Look for opportunities to hugepage map
                 let mut snapshot_memory: Vec<u8> = Vec::new();
                 let pt_buf = GuestPageTableBuffer::new(layout.get_pt_base_gpa() as usize);
+                // Allocate one root table per space and remember the
+                // addresses returned by `alloc_table` instead of
+                // assuming the buffer's physical layout.
+                let mut root_addrs: Vec<u64> = Vec::with_capacity(root_pt_gpas.len());
+                root_addrs.push(pt_buf.initial_root());
                 for _ in 1..root_pt_gpas.len() {
-                    unsafe { pt_buf.alloc_table() };
+                    root_addrs.push(unsafe { pt_buf.alloc_table() });
                 }
 
                 let mut built_roots: BTreeMap<SpaceId, u64> = BTreeMap::new();
                 for (root_idx, (space_id, mappings)) in walk.into_iter().enumerate() {
-                    pt_buf.set_root_offset(root_idx * PAGE_SIZE);
-                    built_roots.insert(
-                        space_id,
-                        (layout.get_pt_base_gpa() as usize + root_idx * PAGE_SIZE) as u64,
-                    );
+                    pt_buf.set_root(root_addrs[root_idx]);
+                    built_roots.insert(space_id, root_addrs[root_idx]);
 
                     for sam in mappings {
                         match sam {
@@ -567,11 +569,11 @@ impl Snapshot {
                 }
 
                 // Phase 3: Map the scratch region into each root.
-                for root_idx in 0..root_pt_gpas.len() {
-                    pt_buf.set_root_offset(root_idx * PAGE_SIZE);
+                for &root_addr in &root_addrs {
+                    pt_buf.set_root(root_addr);
                     map_specials(&pt_buf, layout.get_scratch_size());
                 }
-                pt_buf.set_root_offset(0);
+                pt_buf.set_root(pt_buf.initial_root());
 
                 // Phase 4: finalize PT bytes.
                 let pt_data = pt_buf.into_bytes();
