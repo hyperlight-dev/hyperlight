@@ -104,5 +104,26 @@ pub fn scratch_base_gva(size: usize) -> u64 {
     (MAX_GVA - size + 1) as u64
 }
 
+/// Guest physical address of the base of the paravirtualized clock page.
+///
+/// The clock page sits at a fixed offset from the top of the guest physical
+/// address space, independent of `scratch_size`: it is always
+/// `MAX_GPA + 1 - SCRATCH_TOP_CLOCK_PAGE_OFFSET`.
+///
+/// Only meaningful when the host is built with the `enable_guest_clock`
+/// feature; otherwise the page is not populated.
+pub const fn clock_page_gpa() -> u64 {
+    (MAX_GPA as u64) + 1 - SCRATCH_TOP_CLOCK_PAGE_OFFSET
+}
+
+/// Guest virtual address of the base of the paravirtualized clock page.
+///
+/// See [`clock_page_gpa`]. Scratch is mapped identity-style from
+/// `scratch_base_gva` to `scratch_base_gpa`, so the clock page sits at the
+/// equivalent offset in the guest virtual address space.
+pub const fn clock_page_gva() -> u64 {
+    (MAX_GVA as u64) + 1 - SCRATCH_TOP_CLOCK_PAGE_OFFSET
+}
+
 /// Compute the minimum scratch region size needed for a sandbox.
 pub use arch::min_scratch_size;
