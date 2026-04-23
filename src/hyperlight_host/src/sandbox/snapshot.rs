@@ -108,6 +108,13 @@ pub struct Snapshot {
 
     /// The next action that should be performed on this snapshot
     entrypoint: NextAction,
+
+    /// The generation number assigned to this snapshot when it was
+    /// taken — i.e. "this is the Nth snapshot taken from the sandbox's
+    /// execution path from init to here". Propagated into the
+    /// restored sandbox's guest-visible counter so the guest can tell
+    /// which snapshot it is currently a clone of.
+    snapshot_generation: u64,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
     fn as_ref(&self) -> &Self {
@@ -415,6 +422,7 @@ impl Snapshot {
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
             entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
+            snapshot_generation: 0,
         })
     }
 
@@ -438,6 +446,7 @@ impl Snapshot {
         stack_top_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
+        snapshot_generation: u64,
     ) -> Result<Self> {
         let mut phys_seen = HashMap::<u64, usize>::new();
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
@@ -599,7 +608,13 @@ impl Snapshot {
             stack_top_gva,
             sregs: Some(sregs),
             entrypoint,
+            snapshot_generation,
         })
+    }
+
+    /// Generation number assigned to this snapshot when it was taken.
+    pub(crate) fn snapshot_generation(&self) -> u64 {
+        self.snapshot_generation
     }
 
     /// The id of the sandbox this snapshot was taken from.
@@ -730,6 +745,7 @@ mod tests {
             0,
             default_sregs(),
             super::NextAction::None,
+            1,
         )
         .unwrap();
 
@@ -746,6 +762,7 @@ mod tests {
             0,
             default_sregs(),
             super::NextAction::None,
+            2,
         )
         .unwrap();
 
