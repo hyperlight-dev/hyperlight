@@ -26,7 +26,7 @@ gdbstub_arch = { version = "0.3.3", optional = true }
 goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "endian_fd"] }
 rand = { version = "0.10" }
 cfg-if = { version = "1.0.4" }
-libc = { version = "0.2.185" }
+libc = { version = "0.2.186" }
 flatbuffers = "25.12.19"
 framehop = { version = "0.16.0", optional = true }
 fallible-iterator = { version = "0.3.0", optional = true }
