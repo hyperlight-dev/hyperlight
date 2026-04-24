@@ -76,7 +76,7 @@ jobs:
       - name: Install cargo-hyperlight
         uses: taiki-e/install-action@5939f3337e40968c39aa70f5ecb1417a92fb25a0 # v2.75.15
         with:
-          tool: cargo-hyperlight@0.1.8
+          tool: cargo-hyperlight@0.1.9
 
       - name: clippy exhaustive check (debug)
         run: just clippy-exhaustive debug
@@ -149,7 +149,7 @@ jobs:
       - name: Install cargo-hyperlight
         uses: taiki-e/install-action@5939f3337e40968c39aa70f5ecb1417a92fb25a0 # v2.75.15
         with:
-          tool: cargo-hyperlight@0.1.8
+          tool: cargo-hyperlight@0.1.9
 
       - name: clippy (debug)
         run: |
