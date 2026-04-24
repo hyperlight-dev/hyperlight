@@ -68,7 +68,7 @@ jobs:
             src/tests/rust_guests/witguest -> target
 
       - name: Install cargo-hyperlight
-        uses: taiki-e/install-action@5939f3337e40968c39aa70f5ecb1417a92fb25a0 # v2.75.15
+        uses: taiki-e/install-action@74e87cbfa15a59692b158178d8905a61bf6fca95 # v2.75.20
         with:
           tool: cargo-hyperlight@0.1.8
 
