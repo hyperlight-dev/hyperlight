@@ -1653,6 +1653,7 @@ mod snapshot_file_tests {
             stack_top_gva: snapshot.stack_top_gva(),
             sregs: snapshot.sregs().cloned(),
             entrypoint: snapshot.entrypoint(),
+            snapshot_generation: 0,
         };
 
         let mut sbox2 = MultiUseSandbox::from_snapshot(Arc::new(new_snap)).unwrap();

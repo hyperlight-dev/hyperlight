@@ -369,8 +369,7 @@ impl HyperlightVm {
             let _ = (cr3, sregs); // suppress unused warnings
             // TODO: This is probably not correct.
             // Let's deal with it when we clean up the nanvix-unstable feature
-            self.vm
-                .set_sregs(&CommonSpecialRegisters::standard_real_mode_defaults())?;
+            self.vm.set_sregs(&CommonSpecialRegisters::default())?;
         }
 
         Ok(())

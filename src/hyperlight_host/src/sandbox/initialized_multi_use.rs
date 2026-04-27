@@ -256,17 +256,26 @@ impl MultiUseSandbox {
         // the guest resumes in the correct CPU state.
         #[cfg(not(feature = "nanvix-unstable"))]
         if matches!(snapshot.entrypoint(), super::snapshot::NextAction::Call(_)) {
+            let pt_base = hshm.layout.get_pt_base_gpa();
             let sregs = snapshot.sregs().cloned().unwrap_or_else(|| {
-                crate::hypervisor::regs::CommonSpecialRegisters::standard_64bit_defaults(
-                    hshm.layout.get_pt_base_gpa(),
-                )
-            });
-            vm.apply_sregs(hshm.layout.get_pt_base_gpa(), &sregs)
-                .map_err(|e| {
-                    crate::HyperlightError::HyperlightVmError(
-                        crate::hypervisor::hyperlight_vm::HyperlightVmError::Restore(e),
+                #[cfg(not(feature = "i686-guest"))]
+                {
+                    crate::hypervisor::regs::CommonSpecialRegisters::standard_64bit_defaults(
+                        pt_base,
                     )
-                })?;
+                }
+                #[cfg(feature = "i686-guest")]
+                {
+                    crate::hypervisor::regs::CommonSpecialRegisters::standard_32bit_paging_defaults(
+                        pt_base,
+                    )
+                }
+            });
+            vm.apply_sregs(pt_base, &sregs).map_err(|e| {
+                crate::HyperlightError::HyperlightVmError(
+                    crate::hypervisor::hyperlight_vm::HyperlightVmError::Restore(e),
+                )
+            })?;
         }
 
         #[cfg(gdb)]
