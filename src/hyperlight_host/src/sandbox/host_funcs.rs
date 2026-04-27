@@ -72,6 +72,23 @@ impl FunctionRegistry {
         Ok(())
     }
 
+    /// Create a `FunctionRegistry` pre-populated with the default
+    /// `HostPrint` function (writes to stdout with green text).
+    pub(crate) fn with_default_host_print() -> Result<Self> {
+        use crate::func::host_functions::HostFunction;
+        use crate::func::{ParameterTuple, SupportedReturnType};
+
+        let mut registry = Self::default();
+        let hf: HostFunction<i32, (String,)> = default_writer_func.into();
+        let entry = FunctionEntry {
+            function: hf.into(),
+            parameter_types: <(String,)>::TYPE,
+            return_type: <i32 as SupportedReturnType>::TYPE,
+        };
+        registry.register_host_function("HostPrint".to_string(), entry)?;
+        Ok(registry)
+    }
+
     /// Assuming a host function called `"HostPrint"` exists, and takes a
     /// single string parameter, call it with the given `msg` parameter.
     ///
@@ -118,7 +135,7 @@ impl FunctionRegistry {
 
 /// The default writer function is to write to stdout with green text.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-pub(super) fn default_writer_func(s: String) -> Result<i32> {
+fn default_writer_func(s: String) -> Result<i32> {
     match std::io::stdout().is_terminal() {
         false => {
             print!("{}", s);

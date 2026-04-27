@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{Span, instrument};
 use tracing_core::LevelFilter;
 
-use super::host_funcs::{FunctionRegistry, default_writer_func};
+use super::host_funcs::FunctionRegistry;
 use super::snapshot::Snapshot;
 use super::uninitialized_evolve::evolve_impl_multi_use;
 use crate::func::host_functions::{HostFunction, register_host_function};
@@ -365,9 +365,9 @@ impl UninitializedSandbox {
         let mem_mgr_wrapper =
             SandboxMemoryManager::<ExclusiveSharedMemory>::from_snapshot(snapshot.as_ref())?;
 
-        let host_funcs = Arc::new(Mutex::new(FunctionRegistry::default()));
+        let host_funcs = Arc::new(Mutex::new(FunctionRegistry::with_default_host_print()?));
 
-        let mut sandbox = Self {
+        let sandbox = Self {
             host_funcs,
             mgr: mem_mgr_wrapper,
             max_guest_log_level: None,
@@ -382,9 +382,6 @@ impl UninitializedSandbox {
             counter_taken: std::sync::atomic::AtomicBool::new(false),
             pending_file_mappings: Vec::new(),
         };
-
-        // If we were passed a writer for host print register it otherwise use the default.
-        sandbox.register_print(default_writer_func)?;
 
         crate::debug!("Sandbox created:  {:#?}", sandbox);
 
