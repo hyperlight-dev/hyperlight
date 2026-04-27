@@ -288,7 +288,7 @@ impl BufferChainBuilder<Writable> {
 ///
 /// Contains a scatter-gather list of [`BufferElement`]s, divided into
 /// readable (driver->device) and writable (device->driver) sections.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct BufferChain {
     /// All buffer elements (readable followed by writable)
     elems: SmallVec<[BufferElement; 16]>,
@@ -1350,20 +1350,20 @@ pub(crate) mod tests {
     impl MemOps for TestMem {
         type Error = core::convert::Infallible;
 
-        fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error> {
+        fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
             let src = self.ptr_for_addr(addr);
             unsafe {
                 ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), dst.len());
             }
-            Ok(dst.len())
+            Ok(())
         }
 
-        fn write(&self, addr: u64, src: &[u8]) -> Result<usize, Self::Error> {
+        fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error> {
             let dst = self.ptr_for_addr(addr);
             unsafe {
                 ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
             }
-            Ok(src.len())
+            Ok(())
         }
 
         fn read_val<T: Pod>(&self, addr: u64) -> Result<T, Self::Error> {
@@ -1840,18 +1840,6 @@ pub(crate) mod tests {
             producer.submit_one(0x3000, 256, false),
             Err(RingError::WouldBlock)
         ));
-    }
-
-    #[test]
-    fn test_empty_chain_rejected() {
-        let chain = BufferChain::default();
-        assert_eq!(chain.len(), 0);
-
-        let ring = make_ring(4);
-        let mut producer = make_producer(&ring);
-
-        let result = producer.submit_available(&chain);
-        assert!(matches!(result, Err(RingError::EmptyChain)));
     }
 
     #[test]
@@ -2491,7 +2479,7 @@ pub(crate) mod tests {
     // Out-of-order multi-length explicit
     #[test]
     fn test_out_of_order_multi_length() {
-        let ring = make_ring(12);
+        let ring = make_ring(16);
         let mut producer = make_producer(&ring);
         let mut consumer = make_consumer(&ring);
 
@@ -3311,7 +3299,7 @@ mod fuzz {
 
     impl Arbitrary for Scenario {
         fn arbitrary(g: &mut Gen) -> Self {
-            let table_size = usize::arbitrary(g) % MAX_RING + 1;
+            let table_size = (usize::arbitrary(g) % MAX_RING + 1).next_power_of_two();
             let num_ops = usize::arbitrary(g) % MAX_OPS + 1;
 
             let ops = (0..num_ops).map(|_| Op::arbitrary(g)).collect();

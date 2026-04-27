@@ -47,14 +47,10 @@ pub trait MemOps {
     /// * `addr` - Guest physical address to read from
     /// * `dst` - Destination buffer to fill
     ///
-    /// # Returns
-    ///
-    /// Number of bytes actually read (should equal `dst.len()` on success).
-    ///
     /// # Safety
     ///
     /// The caller must ensure `addr` is valid and points to at least `dst.len()` bytes.
-    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error>;
+    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error>;
 
     /// Write bytes to physical memory.
     ///
@@ -63,14 +59,10 @@ pub trait MemOps {
     /// * `addr` - address to write to
     /// * `src` - Source data to write
     ///
-    /// # Returns
-    ///
-    /// Number of bytes actually written (should equal `src.len()` on success).
-    ///
     /// # Safety
     ///
     /// The caller must ensure `addr` is valid and points to at least `src.len()` bytes.
-    fn write(&self, addr: u64, src: &[u8]) -> Result<usize, Self::Error>;
+    fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error>;
 
     /// Load a u16 with acquire semantics.
     ///
@@ -140,11 +132,11 @@ pub trait MemOps {
 impl<T: MemOps> MemOps for Arc<T> {
     type Error = T::Error;
 
-    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
         (**self).read(addr, dst)
     }
 
-    fn write(&self, addr: u64, src: &[u8]) -> Result<usize, Self::Error> {
+    fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error> {
         (**self).write(addr, src)
     }
 

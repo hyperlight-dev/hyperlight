@@ -92,6 +92,7 @@ impl Layout {
     /// Create a Layout from a base address and number of descriptors.
     ///
     /// The base address must be aligned to `Descriptor::ALIGN`.
+    /// The number of descriptors must be a power of 2.
     /// The memory region starting at `base` must be at least `Layout::query_size(num_descs)` bytes.
     ///
     /// # Safety
@@ -99,11 +100,23 @@ impl Layout {
     /// - `base` must be aligned to `Descriptor::ALIGN`.
     /// - Memory must remain valid for the lifetime of the ring.
     pub const unsafe fn from_base(base: u64, num_descs: NonZeroU16) -> Result<Self, RingError> {
+        let num_descs = num_descs.get() as usize;
+        if !num_descs.is_power_of_two() {
+            return Err(RingError::InvalidLayout);
+        }
+
         if !base.is_multiple_of(Descriptor::ALIGN as u64) {
             return Err(RingError::InvalidLayout);
         }
 
-        let desc_size = num_descs.get() as usize * Descriptor::SIZE;
+        if base
+            .checked_add(Layout::query_size(num_descs) as u64)
+            .is_none()
+        {
+            return Err(RingError::InvalidLayout);
+        }
+
+        let desc_size = num_descs * Descriptor::SIZE;
         let event_size = EventSuppression::SIZE;
         let event_align = EventSuppression::ALIGN;
 
@@ -112,7 +125,7 @@ impl Layout {
 
         Ok(Self {
             desc_table_addr: base,
-            desc_table_len: num_descs.get(),
+            desc_table_len: num_descs as u16,
             drv_evt_addr: base + drv_evt_offset as u64,
             dev_evt_addr: base + dev_evt_offset as u64,
         })
@@ -168,6 +181,10 @@ const _: () = {
         // Total size from query_size covers entire layout
         let layout_end = layout.dev_evt_addr + EventSuppression::SIZE as u64;
         assert!(base + expected_size as u64 == layout_end);
+    }
+
+    unsafe {
+        assert!(Layout::from_base(u64::MAX, NonZeroU16::new(1).unwrap()).is_err());
     }
 
     verify_layout(1);
