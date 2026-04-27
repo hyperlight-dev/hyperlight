@@ -74,9 +74,7 @@ jobs:
         run: just fmt-check
 
       - name: Install cargo-hyperlight
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2.75.22
-        with:
-          tool: cargo-hyperlight@0.1.9
+        run: cargo install cargo-hyperlight --version 0.1.9 --locked --force
 
       - name: clippy exhaustive check (debug)
         run: just clippy-exhaustive debug
@@ -147,9 +145,7 @@ jobs:
         run: just fmt-check
 
       - name: Install cargo-hyperlight
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2.75.22
-        with:
-          tool: cargo-hyperlight@0.1.9
+        run: cargo install cargo-hyperlight --version 0.1.9 --locked --force
 
       - name: clippy (debug)
         run: |
