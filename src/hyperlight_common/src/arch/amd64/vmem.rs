@@ -412,15 +412,18 @@ pub unsafe fn walk_va_spaces<Op: TableReadOps>(
     out
 }
 
-/// See [`walk_va_spaces`]: amd64 never emits `AnotherSpace`, so this
-/// is unreachable in practice. It silently no-ops (rather than
-/// panicking) to keep the architecture-independent re-export usable.
+/// aarch64 never emits `AnotherSpace` entries, so [`SpaceReferenceMapping`]
+/// is [`crate::vmem::Void`] making the `AnotherSpace` match arm statically unreachable.
+pub type SpaceReferenceMapping = crate::vmem::Void;
+
+/// Statically unreachable: amd64 never emits `AnotherSpace`.
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn space_aware_map<Op: TableOps>(
+pub(super) unsafe fn link_shared_table<Op: TableOps>(
     _op: &Op,
-    _ref_map: crate::vmem::SpaceReferenceMapping,
+    impossible: crate::vmem::Void,
     _built_roots: &::alloc::collections::BTreeMap<crate::vmem::SpaceId, Op::TableAddr>,
 ) {
+    match impossible {}
 }
 
 #[allow(clippy::missing_safety_doc)]
