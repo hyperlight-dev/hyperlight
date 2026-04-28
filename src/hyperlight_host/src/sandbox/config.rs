@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::cmp::max;
 use std::time::Duration;
 
+use hyperlight_common::mem::PAGE_SIZE_USIZE;
 #[cfg(target_os = "linux")]
 use libc::c_int;
 use tracing::{Span, instrument};
@@ -44,12 +44,6 @@ pub struct SandboxConfiguration {
     /// Guest gdb debug port
     #[cfg(gdb)]
     guest_debug_info: Option<DebugInfo>,
-    /// The size of the memory buffer that is made available for input to the
-    /// Guest Binary
-    input_data_size: usize,
-    /// The size of the memory buffer that is made available for input to the
-    /// Guest Binary
-    output_data_size: usize,
     /// The heap size to use in the guest sandbox. If set to 0, the heap
     /// size will be determined from the PE file header
     ///
@@ -74,17 +68,29 @@ pub struct SandboxConfiguration {
     interrupt_vcpu_sigrtmin_offset: u8,
     /// How much writable memory to offer the guest
     scratch_size: usize,
+    /// Number of descriptors for the guest-to-host virtqueue. Must be a power of 2.
+    /// Default: 64 sized to 2x H2G depth for deadlock prevention.
+    g2h_queue_depth: usize,
+    /// Number of descriptors for the host-to-guest virtqueue. Must be a power of 2.
+    /// Default: 32
+    h2g_queue_depth: usize,
+    /// Number of physical pages for the G2H (guest-to-host) buffer pool.
+    /// When None, falls back to deprecated `output_data_size` or default.
+    g2h_pool_pages: Option<usize>,
+    /// Number of physical pages for the H2G (host-to-guest) buffer pool.
+    /// When None, falls back to deprecated `input_data_size` or default.
+    h2g_pool_pages: Option<usize>,
+    /// Deprecated: use `g2h_pool_pages` instead.
+    /// When set (non-zero), translates to `g2h_pool_pages` if pool pages
+    /// are not explicitly configured.
+    output_data_size: usize,
+    /// Deprecated: use `h2g_pool_pages` instead.
+    /// When set (non-zero), translates to `h2g_pool_pages` if pool pages
+    /// are not explicitly configured.
+    input_data_size: usize,
 }
 
 impl SandboxConfiguration {
-    /// The default size of input data
-    pub const DEFAULT_INPUT_SIZE: usize = 0x4000;
-    /// The minimum size of input data
-    pub const MIN_INPUT_SIZE: usize = 0x2000;
-    /// The default size of output data
-    pub const DEFAULT_OUTPUT_SIZE: usize = 0x4000;
-    /// The minimum size of output data
-    pub const MIN_OUTPUT_SIZE: usize = 0x2000;
     /// The default interrupt retry delay
     pub const DEFAULT_INTERRUPT_RETRY_DELAY: Duration = Duration::from_micros(500);
     /// The default signal offset from `SIGRTMIN` used to determine the signal number for interrupting
@@ -93,13 +99,19 @@ impl SandboxConfiguration {
     pub const DEFAULT_HEAP_SIZE: u64 = 131072;
     /// The default size of the scratch region
     pub const DEFAULT_SCRATCH_SIZE: usize = 0x48000;
+    /// The default G2H virtqueue depth (number of descriptors, must be power of 2)
+    pub const DEFAULT_G2H_QUEUE_DEPTH: usize = 64;
+    /// The default H2G virtqueue depth (number of descriptors, must be power of 2)
+    pub const DEFAULT_H2G_QUEUE_DEPTH: usize = 32;
+    /// The default number of G2H buffer pool pages
+    pub const DEFAULT_G2H_POOL_PAGES: usize = 8;
+    /// The default number of H2G buffer pool pages
+    pub const DEFAULT_H2G_POOL_PAGES: usize = 4;
 
     #[allow(clippy::too_many_arguments)]
     /// Create a new configuration for a sandbox with the given sizes.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn new(
-        input_data_size: usize,
-        output_data_size: usize,
         heap_size_override: Option<u64>,
         scratch_size: usize,
         interrupt_retry_delay: Duration,
@@ -108,31 +120,21 @@ impl SandboxConfiguration {
         #[cfg(crashdump)] guest_core_dump: bool,
     ) -> Self {
         Self {
-            input_data_size: max(input_data_size, Self::MIN_INPUT_SIZE),
-            output_data_size: max(output_data_size, Self::MIN_OUTPUT_SIZE),
             heap_size_override: heap_size_override.unwrap_or(0),
             scratch_size,
             interrupt_retry_delay,
             interrupt_vcpu_sigrtmin_offset,
+            g2h_queue_depth: Self::DEFAULT_G2H_QUEUE_DEPTH,
+            h2g_queue_depth: Self::DEFAULT_H2G_QUEUE_DEPTH,
+            g2h_pool_pages: None,
+            h2g_pool_pages: None,
+            output_data_size: 0,
+            input_data_size: 0,
             #[cfg(gdb)]
             guest_debug_info,
             #[cfg(crashdump)]
             guest_core_dump,
         }
-    }
-
-    /// Set the size of the memory buffer that is made available for input to the guest
-    /// the minimum value is MIN_INPUT_SIZE
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn set_input_data_size(&mut self, input_data_size: usize) {
-        self.input_data_size = max(input_data_size, Self::MIN_INPUT_SIZE);
-    }
-
-    /// Set the size of the memory buffer that is made available for output from the guest
-    /// the minimum value is MIN_OUTPUT_SIZE
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub fn set_output_data_size(&mut self, output_data_size: usize) {
-        self.output_data_size = max(output_data_size, Self::MIN_OUTPUT_SIZE);
     }
 
     /// Set the heap size to use in the guest sandbox. If set to 0, the heap size will be determined from the PE file header
@@ -195,18 +197,96 @@ impl SandboxConfiguration {
     }
 
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_input_data_size(&self) -> usize {
-        self.input_data_size
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_output_data_size(&self) -> usize {
-        self.output_data_size
-    }
-
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_scratch_size(&self) -> usize {
         self.scratch_size
+    }
+
+    /// Get the G2H virtqueue depth (number of descriptors).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_g2h_queue_depth(&self) -> usize {
+        self.g2h_queue_depth
+    }
+
+    /// Get the H2G virtqueue depth (number of descriptors).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_h2g_queue_depth(&self) -> usize {
+        self.h2g_queue_depth
+    }
+
+    /// Set the G2H virtqueue depth (number of descriptors, must be power of 2).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_g2h_queue_depth(&mut self, depth: usize) {
+        self.g2h_queue_depth = depth;
+    }
+
+    /// Set the H2G virtqueue depth (number of descriptors, must be power of 2).
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_h2g_queue_depth(&mut self, depth: usize) {
+        self.h2g_queue_depth = depth;
+    }
+
+    /// Get the number of G2H buffer pool pages.
+    ///
+    /// Priority: explicit `g2h_pool_pages` > derived from deprecated
+    /// `output_data_size` > default.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_g2h_pool_pages(&self) -> usize {
+        self.g2h_pool_pages.unwrap_or_else(|| {
+            if self.output_data_size > 0 {
+                self.output_data_size
+                    .div_ceil(PAGE_SIZE_USIZE)
+                    .max(Self::DEFAULT_G2H_POOL_PAGES)
+            } else {
+                Self::DEFAULT_G2H_POOL_PAGES
+            }
+        })
+    }
+
+    /// Get the number of H2G buffer pool pages.
+    ///
+    /// Priority: explicit `h2g_pool_pages` > derived from deprecated
+    /// `input_data_size` > default.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn get_h2g_pool_pages(&self) -> usize {
+        self.h2g_pool_pages.unwrap_or_else(|| {
+            if self.input_data_size > 0 {
+                self.input_data_size
+                    .div_ceil(PAGE_SIZE_USIZE)
+                    .max(Self::DEFAULT_H2G_POOL_PAGES)
+            } else {
+                Self::DEFAULT_H2G_POOL_PAGES
+            }
+        })
+    }
+
+    /// Set the number of G2H buffer pool pages.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_g2h_pool_pages(&mut self, pages: usize) {
+        self.g2h_pool_pages = Some(pages);
+    }
+
+    /// Set the number of H2G buffer pool pages.
+    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
+    pub fn set_h2g_pool_pages(&mut self, pages: usize) {
+        self.h2g_pool_pages = Some(pages);
+    }
+
+    /// Deprecated: use [`set_g2h_pool_pages`](Self::set_g2h_pool_pages).
+    ///
+    /// Sets the output data size. If `g2h_pool_pages` is not explicitly
+    /// set, this value is translated to pool pages.
+    #[deprecated(note = "use set_g2h_pool_pages instead")]
+    pub fn set_output_data_size(&mut self, size: usize) {
+        self.output_data_size = size;
+    }
+
+    /// Deprecated: use [`set_h2g_pool_pages`](Self::set_h2g_pool_pages).
+    ///
+    /// Sets the input data size. If `h2g_pool_pages` is not explicitly
+    /// set, this value is translated to pool pages.
+    #[deprecated(note = "use set_h2g_pool_pages instead")]
+    pub fn set_input_data_size(&mut self, size: usize) {
+        self.input_data_size = size;
     }
 
     /// Set the size of the scratch regiong
@@ -245,8 +325,6 @@ impl Default for SandboxConfiguration {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     fn default() -> Self {
         Self::new(
-            Self::DEFAULT_INPUT_SIZE,
-            Self::DEFAULT_OUTPUT_SIZE,
             None,
             Self::DEFAULT_SCRATCH_SIZE,
             Self::DEFAULT_INTERRUPT_RETRY_DELAY,
@@ -266,12 +344,8 @@ mod tests {
     #[test]
     fn overrides() {
         const HEAP_SIZE_OVERRIDE: u64 = 0x50000;
-        const INPUT_DATA_SIZE_OVERRIDE: usize = 0x4000;
-        const OUTPUT_DATA_SIZE_OVERRIDE: usize = 0x4001;
         const SCRATCH_SIZE_OVERRIDE: usize = 0x60000;
-        let mut cfg = SandboxConfiguration::new(
-            INPUT_DATA_SIZE_OVERRIDE,
-            OUTPUT_DATA_SIZE_OVERRIDE,
+        let cfg = SandboxConfiguration::new(
             Some(HEAP_SIZE_OVERRIDE),
             SCRATCH_SIZE_OVERRIDE,
             SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
@@ -286,38 +360,6 @@ mod tests {
         let scratch_size = cfg.get_scratch_size();
         assert_eq!(HEAP_SIZE_OVERRIDE, heap_size);
         assert_eq!(SCRATCH_SIZE_OVERRIDE, scratch_size);
-
-        cfg.heap_size_override = 2048;
-        cfg.scratch_size = 0x40000;
-        assert_eq!(2048, cfg.heap_size_override);
-        assert_eq!(0x40000, cfg.scratch_size);
-        assert_eq!(INPUT_DATA_SIZE_OVERRIDE, cfg.input_data_size);
-        assert_eq!(OUTPUT_DATA_SIZE_OVERRIDE, cfg.output_data_size);
-    }
-
-    #[test]
-    fn min_sizes() {
-        let mut cfg = SandboxConfiguration::new(
-            SandboxConfiguration::MIN_INPUT_SIZE - 1,
-            SandboxConfiguration::MIN_OUTPUT_SIZE - 1,
-            None,
-            SandboxConfiguration::DEFAULT_SCRATCH_SIZE,
-            SandboxConfiguration::DEFAULT_INTERRUPT_RETRY_DELAY,
-            SandboxConfiguration::INTERRUPT_VCPU_SIGRTMIN_OFFSET,
-            #[cfg(gdb)]
-            None,
-            #[cfg(crashdump)]
-            true,
-        );
-        assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
-        assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
-        assert_eq!(0, cfg.heap_size_override);
-
-        cfg.set_input_data_size(SandboxConfiguration::MIN_INPUT_SIZE - 1);
-        cfg.set_output_data_size(SandboxConfiguration::MIN_OUTPUT_SIZE - 1);
-
-        assert_eq!(SandboxConfiguration::MIN_INPUT_SIZE, cfg.input_data_size);
-        assert_eq!(SandboxConfiguration::MIN_OUTPUT_SIZE, cfg.output_data_size);
     }
 
     mod proptests {
@@ -328,21 +370,6 @@ mod tests {
         use crate::sandbox::config::DebugInfo;
 
         proptest! {
-            #[test]
-            fn input_data_size(size in SandboxConfiguration::MIN_INPUT_SIZE..=SandboxConfiguration::MIN_INPUT_SIZE * 10) {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_input_data_size(size);
-                prop_assert_eq!(size, cfg.get_input_data_size());
-            }
-
-            #[test]
-            fn output_data_size(size in SandboxConfiguration::MIN_OUTPUT_SIZE..=SandboxConfiguration::MIN_OUTPUT_SIZE * 10) {
-                let mut cfg = SandboxConfiguration::default();
-                cfg.set_output_data_size(size);
-                prop_assert_eq!(size, cfg.get_output_data_size());
-            }
-
-
             #[test]
             fn heap_size_override(size in 0x1000..=0x10000u64) {
                 let mut cfg = SandboxConfiguration::default();

@@ -30,6 +30,7 @@ pub mod common; // pub to disable dead_code warning
 use crate::common::{
     new_rust_sandbox, new_rust_uninit_sandbox, with_all_sandboxes, with_c_sandbox,
     with_c_uninit_sandbox, with_rust_sandbox, with_rust_sandbox_cfg, with_rust_uninit_sandbox,
+    with_rust_uninit_sandbox_cfg,
 };
 
 // A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
@@ -535,7 +536,7 @@ fn guest_malloc_abort() {
     });
 
     // allocate a vector (on heap) that is bigger than the heap
-    let heap_size = 0x4000;
+    let heap_size = 0x8000;
     let size_to_allocate = 0x10000;
     assert!(
         size_to_allocate > heap_size,
@@ -544,6 +545,10 @@ fn guest_malloc_abort() {
 
     let mut cfg = SandboxConfiguration::default();
     cfg.set_heap_size(heap_size);
+    cfg.set_g2h_queue_depth(2);
+    cfg.set_h2g_queue_depth(2);
+    cfg.set_g2h_pool_pages(3);
+    cfg.set_h2g_pool_pages(1);
     with_rust_sandbox_cfg(cfg, |mut sbox2| {
         let err = sbox2
             .call::<i32>(
@@ -579,47 +584,15 @@ fn guest_outb_with_invalid_port_poisons_sandbox() {
 }
 
 #[test]
-fn corrupt_output_size_prefix_rejected() {
-    with_rust_sandbox(|mut sbox| {
-        let res = sbox.call::<i32>("CorruptOutputSizePrefix", ());
-        assert!(
-            res.is_err(),
-            "Expected error when guest corrupts size prefix, got: {:?}",
-            res,
-        );
-        let err_msg = format!("{:?}", res.unwrap_err());
-        assert!(
-            err_msg.contains("Corrupt buffer size prefix: flatbuffer claims 4294967295 bytes but the element slot is only 8 bytes"),
-            "Unexpected error message: {err_msg}"
-        );
-    });
-}
-
-#[test]
-fn corrupt_output_back_pointer_rejected() {
-    with_rust_sandbox(|mut sbox| {
-        let res = sbox.call::<i32>("CorruptOutputBackPointer", ());
-        assert!(
-            res.is_err(),
-            "Expected error when guest corrupts back-pointer, got: {:?}",
-            res,
-        );
-        let err_msg = format!("{:?}", res.unwrap_err());
-        assert!(
-            err_msg.contains(
-                "Corrupt buffer back-pointer: element offset 57005 is outside valid range [8, 8]"
-            ),
-            "Unexpected error message: {err_msg}"
-        );
-    });
-}
-
-#[test]
 fn guest_panic_no_alloc() {
-    let heap_size = 0x4000;
+    let heap_size = 0x8000;
 
     let mut cfg = SandboxConfiguration::default();
     cfg.set_heap_size(heap_size);
+    cfg.set_g2h_queue_depth(2);
+    cfg.set_h2g_queue_depth(2);
+    cfg.set_g2h_pool_pages(3);
+    cfg.set_h2g_pool_pages(1);
     with_rust_sandbox_cfg(cfg, |mut sbox| {
         let res = sbox
             .call::<i32>(
@@ -743,10 +716,10 @@ fn log_message() {
     // follows:
     //  - logs from trace level tracing spans created as logs because of the tracing `log` feature
     //    - 4 from evolve call (generic_init + hyperlight_main)
-    //    - 8 from guest call
+    //    - 4 from guest call (call_host_function + read_n_bytes_from_user_memory)
     // and are multiplied because we make 6 calls to `log_test_messages`
     // NOTE: These numbers need to be updated if log messages or spans are added/removed
-    let num_fixed_trace_log = 12 * 6;
+    let num_fixed_trace_log = 8 * 6;
 
     // Calculate fixed info logs
     // - 4 logs per iteration from infrastructure at Info level (internal_dispatch_function)
@@ -826,6 +799,167 @@ fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
                 .unwrap();
         });
     }
+}
+
+// The following tests depend on a global SimpleLogger or TracingSubscriber and
+// cannot run in parallel with other tests. They are marked #[ignore] and run
+// sequentially via `just test-isolated`.
+
+#[test]
+#[ignore]
+fn virtq_log_delivery() {
+    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
+
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    with_rust_uninit_sandbox(|mut sbox| {
+        sbox.set_max_guest_log_level(tracing_core::LevelFilter::TRACE);
+        let mut sandbox = sbox.evolve().unwrap();
+
+        sandbox
+            .call::<()>("LogMessage", ("virtq log test message".to_string(), 3_i32))
+            .unwrap();
+
+        let count = LOGGER.num_log_calls();
+        let mut found = false;
+        for i in 0..count {
+            if let Some(call) = LOGGER.get_log_call(i)
+                && call.target == "hyperlight_guest"
+                && call.args.contains("virtq log test")
+            {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "expected 'virtq log test' message from guest");
+        LOGGER.clear_log_calls();
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_log_backpressure() {
+    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
+
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sbox| {
+        sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+        let mut sandbox = sbox.evolve().unwrap();
+
+        sandbox.call::<()>("LogMessageN", 50_i32).unwrap();
+
+        let res: i32 = sandbox
+            .call("ThisIsNotARealFunctionButTheNameIsImportant", ())
+            .unwrap();
+        assert_eq!(res, 99);
+
+        let guest_count = (0..LOGGER.num_log_calls())
+            .filter_map(|i| LOGGER.get_log_call(i))
+            .filter(|c| c.target == "hyperlight_guest" && c.args.contains("log entry"))
+            .count();
+        assert_eq!(guest_count, 50, "expected 50 guest logs, got {guest_count}");
+        LOGGER.clear_log_calls();
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_log_backpressure_repeated() {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        for _ in 0..5 {
+            sandbox.call::<()>("LogMessageN", 30_i32).unwrap();
+        }
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_backpressure_small_ring() {
+    use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
+
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_queue_depth(4);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sbox| {
+        sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+        let mut sandbox = sbox.evolve().unwrap();
+
+        sandbox.call::<()>("LogMessageN", 20_i32).unwrap();
+
+        let guest_count = (0..LOGGER.num_log_calls())
+            .filter_map(|i| LOGGER.get_log_call(i))
+            .filter(|c| c.target == "hyperlight_guest" && c.args.contains("log entry"))
+            .count();
+        assert_eq!(guest_count, 20, "expected 20 guest logs, got {guest_count}");
+        LOGGER.clear_log_calls();
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_log_tracing_delivery() {
+    use hyperlight_testing::tracing_subscriber::TracingSubscriber;
+
+    let subscriber = TracingSubscriber::new(tracing::Level::TRACE);
+
+    tracing::subscriber::with_default(subscriber.clone(), || {
+        with_rust_uninit_sandbox(|mut sbox| {
+            sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+            let mut sandbox = sbox.evolve().unwrap();
+
+            subscriber.clear();
+
+            sandbox
+                .call::<()>("LogMessage", ("tracing delivery test".to_string(), 3_i32))
+                .unwrap();
+
+            let events = subscriber.get_events();
+            assert!(
+                !events.is_empty(),
+                "expected tracing events after guest log call, got none"
+            );
+        });
+    });
+}
+
+#[test]
+#[ignore]
+fn virtq_log_tracing_levels() {
+    use hyperlight_testing::tracing_subscriber::TracingSubscriber;
+
+    let subscriber = TracingSubscriber::new(tracing::Level::TRACE);
+
+    tracing::subscriber::with_default(subscriber.clone(), || {
+        with_rust_uninit_sandbox(|mut sbox| {
+            sbox.set_max_guest_log_level(tracing_core::LevelFilter::TRACE);
+            let mut sandbox = sbox.evolve().unwrap();
+
+            for level in [1_i32, 2, 3, 4, 5] {
+                subscriber.clear();
+                let msg = format!("level-test-{}", level);
+                sandbox.call::<()>("LogMessage", (msg, level)).unwrap();
+
+                let events = subscriber.get_events();
+                assert!(
+                    !events.is_empty(),
+                    "expected tracing events for guest log level {}",
+                    level
+                );
+            }
+        });
+    });
 }
 
 /// Tests whether host is able to return Bool as return type
@@ -1679,7 +1813,9 @@ fn exception_handler_installation_and_validation() {
 /// This validates that the exception handling path does not require heap allocations.
 #[test]
 fn fill_heap_and_cause_exception() {
-    with_rust_sandbox(|mut sandbox| {
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_scratch_size(0x60000);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
         let result = sandbox.call::<()>("FillHeapAndCauseException", ());
 
         // The call should fail with an exception error since there's no handler installed

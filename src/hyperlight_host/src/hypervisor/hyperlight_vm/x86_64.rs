@@ -2110,17 +2110,20 @@ mod tests {
         }
 
         /// Creates VM with guest code that: dirtys FPU (if flag==0), does FXSAVE to buffer, sets flag=1.
-        /// Uses output_data region for FXSAVE buffer (like regular guest output), scratch for stack.
+        /// Uses a scratch region area for the FXSAVE buffer.
         fn hyperlight_vm_with_mem_mgr_fxsave() -> FxsaveTestContext {
             use iced_x86::code_asm::*;
 
             // Compute fixed addresses for FXSAVE buffer and flag.
-            // These are in the output_data region which starts at a known offset.
-            // We use a default SandboxConfiguration to get the same layout as create_test_vm_context.
+            // Place the buffer at halfway through scratch: well past
+            // the rings and page tables at the start, and well below
+            // the stack and scratch-top metadata at the end.
             let config: SandboxConfiguration = Default::default();
             let layout = SandboxMemoryLayout::new(config, 512, 4096, None).unwrap();
-            let fxsave_offset = layout.get_output_data_buffer_scratch_host_offset();
-            let fxsave_gva = layout.get_output_data_buffer_gva();
+            let scratch_size = config.get_scratch_size();
+            let fxsave_offset = (scratch_size / 2) & !0xFFF; // page-aligned
+            let fxsave_gva =
+                hyperlight_common::layout::scratch_base_gva(scratch_size) + fxsave_offset as u64;
             let flag_gva = fxsave_gva + 512;
 
             let mut a = CodeAssembler::new(64).unwrap();

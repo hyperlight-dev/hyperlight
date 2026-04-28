@@ -16,10 +16,13 @@ limitations under the License.
 
 use std::sync::{Arc, Mutex};
 
+use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterValue};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
 use hyperlight_common::outb::{Exception, OutBAction};
+use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
+use hyperlight_common::virtq::{self};
 use log::{Level, Record};
 use tracing::{Span, instrument};
 use tracing_log::format_trace;
@@ -61,46 +64,50 @@ pub enum HandleOutbError {
     MemProfile(String),
 }
 
-#[instrument(err(Debug), skip_all, parent = Span::current(), level="Trace")]
-pub(super) fn outb_log(
-    mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-) -> Result<(), HandleOutbError> {
-    // This code will create either a logging record or a tracing record for the GuestLogData depending on if the host has set up a tracing subscriber.
-    // In theory as we have enabled the log feature in the Cargo.toml for tracing this should happen
-    // automatically (based on if there is tracing subscriber present) but only works if the event created using macros. (see https://github.com/tokio-rs/tracing/blob/master/tracing/src/macros.rs#L2421 )
-    // The reason that we don't want to use the tracing macros is that we want to be able to explicitly
-    // set the file and line number for the log record which is not possible with macros.
-    // This is because the file and line number come from the  guest not the call site.
+/// Emit a guest log record from a virtqueue payload.
+///
+/// Deserializes [`GuestLogData`] from the raw bytes and emits either
+/// a tracing event or a log record.
+pub(crate) fn emit_guest_log(payload: &[u8]) {
+    let Ok(log_data) = GuestLogData::try_from(payload) else {
+        return;
+    };
 
-    let log_data: GuestLogData = mgr
-        .read_guest_log_data()
-        .map_err(|e| HandleOutbError::ReadLogData(e.to_string()))?;
+    // This code will create either a logging record or a tracing record
+    // for the GuestLogData depending on if the host has set up a tracing
+    // subscriber.
+    // In theory as we have enabled the log feature in the Cargo.toml for
+    // tracing this should happen automatically (based on if there is a
+    // tracing subscriber present) but only works if the event is created
+    // using macros.
+    // (see https://github.com/tokio-rs/tracing/blob/master/tracing/src/macros.rs#L2421)
+    // The reason that we don't want to use the tracing macros is that we
+    // want to be able to explicitly set the file and line number for the
+    // log record which is not possible with macros.
+    // This is because the file and line number come from the guest not
+    // the call site.
 
     let record_level: Level = (&log_data.level).into();
 
-    // Work out if we need to log or trace
-    // this API is marked as follows but it is the easiest way to work out if we should trace or log
-
-    // Private API for internal use by tracing's macros.
-    //
-    // This function is *not* considered part of `tracing`'s public API, and has no
-    // stability guarantees. If you use it, and it breaks or disappears entirely,
-    // don't say we didn't warn you.
-
+    // Work out if we need to log or trace.
+    // This API is marked as internal but it is the easiest way to work
+    // out if we should trace or log.
     let should_trace = tracing_core::dispatcher::has_been_set();
     let source_file = Some(log_data.source_file.as_str());
     let line = Some(log_data.line);
     let source = Some(log_data.source.as_str());
 
-    // See https://github.com/rust-lang/rust/issues/42253 for the reason this has to be done this way
+    // See https://github.com/rust-lang/rust/issues/42253 for the reason
+    // this has to be done this way.
 
     if should_trace {
-        // Create a tracing event for the GuestLogData
-        // Ideally we would create tracing metadata based on the Guest Log Data
-        // but tracing derives the metadata at compile time
+        // Create a tracing event for the GuestLogData.
+        // Ideally we would create tracing metadata based on the Guest
+        // Log Data but tracing derives the metadata at compile time.
         // see https://github.com/tokio-rs/tracing/issues/2419
-        // so we leave it up to the subscriber to figure out that there are logging fields present with this data
-        format_trace(
+        // So we leave it up to the subscriber to figure out that there
+        // are logging fields present with this data.
+        let _ = format_trace(
             &Record::builder()
                 .args(format_args!("{}", log_data.message))
                 .level(record_level)
@@ -109,8 +116,7 @@ pub(super) fn outb_log(
                 .line(line)
                 .module_path(source)
                 .build(),
-        )
-        .map_err(|e| HandleOutbError::TraceFormat(e.to_string()))?;
+        );
     } else {
         // Create a log record for the GuestLogData
         log::logger().log(
@@ -124,8 +130,6 @@ pub(super) fn outb_log(
                 .build(),
         );
     }
-
-    Ok(())
 }
 
 const ABORT_TERMINATOR: u8 = 0xFF;
@@ -180,6 +184,128 @@ fn outb_abort(
     Ok(())
 }
 
+/// Handle a guest-to-host function call received via the G2H virtqueue.
+///
+/// Log entries that arrive before the Request are processed inline.
+fn outb_virtq_call(
+    mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+    host_funcs: &Arc<Mutex<FunctionRegistry>>,
+) -> Result<(), HandleOutbError> {
+    let g2h_pool_size = mem_mgr.g2h_pool_size();
+
+    let consumer = mem_mgr.g2h_consumer.as_mut().ok_or_else(|| {
+        HandleOutbError::ReadHostFunctionCall("G2H consumer not initialized".into())
+    })?;
+
+    // Drain entries, processing Log messages, until we find a Request.
+    let (entry, completion) = loop {
+        let Ok(maybe_next) = consumer.poll(g2h_pool_size) else {
+            return Err(HandleOutbError::ReadHostFunctionCall(
+                "G2H poll failed".into(),
+            ));
+        };
+
+        let Some((entry, completion)) = maybe_next else {
+            // No G2H entry - backpressure-only notify or prefill notify.
+            return Ok(());
+        };
+
+        let hdr_size = VirtqMsgHeader::SIZE;
+        let entry_data = entry.data();
+
+        if entry_data.len() < hdr_size {
+            return Err(HandleOutbError::ReadHostFunctionCall(
+                "G2H entry too short".into(),
+            ));
+        }
+
+        let hdr: VirtqMsgHeader = *bytemuck::from_bytes(&entry_data[..hdr_size]);
+
+        match hdr.msg_kind() {
+            Ok(MsgKind::Log) => {
+                let available = entry_data.len() - hdr_size;
+                let log_len = (hdr.payload_len as usize).min(available);
+                let payload = &entry_data[hdr_size..hdr_size + log_len];
+
+                emit_guest_log(payload);
+
+                consumer.complete(completion).map_err(|e| {
+                    HandleOutbError::ReadHostFunctionCall(format!("G2H complete log: {e}"))
+                })?;
+
+                continue;
+            }
+            Ok(MsgKind::Request) => break (entry, completion),
+            Ok(other) => {
+                return Err(HandleOutbError::ReadHostFunctionCall(format!(
+                    "G2H: expected Request via outb, got {:?}",
+                    other
+                )));
+            }
+            Err(unknown) => {
+                return Err(HandleOutbError::ReadHostFunctionCall(format!(
+                    "G2H: unknown message kind: 0x{unknown:02x}"
+                )));
+            }
+        }
+    };
+
+    // Validate completion buffer before calling the host function
+    let virtq::SendCompletion::Writable(mut wc) = completion else {
+        return Err(HandleOutbError::WriteHostFunctionResponse(
+            "G2H: expected writable completion, got ack (ring corruption)".into(),
+        ));
+    };
+
+    let entry_data = entry.data();
+    let hdr: VirtqMsgHeader = *bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
+    let available = entry_data.len() - VirtqMsgHeader::SIZE;
+    let payload_len = (hdr.payload_len as usize).min(available);
+    let payload = &entry_data[VirtqMsgHeader::SIZE..VirtqMsgHeader::SIZE + payload_len];
+
+    let call = FunctionCall::try_from(payload)
+        .map_err(|e| HandleOutbError::ReadHostFunctionCall(e.to_string()))?;
+
+    let name = call.function_name.clone();
+    let args: Vec<ParameterValue> = call.parameters.unwrap_or(vec![]);
+
+    let registry = host_funcs
+        .try_lock()
+        .map_err(|e| HandleOutbError::LockFailed(file!(), line!(), e.to_string()))?;
+
+    let res = registry
+        .call_host_function(&name, args)
+        .map_err(|e| GuestError::new(ErrorCode::HostFunctionError, e.to_string()));
+
+    let func_result = FunctionCallResult::new(res);
+    let mut builder = flatbuffers::FlatBufferBuilder::new();
+    let mut result_payload = func_result.encode(&mut builder).to_vec();
+
+    let total = VirtqMsgHeader::SIZE + result_payload.len();
+    if total > wc.capacity() {
+        let too_large = GuestError::new(
+            ErrorCode::HostFunctionError,
+            "response too large for completion buffer".into(),
+        );
+        let fallback = FunctionCallResult::new(Err(too_large));
+        let mut fb = flatbuffers::FlatBufferBuilder::new();
+        result_payload = fallback.encode(&mut fb).to_vec();
+    }
+
+    let resp_header = VirtqMsgHeader::new(MsgKind::Response, 0, result_payload.len() as u32);
+    let resp_header_bytes = bytemuck::bytes_of(&resp_header);
+
+    wc.write_all(resp_header_bytes)
+        .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
+    wc.write_all(&result_payload)
+        .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
+    consumer
+        .complete(wc.into())
+        .map_err(|e| HandleOutbError::WriteHostFunctionResponse(format!("{e}")))?;
+
+    Ok(())
+}
+
 /// Handles OutB operations from the guest.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
 pub(crate) fn handle_outb(
@@ -194,25 +320,9 @@ pub(crate) fn handle_outb(
         .try_into()
         .map_err(|e: anyhow::Error| HandleOutbError::InvalidPort(e.to_string()))?
     {
-        OutBAction::Log => outb_log(mem_mgr),
-        OutBAction::CallFunction => {
-            let call = mem_mgr
-                .get_host_function_call()
-                .map_err(|e| HandleOutbError::ReadHostFunctionCall(e.to_string()))?;
-            let name = call.function_name.clone();
-            let args: Vec<ParameterValue> = call.parameters.unwrap_or(vec![]);
-            let res = host_funcs
-                .try_lock()
-                .map_err(|e| HandleOutbError::LockFailed(file!(), line!(), e.to_string()))?
-                .call_host_function(&name, args)
-                .map_err(|e| GuestError::new(ErrorCode::HostFunctionError, e.to_string()));
-
-            let func_result = FunctionCallResult::new(res);
-
-            mem_mgr
-                .write_response_from_host_function_call(&func_result)
-                .map_err(|e| HandleOutbError::WriteHostFunctionResponse(e.to_string()))?;
-
+        OutBAction::Log | OutBAction::CallFunction => {
+            // Legacy paths removed - these actions should no longer be
+            // emitted by the guest. Ignore gracefully.
             Ok(())
         }
         OutBAction::Abort => outb_abort(mem_mgr, data),
@@ -227,259 +337,12 @@ pub(crate) fn handle_outb(
             eprint!("{}", ch);
             Ok(())
         }
+        OutBAction::VirtqNotify => outb_virtq_call(mem_mgr, host_funcs),
         #[cfg(feature = "trace_guest")]
         OutBAction::TraceBatch => Ok(()),
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryAlloc => trace_info.handle_trace_mem_alloc(regs, mem_mgr),
         #[cfg(feature = "mem_profile")]
         OutBAction::TraceMemoryFree => trace_info.handle_trace_mem_free(regs, mem_mgr),
-    }
-}
-#[cfg(test)]
-mod tests {
-    use hyperlight_common::flatbuffer_wrappers::guest_log_level::LogLevel;
-    use hyperlight_testing::logger::{LOGGER, Logger};
-    use hyperlight_testing::simple_guest_as_string;
-    use log::Level;
-    use tracing_core::callsite::rebuild_interest_cache;
-
-    use super::outb_log;
-    use crate::GuestBinary;
-    use crate::mem::mgr::SandboxMemoryManager;
-    use crate::sandbox::SandboxConfiguration;
-    use crate::sandbox::outb::GuestLogData;
-    use crate::testing::log_values::test_value_as_str;
-
-    fn new_guest_log_data(level: LogLevel) -> GuestLogData {
-        GuestLogData::new(
-            "test log".to_string(),
-            "test source".to_string(),
-            level,
-            "test caller".to_string(),
-            "test source file".to_string(),
-            123,
-        )
-    }
-
-    #[test]
-    #[ignore]
-    fn test_log_outb_log() {
-        Logger::initialize_test_logger();
-        LOGGER.set_max_level(log::LevelFilter::Off);
-
-        let sandbox_cfg = SandboxConfiguration::default();
-
-        let new_mgr = || {
-            let bin = GuestBinary::FilePath(simple_guest_as_string().unwrap());
-            let snapshot = crate::sandbox::snapshot::Snapshot::from_env(bin, sandbox_cfg).unwrap();
-            let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
-            let (hmgr, _) = mgr.build().unwrap();
-            hmgr
-        };
-        {
-            // We set a logger but there is no guest log data
-            // in memory, so expect a log operation to fail
-            let mut mgr = new_mgr();
-            assert!(outb_log(&mut mgr).is_err());
-        }
-        {
-            // Write a log message so outb_log will succeed.
-            // Since the logger level is set off, expect logs to be no-ops
-            let mut mgr = new_mgr();
-            let log_msg = new_guest_log_data(LogLevel::Information);
-
-            let guest_log_data_buffer: Vec<u8> = log_msg.try_into().unwrap();
-            let offset = mgr.layout.get_output_data_buffer_scratch_host_offset();
-            mgr.scratch_mem
-                .push_buffer(
-                    offset,
-                    sandbox_cfg.get_output_data_size(),
-                    &guest_log_data_buffer,
-                )
-                .unwrap();
-
-            let res = outb_log(&mut mgr);
-            assert!(res.is_ok());
-            assert_eq!(0, LOGGER.num_log_calls());
-            LOGGER.clear_log_calls();
-        }
-        {
-            // now, test logging
-            LOGGER.set_max_level(log::LevelFilter::Trace);
-            let mut mgr = new_mgr();
-            LOGGER.clear_log_calls();
-
-            // set up the logger and set the log level to the maximum
-            // possible (Trace) to ensure we're able to test all
-            // the possible branches of the match in outb_log
-
-            let levels = vec![
-                LogLevel::Trace,
-                LogLevel::Debug,
-                LogLevel::Information,
-                LogLevel::Warning,
-                LogLevel::Error,
-                LogLevel::Critical,
-                LogLevel::None,
-            ];
-            for level in levels {
-                let layout = mgr.layout;
-                let log_data = new_guest_log_data(level);
-
-                let guest_log_data_buffer: Vec<u8> = log_data.clone().try_into().unwrap();
-                mgr.scratch_mem
-                    .push_buffer(
-                        layout.get_output_data_buffer_scratch_host_offset(),
-                        sandbox_cfg.get_output_data_size(),
-                        guest_log_data_buffer.as_slice(),
-                    )
-                    .unwrap();
-
-                outb_log(&mut mgr).unwrap();
-
-                LOGGER.test_log_records(|log_calls| {
-                    let expected_level: Level = (&level).into();
-
-                    assert!(
-                        log_calls
-                            .iter()
-                            .filter(|log_call| {
-                                log_call.level == expected_level
-                                    && log_call.line == Some(log_data.line)
-                                    && log_call.args == log_data.message
-                                    && log_call.module_path == Some(log_data.source.clone())
-                                    && log_call.file == Some(log_data.source_file.clone())
-                            })
-                            .count()
-                            == 1,
-                        "log call did not occur for level {:?}",
-                        level.clone()
-                    );
-                });
-            }
-        }
-    }
-
-    // Tests that outb_log emits traces when a trace subscriber is set
-    // this test is ignored because it is incompatible with other tests , specifically those which require a logger for tracing
-    // marking  this test as ignored means that running `cargo test` will not run this test but will allow a developer who runs that command
-    // from their workstation to be successful without needed to know about test interdependencies
-    // this test will be run explicitly as a part of the CI pipeline
-    #[ignore]
-    #[test]
-    fn test_trace_outb_log() {
-        Logger::initialize_log_tracer();
-        rebuild_interest_cache();
-        let subscriber =
-            hyperlight_testing::tracing_subscriber::TracingSubscriber::new(tracing::Level::TRACE);
-        let sandbox_cfg = SandboxConfiguration::default();
-        tracing::subscriber::with_default(subscriber.clone(), || {
-            let new_mgr = || {
-                let bin = GuestBinary::FilePath(simple_guest_as_string().unwrap());
-                let snapshot =
-                    crate::sandbox::snapshot::Snapshot::from_env(bin, sandbox_cfg).unwrap();
-                let mgr = SandboxMemoryManager::from_snapshot(&snapshot).unwrap();
-                let (hmgr, _) = mgr.build().unwrap();
-                hmgr
-            };
-
-            // as a span does not exist one will be automatically created
-            // after that there will be an event for each log message
-            // we are interested only in the events for the log messages that we created
-
-            let levels = vec![
-                LogLevel::Trace,
-                LogLevel::Debug,
-                LogLevel::Information,
-                LogLevel::Warning,
-                LogLevel::Error,
-                LogLevel::Critical,
-                LogLevel::None,
-            ];
-            for level in levels {
-                let mut mgr = new_mgr();
-                let layout = mgr.layout;
-                let log_data: GuestLogData = new_guest_log_data(level);
-                subscriber.clear();
-
-                let guest_log_data_buffer: Vec<u8> = log_data.try_into().unwrap();
-                mgr.scratch_mem
-                    .push_buffer(
-                        layout.get_output_data_buffer_scratch_host_offset(),
-                        sandbox_cfg.get_output_data_size(),
-                        guest_log_data_buffer.as_slice(),
-                    )
-                    .unwrap();
-                subscriber.clear();
-                outb_log(&mut mgr).unwrap();
-
-                subscriber.test_trace_records(|spans, events| {
-                    let expected_level = match level {
-                        LogLevel::Trace => "TRACE",
-                        LogLevel::Debug => "DEBUG",
-                        LogLevel::Information => "INFO",
-                        LogLevel::Warning => "WARN",
-                        LogLevel::Error => "ERROR",
-                        LogLevel::Critical => "ERROR",
-                        LogLevel::None => "TRACE",
-                    };
-
-                    // We cannot get the parent span using the `current_span()` method as by the time we get to this point that span has been exited so there is no current span
-                    // We need to make sure that the span that we created is in the spans map instead
-                    // We expect to have created 21 spans at this point. We are only interested in the first one that was created when calling outb_log.
-
-                    assert!(
-                        spans.len() == 21,
-                        "expected 21 spans, found {}",
-                        spans.len()
-                    );
-
-                    let span_value = spans
-                        .get(&1)
-                        .unwrap()
-                        .as_object()
-                        .unwrap()
-                        .get("span")
-                        .unwrap()
-                        .get("attributes")
-                        .unwrap()
-                        .as_object()
-                        .unwrap()
-                        .get("metadata")
-                        .unwrap()
-                        .as_object()
-                        .unwrap();
-
-                    //test_value_as_str(span_value, "level", "INFO");
-                    test_value_as_str(span_value, "module_path", "hyperlight_host::sandbox::outb");
-                    let expected_file = if cfg!(windows) {
-                        "src\\hyperlight_host\\src\\sandbox\\outb.rs"
-                    } else {
-                        "src/hyperlight_host/src/sandbox/outb.rs"
-                    };
-                    test_value_as_str(span_value, "file", expected_file);
-                    test_value_as_str(span_value, "target", "hyperlight_host::sandbox::outb");
-
-                    let mut count_matching_events = 0;
-
-                    for json_value in events {
-                        let event_values = json_value.as_object().unwrap().get("event").unwrap();
-                        let metadata_values_map =
-                            event_values.get("metadata").unwrap().as_object().unwrap();
-                        let event_values_map = event_values.as_object().unwrap();
-                        test_value_as_str(metadata_values_map, "level", expected_level);
-                        test_value_as_str(event_values_map, "log.file", "test source file");
-                        test_value_as_str(event_values_map, "log.module_path", "test source");
-                        test_value_as_str(event_values_map, "log.target", "hyperlight_guest");
-                        count_matching_events += 1;
-                    }
-                    assert!(
-                        count_matching_events == 1,
-                        "trace log call did not occur for level {:?}",
-                        level.clone()
-                    );
-                });
-            }
-        });
     }
 }

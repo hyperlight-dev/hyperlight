@@ -636,8 +636,6 @@ mod tests {
         // Non default memory configuration
         let cfg = {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_input_data_size(0x1000);
-            cfg.set_output_data_size(0x1000);
             cfg.set_heap_size(0x1000);
             Some(cfg)
         };
@@ -1390,11 +1388,11 @@ mod tests {
             let _evolved: MultiUseSandbox = sandbox.evolve().expect("Failed to evolve sandbox");
         }
 
-        // Test 4: Create snapshot with custom input/output buffer sizes
+        // Test 4: Create snapshot with custom pool page sizes
         {
             let mut cfg = SandboxConfiguration::default();
-            cfg.set_input_data_size(64 * 1024); // 64KB input
-            cfg.set_output_data_size(64 * 1024); // 64KB output
+            cfg.set_h2g_pool_pages(16); // 16 pages
+            cfg.set_g2h_pool_pages(16); // 16 pages
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 
@@ -1418,9 +1416,7 @@ mod tests {
         {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(32 * 1024 * 1024); // 32MB heap
-            cfg.set_scratch_size(256 * 1024 * 2); // 512KB scratch (256KB will be input/output)
-            cfg.set_input_data_size(128 * 1024); // 128KB input
-            cfg.set_output_data_size(128 * 1024); // 128KB output
+            cfg.set_scratch_size(256 * 1024 * 2); // 512KB scratch
 
             let env = GuestEnvironment::new(GuestBinary::FilePath(binary_path.clone()), None);
 
