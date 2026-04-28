@@ -53,7 +53,7 @@ limitations under the License.
 //! hypervisor-mutable memory we satisfy Rust's aliasing rules
 //! unconditionally.
 
-use core::sync::atomic::{Ordering, fence};
+use core::sync::atomic::{AtomicU64, Ordering, fence};
 
 use hyperlight_common::layout::{
     SCRATCH_TOP_BOOT_TIME_NS_OFFSET, SCRATCH_TOP_CLOCK_TYPE_OFFSET, clock_page_gva,
@@ -293,22 +293,61 @@ fn read_hv_reference_tsc() -> Option<u64> {
     None
 }
 
-/// Monotonic time in nanoseconds.
-///
-/// The value is an absolute counter from the hypervisor's time base
-/// (kvmclock on KVM, partition reference time on Hyper-V). It is
-/// monotonically increasing and suitable for measuring elapsed time
-/// between two reads, but its epoch is unspecified — do not assume
-/// it starts at zero when the sandbox is created.
-///
-/// Returns `None` if the clock is not configured, or if the retry cap was
-/// exhausted (the caller may retry).
-pub fn monotonic_time_ns() -> Option<u64> {
+/// Highest raw pvclock value ever returned. Lives in BSS so it
+/// survives snapshot/restore. Used to detect backward jumps when a
+/// snapshot is restored into a new partition whose monotonic clock
+/// starts from a lower value.
+static RAW_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
+
+/// Cumulative offset added to raw pvclock reads to maintain the
+/// monotonic guarantee across cross-partition restores. On each
+/// backward jump, the previous high-water mark is added so that all
+/// future returns are >= any previously returned value.
+static MONO_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+/// Read the raw monotonic value from the hypervisor without any
+/// offset adjustment.
+fn raw_monotonic_ns() -> Option<u64> {
     match read_clock_type() {
         ClockType::KvmPvclock => read_kvm_pvclock(),
         ClockType::HyperVReferenceTsc => read_hv_reference_tsc(),
         ClockType::None => None,
     }
+}
+
+/// Monotonic time in nanoseconds.
+///
+/// The value is an absolute counter derived from the hypervisor's time
+/// base (kvmclock on KVM, partition reference time on Hyper-V). It is
+/// monotonically increasing and suitable for measuring elapsed time
+/// between two reads.
+///
+/// If a snapshot is restored into a **new** partition whose raw clock
+/// starts from a lower value, an offset is applied so the returned
+/// value never goes backward. Within a single partition epoch, diffs
+/// between consecutive reads reflect real elapsed time. Across a
+/// cross-partition restore the diff includes a synthetic gap (the
+/// high-water mark from the old partition) — safe for timeouts and
+/// deadlines, but not an accurate measure of freeze duration (use
+/// wall-clock time for that).
+///
+/// Returns `None` if the clock is not configured, or if the retry cap
+/// was exhausted (the caller may retry).
+pub fn monotonic_time_ns() -> Option<u64> {
+    let raw = raw_monotonic_ns()?;
+
+    let high = RAW_HIGH_WATER.load(Ordering::Relaxed);
+    if raw < high {
+        // Raw clock went backward — snapshot was restored into a new
+        // partition. Bump the offset by the old high-water mark so all
+        // future reads are >= any previously returned value.
+        MONO_OFFSET.fetch_add(high, Ordering::Relaxed);
+        RAW_HIGH_WATER.store(raw, Ordering::Relaxed);
+    } else {
+        RAW_HIGH_WATER.store(raw, Ordering::Relaxed);
+    }
+
+    Some(raw.wrapping_add(MONO_OFFSET.load(Ordering::Relaxed)))
 }
 
 /// Wall-clock time in nanoseconds since the Unix epoch.
@@ -333,7 +372,11 @@ pub fn monotonic_time_ns() -> Option<u64> {
 /// `MSR_KVM_WALL_CLOCK_NEW`). We use the same host-computed approach
 /// on all backends for uniformity.
 pub fn wall_clock_time_ns() -> Option<u64> {
-    let monotonic = monotonic_time_ns()?;
+    // Use the raw monotonic value (no cross-partition offset) because
+    // boot_time_ns is calibrated by the host against the raw clock.
+    // Applying the monotonic offset here would shift wall time into
+    // the future after a cross-partition restore.
+    let monotonic = raw_monotonic_ns()?;
     let boot_time = read_boot_time_ns();
     // boot_time_ns == 0 means the host hasn't stamped it yet
     // (scratch memory is zero-initialised). Return None rather
