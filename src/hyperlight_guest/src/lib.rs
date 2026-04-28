@@ -25,6 +25,7 @@ pub mod error;
 pub mod exit;
 pub mod layout;
 pub mod prim_alloc;
+pub mod time;
 pub mod types;
 
 pub mod guest_handle {

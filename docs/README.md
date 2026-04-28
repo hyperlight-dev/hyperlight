@@ -29,6 +29,7 @@ This project is composed internally of several components, depicted in the below
 * [How to build a Hyperlight guest binary](./how-to-build-a-hyperlight-guest-binary.md)
 * [Security considerations](./security.md)
 * [Technical requirements document](./technical-requirements-document.md)
+* [Paravirtualized guest clock](./guest-time.md)
 
 ## For developers
 

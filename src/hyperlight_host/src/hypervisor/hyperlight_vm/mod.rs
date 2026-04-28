@@ -183,6 +183,9 @@ pub enum InitializeError {
     SetupRegs(#[from] RegisterError),
     #[error("Guest initialised stack pointer to architecturally invalid value: {0}")]
     InvalidStackPointer(u64),
+    #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+    #[error("Failed to arm paravirtualized guest clock: {0}")]
+    ArmClock(#[source] Box<HyperlightError>),
 }
 
 /// Errors that can occur during VM execution in the run loop
@@ -489,6 +492,124 @@ impl HyperlightVm {
         }
         unsafe { self.vm.map_memory((self.scratch_slot, &rgn))? };
 
+        Ok(())
+    }
+
+    /// Set up the pvclock / Reference TSC MSR and stamp `clock_type`
+    /// into the scratch bookkeeping page so the guest can read monotonic
+    /// time during `hyperlight_main` (init).
+    ///
+    /// Does NOT stamp `boot_time_ns` — on some backends (KVM) the
+    /// monotonic clock source is unreliable until after the first
+    /// vCPU run (see [`arm_clock`]). Wall-clock time returns `None`
+    /// until `arm_clock` is called.
+    ///
+    /// Must be called before the first vCPU run.
+    #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+    pub(crate) fn setup_clock(
+        &mut self,
+        scratch: &crate::mem::shared_mem::HostSharedMemory,
+    ) -> crate::Result<()> {
+        use hyperlight_common::layout::{SCRATCH_TOP_CLOCK_TYPE_OFFSET, clock_page_gpa};
+
+        use crate::mem::shared_mem::SharedMemory;
+
+        let gpa = clock_page_gpa();
+        let clock_type = self.vm.setup_pvclock(gpa)?;
+
+        // Write clock_type to the bookkeeping page (top of scratch),
+        // NOT into the clock page itself — the clock page is 100%
+        // hypervisor-owned.
+        let scratch_size = scratch.mem_size();
+        let clock_type_offset = scratch_size
+            .checked_sub(SCRATCH_TOP_CLOCK_TYPE_OFFSET as usize)
+            .ok_or_else(|| crate::new_error!("scratch region too small for clock metadata"))?;
+
+        scratch.write::<u64>(clock_type_offset, u64::from(clock_type))?;
+
+        tracing::debug!(
+            target: "hyperlight::pvclock",
+            ?clock_type,
+            "clock MSR configured, boot_time_ns deferred until after first vCPU run"
+        );
+        Ok(())
+    }
+
+    /// Arm the paravirtualized clock: set up the MSR and stamp
+    /// `clock_type` + `boot_time_ns` into the scratch bookkeeping page.
+    ///
+    /// Computes `boot_time_ns = wall_now - monotonic_now` where
+    /// `monotonic_now` comes from `VirtualMachine::current_monotonic_ns()`.
+    /// The guest recovers wall time as
+    /// `boot_time_ns + monotonic_time_ns()`.
+    ///
+    /// # Call sites
+    ///
+    /// - **Initial sandbox creation**: called after `initialise()`
+    ///   returns (i.e. after the first vCPU run). On some backends
+    ///   (KVM) the monotonic clock source is unreliable until the
+    ///   first vCPU entry. Monotonic time is available during
+    ///   `hyperlight_main` via the pvclock page (set up by
+    ///   [`setup_clock`] before the first vCPU run), but wall-clock
+    ///   time returns `None` until this method stamps `boot_time_ns`.
+    ///
+    /// - **Snapshot restore**: called directly by the restore path.
+    ///   Re-stamps fresh `boot_time_ns` so the restored guest sees
+    ///   wall time reflecting the restore moment.
+    ///
+    /// Must be called while `scratch_memory` is `Some`.
+    #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+    pub(crate) fn arm_clock(
+        &mut self,
+        scratch: &crate::mem::shared_mem::HostSharedMemory,
+    ) -> crate::Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        use hyperlight_common::layout::{
+            SCRATCH_TOP_BOOT_TIME_NS_OFFSET, SCRATCH_TOP_CLOCK_TYPE_OFFSET, clock_page_gpa,
+        };
+
+        use crate::mem::shared_mem::SharedMemory;
+
+        let gpa = clock_page_gpa();
+        let clock_type = self.vm.setup_pvclock(gpa)?;
+
+        let scratch_size = scratch.mem_size();
+
+        // Sample monotonic first, then wall clock. If preempted between
+        // the two reads, boot_time_ns shifts forward (guest wall clock
+        // runs slightly ahead of host) rather than backward — "slightly
+        // in the future" is more benign than "slightly in the past" for
+        // most use cases. The gap is bounded by the 20ms test tolerance.
+        let mono_ns = self.vm.current_monotonic_ns()?;
+        let wall_ns = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| crate::new_error!("system time before Unix epoch: {}", e))?
+                .as_nanos(),
+        )
+        .map_err(|_| crate::new_error!("wall_ns overflowed u64"))?;
+        let boot_time_ns = wall_ns.wrapping_sub(mono_ns);
+
+        // Write metadata to the bookkeeping page (top of scratch),
+        // NOT into the clock page — the clock page is 100%
+        // hypervisor-owned.
+        let clock_type_offset = scratch_size
+            .checked_sub(SCRATCH_TOP_CLOCK_TYPE_OFFSET as usize)
+            .ok_or_else(|| crate::new_error!("scratch region too small for clock metadata"))?;
+        let boot_time_offset = scratch_size
+            .checked_sub(SCRATCH_TOP_BOOT_TIME_NS_OFFSET as usize)
+            .ok_or_else(|| crate::new_error!("scratch region too small for clock metadata"))?;
+
+        scratch.write::<u64>(clock_type_offset, u64::from(clock_type))?;
+        scratch.write::<u64>(boot_time_offset, boot_time_ns)?;
+
+        tracing::debug!(
+            target: "hyperlight::pvclock",
+            ?clock_type,
+            boot_time_ns,
+            "guest clock armed"
+        );
         Ok(())
     }
 

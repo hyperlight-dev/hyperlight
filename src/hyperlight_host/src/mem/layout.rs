@@ -341,6 +341,11 @@ impl SandboxMemoryLayout {
             cfg.get_input_data_size(),
             cfg.get_output_data_size(),
         );
+        // The guest allocator unconditionally reserves the clock page at
+        // the top of scratch (so its footprint is feature-independent),
+        // so the host minimum must always account for it.
+        let min_scratch_size =
+            min_scratch_size + hyperlight_common::layout::CLOCK_PAGE_SIZE as usize;
         if scratch_size < min_scratch_size {
             return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
         }
@@ -595,6 +600,9 @@ impl SandboxMemoryLayout {
             self.sandbox_memory_config.get_input_data_size(),
             self.sandbox_memory_config.get_output_data_size(),
         );
+        // Must match the unconditional clock page reservation in the guest allocator.
+        let min_fixed_scratch =
+            min_fixed_scratch + hyperlight_common::layout::CLOCK_PAGE_SIZE as usize;
         let min_scratch = min_fixed_scratch + size;
         if self.scratch_size < min_scratch {
             return Err(MemoryRequestTooSmall(self.scratch_size, min_scratch));

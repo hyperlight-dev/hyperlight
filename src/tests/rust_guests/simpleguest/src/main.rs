@@ -725,6 +725,30 @@ fn add(a: i32, b: i32) -> Result<i32> {
     host_add(a, b)
 }
 
+// ===== Paravirtualized guest clock test surface =====
+
+#[guest_function("ClockIsAvailable")]
+fn clock_is_available() -> i32 {
+    hyperlight_guest::time::is_available() as i32
+}
+
+/// Returns monotonic nanoseconds, or `-1` if the clock is unavailable.
+#[guest_function("GetMonotonicTimeNs")]
+fn get_monotonic_time_ns() -> i64 {
+    hyperlight_guest::time::monotonic_time_ns()
+        .and_then(|ns| i64::try_from(ns).ok())
+        .unwrap_or(-1)
+}
+
+/// Returns wall-clock nanoseconds since the Unix epoch, or `-1` if the
+/// clock is unavailable.
+#[guest_function("GetWallClockTimeNs")]
+fn get_wall_clock_time_ns() -> i64 {
+    hyperlight_guest::time::wall_clock_time_ns()
+        .and_then(|ns| i64::try_from(ns).ok())
+        .unwrap_or(-1)
+}
+
 // Does nothing, but used for testing large parameters
 #[guest_function("LargeParameters")]
 fn large_parameters(v: Vec<u8>, s: String) {

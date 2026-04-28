@@ -114,6 +114,11 @@ jobs:
           # with hw-interrupts feature enabled (+ explicit driver on Linux)
           just test ${{ inputs.config }} ${{ runner.os == 'Linux' && (inputs.hypervisor == 'mshv3' && 'mshv3,hw-interrupts' || 'kvm,hw-interrupts') || 'hw-interrupts' }}
 
+      - name: Run Rust tests with enable_guest_clock
+        run: |
+          # with enable_guest_clock + hw-interrupts (+ explicit driver on Linux)
+          just test ${{ inputs.config }} ${{ runner.os == 'Linux' && (inputs.hypervisor == 'mshv3' && 'mshv3,hw-interrupts,enable_guest_clock' || 'kvm,hw-interrupts,enable_guest_clock') || 'hw-interrupts,enable_guest_clock' }}
+
       - name: Run Rust Gdb tests
         env:
           RUST_LOG: debug
