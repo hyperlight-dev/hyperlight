@@ -24,6 +24,7 @@ This project is composed internally of several components, depicted in the below
 
 ## Further reading
 
+* [Getting Started](./getting-started.md)
 * [Glossary](./glossary.md)
 * [How code gets executed in a VM](./hyperlight-execution-details.md)
 * [How to build a Hyperlight guest binary](./how-to-build-a-hyperlight-guest-binary.md)
