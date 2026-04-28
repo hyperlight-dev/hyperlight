@@ -15,14 +15,51 @@ limitations under the License.
  */
 
 //! A bunch of utilities used by the actual code emit functions
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::vec::Vec;
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use crate::etypes::{BoundedTyvar, Defined, Handleable, ImportExport, TypeBound, Tyvar};
+use crate::etypes::{
+    BoundedTyvar, Defined, ExternDecl, ExternDesc, Handleable, ImportExport, TypeBound, Tyvar,
+};
+
+/// Scan a list of import extern decls for interface name collisions.
+/// Returns the set of interface names that appear more than once.
+pub fn find_colliding_import_names(imports: &[ExternDecl]) -> HashSet<String> {
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    for ed in imports {
+        if let ExternDesc::Instance(_) = &ed.desc {
+            let wn = split_wit_name(ed.kebab_name);
+            *counts.entry(wn.name.to_string()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, c)| *c > 1)
+        .map(|(n, _)| n)
+        .collect()
+}
+
+/// Get the disambiguated type and getter names for an import instance.
+/// If the interface name collides with another import, prepend the full
+/// kebab-joined namespace path to disambiguate
+/// (e.g. "types" from "wasi:http" becomes "WasiHttpTypes"/"wasi_http_types").
+pub fn import_member_names(wn: &WitName, collisions: &HashSet<String>) -> (Ident, Ident) {
+    if collisions.contains(wn.name) {
+        let prefix = if wn.namespaces.is_empty() {
+            wn.name.to_string()
+        } else {
+            wn.namespaces.join("-")
+        };
+        let qualified = format!("{}-{}", prefix, wn.name);
+        (kebab_to_type(&qualified), kebab_to_getter(&qualified))
+    } else {
+        (kebab_to_type(wn.name), kebab_to_getter(wn.name))
+    }
+}
 
 /// A representation of a trait definition that we will eventually
 /// emit. This is used to allow easily adding onto the trait each time
@@ -284,6 +321,11 @@ pub struct State<'a, 'b> {
     pub is_wasmtime_guest: bool,
     /// Are we working on an export or an import of the component type?
     pub is_export: bool,
+    /// Set of interface names that collide across different packages
+    /// (e.g. "types" appears in both wasi:filesystem/types and wasi:http/types).
+    /// When a name is in this set, the parent namespace is prepended to
+    /// disambiguate the trait member name.
+    pub colliding_import_names: HashSet<String>,
 }
 
 /// Create a State with all of its &mut references pointing to
@@ -336,6 +378,7 @@ impl<'a, 'b> State<'a, 'b> {
             is_guest,
             is_wasmtime_guest,
             is_export: false,
+            colliding_import_names: HashSet::new(),
         }
     }
     pub fn clone<'c>(&'c mut self) -> State<'c, 'b> {
@@ -357,6 +400,7 @@ impl<'a, 'b> State<'a, 'b> {
             is_guest: self.is_guest,
             is_wasmtime_guest: self.is_wasmtime_guest,
             is_export: self.is_export,
+            colliding_import_names: self.colliding_import_names.clone(),
         }
     }
     /// Obtain a reference to the [`Mod`] that we are currently
@@ -437,10 +481,12 @@ impl<'a, 'b> State<'a, 'b> {
     /// variable, given its absolute index (i.e. ignoring
     /// [`State::var_offset`])
     pub fn noff_var_id(&self, n: u32) -> Ident {
-        let Some(n) = self.bound_vars[n as usize].origin.last_name() else {
+        let Some(name) = self.bound_vars[n as usize].origin.last_name() else {
             panic!("missing origin on tyvar in rust emit")
         };
-        kebab_to_type(n)
+        let wn = split_wit_name(name);
+        let (tn, _) = import_member_names(&wn, &self.colliding_import_names);
+        tn
     }
     /// Copy the state, changing it to emit into the helper module of
     /// the current trait
@@ -802,4 +848,183 @@ pub fn kebab_to_fn(n: &str) -> FnName {
         );
     }
     FnName::Plain(kebab_to_snake(n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::etypes::{ExternDecl, ExternDesc, Instance};
+
+    /// Helper to build a minimal `ExternDecl` whose desc is an Instance.
+    fn instance_decl(kebab_name: &str) -> ExternDecl<'_> {
+        ExternDecl {
+            kebab_name,
+            desc: ExternDesc::Instance(Instance {
+                exports: Vec::new(),
+            }),
+        }
+    }
+
+    /// Helper to build a minimal `ExternDecl` whose desc is a Func (not an Instance).
+    fn func_decl(kebab_name: &str) -> ExternDecl<'_> {
+        ExternDecl {
+            kebab_name,
+            desc: ExternDesc::Func(crate::etypes::Func {
+                params: Vec::new(),
+                result: None,
+            }),
+        }
+    }
+
+    // --- split_wit_name tests ---
+
+    #[test]
+    fn split_wit_name_simple() {
+        let wn = split_wit_name("my-interface");
+        assert_eq!(wn.name, "my-interface");
+        assert!(wn.namespaces.is_empty());
+    }
+
+    #[test]
+    fn split_wit_name_with_package() {
+        let wn = split_wit_name("wasi:http/types");
+        assert_eq!(wn.name, "types");
+        assert_eq!(wn.namespaces, vec!["wasi", "http"]);
+    }
+
+    #[test]
+    fn split_wit_name_with_version() {
+        let wn = split_wit_name("wasi:http/types@0.2.0");
+        assert_eq!(wn.name, "types");
+        assert_eq!(wn.namespaces, vec!["wasi", "http"]);
+    }
+
+    #[test]
+    fn split_wit_name_nested_package() {
+        let wn = split_wit_name("wasi:filesystem/types");
+        assert_eq!(wn.name, "types");
+        assert_eq!(wn.namespaces, vec!["wasi", "filesystem"]);
+    }
+
+    // --- find_colliding_import_names tests ---
+
+    #[test]
+    fn no_collisions_with_distinct_names() {
+        let imports = vec![
+            instance_decl("wasi:http/types"),
+            instance_decl("wasi:filesystem/preopens"),
+        ];
+        let collisions = find_colliding_import_names(&imports);
+        assert!(collisions.is_empty());
+    }
+
+    #[test]
+    fn detects_collision_on_same_short_name() {
+        let imports = vec![
+            instance_decl("wasi:http/types"),
+            instance_decl("wasi:filesystem/types"),
+        ];
+        let collisions = find_colliding_import_names(&imports);
+        assert_eq!(collisions.len(), 1);
+        assert!(collisions.contains("types"));
+    }
+
+    #[test]
+    fn no_collision_for_non_instance_decls() {
+        let imports = vec![instance_decl("wasi:http/types"), func_decl("types")];
+        let collisions = find_colliding_import_names(&imports);
+        assert!(collisions.is_empty());
+    }
+
+    #[test]
+    fn multiple_collisions() {
+        let imports = vec![
+            instance_decl("a:foo/types"),
+            instance_decl("b:bar/types"),
+            instance_decl("a:foo/handler"),
+            instance_decl("c:baz/handler"),
+        ];
+        let collisions = find_colliding_import_names(&imports);
+        assert_eq!(collisions.len(), 2);
+        assert!(collisions.contains("types"));
+        assert!(collisions.contains("handler"));
+    }
+
+    #[test]
+    fn single_import_no_collision() {
+        let imports = vec![instance_decl("wasi:http/types")];
+        let collisions = find_colliding_import_names(&imports);
+        assert!(collisions.is_empty());
+    }
+
+    #[test]
+    fn empty_imports_no_collision() {
+        let collisions = find_colliding_import_names(&[]);
+        assert!(collisions.is_empty());
+    }
+
+    // --- import_member_names tests ---
+
+    #[test]
+    fn no_collision_uses_short_name() {
+        let wn = split_wit_name("wasi:http/types");
+        let collisions = HashSet::new();
+        let (ty, getter) = import_member_names(&wn, &collisions);
+        assert_eq!(ty.to_string(), "Types");
+        assert_eq!(getter.to_string(), "r#types");
+    }
+
+    #[test]
+    fn collision_prepends_parent_namespace() {
+        let wn = split_wit_name("wasi:http/types");
+        let mut collisions = HashSet::new();
+        collisions.insert("types".to_string());
+        let (ty, getter) = import_member_names(&wn, &collisions);
+        assert_eq!(ty.to_string(), "WasiHttpTypes");
+        assert_eq!(getter.to_string(), "r#wasi_http_types");
+    }
+
+    #[test]
+    fn collision_different_parents_produce_different_names() {
+        let mut collisions = HashSet::new();
+        collisions.insert("types".to_string());
+
+        let wn_http = split_wit_name("wasi:http/types");
+        let (ty_http, getter_http) = import_member_names(&wn_http, &collisions);
+
+        let wn_fs = split_wit_name("wasi:filesystem/types");
+        let (ty_fs, getter_fs) = import_member_names(&wn_fs, &collisions);
+
+        assert_eq!(ty_http.to_string(), "WasiHttpTypes");
+        assert_eq!(ty_fs.to_string(), "WasiFilesystemTypes");
+        assert_ne!(ty_http.to_string(), ty_fs.to_string());
+        assert_ne!(getter_http.to_string(), getter_fs.to_string());
+    }
+
+    #[test]
+    fn collision_same_parent_different_package_produces_different_names() {
+        let mut collisions = HashSet::new();
+        collisions.insert("types".to_string());
+
+        let wn_a = split_wit_name("a:pkg/types");
+        let (ty_a, _) = import_member_names(&wn_a, &collisions);
+
+        let wn_b = split_wit_name("b:pkg/types");
+        let (ty_b, _) = import_member_names(&wn_b, &collisions);
+
+        assert_eq!(ty_a.to_string(), "APkgTypes");
+        assert_eq!(ty_b.to_string(), "BPkgTypes");
+        assert_ne!(ty_a.to_string(), ty_b.to_string());
+    }
+
+    #[test]
+    fn collision_simple_name_uses_name_as_parent() {
+        let wn = split_wit_name("types");
+        let mut collisions = HashSet::new();
+        collisions.insert("types".to_string());
+        let (ty, getter) = import_member_names(&wn, &collisions);
+        // When there are no namespaces, the name itself is used as prefix
+        assert_eq!(ty.to_string(), "TypesTypes");
+        assert_eq!(getter.to_string(), "r#types_types");
+    }
 }
