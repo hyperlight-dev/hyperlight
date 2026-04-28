@@ -46,6 +46,7 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                         .map(|p| rtypes::emit_func_param(s, p))
                         .collect::<Vec<_>>();
                     let result_decl = rtypes::emit_func_result(s, &ft.result);
+                    let result_decl = quote! { ::std::result::Result<#result_decl, ::hyperlight_host::error::HyperlightError> };
                     let hln = emit_fn_hl_name(s, ed.kebab_name);
                     let ret = format_ident!("ret");
                     let marshal = ft
@@ -66,11 +67,11 @@ fn emit_export_extern_decl<'a, 'b, 'c>(
                                 #hln,
                                 marshalled,
                             );
-                            let ::std::result::Result::Ok(#ret) = #ret else { panic!("bad return from guest {:?}", #ret) };
+                            let #ret = #ret?;
                             #[allow(clippy::unused_unit)]
                             let mut rts = self.rt.lock().unwrap();
                             #[allow(clippy::unused_unit)]
-                            #unmarshal
+                            Ok(#unmarshal)
                         }
                     }
                 }
@@ -215,16 +216,27 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                 })
                 .unzip::<_, _, Vec<_>, Vec<_>>();
             let tp = s.cur_trait_path();
-            let callname = match kebab_to_fn(ed.kebab_name) {
-                FnName::Plain(n) => quote! { #tp::#n },
+            let (callname, is_constructor) = match kebab_to_fn(ed.kebab_name) {
+                FnName::Plain(n) => (quote! { #tp::#n }, false),
                 FnName::Associated(r, m) => {
                     let hp = s.helper_path();
                     match m {
-                        ResourceItemName::Constructor => quote! { #hp #r::new },
-                        ResourceItemName::Method(mn) => quote! { #hp #r::#mn },
-                        ResourceItemName::Static(mn) => quote! { #hp #r::#mn },
+                        ResourceItemName::Constructor => (quote! { #hp #r::new }, true),
+                        ResourceItemName::Method(mn) => (quote! { #hp #r::#mn }, false),
+                        ResourceItemName::Static(mn) => (quote! { #hp #r::#mn }, false),
                     }
                 }
+            };
+            // WIT constructors always return `own<resource>` with no
+            // spec-level mechanism for fallibility, so their trait
+            // signature stays as `fn new(...) -> Self::T` (no Result
+            // wrapper).  Non-constructor trait methods return
+            // `Result` on the host side, so we append `?` to
+            // propagate errors from the host implementation.
+            let try_op = if is_constructor {
+                quote! {}
+            } else {
+                quote! { ? }
             };
             let SelfInfo {
                 orig_id,
@@ -246,7 +258,7 @@ fn emit_import_extern_decl<'a, 'b, 'c>(
                             &mut #inner_id
                         ),
                         #(#pus),*
-                    );
+                    )#try_op;
                     Ok(#marshal_result)
                 })
                 .unwrap();

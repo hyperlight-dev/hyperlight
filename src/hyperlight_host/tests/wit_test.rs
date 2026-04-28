@@ -17,6 +17,7 @@ limitations under the License.
 use std::sync::{Arc, Mutex};
 
 use hyperlight_common::resource::BorrowedResourceGuard;
+use hyperlight_host::error::HyperlightError;
 use hyperlight_host::{GuestBinary, MultiUseSandbox, UninitializedSandbox};
 use hyperlight_testing::wit_guest_as_string;
 
@@ -67,137 +68,157 @@ impl Clone for Testvariant {
 struct Host {}
 
 impl test::wit::Roundtrip for Host {
-    fn roundtrip_bool(&mut self, x: bool) -> bool {
-        x
+    fn roundtrip_bool(&mut self, x: bool) -> Result<bool, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_s8(&mut self, x: i8) -> i8 {
-        x
+    fn roundtrip_s8(&mut self, x: i8) -> Result<i8, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_s16(&mut self, x: i16) -> i16 {
-        x
+    fn roundtrip_s16(&mut self, x: i16) -> Result<i16, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_s32(&mut self, x: i32) -> i32 {
-        x
+    fn roundtrip_s32(&mut self, x: i32) -> Result<i32, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_s64(&mut self, x: i64) -> i64 {
-        x
+    fn roundtrip_s64(&mut self, x: i64) -> Result<i64, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_u8(&mut self, x: u8) -> u8 {
-        x
+    fn roundtrip_u8(&mut self, x: u8) -> Result<u8, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_u16(&mut self, x: u16) -> u16 {
-        x
+    fn roundtrip_u16(&mut self, x: u16) -> Result<u16, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_u32(&mut self, x: u32) -> u32 {
-        x
+    fn roundtrip_u32(&mut self, x: u32) -> Result<u32, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_u64(&mut self, x: u64) -> u64 {
-        x
+    fn roundtrip_u64(&mut self, x: u64) -> Result<u64, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_f32(&mut self, x: f32) -> f32 {
-        x
+    fn roundtrip_f32(&mut self, x: f32) -> Result<f32, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_f64(&mut self, x: f64) -> f64 {
-        x
+    fn roundtrip_f64(&mut self, x: f64) -> Result<f64, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_char(&mut self, x: char) -> char {
-        x
+    fn roundtrip_char(&mut self, x: char) -> Result<char, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_string(&mut self, x: alloc::string::String) -> alloc::string::String {
-        x
+    fn roundtrip_string(
+        &mut self,
+        x: alloc::string::String,
+    ) -> Result<alloc::string::String, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_list(&mut self, x: alloc::vec::Vec<u8>) -> alloc::vec::Vec<u8> {
-        x
+    fn roundtrip_list(
+        &mut self,
+        x: alloc::vec::Vec<u8>,
+    ) -> Result<alloc::vec::Vec<u8>, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_tuple(&mut self, x: (alloc::string::String, u8)) -> (alloc::string::String, u8) {
-        x
+    fn roundtrip_tuple(
+        &mut self,
+        x: (alloc::string::String, u8),
+    ) -> Result<(alloc::string::String, u8), HyperlightError> {
+        Ok(x)
     }
     fn roundtrip_option(
         &mut self,
         x: ::core::option::Option<alloc::string::String>,
-    ) -> ::core::option::Option<alloc::string::String> {
-        x
+    ) -> Result<::core::option::Option<alloc::string::String>, HyperlightError> {
+        Ok(x)
     }
     fn roundtrip_result(
         &mut self,
         x: ::core::result::Result<char, alloc::string::String>,
-    ) -> ::core::result::Result<char, alloc::string::String> {
-        x
+    ) -> Result<::core::result::Result<char, alloc::string::String>, HyperlightError> {
+        Ok(x)
     }
     fn roundtrip_record(
         &mut self,
         x: test::wit::roundtrip::Testrecord,
-    ) -> test::wit::roundtrip::Testrecord {
-        x
+    ) -> Result<test::wit::roundtrip::Testrecord, HyperlightError> {
+        Ok(x)
     }
     fn roundtrip_flags_small(
         &mut self,
         x: test::wit::roundtrip::Smallflags,
-    ) -> test::wit::roundtrip::Smallflags {
-        x
+    ) -> Result<test::wit::roundtrip::Smallflags, HyperlightError> {
+        Ok(x)
     }
     fn roundtrip_flags_large(
         &mut self,
         x: test::wit::roundtrip::Largeflags,
-    ) -> test::wit::roundtrip::Largeflags {
-        x
+    ) -> Result<test::wit::roundtrip::Largeflags, HyperlightError> {
+        Ok(x)
     }
     fn roundtrip_variant(
         &mut self,
         x: test::wit::roundtrip::Testvariant,
-    ) -> test::wit::roundtrip::Testvariant {
-        x
+    ) -> Result<test::wit::roundtrip::Testvariant, HyperlightError> {
+        Ok(x)
     }
     fn roundtrip_enum(
         &mut self,
         x: test::wit::roundtrip::Testenum,
-    ) -> test::wit::roundtrip::Testenum {
-        x
+    ) -> Result<test::wit::roundtrip::Testenum, HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list(&mut self, x: [u8; 4]) -> [u8; 4] {
-        x
+    fn roundtrip_fix_list(&mut self, x: [u8; 4]) -> Result<[u8; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_u32(&mut self, x: [u32; 4]) -> [u32; 4] {
-        x
+    fn roundtrip_fix_list_u32(&mut self, x: [u32; 4]) -> Result<[u32; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_u64(&mut self, x: [u64; 4]) -> [u64; 4] {
-        x
+    fn roundtrip_fix_list_u64(&mut self, x: [u64; 4]) -> Result<[u64; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_i8(&mut self, x: [i8; 4]) -> [i8; 4] {
-        x
+    fn roundtrip_fix_list_i8(&mut self, x: [i8; 4]) -> Result<[i8; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_i16(&mut self, x: [i16; 4]) -> [i16; 4] {
-        x
+    fn roundtrip_fix_list_i16(&mut self, x: [i16; 4]) -> Result<[i16; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_i32(&mut self, x: [i32; 4]) -> [i32; 4] {
-        x
+    fn roundtrip_fix_list_i32(&mut self, x: [i32; 4]) -> Result<[i32; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_i64(&mut self, x: [i64; 4]) -> [i64; 4] {
-        x
+    fn roundtrip_fix_list_i64(&mut self, x: [i64; 4]) -> Result<[i64; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_f32(&mut self, x: [f32; 4]) -> [f32; 4] {
-        x
+    fn roundtrip_fix_list_f32(&mut self, x: [f32; 4]) -> Result<[f32; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_f64(&mut self, x: [f64; 4]) -> [f64; 4] {
-        x
+    fn roundtrip_fix_list_f64(&mut self, x: [f64; 4]) -> Result<[f64; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_u8_size8(&mut self, x: [u8; 8]) -> [u8; 8] {
-        x
+    fn roundtrip_fix_list_u8_size8(&mut self, x: [u8; 8]) -> Result<[u8; 8], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_u64_size2(&mut self, x: [u64; 2]) -> [u64; 2] {
-        x
+    fn roundtrip_fix_list_u64_size2(&mut self, x: [u64; 2]) -> Result<[u64; 2], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_list_string(&mut self, x: [String; 4]) -> [String; 4] {
-        x
+    fn roundtrip_fix_list_string(
+        &mut self,
+        x: [String; 4],
+    ) -> Result<[String; 4], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_array_of_lists(&mut self, x: [Vec<u8>; 3]) -> [Vec<u8>; 3] {
-        x
+    fn roundtrip_fix_array_of_lists(
+        &mut self,
+        x: [Vec<u8>; 3],
+    ) -> Result<[Vec<u8>; 3], HyperlightError> {
+        Ok(x)
     }
-    fn roundtrip_fix_array_of_string_lists(&mut self, x: [Vec<String>; 2]) -> [Vec<String>; 2] {
-        x
+    fn roundtrip_fix_array_of_string_lists(
+        &mut self,
+        x: [Vec<String>; 2],
+    ) -> Result<[Vec<String>; 2], HyperlightError> {
+        Ok(x)
     }
 
-    fn roundtrip_no_result(&mut self, _x: u32) {}
+    fn roundtrip_no_result(&mut self, _x: u32) -> Result<(), HyperlightError> {
+        Ok(())
+    }
 }
 
 struct TestResource {
@@ -235,7 +256,11 @@ impl test::wit::host_resource::Testresource for Host {
     fn new(&mut self, x: String, last: char) -> Self::T {
         TestResource::new(x, last)
     }
-    fn append_char(&mut self, self_: BorrowedResourceGuard<'_, Self::T>, c: char) {
+    fn append_char(
+        &mut self,
+        self_: BorrowedResourceGuard<'_, Self::T>,
+        c: char,
+    ) -> Result<(), HyperlightError> {
         let mut self_ = self_.lock().unwrap();
         match self_.n_calls {
             // These line up to the initial values and calls made by
@@ -259,16 +284,27 @@ impl test::wit::host_resource::Testresource for Host {
         self_.n_calls += 1;
         self_.x.push(c);
         self_.last = c;
+        Ok(())
     }
 }
 
 impl test::wit::HostResource for Host {
-    fn roundtrip_own(&mut self, owned: Arc<Mutex<TestResource>>) -> Arc<Mutex<TestResource>> {
-        owned
+    fn roundtrip_own(
+        &mut self,
+        owned: Arc<Mutex<TestResource>>,
+    ) -> Result<Arc<Mutex<TestResource>>, HyperlightError> {
+        Ok(owned)
     }
 
-    fn return_own(&mut self, _: Arc<Mutex<TestResource>>) {
+    fn return_own(&mut self, _: Arc<Mutex<TestResource>>) -> Result<(), HyperlightError> {
         // Not much to do here other than let it be dropped
+        Ok(())
+    }
+}
+
+impl test::wit::FailableHost for Host {
+    fn will_fail(&mut self) -> Result<String, HyperlightError> {
+        Err(HyperlightError::Error("deliberate host error".into()))
     }
 }
 
@@ -280,6 +316,10 @@ impl test::wit::TestImports for Host {
     }
     type HostResource = Self;
     fn host_resource(&mut self) -> &mut Self {
+        self
+    }
+    type FailableHost = Self;
+    fn failable_host(&mut self) -> &mut Self {
         self
     }
 }
@@ -295,7 +335,9 @@ mod wit_test {
 
     use proptest::prelude::*;
 
-    use crate::bindings::test::wit::{Roundtrip, TestExports, TestHostResource, roundtrip};
+    use crate::bindings::test::wit::{
+        Failable, Roundtrip, TestExports, TestHostResource, roundtrip,
+    };
     use crate::sb;
 
     prop_compose! {
@@ -347,7 +389,7 @@ mod wit_test {
             proptest! {
                 #[test]
                 fn $fn(x $($ty)*) {
-                    assert_eq!(x, sb().roundtrip().$fn(x.clone()))
+                    assert_eq!(x, sb().roundtrip().$fn(x.clone()).unwrap())
                 }
             }
         }
@@ -394,7 +436,7 @@ mod wit_test {
 
     #[test]
     fn test_roundtrip_no_result() {
-        sb().roundtrip().roundtrip_no_result(42);
+        sb().roundtrip().roundtrip_no_result(42).unwrap();
     }
 
     use std::sync::atomic::Ordering::Relaxed;
@@ -404,7 +446,7 @@ mod wit_test {
         let guard = crate::SERIALIZE_TEST_RESOURCE_TESTS.lock();
         crate::HAS_BEEN_DROPPED.store(false, Relaxed);
         {
-            sb().test_host_resource().test_uses_locally();
+            sb().test_host_resource().test_uses_locally().unwrap();
         }
         assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
         drop(guard);
@@ -416,13 +458,37 @@ mod wit_test {
         {
             let mut sb = sb();
             let inst = sb.test_host_resource();
-            let r = inst.test_makes();
-            inst.test_accepts_borrow(&r);
-            inst.test_accepts_own(r);
-            inst.test_returns();
+            let r = inst.test_makes().unwrap();
+            inst.test_accepts_borrow(&r).unwrap();
+            inst.test_accepts_own(r).unwrap();
+            inst.test_returns().unwrap();
         }
         assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
         drop(guard);
+    }
+
+    #[test]
+    fn test_guest_trap_returns_error() {
+        let mut sb = sb();
+        let failable = sb.failable();
+        let err = failable.will_trap().unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("deliberate guest crash"),
+            "Expected error to mention 'deliberate guest crash', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_host_error_returns_error() {
+        let mut sb = sb();
+        let failable = sb.failable();
+        let err = failable.call_failing_host_func().unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("deliberate host error"),
+            "Expected error to mention 'deliberate host error', got: {msg}"
+        );
     }
 }
 

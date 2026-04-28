@@ -3,8 +3,10 @@ package test:wit;
 world test {
   import roundtrip;
   import host-resource;
+  import failable-host;
   export roundtrip;
   export test-host-resource;
+  export failable;
 }
 
 interface roundtrip {
@@ -89,4 +91,16 @@ interface test-host-resource {
   test-accepts-borrow: func(x: borrow<testresource>);
   test-accepts-own: func(x: own<testresource>);
   test-returns: func() -> own<testresource>;
+}
+
+interface failable {
+  /// This function will deliberately trap in the guest.
+  will-trap: func() -> string;
+  /// This function calls a host import that returns an error.
+  call-failing-host-func: func() -> string;
+}
+
+interface failable-host {
+  /// This host function will deliberately return an error.
+  will-fail: func() -> string;
 }
