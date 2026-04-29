@@ -102,7 +102,7 @@ opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 tokio = { version = "1.52.1", features = ["full"] }
 criterion = "0.8.2"
 tracing-chrome = "0.7.2"
-metrics-util = "0.20.1"
+metrics-util = "0.20.2"
 metrics-exporter-prometheus = { version = "0.18.1", default-features = false }
 serde_json = "1.0"
 hyperlight-component-macro = { workspace = true }
