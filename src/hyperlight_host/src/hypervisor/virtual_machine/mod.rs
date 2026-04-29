@@ -200,8 +200,6 @@ pub enum RunVcpuError {
     GetDr6(HypervisorError),
     #[error("Increment RIP failed: {0}")]
     IncrementRip(HypervisorError),
-    #[error("VP register page not available")]
-    NoVpRegisterPage,
     #[error("Parse GPA access info failed")]
     ParseGpaAccessInfo,
     #[error("Unknown error: {0}")]
