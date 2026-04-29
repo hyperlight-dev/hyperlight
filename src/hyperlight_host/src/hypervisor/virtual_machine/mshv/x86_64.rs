@@ -30,12 +30,14 @@ use mshv_bindings::{
     hv_message_type, hv_message_type_HVMSG_GPA_INTERCEPT, hv_message_type_HVMSG_UNMAPPED_GPA,
     hv_message_type_HVMSG_X64_HALT, hv_message_type_HVMSG_X64_IO_PORT_INTERCEPT,
     hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
-    hv_partition_synthetic_processor_features, mshv_create_partition_v2, mshv_user_mem_region,
+    hv_partition_synthetic_processor_features, hv_register_assoc,
+    hv_register_name_HV_X64_REGISTER_RIP, hv_register_value, mshv_create_partition_v2,
+    mshv_user_mem_region,
 };
 #[cfg(feature = "hw-interrupts")]
 use mshv_bindings::{
     HV_X64_REGISTER_CLASS_GENERAL, hv_interrupt_type_HV_X64_INTERRUPT_TYPE_FIXED,
-    hv_register_assoc, hv_register_value,
+    hv_register_name_HV_X64_REGISTER_RAX, set_gp_regs_field_ptr,
 };
 #[cfg(feature = "hw-interrupts")]
 use mshv_ioctls::InterruptRequest;
@@ -219,19 +221,28 @@ impl VirtualMachine for MshvVm {
                             let is_write = io_message.header.intercept_access_type != 0;
 
                             // mshv, unlike kvm, does not automatically increment RIP.
+                            if let Some(page) = self
+                                .vcpu_fd
+                                .get_vp_reg_page()
+                                .filter(|p| unsafe { (*p.0).isvalid != 0 })
                             {
-                                let page = self
-                                    .vcpu_fd
-                                    .get_vp_reg_page()
-                                    .ok_or(RunVcpuError::NoVpRegisterPage)?;
-                                // SAFETY: The register page is a valid mmap'd page
-                                // from create_vcpu and is always populated after a
-                                // vcpu run returns an intercept message.
+                                // SAFETY: The register page is valid (isvalid checked
+                                // above) and populated after a vcpu run intercept.
                                 unsafe {
                                     (*page.0).__bindgen_anon_1.__bindgen_anon_1.rip =
                                         rip + instruction_length;
                                     (*page.0).dirty |= 1 << HV_X64_REGISTER_CLASS_IP;
                                 }
+                            } else {
+                                self.vcpu_fd
+                                    .set_reg(&[hv_register_assoc {
+                                        name: hv_register_name_HV_X64_REGISTER_RIP,
+                                        value: hv_register_value {
+                                            reg64: rip + instruction_length,
+                                        },
+                                        ..Default::default()
+                                    }])
+                                    .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
                             }
 
                             // VmAction::Halt always means "I'm done", regardless
@@ -257,21 +268,26 @@ impl VirtualMachine for MshvVm {
                                 } else if let Some(val) =
                                     super::super::x86_64::hw_interrupts::handle_io_in(port_number)
                                 {
-                                    let page = self
+                                    if let Some(page) = self
                                         .vcpu_fd
                                         .get_vp_reg_page()
-                                        .ok_or(RunVcpuError::NoVpRegisterPage)?;
-                                    // SAFETY: The register page is a valid mmap'd page
-                                    // from create_vcpu and is always populated after a
-                                    // vcpu run returns an intercept message.
-                                    unsafe {
-                                        (*page.0)
-                                            .__bindgen_anon_1
-                                            .__bindgen_anon_1
-                                            .__bindgen_anon_1
-                                            .__bindgen_anon_1
-                                            .rax = val;
-                                        (*page.0).dirty |= 1 << HV_X64_REGISTER_CLASS_GENERAL;
+                                        .filter(|p| unsafe { (*p.0).isvalid != 0 })
+                                    {
+                                        let vp_reg_page = page.0;
+                                        set_gp_regs_field_ptr!(vp_reg_page, rax, val);
+                                        // SAFETY: page is valid (isvalid checked above).
+                                        unsafe {
+                                            (*vp_reg_page).dirty |=
+                                                1 << HV_X64_REGISTER_CLASS_GENERAL;
+                                        }
+                                    } else {
+                                        self.vcpu_fd
+                                            .set_reg(&[hv_register_assoc {
+                                                name: hv_register_name_HV_X64_REGISTER_RAX,
+                                                value: hv_register_value { reg64: val },
+                                                ..Default::default()
+                                            }])
+                                            .map_err(|e| RunVcpuError::Unknown(e.into()))?;
                                     }
                                     continue;
                                 }
