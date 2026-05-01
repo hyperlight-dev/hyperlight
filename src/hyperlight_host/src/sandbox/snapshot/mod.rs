@@ -14,6 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+mod file;
+mod file_tests;
+
 use std::collections::{BTreeMap, HashMap};
 
 use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
