@@ -2092,9 +2092,9 @@ dependencies = [
 
 [[package]]
 name = "metrics-util"
-version = "0.20.1"
+version = "0.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdfb1365fea27e6dd9dc1dbc19f570198bc86914533ad639dae939635f096be4"
+checksum = "9e56997f084e57b045edf17c3ed8ba7f9f779c670df8206dfd1c736f4c02dc4a"
 dependencies = [
  "aho-corasick",
  "crossbeam-epoch",
@@ -2107,6 +2107,7 @@ dependencies = [
  "radix_trie",
  "rand 0.9.2",
  "rand_xoshiro",
+ "rapidhash",
  "sketches-ddsketch",
 ]
 
