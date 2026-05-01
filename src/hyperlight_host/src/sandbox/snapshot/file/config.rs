@@ -579,3 +579,120 @@ impl OciSnapshotConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterType, ReturnType};
+
+    use super::*;
+
+    /// Build a `CommonSegmentRegister` whose every field holds a
+    /// distinct value, so a transposed field in the `Sregs`
+    /// conversion produces an inequality.
+    fn distinct_segment(start: u64) -> CommonSegmentRegister {
+        CommonSegmentRegister {
+            base: start,
+            limit: (start + 1) as u32,
+            selector: (start + 2) as u16,
+            type_: (start + 3) as u8,
+            present: (start + 4) as u8,
+            dpl: (start + 5) as u8,
+            db: (start + 6) as u8,
+            s: (start + 7) as u8,
+            l: (start + 8) as u8,
+            g: (start + 9) as u8,
+            avl: (start + 10) as u8,
+            unusable: (start + 11) as u8,
+            padding: (start + 12) as u8,
+        }
+    }
+
+    fn distinct_table(start: u64) -> CommonTableRegister {
+        CommonTableRegister {
+            base: start,
+            limit: (start + 1) as u16,
+        }
+    }
+
+    /// Special registers with a unique value in every field, including
+    /// a nonzero `cr3`.
+    fn distinct_sregs() -> CommonSpecialRegisters {
+        CommonSpecialRegisters {
+            cs: distinct_segment(10),
+            ds: distinct_segment(30),
+            es: distinct_segment(50),
+            fs: distinct_segment(70),
+            gs: distinct_segment(90),
+            ss: distinct_segment(110),
+            tr: distinct_segment(130),
+            ldt: distinct_segment(150),
+            gdt: distinct_table(170),
+            idt: distinct_table(180),
+            cr0: 200,
+            cr2: 201,
+            cr3: 202,
+            cr4: 203,
+            cr8: 204,
+            efer: 205,
+            apic_base: 206,
+            interrupt_bitmap: [207, 208, 209, 210],
+        }
+    }
+
+    /// Round-tripping special registers through the serde mirror
+    /// preserves every field. `cr3` is the sole exception: it is
+    /// omitted from the config and recomputed at load, so it returns
+    /// as zero.
+    #[test]
+    fn sregs_round_trip_preserves_all_fields_except_cr3() {
+        let original = distinct_sregs();
+        let restored: CommonSpecialRegisters = Sregs::from(&original).into();
+
+        let mut expected = original;
+        expected.cr3 = 0;
+        assert_eq!(restored, expected);
+    }
+
+    /// Every `ParameterType` survives the round-trip through its serde
+    /// mirror, guarding against a transposed variant in either match.
+    #[test]
+    fn parameter_type_repr_round_trips_every_variant() {
+        let variants = [
+            ParameterType::Int,
+            ParameterType::UInt,
+            ParameterType::Long,
+            ParameterType::ULong,
+            ParameterType::Float,
+            ParameterType::Double,
+            ParameterType::String,
+            ParameterType::Bool,
+            ParameterType::VecBytes,
+        ];
+        for p in variants {
+            let back: ParameterType = ParameterTypeRepr::from(&p).into();
+            assert_eq!(back, p, "parameter type {:?} did not round-trip", p);
+        }
+    }
+
+    /// Every `ReturnType` survives the round-trip through its serde
+    /// mirror, guarding against a transposed variant in either match.
+    #[test]
+    fn return_type_repr_round_trips_every_variant() {
+        let variants = [
+            ReturnType::Int,
+            ReturnType::UInt,
+            ReturnType::Long,
+            ReturnType::ULong,
+            ReturnType::Float,
+            ReturnType::Double,
+            ReturnType::String,
+            ReturnType::Bool,
+            ReturnType::Void,
+            ReturnType::VecBytes,
+        ];
+        for r in variants {
+            let back: ReturnType = ReturnTypeRepr::from(&r).into();
+            assert_eq!(back, r, "return type {:?} did not round-trip", r);
+        }
+    }
+}
