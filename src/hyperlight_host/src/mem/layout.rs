@@ -226,16 +226,16 @@ pub(crate) struct SandboxMemoryLayout {
     /// The size of the guest code section.
     pub(crate) code_size: usize,
     /// The size of the init data section (guest blob).
-    init_data_size: usize,
+    pub(crate) init_data_size: usize,
     /// Permission flags for the init data region.
     #[cfg_attr(feature = "i686-guest", allow(unused))]
-    init_data_permissions: Option<MemoryRegionFlags>,
+    pub(crate) init_data_permissions: Option<MemoryRegionFlags>,
     /// The size of the scratch region in physical memory.
-    scratch_size: usize,
+    pub(crate) scratch_size: usize,
     /// The size of the snapshot region in physical memory.
-    snapshot_size: usize,
+    pub(crate) snapshot_size: usize,
     /// The size of the page tables (None if not yet set).
-    pt_size: Option<usize>,
+    pub(crate) pt_size: Option<usize>,
 }
 
 impl Debug for SandboxMemoryLayout {
@@ -295,7 +295,7 @@ impl SandboxMemoryLayout {
     /// Both the scratch region and the snapshot region are bounded by
     /// this size. The value is arbitrary but chosen to be large enough
     /// for most workloads while preventing accidental resource exhaustion.
-    const MAX_MEMORY_SIZE: usize = (16 * 1024 * 1024 * 1024) - Self::BASE_ADDRESS; // 16 GiB - BASE_ADDRESS
+    pub(crate) const MAX_MEMORY_SIZE: usize = (16 * 1024 * 1024 * 1024) - Self::BASE_ADDRESS; // 16 GiB - BASE_ADDRESS
 
     /// The base address of the sandbox's memory.
     pub(crate) const BASE_ADDRESS: usize = 0x1000;
