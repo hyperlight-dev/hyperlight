@@ -52,7 +52,8 @@ impl Registerable for UninitializedSandbox {
             return_type: Output::TYPE,
         };
 
-        (*hfs).register_host_function(name.to_string(), entry)
+        (*hfs).register_host_function(name.to_string(), entry);
+        Ok(())
     }
 }
 
@@ -92,7 +93,26 @@ impl Registerable for crate::MultiUseSandbox {
             return_type: Output::TYPE,
         };
 
-        (*hfs).register_host_function(name.to_string(), entry)
+        (*hfs).register_host_function(name.to_string(), entry);
+        Ok(())
+    }
+}
+
+impl Registerable for crate::HostFunctions {
+    fn register_host_function<Args: ParameterTuple, Output: SupportedReturnType>(
+        &mut self,
+        name: &str,
+        hf: impl Into<HostFunction<Output, Args>>,
+    ) -> Result<()> {
+        let entry = FunctionEntry {
+            function: hf.into().into(),
+            parameter_types: Args::TYPE,
+            return_type: Output::TYPE,
+        };
+
+        self.inner_mut()
+            .register_host_function(name.to_string(), entry);
+        Ok(())
     }
 }
 
@@ -236,7 +256,7 @@ pub(crate) fn register_host_function<Args: ParameterTuple, Output: SupportedRetu
         .host_funcs
         .try_lock()
         .map_err(|e| new_error!("Error locking at {}:{}: {}", file!(), line!(), e))?
-        .register_host_function(name.to_string(), entry)?;
+        .register_host_function(name.to_string(), entry);
 
     Ok(())
 }

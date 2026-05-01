@@ -91,6 +91,9 @@ pub use hypervisor::virtual_machine::is_hypervisor_present;
 pub use sandbox::MultiUseSandbox;
 /// The re-export for the `UninitializedSandbox` type
 pub use sandbox::UninitializedSandbox;
+/// A collection of host functions that can be supplied to a sandbox
+/// constructor (e.g. [`MultiUseSandbox::from_snapshot`]).
+pub use sandbox::host_funcs::HostFunctions;
 /// The re-export for the `GuestBinary` type
 pub use sandbox::uninitialized::GuestBinary;
 /// The re-export for the `GuestCounter` type
