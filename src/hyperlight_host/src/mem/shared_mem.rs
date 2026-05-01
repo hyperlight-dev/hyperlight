@@ -1521,7 +1521,6 @@ impl ReadonlySharedMemory {
     /// The file's length must be a non-zero multiple of `PAGE_SIZE`.
     /// `guest_mapped_size` must be a non-zero multiple of `PAGE_SIZE`
     /// no greater than the file's length.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn from_file(file: &std::fs::File, guest_mapped_size: usize) -> Result<Self> {
         let len: usize = file
             .metadata()
