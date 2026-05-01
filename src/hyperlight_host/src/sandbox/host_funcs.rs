@@ -35,8 +35,76 @@ pub struct FunctionRegistry {
     functions_map: HashMap<String, FunctionEntry>,
 }
 
-impl From<&mut FunctionRegistry> for HostFunctionDetails {
-    fn from(registry: &mut FunctionRegistry) -> Self {
+/// A collection of host functions that can be supplied to a sandbox
+/// constructor (e.g. [`crate::MultiUseSandbox::from_snapshot`]) to
+/// expose host-side functionality to the guest.
+///
+/// Use [`HostFunctions::default`] to start with the standard
+/// `HostPrint` function pre-registered (matches the registry that the
+/// regular `UninitializedSandbox` → `evolve()` path constructs), or
+/// [`HostFunctions::new`] to start with an empty registry.
+///
+/// Add additional host functions via the
+/// [`crate::func::Registerable`] trait, just as you would on an
+/// `UninitializedSandbox`.
+///
+/// ```no_run
+/// # use hyperlight_host::{HostFunctions, Result};
+/// # use hyperlight_host::func::Registerable;
+/// # fn example() -> Result<()> {
+/// // Default: HostPrint already registered.
+/// let mut funcs = HostFunctions::default();
+/// funcs.register_host_function("Add", |a: i32, b: i32| Ok(a + b))?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct HostFunctions(FunctionRegistry);
+
+impl HostFunctions {
+    /// Create an empty `HostFunctions` with no host functions
+    /// registered.
+    ///
+    /// Most callers want [`HostFunctions::default`] instead, which
+    /// pre-registers the standard `HostPrint` function.
+    pub fn new() -> Self {
+        Self(FunctionRegistry::default())
+    }
+
+    /// Consume this `HostFunctions` and return the inner registry.
+    pub(crate) fn into_inner(self) -> FunctionRegistry {
+        self.0
+    }
+
+    /// Borrow the inner registry mutably.
+    pub(crate) fn inner_mut(&mut self) -> &mut FunctionRegistry {
+        &mut self.0
+    }
+
+    /// Borrow the inner registry immutably.
+    pub(crate) fn inner(&self) -> &FunctionRegistry {
+        &self.0
+    }
+}
+
+impl Default for HostFunctions {
+    /// Create a `HostFunctions` pre-populated with the standard
+    /// `HostPrint` function (writes UTF-8 strings to the host's
+    /// stdout in green).
+    ///
+    /// This matches the default registry installed by
+    /// `UninitializedSandbox::new()`, so a snapshot taken from a
+    /// regular sandbox can be loaded with
+    /// `MultiUseSandbox::from_snapshot(snap, HostFunctions::default(), None)`
+    /// without registering anything else.
+    ///
+    /// Use [`HostFunctions::new`] for an empty registry.
+    fn default() -> Self {
+        Self(FunctionRegistry::with_default_host_print())
+    }
+}
+
+impl From<&FunctionRegistry> for HostFunctionDetails {
+    fn from(registry: &FunctionRegistry) -> Self {
         let host_functions = registry
             .functions_map
             .iter()
@@ -61,15 +129,26 @@ pub struct FunctionEntry {
 
 impl FunctionRegistry {
     /// Register a host function with the sandbox.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-    pub(crate) fn register_host_function(
-        &mut self,
-        name: String,
-        func: FunctionEntry,
-    ) -> Result<()> {
+    #[instrument(skip_all, parent = Span::current(), level = "Trace")]
+    pub(crate) fn register_host_function(&mut self, name: String, func: FunctionEntry) {
         self.functions_map.insert(name, func);
+    }
 
-        Ok(())
+    /// Create a `FunctionRegistry` pre-populated with the default
+    /// `HostPrint` function (writes to stdout with green text).
+    pub(crate) fn with_default_host_print() -> Self {
+        use crate::func::host_functions::HostFunction;
+        use crate::func::{ParameterTuple, SupportedReturnType};
+
+        let mut registry = Self::default();
+        let hf: HostFunction<i32, (String,)> = default_writer_func.into();
+        let entry = FunctionEntry {
+            function: hf.into(),
+            parameter_types: <(String,)>::TYPE,
+            return_type: <i32 as SupportedReturnType>::TYPE,
+        };
+        registry.register_host_function("HostPrint".to_string(), entry);
+        registry
     }
 
     /// Assuming a host function called `"HostPrint"` exists, and takes a
@@ -118,7 +197,7 @@ impl FunctionRegistry {
 
 /// The default writer function is to write to stdout with green text.
 #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
-pub(super) fn default_writer_func(s: String) -> Result<i32> {
+fn default_writer_func(s: String) -> Result<i32> {
     match std::io::stdout().is_terminal() {
         false => {
             print!("{}", s);
