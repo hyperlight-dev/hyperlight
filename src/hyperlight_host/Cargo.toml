@@ -48,9 +48,13 @@ thiserror = "2.0.18"
 chrono = { version = "0.4", optional = true }
 anyhow = "1.0"
 metrics = "0.24.6"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 elfcore = { version = "2.0", optional = true }
 uuid = { version = "1.23.2", features = ["v4"] }
+oci-spec = { version = "0.8", default-features = false, features = ["image"] }
+sha2 = "0.10"
+hex = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -82,7 +86,6 @@ mshv-ioctls = { version = "0.6", optional = true}
 [dev-dependencies]
 uuid = { version = "1.23.2", features = ["v4"] }
 signal-hook-registry = "1.4.8"
-serde = "1.0"
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "code_asm"] }
 proptest = "1.11.0"
 tempfile = "3.27.0"
