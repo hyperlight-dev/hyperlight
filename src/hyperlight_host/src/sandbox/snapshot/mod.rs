@@ -17,6 +17,7 @@ limitations under the License.
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::layout::{scratch_base_gpa, scratch_base_gva};
 use hyperlight_common::vmem;
 use hyperlight_common::vmem::{
@@ -115,6 +116,13 @@ pub struct Snapshot {
     /// restored sandbox's guest-visible counter so the guest can tell
     /// which snapshot it is currently a clone of.
     snapshot_generation: u64,
+
+    /// Names and signatures of host functions registered on the
+    /// sandbox at the time this snapshot was taken. Used by
+    /// [`crate::MultiUseSandbox::from_snapshot`] to reject a
+    /// `HostFunctions` set that is missing required functions or
+    /// has mismatched signatures.
+    host_functions: HostFunctionDetails,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
     fn as_ref(&self) -> &Self {
@@ -423,6 +431,9 @@ impl Snapshot {
             sregs: None,
             entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
             snapshot_generation: 0,
+            host_functions: HostFunctionDetails {
+                host_functions: None,
+            },
         })
     }
 
@@ -447,6 +458,7 @@ impl Snapshot {
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
         snapshot_generation: u64,
+        host_functions: HostFunctionDetails,
     ) -> Result<Self> {
         let mut phys_seen = HashMap::<u64, usize>::new();
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
@@ -610,6 +622,7 @@ impl Snapshot {
             sregs: Some(sregs),
             entrypoint,
             snapshot_generation,
+            host_functions,
         })
     }
 
@@ -674,6 +687,7 @@ impl PartialEq for Snapshot {
 #[cfg(test)]
 #[cfg(not(feature = "i686-guest"))]
 mod tests {
+    use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
 
     use crate::hypervisor::regs::CommonSpecialRegisters;
@@ -747,6 +761,7 @@ mod tests {
             default_sregs(),
             super::NextAction::None,
             1,
+            HostFunctionDetails::default(),
         )
         .unwrap();
 
@@ -764,6 +779,7 @@ mod tests {
             default_sregs(),
             super::NextAction::None,
             2,
+            HostFunctionDetails::default(),
         )
         .unwrap();
 

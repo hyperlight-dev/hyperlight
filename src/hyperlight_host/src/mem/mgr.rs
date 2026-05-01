@@ -22,6 +22,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 };
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
@@ -298,6 +299,7 @@ where
     }
 
     /// Create a snapshot with the given mapped regions
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn snapshot(
         &mut self,
         sandbox_id: u64,
@@ -306,6 +308,7 @@ where
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
+        host_functions: HostFunctionDetails,
     ) -> Result<Snapshot> {
         self.snapshot_count += 1;
         Snapshot::new(
@@ -320,6 +323,7 @@ where
             sregs,
             entrypoint,
             self.snapshot_count,
+            host_functions,
         )
     }
 }
