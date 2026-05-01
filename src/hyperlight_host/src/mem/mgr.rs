@@ -334,7 +334,13 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
         let shared_mem = s.memory().to_mgr_snapshot_mem()?;
         let scratch_mem = ExclusiveSharedMemory::new(s.layout().get_scratch_size())?;
         let entrypoint = s.entrypoint();
-        Ok(Self::new(layout, shared_mem, scratch_mem, entrypoint))
+        let mut mgr = Self::new(layout, shared_mem, scratch_mem, entrypoint);
+        // Inherit the snapshot's generation number for the same
+        // reason `restore_snapshot` does: the guest-visible counter
+        // reflects "which snapshot is the sandbox currently a clone
+        // of", not "how many snapshots this partition has taken".
+        mgr.snapshot_count = s.snapshot_generation();
+        Ok(mgr)
     }
 
     /// Wraps ExclusiveSharedMemory::build

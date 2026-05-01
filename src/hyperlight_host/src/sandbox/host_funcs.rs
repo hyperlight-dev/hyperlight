@@ -74,9 +74,19 @@ impl HostFunctions {
         Self(FunctionRegistry::default())
     }
 
+    /// Consume this `HostFunctions` and return the inner registry.
+    pub(crate) fn into_inner(self) -> FunctionRegistry {
+        self.0
+    }
+
     /// Borrow the inner registry mutably.
     pub(crate) fn inner_mut(&mut self) -> &mut FunctionRegistry {
         &mut self.0
+    }
+
+    /// Borrow the inner registry immutably.
+    pub(crate) fn inner(&self) -> &FunctionRegistry {
+        &self.0
     }
 }
 
@@ -126,6 +136,16 @@ impl FunctionRegistry {
     #[instrument(skip_all, parent = Span::current(), level = "Trace")]
     pub(crate) fn register_host_function(&mut self, name: String, func: FunctionEntry) {
         self.functions_map.insert(name, func);
+    }
+
+    /// Return the registered signature for `name`.
+    pub(crate) fn function_signature(
+        &self,
+        name: &str,
+    ) -> Option<(&'static [ParameterType], ReturnType)> {
+        self.functions_map
+            .get(name)
+            .map(|entry| (entry.parameter_types, entry.return_type))
     }
 
     /// Create a `FunctionRegistry` pre-populated with the default

@@ -94,6 +94,11 @@ impl Registerable for crate::MultiUseSandbox {
         };
 
         (*hfs).register_host_function(name.to_string(), entry);
+
+        // Registration mutates the host-function set captured in
+        // snapshots. Invalidate the cached snapshot so the next
+        // `snapshot()` call reflects the updated registry.
+        self.snapshot = None;
         Ok(())
     }
 }
