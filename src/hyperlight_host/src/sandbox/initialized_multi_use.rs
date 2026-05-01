@@ -207,6 +207,11 @@ impl MultiUseSandbox {
             .get_snapshot_sregs()
             .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
         let entrypoint = self.vm.get_entrypoint();
+        let host_functions = (&*self.host_funcs.try_lock().map_err(|e| {
+            crate::new_error!("Error locking host_funcs at {}:{}: {}", file!(), line!(), e)
+        })?)
+            .into();
+
         let memory_snapshot = self.mem_mgr.snapshot(
             self.id,
             mapped_regions_vec,
@@ -214,6 +219,7 @@ impl MultiUseSandbox {
             stack_top_gpa,
             sregs,
             entrypoint,
+            host_functions,
         )?;
         let snapshot = Arc::new(memory_snapshot);
         self.snapshot = Some(snapshot.clone());

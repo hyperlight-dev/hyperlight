@@ -17,6 +17,7 @@ limitations under the License.
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::layout::{scratch_base_gpa, scratch_base_gva};
 use hyperlight_common::vmem;
 use hyperlight_common::vmem::{
@@ -115,6 +116,16 @@ pub struct Snapshot {
     /// restored sandbox's guest-visible counter so the guest can tell
     /// which snapshot it is currently a clone of.
     snapshot_generation: u64,
+
+    /// Names and signatures of host functions registered on the
+    /// sandbox at the time this snapshot was taken. Persisted to disk
+    /// so that [`crate::MultiUseSandbox::from_snapshot`] can reject
+    /// a `HostFunctions` set that is missing required functions or
+    /// has mismatched signatures.
+    ///
+    /// Empty for snapshots created via test-only constructors that
+    /// bypass the normal sandbox path.
+    host_functions: HostFunctionDetails,
 }
 impl core::convert::AsRef<Snapshot> for Snapshot {
     fn as_ref(&self) -> &Self {
@@ -423,6 +434,9 @@ impl Snapshot {
             sregs: None,
             entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
             snapshot_generation: 0,
+            host_functions: HostFunctionDetails {
+                host_functions: None,
+            },
         })
     }
 
@@ -447,6 +461,7 @@ impl Snapshot {
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
         snapshot_generation: u64,
+        host_functions: HostFunctionDetails,
     ) -> Result<Self> {
         let mut phys_seen = HashMap::<u64, usize>::new();
         let scratch_gva = scratch_base_gva(layout.get_scratch_size());
@@ -610,6 +625,7 @@ impl Snapshot {
             sregs: Some(sregs),
             entrypoint,
             snapshot_generation,
+            host_functions,
         })
     }
 
@@ -663,6 +679,65 @@ impl Snapshot {
     pub(crate) fn entrypoint(&self) -> NextAction {
         self.entrypoint
     }
+
+    /// Validate that `provided` is a superset of the host functions
+    /// recorded in this snapshot: every function that was registered
+    /// at snapshot time must also be present in `provided` with a
+    /// matching signature. Extras in `provided` are allowed.
+    ///
+    /// A snapshot with no recorded host functions (e.g. one
+    /// produced by a test-only constructor) accepts any `provided`
+    /// set.
+    pub(crate) fn validate_host_functions(&self, provided: &crate::HostFunctions) -> Result<()> {
+        let required = match &self.host_functions.host_functions {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        if required.is_empty() {
+            return Ok(());
+        }
+
+        // Build a HostFunctionDetails view of the provided registry
+        // using the existing `From<&FunctionRegistry>` impl.
+        let provided_details: HostFunctionDetails = provided.inner().into();
+        let provided_funcs = provided_details.host_functions.unwrap_or_default();
+
+        let mut missing: Vec<String> = Vec::new();
+        let mut signature_mismatches: Vec<String> = Vec::new();
+
+        for req in required {
+            match provided_funcs
+                .iter()
+                .find(|f| f.function_name == req.function_name)
+            {
+                None => missing.push(req.function_name.clone()),
+                Some(found)
+                    if found.parameter_types != req.parameter_types
+                        || found.return_type != req.return_type =>
+                {
+                    signature_mismatches.push(format!(
+                        "{}: snapshot has {:?} -> {:?}, registered {:?} -> {:?}",
+                        req.function_name,
+                        req.parameter_types,
+                        req.return_type,
+                        found.parameter_types,
+                        found.return_type,
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+
+        if missing.is_empty() && signature_mismatches.is_empty() {
+            return Ok(());
+        }
+
+        Err(crate::new_error!(
+            "snapshot host function mismatch: missing={:?}, signature_mismatches={:?}",
+            missing,
+            signature_mismatches
+        ))
+    }
 }
 
 impl PartialEq for Snapshot {
@@ -674,6 +749,7 @@ impl PartialEq for Snapshot {
 #[cfg(test)]
 #[cfg(not(feature = "i686-guest"))]
 mod tests {
+    use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
     use hyperlight_common::vmem::{self, BasicMapping, Mapping, MappingKind, PAGE_SIZE};
 
     use crate::hypervisor::regs::CommonSpecialRegisters;
@@ -747,6 +823,7 @@ mod tests {
             default_sregs(),
             super::NextAction::None,
             1,
+            HostFunctionDetails::default(),
         )
         .unwrap();
 
@@ -764,6 +841,7 @@ mod tests {
             default_sregs(),
             super::NextAction::None,
             2,
+            HostFunctionDetails::default(),
         )
         .unwrap();
 
