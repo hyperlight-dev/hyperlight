@@ -132,7 +132,6 @@ mod tests {
         });
 
         // Convert snapshot into a hashmap for easier lookup
-        #[expect(clippy::mutable_key_type)]
         let snapshot = snapshot.into_hashmap();
 
         cfg_if::cfg_if! {
