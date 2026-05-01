@@ -391,12 +391,6 @@ impl SandboxMemoryLayout {
         self.peb_file_mappings_offset()
     }
 
-    /// Get the offset in guest memory to the file_mappings pointer field.
-    #[cfg(feature = "nanvix-unstable")]
-    fn get_file_mappings_pointer_offset(&self) -> usize {
-        self.get_file_mappings_size_offset() + size_of::<u64>()
-    }
-
     /// Get the offset in snapshot memory where the FileMappingInfo array starts
     /// (immediately after the PEB struct, within the same page).
     #[cfg(feature = "nanvix-unstable")]
