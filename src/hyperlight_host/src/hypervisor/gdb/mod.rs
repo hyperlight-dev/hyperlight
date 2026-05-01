@@ -171,10 +171,6 @@ impl DebugMemoryAccess {
 pub enum VcpuStopReason {
     Crash,
     DoneStep,
-    /// Hardware breakpoint inserted by the hypervisor so the guest can be stopped
-    /// at the entry point. This is used to avoid the guest from executing
-    /// the entry point code before the debugger is connected
-    EntryPointBp,
     HwBp,
     SwBp,
     Interrupt,
