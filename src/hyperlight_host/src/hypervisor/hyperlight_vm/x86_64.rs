@@ -346,6 +346,15 @@ impl HyperlightVm {
         self.vm.set_debug_regs(&CommonDebugRegs::default())?;
         self.vm.reset_xsave()?;
 
+        self.apply_sregs(cr3, sregs)
+    }
+
+    /// Apply special registers and mark TLB for flush.
+    pub(crate) fn apply_sregs(
+        &mut self,
+        cr3: u64,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
         // Restore the full special registers from snapshot, but update CR3
         // to point to the new (relocated) page tables
         let mut sregs = *sregs;
