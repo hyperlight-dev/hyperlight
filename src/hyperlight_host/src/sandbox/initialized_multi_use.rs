@@ -145,6 +145,193 @@ impl MultiUseSandbox {
         self.pt_root_finder = Some(finder);
     }
 
+    /// Create a `MultiUseSandbox` directly from a [`Snapshot`],
+    /// bypassing [`UninitializedSandbox`](crate::UninitializedSandbox)
+    /// and [`evolve()`](crate::UninitializedSandbox::evolve).
+    ///
+    /// This is useful for fast sandbox creation when a snapshot of
+    /// an already-initialized guest is available, either saved to disk
+    /// or captured in memory from another sandbox.
+    ///
+    /// The provided [`HostFunctions`] must include every host function
+    /// that was registered on the sandbox at the time the snapshot was
+    /// taken (matched by name and signature). Additional host functions
+    /// not present in the snapshot are allowed.
+    ///
+    /// An optional [`SandboxConfiguration`](crate::sandbox::SandboxConfiguration)
+    /// can be supplied to override runtime settings such as timeouts and
+    /// interrupt behavior. Memory layout fields
+    /// (`input_data_size`, `output_data_size`, `heap_size`, `scratch_size`)
+    /// are always taken from the snapshot. Any values supplied in
+    /// `config` for those fields are ignored.
+    ///
+    /// # Examples
+    ///
+    /// From a snapshot taken on another sandbox:
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use hyperlight_host::{HostFunctions, MultiUseSandbox, UninitializedSandbox, GuestBinary};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Create and initialize a sandbox the normal way
+    /// let mut sandbox: MultiUseSandbox = UninitializedSandbox::new(
+    ///     GuestBinary::FilePath("guest.bin".into()),
+    ///     None,
+    /// )?.evolve()?;
+    ///
+    /// // Capture a snapshot of the initialized state
+    /// let snapshot = sandbox.snapshot()?;
+    ///
+    /// // Create a new sandbox directly from the snapshot
+    /// let mut sandbox2 = MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), None)?;
+    /// let result: i32 = sandbox2.call("GetValue", ())?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// From a snapshot loaded from disk:
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use hyperlight_host::{HostFunctions, MultiUseSandbox};
+    /// # use hyperlight_host::sandbox::snapshot::Snapshot;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let snapshot = Arc::new(Snapshot::from_file("guest_snapshot.hls")?);
+    /// let mut sandbox = MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), None)?;
+    /// let result: String = sandbox.call("Echo", "hello".to_string())?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+    pub fn from_snapshot(
+        snapshot: Arc<Snapshot>,
+        host_funcs: crate::HostFunctions,
+        config: Option<crate::sandbox::SandboxConfiguration>,
+    ) -> Result<Self> {
+        use rand::RngExt;
+
+        use crate::mem::ptr::RawPtr;
+        use crate::sandbox::uninitialized_evolve::set_up_hypervisor_partition;
+
+        // Validate that the provided host functions are a superset of
+        // those required by the snapshot.
+        snapshot.validate_host_functions(&host_funcs)?;
+
+        let host_funcs = Arc::new(Mutex::new(host_funcs.into_inner()));
+
+        let stack_top_gva = snapshot.stack_top_gva();
+        // Start from the caller's config (if any) so runtime fields
+        // such as timeouts and interrupt knobs are honored, then
+        // overwrite the layout fields from the snapshot. The on-disk
+        // layout is fixed, so any layout values supplied by the
+        // caller are silently ignored. Warn if the caller passed a
+        // config whose layout fields disagree with the snapshot, so
+        // the override is at least visible.
+        let caller_supplied_config = config.is_some();
+        let mut config = config.unwrap_or_default();
+        if caller_supplied_config {
+            warn_on_layout_override(&config, snapshot.layout());
+        }
+        config.set_input_data_size(snapshot.layout().input_data_size);
+        config.set_output_data_size(snapshot.layout().output_data_size);
+        config.set_heap_size(snapshot.layout().heap_size as u64);
+        config.set_scratch_size(snapshot.layout().get_scratch_size());
+        let load_info = snapshot.load_info();
+
+        let mgr = crate::mem::mgr::SandboxMemoryManager::from_snapshot(&snapshot)?;
+        let (mut hshm, gshm) = mgr.build()?;
+
+        let page_size = u32::try_from(page_size::get())? as usize;
+
+        #[cfg(target_os = "linux")]
+        crate::signal_handlers::setup_signal_handlers(&config)?;
+
+        // Build the runtime config from the caller's `SandboxConfiguration`
+        // so that `guest_core_dump` (crashdump) and `guest_debug_info` (gdb)
+        // take effect just like they do in the normal evolve path.
+        // `binary_path` and `entry_point` are not available from a snapshot
+        // and are left unset. This only affects metadata in core dumps.
+        #[cfg(any(crashdump, gdb))]
+        let rt_cfg = crate::sandbox::uninitialized::SandboxRuntimeConfig {
+            #[cfg(crashdump)]
+            binary_path: None,
+            #[cfg(gdb)]
+            debug_info: config.get_guest_debug_info(),
+            #[cfg(crashdump)]
+            guest_core_dump: config.get_guest_core_dump(),
+            #[cfg(crashdump)]
+            entry_point: None,
+        };
+
+        let mut vm = set_up_hypervisor_partition(
+            gshm,
+            &config,
+            stack_top_gva,
+            page_size,
+            #[cfg(any(crashdump, gdb))]
+            rt_cfg,
+            load_info,
+        )?;
+
+        let seed = {
+            let mut rng = rand::rng();
+            rng.random::<u64>()
+        };
+        let peb_addr = RawPtr::from(u64::try_from(hshm.layout.peb_address())?);
+
+        #[cfg(gdb)]
+        let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
+
+        vm.initialise(
+            peb_addr,
+            seed,
+            page_size as u32,
+            &mut hshm,
+            &host_funcs,
+            None,
+            #[cfg(gdb)]
+            dbg_mem_access_hdl,
+        )
+        .map_err(crate::hypervisor::hyperlight_vm::HyperlightVmError::Initialize)?;
+
+        // If the snapshot was taken from an already-initialized guest
+        // (NextAction::Call), apply the captured special registers so
+        // the guest resumes in the correct CPU state.
+        #[cfg(not(feature = "i686-guest"))]
+        if matches!(snapshot.entrypoint(), super::snapshot::NextAction::Call(_)) {
+            let sregs = snapshot.sregs().ok_or_else(|| {
+                crate::new_error!("snapshot with NextAction::Call must have captured sregs")
+            })?;
+            vm.apply_sregs(hshm.layout.get_pt_base_gpa(), sregs)
+                .map_err(|e| {
+                    crate::HyperlightError::HyperlightVmError(
+                        crate::hypervisor::hyperlight_vm::HyperlightVmError::Restore(e),
+                    )
+                })?;
+        }
+
+        #[cfg(gdb)]
+        let dbg_mem_wrapper = Arc::new(Mutex::new(hshm.clone()));
+
+        let mut sbox = MultiUseSandbox::from_uninit(
+            host_funcs,
+            hshm,
+            vm,
+            #[cfg(gdb)]
+            dbg_mem_wrapper,
+        );
+        // Use the snapshot's sandbox_id so that restore() back to this
+        // snapshot is permitted. The id is process-local and never
+        // persisted to disk: `Snapshot::from_file` assigns a fresh id
+        // on every load, so two `from_file` calls of the same path
+        // yield restore-incompatible sandboxes (which is the intended
+        // safer default). Sandboxes built from clones of the same
+        // in-memory `Arc<Snapshot>` share the id and are mutually
+        // restore-compatible.
+        sbox.id = snapshot.sandbox_id();
+        Ok(sbox)
+    }
+
     /// Creates a snapshot of the sandbox's current memory state.
     ///
     /// The snapshot is tied to this specific sandbox instance and can only be
@@ -946,6 +1133,48 @@ impl Callable for MultiUseSandbox {
 impl std::fmt::Debug for MultiUseSandbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MultiUseSandbox").finish()
+    }
+}
+
+/// Emit a warning for each memory-layout field in `caller` that
+/// disagrees with `snapshot`. Used by [`MultiUseSandbox::from_snapshot`]
+/// to surface ignored caller-supplied layout values, since those
+/// fields are always taken from the snapshot.
+fn warn_on_layout_override(
+    caller: &crate::sandbox::SandboxConfiguration,
+    snapshot: &crate::mem::layout::SandboxMemoryLayout,
+) {
+    let mismatches: &[(&str, u64, u64)] = &[
+        (
+            "input_data_size",
+            caller.get_input_data_size() as u64,
+            snapshot.input_data_size as u64,
+        ),
+        (
+            "output_data_size",
+            caller.get_output_data_size() as u64,
+            snapshot.output_data_size as u64,
+        ),
+        (
+            "heap_size",
+            caller.get_heap_size(),
+            snapshot.heap_size as u64,
+        ),
+        (
+            "scratch_size",
+            caller.get_scratch_size() as u64,
+            snapshot.get_scratch_size() as u64,
+        ),
+    ];
+    for (name, supplied, snap) in mismatches {
+        if supplied != snap {
+            tracing::warn!(
+                "from_snapshot ignoring caller-supplied {} ({}); using snapshot value ({})",
+                name,
+                supplied,
+                snap
+            );
+        }
     }
 }
 
