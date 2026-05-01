@@ -61,9 +61,8 @@ pub(crate) const DR6_HW_BP_FLAGS_MASK: u64 = 0x0F << DR6_HW_BP_FLAGS_POS;
 /// Determine the reason the vCPU stopped
 /// This is done by checking the DR6 register and the exception id
 pub(crate) fn vcpu_stop_reason(
-    vm: &mut dyn DebuggableVm,
+    vm: &dyn DebuggableVm,
     dr6: u64,
-    entrypoint: u64,
     exception: u32,
 ) -> std::result::Result<VcpuStopReason, VcpuStopReasonError> {
     let CommonRegisters { rip, .. } = vm.regs()?;
@@ -81,10 +80,6 @@ pub(crate) fn vcpu_stop_reason(
         // Check page 19-4 Vol. 3B of Intel 64 and IA-32
         // Architectures Software Developer's Manual
         if DR6_HW_BP_FLAGS_MASK & dr6 != 0 {
-            if rip == entrypoint {
-                vm.remove_hw_breakpoint(entrypoint)?;
-                return Ok(VcpuStopReason::EntryPointBp);
-            }
             return Ok(VcpuStopReason::HwBp);
         }
     }
@@ -98,12 +93,10 @@ pub(crate) fn vcpu_stop_reason(
         r"The vCPU exited because of an unknown reason:
         rip: {:?}
         dr6: {:?}
-        entrypoint: {:?}
         exception: {:?}
         ",
         rip,
         dr6,
-        entrypoint,
         exception,
     );
 
