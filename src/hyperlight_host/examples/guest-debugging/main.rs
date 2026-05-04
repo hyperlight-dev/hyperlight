@@ -265,13 +265,12 @@ mod tests {
                     echo \"Stopped at hyperlight_main breakpoint\\n\"
                     backtrace
 
-                    continue
+                    set logging enabled off
+                    detach
+                    quit
                 end
 
                 continue
-
-                set logging enabled off
-                quit
             "
         );
 
@@ -311,16 +310,14 @@ mod tests {
                     break +2
                     commands 2
                         print $xmm1.v4_float
-                        continue
+                        set logging enabled off
+                        detach
+                        quit
                     end
                     continue
                 end
-                
 
                 continue
-
-                set logging enabled off
-                quit
             "
         );
 
