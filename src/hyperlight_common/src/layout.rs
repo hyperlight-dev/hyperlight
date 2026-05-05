@@ -33,12 +33,33 @@ pub use arch::{MAX_GPA, MAX_GVA};
 ))]
 pub use arch::{SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN};
 
-// offsets down from the top of scratch memory for various things
 pub const SCRATCH_TOP_SIZE_OFFSET: u64 = 0x08;
 pub const SCRATCH_TOP_ALLOCATOR_OFFSET: u64 = 0x10;
 pub const SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET: u64 = 0x18;
 pub const SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET: u64 = 0x20;
-pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x30;
+pub const SCRATCH_TOP_G2H_RING_GVA_OFFSET: u64 = 0x28;
+pub const SCRATCH_TOP_H2G_RING_GVA_OFFSET: u64 = 0x30;
+pub const SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET: u64 = 0x38;
+pub const SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET: u64 = 0x3A;
+pub const SCRATCH_TOP_G2H_POOL_PAGES_OFFSET: u64 = 0x3C;
+pub const SCRATCH_TOP_H2G_POOL_PAGES_OFFSET: u64 = 0x3E;
+pub const SCRATCH_TOP_H2G_POOL_GVA_OFFSET: u64 = 0x48;
+pub const SCRATCH_TOP_EXN_STACK_OFFSET: u64 = 0x50;
+
+const _: () = {
+    assert!(SCRATCH_TOP_ALLOCATOR_OFFSET >= SCRATCH_TOP_SIZE_OFFSET + 8);
+    assert!(SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET >= SCRATCH_TOP_ALLOCATOR_OFFSET + 8);
+    assert!(SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET >= SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET + 8);
+    assert!(SCRATCH_TOP_G2H_RING_GVA_OFFSET >= SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET + 8);
+    assert!(SCRATCH_TOP_H2G_RING_GVA_OFFSET >= SCRATCH_TOP_G2H_RING_GVA_OFFSET + 8);
+    assert!(SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET >= SCRATCH_TOP_H2G_RING_GVA_OFFSET + 8);
+    assert!(SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET >= SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET + 2);
+    assert!(SCRATCH_TOP_G2H_POOL_PAGES_OFFSET >= SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET + 2);
+    assert!(SCRATCH_TOP_H2G_POOL_PAGES_OFFSET >= SCRATCH_TOP_G2H_POOL_PAGES_OFFSET + 2);
+    assert!(SCRATCH_TOP_H2G_POOL_GVA_OFFSET >= SCRATCH_TOP_H2G_POOL_PAGES_OFFSET + 8);
+    assert!(SCRATCH_TOP_EXN_STACK_OFFSET >= SCRATCH_TOP_H2G_POOL_GVA_OFFSET + 8);
+    assert!(SCRATCH_TOP_EXN_STACK_OFFSET % 0x10 == 0);
+};
 
 /// Offset from the top of scratch memory for a shared host-guest u64 counter.
 ///
@@ -54,6 +75,28 @@ pub fn scratch_base_gpa(size: usize) -> u64 {
 }
 pub fn scratch_base_gva(size: usize) -> u64 {
     (MAX_GVA - size + 1) as u64
+}
+
+pub const fn scratch_top_ptr<T>(offset: u64) -> *mut T {
+    (MAX_GVA as u64 - offset + 1) as *mut T
+}
+
+/// Compute the byte offset from the scratch base to the G2H ring.
+///
+/// The G2H ring starts at offset 0, aligned to descriptor alignment.
+pub const fn g2h_ring_scratch_offset() -> usize {
+    0
+}
+
+/// Compute the byte offset from the scratch base to the H2G ring.
+///
+/// The H2G ring follows immediately after the G2H ring, aligned to
+/// descriptor alignment.
+pub const fn h2g_ring_scratch_offset(g2h_num_descs: usize) -> usize {
+    let g2h_size = crate::virtq::Layout::query_size(g2h_num_descs);
+    let align = crate::virtq::Descriptor::ALIGN;
+
+    (g2h_size + align - 1) & !(align - 1)
 }
 
 /// Compute the minimum scratch region size needed for a sandbox.

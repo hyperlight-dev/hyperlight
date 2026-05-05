@@ -20,6 +20,6 @@ pub const SNAPSHOT_PT_GVA_MIN: usize = 0xffff_8000_0000_0000;
 pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
 pub const MAX_GPA: usize = 0x0000_000f_ffff_ffff;
 
-pub fn min_scratch_size(_input_data_size: usize, _output_data_size: usize) -> usize {
+pub fn min_scratch_size(_g2h_num_descs: usize, _h2g_num_descs: usize) -> usize {
     unimplemented!("min_scratch_size")
 }

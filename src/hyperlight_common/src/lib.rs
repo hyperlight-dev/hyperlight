@@ -18,7 +18,7 @@ limitations under the License.
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::expect_used))]
 #![cfg_attr(not(any(test, debug_assertions)), warn(clippy::unwrap_used))]
 // We use Arbitrary during fuzzing, which requires std
-#![cfg_attr(not(feature = "fuzzing"), no_std)]
+#![cfg_attr(not(any(feature = "fuzzing", test, miri)), no_std)]
 
 extern crate alloc;
 
@@ -50,3 +50,6 @@ pub mod vmem;
 
 /// ELF note types for embedding hyperlight version metadata in guest binaries.
 pub mod version_note;
+
+/// cbindgen:ignore
+pub mod virtq;

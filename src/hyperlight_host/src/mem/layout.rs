@@ -47,17 +47,12 @@ limitations under the License.
 //!
 //! There is also a scratch region at the top of physical memory,
 //! which is mostly laid out as a large undifferentiated blob of
-//! memory, although at present the snapshot process specially
-//! privileges the statically allocated input and output data regions:
+//! memory:
 //!
 //! +-------------------------------------------+ (top of physical memory)
 //! |         Exception Stack, Metadata         |
 //! +-------------------------------------------+ (1 page below)
 //! |              Scratch Memory               |
-//! +-------------------------------------------+
-//! |                Output Data                |
-//! +-------------------------------------------+
-//! |                Input Data                 |
 //! +-------------------------------------------+ (scratch size)
 
 use std::fmt::Debug;
@@ -223,8 +218,6 @@ pub(crate) struct SandboxMemoryLayout {
     /// The following fields are offsets to the actual PEB struct fields.
     /// They are used when writing the PEB struct itself
     peb_offset: usize,
-    peb_input_data_offset: usize,
-    peb_output_data_offset: usize,
     peb_init_data_offset: usize,
     peb_heap_data_offset: usize,
     #[cfg(feature = "nanvix-unstable")]
@@ -267,14 +260,6 @@ impl Debug for SandboxMemoryLayout {
         .field("PEB Address", &format_args!("{:#x}", self.peb_address))
         .field("PEB Offset", &format_args!("{:#x}", self.peb_offset))
         .field("Code Size", &format_args!("{:#x}", self.code_size))
-        .field(
-            "Input Data Offset",
-            &format_args!("{:#x}", self.peb_input_data_offset),
-        )
-        .field(
-            "Output Data Offset",
-            &format_args!("{:#x}", self.peb_output_data_offset),
-        )
         .field(
             "Init Data Offset",
             &format_args!("{:#x}", self.peb_init_data_offset),
@@ -320,9 +305,6 @@ impl SandboxMemoryLayout {
     /// The base address of the sandbox's memory.
     pub(crate) const BASE_ADDRESS: usize = 0x1000;
 
-    // the offset into a sandbox's input/output buffer where the stack starts
-    pub(crate) const STACK_POINTER_SIZE_BYTES: u64 = 8;
-
     /// Create a new `SandboxMemoryLayout` with the given
     /// `SandboxConfiguration`, code size and stack/heap size.
     #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
@@ -338,8 +320,8 @@ impl SandboxMemoryLayout {
             return Err(MemoryRequestTooBig(scratch_size, Self::MAX_MEMORY_SIZE));
         }
         let min_scratch_size = hyperlight_common::layout::min_scratch_size(
-            cfg.get_input_data_size(),
-            cfg.get_output_data_size(),
+            cfg.get_g2h_queue_depth(),
+            cfg.get_h2g_queue_depth(),
         );
         if scratch_size < min_scratch_size {
             return Err(MemoryRequestTooSmall(scratch_size, min_scratch_size));
@@ -348,8 +330,6 @@ impl SandboxMemoryLayout {
         let guest_code_offset = 0;
         // The following offsets are to the fields of the PEB struct itself!
         let peb_offset = code_size.next_multiple_of(PAGE_SIZE_USIZE);
-        let peb_input_data_offset = peb_offset + offset_of!(HyperlightPEB, input_stack);
-        let peb_output_data_offset = peb_offset + offset_of!(HyperlightPEB, output_stack);
         let peb_init_data_offset = peb_offset + offset_of!(HyperlightPEB, init_data);
         let peb_heap_data_offset = peb_offset + offset_of!(HyperlightPEB, guest_heap);
         #[cfg(feature = "nanvix-unstable")]
@@ -384,8 +364,6 @@ impl SandboxMemoryLayout {
         let mut ret = Self {
             peb_offset,
             heap_size,
-            peb_input_data_offset,
-            peb_output_data_offset,
             peb_init_data_offset,
             peb_heap_data_offset,
             #[cfg(feature = "nanvix-unstable")]
@@ -406,13 +384,6 @@ impl SandboxMemoryLayout {
         Ok(ret)
     }
 
-    /// Get the offset in guest memory to the output data size
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_output_data_size_offset(&self) -> usize {
-        // The size field is the first field in the `OutputData` struct
-        self.peb_output_data_offset
-    }
-
     /// Get the offset in guest memory to the init data size
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn get_init_data_size_offset(&self) -> usize {
@@ -425,14 +396,6 @@ impl SandboxMemoryLayout {
         self.scratch_size
     }
 
-    /// Get the offset in guest memory to the output data pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_output_data_pointer_offset(&self) -> usize {
-        // This field is immediately after the output data size field,
-        // which is a `u64`.
-        self.get_output_data_size_offset() + size_of::<u64>()
-    }
-
     /// Get the offset in guest memory to the init data pointer.
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(super) fn get_init_data_pointer_offset(&self) -> usize {
@@ -441,55 +404,51 @@ impl SandboxMemoryLayout {
         self.get_init_data_size_offset() + size_of::<u64>()
     }
 
-    /// Get the guest virtual address of the start of output data.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_output_data_buffer_gva(&self) -> u64 {
+    /// Get the offset into the scratch region of the G2H ring.
+    fn get_g2h_ring_scratch_offset(&self) -> usize {
+        hyperlight_common::layout::g2h_ring_scratch_offset()
+    }
+
+    /// Get the size of the G2H ring in bytes.
+    #[allow(dead_code)]
+    fn get_g2h_ring_size(&self) -> usize {
+        hyperlight_common::virtq::Layout::query_size(
+            self.sandbox_memory_config.get_g2h_queue_depth(),
+        )
+    }
+
+    /// Get the offset into the scratch region of the H2G ring.
+    fn get_h2g_ring_scratch_offset(&self) -> usize {
+        hyperlight_common::layout::h2g_ring_scratch_offset(
+            self.sandbox_memory_config.get_g2h_queue_depth(),
+        )
+    }
+
+    /// Get the size of the H2G ring in bytes.
+    fn get_h2g_ring_size(&self) -> usize {
+        hyperlight_common::virtq::Layout::query_size(
+            self.sandbox_memory_config.get_h2g_queue_depth(),
+        )
+    }
+
+    /// Get the GVA of the G2H ring in guest address space.
+    pub(crate) fn get_g2h_ring_gva(&self) -> u64 {
         hyperlight_common::layout::scratch_base_gva(self.scratch_size)
-            + self.sandbox_memory_config.get_input_data_size() as u64
+            + self.get_g2h_ring_scratch_offset() as u64
     }
 
-    /// Get the offset into the host scratch buffer of the start of
-    /// the output data.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_output_data_buffer_scratch_host_offset(&self) -> usize {
-        self.sandbox_memory_config.get_input_data_size()
-    }
-
-    /// Get the offset in guest memory to the input data size.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(super) fn get_input_data_size_offset(&self) -> usize {
-        // The input data size is the first field in the input stack's `GuestMemoryRegion` struct
-        self.peb_input_data_offset
-    }
-
-    /// Get the offset in guest memory to the input data pointer.
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_input_data_pointer_offset(&self) -> usize {
-        // The input data pointer is immediately after the input
-        // data size field in the input data `GuestMemoryRegion` struct which is a `u64`.
-        self.get_input_data_size_offset() + size_of::<u64>()
-    }
-
-    /// Get the guest virtual address of the start of input data
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    fn get_input_data_buffer_gva(&self) -> u64 {
+    /// Get the GVA of the H2G ring in guest address space.
+    pub(crate) fn get_h2g_ring_gva(&self) -> u64 {
         hyperlight_common::layout::scratch_base_gva(self.scratch_size)
-    }
-
-    /// Get the offset into the host scratch buffer of the start of
-    /// the input data
-    #[instrument(skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_input_data_buffer_scratch_host_offset(&self) -> usize {
-        0
+            + self.get_h2g_ring_scratch_offset() as u64
     }
 
     /// Get the offset from the beginning of the scratch region to the
     /// location where page tables will be eagerly copied on restore
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn get_pt_base_scratch_offset(&self) -> usize {
-        (self.sandbox_memory_config.get_input_data_size()
-            + self.sandbox_memory_config.get_output_data_size())
-        .next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
+        let after_rings = self.get_h2g_ring_scratch_offset() + self.get_h2g_ring_size();
+        after_rings.next_multiple_of(hyperlight_common::vmem::PAGE_SIZE)
     }
 
     /// Get the base GPA to which the page tables will be eagerly
@@ -592,8 +551,8 @@ impl SandboxMemoryLayout {
     #[instrument(skip_all, parent = Span::current(), level= "Trace")]
     pub(crate) fn set_pt_size(&mut self, size: usize) -> Result<()> {
         let min_fixed_scratch = hyperlight_common::layout::min_scratch_size(
-            self.sandbox_memory_config.get_input_data_size(),
-            self.sandbox_memory_config.get_output_data_size(),
+            self.sandbox_memory_config.get_g2h_queue_depth(),
+            self.sandbox_memory_config.get_h2g_queue_depth(),
         );
         let min_scratch = min_fixed_scratch + size;
         if self.scratch_size < min_scratch {
@@ -753,34 +712,6 @@ impl SandboxMemoryLayout {
 
         // Start of setting up the PEB. The following are in the order of the PEB fields
 
-        // Set up input buffer pointer
-        write_u64(
-            mem,
-            self.get_input_data_size_offset(),
-            self.sandbox_memory_config
-                .get_input_data_size()
-                .try_into()?,
-        )?;
-        write_u64(
-            mem,
-            self.get_input_data_pointer_offset(),
-            self.get_input_data_buffer_gva(),
-        )?;
-
-        // Set up output buffer pointer
-        write_u64(
-            mem,
-            self.get_output_data_size_offset(),
-            self.sandbox_memory_config
-                .get_output_data_size()
-                .try_into()?,
-        )?;
-        write_u64(
-            mem,
-            self.get_output_data_pointer_offset(),
-            self.get_output_data_buffer_gva(),
-        )?;
-
         // Set up init data pointer
         write_u64(
             mem,
@@ -812,10 +743,9 @@ impl SandboxMemoryLayout {
 
         // End of setting up the PEB
 
-        // The input and output data regions do not have their layout
-        // initialised here, because they are in the scratch
-        // region---they are instead set in
-        // [`SandboxMemoryManager::update_scratch_bookkeeping`].
+        // Virtqueue ring layouts are communicated via scratch-top
+        // metadata (queue depths), not the PEB. Both host and guest
+        // compute ring addresses from shared offset functions.
 
         Ok(())
     }
@@ -893,7 +823,6 @@ mod tests {
         let mut cfg = SandboxConfiguration::default();
         // scratch_size exceeds 16 GiB limit
         cfg.set_scratch_size(17 * 1024 * 1024 * 1024);
-        cfg.set_input_data_size(16 * 1024 * 1024 * 1024);
         let layout = SandboxMemoryLayout::new(cfg, 4096, 4096, None);
         assert!(matches!(layout.unwrap_err(), MemoryRequestTooBig(..)));
     }

@@ -57,13 +57,13 @@ impl SandboxSize {
             Self::Medium => {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(MEDIUM_HEAP_SIZE);
-                cfg.set_scratch_size(0x50000);
+                cfg.set_scratch_size(0x80000);
                 Some(cfg)
             }
             Self::Large => {
                 let mut cfg = SandboxConfiguration::default();
                 cfg.set_heap_size(LARGE_HEAP_SIZE);
-                cfg.set_scratch_size(0x100000);
+                cfg.set_scratch_size(0x200000);
                 Some(cfg)
             }
         }
@@ -379,10 +379,15 @@ fn guest_call_benchmark_large_param(c: &mut Criterion) {
         let large_vec = vec![0u8; SIZE];
         let large_string = String::from_utf8(large_vec.clone()).unwrap();
 
+        let h2g_pool_pages = (2 * SIZE + (1024 * 1024)) / 4096;
+        let heap_size = SIZE as u64 * 15;
+
         let mut config = SandboxConfiguration::default();
-        config.set_input_data_size(2 * SIZE + (1024 * 1024)); // 2 * SIZE + 1 MB, to allow 1MB for the rest of the serialized function call
-        config.set_heap_size(SIZE as u64 * 15);
-        config.set_scratch_size(6 * SIZE + 4 * (1024 * 1024)); // Big enough for the IO data regions and enough of the heap to be used
+        config.set_h2g_pool_pages(h2g_pool_pages);
+        config.set_h2g_queue_depth(h2g_pool_pages.next_power_of_two());
+        config.set_heap_size(heap_size);
+        // Scratch backs all guest physical pages (heap, page tables, pools).
+        config.set_scratch_size(heap_size as usize + 4 * 1024 * 1024);
 
         let sandbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_as_string().unwrap()),
@@ -465,7 +470,7 @@ fn sample_workloads_benchmark(c: &mut Criterion) {
 
     fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: String) {
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_input_data_size(25 * 1024);
+        cfg.set_h2g_pool_pages(7); // 25 * 1024 / 4096 ~= 7 pages
 
         let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg))
             .unwrap()
