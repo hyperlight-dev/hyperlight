@@ -91,6 +91,12 @@ jobs:
           name: twoworlds-wasm
           path: src/tests/rust_guests/witguest/
 
+      - name: Download collision.wasm
+        uses: actions/download-artifact@v8
+        with:
+          name: collision-wasm
+          path: src/tests/rust_guests/witguest/
+
       - name: Build
         run: just build ${{ inputs.config }}
 
