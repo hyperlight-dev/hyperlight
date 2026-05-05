@@ -48,5 +48,9 @@ pub mod func;
 // cbindgen:ignore
 pub mod vmem;
 
+/// Paravirtualized clock structures shared between host and guest.
+/// cbindgen:ignore
+pub mod time;
+
 /// ELF note types for embedding hyperlight version metadata in guest binaries.
 pub mod version_note;

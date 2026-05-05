@@ -91,6 +91,9 @@ test-like-ci config=default-target hypervisor="kvm":
     @# with hw-interrupts enabled (+ explicit driver on Linux)
     {{ if os() == "linux" { if hypervisor == "mshv3" { "just test " + config + " mshv3,hw-interrupts" } else { "just test " + config + " kvm,hw-interrupts" } } else { "just test " + config + " hw-interrupts" } }}
 
+    @# with enable_guest_clock (+ explicit driver + hw-interrupts on Linux)
+    {{ if os() == "linux" { if hypervisor == "mshv3" { "just test " + config + " mshv3,hw-interrupts,enable_guest_clock" } else { "just test " + config + " kvm,hw-interrupts,enable_guest_clock" } } else { "just test " + config + " hw-interrupts,enable_guest_clock" } }}
+
     @# make sure certain cargo features compile
     just check
 

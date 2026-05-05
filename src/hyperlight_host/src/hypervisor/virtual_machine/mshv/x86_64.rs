@@ -469,6 +469,57 @@ impl VirtualMachine for MshvVm {
             .map_err(|e| RegisterError::SetXsave(e.into()))?;
         Ok(())
     }
+
+    #[cfg(feature = "enable_guest_clock")]
+    fn setup_pvclock(
+        &mut self,
+        clock_page_gpa: u64,
+    ) -> crate::Result<hyperlight_common::time::ClockType> {
+        // Hyper-V Reference TSC page: write `HV_REGISTER_REFERENCE_TSC` with
+        // `gpa | 1`. Bit 0 is the "enable" flag.
+        //
+        // Reference: Hyper-V TLFS section 12.7 (Reference TSC Page).
+        use mshv_bindings::hv_register_name_HV_REGISTER_REFERENCE_TSC;
+
+        const REFERENCE_TSC_ENABLE_BIT: u64 = 1;
+
+        self.vcpu_fd
+            .set_reg(&[hv_register_assoc {
+                name: hv_register_name_HV_REGISTER_REFERENCE_TSC,
+                value: hv_register_value {
+                    reg64: clock_page_gpa | REFERENCE_TSC_ENABLE_BIT,
+                },
+                ..Default::default()
+            }])
+            .map_err(|e| crate::new_error!("Failed to set HV_REGISTER_REFERENCE_TSC: {}", e))?;
+
+        tracing::debug!(
+            target: "hyperlight::pvclock",
+            clock_page_gpa,
+            "MSHV Reference TSC armed"
+        );
+        Ok(hyperlight_common::time::ClockType::HyperVReferenceTsc)
+    }
+
+    #[cfg(feature = "enable_guest_clock")]
+    fn current_monotonic_ns(&self) -> crate::Result<u64> {
+        // HV Reference TSC is partition reference time in 100 ns units;
+        // the host reads the same time base via HV_REGISTER_TIME_REF_COUNT.
+        use mshv_bindings::hv_register_name_HV_REGISTER_TIME_REF_COUNT;
+        let mut reg = [hv_register_assoc {
+            name: hv_register_name_HV_REGISTER_TIME_REF_COUNT,
+            value: hv_register_value { reg64: 0 },
+            ..Default::default()
+        }];
+        self.vcpu_fd
+            .get_reg(&mut reg)
+            .map_err(|e| crate::new_error!("Failed to read HV_REGISTER_TIME_REF_COUNT: {}", e))?;
+        // SAFETY: the union holds reg64 because we set the register name to
+        // a 64-bit register, and `get_reg` writes through the same union
+        // shape we provided.
+        let ticks_100ns = unsafe { reg[0].value.reg64 };
+        Ok(ticks_100ns.wrapping_mul(100))
+    }
 }
 
 #[cfg(gdb)]

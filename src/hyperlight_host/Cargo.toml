@@ -140,6 +140,8 @@ build-metadata = ["dep:built"]
 i686-guest = ["hyperlight-common/i686-guest"]
 nanvix-unstable = ["i686-guest", "hyperlight-common/nanvix-unstable"]
 guest-counter = ["hyperlight-common/guest-counter"]
+# Populate the paravirtualized clock page so guests can read time without VM exits. x86_64 only.
+enable_guest_clock = []
 
 [[bench]]
 name = "benchmarks"

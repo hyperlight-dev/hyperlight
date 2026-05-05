@@ -348,6 +348,14 @@ impl MultiUseSandbox {
                 HyperlightVmError::Restore(e)
             })?;
 
+        // Re-arm the paravirtualized clock for the freshly-reset vCPU. The
+        // MSR / HV register that pvclock rides on lives in vCPU state and
+        // has been clobbered by reset_vcpu above, and `boot_time_ns` must
+        // be re-stamped so the restored guest sees wall-clock reflecting
+        // the restore moment, not the original boot.
+        #[cfg(all(feature = "enable_guest_clock", target_arch = "x86_64"))]
+        self.vm.arm_clock(&self.mem_mgr.scratch_mem)?;
+
         self.vm.set_stack_top(snapshot.stack_top_gva());
         self.vm.set_entrypoint(snapshot.entrypoint());
 
