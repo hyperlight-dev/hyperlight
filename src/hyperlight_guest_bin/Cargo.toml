@@ -1,6 +1,5 @@
 [package]
 name = "hyperlight-guest-bin"
-links = "c"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,7 +14,7 @@ and third-party code used by our C-API needed to build a native hyperlight-guest
 
 [features]
 default = ["libc", "macros"]
-libc = [] # compile libc from picolibc
+libc = ["dep:hyperlight-libc"] # compile libc from picolibc
 trace_guest = ["hyperlight-common/trace_guest", "hyperlight-guest/trace_guest", "hyperlight-guest-tracing/trace"]
 mem_profile = ["hyperlight-common/mem_profile"]
 macros = ["dep:hyperlight-guest-macro", "dep:linkme"]
@@ -25,6 +24,7 @@ hyperlight-guest = { workspace = true, default-features = false }
 hyperlight-common = { workspace = true, default-features = false }
 hyperlight-guest-tracing = { workspace = true, default-features = false }
 hyperlight-guest-macro = { workspace = true, default-features = false, optional = true }
+hyperlight-libc = { workspace = true, default-features = false, optional = true }
 buddy_system_allocator = "0.13.0"
 log = { version = "0.4", default-features = false }
 linkme = { version = "0.3.36", optional = true }
@@ -37,6 +37,4 @@ workspace = true
 
 [build-dependencies]
 anyhow = "1"
-cc = "1.2"
 cfg-if = "1.0"
-glob = "0.3.3"

@@ -1,6 +1,6 @@
 // Included from hyperlight_guest_capi/include
 #include "hyperlight_guest.h"
-// Included from hyperlight_guest_bin/third_party/picolibc
+// Included from hyperlight_libc/third_party/picolibc
 #include "stdint.h"
 #include "string.h"
 #include "stdlib.h"
