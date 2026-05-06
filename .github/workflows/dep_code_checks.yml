@@ -74,7 +74,7 @@ jobs:
         run: just fmt-check
 
       - name: Install cargo-hyperlight
-        run: cargo install cargo-hyperlight --version 0.1.9 --locked --force
+        run: cargo install cargo-hyperlight --version 0.1.10 --locked --force
 
       - name: clippy exhaustive check (debug)
         run: just clippy-exhaustive debug
@@ -145,7 +145,7 @@ jobs:
         run: just fmt-check
 
       - name: Install cargo-hyperlight
-        run: cargo install cargo-hyperlight --version 0.1.9 --locked --force
+        run: cargo install cargo-hyperlight --version 0.1.10 --locked --force
 
       - name: clippy (debug)
         run: |
