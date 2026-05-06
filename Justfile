@@ -375,7 +375,7 @@ run-rust-examples-linux target=default-target features="": (run-rust-examples ta
 #########################
 
 tar-headers: (build-rust-capi) # build-rust-capi is a dependency because we need the hyperlight_guest.h to be built
-    tar -zcvf include.tar.gz -C {{root}}/src/hyperlight_guest_bin/third_party/ musl/include musl/arch/x86_64 printf/printf.h -C {{root}}/src/hyperlight_guest_capi include
+    tar -zcvf include.tar.gz -C {{root}}/target/sysroot/lib/rustlib/x86_64-hyperlight-none/ include -C {{root}}/src/hyperlight_guest_capi include
 
 tar-static-lib: (build-rust-capi "release") (build-rust-capi "debug")
     tar -zcvf hyperlight-guest-c-api-linux.tar.gz -C {{root}}/target/x86_64-hyperlight-none/ release/libhyperlight_guest_capi.a -C {{root}}/target/x86_64-hyperlight-none/ debug/libhyperlight_guest_capi.a
