@@ -17,7 +17,7 @@ licensing details.
 
 ## Host Function Stubs
 
-When the `libc` feature is enabled, the POSIX stubs in `src/hyperlight_guest_bin/src/libc.rs`
+When the `libc` feature is enabled, the POSIX stubs in `src/hyperlight_guest_bin/src/libc_stubs.rs`
 provide C-compatible implementations of `read`, `write`, `clock_gettime`, `gettimeofday`, and other
 functions that picolibc calls internally.
 
