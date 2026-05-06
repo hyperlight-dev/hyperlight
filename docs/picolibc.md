@@ -8,7 +8,7 @@ for embedded systems, making it well-suited for Hyperlight's micro-VM environmen
 
 The picolibc integration is controlled by the `libc` feature flag on the `hyperlight-guest-bin`
 crate (enabled by default). When enabled, the build script compiles picolibc from source using the
-vendored submodule at `src/hyperlight_guest_bin/third_party/picolibc`.
+vendored submodule at `src/hyperlight_libc/third_party/picolibc`.
 
 The submodule points to [picolibc-bsd](https://github.com/hyperlight-dev/picolibc-bsd), a
 redistribution of picolibc with all copyleft-licensed files (GPL/AGPL) removed from the tree and
@@ -17,7 +17,7 @@ licensing details.
 
 ## Host Function Stubs
 
-When the `libc` feature is enabled, the POSIX stubs in `src/hyperlight_guest_bin/src/libc.rs`
+When the `libc` feature is enabled, the POSIX stubs in `src/hyperlight_guest_bin/src/libc_stubs.rs`
 provide C-compatible implementations of `read`, `write`, `clock_gettime`, `gettimeofday`, and other
 functions that picolibc calls internally.
 
@@ -66,11 +66,11 @@ To update picolibc to a new version:
 2. Update the submodule in hyperlight:
 
     ```bash
-    cd src/hyperlight_guest_bin/third_party/picolibc
+    cd src/hyperlight_libc/third_party/picolibc
     git fetch origin
     git checkout <new-fork-tag>
     cd ../../../..
-    git add src/hyperlight_guest_bin/third_party/picolibc
+    git add src/hyperlight_libc/third_party/picolibc
     ```
 
 3. Verify licensing: The fork's CI runs scancode-toolkit to ensure no copyleft files are present.

@@ -1,0 +1,29 @@
+
+[package]
+name = "hyperlight-libc"
+links = "c"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = """
+This crate provides picolibc for Hyperlight guests.
+It builds the picolibc library and generates bindings to the libc types and functions.
+"""
+
+[features]
+default = []
+
+[dependencies]
+
+[lints]
+workspace = true
+
+[build-dependencies]
+anyhow = "1"
+cc = "1.2"
+glob = "0.3.3"
+bindgen = { version = "0.71", features = ["prettyplease"] }

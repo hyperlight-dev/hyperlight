@@ -55,8 +55,13 @@ pub mod memory;
 pub mod paging;
 
 /// Bridge between picolibc's POSIX expectations and the Hyperlight host.
+/// cbindgen:ignore
 #[cfg(feature = "libc")]
-mod libc;
+mod libc_stubs;
+
+/// Re-export the libc bindings from hyperlight-libc when the libc feature is enabled.
+#[cfg(feature = "libc")]
+pub use hyperlight_libc as libc;
 
 // Globals
 #[cfg(all(feature = "mem_profile", target_arch = "x86_64"))]

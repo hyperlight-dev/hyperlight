@@ -21,6 +21,8 @@ use std::process::Command;
 use std::{env, fs};
 
 use anyhow::{Context, Result, bail};
+use bindgen::Formatter::Prettyplease;
+use bindgen::RustEdition::Edition2021;
 use build_files::{LIBC_FILES, LIBC_FILES_X86, LIBM_FILES, LIBM_FILES_X86};
 
 fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(
@@ -59,6 +61,7 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
     build
         .flag("-fPIC")
         .flag("-nostdlib")
+        .flag("-nostdlibinc")
         .flag("-ffreestanding")
         .flag("-fno-common")
         .flag("-fno-builtin")
@@ -176,6 +179,52 @@ fn init_submodule() -> Result<()> {
     Ok(())
 }
 
+fn generate_bindings(include_dir: &Path, out_dir: &Path) -> Result<()> {
+    bindgen::Builder::default()
+        .header(include_dir.join("stdlib.h").to_string_lossy())
+        .header(include_dir.join("stdio.h").to_string_lossy())
+        .header(include_dir.join("string.h").to_string_lossy())
+        .header(include_dir.join("math.h").to_string_lossy())
+        .header(include_dir.join("stdint.h").to_string_lossy())
+        .header(include_dir.join("ctype.h").to_string_lossy())
+        .header(include_dir.join("errno.h").to_string_lossy())
+        .header(include_dir.join("time.h").to_string_lossy())
+        .header(include_dir.join("limits.h").to_string_lossy())
+        .header(include_dir.join("signal.h").to_string_lossy())
+        .header(include_dir.join("setjmp.h").to_string_lossy())
+        .header(include_dir.join("locale.h").to_string_lossy())
+        .header(include_dir.join("wchar.h").to_string_lossy())
+        .header(include_dir.join("wctype.h").to_string_lossy())
+        .header(include_dir.join("fenv.h").to_string_lossy())
+        .header(include_dir.join("inttypes.h").to_string_lossy())
+        .header(include_dir.join("sys/time.h").to_string_lossy())
+        .clang_arg(format!("-I{}", include_dir.display()))
+        .clang_arg("-nostdlibinc")
+        .clang_arg("--target=x86_64-unknown-linux-none")
+        .clang_arg("-fno-stack-protector")
+        .clang_arg("-D_POSIX_MONOTONIC_CLOCK=1")
+        .use_core()
+        .wrap_unsafe_ops(true)
+        .rust_edition(Edition2021)
+        .formatter(Prettyplease)
+        .ctypes_prefix("core::ffi")
+        .derive_copy(true)
+        .derive_debug(true)
+        .derive_default(true)
+        .derive_eq(true)
+        .derive_hash(true)
+        .derive_ord(true)
+        .generate_comments(true)
+        .generate_cstr(true)
+        .layout_tests(false)
+        .generate()
+        .context("Unable to generate bindings")?
+        .write_to_file(out_dir.join("bindings.rs"))
+        .context("Couldn't write bindings")?;
+
+    Ok(())
+}
+
 fn cargo_main() -> Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=third_party/picolibc");
@@ -193,28 +242,29 @@ fn cargo_main() -> Result<()> {
     let manifest_dir = PathBuf::from(manifest_dir);
     let picolibc_dir = manifest_dir.join("third_party/picolibc");
 
-    if cfg!(feature = "libc") {
-        if !picolibc_dir.join("COPYING.picolibc").exists() {
-            eprintln!("Setting up submodules");
-            init_submodule().with_context(|| "failed to init picolibc submodule")?;
-        }
-
-        let mut build = cc_build(&picolibc_dir, &target)?;
-
-        // include for picolibc configuration: picolibc.h
-        build.include(manifest_dir.join("include"));
-
-        add_libc(&mut build, &picolibc_dir, &target)?;
-        add_libm(&mut build, &picolibc_dir, &target)?;
-
-        if cfg!(windows) {
-            unsafe { env::set_var("AR_x86_64_unknown_none", "llvm-ar") };
-        }
-
-        build.compile("hyperlight_guest_bin");
-        copy_includes(&include_dir, picolibc_dir.join("libc/include"))?;
-        copy_includes(&include_dir, manifest_dir.join("include"))?;
+    if !picolibc_dir.join("COPYING.picolibc").exists() {
+        eprintln!("Setting up submodules");
+        init_submodule().with_context(|| "failed to init picolibc submodule")?;
     }
+
+    let mut build = cc_build(&picolibc_dir, &target)?;
+
+    // include for picolibc configuration: picolibc.h
+    build.include(manifest_dir.join("include"));
+
+    add_libc(&mut build, &picolibc_dir, &target)?;
+    add_libm(&mut build, &picolibc_dir, &target)?;
+
+    if cfg!(windows) {
+        unsafe { env::set_var("AR_x86_64_unknown_none", "llvm-ar") };
+    }
+
+    build.compile("hyperlight_libc");
+    copy_includes(&include_dir, picolibc_dir.join("libc/include"))?;
+    copy_includes(&include_dir, manifest_dir.join("include"))?;
+
+    // Generate bindings using bindgen
+    generate_bindings(&include_dir, &PathBuf::from(&out_dir))?;
 
     let include_str = include_dir
         .to_str()

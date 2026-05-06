@@ -53,7 +53,7 @@ Copyright © 2020 The Newlib Project
 Newlib code is licensed under a collection of BSD-compatible and
 permissive licenses. The full license details for all files are
 documented in the COPYING.picolibc and COPYING.NEWLIB files in the
-picolibc submodule at src/hyperlight_guest_bin/third_party/picolibc/.
+picolibc submodule at src/hyperlight_libc/third_party/picolibc/.
 
 Note: The picolibc submodule uses the picolibc-bsd fork
 (https://github.com/hyperlight-dev/picolibc-bsd), which is a redistribution
