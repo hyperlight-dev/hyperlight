@@ -14,3 +14,5 @@ consts="consts"
 # ist is an acronym for Interrupt Stack Table, not a missspelling of its
 ist="ist"
 finitel="finitel"
+# writables as number of writable buffers
+writables="writables"

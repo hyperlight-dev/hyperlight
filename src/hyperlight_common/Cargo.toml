@@ -15,13 +15,16 @@ Hyperlight's components common to host and guest.
 workspace = true
 
 [dependencies]
-flatbuffers = { version = "25.12.19", default-features = false }
-anyhow = { version = "1.0.102", default-features = false }
-log = "0.4.29"
-tracing = { version = "0.1.44", optional = true }
 arbitrary = {version = "1.4.2", optional = true, features = ["derive"]}
+anyhow = { version = "1.0.102", default-features = false }
+bitflags = "2.10.0"
+bytemuck = { version = "1.24", features = ["derive"] }
+flatbuffers = { version = "25.12.19", default-features = false }
+log = "0.4.29"
+smallvec = "1.15.1"
 spin = "0.10.0"
 thiserror = { version = "2.0.18", default-features = false }
+tracing = { version = "0.1.44", optional = true }
 tracing-core = { version = "0.1.36", default-features = false }
 
 [features]
@@ -34,6 +37,10 @@ std = ["thiserror/std", "log/std", "tracing/std"]
 i686-guest = []
 nanvix-unstable = ["i686-guest"]
 guest-counter = []
+
+[dev-dependencies]
+quickcheck = "1.0.3"
+rand = "0.9.2"
 
 [lib]
 bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
