@@ -16,15 +16,14 @@ limitations under the License.
 
 use alloc::string::String;
 use alloc::vec;
-use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use hyperlight_common::flatbuffer_wrappers::function_types::{ParameterValue, ReturnType};
 
 use crate::host_comm::call_host_function;
 use crate::libc::{
-    CLOCK_MONOTONIC, CLOCK_REALTIME, EBADF, EINVAL, EIO, ENOSYS, clockid_t, errno, timespec,
-    timeval,
+    CLOCK_MONOTONIC, CLOCK_REALTIME, EBADF, EINVAL, EIO, ENOSYS, c_int, c_long, c_void, clockid_t,
+    errno, timespec,
 };
 
 fn set_errno(val: u32) {
@@ -110,21 +109,6 @@ extern "C" fn clock_gettime(clk_id: clockid_t, tp: *mut timespec) -> c_int {
             -1
         }
     }
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut c_void) -> c_int {
-    if tv.is_null() {
-        set_errno(EINVAL);
-        return -1;
-    }
-
-    let (secs, nanos) = current_time();
-    unsafe {
-        (*tv).tv_sec = secs as c_long;
-        (*tv).tv_usec = (nanos / 1000) as c_long;
-    }
-    0
 }
 
 #[unsafe(no_mangle)]

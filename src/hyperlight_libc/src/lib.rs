@@ -33,3 +33,7 @@ limitations under the License.
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
+pub use core::ffi::*;
+
+mod stubs;
