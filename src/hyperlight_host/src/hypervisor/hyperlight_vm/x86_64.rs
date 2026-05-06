@@ -168,6 +168,8 @@ impl HyperlightVm {
             gdb_conn,
             #[cfg(gdb)]
             sw_breakpoints: HashMap::new(),
+            #[cfg(gdb)]
+            one_shot_entry_bp: None,
             #[cfg(feature = "mem_profile")]
             trace_info,
             #[cfg(crashdump)]
@@ -182,12 +184,21 @@ impl HyperlightVm {
         #[cfg(gdb)]
         if ret.gdb_conn.is_some() {
             ret.send_dbg_msg(DebugResponse::InterruptHandle(ret.interrupt_handle.clone()))?;
-            // Add breakpoint to the entry point address, if we are going to initialise
+            // Add breakpoint at the entry point address. The breakpoint
+            // is removed on first hit by the run loop. Tracked via
+            // `one_shot_entry_bp` so it does not interfere with later
+            // user-installed breakpoints at the same address.
             ret.vm.set_debug(true).map_err(VmError::Debug)?;
-            if let NextAction::Initialise(initialise) = entrypoint {
+            let entry_addr = match entrypoint {
+                NextAction::Initialise(addr) | NextAction::Call(addr) => Some(addr),
+                #[cfg(test)]
+                NextAction::None => None,
+            };
+            if let Some(addr) = entry_addr {
                 ret.vm
-                    .add_hw_breakpoint(initialise)
+                    .add_hw_breakpoint(addr)
                     .map_err(CreateHyperlightVmError::AddHwBreakpoint)?;
+                ret.one_shot_entry_bp = Some(addr);
             }
         }
 
@@ -346,6 +357,15 @@ impl HyperlightVm {
         self.vm.set_debug_regs(&CommonDebugRegs::default())?;
         self.vm.reset_xsave()?;
 
+        self.apply_sregs(cr3, sregs)
+    }
+
+    /// Apply special registers and mark TLB for flush.
+    pub(crate) fn apply_sregs(
+        &mut self,
+        cr3: u64,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
         // Restore the full special registers from snapshot, but update CR3
         // to point to the new (relocated) page tables
         let mut sregs = *sregs;
@@ -1489,7 +1509,7 @@ mod tests {
 
         let (mut hshm, gshm) = mem_mgr.build().unwrap();
 
-        let peb_address = gshm.layout.peb_address;
+        let peb_address = gshm.layout.peb_address();
         let stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;

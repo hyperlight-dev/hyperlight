@@ -2012,6 +2012,14 @@ pub struct ReadonlySharedMemory {
     /// by `mapping_at`. If `None`, the full `mem_size()` is mapped.
     #[cfg_attr(unshared_snapshot_mem, allow(dead_code))]
     guest_mapped_size: Option<usize>,
+    /// Size of the leading guard region (the bytes between
+    /// `region.ptr` and the start of the usable memory). For most
+    /// constructors this is exactly `PAGE_SIZE_USIZE`. The Windows
+    /// `from_file` path can use a larger leading guard when the
+    /// snapshot file's `memory_offset` exceeds one page (which
+    /// happens whenever the file carries host-function metadata
+    /// before the memory blob).
+    leading_guard_size: usize,
 }
 // Safety: HostMapping is only non-Send/Sync (causing
 // ReadonlySharedMemory to not be automatically Send/Sync) because raw
@@ -2033,6 +2041,7 @@ impl ReadonlySharedMemory {
         Ok(ReadonlySharedMemory {
             region: anon.region,
             guest_mapped_size: None,
+            leading_guard_size: PAGE_SIZE_USIZE,
         })
     }
 
@@ -2045,6 +2054,7 @@ impl ReadonlySharedMemory {
         Ok(ReadonlySharedMemory {
             region: anon.region,
             guest_mapped_size: Some(guest_mapped_size),
+            leading_guard_size: PAGE_SIZE_USIZE,
         })
     }
 
@@ -2053,6 +2063,244 @@ impl ReadonlySharedMemory {
     #[cfg(not(unshared_snapshot_mem))]
     pub(crate) fn guest_mapped_size(&self) -> usize {
         self.guest_mapped_size.unwrap_or_else(|| self.mem_size())
+    }
+
+    /// Create a `ReadonlySharedMemory` backed by a file on disk.
+    ///
+    /// Only the `len` bytes at `[offset..offset+len)` (the memory
+    /// blob) are exposed via `base_ptr()` and `mem_size()`.
+    ///
+    /// `[offset..offset+len)` is surrounded by guard regions on the
+    /// host.
+    ///
+    /// `offset` and `len` must both be non-zero multiples of
+    /// `PAGE_SIZE`. If `guest_mapped_size` is set, it must also be
+    /// a non-zero multiple of `PAGE_SIZE` no greater than `len`.
+    pub(crate) fn from_file(
+        file: &std::fs::File,
+        offset: usize,
+        len: usize,
+        guest_mapped_size: Option<usize>,
+    ) -> Result<Self> {
+        if len == 0 {
+            return Err(new_error!(
+                "Cannot create file-backed shared memory with size 0"
+            ));
+        }
+
+        if offset == 0 || offset % PAGE_SIZE_USIZE != 0 {
+            return Err(new_error!(
+                "snapshot file offset {} must be a non-zero multiple of PAGE_SIZE",
+                offset
+            ));
+        }
+
+        if !len.is_multiple_of(PAGE_SIZE_USIZE) {
+            return Err(new_error!(
+                "snapshot mapping length {} must be a multiple of PAGE_SIZE",
+                len
+            ));
+        }
+
+        if let Some(gms) = guest_mapped_size
+            && (gms == 0 || gms > len || !gms.is_multiple_of(PAGE_SIZE_USIZE))
+        {
+            return Err(new_error!(
+                "snapshot guest_mapped_size {} must be a non-zero multiple of PAGE_SIZE no greater than len {}",
+                gms,
+                len
+            ));
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            Self::from_file_linux(file, offset, len, guest_mapped_size)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Self::from_file_windows(file, offset, len, guest_mapped_size)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn from_file_linux(
+        file: &std::fs::File,
+        offset: usize,
+        len: usize,
+        guest_mapped_size: Option<usize>,
+    ) -> Result<Self> {
+        use std::ffi::c_void;
+        use std::os::unix::io::AsRawFd;
+
+        use libc::{
+            MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE, PROT_READ,
+            PROT_WRITE, mmap, off_t, size_t,
+        };
+
+        let total_size = len.checked_add(2 * PAGE_SIZE_USIZE).ok_or_else(|| {
+            new_error!("Memory required for file-backed snapshot exceeded usize::MAX")
+        })?;
+
+        let fd = file.as_raw_fd();
+        let offset: off_t = offset
+            .try_into()
+            .map_err(|_| new_error!("snapshot file offset {} exceeds off_t range", offset))?;
+
+        // Allocate the full region (guard + usable + guard) as anonymous
+        let base = unsafe {
+            mmap(
+                null_mut(),
+                total_size as size_t,
+                PROT_NONE,
+                MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE,
+                -1,
+                0 as off_t,
+            )
+        };
+        if base == MAP_FAILED {
+            return Err(HyperlightError::MmapFailed(
+                std::io::Error::last_os_error().raw_os_error(),
+            ));
+        }
+
+        // Map the file content over the usable portion (between guard pages).
+        // PROT_READ | PROT_WRITE: KVM/MSHV require writable host mappings
+        // to handle copy-on-write page faults from the guest.
+        // MAP_PRIVATE: writes go to private copies, not the file.
+        let usable_ptr = unsafe { (base as *mut u8).add(PAGE_SIZE_USIZE) };
+        let mapped = unsafe {
+            mmap(
+                usable_ptr as *mut c_void,
+                len as size_t,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_FIXED | MAP_NORESERVE,
+                fd,
+                offset,
+            )
+        };
+        if mapped == MAP_FAILED {
+            unsafe { libc::munmap(base, total_size as size_t) };
+            return Err(HyperlightError::MmapFailed(
+                std::io::Error::last_os_error().raw_os_error(),
+            ));
+        }
+
+        // Guard pages at base and base+total_size-PAGE_SIZE are already
+        // PROT_NONE from the anonymous mapping; MAP_FIXED only replaced
+        // the middle portion.
+
+        #[allow(clippy::arc_with_non_send_sync)]
+        Ok(ReadonlySharedMemory {
+            region: Arc::new(HostMapping {
+                ptr: base as *mut u8,
+                size: total_size,
+            }),
+            guest_mapped_size,
+            leading_guard_size: PAGE_SIZE_USIZE,
+        })
+    }
+
+    /// Windows file mappings must start at file offset 0 and cannot
+    /// extend beyond the file's size, so the view covers
+    /// `[0 .. offset + len + PAGE_SIZE)`. The leading `offset` bytes
+    /// (header plus any host function metadata) become the leading
+    /// guard, recorded in `leading_guard_size`. The trailing
+    /// `PAGE_SIZE` bytes (written explicitly by `to_file`) become
+    /// the trailing guard. Both ends are protected with
+    /// `VirtualProtect(PAGE_NOACCESS)`.
+    #[cfg(target_os = "windows")]
+    fn from_file_windows(
+        file: &std::fs::File,
+        offset: usize,
+        len: usize,
+        guest_mapped_size: Option<usize>,
+    ) -> Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Memory::{
+            CreateFileMappingA, FILE_MAP_READ, MapViewOfFile, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS,
+            PAGE_READONLY, VirtualProtect,
+        };
+        use windows::core::PCSTR;
+
+        let leading_guard_size = offset;
+        let total_size = leading_guard_size
+            .checked_add(len)
+            .and_then(|n| n.checked_add(PAGE_SIZE_USIZE))
+            .ok_or_else(|| {
+                new_error!("Memory required for file-backed snapshot exceeded usize::MAX")
+            })?;
+        debug_assert!(leading_guard_size >= PAGE_SIZE_USIZE);
+        debug_assert!(leading_guard_size % PAGE_SIZE_USIZE == 0);
+
+        let file_handle = HANDLE(file.as_raw_handle());
+
+        // Create a read-only file mapping at the exact file size (pass 0,0).
+        // The file includes trailing PAGE_SIZE padding written by to_file(),
+        // so the file is at least leading_guard_size + len + PAGE_SIZE bytes.
+        let handle =
+            unsafe { CreateFileMappingA(file_handle, None, PAGE_READONLY, 0, 0, PCSTR::null())? };
+
+        if handle.is_invalid() {
+            log_then_return!(HyperlightError::MemoryAllocationFailed(
+                Error::last_os_error().raw_os_error()
+            ));
+        }
+
+        // Map exactly total_size (leading region + blob + trailing padding) bytes.
+        let addr = unsafe { MapViewOfFile(handle, FILE_MAP_READ, 0, 0, total_size) };
+        if addr.Value.is_null() {
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(handle);
+            }
+            log_then_return!(HyperlightError::MemoryAllocationFailed(
+                Error::last_os_error().raw_os_error()
+            ));
+        }
+
+        #[allow(clippy::arc_with_non_send_sync)]
+        let region = Arc::new(HostMapping {
+            ptr: addr.Value as *mut u8,
+            size: total_size,
+            handle,
+        });
+
+        // Set guard pages on both ends.
+        let mut unused_old_prot = PAGE_PROTECTION_FLAGS(0);
+
+        // Leading guard: covers the fixed header and any host-function
+        // metadata
+        let first_guard = addr.Value;
+        if let Err(e) = unsafe {
+            VirtualProtect(
+                first_guard,
+                leading_guard_size,
+                PAGE_NOACCESS,
+                &mut unused_old_prot,
+            )
+        } {
+            log_then_return!(WindowsAPIError(e.clone()));
+        }
+
+        // Trailing guard: the explicit PAGE_SIZE padding at the end of the file.
+        let last_guard = unsafe { first_guard.add(total_size - PAGE_SIZE_USIZE) };
+        if let Err(e) = unsafe {
+            VirtualProtect(
+                last_guard,
+                PAGE_SIZE_USIZE,
+                PAGE_NOACCESS,
+                &mut unused_old_prot,
+            )
+        } {
+            log_then_return!(WindowsAPIError(e.clone()));
+        }
+
+        Ok(ReadonlySharedMemory {
+            region,
+            guest_mapped_size,
+            leading_guard_size,
+        })
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {
@@ -2097,6 +2345,32 @@ impl ReadonlySharedMemory {
 impl SharedMemory for ReadonlySharedMemory {
     fn region(&self) -> &HostMapping {
         &self.region
+    }
+    // Override the default trait accessors to use the variable-sized
+    // leading guard. The trailing guard is always `PAGE_SIZE_USIZE`.
+    fn base_addr(&self) -> usize {
+        self.region().ptr as usize + self.leading_guard_size
+    }
+    fn base_ptr(&self) -> *mut u8 {
+        self.region().ptr.wrapping_add(self.leading_guard_size)
+    }
+    fn mem_size(&self) -> usize {
+        self.region().size - self.leading_guard_size - PAGE_SIZE_USIZE
+    }
+    fn host_region_base(&self) -> <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType {
+        #[cfg(not(windows))]
+        {
+            self.base_addr()
+        }
+        #[cfg(windows)]
+        {
+            super::memory_region::HostRegionBase {
+                from_handle: self.region().handle.into(),
+                handle_base: self.region().ptr as usize,
+                handle_size: self.region().size,
+                offset: self.leading_guard_size,
+            }
+        }
     }
     // There's no way to get exclusive (and therefore writable) access
     // to a ReadonlySharedMemory.

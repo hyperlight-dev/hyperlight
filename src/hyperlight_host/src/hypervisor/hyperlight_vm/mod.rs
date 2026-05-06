@@ -389,6 +389,12 @@ pub(crate) struct HyperlightVm {
     pub(super) gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
     #[cfg(gdb)]
     pub(super) sw_breakpoints: HashMap<u64, u8>, // addr -> original instruction
+    /// One-shot hw breakpoint installed at the entry address when gdb is
+    /// enabled, so the gdb stub gets a `VcpuStopped` to enter its event
+    /// loop on the first vCPU run after construction. Cleared on first
+    /// hit by `handle_debug`.
+    #[cfg(gdb)]
+    pub(super) one_shot_entry_bp: Option<u64>,
     #[cfg(feature = "mem_profile")]
     pub(super) trace_info: MemTraceInfo,
     #[cfg(crashdump)]
@@ -598,17 +604,28 @@ impl HyperlightVm {
             match exit_reason {
                 #[cfg(gdb)]
                 Ok(VmExit::Debug { dr6, exception }) => {
-                    let initialise = match self.entrypoint {
-                        NextAction::Initialise(initialise) => initialise,
-                        _ => 0,
-                    };
-                    // Handle debug event (breakpoints)
+                    // Classify the debug exit. `vcpu_stop_reason` is a
+                    // pure classifier and has no side effects on the VM.
                     let stop_reason = crate::hypervisor::gdb::arch::vcpu_stop_reason(
-                        self.vm.as_mut(),
+                        self.vm.as_ref(),
                         dr6,
-                        initialise,
                         exception,
                     )?;
+                    // Remove the one-shot entry breakpoint installed by
+                    // `HyperlightVm::new` the first time it fires so it
+                    // does not interfere with later user-installed
+                    // breakpoints at the same address.
+                    if matches!(stop_reason, VcpuStopReason::HwBp)
+                        && let Some(entry_addr) = self.one_shot_entry_bp
+                    {
+                        let rip = self.vm.regs().map_err(VcpuStopReasonError::GetRegs)?.rip;
+                        if rip == entry_addr {
+                            self.vm
+                                .remove_hw_breakpoint(entry_addr)
+                                .map_err(VcpuStopReasonError::RemoveHwBreakpoint)?;
+                            self.one_shot_entry_bp = None;
+                        }
+                    }
                     if let Err(e) = self.handle_debug(dbg_mem_access_fn.clone(), stop_reason) {
                         break Err(e.into());
                     }

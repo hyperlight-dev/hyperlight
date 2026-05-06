@@ -22,6 +22,7 @@ use hyperlight_common::flatbuffer_wrappers::function_call::{
 };
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
 use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
@@ -298,6 +299,7 @@ where
     }
 
     /// Create a snapshot with the given mapped regions
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn snapshot(
         &mut self,
         sandbox_id: u64,
@@ -306,6 +308,7 @@ where
         rsp_gva: u64,
         sregs: CommonSpecialRegisters,
         entrypoint: NextAction,
+        host_functions: HostFunctionDetails,
     ) -> Result<Snapshot> {
         self.snapshot_count += 1;
         Snapshot::new(
@@ -320,6 +323,7 @@ where
             sregs,
             entrypoint,
             self.snapshot_count,
+            host_functions,
         )
     }
 }
@@ -441,7 +445,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
         self.scratch_mem.try_pop_buffer_into::<FunctionCall>(
             self.layout.get_output_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_output_data_size(),
+            self.layout.output_data_size,
         )
     }
 
@@ -456,7 +460,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         self.scratch_mem.push_buffer(
             self.layout.get_input_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_input_data_size(),
+            self.layout.input_data_size,
             data,
         )
     }
@@ -473,7 +477,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
         self.scratch_mem.push_buffer(
             self.layout.get_input_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_input_data_size(),
+            self.layout.input_data_size,
             buffer,
         )?;
         Ok(())
@@ -485,7 +489,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     pub(crate) fn get_guest_function_call_result(&mut self) -> Result<FunctionCallResult> {
         self.scratch_mem.try_pop_buffer_into::<FunctionCallResult>(
             self.layout.get_output_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_output_data_size(),
+            self.layout.output_data_size,
         )
     }
 
@@ -494,7 +498,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
         self.scratch_mem.try_pop_buffer_into::<GuestLogData>(
             self.layout.get_output_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_output_data_size(),
+            self.layout.output_data_size,
         )
     }
 
@@ -503,7 +507,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         loop {
             let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
                 self.layout.get_output_data_buffer_scratch_host_offset(),
-                self.layout.sandbox_memory_config.get_output_data_size(),
+                self.layout.output_data_size,
             ) else {
                 break;
             };
@@ -512,7 +516,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
         loop {
             let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
                 self.layout.get_input_data_buffer_scratch_host_offset(),
-                self.layout.sandbox_memory_config.get_input_data_size(),
+                self.layout.input_data_size,
             ) else {
                 break;
             };
