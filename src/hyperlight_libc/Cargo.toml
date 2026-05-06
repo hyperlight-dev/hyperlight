@@ -25,6 +25,5 @@ workspace = true
 [build-dependencies]
 anyhow = "1"
 cc = "1.2"
-cfg-if = "1.0"
 glob = "0.3.3"
 bindgen = { version = "0.71", features = ["prettyplease"] }

@@ -34,7 +34,3 @@ tracing = { version = "0.1.44", default-features = false, features = ["attribute
 
 [lints]
 workspace = true
-
-[build-dependencies]
-anyhow = "1"
-cfg-if = "1.0"
