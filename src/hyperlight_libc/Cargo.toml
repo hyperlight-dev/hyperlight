@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-readme.workspace = true
+readme = "README.md"
 description = """
 This crate provides picolibc for Hyperlight guests.
 It builds the picolibc library and generates bindings to the libc types and functions.
