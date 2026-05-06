@@ -21,15 +21,16 @@ limitations under the License.
 //! C library types and functions.
 
 #![no_std]
-#![allow(non_upper_case_globals)]
+#![allow(clippy::approx_constant)]
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::unnecessary_cast)]
+#![allow(clippy::useless_transmute)]
+#![allow(dead_code)]
+#![allow(improper_ctypes)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
-#![allow(dead_code)]
-#![allow(clippy::missing_safety_doc)]
-#![allow(clippy::approx_constant)]
-#![allow(clippy::useless_transmute)]
-#![allow(clippy::unnecessary_cast)]
-#![allow(improper_ctypes)]
+#![allow(non_upper_case_globals)]
+#![allow(unpredictable_function_pointer_comparisons)]
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
