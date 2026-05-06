@@ -4,6 +4,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Prerelease] - Unreleased
 
+## [v0.15.0] - 2026-05-06
+
+### Added
+* `#[main]` and `#[dispatch]` macros for type-safe guest entry points by @jprendes in https://github.com/hyperlight-dev/hyperlight/pull/1384
+* Implement `Registerable` for `MultiUseSandbox` by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1392
+* Guest compilation support for aarch64 by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1297
+* i686 page tables, snapshot compaction, and copy-on-write support by @danbugs and @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1385
+
+### Changed
+* **Breaking:** Replace musl with picolibc as C standard library for guests by @andreiltd in https://github.com/hyperlight-dev/hyperlight/pull/831
+* Replace `nanvix-unstable` feature flag with `i686-guest` and `guest-counter` features by @danbugs and @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1385
+
+### Fixed
+* Fix flaky gdb tests by detaching from inside the breakpoint commands by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1435
+* Fix scratch memory overlapping APIC on i686 by @ludfjig in https://github.com/hyperlight-dev/hyperlight/pull/1393
+* Several WHP fixes by @danbugs in https://github.com/hyperlight-dev/hyperlight/pull/1388, https://github.com/hyperlight-dev/hyperlight/pull/1387, and https://github.com/hyperlight-dev/hyperlight/pull/1386
+
 ## [v0.14.0] - 2026-04-01
 
 ### Changed
@@ -278,7 +295,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Initial Hyperlight Release 🎉 
 
 
-[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.14.0..HEAD>
+[Prerelease]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.15.0..HEAD>
+[v0.15.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.14.0...v0.15.0>
 [v0.14.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.1...v0.14.0>
 [v0.13.1]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.13.0...v0.13.1>
 [v0.13.0]: <https://github.com/hyperlight-dev/hyperlight/compare/v0.12.0...v0.13.0>
