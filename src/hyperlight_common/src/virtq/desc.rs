@@ -27,6 +27,9 @@ use super::MemOps;
 
 bitflags! {
     /// Descriptor flags as defined by VIRTIO specification.
+    ///
+    /// Note: The implementation never follows the indirect-table interpretation,
+    /// so INDIRECT bit is effectively ignored.
     #[repr(transparent)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct DescFlags: u16 {
@@ -90,7 +93,7 @@ impl Descriptor {
         DescFlags::from_bits_truncate(self.flags)
     }
 
-    /// Did the guest mark this descriptor in the current guest round?
+    /// Did the driver make this descriptor available in the current driver round?
     #[inline]
     pub fn is_avail(&self, wrap: bool) -> bool {
         let f = self.flags();
@@ -99,7 +102,7 @@ impl Descriptor {
         avail == wrap && used != wrap
     }
 
-    /// Did the host mark this descriptor used in the current host round?
+    /// Did the device mark this descriptor used in the current device round?
     #[inline]
     pub fn is_used(&self, wrap: bool) -> bool {
         let f = self.flags();

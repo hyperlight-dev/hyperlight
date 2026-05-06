@@ -53,6 +53,10 @@ const _: () = assert!(EventSuppression::WRAP_OFFSET == 0);
 const _: () = assert!(EventSuppression::FLAGS_OFFSET == 2);
 
 impl EventSuppression {
+    const FLAGS_MASK: u16 = 0x3;
+    const DESC_EVENT_OFF_MASK: u16 = 0x7FFF;
+    const DESC_EVENT_WRAP: u16 = 0x8000;
+
     pub const SIZE: usize = core::mem::size_of::<Self>();
     pub const ALIGN: usize = core::mem::align_of::<Self>();
     pub const WRAP_OFFSET: usize = core::mem::offset_of!(Self, off_wrap);
@@ -68,27 +72,28 @@ impl EventSuppression {
 
     /// Get the event flags.
     pub fn flags(&self) -> EventFlags {
-        EventFlags::from_bits_truncate(self.flags & 0x3)
+        EventFlags::from_bits_truncate(self.flags & Self::FLAGS_MASK)
     }
 
     /// Set the event flags.
     pub fn set_flags(&mut self, flags: EventFlags) {
-        self.flags = (self.flags & !0x3) | (flags.bits() & 0x3);
+        self.flags = (self.flags & !Self::FLAGS_MASK) | (flags.bits() & Self::FLAGS_MASK);
     }
 
     /// Get the descriptor event offset (bits 0-14).
     pub fn desc_event_off(&self) -> u16 {
-        self.off_wrap & 0x7FFF
+        self.off_wrap & Self::DESC_EVENT_OFF_MASK
     }
 
     /// Check if the descriptor event wrap bit (bit 15) is set.
     pub fn desc_event_wrap(&self) -> bool {
-        (self.off_wrap & 0x8000) != 0
+        (self.off_wrap & Self::DESC_EVENT_WRAP) != 0
     }
 
     /// Set the descriptor event offset and wrap bit.
     pub fn set_desc_event(&mut self, off: u16, wrap: bool) {
-        self.off_wrap = (off & 0x7FFF) | if wrap { 0x8000 } else { 0 };
+        self.off_wrap =
+            (off & Self::DESC_EVENT_OFF_MASK) | if wrap { Self::DESC_EVENT_WRAP } else { 0 };
     }
 
     /// Create an `EventSuppression` from a raw pointer with acquire semantics.

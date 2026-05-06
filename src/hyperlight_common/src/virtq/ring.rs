@@ -96,7 +96,7 @@ pub struct BufferElement {
     pub addr: u64,
     /// Length of the buffer in bytes
     pub len: u32,
-    /// Is this buffer writable
+    /// Whether this buffer is writable by the device
     pub writable: bool,
 }
 
@@ -156,6 +156,9 @@ pub struct Writable;
 ///
 /// Upholds invariants: at least one buffer must be present in the chain,
 /// and readable buffers must be added before writable buffers.
+///
+/// The builder stores up to 16 buffer elements inline to avoid allocation for
+/// common small chains. Larger chains are still supported and spill to the heap.
 #[derive(Debug, Default)]
 pub struct BufferChainBuilder<T> {
     elems: SmallVec<[BufferElement; 16]>,
@@ -190,7 +193,9 @@ impl BufferChainBuilder<Readable> {
         elements: impl IntoIterator<Item = impl Into<BufferElement>>,
     ) -> Self {
         for elem in elements {
-            self.elems.push(elem.into());
+            let mut elem = elem.into();
+            elem.writable = false;
+            self.elems.push(elem);
             self.split += 1;
         }
 
@@ -214,7 +219,7 @@ impl BufferChainBuilder<Readable> {
         }
     }
 
-    /// Add multiple readable buffers from an iterator.
+    /// Add multiple writable buffers from an iterator.
     ///
     /// This transitions to Writable state so no more readable buffers can be added.
     pub fn writables(
@@ -222,7 +227,9 @@ impl BufferChainBuilder<Readable> {
         elements: impl IntoIterator<Item = impl Into<BufferElement>>,
     ) -> BufferChainBuilder<Writable> {
         for elem in elements {
-            self.elems.push(elem.into());
+            let mut elem = elem.into();
+            elem.writable = true;
+            self.elems.push(elem);
         }
 
         BufferChainBuilder {
@@ -258,13 +265,15 @@ impl BufferChainBuilder<Writable> {
         self
     }
 
-    /// Add multiple readable buffers from an iterator.
+    /// Add multiple writable buffers from an iterator.
     pub fn writables(
         mut self,
         elements: impl IntoIterator<Item = impl Into<BufferElement>>,
     ) -> Self {
         for elem in elements {
-            self.elems.push(elem.into());
+            let mut elem = elem.into();
+            elem.writable = true;
+            self.elems.push(elem);
         }
         self
     }
@@ -302,7 +311,7 @@ impl BufferChain {
         self.elems.as_slice()
     }
 
-    /// Get writable buffers in chain
+    /// Get readable buffers in chain
     pub fn readables(&self) -> &[BufferElement] {
         &self.elems[..self.split]
     }
@@ -420,10 +429,10 @@ pub struct RingProducer<M> {
 impl<M: MemOps> RingProducer<M> {
     /// Create a new producer from a memory layout and accessor.
     pub fn new(layout: Layout, mem: M) -> Self {
-        let size = layout.desc_table_len as usize;
-        let raw = layout.desc_table_addr;
+        let size = layout.desc_table_len() as usize;
+        let raw = layout.desc_table_addr();
 
-        // SAFETY: layout is valid
+        // SAFETY: Layout fields are private and from_base validates ring geometry.
         let table = unsafe { DescTable::from_raw_parts(raw, size) };
         let cursor = RingCursor::new(size);
 
@@ -443,8 +452,8 @@ impl<M: MemOps> RingProducer<M> {
             id_free,
             id_num,
             event_flags_shadow,
-            drv_evt_addr: layout.drv_evt_addr,
-            dev_evt_addr: layout.dev_evt_addr,
+            drv_evt_addr: layout.drv_evt_addr(),
+            dev_evt_addr: layout.dev_evt_addr(),
         }
     }
 
@@ -468,6 +477,7 @@ impl<M: MemOps> RingProducer<M> {
     /// - [`RingError::WouldBlock`] - No free descriptor slots
     /// - [`RingError::OutOfMemory`] - No free descriptor IDs (internal error)
     /// - [`RingError::InvalidState`] - ID tracking corrupted (internal error)
+    /// - [`RingError::MemError`] - Backend memory error while publishing the descriptor
     pub fn submit_one(&mut self, addr: u64, len: u32, writable: bool) -> Result<u16, RingError> {
         if self.num_free < 1 {
             return Err(RingError::WouldBlock);
@@ -555,6 +565,9 @@ impl<M: MemOps> RingProducer<M> {
     ///
     /// - [`RingError::EmptyChain`] - Chain has no buffers
     /// - [`RingError::WouldBlock`] - Not enough free descriptor slots
+    /// - [`RingError::OutOfMemory`] - No free descriptor IDs (internal error)
+    /// - [`RingError::InvalidState`] - ID tracking or descriptor-table state is corrupted
+    /// - [`RingError::MemError`] - Backend memory error while publishing descriptors
     pub fn submit_available(&mut self, chain: &BufferChain) -> Result<u16, RingError> {
         let total_descs = chain.len();
         if total_descs == 0 {
@@ -573,7 +586,7 @@ impl<M: MemOps> RingProducer<M> {
         let head_idx = self.avail_cursor.head();
         let head_wrap = self.avail_cursor.wrap();
 
-        let id = self.id_free.pop().ok_or(RingError::InvalidState)?;
+        let id = self.id_free.pop().ok_or(RingError::OutOfMemory)?;
 
         // We should never reuse an ID that is still outstanding
         if self.id_num[id as usize] != 0 {
@@ -858,7 +871,7 @@ impl<M: MemOps> RingProducer<M> {
     pub fn reset_prefilled(&mut self, ids: &[u16]) {
         let size = self.desc_table.len();
         let count = ids.len();
-        debug_assert!(count <= size);
+        assert!(count <= size);
 
         let wrapped = count >= size;
         self.avail_cursor.head = if wrapped { 0 } else { count as u16 };
@@ -869,11 +882,15 @@ impl<M: MemOps> RingProducer<M> {
 
         self.id_num.iter_mut().for_each(|n| *n = 0);
         for &id in ids {
+            assert!((id as usize) < size);
+            assert_eq!(self.id_num[id as usize], 0);
             self.id_num[id as usize] = 1;
         }
 
         self.num_free = size - count;
         self.id_free.clear();
+        self.id_free
+            .extend((0..size as u16).filter(|id| self.id_num[*id as usize] == 0));
     }
 }
 
@@ -913,10 +930,10 @@ pub struct RingConsumer<M> {
 
 impl<M: MemOps> RingConsumer<M> {
     pub fn new(layout: Layout, mem: M) -> Self {
-        let size = layout.desc_table_len as usize;
-        let raw = layout.desc_table_addr;
+        let size = layout.desc_table_len() as usize;
+        let raw = layout.desc_table_addr();
 
-        // SAFETY: layout is valid
+        // SAFETY: Layout fields are private and from_base validates ring geometry.
         let table = unsafe { DescTable::from_raw_parts(raw, size) };
         let cursor = RingCursor::new(size);
         let id_chain_len = SmallVec::<[u16; DescTable::DEFAULT_LEN]>::from_elem(0, size);
@@ -932,8 +949,8 @@ impl<M: MemOps> RingConsumer<M> {
             id_num: id_chain_len,
             num_inflight: 0,
             event_flags_shadow,
-            drv_evt_addr: layout.drv_evt_addr,
-            dev_evt_addr: layout.dev_evt_addr,
+            drv_evt_addr: layout.drv_evt_addr(),
+            dev_evt_addr: layout.dev_evt_addr(),
         }
     }
 
@@ -1017,12 +1034,16 @@ impl<M: MemOps> RingConsumer<M> {
 
         // Since driver wrote the same id everywhere, head_desc.id is valid.
         let id = head_desc.id;
-        if (id as usize) >= self.id_num.len() {
+        let id_num = self
+            .id_num
+            .get_mut(id as usize)
+            .ok_or(RingError::InvalidState)?;
+        if *id_num != 0 {
             return Err(RingError::InvalidState);
         }
 
         // Record chain length for later used submission
-        self.id_num[id as usize] = chain_len;
+        *id_num = chain_len;
         // Advance avail cursor to first slot after chain
         self.avail_cursor = pos;
         // Update inflight count
@@ -1065,8 +1086,7 @@ impl<M: MemOps> RingConsumer<M> {
         let wrap = self.used_cursor.wrap();
 
         // addr is unused for used descriptor according to packed-virtqueue spec
-        let mut used_desc = Descriptor::new(0, 0, id, DescFlags::empty());
-        used_desc.len = written_len;
+        let mut used_desc = Descriptor::new(0, written_len, id, DescFlags::empty());
         used_desc.mark_used(wrap);
 
         let addr = self
@@ -1272,7 +1292,7 @@ fn should_notify(evt: EventSuppression, ring_len: u16, old: RingCursor, new: Rin
 }
 
 #[inline(always)]
-pub fn ring_need_event(event_idx: u16, new: u16, old: u16) -> bool {
+fn ring_need_event(event_idx: u16, new: u16, old: u16) -> bool {
     new.wrapping_sub(event_idx).wrapping_sub(1) < new.wrapping_sub(old)
 }
 
@@ -1296,6 +1316,7 @@ pub(crate) mod tests {
 
     use bytemuck::{Pod, Zeroable};
 
+    use super::super::align_up;
     use super::*;
     use crate::virtq::event::EventSuppression;
 
@@ -1347,7 +1368,9 @@ pub(crate) mod tests {
         }
     }
 
-    impl MemOps for TestMem {
+    // SAFETY: TestMem translates addresses into its owned backing storage. Unit
+    // tests construct layouts within that storage and avoid concurrent access.
+    unsafe impl MemOps for TestMem {
         type Error = core::convert::Infallible;
 
         fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
@@ -1405,10 +1428,6 @@ pub(crate) mod tests {
         layout: Layout,
     }
 
-    fn align_up(val: usize, align: usize) -> usize {
-        (val + align - 1) & !(align - 1)
-    }
-
     impl OwnedRing {
         pub fn new(size: usize) -> Self {
             let num_descs = NonZeroU16::new(size as u16).unwrap();
@@ -1438,7 +1457,7 @@ pub(crate) mod tests {
 
         /// Get address of descriptor at index
         pub fn desc_addr(&self, idx: u16) -> u64 {
-            self.layout.desc_table_addr + (idx as u64 * Descriptor::SIZE as u64)
+            self.layout.desc_table_addr() + (idx as u64 * Descriptor::SIZE as u64)
         }
 
         /// Read descriptor directly (for test verification)
@@ -1453,16 +1472,16 @@ pub(crate) mod tests {
 
         /// Read driver event directly
         pub fn read_driver_event(&self) -> EventSuppression {
-            self.mem.read_val(self.layout.drv_evt_addr).unwrap()
+            self.mem.read_val(self.layout.drv_evt_addr()).unwrap()
         }
 
         /// Read device event directly
         pub fn read_device_event(&self) -> EventSuppression {
-            self.mem.read_val(self.layout.dev_evt_addr).unwrap()
+            self.mem.read_val(self.layout.dev_evt_addr()).unwrap()
         }
 
         pub fn len(&self) -> usize {
-            self.layout.desc_table_len as usize
+            self.layout.desc_table_len() as usize
         }
     }
 
@@ -1521,6 +1540,35 @@ pub(crate) mod tests {
         for i in 0..8 {
             assert_eq!(producer.id_num[i], 0);
         }
+    }
+
+    #[test]
+    fn test_buffer_chain_builder_normalizes_element_direction() {
+        let readable_as_writable = BufferElement {
+            addr: 0x1000,
+            len: 16,
+            writable: true,
+        };
+        let writable_as_readable = BufferElement {
+            addr: 0x2000,
+            len: 32,
+            writable: false,
+        };
+        let second_writable_as_readable = BufferElement {
+            addr: 0x3000,
+            len: 64,
+            writable: false,
+        };
+
+        let chain = BufferChainBuilder::new()
+            .readables([readable_as_writable])
+            .writables([writable_as_readable])
+            .writables([second_writable_as_readable])
+            .build()
+            .unwrap();
+
+        assert!(!chain.readables()[0].writable);
+        assert!(chain.writables().iter().all(|elem| elem.writable));
     }
 
     #[test]
@@ -1960,6 +2008,26 @@ pub(crate) mod tests {
         assert!(polled_chain.elems()[2].writable);
 
         assert_eq!(consumer.id_num[id as usize], 3);
+    }
+
+    #[test]
+    fn test_consumer_rejects_duplicate_inflight_id() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+        let mut consumer = make_consumer(&ring);
+
+        let id = producer.submit_one(0x1000, 512, false).unwrap();
+        let (polled_id, _) = consumer.poll_available().unwrap();
+        assert_eq!(polled_id, id);
+
+        let mut desc = Descriptor::new(0x2000, 256, id, DescFlags::empty());
+        desc.mark_avail(consumer.avail_cursor.wrap());
+        ring.write_desc(consumer.avail_cursor.head(), desc);
+
+        assert!(matches!(
+            consumer.poll_available(),
+            Err(RingError::InvalidState)
+        ));
     }
 
     #[test]
@@ -3179,7 +3247,10 @@ pub(crate) mod tests {
         assert!(producer.used_cursor.wrap());
 
         assert_eq!(producer.num_free, 4);
-        assert!(producer.id_free.is_empty());
+        assert_eq!(producer.id_free.len(), 4);
+        for &id in &[0, 1, 2, 4] {
+            assert!(producer.id_free.contains(&id));
+        }
         // Only the specified IDs are in-flight
         for &id in &[5, 6, 7, 3] {
             assert_eq!(producer.id_num[id as usize], 1);
@@ -3187,6 +3258,19 @@ pub(crate) mod tests {
         for &id in &[0, 1, 2, 4] {
             assert_eq!(producer.id_num[id as usize], 0);
         }
+    }
+
+    #[test]
+    fn test_reset_prefilled_partial_then_submit() {
+        let ring = make_ring(8);
+        let mut producer = make_producer(&ring);
+        producer.reset_prefilled(&[4, 5, 6, 7]);
+
+        let id = producer.submit_one(0x8000, 128, false).unwrap();
+
+        assert!([0, 1, 2, 3].contains(&id));
+        assert_eq!(producer.num_free, 3);
+        assert_eq!(producer.id_num[id as usize], 1);
     }
 
     #[test]

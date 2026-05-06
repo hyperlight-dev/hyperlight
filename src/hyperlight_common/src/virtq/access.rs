@@ -29,13 +29,17 @@ use bytemuck::Pod;
 /// # Safety
 ///
 /// Implementations must ensure that:
-/// - Pointers passed to methods are valid for the duration of the call
-/// - Memory ordering guarantees are upheld as documented
-/// - Reads and writes don't cause undefined behavior (alignment, validity)
+/// - Addresses accepted by these methods are translated according to the
+///   backend's memory model.
+/// - Invalid or inaccessible addresses are reported with `Self::Error` rather
+///   than causing undefined behavior.
+/// - Memory ordering guarantees are upheld as documented.
+/// - Typed reads/writes and atomic operations honor alignment and initialized
+///   memory requirements for the translated addresses.
 ///
 /// [`RingProducer`]: super::RingProducer
 /// [`RingConsumer`]: super::RingConsumer
-pub trait MemOps {
+pub unsafe trait MemOps {
     type Error;
 
     /// Read bytes from physical memory.
@@ -47,9 +51,8 @@ pub trait MemOps {
     /// * `addr` - Guest physical address to read from
     /// * `dst` - Destination buffer to fill
     ///
-    /// # Safety
-    ///
-    /// The caller must ensure `addr` is valid and points to at least `dst.len()` bytes.
+    /// Implementations must return an error if `addr` cannot be read for
+    /// at least `dst.len()` bytes.
     fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error>;
 
     /// Write bytes to physical memory.
@@ -59,23 +62,20 @@ pub trait MemOps {
     /// * `addr` - address to write to
     /// * `src` - Source data to write
     ///
-    /// # Safety
-    ///
-    /// The caller must ensure `addr` is valid and points to at least `src.len()` bytes.
+    /// Implementations must return an error if `addr` cannot be written for
+    /// at least `src.len()` bytes.
     fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error>;
 
     /// Load a u16 with acquire semantics.
     ///
-    /// # Safety
-    ///
-    /// `addr` must translate to a valid, aligned `AtomicU16` in shared memory.
+    /// Implementations must return an error if `addr` does not translate to a
+    /// valid, aligned `AtomicU16` in shared memory.
     fn load_acquire(&self, addr: u64) -> Result<u16, Self::Error>;
 
     /// Store a u16 with release semantics.
     ///
-    /// # Safety
-    ///
-    /// `addr` must translate to a valid `AtomicU16` in shared memory.
+    /// Implementations must return an error if `addr` does not translate to a
+    /// valid, aligned `AtomicU16` in shared memory.
     fn store_release(&self, addr: u64, val: u16) -> Result<(), Self::Error>;
 
     /// Get a direct read-only slice into shared memory.
@@ -106,9 +106,8 @@ pub trait MemOps {
 
     /// Read a Pod type at the given pointer.
     ///
-    /// # Safety
-    ///
-    /// The caller must ensure `addr` is valid, aligned, and translates to initialized memory.
+    /// Implementations must return an error if `addr` is not valid, aligned,
+    /// and initialized for `T`.
     fn read_val<T: Pod>(&self, addr: u64) -> Result<T, Self::Error> {
         let mut val = T::zeroed();
         let bytes = bytemuck::bytes_of_mut(&mut val);
@@ -119,9 +118,8 @@ pub trait MemOps {
 
     /// Write a Pod type at the given pointer.
     ///
-    /// # Safety
-    ///
-    /// The caller ensures that `ptr` is valid.
+    /// Implementations must return an error if `addr` is not valid and aligned
+    /// for `T`.
     fn write_val<T: Pod>(&self, addr: u64, val: T) -> Result<(), Self::Error> {
         let bytes = bytemuck::bytes_of(&val);
         self.write(addr, bytes)?;
@@ -129,7 +127,9 @@ pub trait MemOps {
     }
 }
 
-impl<T: MemOps> MemOps for Arc<T> {
+// SAFETY: Arc delegates all memory operations to the wrapped backend, preserving
+// that backend's MemOps contract.
+unsafe impl<T: MemOps> MemOps for Arc<T> {
     type Error = T::Error;
 
     fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {

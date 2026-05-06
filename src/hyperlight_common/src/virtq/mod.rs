@@ -74,18 +74,18 @@ pub use ring::*;
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
     /// Packed ring descriptor table base in shared memory.
-    pub desc_table_addr: u64,
+    desc_table_addr: u64,
     /// Number of descriptors (ring size, must be power of 2).
-    pub desc_table_len: u16,
+    desc_table_len: u16,
     /// Driver-written event suppression area in shared memory.
-    pub drv_evt_addr: u64,
+    drv_evt_addr: u64,
     /// Device-written event suppression area in shared memory.
-    pub dev_evt_addr: u64,
+    dev_evt_addr: u64,
 }
 
 #[inline]
 const fn align_up(val: usize, align: usize) -> usize {
-    (val + align - 1) & !(align - 1)
+    val.next_multiple_of(align)
 }
 
 impl Layout {
@@ -131,6 +131,26 @@ impl Layout {
         })
     }
 
+    /// Packed ring descriptor table base in shared memory.
+    pub const fn desc_table_addr(&self) -> u64 {
+        self.desc_table_addr
+    }
+
+    /// Number of descriptors in the ring.
+    pub const fn desc_table_len(&self) -> u16 {
+        self.desc_table_len
+    }
+
+    /// Driver-written event suppression area in shared memory.
+    pub const fn drv_evt_addr(&self) -> u64 {
+        self.drv_evt_addr
+    }
+
+    /// Device-written event suppression area in shared memory.
+    pub const fn dev_evt_addr(&self) -> u64 {
+        self.dev_evt_addr
+    }
+
     /// Calculate the memory size needed for a ring with `num_descs` descriptors,
     /// accounting for alignment requirements.
     pub const fn query_size(num_descs: usize) -> usize {
@@ -160,26 +180,26 @@ const _: () = {
 
         let expected_size = Layout::query_size(num_descs);
 
-        assert!(layout.desc_table_addr == base);
-        assert!(layout.desc_table_len as usize == num_descs);
+        assert!(layout.desc_table_addr() == base);
+        assert!(layout.desc_table_len() as usize == num_descs);
         assert!(
             layout
-                .drv_evt_addr
+                .drv_evt_addr()
                 .is_multiple_of(EventSuppression::ALIGN as u64)
         );
         assert!(
             layout
-                .dev_evt_addr
+                .dev_evt_addr()
                 .is_multiple_of(EventSuppression::ALIGN as u64)
         );
 
         // Events don't overlap with descriptor table
         let desc_end = base + (num_descs * Descriptor::SIZE) as u64;
-        assert!(layout.drv_evt_addr >= desc_end);
-        assert!(layout.dev_evt_addr >= layout.drv_evt_addr + EventSuppression::SIZE as u64);
+        assert!(layout.drv_evt_addr() >= desc_end);
+        assert!(layout.dev_evt_addr() >= layout.drv_evt_addr() + EventSuppression::SIZE as u64);
 
         // Total size from query_size covers entire layout
-        let layout_end = layout.dev_evt_addr + EventSuppression::SIZE as u64;
+        let layout_end = layout.dev_evt_addr() + EventSuppression::SIZE as u64;
         assert!(base + expected_size as u64 == layout_end);
     }
 
