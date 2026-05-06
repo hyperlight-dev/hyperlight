@@ -552,18 +552,25 @@ impl Snapshot {
                                     kind,
                                     user_accessible: mapping.user_accessible,
                                 };
-                                unsafe { vmem::map(&pt_buf, compacted) };
-                            }
-                            SpaceAwareMapping::AnotherSpace(ref_map) => {
-                                // Link to the owning space's already-
-                                // rebuilt intermediate table — this
-                                // is what preserves Nanvix's
-                                // kernel-half-shared invariant across
-                                // process PDs after relocation.
+
                                 unsafe {
-                                    vmem::space_aware_map(&pt_buf, ref_map, &built_roots);
-                                }
+                                    vmem::space_aware_map(
+                                        &pt_buf,
+                                        SpaceAwareMapping::ThisSpace(compacted),
+                                        &built_roots,
+                                    )
+                                };
                             }
+                            // Preserve Nanvix's kernel-half-shared
+                            // invariant by linking to the owning
+                            // space's rebuilt intermediate table.
+                            SpaceAwareMapping::AnotherSpace(ref_map) => unsafe {
+                                vmem::space_aware_map(
+                                    &pt_buf,
+                                    SpaceAwareMapping::AnotherSpace(ref_map),
+                                    &built_roots,
+                                )
+                            },
                         }
                     }
                 }
