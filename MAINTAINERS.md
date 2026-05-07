@@ -11,6 +11,7 @@
 | Ludvig Liljenberg  | [@ludfjig](https://github.com/ludfjig)             |
 | Simon Davies       | [@simongdavies](https://github.com/simongdavies)   |
 | Tomasz Andrzejak   | [@andreiltd](https://github.com/andreiltd)         |
+| Ralph Squillace    | [@squillace](https://github.com/squillace)         |
 
 <!-- Note: Please maintain alphabetical order when adding new entries to the table. -->
 
