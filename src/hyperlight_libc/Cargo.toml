@@ -25,4 +25,4 @@ workspace = true
 anyhow = "1"
 cc = "1.2"
 glob = "0.3.3"
-bindgen = { version = "0.71", features = ["prettyplease"] }
+bindgen = { version = "0.72", features = ["prettyplease"] }
