@@ -119,6 +119,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          submodules: true
 
       - uses: hyperlight-dev/ci-setup-workflow@v1.9.0
         with:
