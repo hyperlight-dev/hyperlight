@@ -9,9 +9,9 @@
 | Jorge Prendes      | [@jprendes](https://github.com/jprendes)           |
 | Lucy Menon         | [@syntactically](https://github.com/syntactically) |
 | Ludvig Liljenberg  | [@ludfjig](https://github.com/ludfjig)             |
+| Ralph Squillace    | [@squillace](https://github.com/squillace)         |
 | Simon Davies       | [@simongdavies](https://github.com/simongdavies)   |
 | Tomasz Andrzejak   | [@andreiltd](https://github.com/andreiltd)         |
-| Ralph Squillace    | [@squillace](https://github.com/squillace)         |
 
 <!-- Note: Please maintain alphabetical order when adding new entries to the table. -->
 
