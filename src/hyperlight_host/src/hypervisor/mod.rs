@@ -514,7 +514,6 @@ pub(crate) mod tests {
         vm.initialise(
             peb_addr,
             seed,
-            page_size,
             &mut mem_mgr,
             &host_funcs,
             guest_max_log_level,
