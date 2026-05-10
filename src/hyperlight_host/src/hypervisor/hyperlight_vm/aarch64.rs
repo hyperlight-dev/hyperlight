@@ -26,7 +26,7 @@ use super::{
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::hypervisor::virtual_machine::RegisterError;
-use crate::mem::mgr::SandboxMemoryManager;
+use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
 use crate::sandbox::host_funcs::FunctionRegistry;
@@ -39,7 +39,7 @@ use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 impl HyperlightVm {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        _snapshot_mem: GuestSharedMemory,
+        _snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
         _scratch_mem: GuestSharedMemory,
         _root_pt_addr: u64,
         _entrypoint: NextAction,
