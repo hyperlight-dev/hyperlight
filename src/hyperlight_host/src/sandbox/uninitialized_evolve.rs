@@ -98,7 +98,6 @@ pub(super) fn evolve_impl_multi_use(u_sbox: UninitializedSandbox) -> Result<Mult
     vm.initialise(
         peb_addr,
         seed,
-        page_size,
         &mut hshm,
         &u_sbox.host_funcs,
         u_sbox.max_guest_log_level,

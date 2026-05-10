@@ -283,7 +283,6 @@ impl MultiUseSandbox {
         vm.initialise(
             peb_addr,
             seed,
-            page_size as u32,
             &mut hshm,
             &host_funcs,
             None,

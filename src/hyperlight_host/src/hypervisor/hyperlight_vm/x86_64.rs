@@ -207,7 +207,6 @@ impl HyperlightVm {
         &mut self,
         peb_addr: RawPtr,
         seed: u64,
-        page_size: u32,
         mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
         host_funcs: &Arc<Mutex<FunctionRegistry>>,
         guest_max_log_level: Option<LevelFilter>,
@@ -230,7 +229,7 @@ impl HyperlightVm {
             // function args
             rdi: peb_addr.into(),
             rsi: seed,
-            rdx: page_size.into(),
+            rdx: self.page_size as u64,
             rcx: get_guest_log_filter(guest_max_log_level),
             rflags: 1 << 1,
 
@@ -1526,7 +1525,6 @@ mod tests {
 
         let seed = rand::rng().random::<u64>();
         let peb_addr = RawPtr::from(u64::try_from(peb_address).unwrap());
-        let page_size = u32::try_from(page_size::get()).unwrap();
 
         #[cfg(gdb)]
         let dbg_mem_access_hdl = Arc::new(Mutex::new(hshm.clone()));
@@ -1536,7 +1534,6 @@ mod tests {
         vm.initialise(
             peb_addr,
             seed,
-            page_size,
             &mut hshm,
             &host_funcs,
             None,
