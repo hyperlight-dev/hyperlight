@@ -45,6 +45,7 @@ use hyperlight_common::log_level::GuestLogFilter;
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
 use hyperlight_guest::error::{HyperlightGuestError, Result};
 use hyperlight_guest::exit::{abort_with_code, abort_with_code_and_message};
+#[cfg(target_arch = "x86_64")]
 use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
@@ -85,6 +86,7 @@ fn echo_double(value: f64) -> f64 {
 
 // Test exception handler that validates stack layout and records invocation
 // It is designed to interact with the trigger_int3 breakpoint exception function below
+#[cfg(target_arch = "x86_64")]
 fn test_exception_handler(
     exception_number: u64,
     _exception_info: *mut ExceptionInfo,
@@ -133,6 +135,7 @@ fn test_exception_handler(
 
 /// Install handler for a specific vector
 #[guest_function("InstallHandler")]
+#[cfg(target_arch = "x86_64")]
 fn install_handler(vector: i32) {
     hyperlight_guest_bin::exception::arch::HANDLERS[vector as usize].store(
         test_exception_handler as *const () as usize as u64,
@@ -149,6 +152,7 @@ fn get_exception_handler_call_count() -> i32 {
 
 /// Trigger an INT3 breakpoint exception (vector 3)
 #[guest_function("TriggerInt3")]
+#[cfg(target_arch = "x86_64")]
 fn trigger_int3() -> i32 {
     // Set up test value in R9 before triggering exception
     let test_value: u64 = TEST_R9_VALUE;
@@ -341,6 +345,7 @@ fn call_malloc(size: i32) -> i32 {
 }
 
 #[guest_function("FillHeapAndCauseException")]
+#[cfg(target_arch = "x86_64")]
 fn fill_heap_and_cause_exception() {
     let layout: Layout = Layout::new::<u8>();
     let mut ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
@@ -484,6 +489,7 @@ fn log_message(message: String, level: i32) {
 }
 
 #[guest_function("TriggerException")]
+#[cfg(target_arch = "x86_64")]
 fn trigger_exception() {
     // trigger an undefined instruction exception
     unsafe { core::arch::asm!("ud2") };
@@ -492,6 +498,7 @@ fn trigger_exception() {
 /// Execute an OUT instruction with an arbitrary port and value.
 /// This is used to test that invalid OUT ports cause errors.
 #[guest_function("OutbWithPort")]
+#[cfg(target_arch = "x86_64")]
 fn outb_with_port(port: u32, value: u32) {
     unsafe {
         core::arch::asm!(
@@ -517,6 +524,7 @@ static TIMER_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
 // for the atomic counter update, and sends a non-specific EOI to the master PIC.
 //
 // NOTE: global_asm! on x86_64 in Rust defaults to Intel syntax.
+#[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     ".globl _timer_irq_handler",
     "_timer_irq_handler:",
@@ -555,6 +563,7 @@ struct IdtPtr {
 /// - `max_spin`:  maximum busy-wait iterations before giving up
 ///
 /// Returns the number of timer interrupts received.
+#[cfg(target_arch = "x86_64")]
 #[guest_function("TestTimerInterrupts")]
 fn test_timer_interrupts(period_us: i32, max_spin: i32) -> i32 {
     // Reset counter
@@ -704,17 +713,20 @@ fn call_given_paramless_hostfunc_that_returns_i64(hostfuncname: String) -> Resul
 }
 
 #[guest_function("UseSSE2Registers")]
+#[cfg(target_arch = "x86_64")]
 fn use_sse2_registers() {
     let val: f32 = 1.2f32;
     unsafe { core::arch::asm!("movss xmm1, DWORD PTR [{0}]", in(reg) &val) };
 }
 
 #[guest_function("SetDr0")]
+#[cfg(target_arch = "x86_64")]
 fn set_dr0(value: u64) {
     unsafe { core::arch::asm!("mov dr0, {}", in(reg) value) };
 }
 
 #[guest_function("GetDr0")]
+#[cfg(target_arch = "x86_64")]
 fn get_dr0() -> u64 {
     let value: u64;
     unsafe { core::arch::asm!("mov {}, dr0", out(reg) value) };
@@ -751,6 +763,7 @@ fn read_from_user_memory(num: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(target_arch = "x86_64")]
 #[guest_function("ReadMappedBuffer")]
 fn read_mapped_buffer(base: u64, len: u64, do_map: bool) -> Vec<u8> {
     let base = base as usize as *const u8;
@@ -777,6 +790,7 @@ fn read_mapped_buffer(base: u64, len: u64, do_map: bool) -> Vec<u8> {
     data.to_vec()
 }
 
+#[cfg(target_arch = "x86_64")]
 #[guest_function("CheckMapped")]
 fn check_mapped_buffer(base: u64) -> bool {
     hyperlight_guest_bin::paging::virt_to_phys(base)
@@ -784,6 +798,7 @@ fn check_mapped_buffer(base: u64) -> bool {
         .is_some()
 }
 
+#[cfg(target_arch = "x86_64")]
 #[guest_function("WriteMappedBuffer")]
 fn write_mapped_buffer(base: u64, len: u64) -> bool {
     let base = base as usize as *mut u8;
@@ -812,6 +827,7 @@ fn write_mapped_buffer(base: u64, len: u64) -> bool {
     true
 }
 
+#[cfg(target_arch = "x86_64")]
 #[guest_function("ExecMappedBuffer")]
 fn exec_mapped_buffer(base: u64, len: u64) -> bool {
     let base = base as usize as *mut u8;
@@ -979,6 +995,7 @@ fn fuzz_guest_trace(max_depth: u32, msg: String) -> u32 {
     fuzz_traced_function(0, max_depth, &msg)
 }
 
+#[cfg(target_arch = "x86_64")]
 #[guest_function("CorruptOutputSizePrefix")]
 fn corrupt_output_size_prefix() -> i32 {
     unsafe {
@@ -1003,6 +1020,7 @@ fn corrupt_output_size_prefix() -> i32 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 #[guest_function("CorruptOutputBackPointer")]
 fn corrupt_output_back_pointer() -> i32 {
     unsafe {
