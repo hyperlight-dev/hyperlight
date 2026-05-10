@@ -23,7 +23,7 @@ use std::{env, fs};
 use anyhow::{Context, Result, bail};
 use bindgen::Formatter::Prettyplease;
 use bindgen::RustEdition::Edition2021;
-use build_files::{LIBC_FILES, LIBC_FILES_X86, LIBM_FILES, LIBM_FILES_X86};
+use build_files::{LIBC_FILES, LIBC_FILES_X86, LIBC_FILES_AARCH64, LIBM_FILES, LIBM_FILES_X86, LIBM_FILES_AARCH64};
 
 fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(
     include_dir: P,
@@ -121,6 +121,10 @@ fn cc_build(picolibc_dir: &PathBuf, target: &str) -> Result<cc::Build> {
             build.include(picolibc_dir.join("libm/machine/x86"));
             build.include(picolibc_dir.join("libc/machine/x86"));
         }
+        "aarch64" => {
+            build.include(picolibc_dir.join("libc/machine/aarch64"));
+            build.include(picolibc_dir.join("libm/machine/aarch64"));
+        }
         arch => {
             bail!("Unsupported target architecture: {arch}");
         }
@@ -139,6 +143,7 @@ fn add_libc(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<
     let base = LIBC_FILES.iter();
     let files = match target {
         "x86" | "x86_64" => base.chain(LIBC_FILES_X86.iter()),
+        "aarch64" => base.chain(LIBC_FILES_AARCH64.iter()),
         arch => bail!("Unsupported target architecture: {arch}"),
     };
 
@@ -156,6 +161,7 @@ fn add_libm(build: &mut cc::Build, picolibc_dir: &Path, target: &str) -> Result<
     let base = LIBM_FILES.iter();
     let files = match target {
         "x86" | "x86_64" => base.chain(LIBM_FILES_X86.iter()),
+        "aarch64" => base.chain(LIBM_FILES_AARCH64.iter()),
         arch => bail!("Unsupported target architecture: {arch}"),
     };
 
