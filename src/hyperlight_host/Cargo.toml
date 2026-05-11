@@ -99,7 +99,7 @@ opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "grpc-tonic"] }
 opentelemetry-semantic-conventions = "0.31"
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
-tokio = { version = "1.52.2", features = ["full"] }
+tokio = { version = "1.52.3", features = ["full"] }
 criterion = "0.8.2"
 tracing-chrome = "0.7.2"
 metrics-util = "0.20.3"
