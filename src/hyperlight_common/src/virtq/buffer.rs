@@ -97,7 +97,7 @@ impl<T: BufferProvider> BufferProvider for Arc<T> {
 
 /// The owner of a mapped buffer, ensuring its lifetime.
 ///
-/// Holds a pool allocation and provides direct access to the underlying
+/// Holds a [`PoolAlloc`] and provides direct access to the underlying
 /// shared memory via [`MemOps::as_slice`]. Implements `AsRef<[u8]>` so it
 /// can be used with [`Bytes::from_owner`](bytes::Bytes::from_owner) for
 /// zero-copy `Bytes` backed by shared memory.
@@ -105,44 +105,18 @@ impl<T: BufferProvider> BufferProvider for Arc<T> {
 /// When dropped, the allocation is returned to the pool.
 #[derive(Debug)]
 pub struct BufferOwner<P: BufferProvider, M: MemOps> {
-    pub(crate) pool: P,
+    pub(crate) alloc: PoolAlloc<P>,
     pub(crate) mem: M,
-    pub(crate) alloc: Allocation,
     pub(crate) written: usize,
-}
-
-impl<P: BufferProvider, M: MemOps> Drop for BufferOwner<P, M> {
-    fn drop(&mut self) {
-        let _ = self.pool.dealloc(self.alloc);
-    }
-}
-
-impl<P: BufferProvider, M: MemOps> BufferOwner<P, M> {
-    pub(crate) fn try_new(
-        pool: P,
-        mem: M,
-        alloc: Allocation,
-        written: usize,
-    ) -> Result<Self, M::Error> {
-        // Pre check direct access before handing the owner to Bytes::from_owner
-        let len = written.min(alloc.len);
-        let _ = unsafe { mem.as_slice(alloc.addr, len) }?;
-
-        Ok(Self {
-            pool,
-            mem,
-            alloc,
-            written,
-        })
-    }
 }
 
 impl<P: BufferProvider, M: MemOps> AsRef<[u8]> for BufferOwner<P, M> {
     fn as_ref(&self) -> &[u8] {
-        let len = self.written.min(self.alloc.len);
+        let alloc = self.alloc.allocation();
+        let len = self.written.min(alloc.len);
         // Safety: BufferOwner keeps both the pool allocation and the M alive,
         // so the memory region is valid.
-        match unsafe { self.mem.as_slice(self.alloc.addr, len) } {
+        match unsafe { self.mem.as_slice(alloc.addr, len) } {
             Ok(slice) => slice,
             Err(_) => {
                 debug_assert!(false, "BufferOwner direct slice failed");
@@ -152,41 +126,74 @@ impl<P: BufferProvider, M: MemOps> AsRef<[u8]> for BufferOwner<P, M> {
     }
 }
 
-/// A guard that runs a cleanup function when dropped, unless dismissed.
-pub struct AllocGuard<F: FnOnce(Allocation)>(Option<(Allocation, F)>);
-
-impl<F: FnOnce(Allocation)> AllocGuard<F> {
-    pub fn new(alloc: Allocation, cleanup: F) -> Self {
-        Self(Some((alloc, cleanup)))
-    }
-
-    pub fn release(mut self) -> Allocation {
-        // Safety: AllocGuard is always constructed with Some, and release is only called once
-        self.0
-            .take()
-            .map(|(alloc, _)| alloc)
-            .unwrap_or_else(|| unreachable!("AllocGuard::release called on dismissed guard"))
-    }
+/// Pool-owned allocation that is returned to the pool on drop.
+///
+/// Use [`into_raw`](Self::into_raw) to transfer ownership to a descriptor
+/// state that will deallocate the raw [`Allocation`] through another path.
+#[derive(Debug)]
+pub struct PoolAlloc<P: BufferProvider> {
+    inner: Option<PoolAllocInner<P>>,
 }
 
-impl<F: FnOnce(Allocation)> core::ops::Deref for AllocGuard<F> {
-    type Target = Allocation;
+#[derive(Debug)]
+struct PoolAllocInner<P: BufferProvider> {
+    pool: P,
+    alloc: Allocation,
+}
 
-    fn deref(&self) -> &Allocation {
-        // Safety: AllocGuard is always constructed with Some, and the inner value is only
-        // taken by release() or Drop.
-        &self
-            .0
+impl<P: BufferProvider> PoolAlloc<P> {
+    /// Wrap an existing allocation with its owning pool.
+    pub fn new(pool: P, alloc: Allocation) -> Self {
+        Self {
+            inner: Some(PoolAllocInner { pool, alloc }),
+        }
+    }
+
+    /// Allocate from `pool` and return an owning guard.
+    pub fn allocate(pool: P, len: usize) -> Result<Self, AllocError> {
+        let alloc = pool.alloc(len)?;
+        Ok(Self::new(pool, alloc))
+    }
+
+    /// The raw allocation currently owned by this guard.
+    pub fn allocation(&self) -> Allocation {
+        self.inner
             .as_ref()
-            .unwrap_or_else(|| unreachable!("AllocGuard::deref called on dismissed guard"))
-            .0
+            .map(|inner| inner.alloc)
+            .unwrap_or_else(|| {
+                unreachable!("PoolAlloc::allocation called after ownership transfer")
+            })
+    }
+
+    /// Release ownership and return the raw allocation.
+    pub fn into_raw(mut self) -> Allocation {
+        self.inner
+            .take()
+            .map(|inner| inner.alloc)
+            .unwrap_or_else(|| unreachable!("PoolAlloc::into_raw called after ownership transfer"))
+    }
+
+    pub(crate) fn into_buffer_owner<M: MemOps>(
+        self,
+        mem: M,
+        written: usize,
+    ) -> Result<BufferOwner<P, M>, M::Error> {
+        let alloc = self.allocation();
+        let len = written.min(alloc.len);
+        let _ = unsafe { mem.as_slice(alloc.addr, len) }?;
+
+        Ok(BufferOwner {
+            alloc: self,
+            mem,
+            written,
+        })
     }
 }
 
-impl<F: FnOnce(Allocation)> Drop for AllocGuard<F> {
+impl<P: BufferProvider> Drop for PoolAlloc<P> {
     fn drop(&mut self) {
-        if let Some((alloc, cleanup)) = self.0.take() {
-            cleanup(alloc)
+        if let Some(PoolAllocInner { pool, alloc }) = self.inner.take() {
+            let _ = pool.dealloc(alloc);
         }
     }
 }

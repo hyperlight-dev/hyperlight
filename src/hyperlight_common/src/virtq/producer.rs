@@ -253,30 +253,21 @@ where
             self.pool.dealloc(entry)?;
         }
 
-        let completion_guard = inf.completion().map(|buf| {
-            let pool = self.pool.clone();
-            AllocGuard::new(buf, move |a| {
-                let _ = pool.dealloc(a);
-            })
-        });
+        let completion_guard = inf
+            .completion()
+            .map(|buf| PoolAlloc::new(self.pool.clone(), buf));
 
         // Read completion data
         let has_completion = completion_guard.is_some();
         let data = match completion_guard {
-            Some(buf) => {
-                if written > buf.len {
-                    return Err(VirtqError::InvalidState);
-                }
-                let owner = BufferOwner::try_new(
-                    self.pool.clone(),
-                    self.inner.mem().clone(),
-                    *buf,
-                    written,
-                )
-                .map_err(|_| VirtqError::MemoryReadError)?;
-                let _ = buf.release();
-                Bytes::from_owner(owner)
+            Some(buf) if written > buf.allocation().len => {
+                // This is a protocol violation
+                return Err(VirtqError::InvalidState);
             }
+            Some(buf) => Bytes::from_owner(
+                buf.into_buffer_owner(self.inner.mem().clone(), written)
+                    .map_err(|_| VirtqError::MemoryReadError)?,
+            ),
             None => Bytes::new(),
         };
 
@@ -642,16 +633,8 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
         }
     }
 
-    fn alloc(
-        &self,
-        size: usize,
-    ) -> Result<AllocGuard<impl FnOnce(Allocation) + use<M, P>>, VirtqError> {
-        let alloc = self.pool.alloc(size)?;
-        let pool = self.pool.clone();
-
-        Ok(AllocGuard::new(alloc, move |a| {
-            let _ = pool.dealloc(a);
-        }))
+    fn alloc(&self, size: usize) -> Result<PoolAlloc<P>, VirtqError> {
+        Ok(PoolAlloc::allocate(self.pool.clone(), size)?)
     }
 
     /// Request an entry buffer of `cap` bytes.
@@ -688,14 +671,14 @@ impl<M: MemOps, P: BufferProvider + Clone> ChainBuilder<M, P> {
 
         let inflight = match (entry_alloc, completion_alloc) {
             (Some(entry), Some(cqe)) => Inflight::ReadWrite {
-                entry: entry.release(),
-                completion: cqe.release(),
+                entry: entry.into_raw(),
+                completion: cqe.into_raw(),
             },
             (Some(entry), None) => Inflight::ReadOnly {
-                entry: entry.release(),
+                entry: entry.into_raw(),
             },
             (None, Some(cqe)) => Inflight::WriteOnly {
-                completion: cqe.release(),
+                completion: cqe.into_raw(),
             },
             (None, None) => unreachable!(),
         };
