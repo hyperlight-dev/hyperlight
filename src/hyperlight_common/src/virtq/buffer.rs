@@ -117,15 +117,37 @@ impl<P: BufferProvider, M: MemOps> Drop for BufferOwner<P, M> {
     }
 }
 
+impl<P: BufferProvider, M: MemOps> BufferOwner<P, M> {
+    pub(crate) fn try_new(
+        pool: P,
+        mem: M,
+        alloc: Allocation,
+        written: usize,
+    ) -> Result<Self, M::Error> {
+        // Pre check direct access before handing the owner to Bytes::from_owner
+        let len = written.min(alloc.len);
+        let _ = unsafe { mem.as_slice(alloc.addr, len) }?;
+
+        Ok(Self {
+            pool,
+            mem,
+            alloc,
+            written,
+        })
+    }
+}
+
 impl<P: BufferProvider, M: MemOps> AsRef<[u8]> for BufferOwner<P, M> {
     fn as_ref(&self) -> &[u8] {
         let len = self.written.min(self.alloc.len);
-        // Safety: BufferOwner keeps both the pool allocation and the M
-        // alive, so the memory region is valid. Protocol-level descriptor
-        // ownership transfer guarantees no concurrent writes.
+        // Safety: BufferOwner keeps both the pool allocation and the M alive,
+        // so the memory region is valid.
         match unsafe { self.mem.as_slice(self.alloc.addr, len) } {
             Ok(slice) => slice,
-            Err(_) => &[],
+            Err(_) => {
+                debug_assert!(false, "BufferOwner direct slice failed");
+                &[]
+            }
         }
     }
 }

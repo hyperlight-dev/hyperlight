@@ -253,20 +253,28 @@ where
             self.pool.dealloc(entry)?;
         }
 
+        let completion_guard = inf.completion().map(|buf| {
+            let pool = self.pool.clone();
+            AllocGuard::new(buf, move |a| {
+                let _ = pool.dealloc(a);
+            })
+        });
+
         // Read completion data
-        let has_completion = inf.completion().is_some();
-        let data = match inf.completion() {
+        let has_completion = completion_guard.is_some();
+        let data = match completion_guard {
             Some(buf) => {
                 if written > buf.len {
-                    let _ = self.pool.dealloc(buf);
                     return Err(VirtqError::InvalidState);
                 }
-                let owner = BufferOwner {
-                    pool: self.pool.clone(),
-                    mem: self.inner.mem().clone(),
-                    alloc: buf,
+                let owner = BufferOwner::try_new(
+                    self.pool.clone(),
+                    self.inner.mem().clone(),
+                    *buf,
                     written,
-                };
+                )
+                .map_err(|_| VirtqError::MemoryReadError)?;
+                let _ = buf.release();
                 Bytes::from_owner(owner)
             }
             None => Bytes::new(),
@@ -315,23 +323,42 @@ where
         ChainBuilder::new(self.inner.mem().clone(), self.pool.clone())
     }
 
+    /// Begin a batch of submissions.
+    ///
+    /// Entries submitted through the returned [`SubmitBatch`] are published to
+    /// the ring immediately, but the consumer is notified at most once when
+    /// [`SubmitBatch::finish`] is called. This mirrors the virtio pattern of
+    /// adding multiple buffers and then kicking the queue once.
+    pub fn batch(&mut self) -> SubmitBatch<'_, M, N, P> {
+        SubmitBatch::new(self)
+    }
+
     /// Submit a [`SendEntry`] to the ring.
     ///
     /// Publishes the descriptor chain, stores the in-flight tracking state,
-    /// and notifies the consumer if event suppression allows.
+    /// and notifies the consumer if event suppression allows. Notifications
+    /// are layout-neutral; use [`batch`](Self::batch) when a higher-level
+    /// protocol wants to publish multiple entries and kick once.
     ///
     /// # Errors
     ///
     /// - [`VirtqError::EntryTooLarge`] - written exceeds entry buffer capacity
     /// - [`VirtqError::RingError`] - ring is full
     /// - [`VirtqError::InvalidState`] - descriptor ID collision
-    pub fn submit(&mut self, mut entry: SendEntry<M, P>) -> Result<Token, VirtqError> {
-        let written = entry.written;
-        let inflight = entry.inflight.take().ok_or(VirtqError::InvalidState)?;
-
+    pub fn submit(&mut self, entry: SendEntry<M, P>) -> Result<Token, VirtqError> {
         let cursor_before = self.inner.avail_cursor();
+        let token = self.publish(entry)?;
+        self.notify_since(cursor_before)?;
+        Ok(token)
+    }
+
+    fn publish(&mut self, mut entry: SendEntry<M, P>) -> Result<Token, VirtqError> {
+        let written = entry.written;
+        let inflight = *entry.inflight.as_ref().ok_or(VirtqError::InvalidState)?;
+
         let chain = inflight.try_into_chain(written)?;
         let id = self.inner.submit_available(&chain)?;
+        let inflight = entry.inflight.take().ok_or(VirtqError::InvalidState)?;
 
         let token = Token(self.next_token, id);
         self.next_token = self.next_token.wrapping_add(1);
@@ -347,33 +374,31 @@ where
 
         *slot = Some((token, inflight));
 
-        let should_notify = self.inner.should_notify_since(cursor_before)?;
-
-        // TODO(virtq): for now simulate current outb behavior of only
-        // notifying on bidirectional (request/response) entries.
-        // Eventually this should be decoupled from the buffer layout
-        // and driven entirely by event suppression rules.
-        let should_notify = should_notify && matches!(inflight, Inflight::ReadWrite { .. });
-
-        if should_notify {
-            self.notifier.notify(QueueStats {
-                num_free: self.inner.num_free(),
-                num_inflight: self.inner.num_inflight(),
-            });
-        }
-
         Ok(token)
     }
 
-    /// Signal backpressure to the consumer.
-    ///
-    /// Bypasses event suppression. Call this when submit fails with a backpressure error and the consumer needs to drain.
-    #[inline]
-    pub fn notify_backpressure(&self) {
+    fn notify_since(&mut self, cursor: RingCursor) -> Result<bool, VirtqError> {
+        let should_notify = self.inner.should_notify_since(cursor)?;
+        if should_notify {
+            self.notify_now();
+        }
+        Ok(should_notify)
+    }
+
+    fn notify_now(&self) {
         self.notifier.notify(QueueStats {
             num_free: self.inner.num_free(),
             num_inflight: self.inner.num_inflight(),
         });
+    }
+
+    /// Signal backpressure to the consumer.
+    ///
+    /// Bypasses event suppression. Call this when submit fails with a
+    /// backpressure error and the consumer needs to drain.
+    #[inline]
+    pub fn notify_backpressure(&self) {
+        self.notify_now();
     }
 
     /// Get the current used cursor position.
@@ -451,6 +476,58 @@ where
         self.inner.reset();
         self.pending.clear();
         self.inflight.fill(None);
+    }
+}
+
+/// A scoped batch of producer submissions.
+///
+/// Submissions are published immediately, while notification is delayed until
+/// [`finish`](Self::finish). `finish` is explicit because the event-suppression
+/// check can fail; dropping a batch does not notify.
+#[must_use = "call finish to notify the consumer about batched submissions"]
+pub struct SubmitBatch<'a, M, N, P> {
+    producer: &'a mut VirtqProducer<M, N, P>,
+    notify_from: Option<RingCursor>,
+}
+
+impl<'a, M, N, P> SubmitBatch<'a, M, N, P>
+where
+    M: MemOps + Clone,
+    N: Notifier,
+    P: BufferProvider + Clone,
+{
+    fn new(producer: &'a mut VirtqProducer<M, N, P>) -> Self {
+        Self {
+            producer,
+            notify_from: None,
+        }
+    }
+
+    /// Begin building a descriptor chain for this batch.
+    pub fn chain(&self) -> ChainBuilder<M, P> {
+        self.producer.chain()
+    }
+
+    /// Publish an entry as part of this batch without notifying yet.
+    pub fn submit(&mut self, entry: SendEntry<M, P>) -> Result<Token, VirtqError> {
+        let cursor_before = self.producer.inner.avail_cursor();
+        let token = self.producer.publish(entry)?;
+        if self.notify_from.is_none() {
+            self.notify_from = Some(cursor_before);
+        }
+        Ok(token)
+    }
+
+    /// Finish the batch and notify the consumer once if event suppression
+    /// requires it for the whole published range.
+    ///
+    /// Returns `true` if a notification was sent.
+    pub fn finish(mut self) -> Result<bool, VirtqError> {
+        let Some(notify_from) = self.notify_from.take() else {
+            return Ok(false);
+        };
+
+        self.producer.notify_since(notify_from)
     }
 }
 
@@ -800,6 +877,39 @@ mod tests {
         RecyclePool::new(pool_base, slot_count * SLOT_SIZE, SLOT_SIZE).unwrap()
     }
 
+    #[derive(Clone)]
+    struct NoDirectSliceMem(TestMem);
+
+    // SAFETY: Delegates all non-slice memory operations to TestMem. Direct
+    // slices are intentionally unsupported to exercise producer error handling.
+    unsafe impl MemOps for NoDirectSliceMem {
+        type Error = ();
+
+        fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
+            self.0.read(addr, dst).map_err(|e| match e {})
+        }
+
+        fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error> {
+            self.0.write(addr, src).map_err(|e| match e {})
+        }
+
+        fn load_acquire(&self, addr: u64) -> Result<u16, Self::Error> {
+            self.0.load_acquire(addr).map_err(|e| match e {})
+        }
+
+        fn store_release(&self, addr: u64, val: u16) -> Result<(), Self::Error> {
+            self.0.store_release(addr, val).map_err(|e| match e {})
+        }
+
+        unsafe fn as_slice(&self, _addr: u64, _len: usize) -> Result<&[u8], Self::Error> {
+            Err(())
+        }
+
+        unsafe fn as_mut_slice(&self, _addr: u64, _len: usize) -> Result<&mut [u8], Self::Error> {
+            Err(())
+        }
+    }
+
     #[test]
     fn test_chain_readwrite_build() {
         let ring = make_ring(16);
@@ -941,6 +1051,99 @@ mod tests {
     }
 
     #[test]
+    fn test_submit_read_only_notifies_by_default() {
+        let ring = make_ring(16);
+        let (mut producer, _consumer, notifier) = make_test_producer(&ring);
+
+        let initial_count = notifier.notification_count();
+
+        let mut se = producer.chain().entry(64).build().unwrap();
+        se.write_all(b"fire-and-forget").unwrap();
+        producer.submit(se).unwrap();
+
+        assert!(notifier.notification_count() > initial_count);
+    }
+
+    #[test]
+    fn test_submit_write_only_notifies_by_default() {
+        let ring = make_ring(16);
+        let (mut producer, _consumer, notifier) = make_test_producer(&ring);
+
+        let initial_count = notifier.notification_count();
+
+        let se = producer.chain().completion(128).build().unwrap();
+        producer.submit(se).unwrap();
+
+        assert!(notifier.notification_count() > initial_count);
+    }
+
+    #[test]
+    fn test_batch_notifies_once_on_finish() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
+
+        let initial_count = notifier.notification_count();
+
+        let mut batch = producer.batch();
+
+        let mut first = batch.chain().entry(64).build().unwrap();
+        first.write_all(b"first").unwrap();
+        batch.submit(first).unwrap();
+
+        let mut second = batch.chain().entry(64).build().unwrap();
+        second.write_all(b"second").unwrap();
+        batch.submit(second).unwrap();
+
+        assert_eq!(notifier.notification_count(), initial_count);
+        assert!(batch.finish().unwrap());
+        assert_eq!(notifier.notification_count(), initial_count + 1);
+
+        let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry.data().as_ref(), b"first");
+        consumer.complete(completion).unwrap();
+
+        let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry.data().as_ref(), b"second");
+        consumer.complete(completion).unwrap();
+    }
+
+    #[test]
+    fn test_batch_finish_notifies_from_batch_start_cursor() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
+
+        let cursor = consumer.avail_cursor();
+        consumer
+            .set_avail_suppression(SuppressionKind::Descriptor(cursor))
+            .unwrap();
+
+        let mut batch = producer.batch();
+
+        let mut first = batch.chain().entry(64).build().unwrap();
+        first.write_all(b"first").unwrap();
+        batch.submit(first).unwrap();
+        assert_eq!(notifier.notification_count(), 0);
+
+        let mut second = batch.chain().entry(64).completion(64).build().unwrap();
+        second.write_all(b"second").unwrap();
+        batch.submit(second).unwrap();
+
+        assert!(batch.finish().unwrap());
+
+        assert_eq!(notifier.notification_count(), 1);
+    }
+
+    #[test]
+    fn test_empty_batch_finish_does_not_notify() {
+        let ring = make_ring(16);
+        let (mut producer, _consumer, notifier) = make_test_producer(&ring);
+
+        let batch = producer.batch();
+        assert!(!batch.finish().unwrap());
+        assert_eq!(notifier.notification_count(), 0);
+    }
+
+    #[test]
     fn test_set_written_too_large() {
         let ring = make_ring(16);
         let (producer, _consumer, _notifier) = make_test_producer(&ring);
@@ -1017,6 +1220,33 @@ mod tests {
         let cqe = producer.poll().unwrap().unwrap();
         assert_eq!(cqe.token, token);
         assert_eq!(&cqe.data[..], b"response data");
+    }
+
+    #[test]
+    fn test_poll_completion_requires_direct_slice() {
+        let ring = make_ring(16);
+        let layout = ring.layout();
+        let test_mem = ring.mem();
+        let pool_base = test_mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        let pool = TestPool::new(pool_base, 0x8000);
+        let notifier = TestNotifier::new();
+        let mem = NoDirectSliceMem(test_mem);
+        let mut producer = VirtqProducer::new(layout, mem.clone(), notifier.clone(), pool);
+        let mut consumer = VirtqConsumer::new(layout, mem, notifier);
+
+        let mut se = producer.chain().entry(64).completion(128).build().unwrap();
+        se.write_all(b"request data").unwrap();
+        producer.submit(se).unwrap();
+
+        let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        if let SendCompletion::Writable(mut wc) = completion {
+            wc.write_all(b"response data").unwrap();
+            consumer.complete(wc.into()).unwrap();
+        } else {
+            panic!("expected Writable");
+        }
+
+        assert!(matches!(producer.poll(), Err(VirtqError::MemoryReadError)));
     }
 
     #[test]

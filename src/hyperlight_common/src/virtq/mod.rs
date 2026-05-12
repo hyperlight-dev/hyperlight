@@ -79,17 +79,21 @@ limitations under the License.
 //!
 //! ## Multiple Entries
 //!
-//! Each submit checks event suppression and notifies independently:
+//! Each submit checks event suppression and notifies independently. Use
+//! [`VirtqProducer::batch`] when a higher-level protocol wants to publish
+//! multiple entries and kick the queue once.
 //!
 //! ```ignore
+//! let mut batch = producer.batch();
 //! for data in entries {
-//!     let mut se = producer.chain()
+//!     let mut se = batch.chain()
 //!         .entry(data.len())
 //!         .completion(64)
 //!         .build()?;
 //!     se.write_all(data)?;
-//!     producer.submit(se)?;
+//!     batch.submit(se)?;
 //! }
+//! batch.finish()?;
 //! ```
 //!
 //! ## Completion Batching with Event Suppression

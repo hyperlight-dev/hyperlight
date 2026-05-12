@@ -357,21 +357,24 @@ impl GuestContext {
     /// Pre-fill the H2G queue with completion-only descriptors so the host
     /// can write incoming call payloads into them.
     fn prefill_h2g(&mut self) -> Result<()> {
+        let mut batch = self.h2g_producer.batch();
+
         loop {
-            let entry = match self
-                .h2g_producer
-                .chain()
-                .completion(self.h2g_slot_size)
-                .build()
-            {
+            let entry = match batch.chain().completion(self.h2g_slot_size).build() {
                 Ok(e) => e,
-                Err(e) if e.is_transient() => return Ok(()),
+                Err(e) if e.is_transient() => {
+                    batch.finish()?;
+                    return Ok(());
+                }
                 Err(e) => bail!("H2G prefill build: {e}"),
             };
 
-            match self.h2g_producer.submit(entry) {
+            match batch.submit(entry) {
                 Ok(_) => {}
-                Err(e) if e.is_transient() => return Ok(()),
+                Err(e) if e.is_transient() => {
+                    batch.finish()?;
+                    return Ok(());
+                }
                 Err(e) => bail!("H2G prefill submit: {e}"),
             }
         }
