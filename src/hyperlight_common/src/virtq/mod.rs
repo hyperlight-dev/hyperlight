@@ -515,7 +515,9 @@ pub(crate) mod test_utils {
 
     /// Create test infrastructure: a producer, consumer, and notifier backed
     /// by the supplied [`OwnedRing`].
-    pub(crate) fn make_test_producer(ring: &OwnedRing) -> (TestProducer, TestConsumer, TestNotifier) {
+    pub(crate) fn make_test_producer(
+        ring: &OwnedRing,
+    ) -> (TestProducer, TestConsumer, TestNotifier) {
         let layout = ring.layout();
         let mem = ring.mem();
 

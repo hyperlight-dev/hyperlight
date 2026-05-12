@@ -21,9 +21,8 @@ use flatbuffers::FlatBufferBuilder;
 use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
 use hyperlight_common::flatbuffer_wrappers::function_types::{FunctionCallResult, ParameterType};
 use hyperlight_common::flatbuffer_wrappers::guest_error::{ErrorCode, GuestError};
-use hyperlight_guest::bail;
 use hyperlight_guest::error::{HyperlightGuestError, Result};
-use hyperlight_guest::virtq;
+use hyperlight_guest::{bail, virtq};
 use tracing::instrument;
 
 use crate::REGISTERED_GUEST_FUNCTIONS;
