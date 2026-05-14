@@ -23,8 +23,8 @@ limitations under the License.
 
 use crate::vmem::{
     BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, SpaceAwareMapping,
-    SpaceId, SpaceReferenceMapping, TableMovabilityBase, TableOps, TableReadOps, UpdateParent,
-    UpdateParentNone, modify_ptes, write_entry_updating,
+    SpaceId, TableMovabilityBase, TableOps, TableReadOps, UpdateParent, UpdateParentNone,
+    modify_ptes, write_entry_updating,
 };
 
 pub const PAGE_SIZE: usize = 4096;
@@ -43,6 +43,40 @@ const PTE_AVL_MASK: u64 = 0x0E00;
 const PAGE_AVL_COW: u64 = 1 << 9;
 
 const VA_BITS: usize = 32;
+
+/// The level of the page-table hierarchy at which sharing occurs.
+///
+/// On i686 the only shareable level is the leaf page table: the table a PDE points at.
+#[derive(Debug, Clone, Copy)]
+pub enum SharedTableLevel {
+    /// A leaf page table
+    Pt,
+}
+
+/// A reference from one address space to an intermediate page table
+/// that lives in a different space. Produced by [`walk_va_spaces`]
+/// when the walker encounters an intermediate table whose physical
+/// address was already seen via an earlier root.
+///
+/// On i686 the only shareable level is [`SharedTableLevel::Pt`] (one
+/// level below the root PD).
+///
+/// `our_va` and `their_va` may be any virtual address inside the
+/// aliased region but callers must not assume they are region-aligned.
+#[derive(Debug, Clone, Copy)]
+pub struct SpaceReferenceMapping {
+    /// The level at which the alias starts.
+    pub level: SharedTableLevel,
+    /// The "owning" space is the first root that visited this
+    /// intermediate PA during [`walk_va_spaces`].
+    pub space: SpaceId,
+    /// Any VA inside the aliased sub-tree in OUR space.
+    pub our_va: u64,
+    /// Any VA inside the aliased sub-tree in the owning space.
+    /// Usually equal to `our_va` (kernel mappings at the same VA
+    /// across processes) but the design permits different VAs.
+    pub their_va: u64,
+}
 
 pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {
     type RootUpdateParent: UpdateParent<Op, TableMoveInfo = TableMoveInfo>;
@@ -213,16 +247,15 @@ pub unsafe fn map<Op: TableOps>(op: &Op, mapping: Mapping) {
 // Multi-space walk / link (shared intermediate tables)
 //==================================================================================================
 
-/// i686 has two levels (PD -> PT). The only sharable thing is a PT,
-/// at depth 1 (one level below the root PD).
-const SHARED_TABLE_DEPTH: usize = 1;
-
 /// Walk multiple root PDs together, detecting PDEs that point at the
 /// same PT PA across roots (i.e. aliased PTs — the standard
 /// "kernel-half shared" trick on x86 without KPTI). The first root to
 /// visit a given PT PA becomes the "owner"; later roots that alias it
-/// receive `AnotherSpace(SpaceReferenceMapping { depth: 1, .. })`
+/// receive `AnotherSpace(SpaceReferenceMapping { level: SharedTableLevel::Pt, .. })`
 /// entries.
+///
+/// i686 has two levels (PD -> PT). The only sharable thing is a PT,
+/// one level below the root PD ([`SharedTableLevel::Pt`]).
 ///
 /// Generic over `TableAddr` so it works with both the in-guest
 /// implementation (`TableAddr = u32`, backed by raw pointers) and the
@@ -273,7 +306,7 @@ pub unsafe fn walk_va_spaces<Op: TableReadOps>(
             if let Some(&(owner, their_va)) = seen_pts.get(&pt_pa) {
                 if owner != root_id {
                     mappings.push(SpaceAwareMapping::AnotherSpace(SpaceReferenceMapping {
-                        depth: SHARED_TABLE_DEPTH,
+                        level: SharedTableLevel::Pt,
                         space: owner,
                         our_va: r.vmin,
                         their_va,
@@ -335,24 +368,18 @@ pub unsafe fn walk_va_spaces<Op: TableReadOps>(
 /// PDE slot, and write that PA into our root's PDE slot for
 /// `our_va`. The owner's rebuilt root is found via `built_roots`.
 ///
-/// On i686 `ref_map.depth` must be 1 (PT-level sharing). Other depths
-/// are rejected defensively.
-///
 /// # Safety
 /// Same invariants as [`map`]: caller owns the concurrency story and
 /// must invalidate the TLB if the page tables are live.
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn space_aware_map<Op: TableOps>(
+pub(super) unsafe fn link_shared_table<Op: TableOps>(
     op: &Op,
     ref_map: SpaceReferenceMapping,
     built_roots: &::alloc::collections::BTreeMap<SpaceId, Op::TableAddr>,
 ) {
-    assert!(
-        ref_map.depth == SHARED_TABLE_DEPTH,
-        "i686 only supports depth={} sharing; got depth={}",
-        SHARED_TABLE_DEPTH,
-        ref_map.depth
-    );
+    match ref_map.level {
+        SharedTableLevel::Pt => {}
+    }
 
     // Their rebuilt root — must have been populated earlier in the
     // rebuild loop (walk_va_spaces guarantees topological order).

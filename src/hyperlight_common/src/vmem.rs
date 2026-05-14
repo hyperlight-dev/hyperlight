@@ -289,7 +289,10 @@ pub trait TableReadOps {
 
 /// Our own version of ! until it is stable. Used to avoid needing to
 /// implement [`TableOps::update_root`] for ops that never need
-/// to move a table.
+/// to move a table.  Also used as the `SpaceReferenceMapping` type on
+/// architectures that never emit `AnotherSpace` entries, making the
+/// corresponding match arm statically unreachable.
+#[derive(Debug, Clone, Copy)]
 pub enum Void {}
 
 /// A marker struct, used by an implementation of [`TableOps`] to
@@ -464,34 +467,11 @@ pub use arch::virt_to_phys;
 pub type SpaceId = u64;
 
 /// A reference from one address space to an intermediate page table
-/// that lives in a different space. Produced by [`walk_va_spaces`] when
-/// the walker encounters an intermediate table (at some `depth` below
-/// the root) whose physical address was already seen via an earlier
-/// root — i.e. the two spaces alias that sub-tree.
-///
-/// Semantics: the level-`depth` block in **our** space that contains
-/// VAs starting at `our_va` is aliased to the level-`depth` block in
-/// `space` that contains VAs starting at `their_va`. Everything below
-/// that sub-tree — PDEs, PTEs, leaf mappings — is shared wholesale.
-///
-/// `depth` is counted from the root:
-/// - `depth = 1` on i686: the shared thing is a leaf PT (the thing a
-///   PDE points to).
-/// - `depth = 1, 2, 3` on amd64: PDPT, PD, or PT respectively.
-#[derive(Debug, Clone, Copy)]
-pub struct SpaceReferenceMapping {
-    /// Depth from the root at which the alias starts (1-based).
-    pub depth: usize,
-    /// The "owning" space — the first root that visited this
-    /// intermediate PA during [`walk_va_spaces`].
-    pub space: SpaceId,
-    /// Start VA of the aliased sub-tree in OUR space.
-    pub our_va: u64,
-    /// Start VA of the aliased sub-tree in the owning space. Usually
-    /// equal to `our_va` (kernel mappings at the same VA across
-    /// processes) but the design permits different VAs.
-    pub their_va: u64,
-}
+/// that lives in a different space. Defined per-arch: on
+/// architectures that never emit `AnotherSpace` entries (amd64,
+/// aarch64) it is [`Void`], making the `AnotherSpace` variant of
+/// [`SpaceAwareMapping`] statically unreachable.
+pub use arch::SpaceReferenceMapping;
 
 /// Either a normal leaf mapping in the current space, or a reference
 /// to an intermediate table in another space. The compaction loop in
@@ -501,19 +481,21 @@ pub struct SpaceReferenceMapping {
 ///   backing page is compacted into the new snapshot blob, the PTE is
 ///   written, and intermediate tables are allocated on demand.
 /// - `AnotherSpace(r)` is rebuilt by *linking*: the entry in our
-///   rebuilt root at depth `r.depth - 1` for `r.our_va` is made to
-///   point at whatever table the owning space ended up with at
-///   `r.their_va`. See [`space_aware_map`].
+///   rebuilt root for `r.our_va` is made to point at whatever table
+///   the owning space ended up with at `r.their_va`.
+///   See [`space_aware_map`].
+///
+/// On architectures where `SpaceReferenceMapping` is [`Void`], the
+/// `AnotherSpace` variant is statically unreachable so match arms
+/// for it should use `match impossible {}`.
 #[derive(Debug)]
 pub enum SpaceAwareMapping {
     ThisSpace(Mapping),
     AnotherSpace(SpaceReferenceMapping),
 }
 
-/// Counterpart of [`walk_va_spaces`]'s `AnotherSpace` entries on the
-/// write side: installs a link in `op`'s root PT tree at `ref_map.our_va`
-/// that points at whatever intermediate table the owning space ended
-/// up with at `ref_map.their_va` (in `built_roots[ref_map.space]`).
+/// Install a [`SpaceAwareMapping`] into the page tables managed by
+/// `op`.
 ///
 /// Callers must ensure that `built_roots` contains populated page
 /// tables for any other space referenced by the mapping.
@@ -522,7 +504,19 @@ pub enum SpaceAwareMapping {
 /// Same invariants as [`map`]: the caller owns the concurrency story
 /// around the page tables being written, and must invalidate TLBs
 /// afterwards if they were live.
-pub use arch::space_aware_map;
+pub unsafe fn space_aware_map<Op: TableOps>(
+    op: &Op,
+    sam: SpaceAwareMapping,
+    built_roots: &::alloc::collections::BTreeMap<SpaceId, Op::TableAddr>,
+) {
+    match sam {
+        SpaceAwareMapping::ThisSpace(mapping) => unsafe { arch::map(op, mapping) },
+        SpaceAwareMapping::AnotherSpace(ref_map) => unsafe {
+            arch::link_shared_table(op, ref_map, built_roots)
+        },
+    }
+}
+
 /// Walk multiple page-table roots together, emitting either a normal
 /// leaf mapping (`ThisSpace`) or a reference to an alias that was
 /// already seen via an earlier root (`AnotherSpace`).
