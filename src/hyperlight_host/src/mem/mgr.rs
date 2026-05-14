@@ -15,13 +15,12 @@ limitations under the License.
  */
 #[cfg(feature = "nanvix-unstable")]
 use std::mem::offset_of;
+use std::num::NonZeroU16;
 
-use flatbuffers::FlatBufferBuilder;
-use hyperlight_common::flatbuffer_wrappers::function_call::{
-    FunctionCall, validate_guest_function_call_buffer,
-};
 use hyperlight_common::flatbuffer_wrappers::function_types::FunctionCallResult;
-use hyperlight_common::flatbuffer_wrappers::guest_log_data::GuestLogData;
+use hyperlight_common::mem::PAGE_SIZE_USIZE;
+use hyperlight_common::virtq::msg::{MsgFlags, MsgKind, VirtqMsgHeader};
+use hyperlight_common::virtq::{self, Layout as VirtqLayout};
 use hyperlight_common::vmem::{self, PAGE_TABLE_SIZE};
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 use hyperlight_common::vmem::{BasicMapping, MappingKind};
@@ -31,12 +30,27 @@ use super::layout::SandboxMemoryLayout;
 use super::shared_mem::{
     ExclusiveSharedMemory, GuestSharedMemory, HostSharedMemory, ReadonlySharedMemory, SharedMemory,
 };
+use super::virtq_mem::HostMemOps;
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::memory_region::MemoryRegion;
 #[cfg(crashdump)]
 use crate::mem::memory_region::{CrashDumpRegion, MemoryRegionFlags, MemoryRegionType};
 use crate::sandbox::snapshot::{NextAction, Snapshot};
 use crate::{Result, new_error};
+
+/// Type alias for the host-side G2H virtqueue consumer.
+pub(crate) type G2hConsumer = virtq::VirtqConsumer<HostMemOps, HostNotifier>;
+/// Type alias for the host-side H2G virtqueue consumer.
+pub(crate) type H2gConsumer = virtq::VirtqConsumer<HostMemOps, HostNotifier>;
+
+/// No-op notifier for host-side consumer.
+/// The host resumes the VM to notify the guest, not via the ring.
+#[derive(Clone, Copy)]
+pub(crate) struct HostNotifier;
+
+impl virtq::Notifier for HostNotifier {
+    fn notify(&self, _stats: virtq::QueueStats) {}
+}
 
 #[cfg(all(feature = "crashdump", not(feature = "i686-guest")))]
 fn mapping_kind_to_flags(kind: &MappingKind) -> (MemoryRegionFlags, MemoryRegionType) {
@@ -134,7 +148,6 @@ impl ReadonlySharedMemory {
 pub(crate) use unused_hack::SnapshotSharedMemory;
 /// A struct that is responsible for laying out and managing the memory
 /// for a given `Sandbox`.
-#[derive(Clone)]
 pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// Shared memory for the Sandbox
     pub(crate) shared_mem: SnapshotSharedMemory<S>,
@@ -154,6 +167,29 @@ pub(crate) struct SandboxMemoryManager<S: SharedMemory> {
     /// restored snapshot's own generation number so the guest-visible
     /// counter tracks which snapshot the sandbox is a clone of.
     pub(crate) snapshot_count: u64,
+    /// G2H virtqueue consumer, created after sandbox init.
+    pub(crate) g2h_consumer: Option<G2hConsumer>,
+    /// H2G virtqueue consumer, created after sandbox init.
+    pub(crate) h2g_consumer: Option<H2gConsumer>,
+    /// Saved H2G pool GVA for prefilling after snapshot restore.
+    pub(crate) h2g_pool_gva: Option<u64>,
+}
+
+impl<S: Clone + SharedMemory> Clone for SandboxMemoryManager<S> {
+    fn clone(&self) -> Self {
+        Self {
+            shared_mem: self.shared_mem.clone(),
+            scratch_mem: self.scratch_mem.clone(),
+            layout: self.layout,
+            entrypoint: self.entrypoint,
+            mapped_rgns: self.mapped_rgns,
+            abort_buffer: self.abort_buffer.clone(),
+            snapshot_count: self.snapshot_count,
+            g2h_consumer: None,
+            h2g_consumer: None,
+            h2g_pool_gva: self.h2g_pool_gva,
+        }
+    }
 }
 
 /// Buffer for building guest page tables during snapshot creation.
@@ -289,6 +325,9 @@ where
             mapped_rgns: 0,
             abort_buffer: Vec::new(),
             snapshot_count: 0,
+            g2h_consumer: None,
+            h2g_consumer: None,
+            h2g_pool_gva: None,
         }
     }
 
@@ -359,6 +398,9 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             mapped_rgns: self.mapped_rgns,
             abort_buffer: self.abort_buffer,
             snapshot_count: self.snapshot_count,
+            g2h_consumer: None,
+            h2g_consumer: None,
+            h2g_pool_gva: None,
         };
         let guest_mgr = SandboxMemoryManager {
             shared_mem: gshm,
@@ -368,8 +410,13 @@ impl SandboxMemoryManager<ExclusiveSharedMemory> {
             mapped_rgns: self.mapped_rgns,
             abort_buffer: Vec::new(), // Guest doesn't need abort buffer
             snapshot_count: self.snapshot_count,
+            g2h_consumer: None,
+            h2g_consumer: None,
+            h2g_pool_gva: None,
         };
         host_mgr.update_scratch_bookkeeping()?;
+        host_mgr.init_g2h_consumer()?;
+        host_mgr.init_h2g_consumer()?;
         Ok((host_mgr, guest_mgr))
     }
 }
@@ -436,89 +483,6 @@ impl SandboxMemoryManager<HostSharedMemory> {
         Ok(())
     }
 
-    /// Reads a host function call from memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_host_function_call(&mut self) -> Result<FunctionCall> {
-        self.scratch_mem.try_pop_buffer_into::<FunctionCall>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
-    }
-
-    /// Writes a host function call result to memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_response_from_host_function_call(
-        &mut self,
-        res: &FunctionCallResult,
-    ) -> Result<()> {
-        let mut builder = FlatBufferBuilder::new();
-        let data = res.encode(&mut builder);
-
-        self.scratch_mem.push_buffer(
-            self.layout.get_input_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_input_data_size(),
-            data,
-        )
-    }
-
-    /// Writes a guest function call to memory
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn write_guest_function_call(&mut self, buffer: &[u8]) -> Result<()> {
-        validate_guest_function_call_buffer(buffer).map_err(|e| {
-            new_error!(
-                "Guest function call buffer validation failed: {}",
-                e.to_string()
-            )
-        })?;
-
-        self.scratch_mem.push_buffer(
-            self.layout.get_input_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_input_data_size(),
-            buffer,
-        )?;
-        Ok(())
-    }
-
-    /// Reads a function call result from memory.
-    /// A function call result can be either an error or a successful return value.
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn get_guest_function_call_result(&mut self) -> Result<FunctionCallResult> {
-        self.scratch_mem.try_pop_buffer_into::<FunctionCallResult>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
-    }
-
-    /// Read guest log data from the `SharedMemory` contained within `self`
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub(crate) fn read_guest_log_data(&mut self) -> Result<GuestLogData> {
-        self.scratch_mem.try_pop_buffer_into::<GuestLogData>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            self.layout.sandbox_memory_config.get_output_data_size(),
-        )
-    }
-
-    pub(crate) fn clear_io_buffers(&mut self) {
-        // Clear the output data buffer
-        loop {
-            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.get_output_data_buffer_scratch_host_offset(),
-                self.layout.sandbox_memory_config.get_output_data_size(),
-            ) else {
-                break;
-            };
-        }
-        // Clear the input data buffer
-        loop {
-            let Ok(_) = self.scratch_mem.try_pop_buffer_into::<Vec<u8>>(
-                self.layout.get_input_data_buffer_scratch_host_offset(),
-                self.layout.sandbox_memory_config.get_input_data_size(),
-            ) else {
-                break;
-            };
-        }
-    }
-
     /// This function restores a memory snapshot from a given snapshot.
     pub(crate) fn restore_snapshot(
         &mut self,
@@ -566,6 +530,15 @@ impl SandboxMemoryManager<HostSharedMemory> {
         self.snapshot_count = snapshot.snapshot_generation();
 
         self.update_scratch_bookkeeping()?;
+
+        // Place the H2G pool at first_free so the bump allocator starts right after it.
+        // Guest reads this GVA from scratch-top during reset().
+        let h2g_pool_gva = self.place_h2g_pool_at_first_free()?;
+
+        self.init_g2h_consumer()?;
+        self.init_h2g_consumer()?;
+        self.restore_h2g_prefill(h2g_pool_gva)?;
+
         Ok((gsnapshot, gscratch))
     }
 
@@ -601,15 +574,31 @@ impl SandboxMemoryManager<HostSharedMemory> {
             self.snapshot_count,
         )?;
 
-        // Initialise the guest input and output data buffers in
-        // scratch memory. TODO: remove the need for this.
-        self.scratch_mem.write::<u64>(
-            self.layout.get_input_data_buffer_scratch_host_offset(),
-            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
+        // Write virtqueue metadata to scratch-top so the guest can
+        // discover ring locations without reading the PEB.
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_G2H_RING_GVA_OFFSET,
+            self.layout.get_g2h_ring_gva(),
         )?;
-        self.scratch_mem.write::<u64>(
-            self.layout.get_output_data_buffer_scratch_host_offset(),
-            SandboxMemoryLayout::STACK_POINTER_SIZE_BYTES,
+        self.update_scratch_bookkeeping_item(
+            SCRATCH_TOP_H2G_RING_GVA_OFFSET,
+            self.layout.get_h2g_ring_gva(),
+        )?;
+        self.scratch_mem.write::<u16>(
+            scratch_size - SCRATCH_TOP_G2H_QUEUE_DEPTH_OFFSET as usize,
+            self.layout.sandbox_memory_config.get_g2h_queue_depth() as u16,
+        )?;
+        self.scratch_mem.write::<u16>(
+            scratch_size - SCRATCH_TOP_H2G_QUEUE_DEPTH_OFFSET as usize,
+            self.layout.sandbox_memory_config.get_h2g_queue_depth() as u16,
+        )?;
+        self.scratch_mem.write::<u16>(
+            scratch_size - SCRATCH_TOP_G2H_POOL_PAGES_OFFSET as usize,
+            self.layout.sandbox_memory_config.get_g2h_pool_pages() as u16,
+        )?;
+        self.scratch_mem.write::<u16>(
+            scratch_size - SCRATCH_TOP_H2G_POOL_PAGES_OFFSET as usize,
+            self.layout.sandbox_memory_config.get_h2g_pool_pages() as u16,
         )?;
 
         // Copy page tables from `shared_mem` into scratch. PT bytes
@@ -856,6 +845,264 @@ impl SandboxMemoryManager<HostSharedMemory> {
             })
         })??
     }
+
+    /// Compute the G2H virtqueue Layout from scratch region addresses.
+    pub(crate) fn g2h_virtq_layout(&self) -> Result<virtq::Layout> {
+        let base = self.layout.get_g2h_ring_gva();
+        let depth = self.layout.sandbox_memory_config.get_g2h_queue_depth() as u16;
+
+        let nz = NonZeroU16::new(depth).ok_or_else(|| new_error!("G2H queue depth is zero"))?;
+
+        unsafe { VirtqLayout::from_base(base, nz) }
+            .map_err(|e| new_error!("Invalid G2H virtq layout: {:?}", e))
+    }
+
+    /// Compute the H2G virtqueue Layout from scratch region addresses.
+    pub(crate) fn h2g_virtq_layout(&self) -> Result<virtq::Layout> {
+        let base = self.layout.get_h2g_ring_gva();
+        let depth = self.layout.sandbox_memory_config.get_h2g_queue_depth() as u16;
+
+        let nz = NonZeroU16::new(depth).ok_or_else(|| new_error!("H2G queue depth is zero"))?;
+
+        unsafe { VirtqLayout::from_base(base, nz) }
+            .map_err(|e| new_error!("Invalid H2G virtq layout: {:?}", e))
+    }
+
+    /// Create a [`HostMemOps`] instance backed by this manager's
+    /// scratch shared memory.
+    pub(crate) fn host_mem_ops(&self) -> HostMemOps {
+        let scratch_base_gva =
+            hyperlight_common::layout::scratch_base_gva(self.scratch_mem.mem_size());
+        HostMemOps::new(&self.scratch_mem, scratch_base_gva)
+    }
+
+    /// Total G2H buffer pool size in bytes.
+    pub(crate) fn g2h_pool_size(&self) -> usize {
+        self.layout.sandbox_memory_config.get_g2h_pool_pages() * PAGE_SIZE_USIZE
+    }
+
+    pub(crate) fn h2g_pool_size(&self) -> usize {
+        self.layout.sandbox_memory_config.get_h2g_pool_pages() * PAGE_SIZE_USIZE
+    }
+
+    /// H2G slot size in bytes. Each prefilled writable descriptor has this capacity.
+    pub(crate) fn h2g_slot_size(&self) -> usize {
+        PAGE_SIZE_USIZE
+    }
+
+    /// Initialize the G2H virtqueue consumer.
+    /// Must be called after scratch bookkeeping is written.
+    pub(crate) fn init_g2h_consumer(&mut self) -> Result<()> {
+        match &mut self.g2h_consumer {
+            Some(consumer) => {
+                consumer.reset();
+            }
+            None => {
+                let layout = self.g2h_virtq_layout()?;
+                let mem_ops = self.host_mem_ops();
+                let consumer = virtq::VirtqConsumer::new(layout, mem_ops, HostNotifier);
+                self.g2h_consumer = Some(consumer);
+            }
+        }
+        Ok(())
+    }
+
+    /// Initialize the H2G virtqueue consumer.
+    ///
+    /// Must be called after scratch bookkeeping is written. Avail suppression is set to Disable
+    /// so guest prefill/refill operations do not trigger VM exits.
+    pub(crate) fn init_h2g_consumer(&mut self) -> Result<()> {
+        match &mut self.h2g_consumer {
+            Some(consumer) => {
+                consumer.reset();
+                consumer
+                    .set_avail_suppression(virtq::SuppressionKind::Disable)
+                    .map_err(|e| new_error!("H2G avail suppression: {:?}", e))?;
+            }
+            None => {
+                let layout = self.h2g_virtq_layout()?;
+                let mem_ops = self.host_mem_ops();
+                let mut consumer = virtq::VirtqConsumer::new(layout, mem_ops, HostNotifier);
+                consumer
+                    .set_avail_suppression(virtq::SuppressionKind::Disable)
+                    .map_err(|e| new_error!("H2G avail suppression: {:?}", e))?;
+                self.h2g_consumer = Some(consumer);
+            }
+        }
+        Ok(())
+    }
+
+    /// Place the H2G pool at `first_free` during snapshot restore.
+    ///
+    /// Writes the pool GVA to scratch-top and advances the bump
+    /// allocator past the pool so COW page-fault resolution cannot
+    /// alias pool memory. Returns the computed pool GVA for use by
+    /// [`restore_h2g_prefill`].
+    fn place_h2g_pool_at_first_free(&mut self) -> Result<u64> {
+        use hyperlight_common::layout::*;
+
+        let scratch_size = self.scratch_mem.mem_size();
+        let first_free = self.layout.get_first_free_scratch_gpa();
+        let base_gpa = scratch_base_gpa(scratch_size);
+        let base_gva = scratch_base_gva(scratch_size);
+        let h2g_pool_gva = base_gva + (first_free - base_gpa);
+        let h2g_pages = self.layout.sandbox_memory_config.get_h2g_pool_pages() as u64;
+
+        self.update_scratch_bookkeeping_item(SCRATCH_TOP_H2G_POOL_GVA_OFFSET, h2g_pool_gva)?;
+        let allocator = first_free + h2g_pages * PAGE_SIZE_USIZE as u64;
+        self.update_scratch_bookkeeping_item(SCRATCH_TOP_ALLOCATOR_OFFSET, allocator)?;
+
+        Ok(h2g_pool_gva)
+    }
+
+    /// Prefill the H2G ring with writable descriptors after snapshot restore.
+    ///
+    /// Uses a temporary `RingProducer` to write descriptors into the H2G ring
+    /// so the host consumer can poll them. The guest's `restore_from_ring`
+    /// will later reconstruct its inflight state from these descriptors.
+    fn restore_h2g_prefill(&mut self, pool_gva: u64) -> Result<()> {
+        let layout = self.h2g_virtq_layout()?;
+        let mem_ops = self.host_mem_ops();
+        let h2g_depth = self.layout.sandbox_memory_config.get_h2g_queue_depth();
+
+        let slot_size = self.h2g_slot_size();
+        let pool_size = self.layout.sandbox_memory_config.get_h2g_pool_pages() * PAGE_SIZE_USIZE;
+        let slot_count = pool_size / slot_size;
+
+        let mut producer = virtq::RingProducer::new(layout, mem_ops);
+        let prefill_count = core::cmp::min(slot_count, h2g_depth);
+
+        // Write descriptors in forward order. The guest calls
+        // restore_from_ring which reconstructs used-descriptor addresses
+        // as base + position * slot_size, so the iteration order must
+        // match this formula.
+        for i in 0..prefill_count {
+            let addr = pool_gva + (i * slot_size) as u64;
+            producer
+                .submit_one(addr, slot_size as u32, true)
+                .map_err(|e| new_error!("H2G prefill submit: {:?}", e))?;
+        }
+
+        Ok(())
+    }
+
+    /// Write a guest function call into the H2G virtqueue.
+    ///
+    /// Large payloads that exceed a single slot are split across multiple descriptors.
+    pub(crate) fn write_guest_function_call_virtq(&mut self, buffer: &[u8]) -> Result<()> {
+        let h2g_pool_size = self.h2g_pool_size();
+
+        let consumer = self
+            .h2g_consumer
+            .as_mut()
+            .ok_or_else(|| new_error!("H2G consumer not initialized"))?;
+
+        let mut offset = 0usize;
+
+        loop {
+            let remaining = buffer.len() - offset;
+
+            let (entry, completion) = consumer
+                .poll(h2g_pool_size)
+                .map_err(|e| new_error!("H2G poll: {:?}", e))?
+                .ok_or_else(|| new_error!("H2G: no prefilled descriptor available"))?;
+
+            drop(entry);
+
+            let virtq::SendCompletion::Writable(mut wc) = completion else {
+                return Err(new_error!(
+                    "H2G: expected writable completion (ring corruption)"
+                ));
+            };
+
+            let data_cap = wc.capacity() - VirtqMsgHeader::SIZE;
+            let chunk_len = remaining.min(data_cap);
+            let has_more = offset + chunk_len < buffer.len();
+
+            let flags = if has_more {
+                MsgFlags::MORE
+            } else {
+                MsgFlags::empty()
+            };
+
+            let hdr = VirtqMsgHeader::with_flags(MsgKind::Request, flags, 0, chunk_len as u32);
+
+            wc.write_all(bytemuck::bytes_of(&hdr))
+                .map_err(|e| new_error!("H2G write header: {:?}", e))?;
+            wc.write_all(&buffer[offset..offset + chunk_len])
+                .map_err(|e| new_error!("H2G write payload: {:?}", e))?;
+
+            consumer
+                .complete(wc.into())
+                .map_err(|e| new_error!("H2G complete: {:?}", e))?;
+
+            offset += chunk_len;
+
+            if !has_more {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Read the H2G result from G2H after the guest halts.
+    ///
+    /// The guest submitted the Response on G2H with
+    pub(crate) fn read_h2g_result_from_g2h(&mut self) -> Result<FunctionCallResult> {
+        let g2h_pool_size = self.g2h_pool_size();
+
+        let consumer = self
+            .g2h_consumer
+            .as_mut()
+            .ok_or_else(|| new_error!("G2H consumer not initialized"))?;
+
+        // Drain the G2H queue, processing Log entries inline, until we
+        // find the Response that carries the H2G function call result.
+        loop {
+            let maybe_next = consumer
+                .poll(g2h_pool_size)
+                .map_err(|e| new_error!("G2H poll for H2G result: {:?}", e))?;
+
+            let Some((entry, completion)) = maybe_next else {
+                return Err(new_error!("G2H: no H2G result entry after halt"));
+            };
+
+            let entry_data = entry.data();
+            if entry_data.len() < VirtqMsgHeader::SIZE {
+                return Err(new_error!("G2H: result entry too short"));
+            }
+
+            let hdr_size = VirtqMsgHeader::SIZE;
+            let hdr: &VirtqMsgHeader = bytemuck::from_bytes(&entry_data[..hdr_size]);
+            let available = entry_data.len() - hdr_size;
+            let payload_len = (hdr.payload_len as usize).min(available);
+            let payload = &entry_data[hdr_size..hdr_size + payload_len];
+
+            match hdr.msg_kind() {
+                Ok(MsgKind::Response) => {
+                    let fcr = FunctionCallResult::try_from(payload)
+                        .map_err(|e| new_error!("G2H: malformed FunctionCallResult: {}", e))?;
+                    consumer
+                        .complete(completion)
+                        .map_err(|e| new_error!("G2H complete: {:?}", e))?;
+                    return Ok(fcr);
+                }
+                Ok(MsgKind::Log) => {
+                    crate::sandbox::outb::emit_guest_log(payload);
+                    consumer
+                        .complete(completion)
+                        .map_err(|e| new_error!("G2H complete log: {:?}", e))?;
+                }
+                Ok(other) => {
+                    return Err(new_error!("G2H: expected Response or Log, got {:?}", other));
+                }
+                Err(unknown) => {
+                    return Err(new_error!("G2H: unknown message kind: 0x{:02x}", unknown));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -964,6 +1211,91 @@ mod tests {
 
         for (name, config) in test_cases {
             verify_page_tables(name, config);
+        }
+    }
+
+    /// Verify that the H2G pool placed at `first_free` during restore
+    /// does not overlap with the bump allocator range or the
+    /// scratch-top metadata region.
+    ///
+    /// This guards against the COW-pool GPA overlap bug: if the bump
+    /// allocator could return GPAs inside the pool region, a COW
+    /// page-fault would overwrite pool buffer data with stale shared
+    /// memory content, corrupting virtqueue communication.
+    fn verify_pool_allocator_no_collision(name: &str, config: SandboxConfiguration) {
+        let path = simple_guest_as_string().expect("failed to get simple guest path");
+        let snapshot = Snapshot::from_env(GuestBinary::FilePath(path), config)
+            .unwrap_or_else(|e| panic!("{name}: failed to create snapshot: {e}"));
+
+        let layout = snapshot.layout();
+        let scratch_size = layout.get_scratch_size();
+        let first_free = layout.get_first_free_scratch_gpa();
+        let h2g_pages = layout.sandbox_memory_config.get_h2g_pool_pages();
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(scratch_size);
+
+        let pool_start = first_free;
+        let pool_end = first_free + (h2g_pages * PAGE_TABLE_SIZE) as u64;
+        let allocator_start = pool_end;
+
+        // The metadata region lives at the very top of scratch.
+        // SCRATCH_TOP_EXN_STACK_OFFSET (0x50) is the highest offset.
+        // Two pages are reserved at the top for exception stack and metadata.
+        let scratch_end = scratch_base + scratch_size as u64;
+        let metadata_start = scratch_end - 2 * PAGE_TABLE_SIZE as u64;
+
+        assert!(
+            pool_start >= scratch_base,
+            "{name}: pool starts before scratch (pool=0x{pool_start:x}, scratch=0x{scratch_base:x})"
+        );
+
+        assert!(
+            pool_end <= metadata_start,
+            "{name}: pool overlaps metadata (pool_end=0x{pool_end:x}, metadata=0x{metadata_start:x})"
+        );
+
+        assert_eq!(
+            allocator_start, pool_end,
+            "{name}: allocator should start immediately after pool"
+        );
+
+        assert!(
+            allocator_start < metadata_start,
+            "{name}: no room for COW allocations (allocator=0x{allocator_start:x}, metadata=0x{metadata_start:x})"
+        );
+    }
+
+    #[test]
+    fn test_pool_allocator_no_collision() {
+        let test_cases: Vec<(&str, SandboxConfiguration)> = vec![
+            ("default", SandboxConfiguration::default()),
+            ("large pools", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_h2g_pool_pages(16);
+                cfg.set_g2h_pool_pages(16);
+                cfg
+            }),
+            ("minimal scratch", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_scratch_size(0x20000);
+                cfg
+            }),
+            ("large scratch", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_scratch_size(0x100000);
+                cfg
+            }),
+            ("large heap + large pools", {
+                let mut cfg = SandboxConfiguration::default();
+                cfg.set_heap_size(LARGE_HEAP_SIZE);
+                cfg.set_scratch_size(0x100000);
+                cfg.set_h2g_pool_pages(32);
+                cfg.set_g2h_pool_pages(32);
+                cfg
+            }),
+        ];
+
+        for (name, config) in test_cases {
+            verify_pool_allocator_no_collision(name, config);
         }
     }
 }

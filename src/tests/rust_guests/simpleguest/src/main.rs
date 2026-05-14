@@ -49,11 +49,11 @@ use hyperlight_guest_bin::exception::arch::{Context, ExceptionInfo};
 use hyperlight_guest_bin::guest_function::definition::{GuestFunc, GuestFunctionDefinition};
 use hyperlight_guest_bin::guest_function::register::register_function;
 use hyperlight_guest_bin::host_comm::{
-    call_host_function, call_host_function_without_returning_result, get_host_return_value_raw,
-    print_output_with_host_print, read_n_bytes_from_user_memory,
+    call_host_function, call_host_function_with_hint, print_output_with_host_print,
+    read_n_bytes_from_user_memory,
 };
 use hyperlight_guest_bin::memory::malloc;
-use hyperlight_guest_bin::{GUEST_HANDLE, guest_function, guest_logger, host_function};
+use hyperlight_guest_bin::{guest_function, guest_logger, host_function};
 use log::{LevelFilter, error};
 use tracing::{Span, instrument};
 
@@ -380,6 +380,49 @@ fn echo(value: String) -> String {
     value
 }
 
+/// Calls a host function "GetLargeResponse" with an explicit response
+/// capacity hint. The `hint` parameter is the total completion buffer
+/// size in bytes.
+#[guest_function("CallGetLargeResponseWithHint")]
+fn call_get_large_response_with_hint(size: i32, hint: i32) -> Vec<u8> {
+    call_host_function_with_hint::<Vec<u8>>(
+        "GetLargeResponse",
+        Some(vec![ParameterValue::Int(size)]),
+        ReturnType::VecBytes,
+        hint as usize,
+    )
+    .expect("GetLargeResponse call failed")
+}
+
+/// Calls a host function "GetLargeResponse" WITHOUT a hint, using the
+/// default 4096-byte completion buffer.
+#[guest_function("CallGetLargeResponseDefault")]
+fn call_get_large_response_default(size: i32) -> Vec<u8> {
+    call_host_function::<Vec<u8>>(
+        "GetLargeResponse",
+        Some(vec![ParameterValue::Int(size)]),
+        ReturnType::VecBytes,
+    )
+    .expect("GetLargeResponse call failed")
+}
+
+/// Emits `log_count` log entries to fill the G2H queue, then calls
+/// "GetLargeResponse" with a sized hint. Tests that backpressure
+/// draining of logs frees pool slots for the large completion.
+#[guest_function("LogThenLargeResponse")]
+fn log_then_large_response(log_count: i32, size: i32, hint: i32) -> Vec<u8> {
+    for i in 0..log_count {
+        log::info!("backpressure log {}", i);
+    }
+    call_host_function_with_hint::<Vec<u8>>(
+        "GetLargeResponse",
+        Some(vec![ParameterValue::Int(size)]),
+        ReturnType::VecBytes,
+        hint as usize,
+    )
+    .expect("GetLargeResponse after logs failed")
+}
+
 #[guest_function("GetSizePrefixedBuffer")]
 fn get_size_prefixed_buffer(data: Vec<u8>) -> Vec<u8> {
     data
@@ -476,6 +519,13 @@ fn log_message(message: String, level: i32) {
         None => {
             // was passed LevelFilter::Off, do nothing
         }
+    }
+}
+
+#[guest_function("LogMessageN")]
+fn log_message_n(count: i32) {
+    for i in 0..count {
+        log::info!("log entry {}", i);
     }
 }
 
@@ -975,53 +1025,6 @@ fn fuzz_guest_trace(max_depth: u32, msg: String) -> u32 {
     fuzz_traced_function(0, max_depth, &msg)
 }
 
-#[guest_function("CorruptOutputSizePrefix")]
-fn corrupt_output_size_prefix() -> i32 {
-    unsafe {
-        let peb_ptr = core::ptr::addr_of!(GUEST_HANDLE).read().peb().unwrap();
-        let output_stack_ptr = (*peb_ptr).output_stack.ptr as *mut u8;
-
-        // Write a fake stack entry with a ~4 GB size prefix (0xFFFF_FFFB + 4).
-        let buf = core::slice::from_raw_parts_mut(output_stack_ptr, 24);
-        buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
-        buf[8..12].copy_from_slice(&0xFFFF_FFFBu32.to_le_bytes());
-        buf[12..16].copy_from_slice(&[0u8; 4]);
-        buf[16..24].copy_from_slice(&8_u64.to_le_bytes());
-
-        core::arch::asm!(
-            "out dx, eax",
-            "cli",
-            "hlt",
-            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
-            in("eax") 0u32,
-            options(noreturn),
-        );
-    }
-}
-
-#[guest_function("CorruptOutputBackPointer")]
-fn corrupt_output_back_pointer() -> i32 {
-    unsafe {
-        let peb_ptr = core::ptr::addr_of!(GUEST_HANDLE).read().peb().unwrap();
-        let output_stack_ptr = (*peb_ptr).output_stack.ptr as *mut u8;
-
-        // Write a fake stack entry with back-pointer 0xDEAD (past stack pointer 24).
-        let buf = core::slice::from_raw_parts_mut(output_stack_ptr, 24);
-        buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
-        buf[8..16].copy_from_slice(&[0u8; 8]);
-        buf[16..24].copy_from_slice(&0xDEAD_u64.to_le_bytes());
-
-        core::arch::asm!(
-            "out dx, eax",
-            "cli",
-            "hlt",
-            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
-            in("eax") 0u32,
-            options(noreturn),
-        );
-    }
-}
-
 // Interprets the given guest function call as a host function call and dispatches it to the host.
 fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
     let mut params = func.parameters.unwrap();
@@ -1038,32 +1041,23 @@ fn fuzz_host_function(func: FunctionCall) -> Result<Vec<u8>> {
         }
     };
 
-    // Because we do not know at compile time the actual return type of the host function to be called
-    // we cannot use the `call_host_function<T>` generic function.
-    // We need to use the `call_host_function_without_returning_result` function that does not retrieve the return
-    // value
-    call_host_function_without_returning_result(
-        &host_func_name,
-        Some(params),
-        func.expected_return_type,
-    )
-    .expect("failed to call host function");
+    // Call the host function with dynamic return type. Since we don't
+    // know T at compile time, use ReturnValue as the return type and
+    // match on the result.
+    let return_value: ReturnValue =
+        call_host_function(&host_func_name, Some(params), func.expected_return_type)?;
 
-    let host_return = get_host_return_value_raw();
-    match host_return {
-        Ok(return_value) => match return_value {
-            ReturnValue::Int(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::UInt(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::Long(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::ULong(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::Float(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::Double(i) => Ok(get_flatbuffer_result(i)),
-            ReturnValue::String(str) => Ok(get_flatbuffer_result(str.as_str())),
-            ReturnValue::Bool(bool) => Ok(get_flatbuffer_result(bool)),
-            ReturnValue::Void(()) => Ok(get_flatbuffer_result(())),
-            ReturnValue::VecBytes(byte) => Ok(get_flatbuffer_result(byte.as_slice())),
-        },
-        Err(e) => Err(e),
+    match return_value {
+        ReturnValue::Int(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::UInt(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::Long(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::ULong(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::Float(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::Double(i) => Ok(get_flatbuffer_result(i)),
+        ReturnValue::String(str) => Ok(get_flatbuffer_result(str.as_str())),
+        ReturnValue::Bool(bool) => Ok(get_flatbuffer_result(bool)),
+        ReturnValue::Void(()) => Ok(get_flatbuffer_result(())),
+        ReturnValue::VecBytes(byte) => Ok(get_flatbuffer_result(byte.as_slice())),
     }
 }
 

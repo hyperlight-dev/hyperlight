@@ -33,9 +33,9 @@ static SANDBOX: OnceLock<Mutex<MultiUseSandbox>> = OnceLock::new();
 fuzz_target!(
     init: {
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_output_data_size(64 * 1024); // 64 KB output buffer
-        cfg.set_input_data_size(64 * 1024); // 64 KB input buffer
-        cfg.set_scratch_size(512 * 1024); // large scratch region to contain those buffers, any data copies, etc.
+        cfg.set_g2h_pool_pages(16); // 64 KB / 4096 = 16 pages
+        cfg.set_h2g_pool_pages(16); // 64 KB / 4096 = 16 pages
+        cfg.set_scratch_size(512 * 1024); // large scratch region
         let u_sbox = UninitializedSandbox::new(
             GuestBinary::FilePath(simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing")),
             Some(cfg)
@@ -61,6 +61,8 @@ fuzz_target!(
                 HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("The number of arguments to the function is wrong") => {}
                 HyperlightError::ParameterValueConversionFailure(_, _) => {},
                 HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("Failed To Convert Parameter Value") => {}
+                HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("The parameter value type is unexpected") => {}
+                HyperlightError::GuestError(ErrorCode::HostFunctionError, msg) if msg.contains("The return value type is unexpected") => {}
 
                 // any other error should be reported
                 _ => panic!("Guest Aborted with Unexpected Error: {:?}", e),

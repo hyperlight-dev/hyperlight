@@ -908,6 +908,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "fixedbitset"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
 name = "flatbuffers"
 version = "25.12.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1467,8 +1473,13 @@ dependencies = [
  "arbitrary",
  "bitflags 2.11.1",
  "bytemuck",
+ "bytes",
+ "criterion",
+ "fixedbitset",
  "flatbuffers",
+ "hyperlight-testing",
  "log",
+ "loom",
  "quickcheck",
  "rand 0.9.2",
  "smallvec",
@@ -1520,6 +1531,7 @@ name = "hyperlight-guest"
 version = "0.15.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "flatbuffers",
  "hyperlight-common",
  "hyperlight-guest-tracing",
@@ -1572,6 +1584,7 @@ dependencies = [
  "bitflags 2.11.1",
  "blake3",
  "built",
+ "bytemuck",
  "cfg-if",
  "cfg_aliases",
  "chrono",

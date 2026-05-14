@@ -26,7 +26,7 @@ use hyperlight_testing::simple_guest_as_string;
 pub mod common; // pub to disable dead_code warning
 use crate::common::{
     with_all_sandboxes, with_all_sandboxes_cfg, with_all_sandboxes_with_writer,
-    with_all_uninit_sandboxes,
+    with_all_uninit_sandboxes, with_rust_sandbox_cfg, with_rust_uninit_sandbox_cfg,
 };
 
 #[test]
@@ -212,9 +212,7 @@ fn incorrect_parameter_num() {
 #[test]
 fn small_scratch_sandbox() {
     let mut cfg = SandboxConfiguration::default();
-    cfg.set_scratch_size(0x48000);
-    cfg.set_input_data_size(0x24000);
-    cfg.set_output_data_size(0x24000);
+    cfg.set_scratch_size(0x1000);
     let a = UninitializedSandbox::new(
         GuestBinary::FilePath(simple_guest_as_string().unwrap()),
         Some(cfg),
@@ -374,4 +372,279 @@ fn host_function_error() {
             }
         }
     });
+}
+
+#[test]
+fn virtq_log_with_callback() {
+    // Verify that log messages interleaved with host callbacks work
+    with_all_uninit_sandboxes(|mut sandbox| {
+        let (tx, _rx) = channel();
+        sandbox
+            .register("HostMethod1", move |msg: String| {
+                let len = msg.len();
+                tx.send(msg).unwrap();
+                len as i32
+            })
+            .unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        // Echo triggers guest-side logging infrastructure, then returns.
+        // This validates that log ReadOnly entries interleaved with
+        // function call ReadWrite entries don't corrupt the G2H queue.
+        let res: String = sandbox.call("Echo", "test".to_string()).unwrap();
+        assert_eq!(res, "test");
+    });
+}
+
+#[test]
+fn virtq_backpressure_log_then_callback() {
+    // Logs fill the G2H ring, then a host callback needs ring space.
+    // call_host_function handles backpressure by notify + reclaim + retry.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_queue_depth(4);
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sbox| {
+        sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+        sbox.register_print(|msg: String| msg.len() as i32).unwrap();
+        let mut sandbox = sbox.evolve().unwrap();
+
+        // PrintOutput logs and calls HostPrint callback.
+        // With depth=4 the logs may fill the ring, requiring
+        // call_host_function to handle backpressure before
+        // submitting the callback entry.
+        let res: i32 = sandbox.call("PrintOutput", "bp-test".to_string()).unwrap();
+        assert_eq!(res, 7);
+    });
+}
+
+#[test]
+fn virtq_backpressure_no_data_loss() {
+    // After backpressure recovery, verify multiple function calls
+    // return correct results (completion data wasn't lost by reclaim).
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(2);
+    cfg.set_g2h_queue_depth(4);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sbox| {
+        sbox.set_max_guest_log_level(tracing_core::LevelFilter::INFO);
+        let mut sandbox = sbox.evolve().unwrap();
+
+        // Trigger backpressure with logs
+        sandbox.call::<()>("LogMessageN", 20_i32).unwrap();
+
+        // Now verify multiple function calls with return values
+        let res: String = sandbox.call("Echo", "first".to_string()).unwrap();
+        assert_eq!(res, "first");
+
+        let res: String = sandbox.call("Echo", "second".to_string()).unwrap();
+        assert_eq!(res, "second");
+
+        let res: f64 = sandbox.call("EchoDouble", 1.234_f64).unwrap();
+        assert!((res - 1.234).abs() < f64::EPSILON);
+    });
+}
+
+#[test]
+fn virtq_invalid_guest_function_returns_error() {
+    // Calling a non-existent guest function should return a proper
+    // GuestError, not corrupt data or a hang. This validates that
+    // the virtq error path (MsgKind::Response with GuestError payload)
+    // works end-to-end.
+    with_rust_sandbox_cfg(SandboxConfiguration::default(), |mut sandbox| {
+        let res = sandbox.call::<()>("ThisFunctionDoesNotExist", ());
+        assert!(res.is_err(), "expected error for non-existent function");
+        let err = res.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                HyperlightError::GuestError(
+                    hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode::GuestFunctionNotFound,
+                    _
+                )
+            ),
+            "expected GuestFunctionNotFound, got {:?}",
+            err
+        );
+    });
+}
+
+#[test]
+fn virtq_large_payload_roundtrip() {
+    // Verify that larger payloads survive the virtq roundtrip without corruption.
+    with_rust_sandbox_cfg(SandboxConfiguration::default(), |mut sandbox| {
+        // 1KB string
+        let large_msg: String = "X".repeat(1024);
+        let res: String = sandbox.call("Echo", large_msg.clone()).unwrap();
+        assert_eq!(res, large_msg);
+
+        // 1KB byte array
+        let large_bytes = vec![0xABu8; 1024];
+        let res: Vec<u8> = sandbox
+            .call("SetByteArrayToZero", large_bytes.clone())
+            .unwrap();
+        assert_eq!(res.len(), 1024);
+        assert!(res.iter().all(|&b| b == 0));
+    });
+}
+
+#[test]
+fn virtq_multi_descriptor_h2g_two_slots() {
+    // Payload exceeds a single H2G slot (4096 - header), requiring 2 descriptors.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(4);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        let large_msg: String = "A".repeat(4200);
+        let res: String = sandbox.call("Echo", large_msg.clone()).unwrap();
+        assert_eq!(res, large_msg);
+    });
+}
+
+#[test]
+fn virtq_multi_descriptor_h2g_max_slots() {
+    // Payload spanning all available H2G pool slots.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(4);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        let large_msg: String = "B".repeat(8200);
+        let res: String = sandbox.call("Echo", large_msg.clone()).unwrap();
+        assert_eq!(res, large_msg);
+    });
+}
+
+#[test]
+fn virtq_multi_descriptor_h2g_byte_array() {
+    // Multi-descriptor with byte array arguments to test binary payloads.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(8);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        let large_bytes: Vec<u8> = (0..5000).map(|i| (i % 256) as u8).collect();
+        let res: Vec<u8> = sandbox
+            .call("SetByteArrayToZero", large_bytes.clone())
+            .unwrap();
+        assert_eq!(res.len(), 5000);
+        assert!(res.iter().all(|&b| b == 0));
+    });
+}
+
+#[test]
+fn virtq_multi_descriptor_h2g_boundary() {
+    // Payload exactly at single-slot capacity boundary.
+    // Header is 8 bytes, so a single slot fits exactly 4088 bytes of payload.
+    // The FlatBuffer encoding adds overhead, so we test near the boundary
+    // to verify no off-by-one errors.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(4);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        // This should fit in one descriptor (small overhead)
+        let msg_under: String = "C".repeat(3900);
+        let res: String = sandbox.call("Echo", msg_under.clone()).unwrap();
+        assert_eq!(res, msg_under);
+
+        // This should just barely spill into a second descriptor
+        let msg_over: String = "D".repeat(4100);
+        let res: String = sandbox.call("Echo", msg_over.clone()).unwrap();
+        assert_eq!(res, msg_over);
+    });
+}
+
+#[test]
+fn virtq_multi_descriptor_h2g_repeated_calls() {
+    // Multiple large calls in sequence to verify H2G refill works correctly
+    // after multi-descriptor consumption.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_h2g_pool_pages(8);
+    with_rust_sandbox_cfg(cfg, |mut sandbox| {
+        for i in 0..5 {
+            let ch = char::from(b'A' + i as u8);
+            let msg: String = std::iter::repeat_n(ch, 4500).collect();
+            let res: String = sandbox.call("Echo", msg.clone()).unwrap();
+            assert_eq!(res, msg, "mismatch on call {i}");
+        }
+    });
+}
+
+/// Helper to create a sandbox with a "GetLargeResponse" host function
+/// that returns `size` bytes filled with 0xAB.
+fn sandbox_with_large_response(cfg: SandboxConfiguration) -> MultiUseSandbox {
+    let mut sandbox = UninitializedSandbox::new(
+        GuestBinary::FilePath(simple_guest_as_string().unwrap()),
+        Some(cfg),
+    )
+    .unwrap();
+    sandbox
+        .register("GetLargeResponse", |size: i32| -> Result<Vec<u8>> {
+            Ok(vec![0xABu8; size as usize])
+        })
+        .unwrap();
+    sandbox.evolve().unwrap()
+}
+
+#[test]
+fn virtq_large_g2h_response_with_hint() {
+    // Host function returns >4096 bytes. Guest uses a sized completion
+    // hint so the pool allocates multiple adjacent slots.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(16);
+    let mut sandbox = sandbox_with_large_response(cfg);
+
+    // 8000 bytes of response payload. With FlatBuffer + header overhead,
+    // the wire size is ~8100 bytes. A hint of 3*4096 = 12288 is enough.
+    let hint = 3 * 4096i32;
+    let res: Vec<u8> = sandbox
+        .call("CallGetLargeResponseWithHint", (8000i32, hint))
+        .unwrap();
+    assert_eq!(res.len(), 8000);
+    assert!(res.iter().all(|&b| b == 0xAB));
+}
+
+#[test]
+fn virtq_large_g2h_response_too_large_without_hint() {
+    // Without a hint, the default 4096-byte completion buffer is used.
+    // A response >4096 bytes should trigger the host's "response too
+    // large" fallback error instead of a transport crash.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(16);
+    let mut sandbox = sandbox_with_large_response(cfg);
+
+    let res = sandbox.call::<Vec<u8>>("CallGetLargeResponseDefault", 8000i32);
+    assert!(
+        res.is_err(),
+        "expected error for oversized response without hint"
+    );
+}
+
+#[test]
+fn virtq_large_g2h_response_boundary() {
+    // Response that fits exactly in one page (with overhead) should work
+    // without needing a hint.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(16);
+    let mut sandbox = sandbox_with_large_response(cfg);
+
+    // Small response that fits in default 4096 buffer
+    let res: Vec<u8> = sandbox
+        .call("CallGetLargeResponseDefault", 1000i32)
+        .unwrap();
+    assert_eq!(res.len(), 1000);
+    assert!(res.iter().all(|&b| b == 0xAB));
+}
+
+#[test]
+fn virtq_large_g2h_response_after_log_backpressure() {
+    // Logs fill the G2H pool, then a large host response (with hint)
+    // needs multi-slot allocation. The backpressure path must drain
+    // completed log entries to free pool slots for the large completion.
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_pool_pages(16);
+    let mut sandbox = sandbox_with_large_response(cfg);
+
+    // Emit 20 log entries to consume pool slots, then request 8KB
+    // response with a 12KB hint (3 upper-slab slots).
+    let hint = 3 * 4096i32;
+    let res: Vec<u8> = sandbox
+        .call("LogThenLargeResponse", (20i32, 8000i32, hint))
+        .unwrap();
+    assert_eq!(res.len(), 8000);
+    assert!(res.iter().all(|&b| b == 0xAB));
 }

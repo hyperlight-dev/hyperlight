@@ -69,8 +69,8 @@ impl<'a> Arbitrary<'a> for FuzzInput {
 fuzz_target!(
     init: {
         let mut cfg = SandboxConfiguration::default();
-        // In local tests, 256 KiB seemed sufficient for deep recursion
-        cfg.set_scratch_size(256 * 1024);
+        // In local tests, 512 KiB seemed sufficient for deep recursion
+        cfg.set_scratch_size(512 * 1024);
         let path = simple_guest_for_fuzzing_as_string().expect("Guest Binary Missing");
         let u_sbox = UninitializedSandbox::new(
             GuestBinary::FilePath(path),

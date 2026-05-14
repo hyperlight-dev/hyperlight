@@ -68,8 +68,6 @@ impl Default for FileMappingInfo {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct HyperlightPEB {
-    pub input_stack: GuestMemoryRegion,
-    pub output_stack: GuestMemoryRegion,
     pub init_data: GuestMemoryRegion,
     pub guest_heap: GuestMemoryRegion,
     /// File mappings array descriptor.

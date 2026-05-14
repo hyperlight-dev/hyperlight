@@ -14,13 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! Packed Virtqueue - Ring Primitives
+//! Packed Virtqueue Implementation
 //!
-//! This module provides low-level ring primitives for virtio packed virtqueues,
-//! implementing the VIRTIO 1.1+ packed ring format with proper memory ordering
-//! and event suppression support.
+//! This module provides a high-level API for virtio packed virtqueues, built on top of
+//! the lower-level ring primitives. It implements the VIRTIO 1.1+ packed ring format
+//! with proper memory ordering and event suppression support.
 //!
 //! # Architecture
+//!
+//! The implementation is split into layers:
+//!
+//! - **High-level API** ([`VirtqProducer`], [`VirtqConsumer`]): Manages buffer allocation,
+//!   entry/completion lifecycle, and notification decisions. This is the recommended API
+//!   for most use cases.
 //!
 //! - **Ring primitives** ([`RingProducer`], [`RingConsumer`]): Low-level descriptor ring
 //!   operations with explicit buffer chain management. Use this when you need full control
@@ -29,10 +35,111 @@ limitations under the License.
 //! - **Descriptor and event types** ([`Descriptor`], [`EventSuppression`]): Raw virtio
 //!   data structures for direct memory manipulation.
 //!
-//! - **Memory access** ([`MemOps`]): Trait abstracting memory read/write operations,
-//!   allowing the ring to work with different memory backends (host vs guest).
+//! # Quick Start
+//!
+//! ## Single Entry/Completion
+//!
+//! ```ignore
+//! // Producer (driver) side - build entry, submit, get completion
+//! let mut entry = producer.chain()
+//!     .entry(64)
+//!     .completion(128)
+//!     .build()?;
+//! entry.write_all(b"entry data")?;
+//! let token = producer.submit(entry)?;
+//! // ... wait for notification ...
+//! if let Some(completion) = producer.poll()? {
+//!     process(completion.data);
+//! }
+//!
+//! // Consumer (device) side - receive entry, send completion
+//! if let Some((entry, completion)) = consumer.poll(max_request_size)? {
+//!     let request = entry.data();
+//!     match completion {
+//!         SendCompletion::Writable(mut wc) => {
+//!             let response = handle(request);
+//!             wc.write_all(&response)?;
+//!             consumer.complete(wc.into())?;
+//!         }
+//!         SendCompletion::Ack(ack) => {
+//!             consumer.complete(ack.into())?;
+//!         }
+//!     }
+//! }
+//!
+//! // Multiple pending completions (no borrow on consumer)
+//! let mut pending = Vec::new();
+//! while let Some((entry, completion)) = consumer.poll(max_request_size)? {
+//!     pending.push((process(entry), completion));
+//! }
+//! for (result, completion) in pending {
+//!     consumer.complete(completion)?;
+//! }
+//! ```
+//!
+//! ## Multiple Entries
+//!
+//! Each submit checks event suppression and notifies independently. Use
+//! [`VirtqProducer::batch`] when a higher-level protocol wants to publish
+//! multiple entries and kick the queue once.
+//!
+//! ```ignore
+//! let mut batch = producer.batch();
+//! for data in entries {
+//!     let mut se = batch.chain()
+//!         .entry(data.len())
+//!         .completion(64)
+//!         .build()?;
+//!     se.write_all(data)?;
+//!     batch.submit(se)?;
+//! }
+//! batch.finish()?;
+//! ```
+//!
+//! ## Completion Batching with Event Suppression
+//!
+//! To receive a single notification when multiple requests complete:
+//!
+//! ```ignore
+//! // Submit entries
+//! for data in entries {
+//!     let mut se = producer.chain()
+//!         .entry(data.len())
+//!         .completion(64)
+//!         .build()?;
+//!     se.write_all(data)?;
+//!     producer.submit(se)?;
+//! }
+//!
+//! // Tell device: "notify me only after completing past this cursor"
+//! let cursor = producer.used_cursor();
+//! producer.set_used_suppression(SuppressionKind::Descriptor(cursor))?;
+//!
+//! // Wait for single notification, then drain all responses
+//! producer.drain(|token, data| {
+//!     handle_response(token, data);
+//! })?;
+//! ```
+//!
+//! # Event Suppression
+//!
+//! Both sides can control when they want to be notified using [`SuppressionKind`]:
+//!
+//! - [`SuppressionKind::Enable`]: Always notify (default, lowest latency)
+//! - [`SuppressionKind::Disable`]: Never notify (polling mode, lowest overhead)
+//! - [`SuppressionKind::Descriptor`]: Notify at specific ring position (batching)
+//!
+//! See [`VirtqProducer::set_used_suppression`] and [`VirtqConsumer::set_avail_suppression`].
 //!
 //! # Low-Level API
+//!
+//! For advanced use cases, the ring module exposes lower-level primitives:
+//!
+//! - [`RingProducer`] / [`RingConsumer`]: Direct ring access with [`BufferChain`] submission
+//! - [`BufferChainBuilder`]: Construct scatter-gather buffer lists
+//! - [`RingCursor`]: Track ring positions for event suppression
+//!
+//! Example using low-level API:
 //!
 //! ```ignore
 //! let chain = BufferChainBuilder::new()
@@ -48,16 +155,87 @@ limitations under the License.
 //! ```
 
 mod access;
+mod buffer;
+mod consumer;
 mod desc;
 mod event;
+pub mod msg;
+mod pool;
+mod producer;
 mod ring;
 
 use core::num::NonZeroU16;
 
 pub use access::*;
+pub use buffer::*;
+pub use consumer::*;
 pub use desc::*;
 pub use event::*;
+pub use pool::*;
+pub use producer::*;
 pub use ring::*;
+use thiserror::Error;
+
+/// A trait for notifying the consumer about virtqueue events.
+pub trait Notifier {
+    fn notify(&self, stats: QueueStats);
+}
+
+/// Errors that can occur in the virtqueue operations.
+#[derive(Error, Debug)]
+pub enum VirtqError {
+    #[error("Ring error: {0}")]
+    RingError(RingError),
+    #[error("Allocation error: {0}")]
+    Alloc(AllocError),
+    #[error("Ring or pool temporarily full")]
+    Backpressure,
+    #[error("Allocation exceeds pool capacity")]
+    OutOfMemory,
+    #[error("Invalid token")]
+    BadToken,
+    #[error("Invalid chain received")]
+    BadChain,
+    #[error("Entry data too large for allocated buffer")]
+    EntryTooLarge,
+    #[error("Completion data too large for allocated buffer")]
+    CqeTooLarge,
+    #[error("Internal state error")]
+    InvalidState,
+    #[error("Memory write error")]
+    MemoryWriteError,
+    #[error("Memory read error")]
+    MemoryReadError,
+    #[error("No readable buffer in this entry")]
+    NoReadableBuffer,
+}
+
+impl VirtqError {
+    /// Check if this error is transient or unrecoverable.
+    #[inline(always)]
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Backpressure)
+    }
+}
+
+impl From<RingError> for VirtqError {
+    fn from(e: RingError) -> Self {
+        match e {
+            RingError::WouldBlock => Self::Backpressure,
+            other => Self::RingError(other),
+        }
+    }
+}
+
+impl From<AllocError> for VirtqError {
+    fn from(e: AllocError) -> Self {
+        match e {
+            AllocError::NoSpace => Self::Backpressure,
+            AllocError::OutOfMemory => Self::OutOfMemory,
+            other => Self::Alloc(other),
+        }
+    }
+}
 
 /// Layout of a packed virtqueue ring in shared memory.
 ///
@@ -166,6 +344,49 @@ impl Layout {
     }
 }
 
+/// Statistics about the current virtqueue state.
+///
+/// Provided to the [`Notifier`] when sending notifications, allowing
+/// the notifier to make decisions based on queue pressure.
+#[derive(Debug, Clone, Copy)]
+pub struct QueueStats {
+    /// Number of free descriptor slots available.
+    pub num_free: usize,
+    /// Number of descriptors currently in-flight (submitted but not completed).
+    pub num_inflight: usize,
+}
+
+/// Event suppression mode for controlling when notifications are sent.
+///
+/// This configures when the other side should signal (interrupt/kick) us
+/// about new data. Used to optimize batching and reduce interrupt overhead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuppressionKind {
+    /// Always signal after each operation (default behavior).
+    Enable,
+    /// Never signal.
+    Disable,
+    /// Signal only when reaching a specific descriptor position.
+    Descriptor(RingCursor),
+}
+
+/// A token representing a sent entry in the virtqueue.
+///
+/// Tokens uniquely identify in-flight requests and are used to correlate requests with their responses.
+/// The first element is a monotonically increasing generation counter. The second element is the
+/// underlying descriptor ID
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Token(pub u32, pub u16);
+
+impl From<BufferElement> for Allocation {
+    fn from(value: BufferElement) -> Self {
+        Allocation {
+            addr: value.addr,
+            len: value.len as usize,
+        }
+    }
+}
+
 const _: () = {
     #[allow(clippy::unwrap_used)]
     const fn verify_layout(num_descs: usize) {
@@ -219,3 +440,979 @@ const _: () = {
     verify_layout(512);
     verify_layout(1024);
 };
+
+/// Shared test utilities for virtqueue tests.
+#[cfg(test)]
+pub(crate) mod test_utils {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::virtq::ring::tests::{OwnedRing, TestMem};
+
+    /// Simple notifier that tracks notification count.
+    #[derive(Debug, Clone)]
+    pub(crate) struct TestNotifier {
+        pub(crate) count: Arc<AtomicUsize>,
+    }
+
+    impl TestNotifier {
+        pub(crate) fn new() -> Self {
+            Self {
+                count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        pub(crate) fn notification_count(&self) -> usize {
+            self.count.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Notifier for TestNotifier {
+        fn notify(&self, _stats: QueueStats) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Simple test buffer pool that allocates from a range.
+    #[derive(Clone)]
+    pub(crate) struct TestPool {
+        base: u64,
+        next: Arc<AtomicU64>,
+        size: usize,
+    }
+
+    impl TestPool {
+        pub(crate) fn new(base: u64, size: usize) -> Self {
+            Self {
+                base,
+                next: Arc::new(AtomicU64::new(base)),
+                size,
+            }
+        }
+    }
+
+    impl BufferProvider for TestPool {
+        fn alloc(&self, len: usize) -> Result<Allocation, AllocError> {
+            let addr = self.next.fetch_add(len as u64, Ordering::Relaxed);
+            let end = addr + len as u64;
+            if end > self.base + self.size as u64 {
+                return Err(AllocError::NoSpace);
+            }
+            Ok(Allocation { addr, len })
+        }
+
+        fn dealloc(&self, _alloc: Allocation) -> Result<(), AllocError> {
+            // Simple pool doesn't track individual allocations
+            Ok(())
+        }
+
+        fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
+            // Simple implementation: always allocate new
+            self.dealloc(old_alloc)?;
+            self.alloc(new_len)
+        }
+    }
+
+    type TestProducer = VirtqProducer<TestMem, TestNotifier, TestPool>;
+    type TestConsumer = VirtqConsumer<TestMem, TestNotifier>;
+
+    /// Create test infrastructure: a producer, consumer, and notifier backed
+    /// by the supplied [`OwnedRing`].
+    pub(crate) fn make_test_producer(
+        ring: &OwnedRing,
+    ) -> (TestProducer, TestConsumer, TestNotifier) {
+        let layout = ring.layout();
+        let mem = ring.mem();
+
+        // Pool needs to be in memory accessible via mem - use memory after ring layout
+        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        let pool = TestPool::new(pool_base, 0x8000);
+        let notifier = TestNotifier::new();
+
+        let producer = VirtqProducer::new(layout, mem.clone(), notifier.clone(), pool);
+        let consumer = VirtqConsumer::new(layout, mem, notifier.clone());
+
+        (producer, consumer, notifier)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::virtq::ring::tests::{TestMem, make_ring};
+    use crate::virtq::test_utils::*;
+
+    /// Helper: build and submit an entry+completion chain using the chain() builder.
+    fn send_readwrite(
+        producer: &mut VirtqProducer<TestMem, TestNotifier, TestPool>,
+        entry_data: &[u8],
+        cqe_cap: usize,
+    ) -> Token {
+        let mut se = producer
+            .chain()
+            .entry(entry_data.len())
+            .completion(cqe_cap)
+            .build()
+            .unwrap();
+        se.write_all(entry_data).unwrap();
+        producer.submit(se).unwrap()
+    }
+
+    #[test]
+    fn test_submit_notifies() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
+
+        let initial_count = notifier.notification_count();
+
+        let token = send_readwrite(&mut producer, b"hello", 64);
+        assert!(notifier.notification_count() > initial_count);
+
+        let (entry, _completion) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry.token(), token);
+    }
+
+    #[test]
+    fn test_multiple_submits() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        let tok1 = send_readwrite(&mut producer, b"request1", 64);
+        let tok2 = send_readwrite(&mut producer, b"request2", 64);
+        let tok3 = send_readwrite(&mut producer, b"request3", 64);
+
+        // Consumer sees all requests
+        for _ in 0..3 {
+            let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
+            consumer.complete(completion).unwrap();
+        }
+
+        // All completions available
+        let cqe1 = producer.poll().unwrap().unwrap();
+        let cqe2 = producer.poll().unwrap().unwrap();
+        let cqe3 = producer.poll().unwrap().unwrap();
+        assert!(
+            [cqe1.token, cqe2.token, cqe3.token].contains(&tok1)
+                && [cqe1.token, cqe2.token, cqe3.token].contains(&tok2)
+                && [cqe1.token, cqe2.token, cqe3.token].contains(&tok3)
+        );
+    }
+
+    #[test]
+    fn test_completion_batching_with_suppression() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        // Submit entries
+        let tok1 = send_readwrite(&mut producer, b"req1", 64);
+        let tok2 = send_readwrite(&mut producer, b"req2", 64);
+        let tok3 = send_readwrite(&mut producer, b"req3", 64);
+
+        // Set up completion batching via used suppression
+        let cursor = producer.used_cursor();
+        producer
+            .set_used_suppression(SuppressionKind::Descriptor(cursor))
+            .unwrap();
+
+        // Consumer processes requests
+        for _ in 0..3 {
+            let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
+            let SendCompletion::Writable(mut wc) = completion else {
+                panic!("expected writable completion");
+            };
+            wc.write_all(b"cqe-data").unwrap();
+            consumer.complete(wc.into()).unwrap();
+        }
+
+        // Producer can drain all responses
+        let mut responses = Vec::new();
+        producer
+            .drain(|tok, _data| {
+                responses.push(tok);
+            })
+            .unwrap();
+
+        assert_eq!(responses.len(), 3);
+        assert!(responses.contains(&tok1));
+        assert!(responses.contains(&tok2));
+        assert!(responses.contains(&tok3));
+    }
+
+    #[test]
+    fn test_notifier_receives_context() {
+        #[derive(Debug, Clone)]
+        struct CtxNotifier {
+            last_num_free: Arc<AtomicUsize>,
+            last_num_inflight: Arc<AtomicUsize>,
+            count: Arc<AtomicUsize>,
+        }
+
+        impl Notifier for CtxNotifier {
+            fn notify(&self, stats: QueueStats) {
+                self.last_num_free.store(stats.num_free, Ordering::Relaxed);
+                self.last_num_inflight
+                    .store(stats.num_inflight, Ordering::Relaxed);
+                self.count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let ring = make_ring(16);
+        let layout = ring.layout();
+        let mem = ring.mem();
+        let pool_base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        let pool = TestPool::new(pool_base, 0x8000);
+        let notifier = CtxNotifier {
+            last_num_free: Arc::new(AtomicUsize::new(0)),
+            last_num_inflight: Arc::new(AtomicUsize::new(0)),
+            count: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let mut producer = VirtqProducer::new(layout, mem, notifier.clone(), pool);
+
+        let mut se = producer.chain().entry(4).completion(32).build().unwrap();
+        se.write_all(b"test").unwrap();
+        producer.submit(se).unwrap();
+        assert_eq!(notifier.count.load(Ordering::Relaxed), 1);
+        assert!(notifier.last_num_inflight.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn test_chain_zero_copy_batch() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, notifier) = make_test_producer(&ring);
+
+        let initial_count = notifier.notification_count();
+
+        // Zero-copy entry via buf_mut
+        let mut se1 = producer.chain().entry(64).completion(128).build().unwrap();
+        let buf = se1.buf_mut().unwrap();
+        buf[..6].copy_from_slice(b"zc-ent");
+        se1.set_written(6).unwrap();
+        let _tok1 = producer.submit(se1).unwrap();
+
+        // Write-based entry
+        let mut se2 = producer.chain().entry(64).completion(64).build().unwrap();
+        se2.write_all(b"copy-ent").unwrap();
+        let _tok2 = producer.submit(se2).unwrap();
+
+        // Completion-only chain
+        let se3 = producer.chain().completion(32).build().unwrap();
+        let tok3 = producer.submit(se3).unwrap();
+
+        // Each submit may notify independently
+        assert!(notifier.notification_count() > initial_count);
+
+        // Consumer sees all three entries
+        let (entry1, completion1) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry1.data().as_ref(), b"zc-ent");
+        consumer.complete(completion1).unwrap();
+
+        let (entry2, completion2) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry2.data().as_ref(), b"copy-ent");
+        consumer.complete(completion2).unwrap();
+
+        let (_entry3, completion3) = consumer.poll(1024).unwrap().unwrap();
+        let SendCompletion::Writable(mut wc) = completion3 else {
+            panic!("expected writable completion");
+        };
+        wc.write_all(b"resp").unwrap();
+        consumer.complete(wc.into()).unwrap();
+
+        // Drain completions
+        let _ = producer.poll().unwrap().unwrap();
+        let _ = producer.poll().unwrap().unwrap();
+
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, tok3);
+        assert_eq!(&cqe.data[..], b"resp");
+    }
+
+    #[test]
+    fn test_chain_zero_copy_send() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        // Zero-copy send: allocate, write directly, submit
+        let mut se = producer.chain().entry(64).completion(128).build().unwrap();
+        let buf = se.buf_mut().unwrap();
+        assert_eq!(buf.len(), 64);
+        buf[..5].copy_from_slice(b"hello");
+        se.set_written(5).unwrap();
+        let token = producer.submit(se).unwrap();
+
+        // Consumer sees the data
+        let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry.token(), token);
+        assert_eq!(entry.data().as_ref(), b"hello");
+
+        // Write response
+        let SendCompletion::Writable(mut wc) = completion else {
+            panic!("expected writable completion");
+        };
+        wc.write_all(b"world").unwrap();
+        consumer.complete(wc.into()).unwrap();
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(&cqe.data[..], b"world");
+    }
+
+    #[test]
+    fn test_full_round_trip() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        // Send an entry
+        let token = send_readwrite(&mut producer, b"round-trip-entry", 128);
+
+        // Consumer receives and responds
+        let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry.token(), token);
+        assert_eq!(entry.data().as_ref(), b"round-trip-entry");
+
+        let SendCompletion::Writable(mut wc) = completion else {
+            panic!("expected writable completion");
+        };
+        assert!(wc.capacity() >= 128);
+        wc.write_all(b"round-trip-rsp").unwrap();
+        consumer.complete(wc.into()).unwrap();
+
+        // Producer gets the completion
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, token);
+        assert_eq!(&cqe.data[..], b"round-trip-rsp");
+    }
+
+    #[test]
+    fn test_cancel_submits_zero_length() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        let token = send_readwrite(&mut producer, b"entry-data", 64);
+
+        let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        consumer.complete(completion).unwrap();
+
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, token);
+        assert_eq!(cqe.data.len(), 0);
+        assert!(cqe.data.is_empty());
+    }
+
+    #[test]
+    fn test_hold_completion_and_complete() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        let token = send_readwrite(&mut producer, b"deferred", 64);
+
+        // Poll and hold the completion
+        let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry.token(), token);
+        assert_eq!(entry.data().as_ref(), b"deferred");
+
+        let SendCompletion::Writable(mut wc) = completion else {
+            panic!("expected writable completion");
+        };
+        wc.write_all(b"deferred-cqe").unwrap();
+        consumer.complete(wc.into()).unwrap();
+
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, token);
+        assert_eq!(&cqe.data[..], b"deferred-cqe");
+    }
+
+    #[test]
+    fn test_concurrent_pending_completions() {
+        let ring = make_ring(16);
+        let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
+
+        let tok1 = send_readwrite(&mut producer, b"first", 64);
+        let tok2 = send_readwrite(&mut producer, b"second", 64);
+
+        // Poll both
+        let (entry1, completion1) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry1.token(), tok1);
+        assert_eq!(entry1.data().as_ref(), b"first");
+
+        let (entry2, completion2) = consumer.poll(1024).unwrap().unwrap();
+        assert_eq!(entry2.token(), tok2);
+        assert_eq!(entry2.data().as_ref(), b"second");
+
+        // Complete second first (out of order)
+        let SendCompletion::Writable(mut wc2) = completion2 else {
+            panic!("expected writable");
+        };
+        wc2.write_all(b"resp2").unwrap();
+        consumer.complete(wc2.into()).unwrap();
+
+        let SendCompletion::Writable(mut wc1) = completion1 else {
+            panic!("expected writable");
+        };
+        wc1.write_all(b"resp1").unwrap();
+        consumer.complete(wc1.into()).unwrap();
+
+        let cqe1 = producer.poll().unwrap().unwrap();
+        let cqe2 = producer.poll().unwrap().unwrap();
+        let mut responses: Vec<_> = vec![
+            (cqe1.token, cqe1.data.to_vec()),
+            (cqe2.token, cqe2.data.to_vec()),
+        ];
+        responses.sort_by_key(|(t, _)| t.0);
+
+        let expected_first = responses.iter().find(|(t, _)| *t == tok1).unwrap();
+        let expected_second = responses.iter().find(|(t, _)| *t == tok2).unwrap();
+        assert_eq!(&expected_first.1[..], b"resp1");
+        assert_eq!(&expected_second.1[..], b"resp2");
+    }
+
+    /// Helper: submit a ReadOnly entry (entry data, no completion).
+    fn send_readonly(
+        producer: &mut VirtqProducer<TestMem, TestNotifier, TestPool>,
+        entry_data: &[u8],
+    ) -> Token {
+        let mut se = producer.chain().entry(entry_data.len()).build().unwrap();
+        se.write_all(entry_data).unwrap();
+        producer.submit(se).unwrap()
+    }
+
+    #[test]
+    fn test_reclaim_frees_ring_slots() {
+        let ring = make_ring(4);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Fill the ring with ReadOnly entries
+        send_readonly(&mut producer, b"a");
+        send_readonly(&mut producer, b"b");
+        send_readonly(&mut producer, b"c");
+        send_readonly(&mut producer, b"d");
+
+        // Ring is now full - next submit should fail with Backpressure
+        let mut se = producer.chain().entry(1).build().unwrap();
+        se.write_all(b"e").unwrap();
+        let res = producer.submit(se);
+        assert!(
+            matches!(res, Err(VirtqError::Backpressure)),
+            "expected Backpressure from full ring"
+        );
+
+        // Consumer acks all entries
+        while let Some((_, completion)) = consumer.poll(1024).unwrap() {
+            consumer.complete(completion).unwrap();
+        }
+
+        // Reclaim should free ring slots without losing data
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 4, "expected 4 reclaimed entries");
+
+        // Ring should have space now
+        send_readonly(&mut producer, b"e");
+    }
+
+    #[test]
+    fn test_reclaim_buffers_rw_completions() {
+        let ring = make_ring(4);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Submit a ReadWrite entry
+        let tok = send_readwrite(&mut producer, b"request", 64);
+
+        // Consumer processes and writes response
+        let (_, completion) = consumer.poll(1024).unwrap().unwrap();
+        let SendCompletion::Writable(mut wc) = completion else {
+            panic!("expected writable");
+        };
+        wc.write_all(b"response-data").unwrap();
+        consumer.complete(wc.into()).unwrap();
+
+        // Reclaim buffers the completion (doesn't discard it)
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 1);
+
+        // poll() should return the buffered completion
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, tok);
+        assert_eq!(&cqe.data[..], b"response-data");
+    }
+
+    #[test]
+    fn test_reclaim_discards_readonly_completions() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Submit 3 entries: RO, RW, RO
+        let _tok_ro1 = send_readonly(&mut producer, b"log1");
+        let tok_rw = send_readwrite(&mut producer, b"call", 64);
+        let _tok_ro2 = send_readonly(&mut producer, b"log2");
+
+        // Consumer processes all 3
+        let (_, c1) = consumer.poll(1024).unwrap().unwrap();
+        consumer.complete(c1).unwrap(); // ack RO
+
+        let (_, c2) = consumer.poll(1024).unwrap().unwrap();
+        let SendCompletion::Writable(mut wc) = c2 else {
+            panic!("expected writable");
+        };
+        wc.write_all(b"result").unwrap();
+        consumer.complete(wc.into()).unwrap(); // complete RW
+
+        let (_, c3) = consumer.poll(1024).unwrap().unwrap();
+        consumer.complete(c3).unwrap(); // ack RO
+
+        // Reclaim all 3 - RO completions are discarded, only RW is buffered
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 3);
+
+        // poll() returns only the RW completion
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, tok_rw);
+        assert_eq!(&cqe.data[..], b"result");
+
+        // No more - RO completions were discarded
+        assert!(producer.poll().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_reclaim_mixed_with_poll() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Submit and complete 2 entries
+        send_readonly(&mut producer, b"x");
+        let tok_rw = send_readwrite(&mut producer, b"y", 64);
+
+        let (_, c1) = consumer.poll(1024).unwrap().unwrap();
+        consumer.complete(c1).unwrap();
+
+        let (_, c2) = consumer.poll(1024).unwrap().unwrap();
+        let SendCompletion::Writable(mut wc) = c2 else {
+            panic!("expected writable");
+        };
+        wc.write_all(b"reply").unwrap();
+        consumer.complete(wc.into()).unwrap();
+
+        // poll() consumes first entry directly from ring
+        let cqe1 = producer.poll().unwrap().unwrap();
+        assert!(cqe1.data.is_empty());
+
+        // reclaim() buffers second entry
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 1);
+
+        // poll() returns the buffered one
+        let cqe2 = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe2.token, tok_rw);
+        assert_eq!(&cqe2.data[..], b"reply");
+    }
+
+    /// reclaim + submit must not cause token collisions.
+    #[test]
+    fn test_reclaim_submit_no_token_collision() {
+        let ring = make_ring(8);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        // Submit and complete a ReadOnly entry
+        let tok_old = send_readonly(&mut producer, b"log");
+
+        let (_, c) = consumer.poll(1024).unwrap().unwrap();
+        consumer.complete(c).unwrap();
+
+        let count = producer.reclaim().unwrap();
+        assert_eq!(count, 1);
+
+        // Submit a new ReadWrite entry - may reuse the same descriptor ID
+        let tok_new = send_readwrite(&mut producer, b"call", 64);
+
+        // Tokens must differ even if the descriptor ID was recycled
+        assert_ne!(
+            tok_old, tok_new,
+            "tokens must be unique across reclaim/submit cycles"
+        );
+
+        // Complete the ReadWrite entry
+        let (_, c) = consumer.poll(1024).unwrap().unwrap();
+        let SendCompletion::Writable(mut wc) = c else {
+            panic!("expected writable");
+        };
+        wc.write_all(b"result").unwrap();
+        consumer.complete(wc.into()).unwrap();
+
+        // Poll returns only the RW completion (RO was discarded by reclaim)
+        let cqe = producer.poll().unwrap().unwrap();
+        assert_eq!(cqe.token, tok_new);
+        assert_eq!(&cqe.data[..], b"result");
+
+        // No stale RO completion in the queue
+        assert!(producer.poll().unwrap().is_none());
+    }
+
+    /// Verify that repeated oneshot submit/reclaim cycles do not accumulate pending completions.
+    #[test]
+    fn test_reclaim_readonly_does_not_leak_pending() {
+        let ring = make_ring(4);
+        let (mut producer, mut consumer, _) = make_test_producer(&ring);
+
+        for _ in 0..10 {
+            // Fill the ring
+            for _ in 0..4 {
+                send_readonly(&mut producer, b"msg");
+            }
+
+            // Consumer acks all
+            while let Some((_, completion)) = consumer.poll(1024).unwrap() {
+                consumer.complete(completion).unwrap();
+            }
+
+            // Reclaim frees ring slots; empty completions are discarded
+            let count = producer.reclaim().unwrap();
+            assert_eq!(count, 4);
+
+            // No completions should be buffered in pending
+            assert!(
+                producer.poll().unwrap().is_none(),
+                "pending should be empty after reclaiming RO entries"
+            );
+        }
+    }
+}
+#[cfg(all(test, loom))]
+mod fuzz {
+    //! Loom-based concurrency testing for the virtqueue implementation.
+    //!
+    //! Loom will explores all possible thread interleavings to find data races
+    //! and other concurrency bugs. However, it has specific requirements that
+    //! make our memory model more involved:
+    //!
+    //! ## Flag-Based Synchronization
+    //!
+    //! The virtqueue protocol uses flag-based synchronization:
+    //! 1. Producer writes descriptor fields (addr, len, id), then writes flags with release semantics
+    //! 2. Consumer reads flags with acquire semantics, then reads descriptor fields
+    //!
+    //! Loom  would see this as concurrent access to the same memory and report a race, even though
+    //! acquire/release on flags provides proper synchronization.
+    //!
+    //! ## Shadow Atomics for Flags
+    //!
+    //! We maintain shadow atomics that loom tracks for synchronization:
+    //!
+    //! - `desc_flags`: One `AtomicU16` per descriptor for flags field
+    //! - `drv_flags`: `AtomicU16` for driver event suppression flags
+    //! - `dev_flags`: `AtomicU16` for device event suppression flags
+    //!
+    //! The `load_acquire`/`store_release` operations use these loom atomics,
+    //! while `read`/`write` access the underlying data directly.
+    //!
+    //! ## Memory Regions
+    //!
+    //! We use a `BTreeMap` to map addresses to memory regions:
+    //! - `Desc(idx)`: Individual descriptors in the ring
+    //! - `DrvEvt`: Driver event suppression structure
+    //! - `DevEvt`: Device event suppression structure
+    //! - `Pool`: Buffer pool for entry/completion data
+
+    use alloc::collections::BTreeMap;
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use core::num::NonZeroU16;
+
+    use bytemuck::Zeroable;
+    use loom::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+    use loom::thread;
+
+    use super::*;
+    use crate::virtq::desc::Descriptor;
+    use crate::virtq::pool::BufferPoolSync;
+
+    #[derive(Debug)]
+    pub struct MemErr;
+
+    #[derive(Debug, Clone, Copy)]
+    enum RegionKind {
+        Desc(usize),
+        DrvEvt,
+        DevEvt,
+        Pool,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct RegionInfo {
+        kind: RegionKind,
+        size: usize,
+    }
+
+    #[derive(Debug)]
+    pub struct LoomMem {
+        descs: Vec<Descriptor>,
+        drv: core::cell::UnsafeCell<EventSuppression>,
+        dev: core::cell::UnsafeCell<EventSuppression>,
+        pool: loom::cell::UnsafeCell<Vec<u8>>,
+
+        desc_flags: Vec<AtomicU16>,
+        drv_flags: AtomicU16,
+        dev_flags: AtomicU16,
+
+        regions: BTreeMap<u64, RegionInfo>,
+        layout: Layout,
+    }
+
+    unsafe impl Sync for LoomMem {}
+    unsafe impl Send for LoomMem {}
+
+    impl LoomMem {
+        pub fn new(ring_base: u64, num_descs: usize, pool_base: u64, pool_size: usize) -> Self {
+            let descs_nz = NonZeroU16::new(num_descs as u16).unwrap();
+            let layout = unsafe { Layout::from_base(ring_base, descs_nz).unwrap() };
+
+            let descs: Vec<_> = (0..num_descs).map(|_| Descriptor::zeroed()).collect();
+            let desc_flags: Vec<_> = (0..num_descs).map(|_| AtomicU16::new(0)).collect();
+
+            let mut regions = BTreeMap::new();
+
+            // Register each descriptor as a separate region
+            for i in 0..num_descs {
+                let addr = layout.desc_table_addr() + (i * Descriptor::SIZE) as u64;
+                regions.insert(
+                    addr,
+                    RegionInfo {
+                        kind: RegionKind::Desc(i),
+                        size: Descriptor::SIZE,
+                    },
+                );
+            }
+
+            regions.insert(
+                layout.drv_evt_addr(),
+                RegionInfo {
+                    kind: RegionKind::DrvEvt,
+                    size: EventSuppression::SIZE,
+                },
+            );
+
+            regions.insert(
+                layout.dev_evt_addr(),
+                RegionInfo {
+                    kind: RegionKind::DevEvt,
+                    size: EventSuppression::SIZE,
+                },
+            );
+
+            regions.insert(
+                pool_base,
+                RegionInfo {
+                    kind: RegionKind::Pool,
+                    size: pool_size,
+                },
+            );
+
+            Self {
+                descs,
+                drv: core::cell::UnsafeCell::new(EventSuppression::zeroed()),
+                dev: core::cell::UnsafeCell::new(EventSuppression::zeroed()),
+                pool: loom::cell::UnsafeCell::new(vec![0u8; pool_size]),
+                desc_flags,
+                drv_flags: AtomicU16::new(0),
+                dev_flags: AtomicU16::new(0),
+                regions,
+                layout,
+            }
+        }
+
+        pub fn layout(&self) -> Layout {
+            self.layout
+        }
+
+        fn region(&self, addr: u64) -> Option<(RegionInfo, usize)> {
+            let (&base, &info) = self.regions.range(..=addr).next_back()?;
+            let offset = (addr - base) as usize;
+
+            if offset < info.size {
+                Some((info, offset))
+            } else {
+                None
+            }
+        }
+
+        fn desc_ptr(&self, idx: usize) -> *mut Descriptor {
+            self.descs.as_ptr().cast_mut().wrapping_add(idx)
+        }
+    }
+
+    unsafe impl MemOps for LoomMem {
+        type Error = MemErr;
+
+        fn read(&self, addr: u64, dst: &mut [u8]) -> Result<(), Self::Error> {
+            let (info, offset) = self.region(addr).ok_or(MemErr)?;
+
+            match info.kind {
+                RegionKind::Desc(idx) => {
+                    let desc = unsafe { &*self.desc_ptr(idx) };
+                    let bytes = bytemuck::bytes_of(desc);
+                    dst.copy_from_slice(&bytes[offset..offset + dst.len()]);
+                }
+                RegionKind::DrvEvt => {
+                    let evt = unsafe { &*self.drv.get() };
+                    let bytes = bytemuck::bytes_of(evt);
+                    dst.copy_from_slice(&bytes[offset..offset + dst.len()]);
+                }
+                RegionKind::DevEvt => {
+                    let evt = unsafe { &*self.dev.get() };
+                    let bytes = bytemuck::bytes_of(evt);
+                    dst.copy_from_slice(&bytes[offset..offset + dst.len()]);
+                }
+                RegionKind::Pool => {
+                    self.pool.with(|buf| {
+                        dst.copy_from_slice(&(unsafe { &*buf })[offset..offset + dst.len()]);
+                    });
+                }
+            }
+            Ok(())
+        }
+
+        fn write(&self, addr: u64, src: &[u8]) -> Result<(), Self::Error> {
+            let (info, offset) = self.region(addr).ok_or(MemErr)?;
+
+            match info.kind {
+                RegionKind::Desc(idx) => {
+                    let desc = unsafe { &mut *self.desc_ptr(idx) };
+                    let bytes = bytemuck::bytes_of_mut(desc);
+                    bytes[offset..offset + src.len()].copy_from_slice(src);
+                }
+                RegionKind::DrvEvt => {
+                    let evt = unsafe { &mut *self.drv.get() };
+                    let bytes = bytemuck::bytes_of_mut(evt);
+                    bytes[offset..offset + src.len()].copy_from_slice(src);
+                }
+                RegionKind::DevEvt => {
+                    let evt = unsafe { &mut *self.dev.get() };
+                    let bytes = bytemuck::bytes_of_mut(evt);
+                    bytes[offset..offset + src.len()].copy_from_slice(src);
+                }
+                RegionKind::Pool => {
+                    self.pool.with_mut(|buf| {
+                        (unsafe { &mut *buf })[offset..offset + src.len()].copy_from_slice(src);
+                    });
+                }
+            }
+            Ok(())
+        }
+
+        fn load_acquire(&self, addr: u64) -> Result<u16, Self::Error> {
+            let (info, _offset) = self.region(addr).ok_or(MemErr)?;
+
+            Ok(match info.kind {
+                RegionKind::Desc(idx) => self.desc_flags[idx].load(Ordering::Acquire),
+                RegionKind::DrvEvt => self.drv_flags.load(Ordering::Acquire),
+                RegionKind::DevEvt => self.dev_flags.load(Ordering::Acquire),
+                RegionKind::Pool => return Err(MemErr),
+            })
+        }
+
+        fn store_release(&self, addr: u64, val: u16) -> Result<(), Self::Error> {
+            let (info, _offset) = self.region(addr).ok_or(MemErr)?;
+
+            match info.kind {
+                RegionKind::Desc(idx) => self.desc_flags[idx].store(val, Ordering::Release),
+                RegionKind::DrvEvt => self.drv_flags.store(val, Ordering::Release),
+                RegionKind::DevEvt => self.dev_flags.store(val, Ordering::Release),
+                RegionKind::Pool => return Err(MemErr),
+            }
+            Ok(())
+        }
+
+        unsafe fn as_slice(&self, addr: u64, len: usize) -> Result<&[u8], Self::Error> {
+            let (info, offset) = self.region(addr).ok_or(MemErr)?;
+
+            match info.kind {
+                RegionKind::Pool => {
+                    // Safety: pool memory is a contiguous Vec<u8>; caller ensures
+                    // no concurrent writes for the lifetime of the returned slice.
+                    let buf = unsafe { &*self.pool.get() };
+                    Ok(&buf[offset..offset + len])
+                }
+                _ => Err(MemErr),
+            }
+        }
+
+        unsafe fn as_mut_slice(&self, addr: u64, len: usize) -> Result<&mut [u8], Self::Error> {
+            let (info, offset) = self.region(addr).ok_or(MemErr)?;
+
+            match info.kind {
+                RegionKind::Pool => {
+                    let buf = unsafe { &mut *self.pool.get() };
+                    Ok(&mut buf[offset..offset + len])
+                }
+                _ => Err(MemErr),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Notify {
+        kicks: AtomicUsize,
+    }
+
+    impl Notify {
+        pub fn new() -> Self {
+            Self {
+                kicks: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl Notifier for Arc<Notify> {
+        fn notify(&self, _stats: QueueStats) {
+            self.kicks.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn virtq_ping_pong() {
+        loom::model(|| {
+            let ring_base = 0x10000;
+            let pool_base = 0x40000;
+            let pool_size = 0x10000;
+
+            let mem = Arc::new(LoomMem::new(ring_base, 8, pool_base, pool_size));
+            let pool = BufferPoolSync::<256, 4096>::new(pool_base, pool_size).unwrap();
+            let notify = Arc::new(Notify::new());
+
+            let mut prod = VirtqProducer::new(mem.layout(), mem.clone(), notify.clone(), pool);
+            let mut cons = VirtqConsumer::new(mem.layout(), mem.clone(), notify.clone());
+
+            let t_prod = thread::spawn(move || {
+                let mut se = prod.chain().entry(4).completion(32).build().unwrap();
+                se.write_all(b"ping").unwrap();
+                let tok = prod.submit(se).unwrap();
+                loop {
+                    if let Some(r) = prod.poll().unwrap() {
+                        assert_eq!(r.token, tok);
+                        assert_eq!(&r.data[..], b"pong");
+                        break;
+                    }
+                    thread::yield_now();
+                }
+            });
+
+            let t_cons = thread::spawn(move || {
+                let (entry, completion) = loop {
+                    if let Some(r) = cons.poll(1024).unwrap() {
+                        break r;
+                    }
+                    thread::yield_now();
+                };
+                assert_eq!(entry.data().as_ref(), b"ping");
+                let SendCompletion::Writable(mut wc) = completion else {
+                    panic!("expected writable completion");
+                };
+                wc.write_all(b"pong").unwrap();
+                cons.complete(wc.into()).unwrap();
+            });
+
+            t_prod.join().unwrap();
+            t_cons.join().unwrap();
+        });
+    }
+}

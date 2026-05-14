@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::any::type_name;
 use std::ffi::c_void;
 use std::io::Error;
 use std::mem::{align_of, size_of};
@@ -878,57 +877,25 @@ impl SharedMemory for GuestSharedMemory {
     }
 }
 
-/// An unsafe marker trait for types for which all bit patterns are valid.
-/// This is required in order for it to be safe to read a value of a particular
-/// type out of the sandbox from the HostSharedMemory.
-///
-/// # Safety
-/// This must only be implemented for types for which all bit patterns
-/// are valid. It requires that any (non-undef/poison) value of the
-/// correct size can be transmuted to the type.
-pub unsafe trait AllValid {}
-unsafe impl AllValid for u8 {}
-unsafe impl AllValid for u16 {}
-unsafe impl AllValid for u32 {}
-unsafe impl AllValid for u64 {}
-unsafe impl AllValid for i8 {}
-unsafe impl AllValid for i16 {}
-unsafe impl AllValid for i32 {}
-unsafe impl AllValid for i64 {}
-unsafe impl AllValid for [u8; 16] {}
-
 impl HostSharedMemory {
-    /// Read a value of type T, whose representation is the same
-    /// between the sandbox and the host, and which has no invalid bit
-    /// patterns
-    pub fn read<T: AllValid>(&self, offset: usize) -> Result<T> {
+    /// Read a value of type T from the sandbox at the given offset.
+    ///
+    /// T must implement [`bytemuck::Pod`] which guarantees all bit
+    /// patterns are valid and there is no padding.
+    pub fn read<T: bytemuck::Pod>(&self, offset: usize) -> Result<T> {
         bounds_check!(offset, std::mem::size_of::<T>(), self.mem_size());
-        unsafe {
-            let mut ret: core::mem::MaybeUninit<T> = core::mem::MaybeUninit::uninit();
-            {
-                let slice: &mut [u8] = core::slice::from_raw_parts_mut(
-                    ret.as_mut_ptr() as *mut u8,
-                    std::mem::size_of::<T>(),
-                );
-                self.copy_to_slice(slice, offset)?;
-            }
-            Ok(ret.assume_init())
-        }
+        let mut val = T::zeroed();
+        self.copy_to_slice(bytemuck::bytes_of_mut(&mut val), offset)?;
+        Ok(val)
     }
 
-    /// Write a value of type T, whose representation is the same
-    /// between the sandbox and the host, and which has no invalid bit
-    /// patterns
-    pub fn write<T: AllValid>(&self, offset: usize, data: T) -> Result<()> {
+    /// Write a value of type T into the sandbox at the given offset.
+    ///
+    /// T must implement [`bytemuck::Pod`] which guarantees all bit
+    /// patterns are valid and there is no padding.
+    pub fn write<T: bytemuck::Pod>(&self, offset: usize, data: T) -> Result<()> {
         bounds_check!(offset, std::mem::size_of::<T>(), self.mem_size());
-        unsafe {
-            let slice: &[u8] = core::slice::from_raw_parts(
-                core::ptr::addr_of!(data) as *const u8,
-                std::mem::size_of::<T>(),
-            );
-            self.copy_from_slice(slice, offset)?;
-        }
-        Ok(())
+        self.copy_from_slice(bytemuck::bytes_of(&data), offset)
     }
 
     /// Copy the contents of the slice into the sandbox at the
@@ -1079,145 +1046,6 @@ impl HostSharedMemory {
 
         drop(guard);
         Ok(())
-    }
-
-    /// Pushes the given data onto shared memory to the buffer at the given offset.
-    /// NOTE! buffer_start_offset must point to the beginning of the buffer
-    #[instrument(err(Debug), skip_all, parent = Span::current(), level= "Trace")]
-    pub fn push_buffer(
-        &mut self,
-        buffer_start_offset: usize,
-        buffer_size: usize,
-        data: &[u8],
-    ) -> Result<()> {
-        let stack_pointer_rel = self.read::<u64>(buffer_start_offset)? as usize;
-        let buffer_size_u64: u64 = buffer_size.try_into()?;
-
-        if stack_pointer_rel > buffer_size || stack_pointer_rel < 8 {
-            return Err(new_error!(
-                "Unable to push data to buffer: Stack pointer is out of bounds. Stack pointer: {}, Buffer size: {}",
-                stack_pointer_rel,
-                buffer_size_u64
-            ));
-        }
-
-        let size_required = data.len() + 8;
-        let size_available = buffer_size - stack_pointer_rel;
-
-        if size_required > size_available {
-            return Err(new_error!(
-                "Not enough space in buffer to push data. Required: {}, Available: {}",
-                size_required,
-                size_available
-            ));
-        }
-
-        // get absolute
-        let stack_pointer_abs = stack_pointer_rel + buffer_start_offset;
-
-        // write the actual data to the top of stack
-        self.copy_from_slice(data, stack_pointer_abs)?;
-
-        // write the offset to the newly written data, to the top of stack.
-        // this is used when popping the stack, to know how far back to jump
-        self.write::<u64>(stack_pointer_abs + data.len(), stack_pointer_rel as u64)?;
-
-        // update stack pointer to point to the next free address
-        self.write::<u64>(
-            buffer_start_offset,
-            (stack_pointer_rel + data.len() + 8) as u64,
-        )?;
-        Ok(())
-    }
-
-    /// Pops the given given buffer into a `T` and returns it.
-    /// NOTE! the data must be a size-prefixed flatbuffer, and
-    /// buffer_start_offset must point to the beginning of the buffer
-    pub fn try_pop_buffer_into<T>(
-        &mut self,
-        buffer_start_offset: usize,
-        buffer_size: usize,
-    ) -> Result<T>
-    where
-        T: for<'b> TryFrom<&'b [u8]>,
-    {
-        // get the stackpointer
-        let stack_pointer_rel = self.read::<u64>(buffer_start_offset)? as usize;
-
-        if stack_pointer_rel > buffer_size || stack_pointer_rel < 16 {
-            return Err(new_error!(
-                "Unable to pop data from buffer: Stack pointer is out of bounds. Stack pointer: {}, Buffer size: {}",
-                stack_pointer_rel,
-                buffer_size
-            ));
-        }
-
-        // make it absolute
-        let last_element_offset_abs = stack_pointer_rel + buffer_start_offset;
-
-        // go back 8 bytes to get offset to element on top of stack
-        let last_element_offset_rel: usize =
-            self.read::<u64>(last_element_offset_abs - 8)? as usize;
-
-        // Validate element offset (guest-writable): must be in [8, stack_pointer_rel - 16]
-        // to leave room for the 8-byte back-pointer plus at least 8 bytes of element data
-        // (the minimum for a size-prefixed flatbuffer: 4-byte prefix + 4-byte root offset).
-        if last_element_offset_rel > stack_pointer_rel.saturating_sub(16)
-            || last_element_offset_rel < 8
-        {
-            return Err(new_error!(
-                "Corrupt buffer back-pointer: element offset {} is outside valid range [8, {}].",
-                last_element_offset_rel,
-                stack_pointer_rel.saturating_sub(16),
-            ));
-        }
-
-        // make it absolute
-        let last_element_offset_abs = last_element_offset_rel + buffer_start_offset;
-
-        // Max bytes the element can span (excluding the 8-byte back-pointer).
-        let max_element_size = stack_pointer_rel - last_element_offset_rel - 8;
-
-        // Get the size of the flatbuffer buffer from memory
-        let fb_buffer_size = {
-            let raw_prefix = self.read::<u32>(last_element_offset_abs)?;
-            // flatbuffer byte arrays are prefixed by 4 bytes indicating
-            // the remaining size; add 4 for the prefix itself.
-            let total = raw_prefix.checked_add(4).ok_or_else(|| {
-                new_error!(
-                    "Corrupt buffer size prefix: value {} overflows when adding 4-byte header.",
-                    raw_prefix
-                )
-            })?;
-            usize::try_from(total)
-        }?;
-
-        if fb_buffer_size > max_element_size {
-            return Err(new_error!(
-                "Corrupt buffer size prefix: flatbuffer claims {} bytes but the element slot is only {} bytes.",
-                fb_buffer_size,
-                max_element_size
-            ));
-        }
-
-        let mut result_buffer = vec![0; fb_buffer_size];
-
-        self.copy_to_slice(&mut result_buffer, last_element_offset_abs)?;
-        let to_return = T::try_from(result_buffer.as_slice()).map_err(|_e| {
-            new_error!(
-                "pop_buffer_into: failed to convert buffer to {}",
-                type_name::<T>()
-            )
-        })?;
-
-        // update the stack pointer to point to the element we just popped off since that is now free
-        self.write::<u64>(buffer_start_offset, last_element_offset_rel as u64)?;
-
-        // zero out the memory we just popped off
-        let num_bytes_to_zero = stack_pointer_rel - last_element_offset_rel;
-        self.fill(0, last_element_offset_abs, num_bytes_to_zero)?;
-
-        Ok(to_return)
     }
 }
 
@@ -1723,192 +1551,6 @@ mod tests {
             hshm.copy_to_slice(&mut read_buf, start_offset).unwrap();
 
             assert_eq!(test_data, read_buf);
-        }
-    }
-
-    /// Bounds checking for `try_pop_buffer_into` against corrupt guest data.
-    mod try_pop_buffer_bounds {
-        use super::*;
-
-        #[derive(Debug, PartialEq)]
-        struct RawBytes(Vec<u8>);
-
-        impl TryFrom<&[u8]> for RawBytes {
-            type Error = String;
-            fn try_from(value: &[u8]) -> std::result::Result<Self, Self::Error> {
-                Ok(RawBytes(value.to_vec()))
-            }
-        }
-
-        /// Create a buffer with stack pointer initialized to 8 (empty).
-        fn make_buffer(mem_size: usize) -> super::super::HostSharedMemory {
-            let eshm = ExclusiveSharedMemory::new(mem_size).unwrap();
-            let (hshm, _) = eshm.build();
-            hshm.write::<u64>(0, 8u64).unwrap();
-            hshm
-        }
-
-        #[test]
-        fn normal_push_pop_roundtrip() {
-            let mem_size = 4096;
-            let mut hshm = make_buffer(mem_size);
-
-            // Size-prefixed flatbuffer-like payload: [size: u32 LE][payload]
-            let payload = b"hello";
-            let mut data = Vec::new();
-            data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            data.extend_from_slice(payload);
-
-            hshm.push_buffer(0, mem_size, &data).unwrap();
-            let result: RawBytes = hshm.try_pop_buffer_into(0, mem_size).unwrap();
-            assert_eq!(result.0, data);
-        }
-
-        #[test]
-        fn malicious_flatbuffer_size_prefix() {
-            let mem_size = 4096;
-            let mut hshm = make_buffer(mem_size);
-
-            let payload = b"small";
-            let mut data = Vec::new();
-            data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            data.extend_from_slice(payload);
-            hshm.push_buffer(0, mem_size, &data).unwrap();
-
-            // Corrupt size prefix at element start (offset 8) to near u32::MAX.
-            hshm.write::<u32>(8, 0xFFFF_FFFBu32).unwrap(); // +4 = 0xFFFF_FFFF
-
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(
-                err_msg.contains("Corrupt buffer size prefix: flatbuffer claims 4294967295 bytes but the element slot is only 9 bytes"),
-                "Unexpected error message: {}",
-                err_msg
-            );
-        }
-
-        #[test]
-        fn malicious_element_offset_too_small() {
-            let mem_size = 4096;
-            let mut hshm = make_buffer(mem_size);
-
-            let payload = b"test";
-            let mut data = Vec::new();
-            data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            data.extend_from_slice(payload);
-            hshm.push_buffer(0, mem_size, &data).unwrap();
-
-            // Corrupt back-pointer (offset 16) to 0 (before valid range).
-            hshm.write::<u64>(16, 0u64).unwrap();
-
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(
-                err_msg.contains(
-                    "Corrupt buffer back-pointer: element offset 0 is outside valid range [8, 8]"
-                ),
-                "Unexpected error message: {}",
-                err_msg
-            );
-        }
-
-        #[test]
-        fn malicious_element_offset_past_stack_pointer() {
-            let mem_size = 4096;
-            let mut hshm = make_buffer(mem_size);
-
-            let payload = b"test";
-            let mut data = Vec::new();
-            data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            data.extend_from_slice(payload);
-            hshm.push_buffer(0, mem_size, &data).unwrap();
-
-            // Corrupt back-pointer (offset 16) to 9999 (past stack pointer 24).
-            hshm.write::<u64>(16, 9999u64).unwrap();
-
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(
-                err_msg.contains(
-                    "Corrupt buffer back-pointer: element offset 9999 is outside valid range [8, 8]"
-                ),
-                "Unexpected error message: {}",
-                err_msg
-            );
-        }
-
-        #[test]
-        fn malicious_flatbuffer_size_off_by_one() {
-            let mem_size = 4096;
-            let mut hshm = make_buffer(mem_size);
-
-            let payload = b"abcd";
-            let mut data = Vec::new();
-            data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            data.extend_from_slice(payload);
-            hshm.push_buffer(0, mem_size, &data).unwrap();
-
-            // Corrupt size prefix: claim 5 bytes (total 9), exceeding the 8-byte slot.
-            hshm.write::<u32>(8, 5u32).unwrap(); // fb_buffer_size = 5 + 4 = 9
-
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(
-                err_msg.contains("Corrupt buffer size prefix: flatbuffer claims 9 bytes but the element slot is only 8 bytes"),
-                "Unexpected error message: {}",
-                err_msg
-            );
-        }
-
-        /// Back-pointer just below stack_pointer causes underflow in
-        /// `stack_pointer_rel - last_element_offset_rel - 8`.
-        #[test]
-        fn back_pointer_near_stack_pointer_underflow() {
-            let mem_size = 4096;
-            let mut hshm = make_buffer(mem_size);
-
-            let payload = b"test";
-            let mut data = Vec::new();
-            data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            data.extend_from_slice(payload);
-            hshm.push_buffer(0, mem_size, &data).unwrap();
-
-            // stack_pointer_rel = 24. Set back-pointer to 23 (> 24 - 16 = 8, so rejected).
-            hshm.write::<u64>(16, 23u64).unwrap();
-
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(
-                err_msg.contains(
-                    "Corrupt buffer back-pointer: element offset 23 is outside valid range [8, 8]"
-                ),
-                "Unexpected error message: {}",
-                err_msg
-            );
-        }
-
-        /// Size prefix of 0xFFFF_FFFD causes u32 overflow: 0xFFFF_FFFD + 4 wraps.
-        #[test]
-        fn size_prefix_u32_overflow() {
-            let mem_size = 4096;
-            let mut hshm = make_buffer(mem_size);
-
-            let payload = b"test";
-            let mut data = Vec::new();
-            data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            data.extend_from_slice(payload);
-            hshm.push_buffer(0, mem_size, &data).unwrap();
-
-            // Write 0xFFFF_FFFD as size prefix: checked_add(4) returns None.
-            hshm.write::<u32>(8, 0xFFFF_FFFDu32).unwrap();
-
-            let result: Result<RawBytes> = hshm.try_pop_buffer_into(0, mem_size);
-            let err_msg = format!("{}", result.unwrap_err());
-            assert!(
-                err_msg.contains("Corrupt buffer size prefix: value 4294967293 overflows when adding 4-byte header"),
-                "Unexpected error message: {}",
-                err_msg
-            );
         }
     }
 

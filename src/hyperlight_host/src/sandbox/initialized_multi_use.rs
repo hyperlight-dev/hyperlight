@@ -737,7 +737,7 @@ impl MultiUseSandbox {
             let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
             let buffer = fc.encode(&mut builder);
 
-            self.mem_mgr.write_guest_function_call(buffer)?;
+            self.mem_mgr.write_guest_function_call_virtq(buffer)?;
 
             let dispatch_res = self.vm.dispatch_call_from_host(
                 &mut self.mem_mgr,
@@ -754,7 +754,7 @@ impl MultiUseSandbox {
                 return Err(error);
             }
 
-            let guest_result = self.mem_mgr.get_guest_function_call_result()?.into_inner();
+            let guest_result = self.mem_mgr.read_h2g_result_from_g2h()?.into_inner();
 
             match guest_result {
                 Ok(val) => Ok(val),
@@ -782,8 +782,6 @@ impl MultiUseSandbox {
         // - any serialized host function call are zeroed out by us (the host) during deserialization, see `get_host_function_call`
         // - any serialized host function result is zeroed out by the guest during deserialization, see `get_host_return_value`
         if let Err(e) = &res {
-            self.mem_mgr.clear_io_buffers();
-
             // Determine if we should poison the sandbox.
             self.poisoned |= e.is_poison_error();
         }
@@ -1082,12 +1080,10 @@ mod tests {
             .unwrap();
     }
 
-    /// Make sure input/output buffers are properly reset after guest call (with host call)
+    /// Make sure pool buffers are properly reset after guest call (with host call)
     #[test]
     fn io_buffer_reset() {
-        let mut cfg = SandboxConfiguration::default();
-        cfg.set_input_data_size(4096);
-        cfg.set_output_data_size(4096);
+        let cfg = SandboxConfiguration::default();
         let path = simple_guest_as_string().unwrap();
         let mut sandbox =
             UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg)).unwrap();
@@ -1131,21 +1127,21 @@ mod tests {
         assert_eq!(res, 0);
     }
 
-    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (24K) and heap(20K).
+    // Tests to ensure that many (1000) function calls can be made in a call context with a small stack (24K) and heap(32K).
     // This test effectively ensures that the stack is being properly reset after each call and we are not leaking memory in the Guest.
     #[test]
     fn test_with_small_stack_and_heap() {
         let mut cfg = SandboxConfiguration::default();
-        cfg.set_heap_size(20 * 1024);
+        cfg.set_heap_size(32 * 1024);
         // min_scratch_size already includes 1 page (4k on most
         // platforms) of guest stack, so add 20k more to get 24k
         // total, and then add some more for the eagerly-copied page
-        // tables on amd64
+        // tables on amd64 and virtq pool pages.
         let min_scratch = hyperlight_common::layout::min_scratch_size(
-            cfg.get_input_data_size(),
-            cfg.get_output_data_size(),
+            cfg.get_g2h_queue_depth(),
+            cfg.get_h2g_queue_depth(),
         );
-        cfg.set_scratch_size(min_scratch + 0x10000 + 0x10000);
+        cfg.set_scratch_size(min_scratch + 0x10000 + 0x18000);
 
         let mut sbox1: MultiUseSandbox = {
             let path = simple_guest_as_string().unwrap();
@@ -1196,6 +1192,220 @@ mod tests {
         sbox.restore(snapshot).unwrap();
         let res: i32 = sbox.call("GetStatic", ()).unwrap();
         assert_eq!(res, 0);
+    }
+
+    /// Many snapshot restore cycles with state-modifying guest calls.
+    #[test]
+    fn restore_stress_no_pool_corruption() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        for _ in 0..50 {
+            sbox.restore(snapshot.clone()).unwrap();
+            let _ = sbox.call::<i32>("AddToStatic", 1i32).unwrap();
+
+            let res: i32 = sbox.call("GetStatic", ()).unwrap();
+            assert_eq!(res, 1);
+
+            let res: i32 = sbox.call("AddToStatic", 2i32).unwrap();
+            assert_eq!(res, 3);
+        }
+    }
+
+    /// Stress test: snapshot/restore with G2H queue pressure.
+    #[test]
+    fn restore_stress_with_host_calls() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        for i in 0..50 {
+            sbox.restore(snapshot.clone()).unwrap();
+
+            // Fire-and-forget log oneshots - multiple G2H entries queued
+            // without waiting for responses
+            sbox.call::<()>("LogMessageN", 5_i32).unwrap();
+
+            // G2H round-trip with returned data after logs filled the queue
+            let echo: String = sbox.call("Echo", "ping".to_string()).unwrap();
+            assert_eq!(echo, "ping");
+
+            // Multiple calls without restore to exercise queue reuse
+            let res: i32 = sbox.call("AddToStatic", 1i32).unwrap();
+            assert_eq!(res, 1);
+
+            let echo2: String = sbox.call("Echo", format!("echo {i}")).unwrap();
+            assert_eq!(echo2, format!("echo {i}"));
+        }
+    }
+
+    /// Back-to-back restores without any guest call in between.
+    /// The generation bumps twice but the guest only sees the latest value.
+    #[test]
+    fn restore_back_to_back() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let _ = sbox.call::<i32>("AddToStatic", 42i32).unwrap();
+        let snapshot = sbox.snapshot().unwrap();
+
+        // Two restores in a row, no guest calls between them
+        sbox.restore(snapshot.clone()).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
+
+        // Guest should see the snapshot state (static = 42)
+        let res: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(res, 42);
+
+        // Another round: three restores, then call
+        sbox.restore(snapshot.clone()).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
+
+        let res: i32 = sbox.call("AddToStatic", 1i32).unwrap();
+        assert_eq!(res, 43);
+    }
+
+    /// Restore after flooding the G2H queue with log oneshots.
+    #[test]
+    fn restore_after_g2h_pressure() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        for _ in 0..20 {
+            // Flood G2H with many log oneshots to pressure the queue/pool
+            sbox.call::<()>("LogMessageN", 30_i32).unwrap();
+
+            // Restore after heavy G2H usage
+            sbox.restore(snapshot.clone()).unwrap();
+
+            // Verify queue works cleanly after restore
+            sbox.call::<()>("LogMessageN", 5_i32).unwrap();
+            let echo: String = sbox.call("Echo", "ok".to_string()).unwrap();
+            assert_eq!(echo, "ok");
+        }
+    }
+
+    /// Many calls cycling through all descriptor IDs, then restore.
+    /// Ensures restore handles post-wraparound ring state.
+    #[test]
+    fn restore_after_id_wraparound() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        for i in 0..200 {
+            let res: i32 = sbox.call("AddToStatic", 1i32).unwrap();
+            assert_eq!(res, i + 1);
+        }
+
+        // Restore after IDs have wrapped around many times
+        sbox.restore(snapshot.clone()).unwrap();
+
+        let res: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(res, 0);
+
+        // Do another round of wraparound + restore
+        for _ in 0..200 {
+            let _ = sbox.call::<i32>("AddToStatic", 1i32).unwrap();
+        }
+        sbox.restore(snapshot.clone()).unwrap();
+
+        let echo: String = sbox.call("Echo", "after wraparound".to_string()).unwrap();
+        assert_eq!(echo, "after wraparound");
+    }
+
+    /// Restore after a guest exception recovers the sandbox.
+    /// The virtqueue must be fully functional after restore despite
+    /// the guest having been in a broken state.
+    #[test]
+    fn restore_after_guest_error() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        let snapshot = sbox.snapshot().unwrap();
+
+        // Normal call first
+        let res: i32 = sbox.call("AddToStatic", 5i32).unwrap();
+        assert_eq!(res, 5);
+
+        // Trigger an exception - guest is now in a broken state
+        let err = sbox.call::<()>("TriggerException", ());
+        assert!(err.is_err());
+
+        // Restore should recover fully
+        sbox.restore(snapshot.clone()).unwrap();
+
+        // Verify everything works after recovery
+        let res: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(res, 0);
+
+        let echo: String = sbox.call("Echo", "recovered".to_string()).unwrap();
+        assert_eq!(echo, "recovered");
+
+        sbox.call::<()>("LogMessageN", 5_i32).unwrap();
+        let res: i32 = sbox.call("AddToStatic", 1i32).unwrap();
+        assert_eq!(res, 1);
+    }
+
+    /// Snapshot immediately after evolve, restore before any calls.
+    /// Baseline test: the virtqueue has never been used.
+    #[test]
+    fn restore_fresh_snapshot() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve()
+        }
+        .unwrap();
+
+        // Snapshot immediately - no guest calls yet
+        let snapshot = sbox.snapshot().unwrap();
+
+        sbox.restore(snapshot.clone()).unwrap();
+
+        // First-ever guest call after restore
+        let res: i32 = sbox.call("GetStatic", ()).unwrap();
+        assert_eq!(res, 0);
+
+        let echo: String = sbox.call("Echo", "first".to_string()).unwrap();
+        assert_eq!(echo, "first");
+
+        // Restore again and verify
+        sbox.restore(snapshot.clone()).unwrap();
+        sbox.call::<()>("LogMessageN", 10_i32).unwrap();
+        let res: i32 = sbox.call("AddToStatic", 7i32).unwrap();
+        assert_eq!(res, 7);
     }
 
     #[test]
@@ -1546,7 +1756,7 @@ mod tests {
         for (name, heap_size) in test_cases {
             let mut cfg = SandboxConfiguration::default();
             cfg.set_heap_size(heap_size);
-            cfg.set_scratch_size(0x100000);
+            cfg.set_scratch_size(heap_size as usize + 0x100000);
 
             let path = simple_guest_as_string().unwrap();
             let sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), Some(cfg))
