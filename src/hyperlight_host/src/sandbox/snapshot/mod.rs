@@ -25,7 +25,6 @@ use hyperlight_common::vmem::{
 };
 use tracing::{Span, instrument};
 
-use crate::HyperlightError::MemoryRegionSizeMismatch;
 use crate::Result;
 use crate::hypervisor::regs::CommonSpecialRegisters;
 use crate::mem::exe::{ExeInfo, LoadInfo};
@@ -89,14 +88,6 @@ pub struct Snapshot {
     /// things like persisting a snapshot and reloading it are likely
     /// to destroy this information.
     load_info: LoadInfo,
-    /// The hash of the other portions of the snapshot. Morally, this
-    /// is just a memoization cache for [`hash`], below, but it is not
-    /// a [`std::sync::OnceLock`] because it may be persisted to disk
-    /// without being recomputed on load.
-    ///
-    /// It is not a [`blake3::Hash`] because we do not presently
-    /// require constant-time equality checking
-    hash: [u8; 32],
     /// The address of the top of the guest stack
     stack_top_gva: u64,
 
@@ -158,41 +149,6 @@ impl hyperlight_common::vmem::TableReadOps for Snapshot {
     fn root_table(&self) -> u64 {
         self.root_pt_gpa()
     }
-}
-
-/// Compute a deterministic hash of a snapshot.
-///
-/// This does not include the load info from the snapshot, because
-/// that is only used for debugging builds.
-fn hash(memory: &[u8], regions: &[MemoryRegion]) -> Result<[u8; 32]> {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(memory);
-    for rgn in regions {
-        hasher.update(&usize::to_le_bytes(rgn.guest_region.start));
-        let guest_len = rgn.guest_region.end - rgn.guest_region.start;
-        #[allow(clippy::useless_conversion)]
-        let host_start_addr: usize = rgn.host_region.start.into();
-        #[allow(clippy::useless_conversion)]
-        let host_end_addr: usize = rgn.host_region.end.into();
-        hasher.update(&usize::to_le_bytes(host_start_addr));
-        let host_len = host_end_addr - host_start_addr;
-        if guest_len != host_len {
-            return Err(MemoryRegionSizeMismatch(
-                host_len,
-                guest_len,
-                format!("{:?}", rgn),
-            ));
-        }
-        // Ignore [`MemoryRegion::region_type`], since it is extra
-        // information for debugging rather than a core part of the
-        // identity of the snapshot/workload.
-        hasher.update(&usize::to_le_bytes(guest_len));
-        hasher.update(&u32::to_le_bytes(rgn.flags.bits()));
-    }
-    // Ignore [`load_info`], since it is extra information for
-    // debugging rather than a core part of the identity of the
-    // snapshot/workload.
-    Ok(hasher.finalize().into())
 }
 
 pub(crate) fn access_gpa<'a>(
@@ -418,7 +374,6 @@ impl Snapshot {
             + 1;
 
         let extra_regions = Vec::new();
-        let hash = hash(&memory, &extra_regions)?;
 
         Ok(Self {
             sandbox_id: SANDBOX_CONFIGURATION_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -426,7 +381,6 @@ impl Snapshot {
             layout,
             regions: extra_regions,
             load_info,
-            hash,
             stack_top_gva: exn_stack_top_gva,
             sregs: None,
             entrypoint: NextAction::Initialise(load_addr + entrypoint_va - base_va),
@@ -610,14 +564,12 @@ impl Snapshot {
         // PAs overlap the old region PAs.
         let regions: Vec<MemoryRegion> = Vec::new();
 
-        let hash = hash(&memory, &regions)?;
         Ok(Self {
             sandbox_id,
             layout,
             memory: ReadonlySharedMemory::from_bytes_with_mapped_size(&memory, guest_visible_size)?,
             regions,
             load_info,
-            hash,
             stack_top_gva,
             sregs: Some(sregs),
             entrypoint,
@@ -734,12 +686,6 @@ impl Snapshot {
             missing,
             signature_mismatches
         ))
-    }
-}
-
-impl PartialEq for Snapshot {
-    fn eq(&self, other: &Snapshot) -> bool {
-        self.hash == other.hash
     }
 }
 
