@@ -2916,4 +2916,244 @@ mod tests {
             "Expected overlap error for scratch region, got: {err:?}"
         );
     }
+
+    /// Tests for [`MultiUseSandbox::from_snapshot`] in-memory.
+    mod from_snapshot {
+        use std::sync::Arc;
+
+        use hyperlight_testing::simple_guest_as_string;
+
+        use crate::func::Registerable;
+        use crate::sandbox::SandboxConfiguration;
+        use crate::sandbox::snapshot::Snapshot;
+        use crate::{GuestBinary, HostFunctions, MultiUseSandbox, UninitializedSandbox};
+
+        fn make_sandbox() -> MultiUseSandbox {
+            let path = simple_guest_as_string().unwrap();
+            UninitializedSandbox::new(GuestBinary::FilePath(path), None)
+                .unwrap()
+                .evolve()
+                .unwrap()
+        }
+
+        /// Sandbox with an extra `Add(i32, i32) -> i32` host function.
+        fn make_sandbox_with_add() -> MultiUseSandbox {
+            let path = simple_guest_as_string().unwrap();
+            let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u.register_host_function("Add", |a: i32, b: i32| Ok(a + b))
+                .unwrap();
+            u.evolve().unwrap()
+        }
+
+        fn host_funcs_with_matching_add() -> HostFunctions {
+            let mut hf = HostFunctions::default();
+            hf.register_host_function("Add", |a: i32, b: i32| Ok(a + b))
+                .unwrap();
+            hf
+        }
+
+        #[test]
+        fn round_trip_running_sandbox() {
+            let mut sbox = make_sandbox();
+            sbox.call::<i32>("AddToStatic", 11i32).unwrap();
+            let snapshot = sbox.snapshot().unwrap();
+            let mut sbox2 =
+                MultiUseSandbox::from_snapshot(snapshot, HostFunctions::default(), None).unwrap();
+            assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 11);
+            let echoed: String = sbox2.call("Echo", "hi".to_string()).unwrap();
+            assert_eq!(echoed, "hi");
+        }
+
+        #[test]
+        fn round_trip_pre_init_snapshot() {
+            let path = simple_guest_as_string().unwrap();
+            let snap =
+                Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
+                    .unwrap();
+            let mut sbox =
+                MultiUseSandbox::from_snapshot(Arc::new(snap), HostFunctions::default(), None)
+                    .unwrap();
+            assert_eq!(sbox.call::<i32>("GetStatic", ()).unwrap(), 0);
+        }
+
+        /// Sandboxes built from clones of one `Arc<Snapshot>` share
+        /// `sandbox_id` (so both can `restore` to it) but are
+        /// memory-isolated from each other.
+        #[test]
+        fn arc_clone_isolation_and_restore_compat() {
+            let mut sbox = make_sandbox();
+            sbox.call::<i32>("AddToStatic", 3i32).unwrap();
+            let snapshot = sbox.snapshot().unwrap();
+
+            let mut a =
+                MultiUseSandbox::from_snapshot(snapshot.clone(), HostFunctions::default(), None)
+                    .unwrap();
+            let mut b =
+                MultiUseSandbox::from_snapshot(snapshot.clone(), HostFunctions::default(), None)
+                    .unwrap();
+            assert_eq!(a.call::<i32>("GetStatic", ()).unwrap(), 3);
+            assert_eq!(b.call::<i32>("GetStatic", ()).unwrap(), 3);
+
+            a.call::<i32>("AddToStatic", 7i32).unwrap();
+            assert_eq!(a.call::<i32>("GetStatic", ()).unwrap(), 10);
+            assert_eq!(b.call::<i32>("GetStatic", ()).unwrap(), 3);
+
+            a.restore(snapshot.clone()).unwrap();
+            b.restore(snapshot).unwrap();
+            assert_eq!(a.call::<i32>("GetStatic", ()).unwrap(), 3);
+            assert_eq!(b.call::<i32>("GetStatic", ()).unwrap(), 3);
+        }
+
+        #[test]
+        fn accepts_matching_host_functions() {
+            let mut sbox = make_sandbox_with_add();
+            sbox.call::<i32>("AddToStatic", 5i32).unwrap();
+            let snap = sbox.snapshot().unwrap();
+            let mut sbox2 =
+                MultiUseSandbox::from_snapshot(snap, host_funcs_with_matching_add(), None).unwrap();
+            assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 5);
+        }
+
+        #[test]
+        fn rejects_missing_host_function() {
+            let mut sbox = make_sandbox_with_add();
+            let snap = sbox.snapshot().unwrap();
+            let err = MultiUseSandbox::from_snapshot(snap, HostFunctions::default(), None)
+                .expect_err("missing `Add` must be rejected");
+            let msg = format!("{}", err);
+            assert!(msg.contains("Add"), "got: {}", msg);
+        }
+
+        #[test]
+        fn rejects_signature_mismatch() {
+            let mut sbox = make_sandbox_with_add();
+            let snap = sbox.snapshot().unwrap();
+            let mut hf = HostFunctions::default();
+            hf.register_host_function("Add", |a: String, b: String| Ok(format!("{a}{b}")))
+                .unwrap();
+            let err = MultiUseSandbox::from_snapshot(snap, hf, None)
+                .expect_err("signature mismatch on `Add` must be rejected");
+            let msg = format!("{}", err);
+            assert!(msg.contains("Add"), "got: {}", msg);
+        }
+
+        /// Supplied host-function set may be a strict superset of the
+        /// snapshot's required set.
+        #[test]
+        fn accepts_extra_host_functions() {
+            let mut sbox = make_sandbox_with_add();
+            sbox.call::<i32>("AddToStatic", 9i32).unwrap();
+            let snap = sbox.snapshot().unwrap();
+            let mut hf = host_funcs_with_matching_add();
+            hf.register_host_function("Mul", |a: i32, b: i32| Ok(a * b))
+                .unwrap();
+            let mut sbox2 = MultiUseSandbox::from_snapshot(snap, hf, None).unwrap();
+            assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 9);
+        }
+
+        /// A sandbox built via `from_snapshot` can itself be snapshotted
+        /// and restored, and its snapshots are restore-compatible with it.
+        #[test]
+        fn re_snapshot_after_from_snapshot() {
+            let mut sbox = make_sandbox();
+            sbox.call::<i32>("AddToStatic", 4i32).unwrap();
+            let snap1 = sbox.snapshot().unwrap();
+
+            let mut sbox2 =
+                MultiUseSandbox::from_snapshot(snap1, HostFunctions::default(), None).unwrap();
+            sbox2.call::<i32>("AddToStatic", 6i32).unwrap();
+            let snap2 = sbox2.snapshot().unwrap();
+
+            sbox2.call::<i32>("AddToStatic", 100i32).unwrap();
+            assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 110);
+
+            sbox2.restore(snap2.clone()).unwrap();
+            assert_eq!(sbox2.call::<i32>("GetStatic", ()).unwrap(), 10);
+
+            let mut sbox3 =
+                MultiUseSandbox::from_snapshot(snap2, HostFunctions::default(), None).unwrap();
+            assert_eq!(sbox3.call::<i32>("GetStatic", ()).unwrap(), 10);
+        }
+
+        /// The host function closure supplied to `from_snapshot` (not the
+        /// original sandbox's closure) is the one invoked at runtime.
+        #[test]
+        fn supplied_host_function_is_callable() {
+            let path = simple_guest_as_string().unwrap();
+            let mut u = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u.register_host_function("Echo42", || Ok(1i64)).unwrap();
+            let mut sbox = u.evolve().unwrap();
+            let snap = sbox.snapshot().unwrap();
+
+            let mut hf = HostFunctions::default();
+            hf.register_host_function("Echo42", || Ok(42i64)).unwrap();
+            let mut sbox2 = MultiUseSandbox::from_snapshot(snap, hf, None).unwrap();
+
+            let got: i64 = sbox2
+                .call(
+                    "CallGivenParamlessHostFuncThatReturnsI64",
+                    "Echo42".to_string(),
+                )
+                .unwrap();
+            assert_eq!(got, 42);
+        }
+
+        /// Pre-init snapshots record no required host functions, so any
+        /// `HostFunctions` set is accepted.
+        #[test]
+        fn pre_init_snapshot_accepts_arbitrary_host_functions() {
+            let path = simple_guest_as_string().unwrap();
+            let snap =
+                Snapshot::from_env(GuestBinary::FilePath(path), SandboxConfiguration::default())
+                    .unwrap();
+            let mut hf = HostFunctions::default();
+            hf.register_host_function("Unrelated", |a: i32| Ok(a + 1))
+                .unwrap();
+            let mut sbox = MultiUseSandbox::from_snapshot(Arc::new(snap), hf, None).unwrap();
+            assert_eq!(sbox.call::<i32>("GetStatic", ()).unwrap(), 0);
+        }
+
+        /// Snapshots taken from a sandbox built via `from_snapshot`
+        /// must continue the generation counter of the snapshot they
+        /// were constructed from, matching `restore`.
+        #[test]
+        fn snapshot_generation_propagates() {
+            let mut sbox = make_sandbox();
+            sbox.call::<i32>("AddToStatic", 1i32).unwrap();
+            let snap1 = sbox.snapshot().unwrap();
+            let gen1 = snap1.snapshot_generation();
+            sbox.call::<i32>("AddToStatic", 1i32).unwrap();
+            let snap2 = sbox.snapshot().unwrap();
+            let gen2 = snap2.snapshot_generation();
+            assert_eq!(gen2, gen1 + 1);
+
+            let mut sbox2 =
+                MultiUseSandbox::from_snapshot(snap2, HostFunctions::default(), None).unwrap();
+            sbox2.call::<i32>("AddToStatic", 1i32).unwrap();
+            let snap3 = sbox2.snapshot().unwrap();
+            assert_eq!(snap3.snapshot_generation(), gen2 + 1);
+        }
+
+        /// Registering a host function on an already-evolved
+        /// `MultiUseSandbox` must invalidate its cached snapshot, so
+        /// that the next `snapshot()` reflects the new required
+        /// host-function set.
+        #[test]
+        fn late_register_invalidates_snapshot_cache() {
+            let mut sbox = make_sandbox();
+            // Force a cached snapshot to exist.
+            let _ = sbox.snapshot().unwrap();
+
+            sbox.register_host_function("Echo42", || Ok(42i64)).unwrap();
+
+            // The next snapshot must include `Echo42` as a required
+            // host function, so building a sandbox from it without
+            // `Echo42` must fail.
+            let snap = sbox.snapshot().unwrap();
+            let err = MultiUseSandbox::from_snapshot(snap, HostFunctions::default(), None)
+                .expect_err("late-registered `Echo42` must be required by the new snapshot");
+            let msg = format!("{}", err);
+            assert!(msg.contains("Echo42"), "got: {}", msg);
+        }
+    }
 }
