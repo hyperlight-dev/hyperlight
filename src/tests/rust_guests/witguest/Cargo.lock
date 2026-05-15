@@ -99,7 +99,7 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1af5a01adeeade54c9f5060300227a8ee64c05b6376f28e9b8ee3b72dd2056f"
 dependencies = [
- "spin",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -248,7 +248,7 @@ dependencies = [
  "flatbuffers",
  "log",
  "smallvec",
- "spin",
+ "spin 0.11.0",
  "thiserror",
  "tracing-core",
 ]
@@ -305,7 +305,7 @@ dependencies = [
  "hyperlight-libc",
  "linkme",
  "log",
- "spin",
+ "spin 0.11.0",
  "tracing",
 ]
 
@@ -324,7 +324,7 @@ name = "hyperlight-guest-tracing"
 version = "0.15.0"
 dependencies = [
  "hyperlight-common",
- "spin",
+ "spin 0.11.0",
  "tracing",
  "tracing-core",
 ]
@@ -668,6 +668,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "783f3f6f6b01e295a669edfc402133a5f2553d1f0e81284b3ba4594e80bdd4a2"
+dependencies = [
+ "lock_api",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -817,7 +826,7 @@ dependencies = [
  "hyperlight-component-macro",
  "hyperlight-guest",
  "hyperlight-guest-bin",
- "spin",
+ "spin 0.10.0",
 ]
 
 [[package]]
