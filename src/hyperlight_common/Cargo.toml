@@ -40,7 +40,7 @@ guest-counter = []
 
 [dev-dependencies]
 quickcheck = "1.0.3"
-rand = "0.9.2"
+rand = "0.10.1"
 
 [lib]
 bench = false # see https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
