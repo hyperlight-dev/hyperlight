@@ -22,7 +22,7 @@ bytemuck = { version = "1.24", features = ["derive"] }
 flatbuffers = { version = "25.12.19", default-features = false }
 log = "0.4.29"
 smallvec = "1.15.1"
-spin = "0.10.0"
+spin = "0.11.0"
 thiserror = { version = "2.0.18", default-features = false }
 tracing = { version = "0.1.44", optional = true }
 tracing-core = { version = "0.1.36", default-features = false }
