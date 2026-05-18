@@ -92,7 +92,7 @@ unsafe fn init_tss(pc: *mut ProcCtrl) {
         let tss_ptr = &raw mut (*pc).tss;
         // copy byte by byte to avoid alignment issues
         let ist1_ptr = &raw mut (*tss_ptr).ist1 as *mut [u8; 8];
-        let exn_stack = hyperlight_common::layout::MAX_GVA as u64
+        let exn_stack = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
         ist1_ptr.write_volatile(exn_stack.to_ne_bytes());

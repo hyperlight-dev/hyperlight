@@ -21,7 +21,7 @@ limitations under the License.
 /// We have this the top of the page below the top of memory in order
 /// to make working with start/end ptrs in a few places more
 /// convenient (not needing to worry about overflow)
-pub const MAX_GVA: usize = 0xffff_ffff_ffff_efff;
+pub const SCRATCH_TOP_GVA: usize = 0xffff_ffff_ffff_efff;
 pub const SNAPSHOT_PT_GVA_MIN: usize = 0xffff_8000_0000_0000;
 pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
 
@@ -29,7 +29,7 @@ pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
 /// supports at least 36 bits.  Almost all of them support at least 40
 /// bits, so we could consider bumping this in the future if we were
 /// ever memory-constrained.
-pub const MAX_GPA: usize = 0x0000_000f_ffff_ffff;
+pub const SCRATCH_TOP_GPA: usize = 0x0000_000f_ffff_ffff;
 
 /// On amd64, this is:
 /// - Two pages for the TSS and IDT

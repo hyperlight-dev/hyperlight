@@ -1510,7 +1510,7 @@ mod tests {
         let (mut hshm, gshm) = mem_mgr.build().unwrap();
 
         let peb_address = gshm.layout.peb_address();
-        let stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
+        let stack_top_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
         let mut vm = set_up_hypervisor_partition(
@@ -2122,7 +2122,7 @@ mod tests {
 
             /// Get the stack top GVA, same as the regular codepath.
             fn stack_top_gva(&self) -> u64 {
-                hyperlight_common::layout::MAX_GVA as u64
+                hyperlight_common::layout::SCRATCH_TOP_GVA as u64
                     - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
                     + 1
             }

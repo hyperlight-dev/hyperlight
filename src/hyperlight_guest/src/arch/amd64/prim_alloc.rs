@@ -33,7 +33,8 @@ pub unsafe fn alloc_phys_pages(n: u64) -> u64 {
     }
     // Set aside two pages at the top of the scratch region for the
     // exception stack, shared state, etc
-    let max_avail = hyperlight_common::layout::MAX_GPA - hyperlight_common::vmem::PAGE_SIZE * 2;
+    let max_avail =
+        hyperlight_common::layout::SCRATCH_TOP_GPA - hyperlight_common::vmem::PAGE_SIZE * 2;
     if x.checked_add(nbytes)
         .is_none_or(|xx| xx >= max_avail as u64)
     {
