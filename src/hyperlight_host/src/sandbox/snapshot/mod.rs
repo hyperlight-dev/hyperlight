@@ -355,7 +355,7 @@ impl Snapshot {
         layout.set_pt_size(pt_bytes.len())?;
         memory.extend(&pt_bytes);
 
-        let exn_stack_top_gva = hyperlight_common::layout::MAX_GVA as u64
+        let exn_stack_top_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1;
 
@@ -420,7 +420,7 @@ impl Snapshot {
                         &op,
                         root_pt_gpas,
                         0,
-                        hyperlight_common::layout::MAX_GVA as u64,
+                        hyperlight_common::layout::SCRATCH_TOP_GVA as u64,
                     )
                 };
 

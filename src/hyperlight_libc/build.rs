@@ -23,7 +23,9 @@ use std::{env, fs};
 use anyhow::{Context, Result, bail};
 use bindgen::Formatter::Prettyplease;
 use bindgen::RustEdition::Edition2021;
-use build_files::{LIBC_FILES, LIBC_FILES_X86, LIBC_FILES_AARCH64, LIBM_FILES, LIBM_FILES_X86, LIBM_FILES_AARCH64};
+use build_files::{
+    LIBC_FILES, LIBC_FILES_AARCH64, LIBC_FILES_X86, LIBM_FILES, LIBM_FILES_AARCH64, LIBM_FILES_X86,
+};
 
 fn copy_includes<P: AsRef<Path>, Q: AsRef<Path> + std::fmt::Debug>(
     include_dir: P,

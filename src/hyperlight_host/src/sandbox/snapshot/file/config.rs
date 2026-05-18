@@ -568,7 +568,7 @@ impl OciSnapshotConfig {
         // Bound it to the architecture's addressable GVA range so a
         // malformed config cannot install an out-of-range stack
         // pointer. The range is `(0, MAX_GVA]`.
-        let max_gva = hyperlight_common::layout::MAX_GVA as u64;
+        let max_gva = hyperlight_common::layout::SCRATCH_TOP_GVA as u64;
         if self.stack_top_gva == 0 || self.stack_top_gva > max_gva {
             return Err(crate::new_error!(
                 "snapshot stack_top_gva {:#x} is outside the valid range (0, {:#x}]",

@@ -175,7 +175,7 @@ impl KvmVm {
                 == CPUID_FUNCTION_PROCESSOR_CAPACITY_PARAMETERS_AND_EXTENDED_FEATURE_IDENTIFICATION
             {
                 entry.eax &= !0xff;
-                entry.eax |= hyperlight_common::layout::MAX_GPA.ilog2() + 1;
+                entry.eax |= hyperlight_common::layout::SCRATCH_TOP_GPA.ilog2() + 1;
             }
         }
         vcpu_fd

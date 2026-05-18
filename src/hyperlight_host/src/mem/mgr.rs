@@ -589,7 +589,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
     ) -> Result<Vec<CrashDumpRegion>> {
         use crate::sandbox::snapshot::SharedMemoryPageTableBuffer;
 
-        let len = hyperlight_common::layout::MAX_GVA;
+        let len = hyperlight_common::layout::SCRATCH_TOP_GVA;
 
         let regions = self.shared_mem.with_contents(|snapshot| {
             self.scratch_mem.with_contents(|scratch| {

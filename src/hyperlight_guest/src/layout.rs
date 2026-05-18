@@ -20,19 +20,19 @@ mod arch;
 
 pub use arch::{MAIN_STACK_LIMIT_GVA, MAIN_STACK_TOP_GVA};
 pub fn scratch_size_gva() -> *mut u64 {
-    use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_SIZE_OFFSET};
-    (MAX_GVA as u64 - SCRATCH_TOP_SIZE_OFFSET + 1) as *mut u64
+    use hyperlight_common::layout::{SCRATCH_TOP_GVA, SCRATCH_TOP_SIZE_OFFSET};
+    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_SIZE_OFFSET + 1) as *mut u64
 }
 pub fn allocator_gva() -> *mut u64 {
-    use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_ALLOCATOR_OFFSET};
-    (MAX_GVA as u64 - SCRATCH_TOP_ALLOCATOR_OFFSET + 1) as *mut u64
+    use hyperlight_common::layout::{SCRATCH_TOP_ALLOCATOR_OFFSET, SCRATCH_TOP_GVA};
+    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_ALLOCATOR_OFFSET + 1) as *mut u64
 }
 pub fn snapshot_pt_gpa_base_gva() -> *mut u64 {
-    use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET};
-    (MAX_GVA as u64 - SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET + 1) as *mut u64
+    use hyperlight_common::layout::{SCRATCH_TOP_GVA, SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET};
+    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_SNAPSHOT_PT_GPA_BASE_OFFSET + 1) as *mut u64
 }
 pub fn snapshot_generation_gva() -> *mut u64 {
-    use hyperlight_common::layout::{MAX_GVA, SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET};
-    (MAX_GVA as u64 - SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET + 1) as *mut u64
+    use hyperlight_common::layout::{SCRATCH_TOP_GVA, SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET};
+    (SCRATCH_TOP_GVA as u64 - SCRATCH_TOP_SNAPSHOT_GENERATION_OFFSET + 1) as *mut u64
 }
 pub use arch::{scratch_base_gpa, scratch_base_gva};
