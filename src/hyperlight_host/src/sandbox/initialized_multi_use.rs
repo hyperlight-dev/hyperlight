@@ -568,6 +568,32 @@ impl MultiUseSandbox {
             // writes can be rolled back when necessary.
             log_then_return!("TODO: Writable mappings not yet supported");
         }
+
+        // Validate no overlap with sandbox shared memory
+        let shared_size = self.mem_mgr.shared_mem.mem_size();
+        let base_addr = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS;
+        let shared_end = base_addr + shared_size;
+        let rgn_start = rgn.guest_region.start;
+        let rgn_end = rgn.guest_region.end;
+        if rgn_start < shared_end && rgn_end > base_addr {
+            return Err(crate::HyperlightError::Error(format!(
+                "Overlapping: region [{:#x}..{:#x}) overlaps sandbox memory [{:#x}..{:#x})",
+                rgn_start, rgn_end, base_addr, shared_end,
+            )));
+        }
+
+        // Validate no overlap with existing mapped regions
+        for existing in self.vm.get_mapped_regions() {
+            let ex_start = existing.guest_region.start;
+            let ex_end = existing.guest_region.end;
+            if rgn_start < ex_end && rgn_end > ex_start {
+                return Err(crate::HyperlightError::Error(format!(
+                    "Overlapping: region [{:#x}..{:#x}) overlaps existing [{:#x}..{:#x})",
+                    rgn_start, rgn_end, ex_start, ex_end,
+                )));
+            }
+        }
+
         // Reset snapshot since we are mutating the sandbox state
         self.snapshot = None;
         unsafe { self.vm.map_region(rgn) }.map_err(HyperlightVmError::MapRegion)?;
@@ -2587,5 +2613,100 @@ mod tests {
             let _ = std::fs::remove_file(p);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn map_region_rejects_overlapping_regions() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        let mem1 = allocate_guest_memory();
+        let mem2 = allocate_guest_memory();
+        let guest_base: usize = 0x200000000;
+        let region1 = region_for_memory(&mem1, guest_base, MemoryRegionFlags::READ);
+
+        // First mapping should succeed
+        unsafe { sbox.map_region(&region1).unwrap() };
+
+        // Exact same range should fail
+        let region2 = region_for_memory(&mem2, guest_base, MemoryRegionFlags::READ);
+        let err = unsafe { sbox.map_region(&region2) }.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("Overlapping"),
+            "Expected Overlapping error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn map_region_rejects_partial_overlap() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        // Use multi-page regions so partial overlap is geometrically possible
+        let mem1 = page_aligned_memory(&[0xAA; 8192]); // 2 pages
+        let mem2 = page_aligned_memory(&[0xBB; 8192]); // 2 pages
+        let guest_base: usize = 0x200000000;
+        let region1 = region_for_memory(&mem1, guest_base, MemoryRegionFlags::READ);
+
+        unsafe { sbox.map_region(&region1).unwrap() };
+
+        // region2 starts one page before region1, overlapping by one page
+        let overlap_base = guest_base - 0x1000;
+        let region2 = region_for_memory(&mem2, overlap_base, MemoryRegionFlags::READ);
+        let err = unsafe { sbox.map_region(&region2) }.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("verlap"),
+            "Expected overlap error for partial overlap, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn map_region_allows_adjacent_non_overlapping() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        let mem1 = allocate_guest_memory();
+        let mem2 = allocate_guest_memory();
+        let guest_base: usize = 0x200000000;
+        let region1 = region_for_memory(&mem1, guest_base, MemoryRegionFlags::READ);
+        let region_size = mem1.mem_size();
+
+        unsafe { sbox.map_region(&region1).unwrap() };
+
+        // Adjacent region (starts right after the first one ends) should succeed
+        let adjacent_base = guest_base + region_size;
+        let region2 = region_for_memory(&mem2, adjacent_base, MemoryRegionFlags::READ);
+        unsafe { sbox.map_region(&region2).unwrap() };
+    }
+
+    #[test]
+    fn map_region_rejects_overlap_with_snapshot() {
+        let mut sbox: MultiUseSandbox = {
+            let path = simple_guest_as_string().unwrap();
+            let u_sbox = UninitializedSandbox::new(GuestBinary::FilePath(path), None).unwrap();
+            u_sbox.evolve().unwrap()
+        };
+
+        // Try to map at BASE_ADDRESS (0x1000) which overlaps the snapshot region
+        let mem = allocate_guest_memory();
+        let region = region_for_memory(
+            &mem,
+            crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS,
+            MemoryRegionFlags::READ,
+        );
+        let err = unsafe { sbox.map_region(&region) }.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("Overlapping"),
+            "Expected Overlapping error for snapshot overlap, got: {err:?}"
+        );
     }
 }
