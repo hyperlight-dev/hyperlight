@@ -31,7 +31,8 @@ use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
 use hyperlight_common::virtq::{
-    self, BufferPool, Layout, Notifier, QueueStats, RecyclePool, Token, VirtqProducer,
+    self, BufferPool, Layout, Notifier, QueueStats, RecvCompletion, RecyclePool, Token,
+    VirtqProducer,
 };
 
 use super::GuestMemOps;
@@ -131,7 +132,7 @@ impl GuestContext {
 
     /// Call a host function with an explicit response capacity hint.
     ///
-    /// `resp_hint` is the total completion buffer size in bytes
+    /// `resp_hint` is the total writable response buffer size in bytes.
     /// (including wire overhead: VirtqMsgHeader + FlatBuffer framing).
     /// The BufferPool allocates multiple adjacent slots when the hint
     /// exceeds a single slot size, so this is zero-copy for the host.
@@ -188,12 +189,15 @@ impl GuestContext {
             let Some(cqe) = self.g2h_producer.poll()? else {
                 bail!("G2H: no completion received");
             };
-            if cqe.token == token {
+            if cqe.token() == token {
                 break cqe;
             }
         };
 
-        let result_bytes = &completion.data;
+        let result_bytes = match completion {
+            RecvCompletion::Data(_, data) => data,
+            RecvCompletion::Ack(_) => bail!("G2H: response was ack-only"),
+        };
         if result_bytes.len() < VirtqMsgHeader::SIZE {
             bail!("G2H: response too short for header");
         }
@@ -224,7 +228,10 @@ impl GuestContext {
             bail!("H2G: no pending call");
         };
 
-        let data = &first.data;
+        let data = match first {
+            RecvCompletion::Data(_, data) => data,
+            RecvCompletion::Ack(_) => bail!("H2G: call was ack-only"),
+        };
         if data.len() < VirtqMsgHeader::SIZE {
             bail!("H2G: completion too short for header");
         }
@@ -256,7 +263,10 @@ impl GuestContext {
                 bail!("H2G: expected continuation descriptor, none available");
             };
 
-            let next_data = &next.data;
+            let next_data = match next {
+                RecvCompletion::Data(_, data) => data,
+                RecvCompletion::Ack(_) => bail!("H2G: continuation was ack-only"),
+            };
             if next_data.len() < VirtqMsgHeader::SIZE {
                 bail!("H2G: continuation too short for header");
             }
@@ -354,13 +364,13 @@ impl GuestContext {
         }
     }
 
-    /// Pre-fill the H2G queue with completion-only descriptors so the host
+    /// Pre-fill the H2G queue with writable-only descriptors so the host
     /// can write incoming call payloads into them.
     fn prefill_h2g(&mut self) -> Result<()> {
         let mut batch = self.h2g_producer.batch();
 
         loop {
-            let entry = match batch.chain().completion(self.h2g_slot_size).build() {
+            let entry = match batch.chain().writable(self.h2g_slot_size).build() {
                 Ok(e) => e,
                 Err(e) if e.is_transient() => {
                     batch.finish()?;
@@ -443,7 +453,7 @@ impl GuestContext {
         payload: &[u8],
         entry_len: usize,
     ) -> result::Result<Token, virtq::VirtqError> {
-        let mut entry = self.g2h_producer.chain().entry(entry_len).build()?;
+        let mut entry = self.g2h_producer.chain().readable(entry_len).build()?;
 
         entry.write_all(header)?;
         entry.write_all(payload)?;
@@ -460,8 +470,8 @@ impl GuestContext {
         let mut entry = self
             .g2h_producer
             .chain()
-            .entry(entry_len)
-            .completion(completion_cap)
+            .readable(entry_len)
+            .writable(completion_cap)
             .build()?;
 
         entry.write_all(header)?;

@@ -37,19 +37,22 @@ limitations under the License.
 //!
 //! # Quick Start
 //!
-//! ## Single Entry/Completion
+//! ## Single Readable/Writable Chain
 //!
 //! ```ignore
 //! // Producer (driver) side - build entry, submit, get completion
 //! let mut entry = producer.chain()
-//!     .entry(64)
-//!     .completion(128)
+//!     .readable(64)
+//!     .writable(128)
 //!     .build()?;
 //! entry.write_all(b"entry data")?;
 //! let token = producer.submit(entry)?;
 //! // ... wait for notification ...
 //! if let Some(completion) = producer.poll()? {
-//!     process(completion.data);
+//!     match completion {
+//!         RecvCompletion::Data(_, data) => process(data),
+//!         RecvCompletion::Ack(_) => {}
+//!     }
 //! }
 //!
 //! // Consumer (device) side - receive entry, send completion
@@ -87,8 +90,8 @@ limitations under the License.
 //! let mut batch = producer.batch();
 //! for data in entries {
 //!     let mut se = batch.chain()
-//!         .entry(data.len())
-//!         .completion(64)
+//!         .readable(data.len())
+//!         .writable(64)
 //!         .build()?;
 //!     se.write_all(data)?;
 //!     batch.submit(se)?;
@@ -104,8 +107,8 @@ limitations under the License.
 //! // Submit entries
 //! for data in entries {
 //!     let mut se = producer.chain()
-//!         .entry(data.len())
-//!         .completion(64)
+//!         .readable(data.len())
+//!         .writable(64)
 //!         .build()?;
 //!     se.write_all(data)?;
 //!     producer.submit(se)?;
@@ -116,8 +119,10 @@ limitations under the License.
 //! producer.set_used_suppression(SuppressionKind::Descriptor(cursor))?;
 //!
 //! // Wait for single notification, then drain all responses
-//! producer.drain(|token, data| {
-//!     handle_response(token, data);
+//! producer.drain(|completion| {
+//!     if let RecvCompletion::Data(token, data) = completion {
+//!         handle_response(token, data);
+//!     }
 //! })?;
 //! ```
 //!
@@ -196,6 +201,8 @@ pub enum VirtqError {
     BadToken,
     #[error("Invalid chain received")]
     BadChain,
+    #[error("Unsupported descriptor chain shape")]
+    UnsupportedChain,
     #[error("Entry data too large for allocated buffer")]
     EntryTooLarge,
     #[error("Completion data too large for allocated buffer")]
@@ -554,8 +561,8 @@ mod tests {
     ) -> Token {
         let mut se = producer
             .chain()
-            .entry(entry_data.len())
-            .completion(cqe_cap)
+            .readable(entry_data.len())
+            .writable(cqe_cap)
             .build()
             .unwrap();
         se.write_all(entry_data).unwrap();
@@ -596,9 +603,9 @@ mod tests {
         let cqe2 = producer.poll().unwrap().unwrap();
         let cqe3 = producer.poll().unwrap().unwrap();
         assert!(
-            [cqe1.token, cqe2.token, cqe3.token].contains(&tok1)
-                && [cqe1.token, cqe2.token, cqe3.token].contains(&tok2)
-                && [cqe1.token, cqe2.token, cqe3.token].contains(&tok3)
+            [cqe1.token(), cqe2.token(), cqe3.token()].contains(&tok1)
+                && [cqe1.token(), cqe2.token(), cqe3.token()].contains(&tok2)
+                && [cqe1.token(), cqe2.token(), cqe3.token()].contains(&tok3)
         );
     }
 
@@ -631,8 +638,8 @@ mod tests {
         // Producer can drain all responses
         let mut responses = Vec::new();
         producer
-            .drain(|tok, _data| {
-                responses.push(tok);
+            .drain(|completion| {
+                responses.push(completion.token());
             })
             .unwrap();
 
@@ -673,7 +680,7 @@ mod tests {
 
         let mut producer = VirtqProducer::new(layout, mem, notifier.clone(), pool);
 
-        let mut se = producer.chain().entry(4).completion(32).build().unwrap();
+        let mut se = producer.chain().readable(4).writable(32).build().unwrap();
         se.write_all(b"test").unwrap();
         producer.submit(se).unwrap();
         assert_eq!(notifier.count.load(Ordering::Relaxed), 1);
@@ -688,19 +695,19 @@ mod tests {
         let initial_count = notifier.notification_count();
 
         // Zero-copy entry via buf_mut
-        let mut se1 = producer.chain().entry(64).completion(128).build().unwrap();
+        let mut se1 = producer.chain().readable(64).writable(128).build().unwrap();
         let buf = se1.buf_mut().unwrap();
         buf[..6].copy_from_slice(b"zc-ent");
         se1.set_written(6).unwrap();
         let _tok1 = producer.submit(se1).unwrap();
 
         // Write-based entry
-        let mut se2 = producer.chain().entry(64).completion(64).build().unwrap();
+        let mut se2 = producer.chain().readable(64).writable(64).build().unwrap();
         se2.write_all(b"copy-ent").unwrap();
         let _tok2 = producer.submit(se2).unwrap();
 
         // Completion-only chain
-        let se3 = producer.chain().completion(32).build().unwrap();
+        let se3 = producer.chain().writable(32).build().unwrap();
         let tok3 = producer.submit(se3).unwrap();
 
         // Each submit may notify independently
@@ -727,8 +734,8 @@ mod tests {
         let _ = producer.poll().unwrap().unwrap();
 
         let cqe = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe.token, tok3);
-        assert_eq!(&cqe.data[..], b"resp");
+        assert_eq!(cqe.token(), tok3);
+        assert_eq!(cqe.data().unwrap().as_ref(), b"resp");
     }
 
     #[test]
@@ -737,7 +744,7 @@ mod tests {
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
         // Zero-copy send: allocate, write directly, submit
-        let mut se = producer.chain().entry(64).completion(128).build().unwrap();
+        let mut se = producer.chain().readable(64).writable(128).build().unwrap();
         let buf = se.buf_mut().unwrap();
         assert_eq!(buf.len(), 64);
         buf[..5].copy_from_slice(b"hello");
@@ -756,7 +763,7 @@ mod tests {
         wc.write_all(b"world").unwrap();
         consumer.complete(wc.into()).unwrap();
         let cqe = producer.poll().unwrap().unwrap();
-        assert_eq!(&cqe.data[..], b"world");
+        assert_eq!(cqe.data().unwrap().as_ref(), b"world");
     }
 
     #[test]
@@ -781,8 +788,8 @@ mod tests {
 
         // Producer gets the completion
         let cqe = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe.token, token);
-        assert_eq!(&cqe.data[..], b"round-trip-rsp");
+        assert_eq!(cqe.token(), token);
+        assert_eq!(cqe.data().unwrap().as_ref(), b"round-trip-rsp");
     }
 
     #[test]
@@ -796,9 +803,9 @@ mod tests {
         consumer.complete(completion).unwrap();
 
         let cqe = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe.token, token);
-        assert_eq!(cqe.data.len(), 0);
-        assert!(cqe.data.is_empty());
+        assert_eq!(cqe.token(), token);
+        assert_eq!(cqe.data().unwrap().len(), 0);
+        assert!(cqe.data().unwrap().is_empty());
     }
 
     #[test]
@@ -820,8 +827,8 @@ mod tests {
         consumer.complete(wc.into()).unwrap();
 
         let cqe = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe.token, token);
-        assert_eq!(&cqe.data[..], b"deferred-cqe");
+        assert_eq!(cqe.token(), token);
+        assert_eq!(cqe.data().unwrap().as_ref(), b"deferred-cqe");
     }
 
     #[test]
@@ -857,8 +864,8 @@ mod tests {
         let cqe1 = producer.poll().unwrap().unwrap();
         let cqe2 = producer.poll().unwrap().unwrap();
         let mut responses: Vec<_> = vec![
-            (cqe1.token, cqe1.data.to_vec()),
-            (cqe2.token, cqe2.data.to_vec()),
+            (cqe1.token(), cqe1.data().unwrap().to_vec()),
+            (cqe2.token(), cqe2.data().unwrap().to_vec()),
         ];
         responses.sort_by_key(|(t, _)| t.0);
 
@@ -873,7 +880,7 @@ mod tests {
         producer: &mut VirtqProducer<TestMem, TestNotifier, TestPool>,
         entry_data: &[u8],
     ) -> Token {
-        let mut se = producer.chain().entry(entry_data.len()).build().unwrap();
+        let mut se = producer.chain().readable(entry_data.len()).build().unwrap();
         se.write_all(entry_data).unwrap();
         producer.submit(se).unwrap()
     }
@@ -890,7 +897,7 @@ mod tests {
         send_readonly(&mut producer, b"d");
 
         // Ring is now full - next submit should fail with Backpressure
-        let mut se = producer.chain().entry(1).build().unwrap();
+        let mut se = producer.chain().readable(1).build().unwrap();
         se.write_all(b"e").unwrap();
         let res = producer.submit(se);
         assert!(
@@ -933,8 +940,8 @@ mod tests {
 
         // poll() should return the buffered completion
         let cqe = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe.token, tok);
-        assert_eq!(&cqe.data[..], b"response-data");
+        assert_eq!(cqe.token(), tok);
+        assert_eq!(cqe.data().unwrap().as_ref(), b"response-data");
     }
 
     #[test]
@@ -967,8 +974,8 @@ mod tests {
 
         // poll() returns only the RW completion
         let cqe = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe.token, tok_rw);
-        assert_eq!(&cqe.data[..], b"result");
+        assert_eq!(cqe.token(), tok_rw);
+        assert_eq!(cqe.data().unwrap().as_ref(), b"result");
 
         // No more - RO completions were discarded
         assert!(producer.poll().unwrap().is_none());
@@ -995,7 +1002,7 @@ mod tests {
 
         // poll() consumes first entry directly from ring
         let cqe1 = producer.poll().unwrap().unwrap();
-        assert!(cqe1.data.is_empty());
+        assert!(matches!(cqe1, RecvCompletion::Ack(_)));
 
         // reclaim() buffers second entry
         let count = producer.reclaim().unwrap();
@@ -1003,8 +1010,8 @@ mod tests {
 
         // poll() returns the buffered one
         let cqe2 = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe2.token, tok_rw);
-        assert_eq!(&cqe2.data[..], b"reply");
+        assert_eq!(cqe2.token(), tok_rw);
+        assert_eq!(cqe2.data().unwrap().as_ref(), b"reply");
     }
 
     /// reclaim + submit must not cause token collisions.
@@ -1041,8 +1048,8 @@ mod tests {
 
         // Poll returns only the RW completion (RO was discarded by reclaim)
         let cqe = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe.token, tok_new);
-        assert_eq!(&cqe.data[..], b"result");
+        assert_eq!(cqe.token(), tok_new);
+        assert_eq!(cqe.data().unwrap().as_ref(), b"result");
 
         // No stale RO completion in the queue
         assert!(producer.poll().unwrap().is_none());
@@ -1383,13 +1390,13 @@ mod fuzz {
             let mut cons = VirtqConsumer::new(mem.layout(), mem.clone(), notify.clone());
 
             let t_prod = thread::spawn(move || {
-                let mut se = prod.chain().entry(4).completion(32).build().unwrap();
+                let mut se = prod.chain().readable(4).writable(32).build().unwrap();
                 se.write_all(b"ping").unwrap();
                 let tok = prod.submit(se).unwrap();
                 loop {
                     if let Some(r) = prod.poll().unwrap() {
-                        assert_eq!(r.token, tok);
-                        assert_eq!(&r.data[..], b"pong");
+                        assert_eq!(r.token(), tok);
+                        assert_eq!(r.data().unwrap().as_ref(), b"pong");
                         break;
                     }
                     thread::yield_now();

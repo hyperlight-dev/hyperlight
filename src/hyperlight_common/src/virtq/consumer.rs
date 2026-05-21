@@ -18,15 +18,19 @@ use alloc::vec;
 
 use bytes::Bytes;
 use fixedbitset::FixedBitSet;
+use smallvec::SmallVec;
 
 use super::*;
 
+type ReadableElems = SmallVec<[BufferElement; 2]>;
+type WritableElems = SmallVec<[BufferElement; 1]>;
+
 /// Data received from the producer, safely copied out of shared memory.
 ///
-/// Created by [`VirtqConsumer::poll`]. The entry data is eagerly copied
-/// from shared memory during poll using [`MemOps::read`] (volatile on
-/// the host side), so accessing it requires no unsafe code and no
-/// references into shared memory.
+/// Created by [`VirtqConsumer::poll`]. Device-readable segments are eagerly
+/// copied and concatenated during poll using [`MemOps::read`] (volatile on the
+/// host side), so accessing data requires no unsafe code and no references
+/// into shared memory. Segment boundaries are not preserved by this API.
 #[derive(Debug, Clone)]
 pub struct RecvEntry {
     token: Token,
@@ -58,11 +62,11 @@ impl RecvEntry {
 /// [`VirtqConsumer::complete`] to release the descriptor.
 #[must_use = "dropping without completing leaks the descriptor"]
 pub enum SendCompletion<M: MemOps> {
-    /// Completion with a writable buffer (for chains with a completion buffer).
+    /// Completion with writable buffer capacity.
     /// Use the `write*` methods on [`WritableCompletion`] to fill the
     /// response buffer.
     Writable(WritableCompletion<M>),
-    /// Ack-only completion (for chains with only entry buffers). No response buffer.
+    /// Ack-only completion (for chains with only readable buffers). No response buffer.
     /// Just pass back to [`VirtqConsumer::complete`] to acknowledge.
     Ack(AckCompletion),
 }
@@ -107,17 +111,17 @@ pub struct WritableCompletion<M: MemOps> {
     mem: M,
     id: u16,
     token: Token,
-    elem: BufferElement,
+    elems: WritableElems,
     written: usize,
 }
 
 impl<M: MemOps> WritableCompletion<M> {
-    fn new(mem: M, id: u16, token: Token, elem: BufferElement) -> Self {
+    fn new(mem: M, id: u16, token: Token, elems: WritableElems) -> Self {
         Self {
             mem,
             id,
             token,
-            elem,
+            elems,
             written: 0,
         }
     }
@@ -127,9 +131,9 @@ impl<M: MemOps> WritableCompletion<M> {
         self.token
     }
 
-    /// Total capacity of the completion buffer in bytes.
+    /// Total capacity of writable buffers in bytes.
     pub fn capacity(&self) -> usize {
-        self.elem.len as usize
+        self.elems.iter().map(|elem| elem.len as usize).sum()
     }
 
     /// Number of bytes written so far.
@@ -142,7 +146,7 @@ impl<M: MemOps> WritableCompletion<M> {
         self.capacity() - self.written
     }
 
-    /// Write bytes into the completion buffer, returning how many were written.
+    /// Write bytes into writable buffers, returning how many were written.
     ///
     /// Appends at the current write position. If `buf` is larger than the
     /// remaining capacity, writes as many bytes as will fit (partial write).
@@ -153,18 +157,35 @@ impl<M: MemOps> WritableCompletion<M> {
     ///
     /// - [`VirtqError::MemoryWriteError`] - underlying MemOps write failed
     pub fn write(&mut self, buf: &[u8]) -> Result<usize, VirtqError> {
-        let to_write = buf.len().min(self.remaining());
-        if to_write == 0 {
-            return Ok(0);
+        let mut src = &buf[..buf.len().min(self.remaining())];
+        let mut written = 0;
+        let mut skip = self.written;
+
+        for elem in &self.elems {
+            if src.is_empty() {
+                break;
+            }
+
+            let elem_len = elem.len as usize;
+            if skip >= elem_len {
+                skip -= elem_len;
+                continue;
+            }
+
+            let elem_offset = skip;
+            skip = 0;
+            let n = (elem_len - elem_offset).min(src.len());
+            let addr = elem.addr + elem_offset as u64;
+            self.mem
+                .write(addr, &src[..n])
+                .map_err(|_| VirtqError::MemoryWriteError)?;
+
+            self.written += n;
+            written += n;
+            src = &src[n..];
         }
 
-        let addr = self.elem.addr + self.written as u64;
-        self.mem
-            .write(addr, &buf[..to_write])
-            .map_err(|_| VirtqError::MemoryWriteError)?;
-
-        self.written += to_write;
-        Ok(to_write)
+        Ok(written)
     }
 
     /// Write the entire buffer or return an error.
@@ -178,12 +199,8 @@ impl<M: MemOps> WritableCompletion<M> {
             return Err(VirtqError::CqeTooLarge);
         }
 
-        let addr = self.elem.addr + self.written as u64;
-        self.mem
-            .write(addr, buf)
-            .map_err(|_| VirtqError::MemoryWriteError)?;
-
-        self.written += buf.len();
+        let written = self.write(buf)?;
+        debug_assert_eq!(written, buf.len());
         Ok(())
     }
 
@@ -305,12 +322,15 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
             Err(e) => return Err(e.into()),
         };
 
-        let (entry_elem, cqe_elem) = parse_chain(&chain)?;
+        let (readables, writables) = parse_chain(&chain)?;
 
         // Validate entry size
-        if let Some(ref elem) = entry_elem
-            && elem.len as usize > max_entry
-        {
+        let total_entry_len = readables
+            .iter()
+            .map(|elem| elem.len as usize)
+            .try_fold(0usize, |acc, len| acc.checked_add(len))
+            .ok_or(VirtqError::EntryTooLarge)?;
+        if total_entry_len > max_entry {
             return Err(VirtqError::EntryTooLarge);
         }
 
@@ -329,8 +349,8 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         self.next_token = self.next_token.wrapping_add(1);
 
         // Copy entry data from shared memory
-        let data = match entry_elem.map(|elem| self.read_element(&elem)).transpose() {
-            Ok(d) => d.unwrap_or_default(),
+        let data = match self.read_elements(&readables) {
+            Ok(d) => d,
             Err(e) => {
                 // Read failed - clear inflight before propagating
                 self.inflight.set(id_idx, false);
@@ -341,9 +361,9 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         let entry = RecvEntry { token, data };
 
         // Build the appropriate completion handle
-        let completion = if let Some(elem) = cqe_elem {
+        let completion = if !writables.is_empty() {
             let mem = self.inner.mem().clone();
-            let cqe = WritableCompletion::new(mem, id, token, elem);
+            let cqe = WritableCompletion::new(mem, id, token, writables);
             SendCompletion::Writable(cqe)
         } else {
             let ack = AckCompletion::new(id, token);
@@ -428,15 +448,33 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         Ok(())
     }
 
-    /// Read a buffer element from shared memory into `Bytes`.
-    fn read_element(&self, elem: &BufferElement) -> Result<Bytes, VirtqError> {
-        let mut buf = vec![0u8; elem.len as usize];
-        self.inner
-            .mem()
-            .read(elem.addr, &mut buf)
-            .map_err(|_| VirtqError::MemoryReadError)?;
-
-        Ok(Bytes::from(buf))
+    /// Read readable buffer elements from shared memory into `Bytes`.
+    fn read_elements(&self, elems: &[BufferElement]) -> Result<Bytes, VirtqError> {
+        match elems {
+            [] => Ok(Bytes::new()),
+            [elem] => {
+                let mut buf = vec![0u8; elem.len as usize];
+                self.inner
+                    .mem()
+                    .read(elem.addr, &mut buf)
+                    .map_err(|_| VirtqError::MemoryReadError)?;
+                Ok(Bytes::from(buf))
+            }
+            elems => {
+                let total = elems.iter().map(|elem| elem.len as usize).sum();
+                let mut buf = vec![0u8; total];
+                let mut offset = 0;
+                for elem in elems {
+                    let len = elem.len as usize;
+                    self.inner
+                        .mem()
+                        .read(elem.addr, &mut buf[offset..offset + len])
+                        .map_err(|_| VirtqError::MemoryReadError)?;
+                    offset += len;
+                }
+                Ok(Bytes::from(buf))
+            }
+        }
     }
 
     /// Reset ring and inflight state to initial values.
@@ -446,21 +484,18 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     }
 }
 
-/// Parse a descriptor chain into entry/completion buffer elements.
+/// Parse a descriptor chain into readable and writable buffer elements.
 ///
-/// Returns `(entry_element, completion_element)`.
-fn parse_chain(
-    chain: &BufferChain,
-) -> Result<(Option<BufferElement>, Option<BufferElement>), VirtqError> {
+/// Returns `(readables, writables)`.
+fn parse_chain(chain: &BufferChain) -> Result<(ReadableElems, WritableElems), VirtqError> {
     let r = chain.readables();
     let w = chain.writables();
 
-    match (r.len(), w.len()) {
-        (1, 1) => Ok((Some(r[0]), Some(w[0]))),
-        (0, 1) => Ok((None, Some(w[0]))),
-        (1, 0) => Ok((Some(r[0]), None)),
-        _ => Err(VirtqError::BadChain),
+    if r.is_empty() && w.is_empty() {
+        return Err(VirtqError::BadChain);
     }
+
+    Ok((r.iter().copied().collect(), w.iter().copied().collect()))
 }
 
 impl<M: MemOps> From<WritableCompletion<M>> for SendCompletion<M> {
@@ -478,7 +513,7 @@ impl<M: MemOps> From<AckCompletion> for SendCompletion<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::virtq::ring::tests::make_ring;
+    use crate::virtq::ring::tests::{make_producer, make_ring};
     use crate::virtq::test_utils::*;
 
     #[test]
@@ -486,7 +521,7 @@ mod tests {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
-        let se = producer.chain().completion(16).build().unwrap();
+        let se = producer.chain().writable(16).build().unwrap();
         producer.submit(se).unwrap();
 
         let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
@@ -504,7 +539,7 @@ mod tests {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
-        let mut se = producer.chain().entry(16).build().unwrap();
+        let mut se = producer.chain().readable(16).build().unwrap();
         se.write_all(b"hello").unwrap();
         producer.submit(se).unwrap();
 
@@ -520,7 +555,7 @@ mod tests {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
-        let mut se = producer.chain().entry(32).completion(64).build().unwrap();
+        let mut se = producer.chain().readable(32).writable(64).build().unwrap();
         se.write_all(b"hello world").unwrap();
         producer.submit(se).unwrap();
 
@@ -545,7 +580,7 @@ mod tests {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
-        let se = producer.chain().completion(8).build().unwrap();
+        let se = producer.chain().writable(8).build().unwrap();
         producer.submit(se).unwrap();
 
         let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
@@ -565,7 +600,7 @@ mod tests {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
-        let se = producer.chain().completion(4).build().unwrap();
+        let se = producer.chain().writable(4).build().unwrap();
         producer.submit(se).unwrap();
         let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
 
@@ -582,7 +617,7 @@ mod tests {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
-        let se = producer.chain().completion(16).build().unwrap();
+        let se = producer.chain().writable(16).build().unwrap();
         producer.submit(se).unwrap();
 
         let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
@@ -602,13 +637,51 @@ mod tests {
     }
 
     #[test]
+    fn test_writable_completion_scatters_across_segments() {
+        let ring = make_ring(16);
+        let mem = ring.mem();
+        let mut ring_producer = make_producer(&ring);
+        let mut consumer = VirtqConsumer::new(ring.layout(), mem.clone(), TestNotifier::new());
+
+        let base = mem.base_addr() + Layout::query_size(ring.len()) as u64 + 0x100;
+        let chain = BufferChainBuilder::new()
+            .writable(base, 4)
+            .writable(base + 4, 4)
+            .build()
+            .unwrap();
+        let id = ring_producer.submit_available(&chain).unwrap();
+
+        let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
+        assert!(entry.data().is_empty());
+
+        let SendCompletion::Writable(mut wc) = completion else {
+            panic!("expected Writable");
+        };
+        assert_eq!(wc.capacity(), 8);
+        wc.write_all(b"abcdefgh").unwrap();
+        assert_eq!(wc.written(), 8);
+        consumer.complete(wc.into()).unwrap();
+
+        let mut first = [0u8; 4];
+        let mut second = [0u8; 4];
+        mem.read(base, &mut first).unwrap();
+        mem.read(base + 4, &mut second).unwrap();
+        assert_eq!(&first, b"abcd");
+        assert_eq!(&second, b"efgh");
+
+        let used = ring_producer.poll_used().unwrap();
+        assert_eq!(used.id, id);
+        assert_eq!(used.len, 8);
+    }
+
+    #[test]
     fn test_multiple_pending_completions() {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
-        let se1 = producer.chain().completion(16).build().unwrap();
+        let se1 = producer.chain().writable(16).build().unwrap();
         producer.submit(se1).unwrap();
-        let se2 = producer.chain().completion(16).build().unwrap();
+        let se2 = producer.chain().writable(16).build().unwrap();
         producer.submit(se2).unwrap();
 
         let (_e1, c1) = consumer.poll(1024).unwrap().unwrap();
@@ -624,7 +697,7 @@ mod tests {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
-        let mut se = producer.chain().entry(16).build().unwrap();
+        let mut se = producer.chain().readable(16).build().unwrap();
         se.write_all(b"abc").unwrap();
         producer.submit(se).unwrap();
 
@@ -640,7 +713,7 @@ mod tests {
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
         // Submit and poll (but do not complete)
-        let se = producer.chain().completion(16).build().unwrap();
+        let se = producer.chain().writable(16).build().unwrap();
         producer.submit(se).unwrap();
 
         let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
@@ -661,9 +734,9 @@ mod tests {
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
         // Submit two entries and poll both
-        let se1 = producer.chain().completion(16).build().unwrap();
+        let se1 = producer.chain().writable(16).build().unwrap();
         producer.submit(se1).unwrap();
-        let se2 = producer.chain().completion(16).build().unwrap();
+        let se2 = producer.chain().writable(16).build().unwrap();
         producer.submit(se2).unwrap();
 
         let (_e1, c1) = consumer.poll(1024).unwrap().unwrap();
