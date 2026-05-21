@@ -83,6 +83,8 @@ pub struct Slab<const N: usize> {
     base_addr: u64,
     /// Flat bitmap to track allocated/free slots
     used_slots: FixedBitSet,
+    /// Slot starts for live allocations.
+    run_starts: FixedBitSet,
     /// Last free allocation cache
     last_free_run: Option<Allocation>,
 }
@@ -94,6 +96,7 @@ impl<const N: usize> Slab<N> {
         let usable = region_len - (region_len % N);
         let num_slots = usable / N;
         let used_slots = FixedBitSet::with_capacity(num_slots);
+        let run_starts = FixedBitSet::with_capacity(num_slots);
 
         if base_addr % (N as u64) != 0 {
             return Err(AllocError::InvalidAlign(base_addr));
@@ -106,6 +109,7 @@ impl<const N: usize> Slab<N> {
         Ok(Self {
             base_addr,
             used_slots,
+            run_starts,
             last_free_run: None,
         })
     }
@@ -122,6 +126,56 @@ impl<const N: usize> Slab<N> {
     fn slot_of(&self, addr: u64) -> usize {
         let off = (addr - self.base_addr) as usize;
         off / N
+    }
+
+    fn checked_slot_of(&self, addr: u64, len: usize) -> Result<usize, AllocError> {
+        if addr < self.base_addr {
+            return Err(AllocError::InvalidFree(addr, len));
+        }
+
+        let off = (addr - self.base_addr) as usize;
+        if off % N != 0 {
+            return Err(AllocError::InvalidFree(addr, len));
+        }
+
+        let slot = off / N;
+        if slot >= self.used_slots.len() {
+            return Err(AllocError::InvalidFree(addr, len));
+        }
+
+        Ok(slot)
+    }
+
+    fn live_run_slots_at(&self, start: usize) -> Option<usize> {
+        if start >= self.used_slots.len()
+            || !self.used_slots.contains(start)
+            || !self.run_starts.contains(start)
+        {
+            return None;
+        }
+
+        let mut end = start + 1;
+        while end < self.used_slots.len()
+            && self.used_slots.contains(end)
+            && !self.run_starts.contains(end)
+        {
+            end += 1;
+        }
+
+        Some(end - start)
+    }
+
+    fn live_run_for_alloc(&self, alloc: Allocation) -> Result<(usize, usize), AllocError> {
+        let start = self.checked_slot_of(alloc.addr, alloc.len)?;
+        let run_slots = self
+            .live_run_slots_at(start)
+            .ok_or(AllocError::InvalidFree(alloc.addr, alloc.len))?;
+        let run_len = run_slots * N;
+        if alloc.len != run_len {
+            return Err(AllocError::InvalidFree(alloc.addr, alloc.len));
+        }
+
+        Ok((start, run_slots))
     }
 
     /// Invalidate last_free_run cache if it overlaps with the given allocation.
@@ -171,6 +225,7 @@ impl<const N: usize> Slab<N> {
 
         let idx = self.find_slots(need_slots).ok_or(AllocError::NoSpace)?;
         self.used_slots.insert_range(idx..idx + need_slots);
+        self.run_starts.insert(idx);
         let addr = self.addr_of(idx).ok_or(AllocError::Overflow)?;
 
         let alloc = Allocation {
@@ -184,36 +239,38 @@ impl<const N: usize> Slab<N> {
 
     /// Free a previously allocated slot or multiple slots.
     ///
-    /// `len` must be a multiple of N and `addr` must be N-aligned to base.
+    /// `addr` must be the allocation start and `len` must match the live
+    /// allocator-owned run length.
     pub fn dealloc(&mut self, alloc: Allocation) -> Result<(), AllocError> {
-        let Allocation { addr, len } = alloc;
-        if len == 0 || len % N != 0 || addr < self.base_addr {
-            return Err(AllocError::InvalidFree(addr, len));
-        }
-        let alloc_slots = len / N;
-        let off = (addr - self.base_addr) as usize;
-        if off % N != 0 {
-            return Err(AllocError::InvalidFree(addr, len));
-        }
-        let start = off / N;
-        let num_slots = self.used_slots.len();
-        if start + alloc_slots > num_slots {
-            return Err(AllocError::InvalidFree(addr, len));
-        }
+        let (start, run_slots) = self.live_run_for_alloc(alloc)?;
+        self.dealloc_run(start, run_slots, alloc.addr)
+    }
 
-        // Ensure all bits are set (avoid double-free)
-        if !self
-            .used_slots
-            .contains_all_in_range(start..start + alloc_slots)
-        {
-            return Err(AllocError::InvalidFree(addr, len));
-        }
+    /// Free a live allocation by its start address.
+    pub fn dealloc_addr(&mut self, addr: u64) -> Result<(), AllocError> {
+        let start = self.checked_slot_of(addr, 0)?;
+        let run_slots = self
+            .live_run_slots_at(start)
+            .ok_or(AllocError::InvalidFree(addr, 0))?;
+        self.dealloc_run(start, run_slots, addr)
+    }
 
-        // Mark as free
-        self.used_slots.remove_range(start..start + alloc_slots);
-        self.last_free_run = Some(alloc);
+    fn dealloc_run(&mut self, start: usize, run_slots: usize, addr: u64) -> Result<(), AllocError> {
+        let len = run_slots * N;
+        self.used_slots.remove_range(start..start + run_slots);
+        self.run_starts.set(start, false);
+        self.last_free_run = Some(Allocation { addr, len });
 
         Ok(())
+    }
+
+    /// Capacity of a live allocation by its start address.
+    pub fn allocation_len(&self, addr: u64) -> Result<usize, AllocError> {
+        let start = self.checked_slot_of(addr, 0)?;
+        let run_slots = self
+            .live_run_slots_at(start)
+            .ok_or(AllocError::InvalidFree(addr, 0))?;
+        Ok(run_slots * N)
     }
 
     /// Try to grow a block in place by reserving adjacent free slots to the right.
@@ -224,32 +281,16 @@ impl<const N: usize> Slab<N> {
         old_alloc: Allocation,
         new_len: usize,
     ) -> Result<Option<Allocation>, AllocError> {
-        let Allocation {
-            addr: old_addr,
-            len: old_len,
-        } = old_alloc;
-
-        if new_len <= old_len || old_len == 0 || old_len % N != 0 {
+        let old_addr = old_alloc.addr;
+        let old_len = old_alloc.len;
+        let (start, old_slots) = self.live_run_for_alloc(old_alloc)?;
+        if new_len <= old_len {
             return Err(AllocError::InvalidFree(old_addr, old_len));
         }
 
-        let old_slots = old_len / N;
         let need_slots = new_len.div_ceil(N);
-        let off = (old_addr - self.base_addr) as usize;
-        if off % N != 0 {
-            return Err(AllocError::InvalidFree(old_addr, old_len));
-        }
-
-        let start = off / N;
         if start + need_slots > self.used_slots.len() {
             return Ok(None);
-        }
-        // Existing range must be allocated
-        if !self
-            .used_slots
-            .contains_all_in_range(start..start + old_slots)
-        {
-            return Err(AllocError::InvalidFree(old_addr, old_len));
         }
 
         // Extension must be free
@@ -280,33 +321,17 @@ impl<const N: usize> Slab<N> {
         old_alloc: Allocation,
         new_len: usize,
     ) -> Result<Allocation, AllocError> {
-        let Allocation {
-            addr: old_addr,
-            len: old_len,
-        } = old_alloc;
-
-        if new_len >= old_len || old_len == 0 || old_len % N != 0 {
+        let old_addr = old_alloc.addr;
+        let old_len = old_alloc.len;
+        let (start, old_slots) = self.live_run_for_alloc(old_alloc)?;
+        if new_len == 0 {
+            return Err(AllocError::InvalidArg);
+        }
+        if new_len >= old_len {
             return Err(AllocError::InvalidFree(old_addr, old_len));
         }
 
-        let old_slots = old_len / N;
         let need_slots = new_len.div_ceil(N);
-        let off = (old_addr - self.base_addr) as usize;
-        if off % N != 0 {
-            return Err(AllocError::InvalidFree(old_addr, old_len));
-        }
-
-        let start = off / N;
-        if start + old_slots > self.used_slots.len() {
-            return Err(AllocError::InvalidFree(old_addr, old_len));
-        }
-        // Existing range must be allocated
-        if !self
-            .used_slots
-            .contains_all_in_range(start..start + old_slots)
-        {
-            return Err(AllocError::InvalidFree(old_addr, old_len));
-        }
 
         // Free the excess slots
         self.used_slots
@@ -329,7 +354,12 @@ impl<const N: usize> Slab<N> {
             return Err(AllocError::InvalidArg);
         }
 
-        match new_len.cmp(&old_alloc.len) {
+        let old_len = self.allocation_len(old_alloc.addr)?;
+        if old_alloc.len != old_len {
+            return Err(AllocError::InvalidFree(old_alloc.addr, old_alloc.len));
+        }
+
+        match new_len.cmp(&old_len) {
             Ordering::Greater => {
                 match self.try_grow_inplace(old_alloc, new_len) {
                     // in-place growth succeeded
@@ -383,6 +413,7 @@ impl<const N: usize> Slab<N> {
     /// Reset the slab to initial state which is all slots free.
     pub fn reset(&mut self) {
         self.used_slots.clear();
+        self.run_starts.clear();
         self.last_free_run = None;
     }
 }
@@ -493,6 +524,24 @@ impl<const L: usize, const U: usize> Inner<L, U> {
         }
     }
 
+    /// Free a previously allocated block by its start address.
+    pub fn dealloc_addr(&mut self, addr: u64) -> Result<(), AllocError> {
+        if self.lower.contains(addr) {
+            self.lower.dealloc_addr(addr)
+        } else {
+            self.upper.dealloc_addr(addr)
+        }
+    }
+
+    /// Capacity of a live allocation by its start address.
+    pub fn allocation_len(&self, addr: u64) -> Result<usize, AllocError> {
+        if self.lower.contains(addr) {
+            self.lower.allocation_len(addr)
+        } else {
+            self.upper.allocation_len(addr)
+        }
+    }
+
     /// Reallocate by trying in-place grow; otherwise reserve a new block and free old.
     pub fn resize(
         &mut self,
@@ -522,6 +571,11 @@ fn maybe_move<const A: usize, const B: usize>(
         return slab.resize(old_alloc, new_len);
     }
 
+    let old_len = slab.allocation_len(old_alloc.addr)?;
+    if old_alloc.len != old_len {
+        return Err(AllocError::InvalidFree(old_alloc.addr, old_alloc.len));
+    }
+
     let new_alloc = other.alloc(new_len)?;
 
     slab.dealloc(old_alloc)?;
@@ -545,6 +599,18 @@ impl<const L: usize, const U: usize> BufferProvider for BufferPool<L, U> {
         let mut inner = self.inner.borrow_mut();
         inner.lower.reset();
         inner.upper.reset();
+    }
+}
+
+impl<const L: usize, const U: usize> BufferPool<L, U> {
+    /// Free a previously allocated block by its start address.
+    pub fn dealloc_addr(&self, addr: u64) -> Result<(), AllocError> {
+        self.inner.borrow_mut().dealloc_addr(addr)
+    }
+
+    /// Capacity of a live allocation by its start address.
+    pub fn allocation_len(&self, addr: u64) -> Result<usize, AllocError> {
+        self.inner.borrow().allocation_len(addr)
     }
 }
 
@@ -654,6 +720,35 @@ impl RecyclePool {
         self.inner.borrow().free.len()
     }
 
+    /// Free a previously allocated slot by address.
+    pub fn dealloc_addr(&self, addr: u64) -> Result<(), AllocError> {
+        let slot_size = self.slot_size();
+        self.dealloc(Allocation {
+            addr,
+            len: slot_size,
+        })
+    }
+
+    /// Capacity of a live allocation by its start address.
+    pub fn allocation_len(&self, addr: u64) -> Result<usize, AllocError> {
+        let inner = self.inner.borrow();
+        let end = inner.base_addr + (inner.count * inner.slot_size) as u64;
+
+        if addr < inner.base_addr || addr >= end {
+            return Err(AllocError::InvalidFree(addr, 0));
+        }
+
+        if (addr - inner.base_addr) % inner.slot_size as u64 != 0 {
+            return Err(AllocError::InvalidFree(addr, 0));
+        }
+
+        if inner.free.contains(&addr) {
+            return Err(AllocError::InvalidFree(addr, 0));
+        }
+
+        Ok(inner.slot_size)
+    }
+
     /// Base address of the pool region.
     pub fn base_addr(&self) -> u64 {
         self.inner.borrow().base_addr
@@ -689,6 +784,10 @@ impl BufferProvider for RecyclePool {
         let mut inner = self.inner.borrow_mut();
         let end = inner.base_addr + (inner.count * inner.slot_size) as u64;
 
+        if alloc.len != inner.slot_size {
+            return Err(AllocError::InvalidFree(alloc.addr, alloc.len));
+        }
+
         if alloc.addr < inner.base_addr || alloc.addr >= end {
             return Err(AllocError::InvalidFree(alloc.addr, alloc.len));
         }
@@ -707,9 +806,26 @@ impl BufferProvider for RecyclePool {
 
     fn resize(&self, old: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
         let inner = self.inner.borrow();
+        if old.len != inner.slot_size {
+            return Err(AllocError::InvalidFree(old.addr, old.len));
+        }
         if new_len > inner.slot_size {
             return Err(AllocError::OutOfMemory);
         }
+
+        let end = inner.base_addr + (inner.count * inner.slot_size) as u64;
+        if old.addr < inner.base_addr || old.addr >= end {
+            return Err(AllocError::InvalidFree(old.addr, old.len));
+        }
+
+        if (old.addr - inner.base_addr) % inner.slot_size as u64 != 0 {
+            return Err(AllocError::InvalidFree(old.addr, old.len));
+        }
+
+        if inner.free.contains(&old.addr) {
+            return Err(AllocError::InvalidFree(old.addr, old.len));
+        }
+
         Ok(old)
     }
 
@@ -838,6 +954,57 @@ mod tests {
     }
 
     #[test]
+    fn test_slab_free_wrong_rounded_length() {
+        let mut slab = make_slab::<256>(1024);
+        let alloc = slab.alloc(600).unwrap();
+        assert_eq!(alloc.len, 768);
+
+        let wrong = Allocation {
+            addr: alloc.addr,
+            len: 512,
+        };
+        assert!(matches!(
+            slab.dealloc(wrong),
+            Err(AllocError::InvalidFree(_, 512))
+        ));
+
+        slab.dealloc(alloc).unwrap();
+        assert_eq!(slab.free_bytes(), 1024);
+    }
+
+    #[test]
+    fn test_slab_dealloc_addr_multi_slot() {
+        let mut slab = make_slab::<256>(1024);
+        let alloc = slab.alloc(600).unwrap();
+
+        slab.dealloc_addr(alloc.addr).unwrap();
+        assert_eq!(slab.free_bytes(), 1024);
+    }
+
+    #[test]
+    fn test_slab_dealloc_addr_middle_of_run_fails() {
+        let mut slab = make_slab::<256>(1024);
+        let alloc = slab.alloc(600).unwrap();
+
+        let result = slab.dealloc_addr(alloc.addr + 256);
+        assert!(matches!(result, Err(AllocError::InvalidFree(_, 0))));
+
+        slab.dealloc(alloc).unwrap();
+    }
+
+    #[test]
+    fn test_slab_allocation_len() {
+        let mut slab = make_slab::<256>(1024);
+        let alloc = slab.alloc(600).unwrap();
+
+        assert_eq!(slab.allocation_len(alloc.addr).unwrap(), 768);
+        assert!(matches!(
+            slab.allocation_len(alloc.addr + 256),
+            Err(AllocError::InvalidFree(_, 0))
+        ));
+    }
+
+    #[test]
     fn test_slab_free_double_free() {
         let mut slab = make_slab::<256>(1024);
         let alloc = slab.alloc(256).unwrap();
@@ -845,6 +1012,21 @@ mod tests {
         slab.dealloc(alloc).unwrap();
         let result = slab.dealloc(alloc);
         assert!(matches!(result, Err(AllocError::InvalidFree(_, _))));
+    }
+
+    #[test]
+    fn test_slab_last_free_run_reuse_updates_run_start() {
+        let mut slab = make_slab::<256>(1024);
+        let large = slab.alloc(600).unwrap();
+        slab.dealloc(large).unwrap();
+
+        let small = slab.alloc(128).unwrap();
+        assert_eq!(small.addr, large.addr);
+        assert_eq!(small.len, 256);
+        assert_eq!(slab.allocation_len(small.addr).unwrap(), 256);
+
+        slab.dealloc_addr(small.addr).unwrap();
+        assert_eq!(slab.free_bytes(), 1024);
     }
 
     #[test]
@@ -966,6 +1148,23 @@ mod tests {
         let new_alloc = slab.resize(alloc, 512).unwrap();
         assert_eq!(new_alloc.addr, alloc.addr); // Same address (in-place)
         assert_eq!(new_alloc.len, 512);
+    }
+
+    #[test]
+    fn test_slab_resize_wrong_old_len_rejected() {
+        let mut slab = make_slab::<256>(1024);
+        let alloc = slab.alloc(512).unwrap();
+        let wrong = Allocation {
+            addr: alloc.addr,
+            len: 256,
+        };
+
+        assert!(matches!(
+            slab.resize(wrong, 768),
+            Err(AllocError::InvalidFree(_, 256))
+        ));
+
+        slab.dealloc(alloc).unwrap();
     }
 
     #[test]
@@ -1319,6 +1518,8 @@ mod tests {
         let inner = pool.inner.borrow();
         assert_eq!(inner.lower.used_slots.count_ones(..), 0);
         assert_eq!(inner.upper.used_slots.count_ones(..), 0);
+        assert_eq!(inner.lower.run_starts.count_ones(..), 0);
+        assert_eq!(inner.upper.run_starts.count_ones(..), 0);
         assert!(inner.lower.last_free_run.is_none());
         assert!(inner.upper.last_free_run.is_none());
     }
@@ -1338,6 +1539,38 @@ mod tests {
         // Should be able to allocate as if fresh
         let a = pool.inner.borrow_mut().alloc(256).unwrap();
         assert!(a.len > 0);
+    }
+
+    #[test]
+    fn test_pool_dealloc_addr_routes_to_correct_tier() {
+        let pool = make_pool::<256, 4096>(0x20000);
+        let lower = pool.alloc(128).unwrap();
+        let upper = pool.alloc(1024).unwrap();
+
+        assert_eq!(pool.allocation_len(lower.addr).unwrap(), 256);
+        assert_eq!(pool.allocation_len(upper.addr).unwrap(), 4096);
+
+        pool.dealloc_addr(lower.addr).unwrap();
+        pool.dealloc_addr(upper.addr).unwrap();
+    }
+
+    #[test]
+    fn test_pool_resize_wrong_len_does_not_allocate_new_run() {
+        let pool = make_pool::<256, 4096>(0x20000);
+        let lower = pool.alloc(128).unwrap();
+        let before_upper_free = pool.inner.borrow().upper.free_bytes();
+        let wrong = Allocation {
+            addr: lower.addr,
+            len: 512,
+        };
+
+        assert!(matches!(
+            pool.resize(wrong, 1024),
+            Err(AllocError::InvalidFree(_, 512))
+        ));
+        assert_eq!(pool.inner.borrow().upper.free_bytes(), before_upper_free);
+
+        pool.dealloc(lower).unwrap();
     }
 
     #[test]
@@ -1451,6 +1684,43 @@ mod tests {
         assert!(matches!(
             pool.dealloc(a),
             Err(AllocError::InvalidFree(_, _))
+        ));
+    }
+
+    #[test]
+    fn test_recycle_pool_dealloc_wrong_length_rejected() {
+        let pool = make_recycle_pool(4, 4096);
+        let mut alloc = pool.alloc(4096).unwrap();
+        alloc.len = 2048;
+
+        assert!(matches!(
+            pool.dealloc(alloc),
+            Err(AllocError::InvalidFree(_, 2048))
+        ));
+    }
+
+    #[test]
+    fn test_recycle_pool_dealloc_addr_and_allocation_len() {
+        let pool = make_recycle_pool(4, 4096);
+        let alloc = pool.alloc(4096).unwrap();
+
+        assert_eq!(pool.allocation_len(alloc.addr).unwrap(), 4096);
+        pool.dealloc_addr(alloc.addr).unwrap();
+        assert!(matches!(
+            pool.allocation_len(alloc.addr),
+            Err(AllocError::InvalidFree(_, 0))
+        ));
+    }
+
+    #[test]
+    fn test_recycle_pool_resize_rejects_free_slot() {
+        let pool = make_recycle_pool(4, 4096);
+        let alloc = pool.alloc(4096).unwrap();
+        pool.dealloc(alloc).unwrap();
+
+        assert!(matches!(
+            pool.resize(alloc, 1024),
+            Err(AllocError::InvalidFree(_, 4096))
         ));
     }
 
