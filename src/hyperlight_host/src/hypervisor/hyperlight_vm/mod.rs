@@ -43,7 +43,7 @@ use crate::hypervisor::hyperlight_vm::x86_64::debug::ProcessDebugRequestError;
 #[cfg(not(gdb))]
 use crate::hypervisor::virtual_machine::VirtualMachine;
 use crate::hypervisor::virtual_machine::{
-    MapMemoryError, RegisterError, RunVcpuError, UnmapMemoryError, VmError, VmExit,
+    MapMemoryError, RegisterError, ResetVcpuError, RunVcpuError, UnmapMemoryError, VmError, VmExit,
 };
 use crate::hypervisor::{InterruptHandle, InterruptHandleImpl};
 use crate::mem::memory_region::{MemoryRegion, MemoryRegionFlags, MemoryRegionType};
@@ -353,7 +353,7 @@ pub enum HyperlightVmError {
     #[error("Map region error: {0}")]
     MapRegion(#[from] MapRegionError),
     #[error("Restore VM (vcpu) error: {0}")]
-    Restore(#[from] RegisterError),
+    Restore(#[from] ResetVcpuError),
     #[error("Unmap region error: {0}")]
     UnmapRegion(#[from] UnmapRegionError),
     #[error("Update region error: {0}")]
@@ -392,6 +392,8 @@ pub(crate) struct HyperlightVm {
 
     pub(super) mmap_regions: Vec<(u32, MemoryRegion)>, // Later mapped regions (slot number, region)
 
+    #[cfg(target_arch = "aarch64")]
+    pub(self) vm_can_reset_vcpu: bool,
     pub(super) pending_tlb_flush: bool,
 
     #[cfg(gdb)]

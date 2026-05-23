@@ -246,6 +246,18 @@ pub enum RegisterError {
     ConversionFailed(String),
 }
 
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ResetVcpuError {
+    #[error("Single-operation vcpu reset not supported on this hypervisor")]
+    NotSupported,
+    #[error("Hypervisor operation failed: {0}")]
+    Hypervisor(HypervisorError),
+    #[error("Register operation failed: {0}")]
+    Register(#[from] RegisterError),
+    #[error("Operation failed: {0}")]
+    Unknown(String),
+}
+
 /// Map memory error
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum MapMemoryError {
@@ -352,6 +364,15 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[cfg(test)]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError>;
 
+    /// Single-operation vCPU reset
+    #[cfg(target_arch = "aarch64")]
+    fn can_reset_vcpu(&self) -> bool {
+        false
+    }
+    #[cfg(target_arch = "aarch64")]
+    fn reset_vcpu(&mut self) -> std::result::Result<(), ResetVcpuError> {
+        Err(ResetVcpuError::NotSupported)
+    }
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;

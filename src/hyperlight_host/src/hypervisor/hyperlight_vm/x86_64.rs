@@ -342,7 +342,7 @@ impl HyperlightVm {
         &mut self,
         cr3: u64,
         sregs: &CommonSpecialRegisters,
-    ) -> std::result::Result<(), RegisterError> {
+    ) -> std::result::Result<(), ResetVcpuError> {
         self.vm.set_regs(&CommonRegisters {
             rflags: 1 << 1, // Reserved bit always set
             ..Default::default()
@@ -350,7 +350,9 @@ impl HyperlightVm {
         self.vm.set_debug_regs(&CommonDebugRegs::default())?;
         self.vm.reset_xsave()?;
 
-        self.apply_sregs(cr3, sregs)
+        self.apply_sregs(cr3, sregs)?;
+
+        Ok(())
     }
 
     /// Apply special registers and mark TLB for flush.
