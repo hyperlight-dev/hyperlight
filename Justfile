@@ -27,10 +27,12 @@ export CROSS_CONTAINER_GID := if path_exists("/dev/kvm") == "true" { kvm-gid } e
 root := justfile_directory()
 
 default-target := "debug"
+hyperlight-target-arch := env("HYPERLIGHT_TARGET", arch())
+hyperlight-target := if hyperlight-target-arch == "x86_64" { "x86_64-hyperlight-none" } else if hyperlight-target-arch == "aarch64" { "aarch64-hyperlight-none" } else { error("Unsupported architecture: " + arch()) }
 # All three guest crates share one workspace under src/tests/rust_guests,
 # so they share one target dir and hyperlight-libc / hyperlight-guest-bin
 # get compiled once per profile instead of once per crate.
-rust_guests_target := "src/tests/rust_guests/target/x86_64-hyperlight-none"
+rust_guests_target := "src/tests/rust_guests/target/" + hyperlight-target
 simpleguest_source := rust_guests_target
 dummyguest_source := rust_guests_target
 witguest_source := rust_guests_target
