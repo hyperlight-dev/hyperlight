@@ -59,6 +59,9 @@ pub mod paging;
 #[cfg(feature = "libc")]
 mod libc_stubs;
 
+/// Shared initialisation code used by multiple architectures
+mod init;
+
 /// Re-export the libc bindings from hyperlight-libc when the libc feature is enabled.
 #[cfg(feature = "libc")]
 pub use hyperlight_libc as libc;
