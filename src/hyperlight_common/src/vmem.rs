@@ -25,6 +25,13 @@ pub use arch::{PAGE_PRESENT, PAGE_TABLE_SIZE, PTE_ADDR_MASK, PageTableEntry, Phy
 pub const PAGE_TABLE_ENTRIES_PER_TABLE: usize =
     PAGE_TABLE_SIZE / core::mem::size_of::<PageTableEntry>();
 
+// It would be nice not to have any arch-dependent re-exports here,
+// but on arm64 the MAIR indices used need to be synced between the
+// descriptor creation code and the register initialisation code to
+// make sure that MAIR is set up properly.
+#[cfg(target_arch = "aarch64")]
+pub use arch::ATTR_INDEX_NORMAL;
+
 // Shared page table iterator infrastructure used by each arch module.
 
 /// Utility function to extract an (inclusive on both ends) bit range
@@ -325,6 +332,7 @@ mod sealed {
 use sealed::*;
 
 /// A sealed trait used to collect some information about the marker structures [`MayMoveTable`] and [`MayNotMoveTable`]
+#[allow(private_bounds)] // this trait is intentionally sealed
 pub trait TableMovability<Op: TableReadOps + ?Sized>:
     TableMovabilityBase<Op>
     + arch::TableMovability<Op, <Self as TableMovabilityBase<Op>>::TableMoveInfo>
