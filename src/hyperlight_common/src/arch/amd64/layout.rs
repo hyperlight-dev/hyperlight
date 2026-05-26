@@ -31,6 +31,10 @@ pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
 /// ever memory-constrained.
 pub const SCRATCH_TOP_GPA: usize = 0x0000_000f_ffff_ffff;
 
+pub fn io_page() -> Option<(u64, u64)> {
+    None
+}
+
 /// On amd64, this is:
 /// - Two pages for the TSS and IDT
 /// - (up to) 4 pages for the PTEs for mapping that (including CoW'ing the root PT)

@@ -14,12 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-// TODO(aarch64): change these, they are only provided in order to compile
-pub const SCRATCH_TOP_GVA: usize = 0xffff_ffff_ffff_efff;
-pub const SNAPSHOT_PT_GVA_MIN: usize = 0xffff_8000_0000_0000;
-pub const SNAPSHOT_PT_GVA_MAX: usize = 0xffff_80ff_ffff_ffff;
-pub const SCRATCH_TOP_GPA: usize = 0x0000_000f_ffff_ffff;
+// TODO: consider using the upper half, like we do on x86;
+// this would require enabling ttbr1
+pub const SCRATCH_TOP_GVA: usize = 0x0000_ffff_ffff_dfff;
+pub const SNAPSHOT_PT_GVA_MIN: usize = 0x0000_8000_0000_0000;
+pub const SNAPSHOT_PT_GVA_MAX: usize = 0x0000_80ff_ffff_ffff;
+pub const SCRATCH_TOP_GPA: usize = 0x0000_000f_ffff_efff;
 
-pub fn min_scratch_size(_input_data_size: usize, _output_data_size: usize) -> usize {
-    unimplemented!("min_scratch_size")
+pub const IO_PAGE_GVA: u64 = 0x0000_ffff_ffff_e000;
+pub const IO_PAGE_GPA: u64 = 0x0000_000f_ffff_f000;
+
+pub const fn io_page() -> Option<(crate::vmem::PhysAddr, crate::vmem::VirtAddr)> {
+    Some((IO_PAGE_GPA, IO_PAGE_GVA))
+}
+
+pub fn min_scratch_size(input_data_size: usize, output_data_size: usize) -> usize {
+    (input_data_size + output_data_size).next_multiple_of(crate::vmem::PAGE_SIZE)
+        + 12 * crate::vmem::PAGE_SIZE
 }

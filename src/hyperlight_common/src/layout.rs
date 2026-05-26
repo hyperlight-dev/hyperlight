@@ -18,7 +18,9 @@ limitations under the License.
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/layout.rs")]
 mod arch;
 
-pub use arch::{SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN};
+pub use arch::{
+    SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, SNAPSHOT_PT_GVA_MAX, SNAPSHOT_PT_GVA_MIN, io_page,
+};
 
 // offsets down from the top of scratch memory for various things
 pub const SCRATCH_TOP_SIZE_OFFSET: u64 = 0x08;
