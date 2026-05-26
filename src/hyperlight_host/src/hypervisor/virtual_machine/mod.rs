@@ -107,7 +107,7 @@ pub(crate) enum HypervisorType {
 /// Minimum XSAVE buffer size: 512 bytes legacy region + 64 bytes header.
 /// Only used by MSHV and WHP which use compacted XSAVE format and need to
 /// validate buffer size before accessing XCOMP_BV.
-#[cfg(any(mshv3, target_os = "windows"))]
+#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
 pub(crate) const XSAVE_MIN_SIZE: usize = 576;
 
 /// Standard XSAVE buffer size (4KB) used by KVM and MSHV.
@@ -202,6 +202,9 @@ pub enum RunVcpuError {
     IncrementRip(HypervisorError),
     #[error("Parse GPA access info failed")]
     ParseGpaAccessInfo,
+    #[cfg(target_arch = "aarch64")]
+    #[error("Flush MMIO pending state failed: {0}")]
+    FlushMmioPending(String),
     #[error("Unknown error: {0}")]
     Unknown(HypervisorError),
 }

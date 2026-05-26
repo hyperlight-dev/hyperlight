@@ -17,6 +17,7 @@ limitations under the License.
 // TODO(aarch64): implement arch-specific HyperlightVm methods
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 
 use super::{
     AccessPageTableError, CreateHyperlightVmError, DispatchGuestCallError, HyperlightVm,
@@ -24,8 +25,16 @@ use super::{
 };
 #[cfg(gdb)]
 use crate::hypervisor::gdb::{DebugCommChannel, DebugMsg, DebugResponse};
-use crate::hypervisor::regs::CommonSpecialRegisters;
-use crate::hypervisor::virtual_machine::RegisterError;
+use crate::hypervisor::hyperlight_vm::get_guest_log_filter;
+use crate::hypervisor::regs::{CommonFpu, CommonRegisters, CommonSpecialRegisters};
+#[cfg(kvm)]
+use crate::hypervisor::virtual_machine::kvm::KvmVm;
+#[cfg(kvm)]
+use crate::hypervisor::virtual_machine::{HypervisorType, VmError};
+use crate::hypervisor::virtual_machine::{
+    ResetVcpuError, VirtualMachine, get_available_hypervisor,
+};
+use crate::hypervisor::{InterruptHandleImpl, LinuxInterruptHandle};
 use crate::mem::mgr::{SandboxMemoryManager, SnapshotSharedMemory};
 use crate::mem::shared_mem::{GuestSharedMemory, HostSharedMemory};
 use crate::sandbox::SandboxConfiguration;
@@ -39,61 +48,180 @@ use crate::sandbox::uninitialized::SandboxRuntimeConfig;
 impl HyperlightVm {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        _snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
-        _scratch_mem: GuestSharedMemory,
-        _root_pt_addr: u64,
-        _entrypoint: NextAction,
-        _rsp_gva: u64,
-        _page_size: usize,
-        _config: &SandboxConfiguration,
+        snapshot_mem: SnapshotSharedMemory<GuestSharedMemory>,
+        scratch_mem: GuestSharedMemory,
+        root_pt_addr: u64,
+        entrypoint: NextAction,
+        rsp_gva: u64,
+        page_size: usize,
+        config: &SandboxConfiguration,
         #[cfg(gdb)] _gdb_conn: Option<DebugCommChannel<DebugResponse, DebugMsg>>,
         #[cfg(crashdump)] _rt_cfg: SandboxRuntimeConfig,
         #[cfg(feature = "mem_profile")] _trace_info: MemTraceInfo,
     ) -> std::result::Result<Self, CreateHyperlightVmError> {
-        unimplemented!("new")
+        // TODO: support gdb on aarch64
+        type VmType = Box<dyn VirtualMachine>;
+        let vm: VmType = match get_available_hypervisor() {
+            #[cfg(kvm)]
+            Some(HypervisorType::Kvm) => Box::new(KvmVm::new().map_err(VmError::CreateVm)?),
+            // TODO: mshv support
+            #[cfg(mshv3)]
+            Some(HypervisorType::Mshv) => return Err(CreateHyperlightVmError::NoHypervisorFound),
+            None => return Err(CreateHyperlightVmError::NoHypervisorFound),
+        };
+        vm.set_sregs(&CommonSpecialRegisters::defaults(root_pt_addr))
+            .map_err(VmError::Register)?;
+        let interrupt_handle: Arc<dyn InterruptHandleImpl> = Arc::new(LinuxInterruptHandle {
+            state: AtomicU8::new(0),
+            tid: AtomicU64::new(unsafe { libc::pthread_self() as u64 }),
+            retry_delay: config.get_interrupt_retry_delay(),
+            sig_rt_min_offset: config.get_interrupt_vcpu_sigrtmin_offset(),
+            dropped: AtomicBool::new(false),
+        });
+
+        let snapshot_slot = 0u32;
+        let scratch_slot = 1u32;
+        let vm_can_reset_vcpu = vm.can_reset_vcpu();
+        let mut ret = Self {
+            vm,
+            entrypoint,
+            rsp_gva,
+            interrupt_handle,
+            page_size,
+
+            next_slot: scratch_slot + 1,
+            freed_slots: Vec::new(),
+
+            snapshot_slot,
+            snapshot_memory: None,
+            scratch_slot,
+            scratch_memory: None,
+
+            mmap_regions: Vec::new(),
+
+            vm_can_reset_vcpu,
+            pending_tlb_flush: false,
+        };
+        ret.update_snapshot_mapping(snapshot_mem)?;
+        ret.update_scratch_mapping(scratch_mem)?;
+        Ok(ret)
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn initialise(
         &mut self,
-        _peb_addr: crate::mem::ptr::RawPtr,
-        _seed: u64,
-        _mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        _host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
-        _guest_max_log_level: Option<tracing_core::LevelFilter>,
-        #[cfg(gdb)] _dbg_mem_access_fn: Arc<
+        peb_addr: crate::mem::ptr::RawPtr,
+        seed: u64,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
+        guest_max_log_level: Option<tracing_core::LevelFilter>,
+        #[cfg(gdb)] dbg_mem_access_fn: Arc<
             std::sync::Mutex<SandboxMemoryManager<HostSharedMemory>>,
         >,
     ) -> Result<(), InitializeError> {
-        unimplemented!("initialise")
+        let NextAction::Initialise(initialise) = self.entrypoint else {
+            return Ok(());
+        };
+        let mut x: [u64; 31] = [0; 31];
+        x[0] = peb_addr.into();
+        x[1] = seed;
+        x[2] = self.page_size as u64;
+        x[3] = get_guest_log_filter(guest_max_log_level);
+        let regs = CommonRegisters {
+            pc: initialise,
+            sp: self.rsp_gva,
+            x,
+            // start up with interrupts disabled in EL1t
+            pstate: 0b11 << 6 | 0b100,
+        };
+        self.vm.set_regs(&regs)?;
+
+        self.run(
+            mem_mgr,
+            host_funcs,
+            #[cfg(gdb)]
+            dbg_mem_access_fn,
+        )
+        .map_err(InitializeError::Run)?;
+
+        let regs = self.vm.regs()?;
+        if !regs.sp.is_multiple_of(16) {
+            return Err(InitializeError::InvalidStackPointer(regs.sp));
+        }
+        self.rsp_gva = regs.sp;
+        self.entrypoint = NextAction::Call(regs.x[0]);
+
+        Ok(())
     }
 
     pub(crate) fn dispatch_call_from_host(
         &mut self,
-        _mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
-        _host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
+        mem_mgr: &mut SandboxMemoryManager<HostSharedMemory>,
+        host_funcs: &Arc<std::sync::Mutex<FunctionRegistry>>,
         #[cfg(gdb)] _dbg_mem_access_fn: Arc<
             std::sync::Mutex<SandboxMemoryManager<HostSharedMemory>>,
         >,
     ) -> Result<(), DispatchGuestCallError> {
-        unimplemented!("dispatch_call_from_host")
+        let NextAction::Call(dispatch_func_addr) = self.entrypoint else {
+            return Err(DispatchGuestCallError::Uninitialized);
+        };
+        let mut regs = CommonRegisters {
+            pc: dispatch_func_addr,
+            sp: self.rsp_gva,
+            // start with interrupts disabled in EL1t
+            pstate: 0b1 << 21 | 0b11 << 6 | 0b100,
+            ..Default::default()
+        };
+        if self.pending_tlb_flush {
+            regs.pc += 4;
+        }
+        self.vm
+            .set_regs(&regs)
+            .map_err(DispatchGuestCallError::SetupRegs)?;
+        self.vm
+            .set_fpu(&CommonFpu::default())
+            .map_err(DispatchGuestCallError::SetupRegs)?;
+        let result = self
+            .run(
+                mem_mgr,
+                host_funcs,
+                #[cfg(gdb)]
+                mem_access_fn,
+            )
+            .map_err(DispatchGuestCallError::Run);
+        self.pending_tlb_flush = false;
+        result
     }
 
     pub(crate) fn get_root_pt(&self) -> Result<u64, AccessPageTableError> {
-        unimplemented!("get_root_pt")
+        let sregs = self.vm.sregs()?;
+        Ok(sregs.ttbr0_el1 & ((1 << 48) - 2))
     }
 
     pub(crate) fn get_snapshot_sregs(
         &mut self,
     ) -> Result<CommonSpecialRegisters, AccessPageTableError> {
-        unimplemented!("get_snapshot_sregs")
+        let x = self.vm.sregs()?;
+        Ok(x)
     }
 
     pub(crate) fn reset_vcpu(
         &mut self,
-        _cr3: u64,
-        _sregs: &CommonSpecialRegisters,
-    ) -> std::result::Result<(), RegisterError> {
-        unimplemented!("reset_vcpu")
+        cr3: u64,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), ResetVcpuError> {
+        self.pending_tlb_flush = true;
+        debug_assert!(
+            self.vm_can_reset_vcpu,
+            "No fallback path for vcpu reset on aarch64"
+        );
+        self.vm.reset_vcpu()?;
+        let mut sregs = *sregs;
+        sregs.ttbr0_el1 = cr3 & ((1 << 48) - 2);
+
+        self.vm
+            .set_sregs(&sregs)
+            .map_err(ResetVcpuError::Register)?;
+        Ok(())
     }
 }
