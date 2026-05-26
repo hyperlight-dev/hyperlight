@@ -107,12 +107,12 @@ pub(crate) enum HypervisorType {
 /// Minimum XSAVE buffer size: 512 bytes legacy region + 64 bytes header.
 /// Only used by MSHV and WHP which use compacted XSAVE format and need to
 /// validate buffer size before accessing XCOMP_BV.
-#[cfg(any(mshv3, target_os = "windows"))]
+#[cfg(all(target_arch = "x86_64", any(mshv3, target_os = "windows")))]
 pub(crate) const XSAVE_MIN_SIZE: usize = 576;
 
 /// Standard XSAVE buffer size (4KB) used by KVM and MSHV.
 /// WHP queries the required size dynamically.
-#[cfg(all(any(kvm, mshv3), test))]
+#[cfg(all(any(kvm, mshv3), test, not(target_arch = "aarch64")))]
 pub(crate) const XSAVE_BUFFER_SIZE: usize = 4096;
 
 // Compiler error if no hypervisor type is available (not applicable on aarch64 yet)
@@ -202,6 +202,9 @@ pub enum RunVcpuError {
     IncrementRip(HypervisorError),
     #[error("Parse GPA access info failed")]
     ParseGpaAccessInfo,
+    #[cfg(target_arch = "aarch64")]
+    #[error("Flush MMIO pending state failed: {0}")]
+    FlushMmioPending(String),
     #[error("Unknown error: {0}")]
     Unknown(HypervisorError),
 }
@@ -353,15 +356,19 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[allow(dead_code)]
     fn debug_regs(&self) -> std::result::Result<CommonDebugRegs, RegisterError>;
     /// Set the debug registers of the vCPU
+    #[allow(dead_code)]
     fn set_debug_regs(&self, drs: &CommonDebugRegs) -> std::result::Result<(), RegisterError>;
 
     /// Get xsave
     #[allow(dead_code)]
+    #[cfg(not(target_arch = "aarch64"))]
     fn xsave(&self) -> std::result::Result<Vec<u8>, RegisterError>;
     /// Reset xsave to default state
+    #[cfg(not(target_arch = "aarch64"))]
     fn reset_xsave(&self) -> std::result::Result<(), RegisterError>;
     /// Set xsave - only used for tests
     #[cfg(test)]
+    #[cfg(not(target_arch = "aarch64"))]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError>;
 
     /// Single-operation vCPU reset
