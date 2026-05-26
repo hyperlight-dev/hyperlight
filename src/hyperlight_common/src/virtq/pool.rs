@@ -722,11 +722,23 @@ impl RecyclePool {
 
     /// Free a previously allocated slot by address.
     pub fn dealloc_addr(&self, addr: u64) -> Result<(), AllocError> {
-        let slot_size = self.slot_size();
-        self.dealloc(Allocation {
-            addr,
-            len: slot_size,
-        })
+        let mut inner = self.inner.borrow_mut();
+        let end = inner.base_addr + (inner.count * inner.slot_size) as u64;
+
+        if addr < inner.base_addr || addr >= end {
+            return Err(AllocError::InvalidFree(addr, 0));
+        }
+
+        if (addr - inner.base_addr) % inner.slot_size as u64 != 0 {
+            return Err(AllocError::InvalidFree(addr, 0));
+        }
+
+        if inner.free.contains(&addr) {
+            return Err(AllocError::InvalidFree(addr, 0));
+        }
+
+        inner.free.push(addr);
+        Ok(())
     }
 
     /// Capacity of a live allocation by its start address.

@@ -451,8 +451,10 @@ const _: () = {
 /// Shared test utilities for virtqueue tests.
 #[cfg(test)]
 pub(crate) mod test_utils {
+    use alloc::collections::BTreeMap;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     use super::*;
     use crate::virtq::ring::tests::{OwnedRing, TestMem};
@@ -487,6 +489,7 @@ pub(crate) mod test_utils {
         base: u64,
         next: Arc<AtomicU64>,
         size: usize,
+        allocations: Arc<Mutex<BTreeMap<u64, usize>>>,
     }
 
     impl TestPool {
@@ -495,6 +498,7 @@ pub(crate) mod test_utils {
                 base,
                 next: Arc::new(AtomicU64::new(base)),
                 size,
+                allocations: Arc::new(Mutex::new(BTreeMap::new())),
             }
         }
     }
@@ -506,16 +510,43 @@ pub(crate) mod test_utils {
             if end > self.base + self.size as u64 {
                 return Err(AllocError::NoSpace);
             }
+            self.allocations
+                .lock()
+                .expect("poisoned mutex")
+                .insert(addr, len);
             Ok(Allocation { addr, len })
         }
 
-        fn dealloc(&self, _alloc: Allocation) -> Result<(), AllocError> {
-            // Simple pool doesn't track individual allocations
-            Ok(())
+        fn dealloc(&self, alloc: Allocation) -> Result<(), AllocError> {
+            let len = self
+                .allocations
+                .lock()
+                .expect("poisoned mutex")
+                .get(&alloc.addr)
+                .copied()
+                .ok_or(AllocError::InvalidFree(alloc.addr, alloc.len))?;
+            if alloc.len != len {
+                return Err(AllocError::InvalidFree(alloc.addr, alloc.len));
+            }
+            self.allocations
+                .lock()
+                .expect("poisoned mutex")
+                .remove(&alloc.addr)
+                .map(|_| ())
+                .ok_or(AllocError::InvalidFree(alloc.addr, alloc.len))
         }
 
         fn resize(&self, old_alloc: Allocation, new_len: usize) -> Result<Allocation, AllocError> {
-            // Simple implementation: always allocate new
+            let old_len = self
+                .allocations
+                .lock()
+                .expect("poisoned mutex")
+                .get(&old_alloc.addr)
+                .copied()
+                .ok_or(AllocError::InvalidFree(old_alloc.addr, old_alloc.len))?;
+            if old_alloc.len != old_len {
+                return Err(AllocError::InvalidFree(old_alloc.addr, old_alloc.len));
+            }
             self.dealloc(old_alloc)?;
             self.alloc(new_len)
         }

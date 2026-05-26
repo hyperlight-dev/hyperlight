@@ -47,9 +47,6 @@ pub struct Allocation {
     /// Starting address of the allocation
     pub addr: u64,
     /// Capacity of the allocation in bytes, rounded up to the allocator's slot size.
-    ///
-    /// Pool implementations may track the live run length internally and
-    /// validate this value on deallocation.
     pub len: usize,
 }
 
