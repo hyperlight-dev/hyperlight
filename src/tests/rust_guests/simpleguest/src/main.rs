@@ -343,7 +343,6 @@ fn call_malloc(size: i32) -> i32 {
 }
 
 #[guest_function("FillHeapAndCauseException")]
-#[cfg(target_arch = "x86_64")]
 fn fill_heap_and_cause_exception() {
     let layout: Layout = Layout::new::<u8>();
     let mut ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
@@ -353,7 +352,7 @@ fn fill_heap_and_cause_exception() {
     }
 
     // trigger an undefined instruction exception
-    unsafe { core::arch::asm!("ud2") };
+    trigger_exception();
 }
 
 #[guest_function("ExhaustHeap")]
@@ -454,7 +453,13 @@ fn test_guest_panic(message: String) {
 fn execute_on_heap() -> String {
     unsafe {
         // NO-OP followed by RET
-        let heap_memory = Box::new([0x90u8, 0xC3]);
+        let mut heap_memory = Box::new(
+            #[cfg(target_arch = "x86_64")]
+            [0x90u8, 0xC3],
+            #[cfg(target_arch = "aarch64")]
+            [0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6],
+        );
+        dicachesync(heap_memory.as_mut_ptr(), heap_memory.len());
         let heap_fn: fn() = core::mem::transmute(Box::into_raw(heap_memory));
         heap_fn();
         black_box(heap_fn); // avoid optimization when running in release mode
@@ -487,17 +492,23 @@ fn log_message(message: String, level: i32) {
 }
 
 #[guest_function("TriggerException")]
-#[cfg(target_arch = "x86_64")]
 fn trigger_exception() {
     // trigger an undefined instruction exception
-    unsafe { core::arch::asm!("ud2") };
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("ud2")
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("udf #0")
+    };
 }
 
 /// Execute an OUT instruction with an arbitrary port and value.
 /// This is used to test that invalid OUT ports cause errors.
 #[guest_function("OutbWithPort")]
-#[cfg(target_arch = "x86_64")]
 fn outb_with_port(port: u32, value: u32) {
+    #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!(
             "out dx, eax",
@@ -505,6 +516,12 @@ fn outb_with_port(port: u32, value: u32) {
             in("eax") value,
             options(preserves_flags, nomem, nostack)
         );
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        (hyperlight_common::layout::io_page().unwrap().1 as *mut u64)
+            .wrapping_add(port as usize)
+            .write_volatile(value as u64);
     }
 }
 
@@ -718,16 +735,28 @@ fn use_sse2_registers() {
 }
 
 #[guest_function("SetDr0")]
-#[cfg(target_arch = "x86_64")]
 fn set_dr0(value: u64) {
-    unsafe { core::arch::asm!("mov dr0, {}", in(reg) value) };
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov dr0, {}", in(reg) value)
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("msr dbgbvr0_el1, {}", in(reg) value)
+    };
 }
 
 #[guest_function("GetDr0")]
-#[cfg(target_arch = "x86_64")]
 fn get_dr0() -> u64 {
     let value: u64;
-    unsafe { core::arch::asm!("mov {}, dr0", out(reg) value) };
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov {}, dr0", out(reg) value)
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mrs {}, dbgbvr0_el1", out(reg) value)
+    };
     value
 }
 
@@ -761,7 +790,6 @@ fn read_from_user_memory(num: u64, expected: Vec<u8>) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[cfg(target_arch = "x86_64")]
 #[guest_function("ReadMappedBuffer")]
 fn read_mapped_buffer(base: u64, len: u64, do_map: bool) -> Vec<u8> {
     let base = base as usize as *const u8;
@@ -788,7 +816,6 @@ fn read_mapped_buffer(base: u64, len: u64, do_map: bool) -> Vec<u8> {
     data.to_vec()
 }
 
-#[cfg(target_arch = "x86_64")]
 #[guest_function("CheckMapped")]
 fn check_mapped_buffer(base: u64) -> bool {
     hyperlight_guest_bin::paging::virt_to_phys(base)
@@ -796,7 +823,6 @@ fn check_mapped_buffer(base: u64) -> bool {
         .is_some()
 }
 
-#[cfg(target_arch = "x86_64")]
 #[guest_function("WriteMappedBuffer")]
 fn write_mapped_buffer(base: u64, len: u64) -> bool {
     let base = base as usize as *mut u8;
@@ -825,7 +851,60 @@ fn write_mapped_buffer(base: u64, len: u64) -> bool {
     true
 }
 
-#[cfg(target_arch = "x86_64")]
+fn dicachesync(_base: *mut u8, _len: usize) {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let ctr_el0: u64;
+        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr_el0);
+        let iminline = 4 * (1 << (ctr_el0 & 0xf));
+        #[allow(unused)]
+        let dminline = 4 * (1 << ((ctr_el0 >> 16) & 0xf));
+        // See the comment in the `KVM_EXIT_ARM_NISV` case of
+        // `run_vcpu` in
+        // src/hyperlight_host/src/hypervisor/virtual_machine/kvm.rs
+        // for an explanation of why this cache maintenance sequence
+        // is so complex.
+        core::arch::asm!("
+            ldr xzr, [{addr}]
+            msr nzcv, xzr
+            b 2f
+
+        0:  ldr xzr, [{tmp}]
+            msr nzcv, xzr
+            b 3f
+        1:  ldr xzr, [{tmp}]
+            msr nzcv, xzr
+            b 4f
+
+        2:  mov {tmp}, {addr}
+
+        3:  dc cvau, {tmp}
+            b.eq 0b
+            add {tmp}, {tmp}, {dminline:x}
+            cmp {tmp}, {max}
+            b.lt 3b
+
+            dsb ish
+
+            mov {tmp}, {addr}
+
+        4:  ic ivau, {tmp}
+            b.eq 1b
+            add {tmp}, {tmp}, {iminline:x}
+            cmp {tmp}, {max}
+            b.lt 4b
+
+            dsb ish
+            isb
+        ",
+            iminline = in(reg) iminline,
+            dminline = in(reg) dminline,
+            addr = in(reg) _base as usize,
+            max = in(reg) _base as usize + _len,
+            tmp = out(reg) _);
+    }
+}
+
 #[guest_function("ExecMappedBuffer")]
 fn exec_mapped_buffer(base: u64, len: u64) -> bool {
     let base = base as usize as *mut u8;
@@ -849,6 +928,9 @@ fn exec_mapped_buffer(base: u64, len: u64) -> bool {
 
     // Should be safe as long as data is something like a NOOP followed by a RET
     let func: fn() = unsafe { core::mem::transmute(data.as_ptr()) };
+
+    dicachesync(base, len);
+
     func();
 
     true
@@ -993,7 +1075,6 @@ fn fuzz_guest_trace(max_depth: u32, msg: String) -> u32 {
     fuzz_traced_function(0, max_depth, &msg)
 }
 
-#[cfg(target_arch = "x86_64")]
 #[guest_function("CorruptOutputSizePrefix")]
 fn corrupt_output_size_prefix() -> i32 {
     unsafe {
@@ -1006,19 +1087,11 @@ fn corrupt_output_size_prefix() -> i32 {
         buf[8..12].copy_from_slice(&0xFFFF_FFFBu32.to_le_bytes());
         buf[12..16].copy_from_slice(&[0u8; 4]);
         buf[16..24].copy_from_slice(&8_u64.to_le_bytes());
-
-        core::arch::asm!(
-            "out dx, eax",
-            "cli",
-            "hlt",
-            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
-            in("eax") 0u32,
-            options(noreturn),
-        );
+        outb_with_port(hyperlight_common::outb::VmAction::Halt as u32, 0u32);
+        unreachable!();
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 #[guest_function("CorruptOutputBackPointer")]
 fn corrupt_output_back_pointer() -> i32 {
     unsafe {
@@ -1030,15 +1103,8 @@ fn corrupt_output_back_pointer() -> i32 {
         buf[0..8].copy_from_slice(&24_u64.to_le_bytes());
         buf[8..16].copy_from_slice(&[0u8; 8]);
         buf[16..24].copy_from_slice(&0xDEAD_u64.to_le_bytes());
-
-        core::arch::asm!(
-            "out dx, eax",
-            "cli",
-            "hlt",
-            in("dx") hyperlight_common::outb::VmAction::Halt as u16,
-            in("eax") 0u32,
-            options(noreturn),
-        );
+        outb_with_port(hyperlight_common::outb::VmAction::Halt as u32, 0u32);
+        unreachable!();
     }
 }
 

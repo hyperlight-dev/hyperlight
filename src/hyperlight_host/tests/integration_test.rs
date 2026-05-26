@@ -711,7 +711,12 @@ fn execute_on_heap() {
 
         #[cfg(not(feature = "executable_heap"))]
         assert!(
-            result.unwrap_err().to_string().contains("PageFault"),
+            result.unwrap_err().to_string().contains(
+                #[cfg(target_arch = "x86_64")]
+                "PageFault",
+                #[cfg(target_arch = "aarch64")]
+                "Exception Syndrome: 0x86",
+            ),
             "should get page fault"
         );
     });
@@ -1644,6 +1649,7 @@ fn interrupt_infinite_moving_loop_stress_test() {
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn exception_handler_installation_and_validation() {
     with_rust_sandbox(|mut sandbox| {
         // Verify handler count starts at 0
@@ -1692,9 +1698,14 @@ fn fill_heap_and_cause_exception() {
 
                 // Verify the message was properly formatted (proves no-allocation path worked)
                 // Exception vector 6 is #UD (Invalid Opcode from ud2 instruction)
+                #[cfg(target_arch = "x86_64")]
+                let vector = "Exception vector: 6";
+                #[cfg(target_arch = "aarch64")]
+                let vector = "Exception vector: CurrentSP0 Synchronous";
                 assert!(
-                    message.contains("Exception vector: 6"),
-                    "Message should contain 'Exception vector: 6'\nFull error: {:?}",
+                    message.contains(vector),
+                    "Message should contain '{}'\nFull error: {:?}",
+                    vector,
                     err
                 );
                 assert!(
@@ -1702,9 +1713,16 @@ fn fill_heap_and_cause_exception() {
                     "Message should contain 'Faulting Instruction:'\nFull error: {:?}",
                     err
                 );
+                #[cfg(target_arch = "x86_64")]
                 assert!(
                     message.contains("Stack Pointer:"),
                     "Message should contain 'Stack Pointer:'\nFull error: {:?}",
+                    err
+                );
+                #[cfg(target_arch = "aarch64")]
+                assert!(
+                    message.contains("Exception Syndrome:"),
+                    "Message should contain 'Exception Syndrome:'\nFull error: {:?}",
                     err
                 );
             }

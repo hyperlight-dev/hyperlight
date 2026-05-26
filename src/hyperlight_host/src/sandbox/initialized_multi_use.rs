@@ -1426,12 +1426,12 @@ mod tests {
         match res.unwrap_err() {
             HyperlightError::GuestAborted(_, msg) => {
                 // msg should indicate we got an invalid opcode exception
+                #[cfg(target_arch = "x86_64")]
                 assert!(msg.contains("InvalidOpcode"));
+                #[cfg(target_arch = "aarch64")]
+                assert!(msg.contains("0x2000000"));
             }
-            e => panic!(
-                "Expected HyperlightError::GuestExecutionError but got {:?}",
-                e
-            ),
+            e => panic!("Expected HyperlightError::GuestAborted but got {:?}", e),
         }
     }
 
@@ -1517,7 +1517,10 @@ mod tests {
         .evolve()
         .unwrap();
 
+        #[cfg(target_arch = "x86_64")]
         let expected = &[0x90, 0x90, 0x90, 0xC3]; // NOOP slide to RET
+        #[cfg(target_arch = "aarch64")]
+        let expected = &[0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6];
         let map_mem = page_aligned_memory(expected);
         let guest_base = 0x1_0000_0000; // Arbitrary guest base address
 
@@ -1914,8 +1917,9 @@ mod tests {
         let dr0_initial: u64 = sandbox.call("GetDr0", ()).unwrap();
         assert_eq!(dr0_initial, 0, "DR0 should initially be 0");
 
-        // Dirty DR0 by setting it to a known non-zero value
-        const DIRTY_VALUE: u64 = 0xDEAD_BEEF_CAFE_BABE;
+        // Dirty DR0 by setting it to a known non-zero value, avoiding
+        // bits that are reserved in aarch64 DBGBVR0_EL1
+        const DIRTY_VALUE: u64 = 0xFFFF_FEDC_7654_3210;
         sandbox.call::<()>("SetDr0", DIRTY_VALUE).unwrap();
         let dr0_dirty: u64 = sandbox.call("GetDr0", ()).unwrap();
         assert_eq!(
