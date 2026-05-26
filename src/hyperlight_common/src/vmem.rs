@@ -115,6 +115,31 @@ impl<Op: TableReadOps> UpdateParent<Op> for UpdateParentNone {
     }
 }
 
+/// A struct implementing [`UpdateParent`] to be used when a table's
+/// parent is another table that needs to be updated recursively.
+pub(in crate::vmem) struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
+    pub(in crate::vmem) parent: P,
+    pub(in crate::vmem) entry_ptr: Op::TableAddr,
+}
+impl<Op: TableOps, P: UpdateParent<Op>> Clone for UpdateParentTable<Op, P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<Op: TableOps, P: UpdateParent<Op>> Copy for UpdateParentTable<Op, P> {}
+impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
+    pub(in crate::vmem) fn new(parent: P, entry_ptr: Op::TableAddr) -> Self {
+        UpdateParentTable { parent, entry_ptr }
+    }
+}
+
+/// A struct implementing [`UpdateParent`] to be used when a table's
+/// parent is the "root table" (with access to that root pointer
+/// provided in an architecture/environment-insensitive manner via
+/// `TableOps`)
+#[derive(Copy, Clone)]
+pub struct UpdateParentRoot {}
+
 /// A helper structure indicating a mapping operation that needs to be
 /// performed.
 pub(in crate::vmem) struct MapRequest<Op: TableReadOps, P: UpdateParent<Op>> {

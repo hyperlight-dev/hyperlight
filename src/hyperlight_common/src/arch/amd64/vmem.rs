@@ -27,31 +27,12 @@ limitations under the License.
 
 use crate::vmem::{
     BasicMapping, CowMapping, MapRequest, MapResponse, Mapping, MappingKind, TableMovabilityBase,
-    TableOps, TableReadOps, UpdateParent, UpdateParentNone, Void, modify_ptes,
+    TableOps, TableReadOps, UpdateParent, UpdateParentNone, UpdateParentTable, Void, modify_ptes,
     write_entry_updating,
 };
 
-/// Parent is another page table whose ancestors may also need
-/// updating when it relocates.
-pub struct UpdateParentTable<Op: TableOps, P: UpdateParent<Op>> {
-    pub(crate) parent: P,
-    pub(crate) entry_ptr: Op::TableAddr,
-}
-impl<Op: TableOps, P: UpdateParent<Op>> Clone for UpdateParentTable<Op, P> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<Op: TableOps, P: UpdateParent<Op>> Copy for UpdateParentTable<Op, P> {}
-impl<Op: TableOps, P: UpdateParent<Op>> UpdateParentTable<Op, P> {
-    pub(crate) fn new(parent: P, entry_ptr: Op::TableAddr) -> Self {
-        UpdateParentTable { parent, entry_ptr }
-    }
-}
-
-/// Parent is the root (e.g. CR3).
 #[derive(Copy, Clone)]
-pub struct UpdateParentRoot {}
+pub(in crate::vmem) struct UpdateParentRoot {}
 
 /// Read a PTE and return it (widened to u64) if the present bit is
 /// set. The amd64 "present" encoding is a single bit (bit 0); other
@@ -162,7 +143,7 @@ fn pte_for_table<Op: TableOps>(table_addr: Op::TableAddr) -> u64 {
 /// This trait is used to select appropriate implementations of
 /// [`UpdateParent`] to be used, depending on whether a particular
 /// implementation needs the ability to move tables.
-pub trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {
+pub(in crate::vmem) trait TableMovability<Op: TableReadOps + ?Sized, TableMoveInfo> {
     type RootUpdateParent: UpdateParent<Op, TableMoveInfo = TableMoveInfo>;
     fn root_update_parent() -> Self::RootUpdateParent;
 }
