@@ -26,7 +26,7 @@ limitations under the License.
 #[cfg_attr(target_arch = "aarch64", path = "arch/aarch64/layout.rs")]
 mod arch;
 
-pub use arch::{SCRATCH_TOP_GPA, SCRATCH_TOP_GVA};
+pub use arch::{SCRATCH_TOP_GPA, SCRATCH_TOP_GVA, io_page};
 #[cfg(any(
     all(target_arch = "x86_64", not(feature = "i686-guest")),
     target_arch = "aarch64"
