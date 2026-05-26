@@ -51,7 +51,6 @@ pub mod error;
 pub mod guest_logger;
 pub mod host_comm;
 pub mod memory;
-#[cfg(target_arch = "x86_64")]
 pub mod paging;
 
 /// Bridge between picolibc's POSIX expectations and the Hyperlight host.
