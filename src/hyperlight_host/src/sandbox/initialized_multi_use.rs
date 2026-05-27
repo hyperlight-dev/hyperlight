@@ -536,6 +536,69 @@ impl MultiUseSandbox {
         Ok(())
     }
 
+    /// Like [`restore`](Self::restore), but preserves existing read-only
+    /// file mappings (MemoryRegionType::MappedFile). Safe when file
+    /// mappings are mapped READ-ONLY at the hypervisor level and CoW
+    /// is handled in the guest via scratch pages — scratch gets zeroed,
+    /// page tables are rebuilt from the snapshot, so no stale data leaks.
+    #[instrument(err(Debug), skip_all, parent = Span::current())]
+    pub fn restore_preserving_file_mappings(
+        &mut self,
+        snapshot: Arc<Snapshot>,
+    ) -> Result<()> {
+        use crate::mem::memory_region::MemoryRegionType;
+
+        if self.id != snapshot.sandbox_id() {
+            return Err(SnapshotSandboxMismatch);
+        }
+
+        let (gsnapshot, gscratch) = self.mem_mgr.restore_snapshot(&snapshot)?;
+        if let Some(gsnapshot) = gsnapshot {
+            self.vm
+                .update_snapshot_mapping(gsnapshot)
+                .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        }
+        if let Some(gscratch) = gscratch {
+            self.vm
+                .update_scratch_mapping(gscratch)
+                .map_err(|e| HyperlightError::HyperlightVmError(e.into()))?;
+        }
+
+        let sregs = snapshot.sregs().ok_or_else(|| {
+            HyperlightError::Error("snapshot from running sandbox should have sregs".to_string())
+        })?;
+        self.vm
+            .reset_vcpu(snapshot.root_pt_gpa(), sregs)
+            .map_err(|e| {
+                self.poisoned = true;
+                HyperlightVmError::Restore(e)
+            })?;
+
+        self.vm.set_stack_top(snapshot.stack_top_gva());
+        self.vm.set_entrypoint(snapshot.entrypoint());
+
+        let current_regions: HashSet<_> = self.vm.get_mapped_regions().cloned().collect();
+        let snapshot_regions: HashSet<_> = snapshot.regions().iter().cloned().collect();
+
+        for region in current_regions.difference(&snapshot_regions) {
+            if region.region_type == MemoryRegionType::MappedFile {
+                continue;
+            }
+            self.vm
+                .unmap_region(region)
+                .map_err(HyperlightVmError::UnmapRegion)?;
+        }
+
+        for region in snapshot_regions.difference(&current_regions) {
+            unsafe { self.vm.map_region(region) }.map_err(HyperlightVmError::MapRegion)?;
+        }
+
+        self.snapshot = Some(snapshot.clone());
+        self.poisoned = false;
+
+        Ok(())
+    }
+
     /// Calls a guest function by name with the specified arguments.
     ///
     /// Changes made to the sandbox during execution are *not* persisted.
