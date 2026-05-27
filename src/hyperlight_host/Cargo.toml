@@ -136,6 +136,7 @@ mem_profile = [ "trace_guest", "dep:framehop", "dep:fallible-iterator", "hyperli
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]
 mshv3 = ["dep:mshv-bindings", "dep:mshv-ioctls"]
 hw-interrupts = []
+whp-no-surrogate = []
 # This enables easy debug in the guest
 gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 fuzzing = ["hyperlight-common/fuzzing"]

@@ -352,6 +352,22 @@ pub(crate) trait VirtualMachine: Debug + Send {
     #[cfg(test)]
     fn set_xsave(&self, xsave: &[u32]) -> std::result::Result<(), RegisterError>;
 
+    /// Reset GPRs, debug registers, and special registers in one call.
+    /// The WHP backend overrides this to issue a single
+    /// WHvSetVirtualProcessorRegisters call instead of three.
+    fn reset_vcpu_bulk(
+        &self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
+        self.set_regs(&CommonRegisters {
+            rflags: 1 << 1,
+            ..Default::default()
+        })?;
+        self.set_debug_regs(&CommonDebugRegs::default())?;
+        self.set_sregs(sregs)?;
+        Ok(())
+    }
+
     /// Get partition handle
     #[cfg(target_os = "windows")]
     fn partition_handle(&self) -> windows::Win32::System::Hypervisor::WHV_PARTITION_HANDLE;

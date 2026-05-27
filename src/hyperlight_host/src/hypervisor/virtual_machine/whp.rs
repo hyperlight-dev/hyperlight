@@ -21,10 +21,14 @@ use hyperlight_common::outb::VmAction;
 use tracing::Span;
 #[cfg(feature = "trace_guest")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use windows::Win32::Foundation::{CloseHandle, FreeLibrary, HANDLE};
+use windows::Win32::Foundation::CloseHandle;
+#[cfg(not(feature = "whp-no-surrogate"))]
+use windows::Win32::Foundation::{FreeLibrary, HANDLE};
 use windows::Win32::System::Hypervisor::*;
+#[cfg(not(feature = "whp-no-surrogate"))]
 use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::System::Memory::{MEMORY_MAPPED_VIEW_ADDRESS, UnmapViewOfFile};
+#[cfg(not(feature = "whp-no-surrogate"))]
 use windows::core::s;
 use windows_result::HRESULT;
 
@@ -36,7 +40,9 @@ use crate::hypervisor::regs::{
     WHP_FPU_NAMES, WHP_FPU_NAMES_LEN, WHP_REGS_NAMES, WHP_REGS_NAMES_LEN, WHP_SREGS_NAMES,
     WHP_SREGS_NAMES_LEN,
 };
+#[cfg(not(feature = "whp-no-surrogate"))]
 use crate::hypervisor::surrogate_process::SurrogateProcess;
+#[cfg(not(feature = "whp-no-surrogate"))]
 use crate::hypervisor::surrogate_process_manager::get_surrogate_process_manager;
 #[cfg(feature = "hw-interrupts")]
 use crate::hypervisor::virtual_machine::x86_64::hw_interrupts::TimerThread;
@@ -91,7 +97,7 @@ fn release_file_mapping(view_base: *mut c_void, mapping_handle: HandleWrapper) {
 #[derive(Debug)]
 pub(crate) struct WhpVm {
     partition: WHV_PARTITION_HANDLE,
-    // Surrogate process for memory mapping
+    #[cfg(not(feature = "whp-no-surrogate"))]
     surrogate_process: SurrogateProcess,
     /// Tracks host-side file mappings (view_base, mapping_handle) for
     /// cleanup on unmap or drop. Only populated for MappedFile regions.
@@ -99,15 +105,14 @@ pub(crate) struct WhpVm {
     /// Handle to the background timer (if started).
     #[cfg(feature = "hw-interrupts")]
     timer: Option<TimerThread>,
+    /// Cached xsave reset template — built once during construction,
+    /// reused on every reset_xsave() to avoid 2 extra WHP reads per restore.
+    xsave_template: Vec<u8>,
 }
 
-// Safety: `WhpVm` is !Send because it holds `SurrogateProcess` which contains a raw pointer
-// `allocated_address` (*mut c_void). This pointer represents a memory mapped view address
-// in the surrogate process. It is never dereferenced, only used for address arithmetic and
-// resource management (unmapping). This is a system resource that is not bound to the creating
-// thread and can be safely transferred between threads.
-// `file_mappings` contains raw pointers that are also kernel resource handles,
-// safe to use from any thread.
+// Safety: `WhpVm` is !Send because it holds raw pointers (in `file_mappings` and,
+// when present, `SurrogateProcess`). These are kernel resource handles / addresses
+// that are not bound to the creating thread and can be safely transferred.
 unsafe impl Send for WhpVm {}
 
 impl WhpVm {
@@ -143,18 +148,25 @@ impl WhpVm {
             p
         };
 
-        let mgr = get_surrogate_process_manager()
-            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
-        let surrogate_process = mgr
-            .get_surrogate_process()
-            .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+        #[cfg(not(feature = "whp-no-surrogate"))]
+        let surrogate_process = {
+            let mgr = get_surrogate_process_manager()
+                .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?;
+            mgr.get_surrogate_process()
+                .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?
+        };
+
+        let xsave_template = Self::build_xsave_template(partition)
+            .expect("xsave template build should succeed after vCPU creation");
 
         Ok(WhpVm {
             partition,
+            #[cfg(not(feature = "whp-no-surrogate"))]
             surrogate_process,
             file_mappings: Vec::new(),
             #[cfg(feature = "hw-interrupts")]
             timer: None,
+            xsave_template,
         })
     }
 
@@ -176,6 +188,95 @@ impl WhpVm {
             )
         }
     }
+
+    fn build_xsave_template(
+        partition: WHV_PARTITION_HANDLE,
+    ) -> std::result::Result<Vec<u8>, RegisterError> {
+        let mut buffer_size_needed: u32 = 0;
+        let result = unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                partition,
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut buffer_size_needed,
+            )
+        };
+        if let Err(e) = result
+            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
+        {
+            return Err(RegisterError::GetXsaveSize(e.into()));
+        }
+        if buffer_size_needed < XSAVE_MIN_SIZE as u32 {
+            return Err(RegisterError::XsaveSizeMismatch {
+                expected: XSAVE_MIN_SIZE as u32,
+                actual: buffer_size_needed,
+            });
+        }
+
+        let mut buf = vec![0u8; buffer_size_needed as usize];
+        let mut written_bytes = 0;
+        unsafe {
+            WHvGetVirtualProcessorXsaveState(
+                partition,
+                0,
+                buf.as_mut_ptr() as *mut std::ffi::c_void,
+                buffer_size_needed,
+                &mut written_bytes,
+            )
+            .map_err(|e| RegisterError::GetXsave(e.into()))?;
+        }
+
+        buf[0..520].fill(0);
+        buf[528..].fill(0);
+        buf[0..2].copy_from_slice(&FP_CONTROL_WORD_DEFAULT.to_le_bytes());
+        buf[24..28].copy_from_slice(&MXCSR_DEFAULT.to_le_bytes());
+        buf[512..520].copy_from_slice(&0x3u64.to_le_bytes());
+
+        Ok(buf)
+    }
+
+    /// Reset GPRs, debug registers, and special registers in a single
+    /// WHvSetVirtualProcessorRegisters call instead of three separate ones.
+    pub(crate) fn reset_vcpu_bulk(
+        &self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
+        let gpr_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_REGS_NAMES_LEN] =
+            (&CommonRegisters {
+                rflags: 1 << 1,
+                ..Default::default()
+            })
+                .into();
+        let debug_regs: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_DEBUG_REGS_NAMES_LEN] =
+            (&CommonDebugRegs::default()).into();
+
+        #[cfg(feature = "hw-interrupts")]
+        let sreg_pairs: Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)> = {
+            let all: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
+                sregs.into();
+            all.iter()
+                .copied()
+                .filter(|(name, _)| *name != WHvX64RegisterApicBase)
+                .collect()
+        };
+
+        #[cfg(not(feature = "hw-interrupts"))]
+        let sreg_pairs: Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)> = {
+            let all: [(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>); WHP_SREGS_NAMES_LEN] =
+                sregs.into();
+            all.to_vec()
+        };
+
+        let mut combined: Vec<(WHV_REGISTER_NAME, Align16<WHV_REGISTER_VALUE>)> =
+            Vec::with_capacity(WHP_REGS_NAMES_LEN + WHP_DEBUG_REGS_NAMES_LEN + sreg_pairs.len());
+        combined.extend_from_slice(&gpr_regs);
+        combined.extend_from_slice(&debug_regs);
+        combined.extend_from_slice(&sreg_pairs);
+
+        self.set_registers(&combined)
+            .map_err(|e| RegisterError::SetRegs(e.into()))
+    }
 }
 
 impl VirtualMachine for WhpVm {
@@ -183,18 +284,6 @@ impl VirtualMachine for WhpVm {
         &mut self,
         (_slot, region): (u32, &MemoryRegion),
     ) -> Result<(), MapMemoryError> {
-        // Calculate the surrogate process address for this region
-        let surrogate_base = self
-            .surrogate_process
-            .map(
-                region.host_region.start.from_handle,
-                region.host_region.start.handle_base,
-                region.host_region.start.handle_size,
-                &region.region_type.surrogate_mapping(),
-            )
-            .map_err(|e| MapMemoryError::SurrogateProcess(e.to_string()))?;
-        let surrogate_addr = surrogate_base.wrapping_add(region.host_region.start.offset);
-
         let flags = region
             .flags
             .iter()
@@ -212,32 +301,65 @@ impl VirtualMachine for WhpVm {
             .iter()
             .fold(WHvMapGpaRangeFlagNone, |acc, flag| acc | *flag);
 
-        let whvmapgparange2_func = unsafe {
-            match try_load_whv_map_gpa_range2() {
-                Ok(func) => func,
-                Err(e) => {
-                    return Err(MapMemoryError::LoadApi {
-                        api_name: "WHvMapGpaRange2",
-                        source: e,
-                    });
-                }
+        #[cfg(feature = "whp-no-surrogate")]
+        {
+            let host_addr =
+                (region.host_region.start.handle_base + region.host_region.start.offset)
+                    as *const c_void;
+            unsafe {
+                WHvMapGpaRange(
+                    self.partition,
+                    host_addr,
+                    region.guest_region.start as u64,
+                    region.guest_region.len() as u64,
+                    flags,
+                )
+                .map_err(|e| {
+                    MapMemoryError::Hypervisor(HypervisorError::WindowsError(e))
+                })?;
             }
-        };
+        }
 
-        let res = unsafe {
-            whvmapgparange2_func(
-                self.partition,
-                self.surrogate_process.process_handle.into(),
-                surrogate_addr,
-                region.guest_region.start as u64,
-                region.guest_region.len() as u64,
-                flags,
-            )
-        };
-        if res.is_err() {
-            return Err(MapMemoryError::Hypervisor(HypervisorError::WindowsError(
-                windows_result::Error::from_hresult(res),
-            )));
+        #[cfg(not(feature = "whp-no-surrogate"))]
+        {
+            let surrogate_base = self
+                .surrogate_process
+                .map(
+                    region.host_region.start.from_handle,
+                    region.host_region.start.handle_base,
+                    region.host_region.start.handle_size,
+                    &region.region_type.surrogate_mapping(),
+                )
+                .map_err(|e| MapMemoryError::SurrogateProcess(e.to_string()))?;
+            let surrogate_addr = surrogate_base.wrapping_add(region.host_region.start.offset);
+
+            let whvmapgparange2_func = unsafe {
+                match try_load_whv_map_gpa_range2() {
+                    Ok(func) => func,
+                    Err(e) => {
+                        return Err(MapMemoryError::LoadApi {
+                            api_name: "WHvMapGpaRange2",
+                            source: e,
+                        });
+                    }
+                }
+            };
+
+            let res = unsafe {
+                whvmapgparange2_func(
+                    self.partition,
+                    self.surrogate_process.process_handle.into(),
+                    surrogate_addr,
+                    region.guest_region.start as u64,
+                    region.guest_region.len() as u64,
+                    flags,
+                )
+            };
+            if res.is_err() {
+                return Err(MapMemoryError::Hypervisor(HypervisorError::WindowsError(
+                    windows_result::Error::from_hresult(res),
+                )));
+            }
         }
 
         // Track host-side file mappings for cleanup on unmap or drop.
@@ -263,6 +385,7 @@ impl VirtualMachine for WhpVm {
             )
             .map_err(|e| UnmapMemoryError::Hypervisor(HypervisorError::WindowsError(e)))?;
         }
+        #[cfg(not(feature = "whp-no-surrogate"))]
         self.surrogate_process
             .unmap(region.host_region.start.handle_base);
 
@@ -675,77 +798,12 @@ impl VirtualMachine for WhpVm {
     }
 
     fn reset_xsave(&self) -> std::result::Result<(), RegisterError> {
-        // WHP uses compacted XSAVE format (bit 63 of XCOMP_BV set).
-        // We cannot just zero out the xsave area, we need to preserve the XCOMP_BV.
-
-        // Get the required buffer size by calling with NULL buffer.
-        let mut buffer_size_needed: u32 = 0;
-
-        let result = unsafe {
-            WHvGetVirtualProcessorXsaveState(
-                self.partition,
-                0,
-                std::ptr::null_mut(),
-                0,
-                &mut buffer_size_needed,
-            )
-        };
-
-        // Expect insufficient buffer error; any other error is unexpected
-        if let Err(e) = result
-            && e.code() != windows::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER
-        {
-            return Err(RegisterError::GetXsaveSize(e.into()));
-        }
-
-        if buffer_size_needed < XSAVE_MIN_SIZE as u32 {
-            return Err(RegisterError::XsaveSizeMismatch {
-                expected: XSAVE_MIN_SIZE as u32,
-                actual: buffer_size_needed,
-            });
-        }
-
-        // Create a buffer to hold the current state (to get the correct XCOMP_BV)
-        let mut current_state = vec![0u8; buffer_size_needed as usize];
-        let mut written_bytes = 0;
-        unsafe {
-            WHvGetVirtualProcessorXsaveState(
-                self.partition,
-                0,
-                current_state.as_mut_ptr() as *mut std::ffi::c_void,
-                buffer_size_needed,
-                &mut written_bytes,
-            )
-            .map_err(|e| RegisterError::GetXsave(e.into()))?;
-        };
-
-        // Zero out most of the buffer, preserving only XCOMP_BV (520-528).
-        // Extended components with XSTATE_BV bit=0 will use their init values.
-        //
-        // - Legacy region (0-512): x87 FPU + SSE state
-        // - XSTATE_BV (512-520): Feature bitmap
-        // - XCOMP_BV (520-528): Compaction bitmap + format bit (KEEP)
-        // - Reserved (528-576): Header padding
-        // - Extended (576+): AVX, AVX-512, MPX, PKRU, AMX, etc.
-        current_state[0..520].fill(0);
-        current_state[528..].fill(0);
-
-        // XSAVE area layout from Intel SDM Vol. 1 Section 13.4.1:
-        // - Bytes 0-1: FCW (x87 FPU Control Word)
-        // - Bytes 24-27: MXCSR
-        // - Bytes 512-519: XSTATE_BV (bitmap of valid state components)
-        current_state[0..2].copy_from_slice(&FP_CONTROL_WORD_DEFAULT.to_le_bytes());
-        current_state[24..28].copy_from_slice(&MXCSR_DEFAULT.to_le_bytes());
-        // XSTATE_BV = 0x3: bits 0,1 = x87 + SSE valid. Explicitly tell hypervisor
-        // to apply the legacy region from this buffer for consistent behavior.
-        current_state[512..520].copy_from_slice(&0x3u64.to_le_bytes());
-
         unsafe {
             WHvSetVirtualProcessorXsaveState(
                 self.partition,
                 0,
-                current_state.as_ptr() as *const std::ffi::c_void,
-                buffer_size_needed,
+                self.xsave_template.as_ptr() as *const std::ffi::c_void,
+                self.xsave_template.len() as u32,
             )
             .map_err(|e| RegisterError::SetXsave(e.into()))?;
         }
@@ -796,6 +854,13 @@ impl VirtualMachine for WhpVm {
         }
 
         Ok(())
+    }
+
+    fn reset_vcpu_bulk(
+        &self,
+        sregs: &CommonSpecialRegisters,
+    ) -> std::result::Result<(), RegisterError> {
+        self.reset_vcpu_bulk(sregs)
     }
 
     /// Get the partition handle for this VM
@@ -1126,13 +1191,7 @@ impl Drop for WhpVm {
     }
 }
 
-// This function dynamically loads the WHvMapGpaRange2 function from the winhvplatform.dll
-// WHvMapGpaRange2 only available on Windows 11 or Windows Server 2022 and later
-// we do things this way to allow a user trying to load hyperlight on an older version of windows to
-// get an error message saying that hyperlight requires a newer version of windows, rather than just failing
-// with an error about a missing entrypoint
-// This function should always succeed since before we get here we have already checked that the hypervisor is present and
-// that we are on a supported version of windows.
+#[cfg(not(feature = "whp-no-surrogate"))]
 type WHvMapGpaRange2Func = unsafe extern "C" fn(
     WHV_PARTITION_HANDLE,
     HANDLE,
@@ -1142,6 +1201,7 @@ type WHvMapGpaRange2Func = unsafe extern "C" fn(
     WHV_MAP_GPA_RANGE_FLAGS,
 ) -> HRESULT;
 
+#[cfg(not(feature = "whp-no-surrogate"))]
 unsafe fn try_load_whv_map_gpa_range2() -> windows_result::Result<WHvMapGpaRange2Func> {
     let library = unsafe {
         LoadLibraryExA(
