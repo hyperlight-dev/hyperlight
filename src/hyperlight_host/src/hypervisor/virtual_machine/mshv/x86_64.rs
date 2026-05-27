@@ -220,6 +220,21 @@ impl VirtualMachine for MshvVm {
                             let instruction_length = io_message.header.instruction_length() as u64;
                             let is_write = io_message.header.intercept_access_type != 0;
 
+                            // VmAction::Halt always means "I'm done", regardless of
+                            // whether a timer is active. The next guest dispatch
+                            // rewrites RIP via set_regs(), so skip the RIP advance on
+                            // this hot path.
+                            if is_write && port_number == VmAction::Halt as u16 {
+                                // Stop the timer thread before returning.
+                                #[cfg(feature = "hw-interrupts")]
+                                {
+                                    if let Some(mut t) = self.timer.take() {
+                                        t.stop();
+                                    }
+                                }
+                                return Ok(VmExit::Halt());
+                            }
+
                             // mshv, unlike kvm, does not automatically increment RIP.
                             if let Some(page) = self
                                 .vcpu_fd
@@ -243,19 +258,6 @@ impl VirtualMachine for MshvVm {
                                         ..Default::default()
                                     }])
                                     .map_err(|e| RunVcpuError::IncrementRip(e.into()))?;
-                            }
-
-                            // VmAction::Halt always means "I'm done", regardless
-                            // of whether a timer is active.
-                            if is_write && port_number == VmAction::Halt as u16 {
-                                // Stop the timer thread before returning.
-                                #[cfg(feature = "hw-interrupts")]
-                                {
-                                    if let Some(mut t) = self.timer.take() {
-                                        t.stop();
-                                    }
-                                }
-                                return Ok(VmExit::Halt());
                             }
 
                             #[cfg(feature = "hw-interrupts")]
