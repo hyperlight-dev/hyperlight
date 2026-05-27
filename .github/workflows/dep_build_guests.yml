@@ -61,6 +61,9 @@ jobs:
         with:
           shared-key: "guests-${{ inputs.config }}"
           cache-on-failure: "true"
+          # Only save on main as caches are not shared across branches.
+          # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
             src/tests/rust_guests/simpleguest -> target

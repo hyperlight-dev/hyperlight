@@ -64,8 +64,11 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "${{ runner.os }}-${{ inputs.config }}"
+          shared-key: "${{ runner.os }}-${{ inputs.hypervisor }}-${{ inputs.config }}"
           cache-on-failure: "true"
+          # Only save on main as caches are not shared across branches.
+          # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Download Rust guests
         uses: actions/download-artifact@v8

@@ -97,7 +97,7 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "${{ runner.os }}-release"
+          shared-key: "${{ runner.os }}-${{ inputs.hypervisor }}-release"
           save-if: "false"
 
       - name: Download Rust guests
