@@ -243,6 +243,15 @@ pub enum MapRegionError {
     MapMemory(#[from] MapMemoryError),
     #[error("Region is not page-aligned (page size: {0:#x})")]
     NotPageAligned(usize),
+    #[error(
+        "Region [{new_start:#x}..{new_end:#x}) overlaps existing region [{existing_start:#x}..{existing_end:#x})"
+    )]
+    Overlapping {
+        new_start: usize,
+        new_end: usize,
+        existing_start: usize,
+        existing_end: usize,
+    },
 }
 
 /// Errors that can occur when unmapping a memory region
@@ -418,6 +427,53 @@ impl HyperlightVm {
         .any(|x| x % self.page_size != 0)
         {
             return Err(MapRegionError::NotPageAligned(self.page_size));
+        }
+
+        let new_start = region.guest_region.start;
+        let new_end = region.guest_region.end;
+
+        // Check against existing dynamically mapped regions
+        for (_, existing) in &self.mmap_regions {
+            if new_start < existing.guest_region.end && new_end > existing.guest_region.start {
+                return Err(MapRegionError::Overlapping {
+                    new_start,
+                    new_end,
+                    existing_start: existing.guest_region.start,
+                    existing_end: existing.guest_region.end,
+                });
+            }
+        }
+
+        // Check against the snapshot region
+        if let Some(ref snapshot) = self.snapshot_memory {
+            let snap_start = crate::mem::layout::SandboxMemoryLayout::BASE_ADDRESS;
+            #[cfg(not(unshared_snapshot_mem))]
+            let snap_end = snap_start + snapshot.guest_mapped_size();
+            #[cfg(unshared_snapshot_mem)]
+            let snap_end = snap_start + snapshot.mem_size();
+            if new_start < snap_end && new_end > snap_start {
+                return Err(MapRegionError::Overlapping {
+                    new_start,
+                    new_end,
+                    existing_start: snap_start,
+                    existing_end: snap_end,
+                });
+            }
+        }
+
+        // Check against the scratch region
+        if let Some(ref scratch) = self.scratch_memory {
+            let scratch_start =
+                hyperlight_common::layout::scratch_base_gpa(scratch.mem_size()) as usize;
+            let scratch_end = scratch_start + scratch.mem_size();
+            if new_start < scratch_end && new_end > scratch_start {
+                return Err(MapRegionError::Overlapping {
+                    new_start,
+                    new_end,
+                    existing_start: scratch_start,
+                    existing_end: scratch_end,
+                });
+            }
         }
 
         // Try to reuse a freed slot first, otherwise use next_slot
