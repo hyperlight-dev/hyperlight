@@ -156,8 +156,14 @@ impl WhpVm {
                 .map_err(|e| CreateVmError::SurrogateProcess(e.to_string()))?
         };
 
-        let xsave_template = Self::build_xsave_template(partition)
-            .expect("xsave template build should succeed after vCPU creation");
+        let xsave_template = Self::build_xsave_template(partition).map_err(|e| {
+            CreateVmError::InitializeVm(HypervisorError::WindowsError(
+                windows_result::Error::new(
+                    HRESULT::from_win32(0x32), // ERROR_NOT_SUPPORTED
+                    format!("xsave template build failed: {e}"),
+                ),
+            ))
+        })?;
 
         Ok(WhpVm {
             partition,
