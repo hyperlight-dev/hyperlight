@@ -24,10 +24,10 @@ limitations under the License.
 //! substitute.rs for more details of the approach here).
 
 use wasmparser::{
-    ComponentAlias, ComponentDefinedType, ComponentFuncType, ComponentOuterAliasKind,
-    ComponentType, ComponentTypeDeclaration, ComponentTypeRef, ComponentValType,
-    CompositeInnerType, CoreType, InstanceTypeDeclaration, ModuleTypeDeclaration, OuterAliasKind,
-    PrimitiveValType, TypeBounds, TypeRef,
+    ComponentAlias, ComponentDefinedType, ComponentExternName, ComponentFuncType,
+    ComponentOuterAliasKind, ComponentType, ComponentTypeDeclaration, ComponentTypeRef,
+    ComponentValType, CompositeInnerType, CoreType, InstanceTypeDeclaration, ModuleTypeDeclaration,
+    OuterAliasKind, PrimitiveValType, TypeBounds, TypeRef,
 };
 
 use crate::etypes::{
@@ -536,13 +536,19 @@ impl<'p, 'a> Ctx<'p, 'a> {
                 self.add_core_or_component_ed(ed);
                 Ok(None)
             }
-            InstanceTypeDeclaration::Export { name, ty } => {
+            InstanceTypeDeclaration::Export {
+                name: export_name,
+                ty,
+            } => {
+                let ComponentExternName {
+                    name: kebab_name, ..
+                } = *export_name;
                 let (vs, ed) = self.elab_extern_desc(ty)?;
-                let sub = self.bound_to_evars(Some(name.name), &vs);
+                let sub = self.bound_to_evars(Some(kebab_name), &vs);
                 let ed = sub.extern_desc(&ed).not_void();
                 self.add_ed(&ed);
                 Ok(Some(ExternDecl {
-                    kebab_name: name.name,
+                    kebab_name,
                     desc: ed,
                 }))
             }
@@ -634,27 +640,37 @@ impl<'p, 'a> Ctx<'p, 'a> {
                 self.add_core_or_component_ed(ed);
                 Ok((None, None))
             }
-            ComponentTypeDeclaration::Export { name, ty, .. } => {
+            ComponentTypeDeclaration::Export {
+                name: export_name,
+                ty,
+                ..
+            } => {
+                let ComponentExternName {
+                    name: kebab_name, ..
+                } = *export_name;
                 let (vs, ed) = self.elab_extern_desc(ty)?;
-                let sub = self.bound_to_evars(Some(name.name), &vs);
+                let sub = self.bound_to_evars(Some(kebab_name), &vs);
                 let ed = sub.extern_desc(&ed).not_void();
                 self.add_ed(&ed);
                 Ok((
                     None,
                     Some(ExternDecl {
-                        kebab_name: name.name,
+                        kebab_name,
                         desc: ed,
                     }),
                 ))
             }
             ComponentTypeDeclaration::Import(i) => {
+                let ComponentExternName {
+                    name: kebab_name, ..
+                } = i.name;
                 let (vs, ed) = self.elab_extern_desc(&i.ty)?;
-                let sub = self.bound_to_uvars(Some(i.name.name), &vs, true);
+                let sub = self.bound_to_uvars(Some(kebab_name), &vs, true);
                 let ed = sub.extern_desc(&ed).not_void();
                 self.add_ed(&ed);
                 Ok((
                     Some(ExternDecl {
-                        kebab_name: i.name.name,
+                        kebab_name,
                         desc: ed,
                     }),
                     None,
