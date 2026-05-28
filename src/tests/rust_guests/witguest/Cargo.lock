@@ -264,7 +264,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
- "wasmparser",
 ]
 
 [[package]]
