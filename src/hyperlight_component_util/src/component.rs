@@ -118,7 +118,7 @@ pub fn read_component_single_exported_type<'a>(
                                 // picks the world index if world_name is passed in the proc_macro
                                 // else picks the index of last type, exported by core module
                                 if let Some(world) = world_name.as_ref() {
-                                    let name = ce.name.0;
+                                    let name = ce.name.name;
                                     if name.eq_ignore_ascii_case(world) {
                                         selected_type_idx = Some(ctx.types.len() - 1);
                                     }

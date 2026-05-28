@@ -538,11 +538,11 @@ impl<'p, 'a> Ctx<'p, 'a> {
             }
             InstanceTypeDeclaration::Export { name, ty } => {
                 let (vs, ed) = self.elab_extern_desc(ty)?;
-                let sub = self.bound_to_evars(Some(name.0), &vs);
+                let sub = self.bound_to_evars(Some(name.name), &vs);
                 let ed = sub.extern_desc(&ed).not_void();
                 self.add_ed(&ed);
                 Ok(Some(ExternDecl {
-                    kebab_name: name.0,
+                    kebab_name: name.name,
                     desc: ed,
                 }))
             }
@@ -636,25 +636,25 @@ impl<'p, 'a> Ctx<'p, 'a> {
             }
             ComponentTypeDeclaration::Export { name, ty, .. } => {
                 let (vs, ed) = self.elab_extern_desc(ty)?;
-                let sub = self.bound_to_evars(Some(name.0), &vs);
+                let sub = self.bound_to_evars(Some(name.name), &vs);
                 let ed = sub.extern_desc(&ed).not_void();
                 self.add_ed(&ed);
                 Ok((
                     None,
                     Some(ExternDecl {
-                        kebab_name: name.0,
+                        kebab_name: name.name,
                         desc: ed,
                     }),
                 ))
             }
             ComponentTypeDeclaration::Import(i) => {
                 let (vs, ed) = self.elab_extern_desc(&i.ty)?;
-                let sub = self.bound_to_uvars(Some(i.name.0), &vs, true);
+                let sub = self.bound_to_uvars(Some(i.name.name), &vs, true);
                 let ed = sub.extern_desc(&ed).not_void();
                 self.add_ed(&ed);
                 Ok((
                     Some(ExternDecl {
-                        kebab_name: i.name.0,
+                        kebab_name: i.name.name,
                         desc: ed,
                     }),
                     None,
