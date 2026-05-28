@@ -2556,7 +2556,7 @@ pub(crate) mod tests {
     // Large multi-lap random submission/completion
     #[test]
     fn test_random_stress_small() {
-        use rand::Rng;
+        use rand::RngExt;
         use rand::seq::SliceRandom;
 
         let ring = make_ring(16);
