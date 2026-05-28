@@ -211,7 +211,7 @@ fn outb_virtq_call(
         };
 
         let hdr_size = VirtqMsgHeader::SIZE;
-        let entry_data = entry.data();
+        let entry_data = entry.to_bytes();
 
         if entry_data.len() < hdr_size {
             return Err(HandleOutbError::ReadHostFunctionCall(
@@ -251,13 +251,13 @@ fn outb_virtq_call(
     };
 
     // Validate completion buffer before calling the host function
-    let virtq::SendCompletion::Writable(mut wc) = completion else {
+    let virtq::ReplyChain::Writable(mut wc) = completion else {
         return Err(HandleOutbError::WriteHostFunctionResponse(
             "G2H: expected writable completion, got ack (ring corruption)".into(),
         ));
     };
 
-    let entry_data = entry.data();
+    let entry_data = entry.to_bytes();
     let hdr: VirtqMsgHeader = *bytemuck::from_bytes(&entry_data[..VirtqMsgHeader::SIZE]);
     let available = entry_data.len() - VirtqMsgHeader::SIZE;
     let payload_len = (hdr.payload_len as usize).min(available);

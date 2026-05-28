@@ -1009,7 +1009,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
 
             drop(entry);
 
-            let virtq::SendCompletion::Writable(mut wc) = completion else {
+            let virtq::ReplyChain::Writable(mut wc) = completion else {
                 return Err(new_error!(
                     "H2G: expected writable completion (ring corruption)"
                 ));
@@ -1068,7 +1068,7 @@ impl SandboxMemoryManager<HostSharedMemory> {
                 return Err(new_error!("G2H: no H2G result entry after halt"));
             };
 
-            let entry_data = entry.data();
+            let entry_data = entry.to_bytes();
             if entry_data.len() < VirtqMsgHeader::SIZE {
                 return Err(new_error!("G2H: result entry too short"));
             }

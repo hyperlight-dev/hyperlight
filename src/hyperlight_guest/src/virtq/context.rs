@@ -31,8 +31,7 @@ use hyperlight_common::mem::PAGE_SIZE_USIZE;
 use hyperlight_common::outb::OutBAction;
 use hyperlight_common::virtq::msg::{MsgKind, VirtqMsgHeader};
 use hyperlight_common::virtq::{
-    self, BufferPool, Layout, Notifier, QueueStats, RecvCompletion, RecyclePool, Token,
-    VirtqProducer,
+    self, BufferPool, Layout, Notifier, QueueStats, RecyclePool, Token, UsedChain, VirtqProducer,
 };
 
 use super::GuestMemOps;
@@ -195,8 +194,8 @@ impl GuestContext {
         };
 
         let result_bytes = match completion {
-            RecvCompletion::Data(_, data) => data,
-            RecvCompletion::Ack(_) => bail!("G2H: response was ack-only"),
+            UsedChain::Data(_, segments) => segments.into_bytes(),
+            UsedChain::Ack(_) => bail!("G2H: response was ack-only"),
         };
         if result_bytes.len() < VirtqMsgHeader::SIZE {
             bail!("G2H: response too short for header");
@@ -229,8 +228,8 @@ impl GuestContext {
         };
 
         let data = match first {
-            RecvCompletion::Data(_, data) => data,
-            RecvCompletion::Ack(_) => bail!("H2G: call was ack-only"),
+            UsedChain::Data(_, segments) => segments.into_bytes(),
+            UsedChain::Ack(_) => bail!("H2G: call was ack-only"),
         };
         if data.len() < VirtqMsgHeader::SIZE {
             bail!("H2G: completion too short for header");
@@ -264,8 +263,8 @@ impl GuestContext {
             };
 
             let next_data = match next {
-                RecvCompletion::Data(_, data) => data,
-                RecvCompletion::Ack(_) => bail!("H2G: continuation was ack-only"),
+                UsedChain::Data(_, segments) => segments.into_bytes(),
+                UsedChain::Ack(_) => bail!("H2G: continuation was ack-only"),
             };
             if next_data.len() < VirtqMsgHeader::SIZE {
                 bail!("H2G: continuation too short for header");

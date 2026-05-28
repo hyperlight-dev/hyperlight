@@ -25,7 +25,7 @@ limitations under the License.
 //! The implementation is split into layers:
 //!
 //! - **High-level API** ([`VirtqProducer`], [`VirtqConsumer`]): Manages buffer allocation,
-//!   entry/completion lifecycle, and notification decisions. This is the recommended API
+//!   chain lifecycle, and notification decisions. This is the recommended API
 //!   for most use cases.
 //!
 //! - **Ring primitives** ([`RingProducer`], [`RingConsumer`]): Low-level descriptor ring
@@ -40,31 +40,31 @@ limitations under the License.
 //! ## Single Readable/Writable Chain
 //!
 //! ```ignore
-//! // Producer (driver) side - build entry, submit, get completion
-//! let mut entry = producer.chain()
+//! // Producer (driver) side - build and submit a send chain
+//! let mut chain = producer.chain()
 //!     .readable(64)
 //!     .writable(128)
 //!     .build()?;
-//! entry.write_all(b"entry data")?;
-//! let token = producer.submit(entry)?;
+//! chain.write_all(b"request data")?;
+//! let token = producer.submit(chain)?;
 //! // ... wait for notification ...
-//! if let Some(completion) = producer.poll()? {
-//!     match completion {
-//!         RecvCompletion::Data(_, data) => process(data),
-//!         RecvCompletion::Ack(_) => {}
+//! if let Some(used) = producer.poll()? {
+//!     match used {
+//!         UsedChain::Data(_, segments) => process(segments),
+//!         UsedChain::Ack(_) => {}
 //!     }
 //! }
 //!
-//! // Consumer (device) side - receive entry, send completion
-//! if let Some((entry, completion)) = consumer.poll(max_request_size)? {
-//!     let request = entry.data();
-//!     match completion {
-//!         SendCompletion::Writable(mut wc) => {
+//! // Consumer (device) side - receive a chain and reply/ack it
+//! if let Some((chain, reply)) = consumer.poll(max_request_size)? {
+//!     let request = chain.to_bytes();
+//!     match reply {
+//!         ReplyChain::Writable(mut wc) => {
 //!             let response = handle(request);
 //!             wc.write_all(&response)?;
 //!             consumer.complete(wc.into())?;
 //!         }
-//!         SendCompletion::Ack(ack) => {
+//!         ReplyChain::Ack(ack) => {
 //!             consumer.complete(ack.into())?;
 //!         }
 //!     }
@@ -72,29 +72,29 @@ limitations under the License.
 //!
 //! // Multiple pending completions (no borrow on consumer)
 //! let mut pending = Vec::new();
-//! while let Some((entry, completion)) = consumer.poll(max_request_size)? {
-//!     pending.push((process(entry), completion));
+//! while let Some((chain, reply)) = consumer.poll(max_request_size)? {
+//!     pending.push((process(chain), reply));
 //! }
-//! for (result, completion) in pending {
-//!     consumer.complete(completion)?;
+//! for (result, reply) in pending {
+//!     consumer.complete(reply)?;
 //! }
 //! ```
 //!
-//! ## Multiple Entries
+//! ## Multiple Chains
 //!
 //! Each submit checks event suppression and notifies independently. Use
 //! [`VirtqProducer::batch`] when a higher-level protocol wants to publish
-//! multiple entries and kick the queue once.
+//! multiple chains and kick the queue once.
 //!
 //! ```ignore
 //! let mut batch = producer.batch();
 //! for data in entries {
-//!     let mut se = batch.chain()
+//!     let mut chain = batch.chain()
 //!         .readable(data.len())
 //!         .writable(64)
 //!         .build()?;
-//!     se.write_all(data)?;
-//!     batch.submit(se)?;
+//!     chain.write_all(data)?;
+//!     batch.submit(chain)?;
 //! }
 //! batch.finish()?;
 //! ```
@@ -104,14 +104,14 @@ limitations under the License.
 //! To receive a single notification when multiple requests complete:
 //!
 //! ```ignore
-//! // Submit entries
+//! // Submit chains
 //! for data in entries {
-//!     let mut se = producer.chain()
+//!     let mut chain = producer.chain()
 //!         .readable(data.len())
 //!         .writable(64)
 //!         .build()?;
-//!     se.write_all(data)?;
-//!     producer.submit(se)?;
+//!     chain.write_all(data)?;
+//!     producer.submit(chain)?;
 //! }
 //!
 //! // Tell device: "notify me only after completing past this cursor"
@@ -120,7 +120,7 @@ limitations under the License.
 //!
 //! // Wait for single notification, then drain all responses
 //! producer.drain(|completion| {
-//!     if let RecvCompletion::Data(token, data) = completion {
+//!     if let UsedChain::Data(token, data) = completion {
 //!         handle_response(token, data);
 //!     }
 //! })?;
@@ -659,7 +659,7 @@ mod tests {
         // Consumer processes requests
         for _ in 0..3 {
             let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
-            let SendCompletion::Writable(mut wc) = completion else {
+            let ReplyChain::Writable(mut wc) = completion else {
                 panic!("expected writable completion");
             };
             wc.write_all(b"cqe-data").unwrap();
@@ -746,15 +746,15 @@ mod tests {
 
         // Consumer sees all three entries
         let (entry1, completion1) = consumer.poll(1024).unwrap().unwrap();
-        assert_eq!(entry1.data().as_ref(), b"zc-ent");
+        assert_eq!(entry1.to_bytes().as_ref(), b"zc-ent");
         consumer.complete(completion1).unwrap();
 
         let (entry2, completion2) = consumer.poll(1024).unwrap().unwrap();
-        assert_eq!(entry2.data().as_ref(), b"copy-ent");
+        assert_eq!(entry2.to_bytes().as_ref(), b"copy-ent");
         consumer.complete(completion2).unwrap();
 
         let (_entry3, completion3) = consumer.poll(1024).unwrap().unwrap();
-        let SendCompletion::Writable(mut wc) = completion3 else {
+        let ReplyChain::Writable(mut wc) = completion3 else {
             panic!("expected writable completion");
         };
         wc.write_all(b"resp").unwrap();
@@ -766,7 +766,7 @@ mod tests {
 
         let cqe = producer.poll().unwrap().unwrap();
         assert_eq!(cqe.token(), tok3);
-        assert_eq!(cqe.data().unwrap().as_ref(), b"resp");
+        assert_eq!(cqe.to_bytes().unwrap().as_ref(), b"resp");
     }
 
     #[test]
@@ -785,16 +785,16 @@ mod tests {
         // Consumer sees the data
         let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
         assert_eq!(entry.token(), token);
-        assert_eq!(entry.data().as_ref(), b"hello");
+        assert_eq!(entry.to_bytes().as_ref(), b"hello");
 
         // Write response
-        let SendCompletion::Writable(mut wc) = completion else {
+        let ReplyChain::Writable(mut wc) = completion else {
             panic!("expected writable completion");
         };
         wc.write_all(b"world").unwrap();
         consumer.complete(wc.into()).unwrap();
         let cqe = producer.poll().unwrap().unwrap();
-        assert_eq!(cqe.data().unwrap().as_ref(), b"world");
+        assert_eq!(cqe.to_bytes().unwrap().as_ref(), b"world");
     }
 
     #[test]
@@ -808,9 +808,9 @@ mod tests {
         // Consumer receives and responds
         let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
         assert_eq!(entry.token(), token);
-        assert_eq!(entry.data().as_ref(), b"round-trip-entry");
+        assert_eq!(entry.to_bytes().as_ref(), b"round-trip-entry");
 
-        let SendCompletion::Writable(mut wc) = completion else {
+        let ReplyChain::Writable(mut wc) = completion else {
             panic!("expected writable completion");
         };
         assert!(wc.capacity() >= 128);
@@ -820,7 +820,7 @@ mod tests {
         // Producer gets the completion
         let cqe = producer.poll().unwrap().unwrap();
         assert_eq!(cqe.token(), token);
-        assert_eq!(cqe.data().unwrap().as_ref(), b"round-trip-rsp");
+        assert_eq!(cqe.to_bytes().unwrap().as_ref(), b"round-trip-rsp");
     }
 
     #[test]
@@ -835,8 +835,8 @@ mod tests {
 
         let cqe = producer.poll().unwrap().unwrap();
         assert_eq!(cqe.token(), token);
-        assert_eq!(cqe.data().unwrap().len(), 0);
-        assert!(cqe.data().unwrap().is_empty());
+        assert_eq!(cqe.to_bytes().unwrap().len(), 0);
+        assert!(cqe.to_bytes().unwrap().is_empty());
     }
 
     #[test]
@@ -849,9 +849,9 @@ mod tests {
         // Poll and hold the completion
         let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
         assert_eq!(entry.token(), token);
-        assert_eq!(entry.data().as_ref(), b"deferred");
+        assert_eq!(entry.to_bytes().as_ref(), b"deferred");
 
-        let SendCompletion::Writable(mut wc) = completion else {
+        let ReplyChain::Writable(mut wc) = completion else {
             panic!("expected writable completion");
         };
         wc.write_all(b"deferred-cqe").unwrap();
@@ -859,7 +859,7 @@ mod tests {
 
         let cqe = producer.poll().unwrap().unwrap();
         assert_eq!(cqe.token(), token);
-        assert_eq!(cqe.data().unwrap().as_ref(), b"deferred-cqe");
+        assert_eq!(cqe.to_bytes().unwrap().as_ref(), b"deferred-cqe");
     }
 
     #[test]
@@ -873,20 +873,20 @@ mod tests {
         // Poll both
         let (entry1, completion1) = consumer.poll(1024).unwrap().unwrap();
         assert_eq!(entry1.token(), tok1);
-        assert_eq!(entry1.data().as_ref(), b"first");
+        assert_eq!(entry1.to_bytes().as_ref(), b"first");
 
         let (entry2, completion2) = consumer.poll(1024).unwrap().unwrap();
         assert_eq!(entry2.token(), tok2);
-        assert_eq!(entry2.data().as_ref(), b"second");
+        assert_eq!(entry2.to_bytes().as_ref(), b"second");
 
         // Complete second first (out of order)
-        let SendCompletion::Writable(mut wc2) = completion2 else {
+        let ReplyChain::Writable(mut wc2) = completion2 else {
             panic!("expected writable");
         };
         wc2.write_all(b"resp2").unwrap();
         consumer.complete(wc2.into()).unwrap();
 
-        let SendCompletion::Writable(mut wc1) = completion1 else {
+        let ReplyChain::Writable(mut wc1) = completion1 else {
             panic!("expected writable");
         };
         wc1.write_all(b"resp1").unwrap();
@@ -895,8 +895,8 @@ mod tests {
         let cqe1 = producer.poll().unwrap().unwrap();
         let cqe2 = producer.poll().unwrap().unwrap();
         let mut responses: Vec<_> = vec![
-            (cqe1.token(), cqe1.data().unwrap().to_vec()),
-            (cqe2.token(), cqe2.data().unwrap().to_vec()),
+            (cqe1.token(), cqe1.to_bytes().unwrap().to_vec()),
+            (cqe2.token(), cqe2.to_bytes().unwrap().to_vec()),
         ];
         responses.sort_by_key(|(t, _)| t.0);
 
@@ -959,7 +959,7 @@ mod tests {
 
         // Consumer processes and writes response
         let (_, completion) = consumer.poll(1024).unwrap().unwrap();
-        let SendCompletion::Writable(mut wc) = completion else {
+        let ReplyChain::Writable(mut wc) = completion else {
             panic!("expected writable");
         };
         wc.write_all(b"response-data").unwrap();
@@ -972,7 +972,7 @@ mod tests {
         // poll() should return the buffered completion
         let cqe = producer.poll().unwrap().unwrap();
         assert_eq!(cqe.token(), tok);
-        assert_eq!(cqe.data().unwrap().as_ref(), b"response-data");
+        assert_eq!(cqe.to_bytes().unwrap().as_ref(), b"response-data");
     }
 
     #[test]
@@ -990,7 +990,7 @@ mod tests {
         consumer.complete(c1).unwrap(); // ack RO
 
         let (_, c2) = consumer.poll(1024).unwrap().unwrap();
-        let SendCompletion::Writable(mut wc) = c2 else {
+        let ReplyChain::Writable(mut wc) = c2 else {
             panic!("expected writable");
         };
         wc.write_all(b"result").unwrap();
@@ -1006,7 +1006,7 @@ mod tests {
         // poll() returns only the RW completion
         let cqe = producer.poll().unwrap().unwrap();
         assert_eq!(cqe.token(), tok_rw);
-        assert_eq!(cqe.data().unwrap().as_ref(), b"result");
+        assert_eq!(cqe.to_bytes().unwrap().as_ref(), b"result");
 
         // No more - RO completions were discarded
         assert!(producer.poll().unwrap().is_none());
@@ -1025,7 +1025,7 @@ mod tests {
         consumer.complete(c1).unwrap();
 
         let (_, c2) = consumer.poll(1024).unwrap().unwrap();
-        let SendCompletion::Writable(mut wc) = c2 else {
+        let ReplyChain::Writable(mut wc) = c2 else {
             panic!("expected writable");
         };
         wc.write_all(b"reply").unwrap();
@@ -1033,7 +1033,7 @@ mod tests {
 
         // poll() consumes first entry directly from ring
         let cqe1 = producer.poll().unwrap().unwrap();
-        assert!(matches!(cqe1, RecvCompletion::Ack(_)));
+        assert!(matches!(cqe1, UsedChain::Ack(_)));
 
         // reclaim() buffers second entry
         let count = producer.reclaim().unwrap();
@@ -1042,7 +1042,7 @@ mod tests {
         // poll() returns the buffered one
         let cqe2 = producer.poll().unwrap().unwrap();
         assert_eq!(cqe2.token(), tok_rw);
-        assert_eq!(cqe2.data().unwrap().as_ref(), b"reply");
+        assert_eq!(cqe2.to_bytes().unwrap().as_ref(), b"reply");
     }
 
     /// reclaim + submit must not cause token collisions.
@@ -1071,7 +1071,7 @@ mod tests {
 
         // Complete the ReadWrite entry
         let (_, c) = consumer.poll(1024).unwrap().unwrap();
-        let SendCompletion::Writable(mut wc) = c else {
+        let ReplyChain::Writable(mut wc) = c else {
             panic!("expected writable");
         };
         wc.write_all(b"result").unwrap();
@@ -1080,7 +1080,7 @@ mod tests {
         // Poll returns only the RW completion (RO was discarded by reclaim)
         let cqe = producer.poll().unwrap().unwrap();
         assert_eq!(cqe.token(), tok_new);
-        assert_eq!(cqe.data().unwrap().as_ref(), b"result");
+        assert_eq!(cqe.to_bytes().unwrap().as_ref(), b"result");
 
         // No stale RO completion in the queue
         assert!(producer.poll().unwrap().is_none());
@@ -1427,7 +1427,7 @@ mod fuzz {
                 loop {
                     if let Some(r) = prod.poll().unwrap() {
                         assert_eq!(r.token(), tok);
-                        assert_eq!(r.data().unwrap().as_ref(), b"pong");
+                        assert_eq!(r.to_bytes().unwrap().as_ref(), b"pong");
                         break;
                     }
                     thread::yield_now();
@@ -1441,8 +1441,8 @@ mod fuzz {
                     }
                     thread::yield_now();
                 };
-                assert_eq!(entry.data().as_ref(), b"ping");
-                let SendCompletion::Writable(mut wc) = completion else {
+                assert_eq!(entry.to_bytes().as_ref(), b"ping");
+                let ReplyChain::Writable(mut wc) = completion else {
                     panic!("expected writable completion");
                 };
                 wc.write_all(b"pong").unwrap();

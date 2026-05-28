@@ -23,110 +23,115 @@ use smallvec::SmallVec;
 use super::*;
 
 type ReadableElems = SmallVec<[BufferElement; 2]>;
-type WritableElems = SmallVec<[BufferElement; 1]>;
+type WritableElems = SmallVec<[BufferElement; 2]>;
 
-/// Data received from the producer, safely copied out of shared memory.
+/// Payload received from the producer, safely copied out of shared memory.
 ///
 /// Created by [`VirtqConsumer::poll`]. Device-readable segments are eagerly
-/// copied and concatenated during poll using [`MemOps::read`] (volatile on the
-/// host side), so accessing data requires no unsafe code and no references
-/// into shared memory. Segment boundaries are not preserved by this API.
+/// copied during poll using [`MemOps::read`] (volatile on the host side), so
+/// accessing data requires no unsafe code and no references into shared
+/// memory. Segment boundaries are preserved in [`Segments`].
 #[derive(Debug, Clone)]
-pub struct RecvEntry {
+pub struct RecvChain {
     token: Token,
-    data: Bytes,
+    segments: Segments,
 }
 
-impl RecvEntry {
-    /// The token identifying this entry.
+impl RecvChain {
+    /// The token identifying this chain.
     pub fn token(&self) -> Token {
         self.token
     }
 
-    /// The entry payload, copied from shared memory.
-    ///
-    /// Returns empty [`Bytes`] when the chain has no readable buffers.
-    pub fn data(&self) -> &Bytes {
-        &self.data
+    /// The chain payload as ordered byte segments.
+    pub fn segments(&self) -> &Segments {
+        &self.segments
     }
 
-    /// Consume the entry, taking ownership of the data.
-    pub fn into_data(self) -> Bytes {
-        self.data
+    /// Consume the chain, taking ownership of the segments.
+    pub fn into_segments(self) -> Segments {
+        self.segments
+    }
+
+    /// Return the chain payload as contiguous bytes.
+    ///
+    /// Returns empty [`Bytes`] when the chain has no readable buffers.
+    pub fn to_bytes(&self) -> Bytes {
+        self.segments.to_bytes()
+    }
+
+    /// Consume the chain and return the payload as contiguous bytes.
+    pub fn into_bytes(self) -> Bytes {
+        self.segments.into_bytes()
     }
 }
 
-/// A pending completion, either writable or ack-only.
+/// Consumer-side chain reply, either writable or ack-only.
 ///
 /// Created by [`VirtqConsumer::poll`]. Must be submitted back via
 /// [`VirtqConsumer::complete`] to release the descriptor.
 #[must_use = "dropping without completing leaks the descriptor"]
-pub enum SendCompletion<M: MemOps> {
-    /// Completion with writable buffer capacity.
-    /// Use the `write*` methods on [`WritableCompletion`] to fill the
+pub enum ReplyChain<M: MemOps> {
+    /// Reply with writable buffer capacity.
+    /// Use the `write*` methods on [`WritableChain`] to fill the
     /// response buffer.
-    Writable(WritableCompletion<M>),
-    /// Ack-only completion (for chains with only readable buffers). No response buffer.
+    Writable(WritableChain<M>),
+    /// Ack-only reply (for chains with only readable buffers). No response buffer.
     /// Just pass back to [`VirtqConsumer::complete`] to acknowledge.
-    Ack(AckCompletion),
+    Ack(AckChain),
 }
 
-impl<M: MemOps> SendCompletion<M> {
-    /// The token identifying this completion.
+impl<M: MemOps> ReplyChain<M> {
+    /// The token identifying this reply.
     pub fn token(&self) -> Token {
         match self {
-            SendCompletion::Writable(wc) => wc.token(),
-            SendCompletion::Ack(ack) => ack.token(),
+            ReplyChain::Writable(wc) => wc.token(),
+            ReplyChain::Ack(ack) => ack.token(),
         }
     }
 
     /// Number of bytes written (0 for Ack).
     pub fn written(&self) -> usize {
         match self {
-            SendCompletion::Writable(wc) => wc.written(),
-            SendCompletion::Ack(_) => 0,
+            ReplyChain::Writable(wc) => wc.written(),
+            ReplyChain::Ack(_) => 0,
         }
     }
 
     fn id(&self) -> u16 {
-        match self {
-            SendCompletion::Writable(wc) => wc.id,
-            SendCompletion::Ack(ack) => ack.id,
-        }
+        self.token().1
     }
 }
 
-/// A completion with a writable buffer for response data.
+/// A reply chain with writable buffer capacity.
 ///
 /// # Example
 ///
 /// ```ignore
-/// if let SendCompletion::Writable(mut wc) = completion {
+/// if let ReplyChain::Writable(mut wc) = completion {
 ///     wc.write_all(b"response data")?;
 ///     consumer.complete(wc.into())?;
 /// }
 /// ```
 #[must_use = "dropping without completing leaks the descriptor"]
-pub struct WritableCompletion<M: MemOps> {
+pub struct WritableChain<M: MemOps> {
     mem: M,
-    id: u16,
     token: Token,
     elems: WritableElems,
     written: usize,
 }
 
-impl<M: MemOps> WritableCompletion<M> {
-    fn new(mem: M, id: u16, token: Token, elems: WritableElems) -> Self {
+impl<M: MemOps> WritableChain<M> {
+    fn new(mem: M, token: Token, elems: WritableElems) -> Self {
         Self {
             mem,
-            id,
             token,
             elems,
             written: 0,
         }
     }
 
-    /// The token identifying this completion.
+    /// The token identifying this writable reply.
     pub fn token(&self) -> Token {
         self.token
     }
@@ -134,6 +139,16 @@ impl<M: MemOps> WritableCompletion<M> {
     /// Total capacity of writable buffers in bytes.
     pub fn capacity(&self) -> usize {
         self.elems.iter().map(|elem| elem.len as usize).sum()
+    }
+
+    /// Number of writable buffers in this reply.
+    pub fn writable_count(&self) -> usize {
+        self.elems.len()
+    }
+
+    /// Capacity of a specific writable buffer.
+    pub fn writable_capacity(&self, index: usize) -> Option<usize> {
+        self.elems.get(index).map(|elem| elem.len as usize)
     }
 
     /// Number of bytes written so far.
@@ -176,6 +191,7 @@ impl<M: MemOps> WritableCompletion<M> {
             skip = 0;
             let n = (elem_len - elem_offset).min(src.len());
             let addr = elem.addr + elem_offset as u64;
+
             self.mem
                 .write(addr, &src[..n])
                 .map_err(|_| VirtqError::MemoryWriteError)?;
@@ -213,19 +229,18 @@ impl<M: MemOps> WritableCompletion<M> {
     }
 }
 
-/// An ack-only completion for chains with no writable buffers.
+/// An ack-only reply for chains with no writable buffers.
 ///
 /// No response buffer - just pass back to [`VirtqConsumer::complete`]
 /// to acknowledge processing and release the descriptor.
 #[must_use = "dropping without completing leaks the descriptor"]
-pub struct AckCompletion {
-    id: u16,
+pub struct AckChain {
     token: Token,
 }
 
-impl AckCompletion {
-    fn new(id: u16, token: Token) -> Self {
-        Self { id, token }
+impl AckChain {
+    fn new(token: Token) -> Self {
+        Self { token }
     }
 
     pub fn token(&self) -> Token {
@@ -235,8 +250,8 @@ impl AckCompletion {
 
 /// A high-level virtqueue consumer (device side).
 ///
-/// The consumer receives entries from the producer (driver), processes them,
-/// and sends back completions. This is typically used on the device/host side.
+/// The consumer receives chains from the producer (driver), processes them,
+/// and sends back replies. This is typically used on the device/host side.
 ///
 /// # Example
 ///
@@ -244,15 +259,15 @@ impl AckCompletion {
 /// let mut consumer = VirtqConsumer::new(layout, mem, notifier);
 ///
 /// // Poll and process
-/// while let Some((entry, completion)) = consumer.poll(MAX_ENTRY_SIZE)? {
-///     let data = entry.data();
-///     match completion {
-///         SendCompletion::Writable(mut wc) => {
+/// while let Some((chain, reply)) = consumer.poll(MAX_ENTRY_SIZE)? {
+///     let data = chain.to_bytes();
+///     match reply {
+///         ReplyChain::Writable(mut wc) => {
 ///             let response = handle_request(data);
 ///             wc.write_all(&response)?;
 ///             consumer.complete(wc.into())?;
 ///         }
-///         SendCompletion::Ack(ack) => {
+///         ReplyChain::Ack(ack) => {
 ///             consumer.complete(ack.into())?;
 ///         }
 ///     }
@@ -260,12 +275,12 @@ impl AckCompletion {
 ///
 /// // Or defer completions
 /// let mut pending = Vec::new();
-/// while let Some((entry, completion)) = consumer.poll(MAX_ENTRY_SIZE)? {
-///     pending.push((process(entry), completion));
+/// while let Some((chain, reply)) = consumer.poll(MAX_ENTRY_SIZE)? {
+///     pending.push((process(chain), reply));
 /// }
-/// for (result, completion) in pending {
+/// for (result, reply) in pending {
 ///     // ... complete later ...
-///     consumer.complete(completion)?;
+///     consumer.complete(reply)?;
 /// }
 /// ```
 pub struct VirtqConsumer<M, N> {
@@ -282,7 +297,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     ///
     /// * `layout` - Ring memory layout (descriptor table and event suppression addresses)
     /// * `mem` - Memory operations implementation for reading/writing to shared memory
-    /// * `notifier` - Callback for notifying the driver (producer) about completions
+    /// * `notifier` - Callback for notifying the driver (producer) about replies
     pub fn new(layout: Layout, mem: M, notifier: N) -> Self {
         let inner = RingConsumer::new(layout, mem);
         let inflight = FixedBitSet::with_capacity(inner.len());
@@ -295,27 +310,27 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         }
     }
 
-    /// Poll for a single incoming entry from the driver.
+    /// Poll for a single incoming chain from the driver.
     ///
-    /// Returns a [`RecvEntry`] (data copied from shared memory) and a
-    /// [`SendCompletion`] (writable handle or ack token). Both are
+    /// Returns a [`RecvChain`] (payload copied from shared memory) and a
+    /// [`ReplyChain`] (writable reply capacity or ack token). Both are
     /// independent owned values with no borrow on the consumer.
     ///
     /// # Arguments
     ///
-    /// * `max_entry` - Maximum entry size to accept. Entries larger than
+    /// * `max_entry` - Maximum chain payload size to accept. Payloads larger than
     ///   this will return [`VirtqError::EntryTooLarge`].
     ///
     /// # Errors
     ///
-    /// - [`VirtqError::EntryTooLarge`] - Entry data exceeds `max_entry` bytes
+    /// - [`VirtqError::EntryTooLarge`] - Chain payload exceeds `max_entry` bytes
     /// - [`VirtqError::BadChain`] - Descriptor chain format not recognized
     /// - [`VirtqError::InvalidState`] - Descriptor ID collision (driver bug)
-    /// - [`VirtqError::MemoryReadError`] - Failed to read entry from shared memory
+    /// - [`VirtqError::MemoryReadError`] - Failed to read chain payload from shared memory
     pub fn poll(
         &mut self,
         max_entry: usize,
-    ) -> Result<Option<(RecvEntry, SendCompletion<M>)>, VirtqError> {
+    ) -> Result<Option<(RecvChain, ReplyChain<M>)>, VirtqError> {
         let (id, chain) = match self.inner.poll_available() {
             Ok(x) => x,
             Err(RingError::WouldBlock) => return Ok(None),
@@ -324,13 +339,13 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
 
         let (readables, writables) = parse_chain(&chain)?;
 
-        // Validate entry size
-        let total_entry_len = readables
+        // Validate chain payload size
+        let total_chain_len = readables
             .iter()
             .map(|elem| elem.len as usize)
             .try_fold(0usize, |acc, len| acc.checked_add(len))
             .ok_or(VirtqError::EntryTooLarge)?;
-        if total_entry_len > max_entry {
+        if total_chain_len > max_entry {
             return Err(VirtqError::EntryTooLarge);
         }
 
@@ -348,7 +363,7 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
         let token = Token(self.next_token, id);
         self.next_token = self.next_token.wrapping_add(1);
 
-        // Copy entry data from shared memory
+        // Copy chain payload from shared memory
         let data = match self.read_elements(&readables) {
             Ok(d) => d,
             Err(e) => {
@@ -358,30 +373,33 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
             }
         };
 
-        let entry = RecvEntry { token, data };
-
-        // Build the appropriate completion handle
-        let completion = if !writables.is_empty() {
-            let mem = self.inner.mem().clone();
-            let cqe = WritableCompletion::new(mem, id, token, writables);
-            SendCompletion::Writable(cqe)
-        } else {
-            let ack = AckCompletion::new(id, token);
-            SendCompletion::Ack(ack)
+        let chain = RecvChain {
+            token,
+            segments: data,
         };
 
-        Ok(Some((entry, completion)))
+        // Build the appropriate reply.
+        let reply = if !writables.is_empty() {
+            let mem = self.inner.mem().clone();
+            let writable = WritableChain::new(mem, token, writables);
+            ReplyChain::Writable(writable)
+        } else {
+            let ack = AckChain::new(token);
+            ReplyChain::Ack(ack)
+        };
+
+        Ok(Some((chain, reply)))
     }
 
-    /// Submit a completed entry back to the ring.
+    /// Submit a reply/ack for a received chain back to the ring.
     ///
-    /// Accepts both [`WritableCompletion`] (with written byte count) and
-    /// [`AckCompletion`] (zero-length) via the [`SendCompletion`] enum.
+    /// Accepts both [`WritableChain`] (with written byte count) and
+    /// [`AckChain`] (zero-length) via the [`ReplyChain`] enum.
     /// Clears the inflight slot and notifies the producer if event
     /// suppression allows.
-    pub fn complete(&mut self, completion: SendCompletion<M>) -> Result<(), VirtqError> {
-        let id = completion.id();
-        let written = completion.written() as u32;
+    pub fn complete(&mut self, reply: ReplyChain<M>) -> Result<(), VirtqError> {
+        let id = reply.id();
+        let written = reply.written() as u32;
 
         let id_idx = id as usize;
         let slot_set = id_idx < self.inflight.len() && self.inflight.contains(id_idx);
@@ -431,8 +449,8 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     /// ```ignore
     /// consumer.set_avail_suppression(SuppressionKind::Disable)?;
     /// loop {
-    ///     while let Some((entry, completion)) = consumer.poll(1024)? {
-    ///         process(entry, completion);
+    ///     while let Some((chain, reply)) = consumer.poll(1024)? {
+    ///         process(chain, reply);
     ///     }
     ///     // ... do other work ...
     /// }
@@ -449,32 +467,19 @@ impl<M: MemOps + Clone, N: Notifier> VirtqConsumer<M, N> {
     }
 
     /// Read readable buffer elements from shared memory into `Bytes`.
-    fn read_elements(&self, elems: &[BufferElement]) -> Result<Bytes, VirtqError> {
-        match elems {
-            [] => Ok(Bytes::new()),
-            [elem] => {
-                let mut buf = vec![0u8; elem.len as usize];
-                self.inner
-                    .mem()
-                    .read(elem.addr, &mut buf)
-                    .map_err(|_| VirtqError::MemoryReadError)?;
-                Ok(Bytes::from(buf))
-            }
-            elems => {
-                let total = elems.iter().map(|elem| elem.len as usize).sum();
-                let mut buf = vec![0u8; total];
-                let mut offset = 0;
-                for elem in elems {
-                    let len = elem.len as usize;
-                    self.inner
-                        .mem()
-                        .read(elem.addr, &mut buf[offset..offset + len])
-                        .map_err(|_| VirtqError::MemoryReadError)?;
-                    offset += len;
-                }
-                Ok(Bytes::from(buf))
-            }
+    fn read_elements(&self, elems: &[BufferElement]) -> Result<Segments, VirtqError> {
+        let mut segments = SmallVec::<[Bytes; 4]>::new();
+
+        for elem in elems {
+            let mut buf = vec![0u8; elem.len as usize];
+            self.inner
+                .mem()
+                .read(elem.addr, &mut buf)
+                .map_err(|_| VirtqError::MemoryReadError)?;
+            segments.push(Bytes::from(buf));
         }
+
+        Ok(Segments::from_smallvec(segments))
     }
 
     /// Reset ring and inflight state to initial values.
@@ -498,15 +503,15 @@ fn parse_chain(chain: &BufferChain) -> Result<(ReadableElems, WritableElems), Vi
     Ok((r.iter().copied().collect(), w.iter().copied().collect()))
 }
 
-impl<M: MemOps> From<WritableCompletion<M>> for SendCompletion<M> {
-    fn from(wc: WritableCompletion<M>) -> Self {
-        SendCompletion::Writable(wc)
+impl<M: MemOps> From<WritableChain<M>> for ReplyChain<M> {
+    fn from(wc: WritableChain<M>) -> Self {
+        ReplyChain::Writable(wc)
     }
 }
 
-impl<M: MemOps> From<AckCompletion> for SendCompletion<M> {
-    fn from(ack: AckCompletion) -> Self {
-        SendCompletion::Ack(ack)
+impl<M: MemOps> From<AckChain> for ReplyChain<M> {
+    fn from(ack: AckChain) -> Self {
+        ReplyChain::Ack(ack)
     }
 }
 
@@ -525,10 +530,10 @@ mod tests {
         producer.submit(se).unwrap();
 
         let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
-        assert!(entry.data().is_empty());
-        assert!(matches!(completion, SendCompletion::Writable(_)));
+        assert!(entry.to_bytes().is_empty());
+        assert!(matches!(completion, ReplyChain::Writable(_)));
 
-        if let SendCompletion::Writable(mut wc) = completion {
+        if let ReplyChain::Writable(mut wc) = completion {
             wc.write_all(b"response").unwrap();
             consumer.complete(wc.into()).unwrap();
         }
@@ -544,8 +549,8 @@ mod tests {
         producer.submit(se).unwrap();
 
         let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
-        assert_eq!(entry.data().as_ref(), b"hello");
-        assert!(matches!(completion, SendCompletion::Ack(_)));
+        assert_eq!(entry.to_bytes().as_ref(), b"hello");
+        assert!(matches!(completion, ReplyChain::Ack(_)));
 
         consumer.complete(completion).unwrap();
     }
@@ -560,9 +565,9 @@ mod tests {
         producer.submit(se).unwrap();
 
         let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
-        assert_eq!(entry.data().as_ref(), b"hello world");
+        assert_eq!(entry.to_bytes().as_ref(), b"hello world");
 
-        if let SendCompletion::Writable(mut wc) = completion {
+        if let ReplyChain::Writable(mut wc) = completion {
             assert_eq!(wc.capacity(), 64);
             assert_eq!(wc.written(), 0);
             assert_eq!(wc.remaining(), 64);
@@ -585,7 +590,7 @@ mod tests {
 
         let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
 
-        if let SendCompletion::Writable(mut wc) = completion {
+        if let ReplyChain::Writable(mut wc) = completion {
             let n = wc.write(b"hello world!").unwrap();
             assert_eq!(n, 8);
             assert_eq!(wc.remaining(), 0);
@@ -604,7 +609,7 @@ mod tests {
         producer.submit(se).unwrap();
         let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
 
-        if let SendCompletion::Writable(mut wc) = completion {
+        if let ReplyChain::Writable(mut wc) = completion {
             let err = wc.write_all(b"too long").unwrap_err();
             assert!(matches!(err, VirtqError::CqeTooLarge));
         } else {
@@ -622,7 +627,7 @@ mod tests {
 
         let (_entry, completion) = consumer.poll(1024).unwrap().unwrap();
 
-        if let SendCompletion::Writable(mut wc) = completion {
+        if let ReplyChain::Writable(mut wc) = completion {
             wc.write_all(b"first").unwrap();
             assert_eq!(wc.written(), 5);
             wc.reset();
@@ -652,9 +657,9 @@ mod tests {
         let id = ring_producer.submit_available(&chain).unwrap();
 
         let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
-        assert!(entry.data().is_empty());
+        assert!(entry.to_bytes().is_empty());
 
-        let SendCompletion::Writable(mut wc) = completion else {
+        let ReplyChain::Writable(mut wc) = completion else {
             panic!("expected Writable");
         };
         assert_eq!(wc.capacity(), 8);
@@ -693,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entry_into_data() {
+    fn test_entry_into_bytes() {
         let ring = make_ring(16);
         let (mut producer, mut consumer, _notifier) = make_test_producer(&ring);
 
@@ -702,7 +707,7 @@ mod tests {
         producer.submit(se).unwrap();
 
         let (entry, completion) = consumer.poll(1024).unwrap().unwrap();
-        let data = entry.into_data();
+        let data = entry.into_bytes();
         assert_eq!(data.as_ref(), b"abc");
         consumer.complete(completion).unwrap();
     }
