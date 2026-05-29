@@ -2,7 +2,7 @@
 # Scans workflow files for GitHub Actions, resolves the latest release,
 # and prints the pinned hash reference.
 #
-# Usage: ./scripts/update-actions.sh [--update]
+# Usage: ./hack/update-actions.sh [--update]
 #   --update   Apply the pinned hashes to the workflow files in-place
 # Requires: gh (GitHub CLI), authenticated
 
@@ -34,15 +34,17 @@ fi
 # Resolve latest release + commit hash for each action
 declare -A latest_tag latest_hash
 
+sed_escape_regex() {
+    printf '%s' "$1" | sed -E 's/[][\\.^$*+?{}()|]/\\&/g'
+}
+
 resolve_tag_sha() {
     local repo=$1 tag=$2
-    local ref_obj obj_type obj_sha
+    local ref_data obj_type obj_sha
 
-    ref_obj=$(gh api "repos/$repo/git/ref/tags/$tag" \
-        --jq '.object' 2>/dev/null) || true
-
-    obj_type=$(echo "$ref_obj" | jq -r '.type // empty' 2>/dev/null) || true
-    obj_sha=$(echo "$ref_obj" | jq -r '.sha // empty' 2>/dev/null) || true
+    ref_data=$(gh api "repos/$repo/git/ref/tags/$tag" \
+        --jq '[.object.type // "", .object.sha // ""] | @tsv' 2>/dev/null) || true
+    read -r obj_type obj_sha <<< "$ref_data"
 
     # Dereference annotated tags to get the commit
     if [[ "$obj_type" == "tag" ]]; then
@@ -122,6 +124,8 @@ if [[ "$do_update" == true ]]; then
         current="${entry##*@}"
         hash="${latest_hash[$entry]}"
         tag="${latest_tag[$entry]}"
+        escaped_repo=$(sed_escape_regex "$repo")
+        escaped_current=$(sed_escape_regex "$current")
 
         if [[ "$hash" == "(not found)" || "$current" == "$hash" ]]; then
             continue
@@ -130,7 +134,7 @@ if [[ "$do_update" == true ]]; then
         # Replace repo@current with repo@hash # tag in all workflow files
         while IFS= read -r file; do
             if grep -q "${repo}@${current}" "$file"; then
-                sed -i "s|${repo}@${current}|${repo}@${hash}  # ${tag}|g" "$file"
+                sed -i -E "s|${escaped_repo}@${escaped_current}([[:space:]]*#.*)?|${repo}@${hash}  # ${tag}|g" "$file"
                 echo "Updated $repo in $(basename "$file"): ${current} -> ${hash} (${tag})"
                 updated=$((updated + 1))
             fi
